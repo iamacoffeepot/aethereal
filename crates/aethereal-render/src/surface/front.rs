@@ -1,6 +1,7 @@
 //! The front the chassis hands the render root each frame through, one for every window, and what the render root asks
 //! of each window's frame it drew (ADR-0019, ADR-0021).
 
+use crate::stats::FrameBudget;
 use aethereal_actor::Resource;
 use aethereal_window::WindowId;
 use crossbeam_queue::{ArrayQueue, SegQueue};
@@ -14,13 +15,17 @@ use std::sync::Arc;
 /// It is one front for every window, and not one for each: a resource the render root keeps leaves it only when it
 /// ends, so a front handed for each window would stay kept after its window closed. Its slots come and go as the
 /// chassis opens and closes windows, between steps, through its end of the front, [`Fronting`] (ADR-0027).
+///
+/// It also holds the frame time the program aims at, `budget`, which the chassis knows from how it presents and the
+/// display its first window is on, and says again through its end whenever either changes (ADR-0053).
 pub struct Front {
     slots: Vec<(WindowId, Slot)>,
+    budget: FrameBudget,
     changes: Arc<SegQueue<Change>>,
 }
 
 /// The chassis's end of the front: it adds a window's slot as it makes the window's surface, and takes it out as it
-/// drops the surface, each between steps. The render root's end sees each change as it next takes its frames, in
+/// drops the surface, each between steps, and says the frame budget as it changes. The render root's end sees each change as it next takes its frames, in
 /// the order made, so it never meets a slot half made, and neither end waits on the other.
 pub struct Fronting {
     changes: Arc<SegQueue<Change>>,
@@ -35,6 +40,8 @@ enum Change {
     Added(WindowId, Slot),
     /// The slot of `window`, taken out.
     Removed(WindowId),
+    /// The frame budget, in place of the one before.
+    Budget(FrameBudget),
 }
 
 /// The chassis's end of one window's slot in the front, which it puts each frame it acquired of that window into.
@@ -50,13 +57,18 @@ pub struct Present {
 }
 
 impl Front {
-    /// A front with no window's slot in it, and the chassis's end of it, which adds each window's slot as the chassis
-    /// makes the window's surface.
+    /// A front with no window's slot in it, aiming at `budget` until the chassis says another, and the chassis's end
+    /// of it, which adds each window's slot as the chassis makes the window's surface.
     #[must_use]
-    pub fn new() -> (Self, Fronting) {
+    pub fn new(budget: FrameBudget) -> (Self, Fronting) {
         let changes = Arc::new(SegQueue::new());
 
-        (Self { slots: Vec::new(), changes: Arc::clone(&changes) }, Fronting { changes })
+        (Self { slots: Vec::new(), budget, changes: Arc::clone(&changes) }, Fronting { changes })
+    }
+
+    /// The frame time the program aims at, as the chassis last said it by the last take.
+    pub(crate) const fn budget(&self) -> FrameBudget {
+        self.budget
     }
 
     /// The frame of each window to draw this cycle, taken, beside the window, once the slots the chassis added and
@@ -72,6 +84,7 @@ impl Front {
                     self.slots.push((window, slot));
                 }
                 Change::Removed(window) => self.slots.retain(|(slotted, _)| *slotted != window),
+                Change::Budget(budget) => self.budget = budget,
             }
         }
 
@@ -96,6 +109,12 @@ impl Fronting {
     /// handed nothing for it from its next take.
     pub fn remove(&self, window: WindowId) {
         self.changes.push(Change::Removed(window));
+    }
+
+    /// Says the frame time the program aims at is `budget` now, as the chassis's present mode or its first window's
+    /// display changed: the render root reads it from its next take (ADR-0053).
+    pub fn budget(&self, budget: FrameBudget) {
+        self.changes.push(Change::Budget(budget));
     }
 }
 

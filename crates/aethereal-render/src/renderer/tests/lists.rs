@@ -269,7 +269,7 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    kept.run_all(&mut encoder, &windows, None);
+    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off);
     let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(device, &mut encoder, &frame) else {
         panic!("the frame is copied");
     };

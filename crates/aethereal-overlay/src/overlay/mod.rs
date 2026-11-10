@@ -18,16 +18,11 @@ use aethereal_render::instances::{Instanced, InstancesId};
 use aethereal_render::mesh::Meshed;
 use aethereal_render::placement::{Placed, PlacementId};
 use aethereal_render::program::Programmed;
+use aethereal_render::stats::{FrameBudget, FrameStats};
 use aethereal_render::text::{TextId, TextMade, TextPlaced};
 use aethereal_render::uniforms::{Uniformed, UniformsId};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{self as window, Event, InitialWindows, Surface, Window, WindowId};
-
-/// The frame time the chart measures each cycle against, 16.7 milliseconds: a constant until the renderer's frame
-/// statistics bring the program's own budget, which follows its present mode and the monitor its window is on
-/// (ADR-0053: Frame statistics). It is not a flag, which would be wrong the moment either changed (ADR-0053:
-/// Alternatives considered).
-pub const BUDGET_NANOS: u64 = 16_700_000;
 
 /// How often the figures beneath the chart are worked out again while it is shown: four times a second. Their text
 /// is written only when what it shows changes.
@@ -57,8 +52,9 @@ pub struct OverlayConfig {
 }
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
-/// cycle's time and draws the band over what the program drew. While it is hidden it draws nothing and hears no
-/// `Tick`, only its window.
+/// cycle's time and draws the band over what the program drew, against the frame budget the renderer's statistics
+/// bring. While it is hidden it draws nothing and hears no `Tick` and no statistics, only its window, so the renderer
+/// counts nothing for it.
 #[derive(Bound)]
 #[kind(name = "aether.overlay")]
 pub struct Overlay {
@@ -68,6 +64,10 @@ pub struct Overlay {
     /// and nothing is made or drawn before then.
     surface: Surface,
     frames: FrameTimes,
+    /// The frame time the chart measures each cycle against, as the renderer's statistics last said: the program's own,
+    /// which follows its present mode and the display its window is on (ADR-0053: Frame statistics). Until they first
+    /// say, the fallback refresh, drawn as a reference.
+    budget: FrameBudget,
     chart: Chart,
     readout: Readout,
     /// The program's time from which the figures are next worked out.
@@ -107,6 +107,7 @@ impl Actor for Overlay {
     type Handles = (
         Event,
         On<Tick>,
+        FrameStats,
         Answer<Shaped, ChartAsked>,
         Answer<Meshed, ChartShaped>,
         Answer<Programmed, ChartMeshed>,
@@ -127,6 +128,7 @@ impl Actor for Overlay {
             stop: Stop::Hidden,
             surface: Surface { width: 1, height: 1, scale: 1.0 },
             frames: FrameTimes::default(),
+            budget: FrameBudget::UNTOLD,
             chart: Chart::Unasked,
             readout: Readout::Unasked,
             figures_due_nanos: 0,

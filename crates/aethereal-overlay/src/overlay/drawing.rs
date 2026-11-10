@@ -1,9 +1,10 @@
 //! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): what its window hears steps it and lays it
 //! out again, and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
-//! write, and writes the figures' text when what it shows changes.
+//! write, and writes the figures' text when what it shows changes. While it is shown it also hears each frame's
+//! statistics, for the budget the chart is drawn against (ADR-0053).
 
 use super::making::{ChartAsked, ReadoutAsked};
-use super::{BUDGET_NANOS, Chart, FIGURES_EVERY_NANOS, Overlay, Readout};
+use super::{Chart, FIGURES_EVERY_NANOS, Overlay, Readout};
 use crate::chart::{self, RECORD_BYTES};
 use crate::layout::Layout;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
@@ -12,6 +13,7 @@ use aethereal_render::draw_list::DrawList;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::instances::WriteInstances;
 use aethereal_render::pass::Main;
+use aethereal_render::stats::{FrameStats, SubscribeFrameStats, UnsubscribeFrameStats};
 use aethereal_render::text::{Clip, CreateText, Layer, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
 use aethereal_window::{Event, Surface};
@@ -28,6 +30,8 @@ type Heard = (
     Tells<Path<Renderer>, MoveText>,
     Asks<Path<Renderer>, ShapeOf, ChartAsked>,
     Asks<Path<Renderer>, CreateText, ReadoutAsked>,
+    Tells<Path<Renderer>, SubscribeFrameStats>,
+    Tells<Path<Renderer>, UnsubscribeFrameStats>,
 );
 
 /// A backtick steps the overlay, and a resize lays it out again; the overlay hears nothing else of its window.
@@ -58,17 +62,21 @@ impl Overlay {
         Ok(())
     }
 
-    /// Steps to the next stop: shown, it hears each `Tick` and draws its list, written for the stop at once; hidden,
-    /// it hears no `Tick` and draws an empty list.
+    /// Steps to the next stop: shown, it hears each `Tick` and each frame's statistics and draws its list, written for
+    /// the stop at once; hidden, it hears neither and draws an empty list.
     fn step(&mut self, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         let was = self.stop;
         self.stop = was.next();
         match (was.draws(), self.stop.draws()) {
             (false, true) => {
                 turn.subscribe::<Tick>();
+                turn.to(path::<Renderer>(())).send(&SubscribeFrameStats)?;
                 self.figures_due_nanos = 0;
             }
-            (true, false) => turn.unsubscribe::<Tick>(),
+            (true, false) => {
+                turn.unsubscribe::<Tick>();
+                turn.to(path::<Renderer>(())).send(&UnsubscribeFrameStats)?;
+            }
             (false, false) | (true, true) => {}
         }
         if self.stop.draws() {
@@ -113,7 +121,7 @@ impl Overlay {
         let count = chart::column_count(layout);
         let mut records = turn.buffer(chart::records_bytes(layout));
         let (columns, slide) = (self.frames.columns(count), self.frames.slide(count));
-        chart::records(&mut records, layout, self.stop, columns, slide, BUDGET_NANOS);
+        chart::records(&mut records, layout, self.stop, columns, slide, self.budget);
         let count = u32::try_from(records.len() / RECORD_BYTES as usize).unwrap_or(u32::MAX);
         let Ok(records) = turn.put(records) else {
             turn.log(Level::Warn, "the overlay's chart was not written: its records were not put");
@@ -199,6 +207,18 @@ impl Handles<On<Tick>> for Overlay {
         }
         turn.to(path::<Renderer>(())).send(&WriteText { text: *text, runs: figures.runs() })?;
         *shown = figures;
+
+        Ok(())
+    }
+}
+
+/// The budget each frame's statistics bring, which the chart is drawn against from the next `Tick`. Heard only while
+/// the overlay is shown.
+impl Handles<FrameStats> for Overlay {
+    type Sends = ();
+
+    fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.budget = stats.budget;
 
         Ok(())
     }

@@ -3,6 +3,7 @@
 //! says, and written a glyph at a time as each glyph's job finishes (ADR-0052).
 
 use super::{Arranged, Slot};
+use crate::stats;
 
 /// The atlas's texture, its view, and the group binding it with the sampler the glyph program reads it through.
 pub struct AtlasTexture {
@@ -20,6 +21,12 @@ impl AtlasTexture {
         let group = group(device, &layout, &texture, &sampler);
 
         Self { texture, group, layout, sampler }
+    }
+
+    /// The bytes of the texture as it is made now (ADR-0053).
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        stats::texture_bytes(&self.texture)
     }
 
     /// The group the glyph program binds the atlas in, group 0.

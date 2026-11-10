@@ -16,6 +16,7 @@ use crate::made::{Made, Owned};
 use crate::pass::PassName;
 use crate::placement::{self, Finds, Fits, PlacementId};
 use crate::shape::Shape;
+use crate::stats::{self, AtlasFill, Tally};
 use crate::text::atlas::texture::AtlasTexture;
 use crate::text::atlas::{Atlas, Field, GlyphKey};
 use crate::text::faces::{Face, Faces, FontKey};
@@ -402,13 +403,22 @@ impl Texts {
         PlacedText { text: place.text.id, placing, joins }
     }
 
+    /// How full the atlas is, and the bytes of its texture (ADR-0053).
+    pub fn atlas(&self) -> (AtlasFill, u64) {
+        let fill =
+            AtlasFill { used_texels: self.atlas.used_texels(), side: self.atlas.side(), most_side: self.atlas.most() };
+
+        (fill, self.texture.bytes())
+    }
+
     /// Records the placed text `placed`'s draw in its join `join` into `recording`, a pass that uses depth as `depth`
-    /// says: nothing while its text shows nothing.
+    /// says, counted into `tally`: nothing while its text shows nothing.
     pub fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
         (placed, join): (&PlacedText, &TextJoined),
         depth: DepthUse,
+        tally: &mut Tally,
     ) {
         let built = match self.made.get(placed.text).map(|text| &text.shown) {
             Some(Shown::Ready { shown } | Shown::Rewriting { shown, .. }) => shown,
@@ -422,6 +432,7 @@ impl Texts {
         recording.set_bind_group(1, &join.group, &[]);
         recording.set_vertex_buffer(0, built.instances.slice(..));
         recording.draw(0..6, 0..built.count);
+        tally.draw(stats::triangles(6, built.count));
     }
 
     /// Each text placement's join drawn loose in the pass `pass` of `frame`, whose programs are made against `fits`,
@@ -777,6 +788,8 @@ impl Handles<Answer<GlyphsGenerated, Generating>> for Renderer {
             .iter()
             .map(|field| Field { width: field.width, height: field.height, left: field.left, top: field.top })
             .collect();
+        // Each field's three channels are written as four.
+        self.watch.uploaded(pixels.len() / 3 * 4);
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let unfit = turn.open(&mut self.kept)?.text.generated((&device, &queue), batch, &fields, &pixels);

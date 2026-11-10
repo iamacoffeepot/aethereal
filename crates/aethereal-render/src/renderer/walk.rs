@@ -10,6 +10,7 @@ use crate::frame::{
 use crate::pass::PassName;
 use crate::placement::{Fits, Resource};
 use crate::shape::{ColourFormat, Samples, Shape};
+use crate::stats;
 use aethereal_window::WindowId;
 
 /// A frame, checked and made: what it does, where it ends, what each pass does with what it was made with, the
@@ -53,6 +54,16 @@ impl Image {
     pub const fn read(&self) -> &wgpu::TextureView {
         match self {
             Self::Single(view) | Self::Resolved { resolved: view, .. } => view,
+        }
+    }
+
+    /// The bytes of its textures, the samples and what they resolve into alike (ADR-0053).
+    pub fn bytes(&self) -> u64 {
+        match self {
+            Self::Single(view) => stats::texture_bytes(view.texture()),
+            Self::Resolved { samples, resolved } => {
+                stats::texture_bytes(samples.texture()) + stats::texture_bytes(resolved.texture())
+            }
         }
     }
 }
@@ -244,6 +255,11 @@ impl Walk {
         let image = self.targets.get(at as usize)?;
 
         Some((*spec, image.read().texture()))
+    }
+
+    /// The bytes of its targets, each texture its passes draw into or read (ADR-0053).
+    pub fn targets_bytes(&self) -> u64 {
+        self.targets.iter().map(Image::bytes).sum()
     }
 
     /// The size its end was last drawn at.

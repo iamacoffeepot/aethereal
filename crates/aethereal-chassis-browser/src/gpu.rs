@@ -2,17 +2,19 @@
 //! configured, and the GPU the renderer draws with (ADR-0010, ADR-0019, ADR-0021, ADR-0024, ADR-0029).
 
 use crate::program::ShownCanvas;
+use crate::refresh::Refresh;
 use crate::serving::Surfaced;
 use aethereal_render::Gpu;
-use aethereal_render::surface::{Front, WindowSurface};
+use aethereal_render::surface::{Front, Fronting, WindowSurface};
 use wasm_bindgen::JsError;
 
 /// WebGPU opened on the canvases, for the renderer's bootstrap to make the renderer's config from: the GPU, the front
-/// the renderer is handed each canvas's frame through, and each canvas's surface, configured, in the order the
-/// canvases were opened.
+/// the renderer is handed each canvas's frame through, and the chassis's end of it, which says the frame budget, and
+/// each canvas's surface, configured, in the order the canvases were opened.
 pub struct Opened {
     pub gpu: Gpu,
     pub front: Front,
+    pub fronting: Fronting,
     pub surfaces: Vec<Surfaced>,
 }
 
@@ -52,8 +54,9 @@ pub async fn open(canvases: &[ShownCanvas]) -> Result<Opened, JsError> {
         .map_err(|error| JsError::new(&format!("the adapter refused a device: {error}")))?;
 
     let gpu = Gpu::new(device, queue);
-    // The chassis's end of the front adds each canvas's slot here, and is dropped: a page opens no window after.
-    let (front, fronting) = Front::new();
+    // The chassis's end of the front adds each canvas's slot here; after, it only says the budget, as a page opens no
+    // window after.
+    let (front, fronting) = Front::new(Refresh::untold());
     let mut kept = Vec::with_capacity(canvases.len());
     for (surface, shown) in surfaces.into_iter().zip(canvases) {
         let (width, height) = (shown.canvas.width().max(1), shown.canvas.height().max(1));
@@ -68,5 +71,5 @@ pub async fn open(canvases: &[ShownCanvas]) -> Result<Opened, JsError> {
         kept.push(Surfaced { surface, size: shown.shown.size() });
     }
 
-    Ok(Opened { gpu, front, surfaces: kept })
+    Ok(Opened { gpu, front, fronting, surfaces: kept })
 }

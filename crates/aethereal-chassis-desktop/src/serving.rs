@@ -263,5 +263,7 @@ impl Drawing {
         // Each refused only once its root has gone, and nothing then hears of it.
         let _ = self.surfacing.push(Surfaced::Closed { window });
         let _ = hosting.closed(window);
+        // Another window may be first now (ADR-0053).
+        self.rebudget();
     }
 }

@@ -6,6 +6,7 @@ mod groups;
 mod tests;
 mod text;
 mod walk;
+mod watching;
 
 use crate::Gpu;
 use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
@@ -34,6 +35,10 @@ use crate::readback::{
     StorageContents, TargetPixels,
 };
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
+use crate::stats::{
+    self, DescribeGpu, FrameStats, GpuDescribed, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, Tally,
+    UnsubscribeFrameStats, UnsubscribeGpuTimes,
+};
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
 use crate::text::generate::{Generating, GlyphsGenerated};
@@ -46,7 +51,7 @@ use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
     Actor, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level,
-    On, Protocol, Render, Resource, Source, ToSender, Top, Turn,
+    On, Protocol, Render, Resource, Source, Subscribers, ToAny, ToSender, Top, Turn,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_window::WindowId;
@@ -55,6 +60,7 @@ use std::collections::HashMap;
 use std::mem;
 use text::{Listable, PlacedText, TextJoined, Texts};
 use walk::{End, Making, ReadGroup, Step, Walk};
+use watching::Watch;
 
 /// The renderer, the one actor that touches the GPU. Actors ask it through [`Rendering`].
 #[derive(Bound)]
@@ -71,6 +77,10 @@ pub struct Renderer {
     /// opens it.
     surfaced: Handle<Source<Surfaced>>,
     owed: Owed,
+    /// Who is sent each frame's statistics, and what is counted for them meanwhile (ADR-0053).
+    watch: Watch,
+    /// Who is sent the GPU's time over each frame's passes (ADR-0053).
+    timed: Subscribers<(GpuTimes,)>,
 }
 
 /// The reads and timings the renderer owes: those of the next frame, each read under the window it reads, and those
@@ -161,6 +171,10 @@ impl Carries<TimeFrame> for Renderer {
     type Answers = (Timed,);
 }
 
+impl Carries<DescribeGpu> for Renderer {
+    type Answers = (GpuDescribed,);
+}
+
 /// What the renderer is made from: the GPU the chassis opened; the front the chassis hands it each window's frame
 /// through, with a slot for each window's surface it keeps ([`WindowSurface::new`](crate::surface::WindowSurface::new)),
 /// and the controller it asks the chassis to present each window's frame it drew through; each window it draws to,
@@ -183,8 +197,9 @@ pub struct RendererConfig {
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
 /// what is computed, to list its placements in a pass in order, the shape of a pass it joins, to release what it made,
-/// to read back what it draws or storage, to time what it draws, to read a font or name the fonts that fall back, or
-/// to make, write, place, or move a text (ADR-0052).
+/// to read back what it draws or storage, to time what it draws, to read a font or name the fonts that fall back, to
+/// make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the GPU's time over its
+/// passes, or told the adapter it draws on (ADR-0053).
 pub struct Rendering;
 
 impl Protocol for Rendering {
@@ -216,6 +231,11 @@ impl Protocol for Rendering {
         WriteText,
         PlaceText,
         MoveText,
+        SubscribeFrameStats,
+        UnsubscribeFrameStats,
+        SubscribeGpuTimes,
+        UnsubscribeGpuTimes,
+        DescribeGpu,
     );
 }
 
@@ -329,6 +349,26 @@ impl Carries<PlaceText> for Rendering {
 
 impl Carries<MoveText> for Rendering {
     type Answers = ();
+}
+
+impl Carries<SubscribeFrameStats> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<UnsubscribeFrameStats> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<SubscribeGpuTimes> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<UnsubscribeGpuTimes> for Rendering {
+    type Answers = ();
+}
+
+impl Carries<DescribeGpu> for Rendering {
+    type Answers = (GpuDescribed,);
 }
 
 /// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
@@ -488,8 +528,15 @@ enum Reading {
     Target { buffer: wgpu::Buffer, copied: Copied, within: Region, region: Region, kind: TargetKind },
     /// Storage's bytes, copied whole.
     Bytes { buffer: wgpu::Buffer },
-    /// A pass's timestamps, each tick `period` nanoseconds.
-    Stamps { buffer: wgpu::Buffer, period: f32 },
+    /// A pass's timestamps, each tick `period` nanoseconds, and whether they are named for subscribers.
+    Stamps { buffer: wgpu::Buffer, period: f32, named: Named },
+}
+
+/// Whose a frame's timestamps are: only those who asked [`TimeFrame`], or also the subscribers of [`GpuTimes`], told
+/// them each beside its frame and its pass's name, of the cycle at `elapsed_nanos` (ADR-0053).
+enum Named {
+    Unnamed,
+    Named { elapsed_nanos: u64, passes: Vec<(Frame, PassName)> },
 }
 
 /// A program on the GPU: its pipeline, with what its stages read, what it binds, the layout of each group it binds in,
@@ -647,6 +694,11 @@ impl Actor for Renderer {
         PlaceText,
         MoveText,
         Answer<GlyphsGenerated, Generating>,
+        SubscribeFrameStats,
+        UnsubscribeFrameStats,
+        SubscribeGpuTimes,
+        UnsubscribeGpuTimes,
+        DescribeGpu,
     );
     type BeginSends = ();
     type EndSends = ();
@@ -683,7 +735,18 @@ impl Actor for Renderer {
             timing: Vec::new(),
         };
 
-        Ok(Self { gpu, kept, front, presenting, mapping, mapped, surfaced, owed })
+        Ok(Self {
+            gpu,
+            kept,
+            front,
+            presenting,
+            mapping,
+            mapped,
+            surfaced,
+            owed,
+            watch: Watch::Unwatched,
+            timed: Subscribers::new(),
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -691,11 +754,15 @@ impl Actor for Renderer {
     }
 }
 
+/// Draws each window handed a frame, and tells each subscriber of the frame's statistics, counted only while one
+/// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053).
 impl Handles<On<Render>> for Renderer {
-    type Sends = ();
+    type Sends = (ToAny<(FrameStats,), FrameStats>,);
 
-    fn handle(&mut self, _: Render, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let handed = turn.open(&mut self.front)?.take();
+    fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let front = turn.open(&mut self.front)?;
+        let handed = front.take();
+        let budget = front.budget();
         let gpu = turn.open(&mut self.gpu)?;
         // Held past the opening of what is kept, as a turn opens one resource at a time.
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
@@ -717,8 +784,17 @@ impl Handles<On<Render>> for Renderer {
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let passes = kept.passes(&views);
-        let stamps = (!self.owed.timings.is_empty()).then(|| Stamps::new(&device, passes));
-        kept.run_all(&mut encoder, &views, stamps.as_ref());
+        let asked = !self.owed.timings.is_empty();
+        let subscribed = !self.timed.references().is_empty();
+        let timed = asked || subscribed;
+        let stamps = timed.then(|| Stamps::new(&device, passes));
+        let named = if subscribed {
+            Named::Named { elapsed_nanos: render.elapsed_nanos, passes: kept.pass_names(&views) }
+        } else {
+            Named::Unnamed
+        };
+        let mut tally = self.watch.tally();
+        kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally);
         kept.keep_last(&device, &mut encoder, &frames);
         let copied: Vec<_> = frames
             .iter()
@@ -728,8 +804,12 @@ impl Handles<On<Render>> for Renderer {
                 asked.then(|| (copy_frame(&device, &mut encoder, frame), owed))
             })
             .collect();
-        let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period()));
+        let timed = stamps.map(|stamps| stamps.resolve(&mut encoder, queue.get_timestamp_period(), named));
         queue.submit([encoder.finish()]);
+        let stats = match tally {
+            Tally::On(drawn) => Some(kept.frame_stats(render.elapsed_nanos, budget, drawn)),
+            Tally::Off => None,
+        };
 
         let mut mappings = Vec::new();
         let mut refused = Vec::new();
@@ -764,6 +844,9 @@ impl Handles<On<Render>> for Renderer {
         }
         if let Some((job, generating)) = wanted {
             turn.run(&job, &generating)?;
+        }
+        if let (Some(stats), Watch::Watched { subscribers, .. }) = (stats, &self.watch) {
+            turn.to(subscribers).send(&stats)?;
         }
 
         Ok(())
@@ -902,9 +985,9 @@ impl Handles<TimeFrame> for Renderer {
 }
 
 impl Handles<Mapped> for Renderer {
-    type Sends = ();
+    type Sends = (ToAny<(GpuTimes,), GpuTimes>,);
 
-    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         // What the source brings comes from this actor to itself; a buffer is read only once the chassis says it is
         // mapped, as reading one that is not stops the program.
         let brought = turn.sender().id() == turn.me().id();
@@ -956,8 +1039,12 @@ impl Handles<Mapped> for Renderer {
                     turn.answer(held, &answer)?;
                 }
             }
-            Reading::Stamps { buffer, period } => {
+            Reading::Stamps { buffer, period, named } => {
                 let passes = ready.then(|| mapped_bytes(&buffer, |bytes| timing::passes(bytes, period))).flatten();
+                if let (Some(nanos), Named::Named { elapsed_nanos, passes: names }) = (&passes, named) {
+                    let times = GpuTimes::Took { elapsed_nanos, passes: stats::named(&names, nanos) };
+                    turn.to(&self.timed).send(&times)?;
+                }
                 let answer = passes.map_or(Timed::Refused(TimingRefused::Unmapped), |passes| Timed::Took { passes });
                 for held in owed_by(&mut self.owed.timing, read) {
                     turn.answer(held, &answer)?;
@@ -1044,6 +1131,7 @@ impl Handles<CreateMesh> for Renderer {
             }
         };
 
+        self.watch.uploaded(vertices.len() + indices.len());
         let gpu = turn.open(&mut self.gpu)?;
         let mesh = Mesh {
             vertices: upload(gpu, &vertices, wgpu::BufferUsages::VERTEX),
@@ -1088,6 +1176,7 @@ impl Handles<CreateTexture> for Renderer {
             rows_per_image: Some(height),
         };
         gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
+        self.watch.uploaded(pixels.len());
         let view = made.create_view(&wgpu::TextureViewDescriptor::default());
         let texture = Texture { made, view, format, origin: Origin::Pixels };
         let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
@@ -1170,6 +1259,7 @@ impl Handles<CreateInstances> for Renderer {
             mapped_at_creation: false,
         });
         gpu.queue().write_buffer(&buffer, 0, &records);
+        self.watch.uploaded(records.len());
         let held = instances::Held { stride: layout.stride, capacity, length };
         let made = Instances { buffer, held, layout };
         let id = self.made(turn, |kept, id, maker| kept.instances.keep(id, maker, made))?;
@@ -1211,6 +1301,7 @@ impl Handles<WriteInstances> for Renderer {
 
         let at = u64::from(write.first) * u64::from(stride);
         turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, at, &records);
+        self.watch.uploaded(records.len());
 
         Ok(())
     }
@@ -1230,6 +1321,7 @@ impl Handles<CreateUniforms> for Renderer {
             }
         };
 
+        self.watch.uploaded(bytes.len());
         let gpu = turn.open(&mut self.gpu)?;
         let buffer = upload(gpu, &bytes, wgpu::BufferUsages::UNIFORM);
         let made = Uniforms { buffer, size };
@@ -1268,6 +1360,7 @@ impl Handles<WriteUniforms> for Renderer {
         };
 
         turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+        self.watch.uploaded(bytes.len());
 
         Ok(())
     }
@@ -1278,6 +1371,7 @@ impl Handles<CreateStorage> for Renderer {
 
     fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let bytes = turn.read(&create.bytes).to_vec();
+        self.watch.uploaded(bytes.len());
         self.store(turn, bytes.len() as u64, |gpu| upload(gpu, &bytes, STORAGE_USAGE))
     }
 }
@@ -1326,6 +1420,7 @@ impl Handles<WriteStorage> for Renderer {
         };
 
         turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, write.first, &bytes);
+        self.watch.uploaded(bytes.len());
 
         Ok(())
     }
@@ -1534,6 +1629,8 @@ impl Handles<Ended> for Renderer {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.watch.ended(&ended);
+        self.timed.ended(&ended);
         let maker = ended.actor().id();
         let kept = turn.open(&mut self.kept)?;
         let watched = kept.makers.ended(maker);
@@ -1797,13 +1894,14 @@ impl Kept {
     /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into that
     /// window's frame among `windows`: each of its passes begun in order, and what it does recorded in it, each pass
     /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
-    /// that ends on a window with none among them is not recorded.
+    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         (frame, walk): (Frame, &Walk),
         windows: &[(WindowId, wgpu::TextureView)],
         (stamps, first): (Option<&Stamps>, u32),
+        tally: &mut Tally,
     ) {
         let Some(end) = walk.end(windows) else {
             return;
@@ -1859,7 +1957,7 @@ impl Kept {
             });
             match step {
                 Step::Draw { fits, read, depth, .. } => {
-                    self.draw(&mut recording, (frame, pass), (fits, *depth), read);
+                    self.draw(&mut recording, (frame, pass), (fits, *depth), read, tally);
                 }
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
@@ -1868,6 +1966,7 @@ impl Kept {
                         recording.set_bind_group(group, bound, &[]);
                     }
                     recording.draw(0..3, 0..1);
+                    tally.draw(1);
                 }
                 Step::Compute => {}
             }
@@ -2174,34 +2273,41 @@ impl Kept {
             .map(|windowed| (windowed.window, self.main_of(windowed)))
     }
 
-    /// How many passes a `Render` runs that draws into `windows`: every frame's that ends on a texture, and the main
-    /// frame's of each window with a frame among them.
-    fn passes(&self, windows: &[(WindowId, wgpu::TextureView)]) -> u32 {
-        let textures: u32 = self.order.iter().filter_map(|id| self.frames.get(*id)).map(Walk::passes).sum();
-        let mains: u32 = self.shown(windows).map(|(_, main)| main.passes()).sum();
+    /// Every frame a `Render` that draws into `windows` runs, in the order it runs them: those that end on textures in
+    /// their order, then the main frame of each window with a frame among them, in the order of the windows.
+    fn ran<'a>(&'a self, windows: &'a [(WindowId, wgpu::TextureView)]) -> impl Iterator<Item = (Frame, &'a Walk)> + 'a {
+        let textures =
+            self.order.iter().filter_map(|id| Some((Frame::Texture(FrameId { id: *id }), self.frames.get(*id)?)));
+        let mains = self.shown(windows).map(|(window, main)| (Frame::Main(window), main));
 
-        textures + mains
+        textures.chain(mains)
     }
 
-    /// Records every frame on `encoder`: those that end on textures in their order, then the main frame of each window
-    /// with a frame among `windows`, in the order of the windows, drawing into that frame, each pass writing its
-    /// timestamps to `stamps` in the order they run when the frames are timed (ADR-0025).
+    /// How many passes a `Render` runs that draws into `windows`: every pass of each frame it runs.
+    fn passes(&self, windows: &[(WindowId, wgpu::TextureView)]) -> u32 {
+        self.ran(windows).map(|(_, walk)| walk.passes()).sum()
+    }
+
+    /// Each pass a `Render` that draws into `windows` runs, beside its frame, in the order it runs them, which is the
+    /// order they write their timestamps in (ADR-0053).
+    fn pass_names(&self, windows: &[(WindowId, wgpu::TextureView)]) -> Vec<(Frame, PassName)> {
+        self.ran(windows).flat_map(|(frame, walk)| walk.steps().map(move |(pass, _)| (frame, pass))).collect()
+    }
+
+    /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that
+    /// window's frame among `windows`, each pass writing its timestamps to `stamps` in the order they run when the
+    /// frames are timed, and each draw counted into `tally` (ADR-0025, ADR-0053).
     fn run_all(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         windows: &[(WindowId, wgpu::TextureView)],
         stamps: Option<&Stamps>,
+        tally: &mut Tally,
     ) {
         let mut first = 0;
-        for id in &self.order {
-            if let Some(walk) = self.frames.get(*id) {
-                self.run(encoder, (Frame::Texture(FrameId { id: *id }), walk), windows, (stamps, first));
-                first += walk.passes();
-            }
-        }
-        for (window, main) in self.shown(windows) {
-            self.run(encoder, (Frame::Main(window), main), windows, (stamps, first));
-            first += main.passes();
+        for (frame, walk) in self.ran(windows) {
+            self.run(encoder, (frame, walk), windows, (stamps, first), tally);
+            first += walk.passes();
         }
     }
 
@@ -2299,13 +2405,15 @@ impl Kept {
     /// Records into `recording` every placement drawn in the pass `pass` of `frame`, whose programs are made against
     /// `fits`, which uses depth as `depth` says, in the order [`drawn`](Self::drawn) answers, setting a pipeline only
     /// where the placement drawn before used another program, with the targets the pass reads bound at group 0 through
-    /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass.
+    /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass. Each draw is
+    /// counted into `tally`.
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
         (frame, pass): (Frame, PassName),
         (fits, depth): (&Fits, DepthUse),
         read: &ReadGroup,
+        tally: &mut Tally,
     ) {
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
         let reads = !fits.reads.is_empty();
@@ -2317,7 +2425,7 @@ impl Kept {
             let (placement, join) = match drawable {
                 Drawable::Mesh(placement, join) => (placement, join),
                 Drawable::Text(placed, join) => {
-                    self.text.draw(recording, (placed, join), depth);
+                    self.text.draw(recording, (placed, join), depth, tally);
                     // The next mesh drawn sets its own pipeline, as no program's id is zero.
                     pipeline = 0;
                     continue;
@@ -2348,8 +2456,14 @@ impl Kept {
             }
             recording.set_index_buffer(placement.indices.slice(..), wgpu::IndexFormat::Uint32);
             match count {
-                Count::Given(count) => recording.draw_indexed(0..placement.index_count, 0, 0..count),
-                Count::Held { buffer, at } => recording.draw_indexed_indirect(buffer, at),
+                Count::Given(count) => {
+                    recording.draw_indexed(0..placement.index_count, 0, 0..count);
+                    tally.draw(stats::triangles(placement.index_count, count));
+                }
+                Count::Held { buffer, at } => {
+                    recording.draw_indexed_indirect(buffer, at);
+                    tally.draw(0);
+                }
             }
         }
     }
@@ -2623,13 +2737,13 @@ impl Stamps {
     }
 
     /// Resolves the timestamps and copies them where the chassis can map them, recorded on `encoder` after the
-    /// passes, each tick `period` nanoseconds.
-    fn resolve(self, encoder: &mut wgpu::CommandEncoder, period: f32) -> Reading {
+    /// passes, each tick `period` nanoseconds, named for subscribers as `named` says.
+    fn resolve(self, encoder: &mut wgpu::CommandEncoder, period: f32, named: Named) -> Reading {
         let bytes = u64::from(self.count) * u64::from(wgpu::QUERY_SIZE);
         encoder.resolve_query_set(&self.set, 0..self.count, &self.resolved, 0);
         encoder.copy_buffer_to_buffer(&self.resolved, 0, &self.read, 0, bytes);
 
-        Reading::Stamps { buffer: self.read, period }
+        Reading::Stamps { buffer: self.read, period, named }
     }
 }
 

@@ -1,8 +1,9 @@
 //! The front's tests: each window's slot holds at most one frame, the last the chassis put for that window, on a device
-//! that draws nothing; a slot added or taken out between takes is handed from the next; and an ask to present one
-//! window's frame is that window's alone.
+//! that draws nothing; a slot added or taken out between takes is handed from the next; an ask to present one window's
+//! frame is that window's alone; and the budget the chassis says is read from the next take.
 
 use super::{Front, Present};
+use crate::stats::FrameBudget;
 use aethereal_data::{Budget, from_bytes};
 use aethereal_window::WindowId;
 
@@ -41,7 +42,7 @@ fn each_window_slot_holds_the_last_frame_put_for_it_once_and_none_once_cleared()
     // took back still there for the render root; and a frame handed under another window's id, or put in place of
     // another window's, which would draw one window's main frame into the other's surface or leave it undrawn.
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let (mut front, fronting) = Front::new();
+    let (mut front, fronting) = Front::new(FrameBudget::UNTOLD);
     let (first, second) = (fronting.hand(window(0)), fronting.hand(window(1)));
 
     first.put(frame(&device, 1));
@@ -63,7 +64,7 @@ fn a_slot_added_after_the_front_is_handed_is_taken_from_and_one_taken_out_hands_
     // draw into once the surface it came from was dropped; and a slot added again for a window, as its surface is made
     // anew, handing the old slot's frame beside the new one's.
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let (mut front, fronting) = Front::new();
+    let (mut front, fronting) = Front::new(FrameBudget::UNTOLD);
     let first = fronting.hand(window(0));
     first.put(frame(&device, 1));
     assert_eq!(taken(&mut front), [(window(0), 1)]);
@@ -90,4 +91,19 @@ fn an_ask_to_present_one_window_presents_that_window_alone() {
     assert!(Present::asked_for(&asked, window(1)));
     assert!(!Present::asked_for(&asked, window(0)));
     assert!(!Present::asked_for(&[], window(1)));
+}
+
+#[test]
+fn the_budget_the_chassis_says_is_read_from_the_next_take_the_last_said_winning() {
+    // Catches a budget said as the window moved to another display never reaching the render root, read before the
+    // take that brings it, or two said between takes read in the other order, leaving the older one standing.
+    let (mut front, fronting) = Front::new(FrameBudget::UNTOLD);
+    let (slower, faster) = (FrameBudget::Limit { nanos: 16_666_666 }, FrameBudget::Limit { nanos: 6_944_444 });
+
+    fronting.budget(slower);
+    fronting.budget(faster);
+    assert_eq!(front.budget(), FrameBudget::UNTOLD, "said, but not yet taken");
+    taken(&mut front);
+
+    assert_eq!(front.budget(), faster);
 }

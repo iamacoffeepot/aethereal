@@ -109,6 +109,18 @@ impl Atlas {
         self.side
     }
 
+    /// The longest side it may grow to, in texels.
+    #[must_use]
+    pub const fn most(&self) -> u32 {
+        self.most
+    }
+
+    /// The texels its glyphs' fields cover, without the gaps between them.
+    #[must_use]
+    pub fn used_texels(&self) -> u64 {
+        self.slots.values().map(|slot| u64::from(slot.field.width) * u64::from(slot.field.height)).sum()
+    }
+
     /// How many times it has been packed again: a text laid into it at another count is laid into it again.
     #[must_use]
     pub const fn packings(&self) -> u64 {
