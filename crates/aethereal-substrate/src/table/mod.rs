@@ -188,20 +188,20 @@ impl ActorTable {
     /// The path `id` stands for, when its actor and every actor above it are live.
     #[must_use]
     pub fn path(&self, id: ActorId) -> Option<ActorPath> {
-        let mut entry = self.entry(id)?;
-        let mut segments = vec![entry.segment()];
-        while let Some(above) = entry.above() {
-            let is_too_deep = segments.len() >= ActorPath::MAX_DEPTH;
-            if is_too_deep {
-                return None;
-            }
-            entry = self.entry(above)?;
-            segments.push(entry.segment());
-        }
+        walked(id, |id| self.entry(id))
+    }
 
-        let root = ActorPath::from_root(segments.pop()?);
+    /// The path `id` stands for, when its actor and every actor above it are live or among those that ended most
+    /// recently: how a log read across actors names one (ADR-0053).
+    #[must_use]
+    pub fn name(&self, id: ActorId) -> Option<ActorPath> {
+        walked(id, |id| self.actors.shard(id.bits()).named(id.bits()))
+    }
 
-        segments.iter().rev().try_fold(root, |path, segment| path.child(segment)).ok()
+    /// Remembers the entries of at most `most` actors that ended in each part, the most recent: for the engine's
+    /// setup, before any fold (ADR-0053).
+    pub(crate) fn keep_ended_at_most(&mut self, most: usize) {
+        self.actors.shards_mut().for_each(|standing| standing.keep_ended_at_most(most));
     }
 
     /// The seat of the actor `id` stands for, when it is live.
@@ -218,6 +218,25 @@ impl ActorTable {
 
     /// The entry of the actor `id` stands for, when it is in the table.
     fn entry(&self, id: ActorId) -> Option<&Entry> {
-        self.actors.shard(id.bits()).get(&id.bits())
+        self.actors.shard(id.bits()).live(id.bits())
     }
+}
+
+/// The path `id` stands for, each actor's entry, its own and those above it, found by `entry`: none when one is not
+/// found, or the path is deeper than a path may be.
+fn walked<'a>(id: ActorId, entry: impl Fn(ActorId) -> Option<&'a Entry>) -> Option<ActorPath> {
+    let mut found = entry(id)?;
+    let mut segments = vec![found.segment()];
+    while let Some(above) = found.above() {
+        let is_too_deep = segments.len() >= ActorPath::MAX_DEPTH;
+        if is_too_deep {
+            return None;
+        }
+        found = entry(above)?;
+        segments.push(found.segment());
+    }
+
+    let root = ActorPath::from_root(segments.pop()?);
+
+    segments.iter().rev().try_fold(root, |path, segment| path.child(segment)).ok()
 }

@@ -171,6 +171,12 @@ impl Setup<()> {
         Self::of(self.engine.with_most_logged(most))
     }
 
+    /// The engine, whose log keeps at most `most` of every actor's most recent entries between its parts, for a read
+    /// that names no actor: 2,000 unless set (ADR-0053).
+    pub fn with_most_recent(self, most: usize) -> Self {
+        Self::of(self.engine.with_most_recent(most))
+    }
+
     /// The engine, its jobs run by `jobs`, which with none set answers every job that no runner runs it (ADR-0018).
     pub fn with_jobs(self, jobs: Arc<dyn Jobs>) -> Self {
         Self::of(self.engine.with_jobs(jobs))

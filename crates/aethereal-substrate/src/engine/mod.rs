@@ -529,6 +529,18 @@ impl Engine {
         self
     }
 
+    /// The engine, whose log keeps at most `most` of every actor's most recent entries between its parts, each an
+    /// equal share, and whose table remembers the names of as many ended actors in each part (ADR-0053): set before
+    /// any root is made.
+    fn with_most_recent(mut self, most: usize) -> Self {
+        let parts = NonZeroUsize::new(self.log.shards().count()).unwrap_or(NonZeroUsize::MIN);
+        let share = log::share(most, parts);
+        self.log.shards_mut().for_each(|logs| logs.keep_recent_at_most(share));
+        self.table.keep_ended_at_most(share);
+
+        self
+    }
+
     /// Gives each part instances that carry the engine's guests' code, the native types it keeps, and its read limit.
     fn carry(&mut self) {
         for instances in &mut self.instances {
@@ -1018,6 +1030,9 @@ impl Engine {
     pub fn plan(&mut self, workers: Workers, now: Time) -> Plan {
         self.expire(now);
         self.step += 1;
+        let step = self.step;
+        // What is folded from here until the next plan goes with this step (ADR-0053).
+        self.log.shards_mut().for_each(|logs| logs.stamp(step));
         self.now = now;
         self.rest();
         // An actor kept to a slice runs long enough for what splitting the step costs to be a small part of it, and

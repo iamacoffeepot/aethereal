@@ -4,10 +4,12 @@
 use super::fuse::Run;
 use super::lifecycle::runs;
 use crate::id::path_id;
-use crate::log::find;
+use crate::log::{find, recent};
 use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor, Folded, Log};
-use aethereal_actor::{BlobHash, BlobId, Cycling, Declared, Logged, SeatNumber, Seated, Table, Time};
+use aethereal_actor::{
+    ActorName, BlobHash, BlobId, Cycling, Declared, Logged, Recent, SeatNumber, Seated, Table, Time,
+};
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
@@ -142,5 +144,10 @@ impl Table for Since<'_> {
             .map_or_else(|| find(self.log, path_id(path)), |seated| self.log.shard(seated.seat.number()).get(seated));
 
         kept.map_or(Logged::Nothing, Logged::Kept)
+    }
+
+    /// Every part's ring is read where it lies, each actor named by the table, live or ended recently (ADR-0053).
+    fn recent(&self, since: u64) -> Recent<'_> {
+        recent(self.log, since, |id| self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path))
     }
 }

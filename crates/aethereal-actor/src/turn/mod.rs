@@ -19,8 +19,8 @@ use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held, Instances, Keeping,
     Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented, Path, PathTo,
-    Payload, ProtocolRef, Puts, Reachable, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage, Table, Tie,
-    Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats, Seen, Sends, Stage,
+    Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -628,6 +628,11 @@ impl Seat<'_> {
     /// What the actor `path` names has logged, live or ended (ADR-0044).
     fn logged(&self, path: &ActorPath) -> Logged<'_> {
         self.table.logged(path)
+    }
+
+    /// What every actor has logged most recently from the step `since` on (ADR-0053).
+    fn recent(&self, since: u64) -> Recent<'_> {
+        self.table.recent(since)
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
@@ -2056,6 +2061,15 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn logged(&self, path: &ActorPath) -> Logged<'_> {
         self.seat.logged(path)
+    }
+
+    /// What every actor, live or ended, has logged most recently from the step `since` on, as the log view stood
+    /// when the step began, each entry named by its actor's path where the table remembers it: merged by step, oldest
+    /// first, with the step to read on from and how many entries had left the view before the read (ADR-0053). A
+    /// guest reads nothing, as it reads no log.
+    #[must_use]
+    pub fn recent(&self, since: u64) -> Recent<'_> {
+        self.seat.recent(since)
     }
 
     /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of

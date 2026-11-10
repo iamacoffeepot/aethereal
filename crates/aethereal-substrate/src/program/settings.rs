@@ -1,7 +1,7 @@
 //! The engine's section of the configuration, which every host reads (ADR-0028, ADR-0029).
 
 use crate::engine::MOST_KEPT_BYTES;
-use crate::{Engine, MOST_LOGGED, Setup};
+use crate::{Engine, MOST_LOGGED, MOST_RECENT, Setup};
 use aethereal_data::Plain;
 use core::num::{NonZeroU32, NonZeroUsize};
 
@@ -33,6 +33,9 @@ pub struct EngineSettings {
     pub most_kept_bytes: u64,
     /// The most entries the log keeps for each actor, the oldest leaving first (ADR-0044).
     pub most_logged: u32,
+    /// The most of every actor's most recent entries the log keeps between its parts, for a read that names no actor,
+    /// the oldest leaving first (ADR-0053).
+    pub most_recent: u32,
     /// The fused hops each part runs in a step (ADR-0013): with none, every piece of mail is handled in a later step.
     #[flag]
     pub hops: u32,
@@ -48,6 +51,7 @@ impl Default for EngineSettings {
             blob_bytes: 1 << 26,
             most_kept_bytes: MOST_KEPT_BYTES as u64,
             most_logged: u32::try_from(MOST_LOGGED).unwrap_or(u32::MAX),
+            most_recent: u32::try_from(MOST_RECENT).unwrap_or(u32::MAX),
             hops: 0,
         }
     }
@@ -66,6 +70,7 @@ impl EngineSettings {
         Engine::new(parts, size(self.read_limit), size(self.mail_bytes), size(self.blob_bytes), size(self.hops))
             .with_most_kept_bytes(size(self.most_kept_bytes))
             .with_most_logged(size(self.most_logged))
+            .with_most_recent(size(self.most_recent))
     }
 }
 

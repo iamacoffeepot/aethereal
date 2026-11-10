@@ -1,8 +1,10 @@
-//! The view of what each actor logged most recently (ADR-0009, ADR-0011).
+//! The view of what each actor logged most recently (ADR-0009, ADR-0011), and of what every actor did, across actors
+//! (ADR-0053).
 
 use crate::{ByActor, BySeat, Context, Folded, Part, View};
 use aethereal_actor::{
-    Arena, Effect, Entry, Fault, KeptLog, Level, Line, Payload, SeatNumber, Seated, Unreadable, What,
+    ActorName, Arena, Effect, Entry, Fault, KeptLog, Level, Line, Named, Payload, Recent, RecentRing, Recorded,
+    SeatNumber, Seated, Unreadable, What,
 };
 use aethereal_data::ActorId;
 use std::num::NonZeroUsize;
@@ -10,6 +12,10 @@ use std::num::NonZeroUsize;
 /// How many entries the view keeps for one actor by default, as `EngineSettings::most_logged` sets it (ADR-0044). An
 /// older one leaves as a newer one arrives.
 pub const MOST_LOGGED: usize = 32;
+
+/// How many of every actor's most recent entries the view keeps between its parts by default, as
+/// `EngineSettings::most_recent` sets it (ADR-0053). An older one leaves as a newer one arrives.
+pub const MOST_RECENT: usize = 2000;
 
 /// The view of what each actor logged most recently, keyed by the actor's seat (ADR-0011).
 ///
@@ -21,7 +27,8 @@ pub const MOST_LOGGED: usize = 32;
 pub struct Log;
 
 /// One part of the log: the entries of each actor whose seat falls in it, the seat each such actor logged in by its
-/// id, and how many each keeps.
+/// id, and how many each keeps; and the part's most recent entries across those actors, each with the step it was
+/// folded in (ADR-0053).
 pub struct Logs {
     seats: BySeat<KeptLog>,
     /// The seat each actor kept here logged in, by its id: written as an actor first logs in a seat, so a log is found
@@ -29,12 +36,34 @@ pub struct Logs {
     ids: ByActor<SeatNumber>,
     /// The most entries an actor keeps: fixed as the engine is set up, before any fold.
     most: usize,
+    /// The part's most recent entries, across its actors, filled by the fold that keeps each actor's: no part writes
+    /// another's, so the parts still fold apart (ADR-0053).
+    recent: RecentRing,
+    /// The most entries the part's ring keeps: its share of the view's, fixed as the engine is set up, before any fold.
+    most_recent: usize,
+    /// The step the part's next entries are folded in: set as each step is planned, before its turns run, so what
+    /// is folded between two steps goes with the step before (ADR-0053).
+    step: u64,
 }
 
 impl Part for Logs {
     fn empty(parts: NonZeroUsize) -> Self {
-        Self { seats: BySeat::empty(parts), ids: ByActor::default(), most: MOST_LOGGED }
+        Self {
+            seats: BySeat::empty(parts),
+            ids: ByActor::default(),
+            most: MOST_LOGGED,
+            recent: RecentRing::default(),
+            most_recent: share(MOST_RECENT, parts),
+            step: 0,
+        }
     }
+}
+
+/// One part's share of `most` entries kept between `parts` parts: an equal share, as each part holds an equal share
+/// of the seats, rounded up, so the parts together keep at least `most` (ADR-0053).
+#[must_use]
+pub const fn share(most: usize, parts: NonZeroUsize) -> usize {
+    most.div_ceil(parts.get())
 }
 
 impl Logs {
@@ -48,6 +77,50 @@ impl Logs {
     pub const fn keep_at_most(&mut self, most: usize) {
         self.most = most;
     }
+
+    /// Keeps at most `most` of the part's most recent entries across its actors from here on: for the engine's setup,
+    /// before any fold (ADR-0053).
+    pub const fn keep_recent_at_most(&mut self, most: usize) {
+        self.most_recent = most;
+    }
+
+    /// Folds the part's next entries in the step `step`: for the engine, as it plans each step (ADR-0053).
+    pub const fn stamp(&mut self, step: u64) {
+        self.step = step;
+    }
+
+    /// The part's most recent entries, across its actors.
+    #[must_use]
+    pub const fn recent(&self) -> &RecentRing {
+        &self.recent
+    }
+}
+
+/// What every part's ring holds from the step `since` on, as [`Recent`] has it, each entry's actor named by `name`
+/// once for the read (ADR-0053). The read goes on from the step the parts are stamped with, which a turn reading them
+/// runs in, so a reader that goes on from it sees each entry once.
+pub fn recent(log: &Folded<Log>, since: u64, mut name: impl FnMut(ActorId) -> ActorName) -> Recent<'_> {
+    let parts = log.shards().enumerate();
+    let mut found: Vec<(u64, usize, &Recorded)> = parts
+        .flat_map(|(part, logs)| logs.recent.since(since).map(move |recorded| (recorded.step(), part, recorded)))
+        .collect();
+    // A stable sort, so a part's entries within one step stay in the order it folded them.
+    found.sort_by_key(|(step, part, _)| (*step, *part));
+
+    let mut names: ByActor<ActorName> = ByActor::default();
+    let entries = found
+        .into_iter()
+        .map(|(_, _, recorded)| {
+            let by = recorded.by();
+            let actor = names.entry(by.bits()).or_insert_with(|| name(by)).clone();
+
+            Named { actor, recorded }
+        })
+        .collect();
+    let stamped = log.shards().map(|logs| logs.step).max().unwrap_or(since);
+    let left = log.shards().map(|logs| logs.recent.left_since(since)).sum();
+
+    Recent { entries, next: stamped.max(since), left }
 }
 
 /// What the actor `id` has logged, live or ended, found in the seat it last logged in while no other actor has logged
@@ -87,22 +160,51 @@ impl View for Log {
         fault(effect).into_iter()
     }
 
-    /// A line's text is copied out of its arena into the actor's entries, into the text of the entry that leaves as
-    /// it arrives, so a log kept full allocates nothing.
+    /// A line's text is copied out of its arena into the actor's entries, and from there into the part's ring, each
+    /// into the text of the entry that leaves as it arrives, so a log and a ring kept full allocate nothing.
     fn fold(shard: &mut Logs, key: u64, (id, logged): (ActorId, Logged), written: &[Arena]) {
-        let most = shard.most;
+        let Logs { seats, ids, most, recent, most_recent, step } = shard;
         let seated = Seated { id, seat: SeatNumber::new(key) };
-        let is_first = shard.seats.get(seated).is_none();
+        let is_first = seats.get(seated).is_none();
         if is_first {
             // The seat's last actor, if any, leaves the index as this one takes its place in it.
-            if let Some(gone) = shard.seats.id_in(seated.seat) {
-                shard.ids.remove(&gone.bits());
+            if let Some(gone) = seats.id_in(seated.seat) {
+                ids.remove(&gone.bits());
             }
-            shard.ids.insert(id.bits(), seated.seat);
+            ids.insert(id.bits(), seated.seat);
         }
-        let kept = shard.seats.entry(seated, KeptLog::default);
-        kept.keep(most, |left| entry(logged, left, written));
+        let kept = seats.entry(seated, KeptLog::default);
+        kept.keep(*most, |left| {
+            let made = entry(logged, left, written);
+            recent.keep(*most_recent, id, *step, |leaving| copied(&made, leaving));
+
+            made
+        });
     }
+}
+
+/// The text of `left`, an entry that leaves as another arrives, emptied for the one that arrives: a new one when it
+/// held none.
+fn emptied(left: Option<Entry>) -> String {
+    let mut text = match left {
+        Some(Entry::Line { text, .. }) => text,
+        _ => String::new(),
+    };
+    text.clear();
+
+    text
+}
+
+/// A copy of `entry` for a ring, a line's text copied into the text of `left`, the ring's entry that leaves as it
+/// arrives, so a ring kept full allocates nothing for a line.
+fn copied(entry: &Entry, left: Option<Entry>) -> Entry {
+    let Entry::Line { level, text } = entry else {
+        return entry.clone();
+    };
+    let mut kept = emptied(left);
+    kept.push_str(text);
+
+    Entry::Line { level: *level, text: kept }
 }
 
 /// The entry `logged` comes to, a line's text copied out of its arena into the text of `left`, the entry that leaves
@@ -110,11 +212,7 @@ impl View for Log {
 fn entry(logged: Logged, left: Option<Entry>, written: &[Arena]) -> Entry {
     match logged {
         Logged::Line { level, text } => {
-            let mut kept = match left {
-                Some(Entry::Line { text, .. }) => text,
-                _ => String::new(),
-            };
-            kept.clear();
+            let mut kept = emptied(left);
             let bytes = written.get(text.slot()).and_then(|arena| arena.read(text)).unwrap_or_default();
             // The turn wrote the text through `fmt::Write`, so it is whole UTF-8.
             kept.push_str(str::from_utf8(bytes).unwrap_or_default());
@@ -237,6 +335,100 @@ mod tests {
         log.fold_records(lines, &[arena]);
 
         assert_eq!(texts(log.shard(actor.seat.number()).get(actor)), ["3", "4"]);
+    }
+
+    /// The record of the line `text` by `by`, written into `arena`.
+    fn says(arena: &mut Arena, by: Seated, text: &str) -> (u64, (ActorId, Logged)) {
+        let Ok(text) = arena.write_text(text) else {
+            panic!("a text shows");
+        };
+
+        line(Line { by, level: Level::Info, text })
+    }
+
+    /// Folds `lines`, each the text said by its actor, into `log` in the step `step`.
+    fn fold_in(log: &mut Folded<Log>, step: u64, lines: &[(Seated, &str)]) {
+        log.shards_mut().for_each(|logs| logs.stamp(step));
+        let mut arena = Arena::new(0);
+        let records: Vec<_> = lines.iter().map(|(by, text)| says(&mut arena, *by, text)).collect();
+        log.fold_records(records, &[arena]);
+    }
+
+    /// What `log` holds from `since` on, read in the step `step`: each entry's step and text, oldest first, the step
+    /// to read on from, and how many had left.
+    fn read_in(log: &mut Folded<Log>, step: u64, since: u64) -> (Vec<(u64, String)>, u64, u64) {
+        log.shards_mut().for_each(|logs| logs.stamp(step));
+        let read = recent(log, since, ActorName::Unnamed);
+        let entries = read
+            .entries
+            .iter()
+            .filter_map(|named| match named.recorded.entry() {
+                Entry::Line { text, .. } => Some((named.recorded.step(), text.clone())),
+                _ => None,
+            })
+            .collect();
+
+        (entries, read.next, read.left)
+    }
+
+    /// Owned `(step, text)` pairs, to compare with a read.
+    fn stepped(entries: &[(u64, &str)]) -> Vec<(u64, String)> {
+        entries.iter().map(|(step, text)| (*step, String::from(*text))).collect()
+    }
+
+    #[test]
+    fn actors_in_different_parts_are_read_merged_by_step() {
+        // Catches a read that walks one part after another, so a later step of one part comes before an earlier step
+        // of another, and one that orders a step's entries other than by part and then as each part folded them.
+        // Seat 3 falls in part 1 and seat 4 in part 0.
+        let odd = Seated { id: ActorId::new(1), seat: SeatNumber::new(3) };
+        let even = Seated { id: ActorId::new(2), seat: SeatNumber::new(4) };
+        let mut log = Folded::<Log>::new(parts());
+        fold_in(&mut log, 1, &[(odd, "odd 1"), (even, "even 1")]);
+        fold_in(&mut log, 2, &[(odd, "odd 2a"), (odd, "odd 2b"), (even, "even 2")]);
+
+        let (entries, ..) = read_in(&mut log, 3, 0);
+
+        let expected = stepped(&[(1, "even 1"), (1, "odd 1"), (2, "even 2"), (2, "odd 2a"), (2, "odd 2b")]);
+        assert_eq!(entries, expected);
+    }
+
+    #[test]
+    fn a_read_from_its_next_step_sees_each_entry_once() {
+        // Catches a read that answers entries before its step, and a `next` that repeats the last step read or skips
+        // what was folded between two steps.
+        let actor = Seated { id: ActorId::new(1), seat: SeatNumber::new(3) };
+        let mut log = Folded::<Log>::new(parts());
+        fold_in(&mut log, 1, &[(actor, "one")]);
+        fold_in(&mut log, 2, &[(actor, "two")]);
+
+        let (first, next, _) = read_in(&mut log, 3, 2);
+        // Folded after the read's step, and between it and the next.
+        fold_in(&mut log, 3, &[(actor, "three"), (actor, "between")]);
+        let (second, after, _) = read_in(&mut log, 4, next);
+
+        assert_eq!((first, next), (stepped(&[(2, "two")]), 3));
+        assert_eq!((second, after), (stepped(&[(3, "three"), (3, "between")]), 4));
+    }
+
+    #[test]
+    fn a_full_ring_drops_its_oldest_and_counts_them_as_left() {
+        // Catches a ring that grows without end, one that drops the newest, and entries that left uncounted, or
+        // counted for a read from a step after theirs.
+        let actor = Seated { id: ActorId::new(1), seat: SeatNumber::new(3) };
+        let mut log = Folded::<Log>::new(parts());
+        log.shards_mut().for_each(|logs| logs.keep_recent_at_most(2));
+        fold_in(&mut log, 1, &[(actor, "a")]);
+        fold_in(&mut log, 2, &[(actor, "b"), (actor, "c")]);
+        fold_in(&mut log, 3, &[(actor, "d")]);
+
+        let (every, _, left) = read_in(&mut log, 4, 0);
+        let (from_two, _, from_two_left) = read_in(&mut log, 4, 2);
+        let (from_three, _, from_three_left) = read_in(&mut log, 4, 3);
+
+        assert_eq!((every, left), (stepped(&[(2, "c"), (3, "d")]), 2));
+        assert_eq!((from_two.len(), from_two_left), (2, 1));
+        assert_eq!((from_three, from_three_left), (stepped(&[(3, "d")]), 0));
     }
 
     #[test]
