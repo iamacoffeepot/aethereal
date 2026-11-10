@@ -16,7 +16,7 @@ use aethereal_link::{
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Offer, Offered, Output, ToolSheet, Tooling, Withdraw};
+use aethereal_tools::{Call, Called, Offer, Offered, Output, ToolSheet, Tooling, Tools, Withdraw};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
@@ -690,7 +690,7 @@ fn linking(port: u16, settings: LinkSettings) -> Result<Harness<Headless>, Unhea
         ..settings
     };
 
-    Harness::of(Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(settings))
+    Harness::of(Headless::program().with_engine(engine()).root::<Tcp>().root::<Tools>().root_with::<Link>(settings))
 }
 
 /// The next connection `Link` dials to `listener`, the harness stepping the host until it has.
@@ -710,11 +710,11 @@ fn accepted(harness: &mut Harness<Headless>, listener: &TcpListener) -> TcpStrea
     timed(stream)
 }
 
-/// Offers `link` the tool `say`, the test its worker.
+/// Offers the engine's `Tools` the tool `say`, the test its worker.
 fn offer_say(harness: &mut Harness<Headless>) -> Result<(), Unheard> {
-    let link = harness.root::<Link>();
+    let tools = harness.root::<Tools>();
     let worker = harness.protocol::<Tooling>();
-    let offering = harness.ask(link, &Offer { tools: vec![sheet("say")], worker })?;
+    let offering = harness.ask(tools, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
     Ok(())
@@ -752,9 +752,10 @@ fn link_dials_its_hub_and_says_hello_with_its_token_then_its_set() -> Result<(),
 
 #[test]
 fn each_change_while_linked_writes_the_whole_set_at_a_higher_revision() -> Result<(), Unheard> {
-    // Catches an offer or a withdrawal that writes nothing, a set written as a change instead of whole, and a revision
-    // not raised, with which the hub would convert a call by a set the engine no longer holds. A withdrawal's turn may
-    // send nothing, so it catches the set it changed never written too.
+    // Catches an offer to `Tools` or a withdrawal from it, once `Link` has written its first set, that `Link` never
+    // hears and so never writes, a set written as a change instead of whole, and a revision not raised, with which the
+    // hub would convert a call by a set the engine no longer holds. A withdrawal's turn may send nothing, so it catches
+    // the set it changed never written too.
     let (listener, port) = hub_socket();
     let mut harness = linking(port, LinkSettings::default())?;
     let stream = accepted(&mut harness, &listener);
@@ -764,8 +765,8 @@ fn each_change_while_linked_writes_the_whole_set_at_a_higher_revision() -> Resul
     let (offered, stream) = frames::<Up>(&mut harness, stream, 1);
     assert_eq!(offered, vec![Up::Sheets { revision: 1, tools: vec![sheet("say")] }]);
 
-    let (link, worker) = (harness.root::<Link>(), harness.protocol::<Tooling>());
-    harness.tell(link, &Withdraw { tool: String::from("say"), worker })?;
+    let (tools, worker) = (harness.root::<Tools>(), harness.protocol::<Tooling>());
+    harness.tell(tools, &Withdraw { tool: String::from("say"), worker })?;
     let (withdrawn, _stream) = frames::<Up>(&mut harness, stream, 1);
     assert_eq!(withdrawn, vec![Up::Sheets { revision: 2, tools: Vec::new() }]);
 
@@ -904,7 +905,7 @@ fn an_engine_started_without_a_token_fails_as_it_begins_naming_the_setting() {
     // Catches an engine that starts with no token and dials a hub that can only refuse it, and a failure that does
     // not say which setting to give.
     let link = LinkSettings { most_bytes: MOST_BYTES, ..LinkSettings::default() };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(link);
+    let program = Headless::program().with_engine(engine()).root::<Tcp>().root::<Tools>().root_with::<Link>(link);
 
     let built = Harness::of(program);
 

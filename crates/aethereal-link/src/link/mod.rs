@@ -1,5 +1,6 @@
-//! The engine's end of the link: the root that holds the engine's tools, dials its hub once, and hands the hub the
-//! whole set after each change, and ends its program when the link ends (ADR-0038, ADR-0040).
+//! The engine's end of the link: the root that dials its hub once, hands the hub the whole set of the engine's tools
+//! after each change, asks the engine's tools for each call the hub sends, and ends its program when the link ends
+//! (ADR-0038, ADR-0040, ADR-0053).
 
 mod settings;
 
@@ -9,14 +10,13 @@ use crate::frames::{self, Written};
 use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles,
-    Level, More, Number, Open, Part, Path, ProtocolRef, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn,
-    Unanswered, path,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ending, Fault, Handles, Level, More,
+    Number, Open, Part, Path, Streamed, Streams, Taken, Tells, ToAny, ToType, Top, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Connect, Connected, Dialed, Framing, HungUp, Read, Reading, Shut, Tcp, Write, Writing, Wrote};
-use aethereal_tools::{Call, Called, Holder, Offer, Offered, Table, ToolSheet, Tooling, Withdraw};
+use aethereal_tools::{CallTool, Called, Sheets, Subscribe, Tools};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
@@ -33,7 +33,7 @@ pub struct Sending {
     reader: Number,
 }
 
-/// What the root keeps for a call it asked of a worker: which it was.
+/// What the root keeps for a call it asked of the engine's tools: which it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.calling")]
 pub struct Calling {
@@ -51,6 +51,16 @@ enum Line {
     Ended,
 }
 
+impl Set {
+    /// Whether the set last heard is the set of `revision`.
+    const fn is_of(&self, revision: u64) -> bool {
+        match self {
+            Self::Unheard => false,
+            Self::Heard(sheets) => sheets.revision == revision,
+        }
+    }
+}
+
 impl Line {
     /// Whether the connection open is the one read through the stream `number`.
     fn is_read_by(&self, number: Number) -> bool {
@@ -61,15 +71,25 @@ impl Line {
     }
 }
 
+/// What the root has heard of the engine's tools.
+#[derive(Debug, Plain)]
+enum Set {
+    /// `Tools` has not yet sent the set: none is written, and every call is refused.
+    Unheard,
+    /// The set `Tools` last sent.
+    Heard(Sheets),
+}
+
 /// The frames of its connection the root is sent ahead of reading them.
 const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 
-/// The engine's end of the link (ADR-0038, ADR-0040): a tools [`Holder`], which any actor may [`Offer`] tools at its
-/// typed path, `path::<Link>(())`, naming a worker that speaks [`Tooling`]. It dials its hub once, as it begins,
-/// writes [`Up::Hello`] with the token its hub minted and then [`Up::Sheets`], and writes the whole set again after
-/// every change to what it holds. Each [`Down::Call`] is asked of the tool's worker within the time the call has left,
-/// from when its frame is read, and its answer written back as [`Up::Called`]: a call its tool has not answered by
-/// then is written back refused (ADR-0041). A tool's offer never waits on the hub.
+/// The engine's end of the link (ADR-0038, ADR-0040, ADR-0053). It holds no tools: it [`Subscribe`]s to the engine's
+/// [`Tools`], listed before it, as it begins. It dials its hub once, as it begins, writes [`Up::Hello`] with the token
+/// its hub minted and then [`Up::Sheets`], the set `Tools` last sent with `Tools`'s revision, and writes the whole set
+/// again each time `Tools` sends it another. Each [`Down::Call`] of the set it last wrote is asked of `Tools` as a
+/// [`CallTool`] within the time the call has left, from when its frame is read, and its answer written back as
+/// [`Up::Called`]: a call not answered by then is written back refused (ADR-0041). A tool's offer never waits on the
+/// hub.
 ///
 /// No engine outlives its link: when the dial comes to nothing, the connection ends, a frame from the hub does not
 /// read, or the hub refuses the engine, the root asks its program to stop (`turn.quit`, ADR-0020). Its token is spent,
@@ -82,26 +102,16 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 #[kind(name = "aether.link")]
 pub struct Link {
     config: LinkConfig,
-    table: Table,
-    /// The revision of what it holds: raised with every change, and never reset, across connections too.
-    revision: u64,
+    set: Set,
     line: Line,
     reading: Streams<Reading, ()>,
-    /// Each call of the open connection asked of a worker, by the root's own number, with the hub's number for it.
+    /// Each call of the open connection asked of `Tools`, by the root's own number, with the hub's number for it.
     calls: BTreeMap<u64, u64>,
     next: u64,
 }
 
 impl ChildOf for Link {
     type Parent = Top;
-}
-
-/// It holds the tools an engine's own program offers.
-impl Holder for Link {}
-
-/// Asked at its typed path, it answers an offer in the same turn.
-impl Carries<Offer> for Link {
-    type Answers = (Offered,);
 }
 
 /// It stands up on every host, and refuses to where a frame it would read could not be read, or where its settings
@@ -124,26 +134,24 @@ impl Actor for Link {
     type Config = LinkConfig;
     type Key = ();
     type Handles = (
-        Offer,
-        Withdraw,
-        Ended,
+        Sheets,
         Answer<Connected, Connecting>,
         Part<Reading>,
         Answer<HungUp, Number>,
         Answer<Wrote, Sending>,
         Answer<Called, Calling>,
     );
-    type BeginSends = (Asks<Path<Tcp>, Connect, Connecting>,);
+    type BeginSends = (Tells<Path<Tools>, Subscribe>, Asks<Path<Tcp>, Connect, Connecting>);
     type EndSends = ();
 
-    /// Dials its hub.
+    /// Subscribes to the engine's tools, and dials its hub.
     fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.to(path::<Tools>(())).send(&Subscribe)?;
         turn.to(path::<Tcp>(())).ask(&connect(&config), &Connecting)?;
 
         Ok(Self {
             config,
-            table: Table::new(),
-            revision: 0,
+            set: Set::Unheard,
             line: Line::Dialing,
             reading: Streams::new(READING_WINDOW),
             calls: BTreeMap::new(),
@@ -156,61 +164,14 @@ impl Actor for Link {
     }
 }
 
-impl Handles<Offer> for Link {
-    type Sends = (ToSender<Offered>, Asks<Writing, Write, Sending>);
-
-    /// Holds the offer, when its tools fit in the table and the set with them in a frame, and writes the set.
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let room = usize::try_from(self.config.most_tools).unwrap_or(usize::MAX);
-        let names: Vec<String> = offer.tools.iter().map(|sheet| sheet.name.clone()).collect();
-        let worker = offer.worker;
-        let taken = self.table.take(offer.tools, worker, room);
-        let offered = match taken {
-            Offered::Yes => self.fitted(&names, worker)?,
-            refused => refused,
-        };
-        if offered == Offered::Yes {
-            turn.watch(worker);
-            self.revision += 1;
-            self.write_sheets(turn)?;
-        }
-        turn.reply(&offered)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Withdraw> for Link {
+impl Handles<Sheets> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
 
-    /// Stops holding the tool, and writes the set without it.
-    fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let held = self.table.len();
-        self.table.withdraw(&withdraw.tool, withdraw.worker);
-        let changed = self.table.len() < held;
-        if changed {
-            self.revision += 1;
-            self.write_sheets(turn)?;
-        }
+    /// The engine's tools as `Tools` now holds them: kept, and written to the hub when connected.
+    fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.set = Set::Heard(sheets);
 
-        Ok(())
-    }
-}
-
-impl Handles<Ended> for Link {
-    type Sends = (Asks<Writing, Write, Sending>,);
-
-    /// A worker has ended: its tools are dropped, and the set written.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let held = self.table.len();
-        self.table.ended(ended.actor());
-        let changed = self.table.len() < held;
-        if changed {
-            self.revision += 1;
-            self.write_sheets(turn)?;
-        }
-
-        Ok(())
+        self.write_sheets(turn)
     }
 }
 
@@ -243,11 +204,11 @@ impl Handles<Part<Reading>> for Link {
     type Sends = (
         ToAny<Streamed<Reading>, More>,
         Asks<Writing, Write, Sending>,
-        Asks<Tooling, Call, Calling>,
+        Asks<Path<Tools>, CallTool, Calling>,
         ToType<Dialed, Shut>,
     );
 
-    /// A frame from the hub: a call, asked of its worker, or a refusal, which ends the link, as a frame that does not
+    /// A frame from the hub: a call, asked of the engine's tools, or a refusal, which ends the link, as a frame that does not
     /// read does.
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.reading.part(turn, part)? else {
@@ -278,7 +239,7 @@ impl Handles<Part<Reading>> for Link {
                     return self.answer(turn, call, unheld);
                 };
                 let due = within.due(turn.now());
-                self.call(turn, call, revision, due, &Call { tool, input })
+                self.call(turn, call, revision, due, &CallTool { tool, input })
             }
         }
     }
@@ -328,7 +289,7 @@ impl Handles<Answer<Wrote, Sending>> for Link {
 impl Handles<Answer<Called, Calling>> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
 
-    /// A worker's answer, written to the hub: one that comes once the link has ended is dropped.
+    /// What `Tools` answered, written to the hub: one that comes once the link has ended is dropped.
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
@@ -348,63 +309,28 @@ impl Handles<Answer<Called, Calling>> for Link {
 }
 
 impl Link {
-    /// The offer just taken, of `names` for `worker`, when the set with it fits in a frame: otherwise it is taken back,
-    /// and refused as `Full`.
-    fn fitted(&mut self, names: &[String], worker: ProtocolRef<Tooling>) -> Result<Offered, Fault> {
-        let written = frames::written(&self.sheets(self.revision + 1), self.config.most_bytes)?;
-        let Written::TooLarge = written else {
-            return Ok(Offered::Yes);
-        };
-        for name in names {
-            self.table.withdraw(name, worker);
-        }
-
-        Ok(Offered::Full)
-    }
-
-    /// Every tool it holds, as the set of `revision`.
-    fn sheets(&self, revision: u64) -> Up {
-        let tools = self
-            .table
-            .tools()
-            .map(|(name, held)| ToolSheet {
-                name: String::from(name),
-                description: held.description.clone(),
-                input: held.input.clone(),
-                output: held.output.sheet(),
-            })
-            .collect();
-
-        Up::Sheets { revision, tools }
-    }
-
-    /// The hub's call `call` of `revision`: refused when the set has changed since or holds no such tool, and asked of
-    /// the tool's worker otherwise, due as `due` says, so a tool that never answers is refused at the time the hub
-    /// stops waiting (ADR-0041).
+    /// The hub's call `call` of `revision`: refused when it is not the set last heard, and asked of `Tools`
+    /// otherwise, due as `due` says, so a tool that never answers is refused at the time the hub stops waiting
+    /// (ADR-0041). `Tools` refuses a tool it does not hold.
     fn call<S, IW, IC>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
         call: u64,
         revision: u64,
         due: Due,
-        asked: &Call,
+        asked: &CallTool,
     ) -> Result<(), Fault>
     where
-        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Tooling, Call, Calling>, IC>,
+        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Path<Tools>, CallTool, Calling>, IC>,
     {
-        let is_stale = revision != self.revision;
-        if is_stale {
+        let is_current = self.set.is_of(revision);
+        if !is_current {
             let changed = Called::Refused(String::from("the engine's tools have changed: describe it again"));
             return self.answer::<_, IW>(turn, call, changed);
         }
-        let Some(held) = self.table.tool(&asked.tool) else {
-            let unknown = Called::Refused(format!("the engine holds no tool named {}", asked.tool));
-            return self.answer::<_, IW>(turn, call, unknown);
-        };
-        let worker = held.worker;
         let number = self.next;
         self.next += 1;
-        turn.to(worker).within(due).ask::<_, _, IC>(asked, &Calling { number })?;
+        turn.to(path::<Tools>(())).within(due).ask::<_, _, IC>(asked, &Calling { number })?;
         self.calls.insert(number, call);
 
         Ok(())
@@ -429,14 +355,19 @@ impl Link {
         self.write::<_, I>(turn, bytes)
     }
 
-    /// Writes every tool it holds, when connected.
+    /// Writes the set `Tools` last sent, when it has sent one and the root is connected. A set too large for a frame
+    /// is not written, and the hub keeps the set before it, whose calls are then refused as changed.
     fn write_sheets<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
-        let written = frames::written(&self.sheets(self.revision), self.config.most_bytes)?;
+        let Set::Heard(Sheets { revision, tools }) = &self.set else {
+            return Ok(());
+        };
+        let up = Up::Sheets { revision: *revision, tools: tools.clone() };
+        let written = frames::written(&up, self.config.most_bytes)?;
         let Written::Fits(bytes) = written else {
-            turn.log(Level::Error, "the tools held do not fit in a frame, and were not written");
+            turn.log(Level::Error, "the engine's tools do not fit in a frame, and were not written");
             return Ok(());
         };
 

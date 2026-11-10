@@ -5,8 +5,8 @@ use aethereal_data::Plain;
 use core::error::Error;
 use core::fmt;
 
-/// The engine end's section, `link`: where its hub is, the name the hub shows, the token it links with, and its limits
-/// (ADR-0038, ADR-0040).
+/// The engine end's section, `link`: where its hub is, the name the hub shows, the token it links with, and its limit
+/// (ADR-0038, ADR-0040). How many tools an engine holds is `Tools`'s setting (ADR-0053).
 ///
 /// The token has no default: the kind's `Default` holds no bytes, which is no token, so an engine started without
 /// `--hub-token` fails as it begins, naming the setting ([`NoToken`]).
@@ -26,10 +26,7 @@ pub struct LinkSettings {
     /// The token the hub minted for this engine, 16 bytes in hexadecimal: good for one link, and required.
     #[flag(long = "hub-token")]
     pub token: Vec<u8>,
-    /// The most tools the root holds.
-    #[flag]
-    pub most_tools: u32,
-    /// The most bytes of a frame, each way: past it, an offer is refused and an answer is written as a refusal.
+    /// The most bytes of a frame, each way: past it, a set is not written and an answer is written as a refusal.
     #[flag]
     pub most_bytes: u32,
 }
@@ -41,7 +38,6 @@ impl Default for LinkSettings {
             port: PORT,
             name: String::from("engine"),
             token: Vec::new(),
-            most_tools: 256,
             most_bytes: 1 << 20,
         }
     }
@@ -57,7 +53,6 @@ impl LinkSettings {
             port: self.port,
             name: self.name.clone(),
             token: Token(bytes),
-            most_tools: self.most_tools,
             most_bytes: self.most_bytes,
         })
     }
@@ -71,7 +66,6 @@ pub struct LinkConfig {
     pub port: u16,
     pub name: String,
     pub token: Token,
-    pub most_tools: u32,
     pub most_bytes: u32,
 }
 

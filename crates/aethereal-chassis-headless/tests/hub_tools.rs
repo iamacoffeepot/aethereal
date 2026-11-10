@@ -18,7 +18,7 @@ use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{
-    Call, Called, Holder, Offer, Offered, Output, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
+    Call, Called, Holder, Offer, Offered, Output, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Tools, Withdraw,
 };
 use std::io::{Read as _, Write as _};
 use std::iter;
@@ -571,11 +571,11 @@ fn an_image_from_a_tool_whose_sheet_says_a_value_is_refused() -> Result<(), Unhe
     Ok(())
 }
 
-/// An engine of a `Link` alone, started with `args` as a person would type them after its name, the engine reading
+/// An engine of a `Link` alone, over `Tools`, started with `args` as a person would type them after its name, the engine reading
 /// frames as large as the hub's.
 fn started(args: &[String]) -> Result<Harness<Headless>, Unheard> {
     let link = LinkSettings { most_bytes: MOST_BYTES, ..LinkSettings::default() };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Link>(link);
+    let program = Headless::program().with_engine(engine()).root::<Tcp>().root::<Tools>().root_with::<Link>(link);
     let invocation =
         Invocation::new(iter::once("engine").chain(args.iter().map(String::as_str)), Vec::<(String, String)>::new());
     let Ok(Invoked::Run(program)) = program.read("engine", invocation) else {

@@ -29,7 +29,7 @@ use aethereal_pace::{PaceTool, Pacer};
 use aethereal_render::{CaptureTool, RecordTool, Renderer, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{LogsTool, Toolbox, TuningTool};
+use aethereal_tools::{LogsTool, Toolbox, Tools, TuningTool};
 use aethereal_window::{InputTool, WindowTool, Windows};
 use captions::Captions;
 use core::error::Error;
@@ -89,10 +89,11 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Captions>()
         .root::<Files>()
         .root::<Tcp>()
+        .root::<Tools>()
         .root_with::<Link>(link)
         .root::<Toolbox<
             (CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool, TuningTool<(Scene,)>),
-            Link,
+            Tools,
         >>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)

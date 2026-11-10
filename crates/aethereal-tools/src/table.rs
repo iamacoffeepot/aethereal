@@ -68,6 +68,20 @@ impl Table {
         self.tools.iter().map(|(name, held)| (name.as_str(), held))
     }
 
+    /// Each tool held as its worker offered it, in the order of their names.
+    #[must_use]
+    pub fn sheets(&self) -> Vec<ToolSheet> {
+        self.tools
+            .iter()
+            .map(|(name, held)| ToolSheet {
+                name: name.clone(),
+                description: held.description.clone(),
+                input: held.input.clone(),
+                output: held.output.sheet(),
+            })
+            .collect()
+    }
+
     /// How many tools are held.
     #[must_use]
     pub fn len(&self) -> usize {

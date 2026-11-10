@@ -35,7 +35,7 @@ pub enum Unlisted {
 }
 
 /// A program's tools: spawns each of `L` beneath itself and offers it to `R`, the root that holds them (ADR-0037,
-/// ADR-0038): `Mcp` in a hub, `Link` in an engine. It is sugar over [`Offer`], which any actor may ask.
+/// ADR-0038): `Mcp` in a hub, [`Tools`](crate::Tools) in an engine (ADR-0053). It is sugar over [`Offer`], which any actor may ask.
 ///
 /// A list that is not its holder's to take fails in the order a list's failures can be found: a program with no `R`
 /// listed before this does not build, and a repeated name, a tool that cannot begin, or an offer its holder refuses
