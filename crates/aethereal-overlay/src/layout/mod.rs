@@ -1,10 +1,12 @@
 //! Where the overlay draws, worked out from the window's surface each time it is needed (ADR-0053: The three stops):
-//! the band across the top, a tenth of the window's height, in two columns; the chart's figures on one line at the
-//! foot of the left column, and the frame chart filling the column above them, with the count of warnings and errors
-//! at the right end of that line; and the console's panel beneath the band, a third of the window's height, cut into
-//! two strips told apart by their tints and a faint line between: the scrollback above, its scroll bar in the padding
-//! at its right edge, and the prompt's strip along the panel's foot, a line of text tall, with what is running at its
-//! right end. All of it is in the surface's pixels, from its top left, as the renderer places texts (ADR-0052).
+//! the band across the top, in two columns. Its left column holds, top to bottom on one axis of time, the frame chart
+//! and its figures' line, the GPU's graph and its figures' line, and the four lines' rows, each graph ending at a
+//! gutter on the column's right where each row's label and latest value are written; the count of warnings and errors
+//! sits at the band's right end, on the frame figures' line. Beneath the band is the console's panel, a third of the
+//! window's height, cut into two strips told apart by their tints and a faint line between: the scrollback above, its
+//! scroll bar in the padding at its right edge, and the prompt's strip along the panel's foot, a line of text tall,
+//! with what is running at its right end. All of it is in the surface's pixels, from its top left, as the renderer
+//! places texts (ADR-0052).
 
 #[cfg(test)]
 mod tests;
@@ -12,8 +14,25 @@ mod tests;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_window::Surface;
 
-/// The share of the window's height the band takes.
-const BAND_SHARE: f32 = 0.1;
+/// The share of the window's height the frame chart takes: at 1080, 65 pixels.
+const CHART_SHARE: f32 = 0.06;
+
+/// How tall the GPU's graph is, as a share of the frame chart's height.
+const GPU_SHARE: f32 = 2.0 / 3.0;
+
+/// How many rows the lines beneath the GPU's graph take: draws, triangles, bytes uploaded, and GPU memory.
+const ROWS: u8 = 4;
+
+/// How many characters wide the gutter at the right of the left column's graphs is: a row's label and its latest
+/// value, `triangles   12.3M`.
+pub const GUTTER_CHARACTERS: usize = 20;
+
+/// The space between one section of the band's left column and the next, and between the graphs and the gutter, in
+/// logical pixels.
+const SECTION_PIXELS: f32 = 8.0;
+
+/// How far a row's bars stand in from its top and foot, in logical pixels, so the rows read apart.
+const ROW_INSET_PIXELS: f32 = 3.0;
 
 /// The share of the window's height the console's panel takes, beneath the band.
 const CONSOLE_SHARE: f32 = 1.0 / 3.0;
@@ -96,9 +115,12 @@ impl Layout {
         (logical * self.scale).round()
     }
 
-    /// The band: the whole width of the window, a tenth of its height, from its top.
+    /// The band: the whole width of the window, from its top down to its left column's last row and the padding
+    /// beneath it.
     pub fn band(self) -> Rect2 {
-        Rect2 { min: Vec2::ZERO, max: Vec2::new(self.width, (self.height * BAND_SHARE).round()) }
+        let bottom = (self.rows().max.y + self.pixels(PADDING_PIXELS)).round();
+
+        Rect2 { min: Vec2::ZERO, max: Vec2::new(self.width, bottom) }
     }
 
     /// The console's panel: the whole width of the window, a third of its height, beneath the band.
@@ -141,23 +163,77 @@ impl Layout {
         Rect2 { min: strip.min, max: Vec2::new(strip.max.x, bottom) }
     }
 
-    /// The frame chart: the band's left column, inside its padding, from its top down to a gap above the figures. At
-    /// least a pixel tall, on a window too short to hold it.
+    /// The frame chart: the band's left column inside its padding, left of the gutter, from its top, a share of the
+    /// window's height tall. At least a pixel wide and tall, on a window too small to hold it. The GPU's graph and the
+    /// rows beneath it span the same pixels across, so a column of each stands under the frame chart's.
     pub fn chart(self) -> Rect2 {
         let padding = self.pixels(PADDING_PIXELS);
-        let right = ((self.width * LEFT_SHARE).round() - padding).max(padding);
-        let bottom = (self.figures_at().y - self.pixels(GAP_PIXELS)).max(padding + 1.0);
+        let column_right = (self.width * LEFT_SHARE).round() - padding;
+        let right = (column_right - self.gutter_pixels()).max(padding + 1.0);
+        let bottom = padding + (self.height * CHART_SHARE).round().max(1.0);
 
         Rect2 { min: Vec2::new(padding, padding), max: Vec2::new(right, bottom) }
     }
 
-    /// Where the chart's figures are placed: the top left of their one line, which sits on the band's foot, inside its
-    /// padding.
-    pub fn figures_at(self) -> Vec2 {
-        let padding = self.pixels(PADDING_PIXELS);
-        let line = (self.text_pixels() * LINE_EMS).ceil();
+    /// How wide the gutter right of the graphs is, in the surface's pixels: a section's space and the gutter's
+    /// characters.
+    fn gutter_pixels(self) -> f32 {
+        // A count of characters is some tens, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let characters = GUTTER_CHARACTERS as f32;
 
-        Vec2::new(padding, self.band().max.y - padding - line)
+        self.pixels(SECTION_PIXELS) + (characters * self.advance()).round()
+    }
+
+    /// How tall a line of the band's figures is given, in whole pixels.
+    fn figures_line_pixels(self) -> f32 {
+        self.line_pixels_tall().ceil()
+    }
+
+    /// Where the frame chart's figures are placed: the top left of their one line, a gap beneath the chart.
+    pub fn figures_at(self) -> Vec2 {
+        Vec2::new(self.pixels(PADDING_PIXELS), self.chart().max.y + self.pixels(GAP_PIXELS))
+    }
+
+    /// The GPU's graph: across the frame chart's pixels, a section's space beneath the frame chart's figures, two
+    /// thirds of the frame chart's height and at least a pixel.
+    pub fn gpu_graph(self) -> Rect2 {
+        let chart = self.chart();
+        let top = self.figures_at().y + self.figures_line_pixels() + self.pixels(SECTION_PIXELS);
+        let tall = (chart.height() * GPU_SHARE).round().max(1.0);
+
+        Rect2 { min: Vec2::new(chart.min.x, top), max: Vec2::new(chart.max.x, top + tall) }
+    }
+
+    /// Where the GPU's figures are placed: the top left of their one line, a gap beneath the GPU's graph.
+    pub fn gpu_figures_at(self) -> Vec2 {
+        Vec2::new(self.pixels(PADDING_PIXELS), self.gpu_graph().max.y + self.pixels(GAP_PIXELS))
+    }
+
+    /// The lines' rows together: across the frame chart's pixels, a section's space beneath the GPU's figures, each
+    /// row a line of text tall, so the text of their labels and values beside them lines up with them.
+    pub fn rows(self) -> Rect2 {
+        let chart = self.chart();
+        let top = self.gpu_figures_at().y + self.figures_line_pixels() + self.pixels(SECTION_PIXELS);
+        let tall = f32::from(ROWS) * self.line_pixels_tall();
+
+        Rect2 { min: Vec2::new(chart.min.x, top), max: Vec2::new(chart.max.x, top + tall) }
+    }
+
+    /// Where the bars of the row `index`, from the top, stand: its line of the rows, inset from its top and foot, and
+    /// at least a pixel tall.
+    pub fn row(self, index: u8) -> Rect2 {
+        let rows = self.rows();
+        let tall = self.line_pixels_tall();
+        let top = f32::from(index).mul_add(tall, rows.min.y);
+        let inset = self.pixels(ROW_INSET_PIXELS).min((tall - 1.0) / 2.0).max(0.0);
+
+        Rect2 { min: Vec2::new(rows.min.x, top + inset), max: Vec2::new(rows.max.x, top + tall - inset) }
+    }
+
+    /// Where the rows' labels and values are placed: the top left of the gutter beside the first row.
+    pub fn lines_at(self) -> Vec2 {
+        Vec2::new(self.chart().max.x + self.pixels(SECTION_PIXELS), self.rows().min.y)
     }
 
     /// The console's panel inside its padding, its foot the prompt's strip's padding, and left of its scroll bar by a

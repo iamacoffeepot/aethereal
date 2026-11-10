@@ -24,7 +24,7 @@ pub const WINDOW_NANOS: u64 = 60_000_000_000;
 
 /// How far back the cycles are kept: three windows, as the oldest column a chart of a single column draws begins up
 /// to two spans of a whole window before the newest, and a column's longest cycle must stay while any of it shows.
-const KEPT_NANOS: u64 = 3 * WINDOW_NANOS;
+pub const KEPT_NANOS: u64 = 3 * WINDOW_NANOS;
 
 /// What a figure is rounded to, as it is shown: a tenth of a millisecond.
 const SHOWN_NANOS: u64 = 100_000;
@@ -46,7 +46,7 @@ pub struct FrameTimes {
 
 impl Default for FrameTimes {
     fn default() -> Self {
-        Self { samples: VecDeque::new(), bins: Bins::new(Self::span_nanos(1)) }
+        Self { samples: VecDeque::new(), bins: Bins::new(span_nanos(1)) }
     }
 }
 
@@ -102,18 +102,12 @@ impl FrameTimes {
         self.samples.back().map_or(0, |sample| sample.elapsed_nanos)
     }
 
-    /// How long a column's span is when the window is cut into `count` of them: the whole window when `count` is
-    /// zero. A minute cut into at most a u32's count is never cut to nothing.
-    fn span_nanos(count: u32) -> u64 {
-        WINDOW_NANOS.div_ceil(u64::from(count.max(1)))
-    }
-
     /// The columns of a chart of `count`, each the span of the program's time it covers and the fastest, the median,
     /// and the slowest of its cycles: only those some cycle fell in, from the newest, back to the one `count + 1` spans before
     /// it, as the chart's width holds a little more than `count` columns and the oldest two slide off its left edge. A
     /// chart cut into another count than it was last is binned again from the cycles kept.
     pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Column> + '_ {
-        let span_nanos = Self::span_nanos(count);
+        let span_nanos = span_nanos(count);
         let recut = self.bins.span_nanos() != span_nanos;
         if recut {
             self.bins = Bins::new(span_nanos);
@@ -129,7 +123,7 @@ impl FrameTimes {
 
     /// Where the columns of a chart of `count` stand at the newest cycle.
     pub fn slide(&self, count: u32) -> Slide {
-        let span_nanos = Self::span_nanos(count);
+        let span_nanos = span_nanos(count);
         let newest_nanos = self.newest_nanos();
         // Nanoseconds of a span, at most a minute, which an f32 holds closely enough to draw.
         #[allow(clippy::cast_precision_loss)]
@@ -158,6 +152,12 @@ impl FrameTimes {
     }
 }
 
+/// How long a column's span is when the window is cut into `count` of them: the whole window when `count` is zero. A
+/// minute cut into at most a u32's count is never cut to nothing.
+pub fn span_nanos(count: u32) -> u64 {
+    WINDOW_NANOS.div_ceil(u64::from(count.max(1)))
+}
+
 /// `nanos` rounded to the nearest tenth of a millisecond.
 const fn shown(nanos: u64) -> u64 {
     nanos.saturating_add(SHOWN_NANOS / 2) / SHOWN_NANOS * SHOWN_NANOS
@@ -171,6 +171,11 @@ fn millis(nanos: u64) -> String {
 }
 
 impl Figures {
+    /// The median cycle over the window, rounded as it is shown.
+    pub const fn median_nanos(self) -> u64 {
+        self.median
+    }
+
     /// The runs of the text that shows them: `med 16.7  p90 16.9  p99 17.4  max 33.1 ms`, each label in stone and
     /// each figure in bone.
     pub fn runs(self) -> Vec<Run> {

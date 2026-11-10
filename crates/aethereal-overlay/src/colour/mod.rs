@@ -1,7 +1,7 @@
 //! The overlay's colours (ADR-0053: Colours): slate and earth. Healthy is one cool colour, and only warm colours mean
 //! trouble; the frame chart's three bars are told apart by colour alone, the same whatever the budget, as their height
-//! against the budget's line says over or under. The table writes them in sRGB, and the renderer's colours are in linear light, so each is turned into
-//! linear light as it is used.
+//! against the budget's line says over or under, and the GPU graph's passes by colours of their own. The table writes
+//! them in sRGB, and the renderer's colours are in linear light, so each is turned into linear light as it is used.
 
 #[cfg(test)]
 mod tests;
@@ -34,6 +34,19 @@ pub const SAND: Swatch = Swatch::hex(0x6b_5f_4c);
 
 /// The chart's fastest bar, the shortest of a column's three, in front: `#3f5a57`.
 pub const SLATE_TEAL: Swatch = Swatch::hex(0x3f_5a_57);
+
+/// The GPU graph's first pass in each three, and its figure: `#6f8aa6`.
+pub const SLATE_BLUE: Swatch = Swatch::hex(0x6f_8a_a6);
+
+/// The GPU graph's second pass in each three, and its figure: `#8a7ca8`.
+pub const MUTED_VIOLET: Swatch = Swatch::hex(0x8a_7c_a8);
+
+/// The GPU graph's third pass in each three, and its figure: `#a88aa0`.
+pub const MAUVE: Swatch = Swatch::hex(0xa8_8a_a0);
+
+/// The GPU graph's passes, by their labels in the order they were first heard, cycling: cool and muted, and none of
+/// the frame chart's three, so lichen, sand, and slate-teal keep their one meaning each.
+pub const PASS_SWATCHES: [Swatch; 3] = [SLATE_BLUE, MUTED_VIOLET, MAUVE];
 
 /// Marks, on the chart and in the scrollback: `#d9b86c`.
 pub const OCHRE: Swatch = Swatch::hex(0xd9_b8_6c);
