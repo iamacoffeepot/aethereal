@@ -13,7 +13,7 @@ use aethereal_math::{Rect2, Vec2};
 pub const MOST_BAR_RECORDS: u32 = 4;
 
 /// How opaque a bar's trough is drawn, in stone: faint, as the fill over it carries the reading.
-const TROUGH_OPACITY: f32 = 0.2;
+const TROUGH_OPACITY: f32 = 0.08;
 
 /// The percentages of the most from which a fill is rust, and then brick.
 const RUST_PERCENT: u64 = 75;
