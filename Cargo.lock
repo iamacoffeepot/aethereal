@@ -189,6 +189,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-overlay"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-chassis-desktop",
+ "aethereal-chassis-headless",
+ "aethereal-data",
+ "aethereal-files",
+ "aethereal-link",
+ "aethereal-math",
+ "aethereal-pace",
+ "aethereal-render",
+ "aethereal-substrate",
+ "aethereal-tcp",
+ "aethereal-tools",
+ "aethereal-window",
+]
+
+[[package]]
 name = "aethereal-pace"
 version = "0.1.0"
 dependencies = [
