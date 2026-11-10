@@ -20,7 +20,9 @@ mod tools;
 mod tuning;
 
 pub use holder::Holder;
-pub use logs::{ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog};
+pub use logs::{
+    ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentEntry, RecentLog,
+};
 pub use table::{HeldOutput, HeldTool, Table};
 pub use tool::{Tool, ToolList};
 pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};
