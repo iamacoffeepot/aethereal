@@ -52,7 +52,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **Every type a guest's module makes implements `Upgrade`, and `guest!` requires it,** so a guest that does not say how it moves does not build. A native actor does not implement it: a native kind's code is the program's own (ADR-0009: `Code::Linked`) and moves only with a rebuild.
 
   ```rust
-  pub trait Upgrade: Actor {
+  pub trait Upgrade: Actor + Portability {
       /// Asked before each turn while this actor is behind its kind's head.
       fn upgrade(&self) -> Answer;
 
@@ -78,17 +78,30 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **The engine takes the actor's state out at `Within`, as for a child seated in another part, with the schema of its kind as the old module declares it.** `aethereal.declared` gains each actor type's state schema, its names included (ADR-0004: `SchemaNodes`), which `Declared` reads.
 - **The state goes into an instance of the new blob in the same part,** made there if the part has none (ADR-0015). Its children stay where they stand, each on its own blob and its own kind's head.
 - **When the old and new kinds have the same id, the state is taken in as it is.** Same name and same layout mean the same bytes (ADR-0006), so `take_over` is not called.
-- **When the layouts differ, the new code is handed `Portable<New>`.** It is generated from the new state's type: the same field names, each an `Option` of the field's type.
+- **When the layouts differ, the new code is handed its portable form.** `#[derive(Portability)]` on the state type writes a struct with the same field names, each an `Option` of the field's type, and links the two through a trait. `Portable<T>` is an alias over that link, so inside an impl for `Hud`, `Portable<Self>` is the generated struct and its fields are plain field accesses. `Upgrade` requires `Portability`.
 
   ```rust
-  // generated from v2's `Hud`
-  pub struct Portable<Hud> {
-      save: Option<Save>,
-      health: Option<f32>,
-      show_cooldowns: Option<bool>,
+  pub trait Portability {
+      type Form;
+      fn read(old: &OldState<'_>) -> Result<Self::Form, TakeOverError>;   // by field name, with the old schema
   }
 
-  fn take_over(old: Portable<Hud>) -> Result<Hud, TakeOverError> {
+  pub type Portable<T> = <T as Portability>::Form;
+
+  // what `#[derive(Portability)]` writes for v2's `Hud`
+  pub struct PortableHud {
+      pub save: Option<Save>,
+      pub health: Option<f32>,
+      pub show_cooldowns: Option<bool>,
+  }
+
+  impl Portability for Hud {
+      type Form = PortableHud;
+      fn read(old: &OldState<'_>) -> Result<PortableHud, TakeOverError> { .. }
+  }
+
+  // written by hand, in `impl Upgrade for Hud`
+  fn take_over(old: Portable<Self>) -> Result<Self, TakeOverError> {
       let Some(save) = old.save else { return Err(TakeOverError::missing("save")) };
       let health = old.health.unwrap_or(100.0);
 
@@ -134,7 +147,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **`Files` gains `Code`, and each host's settings gain its root.**
 - **Two versions of one kind can run at once** while some actors answer `Later` or are parked. Mail between them is safe, as ADR-0009 already holds: a changed kind is another id.
 
-Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Source` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portable` and its derive; `aethereal-library` with `Library`, `publish`, and `upgrades`.
+Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Source` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portability`, its derive, and `Portable`; `aethereal-library` with `Library`, `publish`, and `upgrades`.
 
 ## Alternatives considered
 
