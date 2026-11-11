@@ -42,7 +42,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
   .root::<Library>()
   ```
 
-- **One library holds all of a program's code.** It registers as the program's library in its `begin`, with a new effect, `What::Register`. Only a root may register, and only one may: a second register fails its `begin`, which stops the program as it starts (ADR-0029). The engine takes `Publish` from the registered library alone, so no other actor changes which code a kind runs.
+- **The right to publish is a handle, `Publisher`, and only the chassis makes one.** It makes it once as the program starts and hands it to `Library` as it bootstraps, as it hands other roots their handles (ADR-0029, ADR-0010). `Publish` is asked with it, `turn.publish(&self.publisher, kind, &blob)`, and the heads view is folded only from what it publishes. The engine keeps no record of which actor is the library: the handle is the right, so no other actor changes which code a kind runs, and one program has one library because there is one handle.
 - **As it bootstraps, `Library` puts every module in `Code`** and publishes the head of every kind each makes. Natively it lists the directory; in a browser it reads a manifest of the modules, written when the page is built, as `Assets` is listed (ADR-0032). Two modules that make one kind at boot fail the bootstrap, naming both, since neither can be chosen over the other. A module the guest host refuses fails it too (ADR-0015).
 - **`Namespace` gains `Code`:** read-only, the guest modules a program runs. Natively its root is a setting of `Files`, `code`, beside `assets`; in a browser it is fetched relative to the page, as `Assets` is. A module is built where `Code` points, so a rebuild is a new file to publish.
 - **A spawn names a library's kind and takes its head.** `turn.spawn_from` takes a `Source`: `Source::Head`, the head the view shows for the child's kind, refused with `Refused::NoHead` when the kind has none; or `Source::Blob(&code)`, a blob the parent holds, for code no library publishes (tests, the chassis). A parent of a library's kind holds none of its code, so updating that kind is one `Publish` for every parent that makes it.
@@ -134,7 +134,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **`Files` gains `Code`, and each host's settings gain its root.**
 - **Two versions of one kind can run at once** while some actors answer `Later` or are parked. Mail between them is safe, as ADR-0009 already holds: a changed kind is another id.
 
-Follow-on work, in order: `What::Register` and `What::Publish` with the heads view; `Source` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portable` and its derive; `aethereal-library` with `Library`, `publish`, and `upgrades`.
+Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Source` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portable` and its derive; `aethereal-library` with `Library`, `publish`, and `upgrades`.
 
 ## Alternatives considered
 
@@ -149,6 +149,8 @@ Follow-on work, in order: `What::Register` and `What::Publish` with the heads vi
 - **A failed `take_over` retried every turn.** The same code fails again against nearly the same state, and the log fills with it.
 - **A failed move ends the actor, or begins it again.** A bug in the new version would end actors that work on the old one, or lose their state with no one deciding to lose it; the engine does not keep a config to begin one again.
 - **A scripting language beside Rust.** A second language, runtime, and set of bindings, for what a module already does once it can be replaced live.
+- **An effect that registers the library, and `Publish` taken from the registered root alone.** The engine would remember one actor as special. A handle carries the right the way every other right is carried, and a program cannot make a second.
+- **The engine reads `Code` and serves the tools itself.** No actor holds the right. The core would then do file I/O and name the tool machinery, and the tools must be actors anyway, so one would need the right regardless.
 - **A library for each namespace, listing its modules,** as ADR-0009 had it. Ownership by namespace guards libraries in one program from one another, which one library cannot need, and every program would list its namespaces and modules, changing its settings for each new module.
 - **A parent ships its children's code.** Updating a child means rebuilding or re-handing every parent that makes it. A library's head lets a parent name only the kind.
 - **Modules checked into the hub's store and sent to the engine.** The store never gives bytes back (ADR-0039), and how a blob crosses to another engine is not decided (ADR-0014). An engine reads its own `Code` through `Files`, as it reads `Assets`, natively and in a browser.
