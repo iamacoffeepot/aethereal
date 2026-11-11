@@ -1,40 +1,48 @@
-//! The native host's storage, and the file capability on the headless host (ADR-0032, ADR-0039).
+//! The native host's storage, and the file capability on the headless host (ADR-0032, ADR-0039, ADR-0054).
 
 use super::*;
 use aethereal_actor::{Answered, Tick};
-use aethereal_files::{FileRead, FileWritten, ReadFile, WriteFile};
+use aethereal_files::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use std::env;
 use std::process;
 
-/// A directory of files, named for `test`, removed when dropped: the assets' directory and the saves' beside it.
+/// A directory of files, named for `test`, removed when dropped: the assets' directory, and the saves' and the code's
+/// beside it.
 struct Dir(PathBuf);
 
 impl Dir {
     /// A directory whose assets are `files`, each a path beneath the assets' directory and its bytes, and with no
-    /// saves.
+    /// saves and no code.
     fn new(test: &str, files: &[(&str, &[u8])]) -> Self {
         let root = env::temp_dir().join(format!("aethereal-files-{}-{test}", process::id()));
         let _ = fs::remove_dir_all(&root);
+        let dir = Self(root);
+        dir.make(Namespace::Assets, files);
+
+        dir
+    }
+
+    /// Writes `files` in `namespace`, each a path beneath its directory and its bytes.
+    fn make(&self, namespace: Namespace, files: &[(&str, &[u8])]) {
         for (path, bytes) in files {
-            let file = root.join("assets").join(path);
+            let file = self.file(namespace, path);
             let Some(parent) = file.parent() else {
                 panic!("a file beneath the directory has a parent");
             };
             let made = fs::create_dir_all(parent).and_then(|()| fs::write(&file, bytes));
             assert!(made.is_ok(), "the test's file `{path}` is written");
         }
-
-        Self(root)
     }
 
-    /// Settings naming its assets' and saves' directories, read and written on `readers` threads.
+    /// Settings naming its assets', saves', and code's directories, read and written on `readers` threads.
     fn roots(&self, readers: u32) -> FileRoots {
         let assets = self.0.join("assets").display().to_string();
         let save = self.0.join("save").display().to_string();
+        let code = self.0.join("code").display().to_string();
 
-        FileRoots { assets, save, readers }
+        FileRoots { assets, save, code, readers }
     }
 
     /// Where the file at `path` in `namespace` is on the disk.
@@ -42,6 +50,7 @@ impl Dir {
         let directory = match namespace {
             Namespace::Assets => "assets",
             Namespace::Save => "save",
+            Namespace::Code => "code",
         };
 
         self.0.join(directory).join(path)
@@ -234,6 +243,47 @@ fn the_storage_writes_no_asset() {
     assert!(!dir.file(Namespace::Assets, "new.txt").exists(), "no asset is made");
 }
 
+/// What `storage` listed of `namespace`.
+fn list(storage: &Directories, namespace: Namespace) -> Result<Vec<FilePath>, Unlisted> {
+    pollster::block_on(storage.list(namespace))
+}
+
+#[test]
+fn code_lists_the_modules_directly_in_its_directory_and_reads_each() {
+    // Catches `Code` rooted at another namespace's directory, a listing that walks the tree (a build directory's
+    // `deps/` holds a second copy of each module, which would make every kind twice), one that lists a file that is
+    // no module or a directory named as one, one in the order the disk gave, and one that fails on a name no path
+    // spells rather than leaving it out.
+    let dir = Dir::new("code", &[("b.wasm", b"an asset")]);
+    dir.make(
+        Namespace::Code,
+        &[
+            ("b.wasm", b"b"),
+            ("a.wasm", b"a"),
+            ("a.d", b"a dependency file"),
+            ("deps/c.wasm", b"c"),
+            ("folder.wasm/inner.wasm", b"inner"),
+            ("Upper.wasm", b"upper"),
+        ],
+    );
+    let storage = Directories::new(&dir.roots(2));
+
+    assert_eq!(list(&storage, Namespace::Code), Ok(vec![checked("a.wasm"), checked("b.wasm")]));
+    assert_eq!(read_in(&storage, Namespace::Code, "b.wasm"), Ok(b"b".to_vec()));
+}
+
+#[test]
+fn code_with_no_directory_is_missing_and_a_namespace_not_listed_is_refused() {
+    // Catches a program with no code answered as one with none in it, which a library could not tell from a wrong
+    // setting, and a storage that lists the assets or the saves when asked directly, past the capability's check.
+    let dir = Dir::new("code-missing", &[("a.wasm", b"an asset")]);
+    let storage = Directories::new(&dir.roots(1));
+
+    assert_eq!(list(&storage, Namespace::Code), Err(Unlisted::Missing));
+    assert_eq!(list(&storage, Namespace::Assets), Err(Unlisted::NotListed));
+    assert_eq!(list(&storage, Namespace::Save), Err(Unlisted::NotListed));
+}
+
 /// A request for the asset at `path`.
 fn asset(path: &str) -> ReadFile {
     ReadFile { namespace: Namespace::Assets, path: checked(path) }
@@ -316,6 +366,31 @@ fn a_write_to_assets_is_read_only_in_the_turn_that_asks() -> Result<(), Unheard>
         harness.host().engine_mut().take_turned().iter().filter(|turn| turn.actor == files.seated()).count();
     assert_eq!(turns_of_files, 1, "the asking turn alone");
     assert_eq!(fs::read(dir.file(Namespace::Assets, "a.txt")).ok(), Some(b"a".to_vec()));
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_lists_code_through_the_file_capability_and_assets_is_refused_in_the_turn_that_asks() -> Result<(), Unheard>
+{
+    // Catches a listing answered to no one or to the wrong request, a host that serves its runners not the
+    // capability's job (every listing failed), and a listing of `Assets` handed to a job, which `Files` would take a
+    // second turn to answer and which leaves the storage's own refusal the only guard.
+    let dir = Dir::new("capability-code", &[("a.wasm", b"an asset")]);
+    dir.make(Namespace::Code, &[("guest.wasm", b"guest"), ("notes.txt", b"notes")]);
+    let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)))?;
+    let files = harness.root::<Files>();
+    harness.host().engine_mut().record_turns();
+
+    let assets = harness.ask(files, &ListFiles { namespace: Namespace::Assets })?;
+    assert_eq!(harness.answer(assets)?, Answered::Yes(FilesListed::NotListed));
+    let turns_of_files =
+        harness.host().engine_mut().take_turned().iter().filter(|turn| turn.actor == files.seated()).count();
+    assert_eq!(turns_of_files, 1, "the asking turn alone");
+
+    let code = harness.ask(files, &ListFiles { namespace: Namespace::Code })?;
+    let listed = harness.answer(code)?;
+    assert_eq!(listed, Answered::Yes(FilesListed::Listed { paths: vec![checked("guest.wasm")] }));
 
     Ok(())
 }

@@ -1,22 +1,24 @@
-//! The file capability's root (ADR-0032, ADR-0039).
+//! The file capability's root (ADR-0032, ADR-0039, ADR-0054).
 
 use crate::load::Load;
 use crate::save::Save;
-use crate::{FileRead, FileWritten, ReadFile, WriteFile};
+use crate::scan::Scan;
+use crate::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
 use aethereal_actor::{
     Actor, Answer, Answered, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
 
-/// The file capability: reads and writes files for every other actor, in named namespaces, by path (ADR-0032,
-/// ADR-0039). An actor asks it a [`ReadFile`] or a [`WriteFile`] at its typed path, `path::<Files>(())`, and is
-/// answered a [`FileRead`] or a [`FileWritten`] once the read or the write is done.
+/// The file capability: reads, writes, and lists files for every other actor, in named namespaces, by path (ADR-0032,
+/// ADR-0039, ADR-0054). An actor asks it a [`ReadFile`], a [`WriteFile`], or a [`ListFiles`] at its typed path,
+/// `path::<Files>(())`, and is answered a [`FileRead`], a [`FileWritten`], or a [`FilesListed`] once the work is done.
 ///
-/// It holds each request, runs a read or a write for it, and answers it with what
-/// that came to; one the host could not run is answered `Failed`. A write to a
-/// namespace that is not written is answered [`FileWritten::ReadOnly`] in the turn
-/// that asks, with no job run.
+/// It holds each request, runs a read, a write, or a listing for it, and answers it
+/// with what that came to; one the host could not run is answered `Failed`. A write
+/// to a namespace that is not written is answered [`FileWritten::ReadOnly`], and a
+/// listing of one that is not listed [`FilesListed::NotListed`], in the turn that
+/// asks, with no job run.
 #[derive(Bound)]
 #[kind(name = "aether.files")]
 pub struct Files {
@@ -24,6 +26,8 @@ pub struct Files {
     waiting: BTreeMap<u64, Held<FileRead>>,
     /// The writes it holds, each by the number of the job it ran for it.
     writing: BTreeMap<u64, Held<FileWritten>>,
+    /// The listings it holds, each by the number of the job it ran for it.
+    listing: BTreeMap<u64, Held<FilesListed>>,
     /// The number of the next job it runs.
     next: u64,
 }
@@ -47,6 +51,13 @@ pub struct Saving {
     number: u64,
 }
 
+/// What the file capability keeps for a listing it runs: which request it was run for.
+#[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.files.scanning")]
+pub struct Scanning {
+    number: u64,
+}
+
 impl ChildOf for Files {
     type Parent = Top;
 }
@@ -61,15 +72,27 @@ impl Carries<WriteFile> for Files {
     type Answers = (FileWritten,);
 }
 
+/// Asked at its typed path, it answers a listing with what became of it.
+impl Carries<ListFiles> for Files {
+    type Answers = (FilesListed,);
+}
+
 impl Actor for Files {
     type Config = FilesConfig;
     type Key = ();
-    type Handles = (ReadFile, Answer<FileRead, Reading>, WriteFile, Answer<FileWritten, Saving>);
+    type Handles = (
+        ReadFile,
+        Answer<FileRead, Reading>,
+        WriteFile,
+        Answer<FileWritten, Saving>,
+        ListFiles,
+        Answer<FilesListed, Scanning>,
+    );
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: FilesConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self { waiting: BTreeMap::new(), writing: BTreeMap::new(), next: 0 })
+        Ok(Self { waiting: BTreeMap::new(), writing: BTreeMap::new(), listing: BTreeMap::new(), next: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -123,6 +146,45 @@ impl Handles<Answer<FileWritten, Saving>> for Files {
             Answered::No(_) => FileWritten::Failed,
         };
         turn.answer(held, &written)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<ListFiles> for Files {
+    type Sends = (ToSender<FilesListed>,);
+
+    fn handle(&mut self, list: ListFiles, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if !list.namespace.is_listed() {
+            turn.reply(&FilesListed::NotListed)?;
+            return Ok(());
+        }
+        let held = turn.hold()?;
+        let number = self.number();
+        turn.run(&Scan::new(list.namespace), &Scanning { number })?;
+        self.listing.insert(number, held);
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<FilesListed, Scanning>> for Files {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, scanning): (Answered<FilesListed>, Scanning),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.listing.remove(&scanning.number) else {
+            return Ok(());
+        };
+        // A listing larger than the engine's `read_limit` reaches here unreadable, and is answered as one that failed.
+        let listed = match answered {
+            Answered::Yes(listed) => listed,
+            Answered::No(_) => FilesListed::Failed,
+        };
+        turn.answer(held, &listed)?;
 
         Ok(())
     }
