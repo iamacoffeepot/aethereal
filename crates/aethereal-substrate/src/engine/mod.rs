@@ -166,6 +166,12 @@ pub struct Engine {
     /// The turns recorded and not yet taken.
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
+    /// Whether what it asks of the host's jobs is recorded: from when a test asks it to.
+    #[cfg(any(test, feature = "harness"))]
+    recording_jobs: bool,
+    /// What it asked of the host's jobs while it recorded them, and not yet taken.
+    #[cfg(any(test, feature = "harness"))]
+    jobbed: Vec<outside::Jobbed>,
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
     hops: usize,
@@ -505,6 +511,10 @@ impl Engine {
             recording: false,
             #[cfg(any(test, feature = "harness"))]
             turned: Vec::new(),
+            #[cfg(any(test, feature = "harness"))]
+            recording_jobs: false,
+            #[cfg(any(test, feature = "harness"))]
+            jobbed: Vec::new(),
             read_limit,
             hops,
             slice: u64::MAX,

@@ -4,9 +4,9 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, Mail, MailId,
-    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top, Turning,
-    Unanswered, Why, Written,
+    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, JobId, Mail,
+    MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top,
+    Turning, Unanswered, Why, Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -283,6 +283,16 @@ impl Noted {
     }
 }
 
+/// What the engine asked of its host's jobs for an actor, as it recorded it: nothing is sent or counted for it, so the
+/// engine asks the same whether it records or not (ADR-0018, ADR-0036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Jobbed {
+    /// It handed the host the job `id`, of the kind `kind`, to run.
+    Started { id: JobId, kind: KindId },
+    /// It asked the host to stop the job `id`, which it had handed out.
+    Stopped(JobId),
+}
+
 /// Why a reply from the outside was not sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsent {
@@ -310,6 +320,31 @@ impl Engine {
     /// whose seats are its own to place.
     pub fn record_turns(&mut self) {
         self.recording = true;
+    }
+
+    /// Records what it asks of its host's jobs from now on, apart from its turns, whose records keep the blobs their
+    /// mail refers to: for a test of how the engine hands out and stops jobs.
+    pub fn record_jobs(&mut self) {
+        self.recording_jobs = true;
+    }
+
+    /// Notes `jobbed`, when the engine records its jobs.
+    pub(super) fn note_job(&mut self, jobbed: Jobbed) {
+        if self.recording_jobs {
+            self.jobbed.push(jobbed);
+        }
+    }
+
+    /// Takes what the engine asked of its host's jobs, in order, since this was last asked: recorded from when it
+    /// records its jobs (ADR-0036).
+    pub fn take_jobbed(&mut self) -> Vec<Jobbed> {
+        mem::take(&mut self.jobbed)
+    }
+
+    /// How many of the jobs it handed out the host holds the finish of: those neither answered nor dropped, as of now.
+    #[must_use]
+    pub fn jobs_in_flight(&self) -> usize {
+        Arc::strong_count(&self.in_flight) - 1
     }
 
     /// How many pieces of mail the actor `seated` names has sent, as of the last step.

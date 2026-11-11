@@ -115,20 +115,8 @@ fn each_job_runs_on_a_thread_of_its_own_and_those_past_its_threads_wait_their_tu
     Ok(())
 }
 
-/// The test's own word on the job that waits for good, served to it: whether it was dropped. It says more than an
-/// `Arc`'s count could, which reads the same for a job dropped and one that never began.
-struct Dropped(AtomicBool);
-
-/// What a job that waits for good holds: it notes when it is dropped.
-struct Guard<'job>(&'job Dropped);
-
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        self.0.0.store(true, Ordering::Release);
-    }
-}
-
-/// A job that waits for good, until it is dropped.
+/// A job that waits for good, until it is dropped: its runner then drops where it was to answer too, which the engine
+/// counts in flight until it goes.
 #[derive(Plain)]
 #[kind(name = "aether.test.forever")]
 struct Forever;
@@ -137,11 +125,7 @@ impl Job for Forever {
     type Done = Ran;
     const RUNNER: Runner = Runner::Io;
 
-    async fn run(self, job: &mut Running) -> Result<Ran, Fault> {
-        let Some(dropped) = job.service::<Dropped>() else {
-            return Ok(Ran { at: 0, on_a_job_thread: true });
-        };
-        let _guard = Guard(dropped);
+    async fn run(self, _: &mut Running) -> Result<Ran, Fault> {
         future::pending::<()>().await;
 
         Ok(Ran { at: 0, on_a_job_thread: true })
@@ -244,9 +228,7 @@ fn a_sleep_wakes_once_its_time_has_come_and_a_job_given_up_on_is_dropped() {
     // Catches a sleep answered before its time, or never; two sleeps answered out of the order of their times; a
     // timer on another clock than the steps' time; and a job that waits, cancelled, left running. The job that waits
     // for good is given up on once the later sleep wakes.
-    let dropped = Arc::new(Dropped(AtomicBool::new(false)));
-    let services = Services::none().with(Arc::clone(&dropped));
-    let runners = Arc::new(Runners::new(NonZeroUsize::MIN, Arc::new(services)));
+    let runners = Arc::new(Runners::new(NonZeroUsize::MIN, Arc::new(Services::none())));
     let one = NonZeroUsize::MIN;
     let mut engine = Engine::new(one, 1024, 0, 1 << 20, 0).with_jobs(Arc::clone(&runners) as Arc<dyn Jobs>).ready();
     let clock = Monotonic::new();
@@ -259,19 +241,19 @@ fn a_sleep_wakes_once_its_time_has_come_and_a_job_given_up_on_is_dropped() {
     let sleeper = seated(&engine, sleeper);
     let mut did = Vec::new();
 
-    let mut is_dropped = false;
+    let mut in_flight = 0;
     waiting::until(BUDGET, || {
         engine.bring();
         while !engine.is_idle() {
             engine.step(now(), &clock);
         }
         did = engine.state::<Sleeper>(sleeper).map(|state| state.did.clone()).unwrap_or_default();
-        is_dropped = dropped.0.load(Ordering::Acquire);
-        did.len() == 2 && is_dropped
+        in_flight = engine.jobs_in_flight();
+        did.len() == 2 && in_flight == 0
     });
     drop(engine);
     drop(runners);
 
     assert_eq!(did, [Did::Woke { order: 1, after_its_time: true }, Did::Woke { order: 2, after_its_time: true }]);
-    assert!(is_dropped, "the job given up on is dropped");
+    assert_eq!(in_flight, 0, "the job given up on is dropped, with where it was to answer");
 }

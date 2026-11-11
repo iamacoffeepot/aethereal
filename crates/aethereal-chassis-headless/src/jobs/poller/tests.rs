@@ -1,15 +1,17 @@
 //! The native host's poller, on real sockets of this machine's loopback.
 
 use super::*;
+use crate::waiting;
 use std::io::Write as _;
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, mpsc};
 use std::task::Wake;
 use std::thread;
 
-/// A waker that counts how often it is woken.
+/// A waker that counts how often it is woken: what the poller's report does is wake a waker, which is `Send` and
+/// `Sync` and woken from the poller's thread, so its count is an atomic, and no mail orders it.
 struct Counted {
     wakes: AtomicUsize,
 }
@@ -130,20 +132,19 @@ fn a_notify_wakes_the_poller_asleep_even_when_it_came_first() {
     // thread sleeps: the job it was for would wait until something else woke the thread, or for good.
     let poller = Arc::new(Poller::new());
     poller.notify();
-    let (slept, sleeping) = mpsc::channel();
     let asleep = Arc::clone(&poller);
     #[allow(clippy::disallowed_methods)] // The test sleeps the poller on a real thread, to bound it.
-    thread::spawn(move || {
-        asleep.sleep(Sleep::Forever);
-        let _ = slept.send(());
-        asleep.sleep(Sleep::Forever);
-        let _ = slept.send(());
-    });
+    let first = thread::spawn(move || asleep.sleep(Sleep::Forever));
+    waiting::until(Duration::from_secs(10), || first.is_finished());
+    let woke_first = first.is_finished();
 
-    let first = sleeping.recv_timeout(Duration::from_secs(10));
+    let asleep = Arc::clone(&poller);
+    #[allow(clippy::disallowed_methods)] // The test sleeps the poller on a real thread, to bound it.
+    let second = thread::spawn(move || asleep.sleep(Sleep::Forever));
     poller.notify();
-    let second = sleeping.recv_timeout(Duration::from_secs(10));
+    waiting::until(Duration::from_secs(10), || second.is_finished());
+    let woke_second = second.is_finished();
 
-    assert_eq!(first, Ok(()), "a notify that came before the sleep wakes it");
-    assert_eq!(second, Ok(()), "a notify while it sleeps wakes it");
+    assert!(woke_first, "a notify that came before the sleep wakes it");
+    assert!(woke_second, "a notify while it sleeps wakes it");
 }

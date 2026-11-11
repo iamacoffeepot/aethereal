@@ -9,7 +9,9 @@ use std::any;
 use std::mem;
 use std::sync::{Arc, Weak};
 
-/// A resource: a value that is not data, which holds a test's witness for as long as it is not dropped.
+/// A resource: a value that is not data, which holds a test's witness for as long as it is not dropped. What the test
+/// asserts is that the engine drops it, which no record shows: a resource is `Send` and dropped wherever the engine
+/// lets go of what holds it, so only a count the value carries says it went, and the witness is an `Arc`'s.
 struct Lamp {
     light: u64,
     _witness: Arc<()>,
