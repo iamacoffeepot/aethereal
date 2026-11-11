@@ -1,11 +1,12 @@
 //! Guests moving onto their kind's new code while the program runs (ADR-0054): the echo guest, and its second build,
 //! `v2`, which a library root publishes as the head of a kind the echo makes. Each guest answers a probe with the
-//! version of the code that handled it and what its state holds.
+//! version of the code that handled it and what its state holds; when the engine asked each whether to move, and what
+//! it answered, is read in the engine's record of what it ran.
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answered, Beginning, Bytes, ChildOf, Ended, Ending, Entry, Fault, Given, Handle, Handles, How,
-    Level, Publisher, Root, Top, Turn, Unanswered,
+    Actor, ActorRef, Answered, AskedToMove, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault, Given,
+    Handle, Handles, How, Level, Publisher, Root, ToSender, Top, Turn, Unanswered, Upgrade,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -13,7 +14,7 @@ use aethereal_guest_echo as echo;
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Askable, Bench, Harness, Steps, Unheard};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// The echo guest the build script built.
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
@@ -88,14 +89,42 @@ struct Looks {
     at: ActorPath,
 }
 
-/// How each actor the lookout watches ended, as it was shown: locked because the test reads it from its own thread,
-/// between the steps whose turns write it.
-static SEEN: Mutex<Vec<How>> = Mutex::new(Vec::new());
+/// How an actor the lookout watched ended, as it was shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Sighting {
+    Closed,
+    Failed,
+    Earlier,
+}
 
-/// A native root that watches the actor at its config's path, and keeps how it ended in [`SEEN`].
+impl From<&How> for Sighting {
+    fn from(how: &How) -> Self {
+        match how {
+            How::Closed => Self::Closed,
+            How::Failed(_) => Self::Failed,
+            How::Earlier => Self::Earlier,
+        }
+    }
+}
+
+/// A question to the lookout: how has each actor it watches ended so far?
+#[derive(Plain)]
+#[kind(name = "aether.test.recall")]
+struct Recall;
+
+/// What the lookout answers a recall with: each ending it was shown, oldest first.
+#[derive(Plain)]
+#[kind(name = "aether.test.sightings")]
+struct Sightings {
+    endings: Vec<Sighting>,
+}
+
+/// A native root that watches the actor at its config's path, keeps how it ended, and answers a recall with it.
 #[derive(Bound)]
 #[kind(name = "aether.test.lookout")]
-struct Lookout;
+struct Lookout {
+    seen: Vec<Sighting>,
+}
 
 impl ChildOf for Lookout {
     type Parent = Top;
@@ -104,7 +133,7 @@ impl ChildOf for Lookout {
 impl Actor for Lookout {
     type Config = Looks;
     type Key = ();
-    type Handles = (Ended,);
+    type Handles = (Ended, Recall);
     type BeginSends = ();
     type EndSends = ();
 
@@ -113,7 +142,7 @@ impl Actor for Lookout {
             turn.watch(found);
         }
 
-        Ok(Self)
+        Ok(Self { seen: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -125,9 +154,21 @@ impl Handles<Ended> for Lookout {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if let Ok(mut seen) = SEEN.lock() {
-            seen.push(ended.how().clone());
-        }
+        self.seen.push(Sighting::from(ended.how()));
+
+        Ok(())
+    }
+}
+
+impl Carries<Recall> for Lookout {
+    type Answers = (Sightings,);
+}
+
+impl Handles<Recall> for Lookout {
+    type Sends = (ToSender<Sightings>,);
+
+    fn handle(&mut self, _: Recall, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.reply(&Sightings { endings: self.seen.clone() })?;
 
         Ok(())
     }
@@ -189,6 +230,40 @@ where
     harness.answer(asked).map(report)
 }
 
+/// What became of a recall: the endings the lookout was shown, or why it did not answer.
+fn endings(answered: Answered<Sightings>) -> Result<Vec<Sighting>, Unanswered> {
+    match answered {
+        Answered::Yes(sightings) => Ok(sightings.endings),
+        Answered::No(why) => Err(why),
+    }
+}
+
+/// Asks `lookout` how each actor it watches has ended so far, and answers with what became of the recall once it has.
+fn recall(
+    harness: &mut Harness<Bench>,
+    lookout: ActorRef<Lookout>,
+) -> Result<Result<Vec<Sighting>, Unanswered>, Unheard> {
+    let asked = harness.ask(lookout, &Recall)?;
+
+    harness.answer(asked).map(endings)
+}
+
+/// How the engine asked `actor` before each of its turns recorded since the record was last taken, whether to move
+/// onto its kind's head, oldest first: the turns of every other actor are taken with them.
+fn turn_asks<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Vec<AskedToMove> {
+    let turned = harness.host().engine().take_turned();
+
+    turned.iter().filter(|turn| turn.actor == actor.seated()).map(|turn| turn.asked).collect()
+}
+
+/// What `actor` answered each time the engine asked it whether to move onto its kind's head in a call with no turn,
+/// as it had no mail, recorded since the record was last taken, oldest first: every other actor's are taken with them.
+fn idle_asks<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Vec<Upgrade> {
+    let asked = harness.host().engine().take_asked_idle();
+
+    asked.iter().filter(|ask| ask.actor == actor.seated()).map(|ask| ask.answer).collect()
+}
+
 /// The lines `actor` has logged at `level`, oldest first.
 fn lines<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>, level: Level) -> Vec<String> {
     let logged = harness.host().engine().log(actor.seated());
@@ -204,20 +279,26 @@ fn lines<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>, level: Level) -> V
 fn a_guest_that_answers_later_runs_its_turn_on_its_old_code_and_is_asked_again_before_the_next() -> Result<(), Unheard>
 {
     // Catches a turn run on the new code though its actor answered `Later`, an actor never asked again once it has
-    // answered `Later`, and a move that loses what the old code counted.
+    // answered `Later`, an actor still asked once it is on its kind's head, and a move that loses what the old code
+    // counted.
     let Program { mut harness, guest: mover, library, second } =
         program::<echo::Mover>(&echo::MoverConfig { holds: true }, 1)?;
     let blob = second[0].clone();
     harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
     harness.settle();
+    let _ = turn_asks(&mut harness, mover);
 
     let held = probe(&mut harness, mover)?.map(|report| (report.version, report.count));
     harness.tell(mover, &echo::LetGo)?;
     harness.settle();
+    let holding = turn_asks(&mut harness, mover);
     let after = probe(&mut harness, mover)?.map(|report| (report.version, report.count));
+    let on_head = turn_asks(&mut harness, mover);
 
     assert_eq!(held, Ok((1, 1)), "the turn it answered `Later` before ran on its old code");
+    assert_eq!(holding, [AskedToMove::Later, AskedToMove::Later], "each turn while it held was asked first");
     assert_eq!(after, Ok((2, 2)), "asked again, it moved, and its count came with it");
+    assert_eq!(on_head, [AskedToMove::Not], "on its kind's head, its turn is not asked");
     Ok(())
 }
 
@@ -289,18 +370,25 @@ fn a_failing_take_over_leaves_the_guest_on_its_old_code_parked_until_the_next_pu
     let first = second[0].clone();
     harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: first })?;
     harness.settle();
+    let first_asked = idle_asks(&mut harness, stubborn);
+    let _ = turn_asks(&mut harness, stubborn);
 
-    let seen = |report: echo::Report| (report.version, report.count, report.asked);
+    let seen = |report: echo::Report| (report.version, report.count);
     let parked = probe(&mut harness, stubborn)?.map(seen);
     let again = probe(&mut harness, stubborn)?.map(seen);
+    let parked_turns = turn_asks(&mut harness, stubborn);
     let next = second[1].clone();
     harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: next })?;
     harness.settle();
+    let next_asked = idle_asks(&mut harness, stubborn);
     let unparked = probe(&mut harness, stubborn)?.map(seen);
 
-    assert_eq!(parked, Ok((1, 1, 1)), "on its old code with its state, asked once");
-    assert_eq!(again, Ok((1, 2, 1)), "parked: not asked before its turns");
-    assert_eq!(unparked, Ok((1, 3, 2)), "asked again once its kind's head moved on");
+    assert_eq!(first_asked, [Upgrade::Now], "asked once, with no mail, as the head moved");
+    assert_eq!(parked, Ok((1, 1)), "on its old code with its state");
+    assert_eq!(again, Ok((1, 2)));
+    assert_eq!(parked_turns, [AskedToMove::Not, AskedToMove::Not], "parked: not asked before its turns");
+    assert_eq!(next_asked, [Upgrade::Now], "asked again once its kind's head moved on");
+    assert_eq!(unparked, Ok((1, 3)), "parked again, on its old code with its state");
     let errors = lines(&mut harness, stubborn, Level::Error);
     let expected = [
         "did not move to publish 1: the old state has no `answered`; parked",
@@ -322,10 +410,15 @@ fn an_idle_guest_behind_its_head_is_asked_once() -> Result<(), Unheard> {
     for _ in 0..4 {
         harness.step();
     }
+    let idle = idle_asks(&mut harness, mover);
+    let _ = turn_asks(&mut harness, mover);
 
-    let report = probe(&mut harness, mover)?.map(|report| (report.version, report.asked));
+    let version = probe(&mut harness, mover)?.map(|report| report.version);
+    let turns = turn_asks(&mut harness, mover);
 
-    assert_eq!(report, Ok((1, 2)), "asked once idle, and once before this turn");
+    assert_eq!(idle, [Upgrade::Later], "asked once while it had no mail, however many steps passed");
+    assert_eq!(version, Ok(1));
+    assert_eq!(turns, [AskedToMove::Later], "and once before its next turn");
     Ok(())
 }
 
@@ -337,6 +430,7 @@ fn a_moved_guest_keeps_its_path_its_watchers_and_the_references_it_holds() -> Re
         program::<echo::Mover>(&echo::MoverConfig { holds: false }, 1)?;
     let path = ActorPath::from_root(&PathSegment::new(echo::Mover::NAME, &()));
     harness.add_root::<Lookout>(&(), Looks { at: path.clone() })?;
+    let lookout = harness.root::<Lookout>();
     let kept = harness.put(vec![7; 300])?;
     harness.tell(mover, &echo::Keep { blob: kept })?;
     let blob = second[0].clone();
@@ -345,14 +439,14 @@ fn a_moved_guest_keeps_its_path_its_watchers_and_the_references_it_holds() -> Re
 
     let report = probe(&mut harness, mover)?.map(|report| (report.version, report.kept));
     let resolved = harness.host().engine().table().resolve(&path);
-    let seen_moving = SEEN.lock().map(|seen| seen.clone()).unwrap_or_default();
+    let seen_moving = recall(&mut harness, lookout)?;
     harness.tell(mover, &echo::Shut)?;
     harness.settle();
-    let seen_closing = SEEN.lock().map(|seen| seen.clone()).unwrap_or_default();
+    let seen_closing = recall(&mut harness, lookout)?;
 
     assert_eq!(report, Ok((2, 300)), "the new code reads the blob its state refers to");
     assert_eq!(resolved, Some(mover.seated().id), "its path still names it");
-    assert_eq!(seen_moving, [], "moving is not ending");
-    assert_eq!(seen_closing, [How::Closed], "the watch made on its old code sees it close on its new");
+    assert_eq!(seen_moving, Ok(Vec::new()), "moving is not ending");
+    assert_eq!(seen_closing, Ok(vec![Sighting::Closed]), "the watch made on its old code sees it close on its new");
     Ok(())
 }

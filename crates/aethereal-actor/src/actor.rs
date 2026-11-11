@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault, HandledList, Holds,
-    Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
+    Actors, AskedToMove, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault,
+    HandledList, Holds, Instances, Item, Moving, Puts, Reached, Seated, Seats, Sends, Table, Tie, Turning, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -111,10 +111,18 @@ pub trait Runs: Any + Send {
         false
     }
 
+    /// Whether the turn [`Self::turn`] handed back last was asked first whether to move onto its kind's head, and what
+    /// the actor answered: read only for the engine's record of the turns it ran (ADR-0036, ADR-0054). Never asked,
+    /// for code no head names, whose kind is the program's own.
+    fn asked_to_move(&self) -> AskedToMove {
+        AskedToMove::Not
+    }
+
     /// Asked between steps, in the actor's part, to move onto its kind's head as `moving` says, or first whether to:
-    /// answers with what became of it (ADR-0054). Code no head names stays on its code.
-    fn upgrade(&mut self, _moving: Moving<'_>) -> Upgraded {
-        Upgraded::Stays
+    /// answers with what it answered when it was asked there, and what became of it (ADR-0054). Code no head names
+    /// is never asked, and stays on its code.
+    fn upgrade(&mut self, _moving: Moving<'_>) -> Reached {
+        Reached::stays()
     }
 }
 

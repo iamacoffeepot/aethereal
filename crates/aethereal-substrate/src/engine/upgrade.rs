@@ -4,7 +4,7 @@
 use super::{Engine, Held, Holding, parity};
 use crate::heads::HEADS;
 use crate::{Context, lives, log};
-use aethereal_actor::{Behind, Effect, Fault, Level, MailId, Moving, Seated, Upgraded, What};
+use aethereal_actor::{Behind, Effect, Fault, Level, MailId, Moving, Reached, Seated, Upgraded, What};
 use aethereal_data::KindName;
 use std::mem;
 
@@ -47,16 +47,17 @@ impl Engine {
     }
 
     /// Reaches the actor `me` names, in its part, to move onto its kind's head as it stands, for why `behind` says, and
-    /// takes in what became of it: its new type, the lines its move logs as its own, each tagged with the publish
-    /// that made the head, and the actors that ended as a call broke their instance. Nothing when it is not live, or
-    /// its kind has no head.
+    /// takes in what became of it: what it answered when it was asked in a call with no turn, for the record of what
+    /// the engine ran; its new type, the lines its move logs as its own, each tagged with the publish that made the
+    /// head, and the actors that ended as a call broke their instance. Nothing when it is not live, or its kind has no
+    /// head.
     fn upgrade(&mut self, me: Seated, behind: Behind) {
         let part = self.part(me.seat);
         let is_live = self.lives.at(part).life(me).is_some_and(lives::Life::is_live);
         if !is_live {
             return;
         }
-        let (number, upgraded) = {
+        let (number, Reached { asked, upgraded }) = {
             let Self { actors, instances, heads, .. } = self;
             let Some(Held { actor: Holding::Here(actor), .. }) = actors[part].get_mut(me) else {
                 return;
@@ -69,6 +70,11 @@ impl Engine {
             (head.number(), actor.upgrade(moving))
         };
         self.stats.measure(part, &self.instances[part]);
+        // What it answered asked with no turn is kept only by an engine that records what it ran (ADR-0036).
+        #[cfg(any(test, feature = "harness"))]
+        self.record_asked_idle(me, asked);
+        #[cfg(not(any(test, feature = "harness")))]
+        let _ = asked;
 
         match upgraded {
             Upgraded::Stays => {}

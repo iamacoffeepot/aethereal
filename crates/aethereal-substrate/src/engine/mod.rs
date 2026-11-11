@@ -173,6 +173,9 @@ pub struct Engine {
     /// The turns recorded and not yet taken.
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
+    /// The asks made in calls with no turn recorded and not yet taken (ADR-0054).
+    #[cfg(any(test, feature = "harness"))]
+    asked_idle: Vec<outside::AskedIdle>,
     read_limit: usize,
     /// The most fused hops one part runs in one step (ADR-0013).
     hops: usize,
@@ -517,6 +520,8 @@ impl Engine {
             recording: false,
             #[cfg(any(test, feature = "harness"))]
             turned: Vec::new(),
+            #[cfg(any(test, feature = "harness"))]
+            asked_idle: Vec::new(),
             read_limit,
             hops,
             slice: u64::MAX,
@@ -1889,7 +1894,7 @@ impl Reading<'_> {
                             tied(me, (source, tie, context, stepped.sent), filed, asked, &mut outcome);
                         }
                         #[cfg(any(test, feature = "harness"))]
-                        noted.finish(me, &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
+                        noted.finish((me, &*actor), &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -2118,7 +2123,7 @@ impl Reading<'_> {
                     tied(me, (hop.from, hop.tie, chain, sent_before), filed, asked, &mut outcome);
                 }
                 #[cfg(any(test, feature = "harness"))]
-                noted.finish(me, &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
+                noted.finish((me, &*actor), &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
 
                 outcome
             };

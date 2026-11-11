@@ -25,8 +25,8 @@
 //! 32-bit memory.
 
 use crate::{
-    BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Time,
-    Unreadable, Why,
+    AskedToMove, BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated,
+    Time, Unreadable, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::string::String;
@@ -328,7 +328,8 @@ impl OutHead {
 }
 
 /// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims, holds, stages,
-/// jobs run and jobs cancelled the turns up to and including it asked for.
+/// jobs run and jobs cancelled the turns up to and including it asked for; and whether the turn itself was asked first
+/// whether to move onto its kind's head, and what its actor answered (ADR-0054).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
@@ -341,11 +342,13 @@ pub struct TurnEnds {
     pub stages: u32,
     pub jobs: u32,
     pub cancels: u32,
+    /// The turn's own, not counted on from the turns before it.
+    pub asked: AskedToMove,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 40;
+    pub const BYTES: usize = 44;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -360,7 +363,13 @@ impl TurnEnds {
         out[24..28].copy_from_slice(&self.holds.to_le_bytes());
         out[28..32].copy_from_slice(&self.stages.to_le_bytes());
         out[32..36].copy_from_slice(&self.jobs.to_le_bytes());
-        out[36..].copy_from_slice(&self.cancels.to_le_bytes());
+        out[36..40].copy_from_slice(&self.cancels.to_le_bytes());
+        let asked: u32 = match self.asked {
+            AskedToMove::Not => 0,
+            AskedToMove::Later => 1,
+            AskedToMove::Now => 2,
+        };
+        out[40..].copy_from_slice(&asked.to_le_bytes());
 
         out
     }
@@ -368,6 +377,13 @@ impl TurnEnds {
     /// The record `bytes` begin with.
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
+        let asked = match u32_at(bytes, 40)? {
+            0 => AskedToMove::Not,
+            1 => AskedToMove::Later,
+            2 => AskedToMove::Now,
+            _ => return None,
+        };
+
         Some(Self {
             sends: u32_at(bytes, 0)?,
             lines: u32_at(bytes, 4)?,
@@ -379,6 +395,7 @@ impl TurnEnds {
             stages: u32_at(bytes, 28)?,
             jobs: u32_at(bytes, 32)?,
             cancels: u32_at(bytes, 36)?,
+            asked,
         })
     }
 }

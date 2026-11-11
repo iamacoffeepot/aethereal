@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-pub use crate::engine::outside::{Arrival, Handed, Ran, Turned};
+pub use crate::engine::outside::{Arrival, AskedIdle, Handed, Ran, Turned};
 
 use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};

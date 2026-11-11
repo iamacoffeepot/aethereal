@@ -74,6 +74,30 @@ pub enum Upgrade {
     Later,
 }
 
+/// Whether an actor was asked whether to move onto its kind's head, and what it answered: what its host hands back of
+/// each turn, and of a call with no turn that asks an actor with no mail, for the engine's record of what it ran
+/// (ADR-0036, ADR-0054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AskedToMove {
+    /// It was not asked: its code is its kind's head, it is parked there, or its code is the program's own.
+    #[default]
+    Not,
+    /// It was asked, and answered [`Upgrade::Later`]: a turn so asked ran on its old code.
+    Later,
+    /// It was asked, and answered [`Upgrade::Now`]. No turn runs after it on the old code, so only a call with no turn
+    /// hands it back.
+    Now,
+}
+
+impl From<Upgrade> for AskedToMove {
+    fn from(answer: Upgrade) -> Self {
+        match answer {
+            Upgrade::Now => Self::Now,
+            Upgrade::Later => Self::Later,
+        }
+    }
+}
+
 /// Why the engine reaches an actor whose code may be behind its kind's head, between steps (ADR-0054).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Behind {
@@ -111,4 +135,23 @@ pub enum Upgraded {
     /// A call into its own code's instance broke, so nothing runs there again: it ends, and each other actor of that
     /// instance with it, each as `ended` says (ADR-0015).
     Broke { ended: Vec<(Seated, Fault)> },
+}
+
+/// What the engine's reach between steps found of an actor whose code may be behind its kind's head (ADR-0054).
+#[derive(Debug)]
+pub struct Reached {
+    /// What it answered asked in a call with no turn, as an actor with no mail is: [`AskedToMove::Not`] when no such
+    /// call asked it, as it was reached for the answer it gave before a turn, or was not behind its kind's head, or
+    /// was parked there, or the call broke before it answered.
+    pub asked: AskedToMove,
+    /// What became of it.
+    pub upgraded: Upgraded,
+}
+
+impl Reached {
+    /// An actor no call with no turn asked, which stays on its code.
+    #[must_use]
+    pub const fn stays() -> Self {
+        Self { asked: AskedToMove::Not, upgraded: Upgraded::Stays }
+    }
 }

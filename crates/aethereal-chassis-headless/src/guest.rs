@@ -22,11 +22,11 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, Batch, Behind, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared,
-    Due, FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping,
-    Loadable, Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads,
-    Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade,
-    Upgraded, Was, Why, Written, holders, take_loose_ticket,
+    Above, Arena, Asked, AskedToMove, Batch, Behind, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children,
+    Claimed, Declared, Due, FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances,
+    Item, Keeping, Loadable, Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing,
+    Puts, Reached, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit,
+    Unspawned, Upgrade, Upgraded, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
@@ -1182,23 +1182,23 @@ impl Guest {
     }
 
     /// What the actor answers, asked in a call with no turn whether to move onto `head`, its kind's head, in its part
-    /// whose `instances` are lent: [`Upgrade::Later`] when it is not behind it, or is parked there, as it is then not
+    /// whose `instances` are lent: [`AskedToMove::Not`] when it is not behind it, or is parked there, as it is then not
     /// asked (ADR-0054).
     ///
     /// # Errors
     ///
     /// What became of it when the call broke its instance: it ended, with every other actor of the instance.
-    fn ask(&mut self, head: BlobId, instances: &mut Instances) -> Result<Upgrade, Upgraded> {
+    fn ask(&mut self, head: BlobId, instances: &mut Instances) -> Result<AskedToMove, Upgraded> {
         let asks = self.is_behind(head);
         if !asks {
-            return Ok(Upgrade::Later);
+            return Ok(AskedToMove::Not);
         }
         let key = self.running.code.key;
         let read_limit = instances.read_limit();
         let instance = instances.get_or_load(key, || Instance::load(&self.running.code, read_limit));
         let answer = self.handle_in(instance).and_then(|handle| instance.upgrade(handle));
 
-        answer.map_err(|broke| Upgraded::Broke { ended: self.ended(broke, instances) })
+        answer.map(AskedToMove::from).map_err(|broke| Upgraded::Broke { ended: self.ended(broke, instances) })
     }
 
     /// Moves the actor onto `head`, its kind's head, in its part whose `instances` are lent: its state taken out of
@@ -1575,25 +1575,42 @@ impl Runs for Guest {
         matches!(self.ran, Ran::At { head, next, .. } if next == head.ran && head.stopped == Stopped::Upgrading)
     }
 
+    /// Whether the turn handed back last was asked first whether to move onto its kind's head, and what the actor
+    /// answered, as the guest's record of it says (ADR-0054).
+    fn asked_to_move(&self) -> AskedToMove {
+        match self.ran {
+            Ran::At { before, .. } => before.asked,
+            Ran::Nothing | Ran::Broke(_) => AskedToMove::Not,
+        }
+    }
+
     /// Moves the actor onto its kind's head between steps, as it answered before a turn this step, or once it answers
     /// so asked in a call with no turn: as [`Self::move_onto`] says. It stays on the code it runs while that is the
     /// head (ADR-0054).
-    fn upgrade(&mut self, moving: Moving<'_>) -> Upgraded {
+    fn upgrade(&mut self, moving: Moving<'_>) -> Reached {
         let Moving { behind, head, instances } = moving;
         let is_head = head.id() == self.running.pin.id();
         if is_head {
-            return Upgraded::Stays;
+            return Reached::stays();
         }
-        let is_idle = behind == Behind::Idle;
-        if is_idle {
-            match self.ask(head.id(), instances) {
-                Ok(Upgrade::Now) => {}
-                Ok(Upgrade::Later) => return Upgraded::Stays,
-                Err(broke) => return broke,
-            }
-        }
+        // An actor reached for the answer it gave before a turn was asked in that turn's call, not here.
+        let asked = match behind {
+            Behind::Answered => AskedToMove::Not,
+            Behind::Idle => match self.ask(head.id(), instances) {
+                Ok(asked) => asked,
+                Err(broke) => return Reached { asked: AskedToMove::Not, upgraded: broke },
+            },
+        };
+        let answered_before = behind == Behind::Answered;
+        let answers_now = asked == AskedToMove::Now;
+        let moves = answered_before || answers_now;
+        let upgraded = if moves {
+            self.move_onto(head, instances)
+        } else {
+            Upgraded::Stays
+        };
 
-        self.move_onto(head, instances)
+        Reached { asked, upgraded }
     }
 }
 

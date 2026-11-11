@@ -31,9 +31,9 @@ use crate::{
     Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Bytes, ChildOf, Children, Declared, Due,
     Ended, Fault, How, Item, Tie, Tied, Unanswered,
 };
+use crate::{AskedToMove, Upgrade, Upgrades};
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
-use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, SchemaNodes,
@@ -443,7 +443,8 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
 /// pieces of mail and jobs before the first, which its turns count on from, as the engine counts them, so a job's id is
 /// the one its host files it under (ADR-0018). While `behind` is one, the actor's code is behind its kind's head, and it
 /// is asked before each turn whether to move onto it: the batch stops before the turn of an actor that answers
-/// [`Upgrade::Now`] (ADR-0054). Answers where what the turns asked for lies, as [`out`] does.
+/// [`Upgrade::Now`], and each turn's [`TurnEnds`] says whether it was asked first, and what was answered (ADR-0054).
+/// Answers where what the turns asked for lies, as [`out`] does.
 #[must_use]
 pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64, behind: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
@@ -475,8 +476,10 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut counted = Counted::default();
         let mut sent = sent;
         for _ in 0..items {
-            // Each turn runs wholly on one version of the code: an actor that moves now runs none of the rest.
-            let moves = asks.is_some_and(|upgrade| upgrade(&**runs) == Upgrade::Now);
+            // Each turn runs wholly on one version of the code: an actor that moves now runs none of the rest. What it
+            // answered otherwise is handed back with the turn's ends, for its engine's record.
+            let answered = asks.map_or(AskedToMove::Not, |upgrade| AskedToMove::from(upgrade(&**runs)));
+            let moves = answered == AskedToMove::Now;
             if moves {
                 last = Last::Upgrading;
                 break;
@@ -513,6 +516,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
                 Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie, due);
             let result = runs.turn(item, turning);
             sent = asked.last_sent(*me).unwrap_or(sent);
+            counted.ends.asked = answered;
             write_ends(out, asked, (ran, unread), &mut counted);
             ran += 1;
             last = match result {

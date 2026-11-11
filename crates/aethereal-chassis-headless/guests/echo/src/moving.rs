@@ -1,6 +1,7 @@
 //! Guests a test moves onto new code (ADR-0054): the echo is built a second time with the `echo_v2` cfg set, and a test
 //! publishes that build as their kinds' head. Each answers a probe with the version of the code that handled it and
-//! what its state holds, so a test sees which code ran a turn and what the move carried.
+//! what its state holds, so a test sees which code ran a turn and what the move carried. When each was asked whether
+//! to move, and what it answered, the test reads in the engine's record of what it ran.
 
 use crate::Shut;
 use aethereal_actor::{
@@ -10,7 +11,6 @@ use aethereal_actor::{
 #[cfg(echo_v2)]
 use aethereal_actor::{Portable, TakeOverError};
 use aethereal_data::{Bound, Plain};
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// The version of the code this build is: two when built with the `echo_v2` cfg.
 const VERSION: u64 = if cfg!(echo_v2) {
@@ -18,15 +18,6 @@ const VERSION: u64 = if cfg!(echo_v2) {
 } else {
     1
 };
-
-/// How many times this build's movers have been asked whether to move, in their instance. Atomic only because a
-/// static must be `Sync`: `upgrade` takes `&self`, so the count is kept outside the actor, and an instance runs on one
-/// thread at a time.
-static MOVER_ASKED: AtomicU64 = AtomicU64::new(0);
-
-/// How many times this build's stubborn actors have been asked whether to move, in their instance: atomic as
-/// [`MOVER_ASKED`] is.
-static STUBBORN_ASKED: AtomicU64 = AtomicU64::new(0);
 
 /// What a mover is made from: whether it holds, answering `Later` while it does.
 #[derive(Plain)]
@@ -53,15 +44,13 @@ pub struct Keep {
 pub struct LetGo;
 
 /// What a probe is answered with: the version of the code that handled it; how many probes the actor has answered,
-/// this one among them; how many times its build has been asked whether to move, in its instance; whether its new
-/// code found a field absent as it took its state over; and how many bytes the blobs it keeps hold, read through the
-/// references it keeps.
+/// this one among them; whether its new code found a field absent as it took its state over; and how many bytes the
+/// blobs it keeps hold, read through the references it keeps.
 #[derive(Plain)]
 #[kind(name = "aether.guest.report")]
 pub struct Report {
     pub version: u64,
     pub count: u64,
-    pub asked: u64,
     pub first_move: bool,
     pub kept: u64,
 }
@@ -138,7 +127,6 @@ impl Actor for Mover {
 
 impl Upgrades for Mover {
     fn upgrade(&self) -> Upgrade {
-        MOVER_ASKED.fetch_add(1, Ordering::Relaxed);
         if self.holds {
             Upgrade::Later
         } else {
@@ -168,8 +156,7 @@ impl Handles<Probe> for Mover {
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
         let kept = self.kept.iter().map(|blob| u64::try_from(turn.read(blob).len()).unwrap_or(u64::MAX)).sum();
-        let asked = MOVER_ASKED.load(Ordering::Relaxed);
-        let report = Report { version: VERSION, count: self.count, asked, first_move: self.first_move(), kept };
+        let report = Report { version: VERSION, count: self.count, first_move: self.first_move(), kept };
         turn.reply(&report)?;
 
         Ok(())
@@ -249,7 +236,7 @@ impl Handles<Probe> for Keeper {
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
-        turn.reply(&Report { version: VERSION, count: self.count, asked: 0, first_move: false, kept: 0 })?;
+        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
 
         Ok(())
     }
@@ -323,8 +310,6 @@ impl Actor for Stubborn {
 
 impl Upgrades for Stubborn {
     fn upgrade(&self) -> Upgrade {
-        STUBBORN_ASKED.fetch_add(1, Ordering::Relaxed);
-
         Upgrade::Now
     }
 
@@ -348,8 +333,7 @@ impl Handles<Probe> for Stubborn {
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answer();
-        let asked = STUBBORN_ASKED.load(Ordering::Relaxed);
-        turn.reply(&Report { version: VERSION, count: self.count, asked, first_move: false, kept: 0 })?;
+        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
 
         Ok(())
     }
