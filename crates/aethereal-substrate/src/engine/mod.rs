@@ -618,14 +618,6 @@ impl Engine {
         self.log.shard(actor.seat.number()).get(actor).into_iter().flat_map(KeptLog::entries)
     }
 
-    /// What the actor `path` names logged most recently, oldest first, as of the last step, found by its id as a log
-    /// read by path is (ADR-0044): for a harness, which reads the log of an actor that never went live, and so sat in
-    /// no seat it can name, as one whose `begin` failed or whose guest could not keep it (ADR-0009).
-    #[cfg(any(test, feature = "harness"))]
-    pub fn log_of(&self, path: &ActorPath) -> impl Iterator<Item = &Entry> {
-        log::find(&self.log, crate::path_id(path)).into_iter().flat_map(KeptLog::entries)
-    }
-
     /// The number of the last step run, from one. Zero before the first.
     #[must_use]
     pub const fn step_number(&self) -> u64 {

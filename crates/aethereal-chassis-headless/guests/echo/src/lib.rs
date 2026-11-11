@@ -8,11 +8,9 @@ use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Path, Portability,
     Protocol, ProtocolRef, Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender,
-    ToType, Top, Turn, Unanswered, Upgrade, Upgrades, Within, parent, path,
+    ToType, Top, Turn, Unanswered, Upgrade, Upgrades, parent, path,
 };
-use aethereal_data::{
-    ActorPath, Bound, Decode, DecodeError, Encode, EncodeError, KindId, KindName, Plain, Schema, Shape, Writer,
-};
+use aethereal_data::{ActorPath, Bound, KindId, KindName, Plain};
 use core::mem;
 
 /// A ping, which an echo answers with a pong of the same number.
@@ -2620,100 +2618,6 @@ impl Handles<On<Start>> for Usher {
     }
 }
 
-/// What a litter is made from: how many homebodies it spawns as it begins.
-#[derive(Plain)]
-#[kind(name = "aether.guest.litter_config")]
-pub struct LitterConfig {
-    pub children: u64,
-}
-
-/// An actor that spawns homebodies as it begins, keyed from nought: one seated in another part than the litter's is
-/// one its guest cannot take out to that part.
-#[derive(Bound, Portability)]
-#[kind(name = "aether.guest.litter")]
-pub struct Litter;
-
-impl ChildOf for Litter {
-    type Parent = Top;
-}
-
-impl Actor for Litter {
-    type Config = LitterConfig;
-    type Key = ();
-    type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
-
-    fn begin(config: LitterConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        for key in 0..config.children {
-            if turn.spawn::<Homebody>(&key, HomebodyConfig).is_err() {
-                turn.log(Level::Error, "a homebody was refused");
-            }
-        }
-
-        Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// What a homebody is made from: nothing.
-#[derive(Plain)]
-#[kind(name = "aether.guest.homebody_config")]
-pub struct HomebodyConfig;
-
-/// A tie to the instance a value was made in, as an address in its memory is: nothing carries it to another instance,
-/// so written at `Within`, as a state is to be taken out to another part's instance, it refuses.
-pub struct Tether;
-
-impl Schema for Tether {
-    const SHAPE: Shape = <u32 as Schema>::SHAPE;
-}
-
-impl Encode<Within> for Tether {
-    fn encode(&self, _: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
-        Err(EncodeError::NotCarried { name: "Tether" })
-    }
-}
-
-impl Decode<Within> for Tether {
-    fn decode(input: &mut aethereal_data::Reader<'_, Within>) -> Result<Self, DecodeError> {
-        u32::decode(input)?;
-
-        Ok(Self)
-    }
-}
-
-/// An actor whose state holds a tether to the instance it began in: kept there, in its parent's part, and never taken
-/// out to another part's.
-#[derive(Bound, Portability)]
-#[kind(name = "aether.guest.homebody")]
-pub struct Homebody {
-    tether: Tether,
-}
-
-impl ChildOf for Homebody {
-    type Parent = Litter;
-}
-
-impl Actor for Homebody {
-    type Config = HomebodyConfig;
-    type Key = u64;
-    type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
-
-    fn begin(_: HomebodyConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(Self { tether: Tether })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
 /// Says of each type that it moves onto its kind's head as soon as it is asked, and writes no `take_over`: the tests
 /// publish no new code for it (ADR-0054).
 macro_rules! moves_when_asked {
@@ -2769,8 +2673,6 @@ moves_when_asked!(
     Sexton,
     Chimer,
     Usher,
-    Litter,
-    Homebody,
 );
 
 aethereal_actor::guest!(
@@ -2817,7 +2719,5 @@ aethereal_actor::guest!(
     Mover,
     Keeper,
     Stubborn,
-    Breaker,
-    Litter,
-    Homebody
+    Breaker
 );

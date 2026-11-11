@@ -7,7 +7,7 @@
 //! [`OutHead`], a [`TurnEnds`] for each turn it ran, then a [`SendRecord`] for
 //! each piece of mail its turns sent, a [`LineRecord`] for each line they
 //! logged, a [`SpawnRecord`] for each child they spawned, a [`StoodRecord`]
-//! for each child that began, kept or not, a [`WatchRecord`] for each actor they
+//! for each child that began, a [`WatchRecord`] for each actor they
 //! watched, a [`ClaimRecord`] for each claim they made of a resource, a [`HoldRecord`] for each request they held,
 //! a [`StageRecord`] for each thing they asked of the program's lifecycle, a [`JobRecord`] for each job they ran,
 //! and a [`CancelRecord`] for each job they cancelled; and, for the call as a whole, a [`PinRecord`] for each blob whose
@@ -31,7 +31,6 @@ use crate::{
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
 /// depth, the length of the bytes after it, a context's included, and when the request it is or answers is due.
@@ -1086,61 +1085,13 @@ pub struct StoodRecord {
 /// Where a child's state is held once it began.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kept {
-    /// In the instance it began in, which is its part's, under the handle the guest knows it by: `u32::MAX` for a child
-    /// of a turn that failed, which the guest dropped, as the engine drops it.
+    /// In the instance it began in, which is its part's, under the handle the guest knows it by.
     Here { handle: u32 },
     /// Taken out, as it sits in another part: its path and state, written at `Within`, lie where `state` says, for its
     /// host to take into its own part's instance.
     Out { state: Span },
     /// Nowhere in the guest: it is of other code, which its host began and holds.
     Elsewhere,
-    /// Nowhere: the guest could not keep it, for the reason `why` says, so its host takes it back as a `begin` that
-    /// failed is taken back, and logs why (ADR-0009, ADR-0015).
-    Not { why: Unkept },
-}
-
-/// Why a guest could not keep a child whose `begin` it ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unkept {
-    /// It is of no type the guest makes, though its turn began it as its own.
-    Unmade,
-    /// It sits in another part, and where it stands or its state did not encode at `Within` to be taken out to it.
-    Unencoded,
-    /// The child whose `begin` stood it up was not kept.
-    Above,
-}
-
-impl Unkept {
-    /// It, as a record holds it: one number.
-    const fn code(self) -> u32 {
-        match self {
-            Self::Unmade => 0,
-            Self::Unencoded => 1,
-            Self::Above => 2,
-        }
-    }
-
-    /// The reason `code` names: nothing for a number no reason has.
-    const fn of(code: u32) -> Option<Self> {
-        match code {
-            0 => Some(Self::Unmade),
-            1 => Some(Self::Unencoded),
-            2 => Some(Self::Above),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Unkept {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let said = match self {
-            Self::Unmade => "it is of no type its guest makes",
-            Self::Unencoded => "its state did not encode to be taken out to its part",
-            Self::Above => "the child whose begin stood it up was not kept",
-        };
-
-        f.write_str(said)
-    }
 }
 
 impl StoodRecord {
@@ -1164,10 +1115,6 @@ impl StoodRecord {
                 1
             }
             Kept::Elsewhere => 2,
-            Kept::Not { why } => {
-                out[36..40].copy_from_slice(&why.code().to_le_bytes());
-                3
-            }
         };
         out[32..36].copy_from_slice(&kept.to_le_bytes());
 
@@ -1181,7 +1128,6 @@ impl StoodRecord {
             0 => Kept::Here { handle: u32_at(bytes, 36)? },
             1 => Kept::Out { state: Span { at: u32_at(bytes, 36)?, len: u32_at(bytes, 40)? } },
             2 => Kept::Elsewhere,
-            3 => Kept::Not { why: Unkept::of(u32_at(bytes, 36)?)? },
             _ => return None,
         };
 
