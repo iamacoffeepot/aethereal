@@ -137,6 +137,24 @@ pub enum TakeOverError {
     /// The old state does not read: it is not a struct of the schema it was written with, or a field does not read as
     /// its new type, or reading it would take the read past the engine's limit.
     Unreadable(DecodeError),
+    /// The old state has no field `field`, which this version cannot work out: what a hand-written `take_over` refuses
+    /// with, through [`Self::missing`].
+    Missing {
+        /// The field's name.
+        field: &'static str,
+    },
+    /// The layouts differ and this version wrote no `take_over`: what [`Upgrades::take_over`](crate::Upgrades)
+    /// answers until it is written.
+    Unwritten,
+}
+
+impl TakeOverError {
+    /// The old state has no field `field`, and this version cannot work it out: for a hand-written `take_over` that
+    /// requires one.
+    #[must_use]
+    pub const fn missing(field: &'static str) -> Self {
+        Self::Missing { field }
+    }
 }
 
 impl From<DecodeError> for TakeOverError {
@@ -150,6 +168,8 @@ impl fmt::Display for TakeOverError {
         match self {
             Self::Mismatch { field } => write!(f, "the old state holds `{field}` with another layout"),
             Self::Unreadable(error) => write!(f, "the old state does not read: {error}"),
+            Self::Missing { field } => write!(f, "the old state has no `{field}`"),
+            Self::Unwritten => f.write_str("the layout changed and no `take_over` is written"),
         }
     }
 }

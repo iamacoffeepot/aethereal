@@ -15,3 +15,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 aethereal-actor = { path = "../../../aethereal-actor", features = ["guest"] }
 aethereal-data = { path = "../../../aethereal-data" }
+
+
+[lints.rust]
+# The second version of the guests a test moves onto new code, set by the build that makes it (ADR-0054): a cfg, not
+# a feature, so a build with every feature on still names the first version's types.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(echo_v2)"] }

@@ -57,6 +57,7 @@ mod time;
 #[cfg(feature = "std")]
 pub mod tuning;
 mod turn;
+mod upgrade;
 mod written;
 
 pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
@@ -130,6 +131,7 @@ pub use turn::{
     Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,
     Unspawned, Vantage, Why,
 };
+pub use upgrade::{Behind, Moving, Upgrade, Upgraded, Upgrades};
 pub use written::Written;
 
 /// Derives `Portability` for a struct: its portable form, a struct named `Portable` and the state's name, of its fields

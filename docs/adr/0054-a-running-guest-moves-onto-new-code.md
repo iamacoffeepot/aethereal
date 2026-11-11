@@ -49,12 +49,12 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 
 ### Asking a guest to move
 
-- **Every type a guest's module makes implements `Upgrade`, and `guest!` requires it,** so a guest that does not say how it moves does not build. A native actor does not implement it: a native kind's code is the program's own (ADR-0009: `Code::Linked`) and moves only with a rebuild.
+- **Every type a guest's module makes implements `Upgrades`, and `guest!` requires it,** so a guest that does not say how it moves does not build. A native actor does not implement it: a native kind's code is the program's own (ADR-0009: `Code::Linked`) and moves only with a rebuild.
 
   ```rust
-  pub trait Upgrade: Actor + Portability {
+  pub trait Upgrades: Actor + Portability {
       /// Asked before each turn while this actor is behind its kind's head.
-      fn upgrade(&self) -> Answer;
+      fn upgrade(&self) -> Upgrade;
 
       /// Builds this version's state from the state the actor had. Called only when the layouts differ.
       fn take_over(old: Portable<Self>) -> Result<Self, TakeOverError> {
@@ -62,7 +62,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
       }
   }
 
-  pub enum Answer { Now, Later }
+  pub enum Upgrade { Now, Later }
   ```
 
 - **An actor is behind when the blob it runs is not its kind's head.** The engine knows both, so nothing is kept in the actor, and nothing is sent to it.
@@ -78,7 +78,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **The engine takes the actor's state out at `Within`, as for a child seated in another part, with the schema of its kind as the old module declares it.** `aethereal.declared` gains each actor type's state schema, its names included (ADR-0004: `SchemaNodes`), which `Declared` reads.
 - **The state goes into an instance of the new blob in the same part,** made there if the part has none (ADR-0015). Its children stay where they stand, each on its own blob and its own kind's head.
 - **When the old and new kinds have the same id, the state is taken in as it is.** Same name and same layout mean the same bytes (ADR-0006), so `take_over` is not called.
-- **When the layouts differ, the new code is handed its portable form.** `#[derive(Portability)]` on the state type writes a struct with the same field names, each an `Option` of the field's type, and links the two through a trait. `Portable<T>` is an alias over that link, so inside an impl for `Hud`, `Portable<Self>` is the generated struct and its fields are plain field accesses. `Upgrade` requires `Portability`.
+- **When the layouts differ, the new code is handed its portable form.** `#[derive(Portability)]` on the state type writes a struct with the same field names, each an `Option` of the field's type, and links the two through a trait. `Portable<T>` is an alias over that link, so inside an impl for `Hud`, `Portable<Self>` is the generated struct and its fields are plain field accesses. `Upgrades` requires `Portability`.
 
   ```rust
   pub trait Portability {
@@ -100,7 +100,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
       fn read(old: &OldState<'_>) -> Result<PortableHud, TakeOverError> { .. }
   }
 
-  // written by hand, in `impl Upgrade for Hud`
+  // written by hand, in `impl Upgrades for Hud`
   fn take_over(old: Portable<Self>) -> Result<Self, TakeOverError> {
       let Some(save) = old.save else { return Err(TakeOverError::missing("save")) };
       let health = old.health.unwrap_or(100.0);
@@ -109,11 +109,11 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
   }
   ```
 
-  - **Each field is filled by name from the old state,** read with the old schema: a field the old state has, of the same layout, is `Some`. A field it lacks is `None`: it is new, and the code gives it a value or works it out from the others. A field the old state has that the new one lacks is dropped, and a handle in it is released, as a dropped handle is (ADR-0010).
+  - **Each field is filled by name from the old state,** read with the old schema: a field the old state has, of the same layout, is `Some`. A field it lacks is `None`: it is new, and the code gives it a value or works it out from the others. A field the old state has that the new one lacks is dropped with the old state's bytes, and a reference in it with them. A handle in it is not released at the move: a handle has no `Drop`, so its resource stays with its actor until the actor closes (ADR-0010).
   - **A field the old state has with another layout refuses the move,** with `TakeOverError::Mismatch { field }`. A default would quietly throw its value away. To change a field's type, a version names it anew.
   - **Every field is an `Option`, with no required fields.** A required field could never be safely added or removed while an older version may still run; protobuf dropped `required` in proto3 for that reason. A field that must be present is checked in `take_over`, which can refuse.
   - The portable form is built by the schema walk of ADR-0007, without the old Rust type, so a version takes over from any earlier one, however many versions it skips, and an older version takes over from a newer one when a head is moved back. It is read within the engine's read limit, and the handles in it are the ones the `Written` holds.
-- **`take_over` runs in a call like a `begin`,** its lines logged as the actor's. **Each move logs the fields that were absent,** at `Info`: `moved to publish 12; absent: show_cooldowns`. A field that should never be absent showing there says something went wrong even where a default covered it.
+- **`take_over` runs in a call of its own into the new code's instance, as a `begin` does.** It takes no turn, so it logs nothing itself; the move's lines are logged as the actor's. **Each move logs the fields that were absent,** at `Info`: `moved to publish 12; absent: show_cooldowns`. A field that should never be absent showing there says something went wrong even where a default covered it.
 - **A move that fails leaves the actor as it was.** `take_over`'s `Err`, a trap in it, or an unwritten `take_over` for a changed layout puts the taken-out state back into the old instance, and the actor runs on its old code. The error is logged at `Error` as the actor's, with its reason. The actor is **parked**: it is not asked again until its kind's head moves again, since the same code would fail again against nearly the same state, every turn. The remedy is another publish.
 - **Moving is not ending.** `end` is not run, and the actor's path, its watchers, and its references are unchanged. Mail of a kind whose layout the new code changed goes unhandled, as between two actors on different versions (ADR-0009).
 
@@ -147,7 +147,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **`Files` gains `Code`, and each host's settings gain its root.**
 - **Two versions of one kind can run at once** while some actors answer `Later` or are parked. Mail between them is safe, as ADR-0009 already holds: a changed kind is another id.
 
-Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Origin` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portability`, its derive, and `Portable`; `aethereal-library` with `Library`, `publish`, and `upgrades`.
+Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Origin` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrades`, `Upgrade`, and the `Upgrading` ending in the guest's library and the native host (the browser chassis runs no guests, so it has none to ask); taking a state into a new blob's instance and back; `Portability`, its derive, and `Portable`; `aethereal-library` with `Library`, `publish`, and `upgrades`.
 
 ## Alternatives considered
 

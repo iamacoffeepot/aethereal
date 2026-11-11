@@ -73,6 +73,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     Ok(quote! {
         #[doc = #form_doc]
+        #[allow(dead_code, reason = "a version reads its portable form only in a `take_over` it writes")]
         #definition
 
         #[automatically_derived]

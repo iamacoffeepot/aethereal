@@ -1,10 +1,14 @@
 //! A guest that answers each ping it is sent with a pong, to its sender (ADR-0015).
 
+mod moving;
+
+pub use moving::{Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report, Stubborn};
+
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Path, Protocol,
-    ProtocolRef, Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top,
-    Turn, Unanswered, parent, path,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Path, Portability,
+    Protocol, ProtocolRef, Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender,
+    ToType, Top, Turn, Unanswered, Upgrade, Upgrades, parent, path,
 };
 use aethereal_data::{ActorPath, Bound, KindId, KindName, Plain};
 use core::mem;
@@ -53,7 +57,7 @@ pub struct Crash;
 pub struct EchoConfig;
 
 /// An actor that answers pings, and logs as it begins.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.echo")]
 pub struct Echo {
     answered: u64,
@@ -134,7 +138,7 @@ impl Handles<Shut> for Echo {
 
 /// A second kind of actor the blob makes, so two of its actors can live in one instance: it answers pings, and
 /// closes on the word to.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.mirror")]
 pub struct Mirror;
 
@@ -188,7 +192,7 @@ impl Handles<Crash> for Mirror {
 
 /// An actor that subscribes to the lifecycle's `Start` and `Stop` as it begins, logs each it is sent, and asks the
 /// program to stop on `Start` (ADR-0020).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.starter")]
 pub struct Starter;
 
@@ -237,7 +241,7 @@ impl Handles<On<Stop>> for Starter {
 }
 
 /// An actor that subscribes to `Tick` as it begins: one an engine whose cycle runs no `Tick` does not make (ADR-0020).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.ticker")]
 pub struct Ticker;
 
@@ -273,7 +277,7 @@ impl Handles<On<Tick>> for Ticker {
 
 /// An actor that spawns a ticker of its own blob as it begins, and logs whether its engine made it: refused for
 /// `Tick`, by the stage's kind, when its cycle runs none (ADR-0020).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.metronome")]
 pub struct Metronome;
 
@@ -359,7 +363,7 @@ pub struct Shift {
 /// An actor that runs jobs: as it begins, one that measures a blob it puts and keeps nowhere else, and on each order to,
 /// two chores between two pongs to the order's sender. It logs the count each job took among what it sends, cancels them
 /// all on the word to, logs what each job it did not cancel was answered with, and closes on the word to (ADR-0018).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.foreman")]
 pub struct Foreman {
     ran: Vec<JobId>,
@@ -446,7 +450,7 @@ impl Handles<Answer<Pong, Shift>> for Foreman {
 }
 
 /// An actor whose `begin` stands up an apprentice, which its host begins apart from the guest's call (ADR-0015).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.overseer")]
 pub struct Overseer;
 
@@ -520,7 +524,7 @@ impl Handles<Answer<Pong, Shift>> for Apprentice {
 }
 
 /// An actor that answers each ping with the time its turn reads, in nanoseconds (ADR-0018).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.timekeeper")]
 pub struct Timekeeper;
 
@@ -556,7 +560,7 @@ impl Handles<Ping> for Timekeeper {
 
 /// An actor of which the blob makes many, each under its own key: it answers pings, and counts them, so each keeps
 /// state of its own in the instance it lives in, and closes on the word to.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.responder")]
 pub struct Responder {
     answered: u64,
@@ -604,7 +608,7 @@ impl Handles<Shut> for Responder {
 }
 
 /// An actor whose `begin` panics, which traps, as a guest's panic does.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.doomed")]
 pub struct Doomed;
 
@@ -642,7 +646,7 @@ pub struct Grow;
 
 /// An actor that spawns adders: some as it begins, and one more on each word to grow. The `k`th adds `10 k + 1`, and
 /// the first spawns one of its own.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.brood")]
 pub struct Brood {
     next: u64,
@@ -699,7 +703,7 @@ pub struct AddBy {
 
 /// An actor that answers a ping with a pong of the ping's number and its own, so the answer says its state survived
 /// wherever it was kept. Made deeper, it spawns an adder of its own that adds a thousand more.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.adder")]
 pub struct Adder {
     by: u64,
@@ -751,7 +755,7 @@ pub struct Seek {
 
 /// An actor that resolves each path it is made with as it begins, and pings each actor one names with its place in
 /// the list, so what is pinged says which paths it found.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.seeker")]
 pub struct Seeker;
 
@@ -784,7 +788,7 @@ impl Actor for Seeker {
 /// An actor that resolves each path it is made with as it begins, casts each actor one names to a protocol, and
 /// pings each that casts with its place in the list: to `(Ping,)` as it is, and to `(Ping, Shut)` past fifty, so what
 /// is pinged says which casts answered.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.caster")]
 pub struct Caster;
 
@@ -836,7 +840,7 @@ pub struct Untold;
 /// An actor that watches each actor at the paths it is made with, and tells the actor at the last of how each ended:
 /// a ping of ten for its place in the list, and one for a close, two for a fault, or three for an ending before the
 /// watch.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.watcher")]
 pub struct Watcher {
     watched: Vec<ErasedActorRef>,
@@ -894,7 +898,7 @@ impl Handles<Ended> for Watcher {
 
 /// An actor that answers each ping by telling its parent, with a pong of the ping's number and its own key, so a turn
 /// long after its `begin` still reaches whatever spawned it.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.reporter")]
 pub struct Reporter {
     key: u64,
@@ -1058,7 +1062,7 @@ pub struct Hatch {
 /// reporter of the other blob, adding twenty, which it pings. On the `k`th word to grow it spawns a chick, a native
 /// child, adding `10 k + 2`; a stray and a fake chick, whose refusals it tells its parent as five and six hundred and
 /// why; and, on the first, a boomerang of the other blob, which it pings.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.hatcher")]
 pub struct Hatcher {
     other: Bytes,
@@ -1135,7 +1139,7 @@ pub struct Home {
 /// An actor that spawns a reporter of the blob it was spawned from: refused as it begins, as that blob's instance waits
 /// on the call out that begins it, which it tells its parent as three hundred and why, and made on a ping, which it
 /// tells as four hundred.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.boomerang")]
 pub struct Boomerang {
     home: Bytes,
@@ -1179,7 +1183,7 @@ impl Handles<Ping> for Boomerang {
 
 /// An actor that, as it begins, spawns a reporter of key five, adding one, from the head of the reporter's kind: refused
 /// while no code has been published for that kind, which fails its `begin` with why (ADR-0054).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.heir")]
 pub struct Heir;
 
@@ -1224,7 +1228,7 @@ pub struct Book {
 /// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; answers a ping of `n`
 /// with a reference to a blob of `n` sevens, which it puts; answers a book it is sent with a pong of a hundred and its
 /// length; and closes on a word to shut.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.librarian")]
 pub struct Librarian {
     book: Bytes,
@@ -1310,7 +1314,7 @@ fn forged(id: BlobId) -> Bytes {
 
 /// An actor that makes a reference to a blob out of an id it was told as numbers, and reads it as it begins: its host
 /// refuses the read, as the guest was never given the blob.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.forger")]
 pub struct Forger;
 
@@ -1339,7 +1343,7 @@ impl Actor for Forger {
 
 /// An actor that makes a reference to a blob out of an id it was told as numbers, and keeps it, reading nothing: its
 /// host finds, among what its `begin` changed of its references, one to a blob the guest was never given.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.hoarder")]
 pub struct Hoarder {
     forged: Bytes,
@@ -1368,7 +1372,7 @@ impl Actor for Hoarder {
 /// An actor that, pinged for `n`, puts a blob of `n` sevens, spawns a librarian to keep it that tells no one, and then
 /// answers with a reference to a blob it was never given: its host refuses that send, and the turn fails with the librarian it stood
 /// up, which the engine never ends.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.spendthrift")]
 pub struct Spendthrift;
 
@@ -1417,7 +1421,7 @@ pub struct Farewell {
 /// An actor that counts the pings it is sent, and fails on a ping of zero; closes on a word to shut; and, in its
 /// closing turn, tells the actor it was made to tell a pong of six hundred, ten for each ping it counted, and one when
 /// it ends because a turn of its own failed.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.parting")]
 pub struct Parting {
     tell: ProtocolRef<(Pong,)>,
@@ -1485,7 +1489,7 @@ pub struct Stacks {
 
 /// An actor that spawns readers as it begins, each keeping a reference to the book it was made with, and keeps none
 /// itself.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.archive")]
 pub struct Archive;
 
@@ -1517,7 +1521,7 @@ impl Actor for Archive {
 
 /// An actor that keeps a reference to a book, and answers a ping with a pong of the ping's number and the length it
 /// reads the book to be, and closes.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.reader")]
 pub struct Reader {
     book: Bytes,
@@ -1583,7 +1587,7 @@ pub struct Porting {
 /// mail it sends on, and what its config holds as `how` says, sending it on for nought, handing it in its config to a
 /// porter it spawns of its own code, which sends it on, for one, and to a bearer, of native code, which it pings to
 /// send it on, for two.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.porter")]
 pub struct Porter {
     to: ActorPath,
@@ -1773,7 +1777,7 @@ pub enum Heard {
 
 /// An actor that asks an echo it spawns as it begins, and tells its parent what became of each request, with what it
 /// kept for it.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.querent")]
 pub struct Querent {
     echo: ActorRef<Echo>,
@@ -1844,7 +1848,7 @@ pub struct Opening {
 /// An actor whose `begin` spawns an echo and asks it a ping of `n`, and, while `below` is more than none, stands up an
 /// opener of its own code beneath it that asks a ping of one more; the last stands up an inlet that does. It tells
 /// its parent what became of its request, and passes on what each actor below tells it.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.opener")]
 pub struct Opener;
 
@@ -1956,7 +1960,7 @@ impl Handles<Answer<Pong, Which>> for Inlet {
 
 /// An actor that answers a ping of `n` by telling its parent a pong of `n`, and then two books, of `n` sevens and of one
 /// more, sent back to back: a run of mail, after other mail, whose references its host must place.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.shelver")]
 pub struct Shelver;
 
@@ -2031,7 +2035,7 @@ pub struct Release {
 /// An actor that holds each ping it is asked and, in the turn that holds it, asks a steward it spawns as it begins the
 /// same ping, stating no deadline, so its ask inherits the ping's: it tells its parent what became of its own
 /// (ADR-0041).
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.envoy")]
 pub struct Envoy {
     steward: ActorRef<Steward>,
@@ -2101,7 +2105,7 @@ pub struct Kept {
 /// hundred and its number, or, through a request of its own to an echo it spawns as it begins, of two hundred and it.
 /// It holds each weighing too, answered with a weight of a hundred and its number, or of three hundred and it, with
 /// no request of its own. Closed on a release past three, its closing turn answers each with four hundred and it.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.steward")]
 pub struct Steward {
     held: Vec<(u64, Held<Pong>)>,
@@ -2225,7 +2229,7 @@ pub struct Stashed {
 
 /// An actor that asks an echo it spawns as it begins, keeping only in its context a blob it puts, and tells its parent
 /// how many bytes the blob holds once it is answered, as a pong heard at that many.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.stasher")]
 pub struct Stasher {
     echo: ActorRef<Echo>,
@@ -2315,7 +2319,7 @@ impl Actor for Nestling {
 
 /// An actor that answers a book it is mailed by spawning a nestling made from it, keeping none of it, and tells its
 /// parent each pong it is told.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.nester")]
 pub struct Nester;
 
@@ -2372,7 +2376,7 @@ pub struct Ring {
 }
 
 /// A root that answers each ping with a pong of one more, which an actor reaches by its type alone.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.bell")]
 pub struct Bell;
 
@@ -2410,7 +2414,7 @@ impl Handles<Ping> for Bell {
 
 /// A root that, as it begins, asks the bell of key zero at its typed path, which its spawn does not check, a ping of four, and pings the actor at its keeper's
 /// path with what it hears: the bell's pong, or ninety when the ask went unanswered.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.ringer")]
 pub struct Ringer {
     keeper: ActorPath,
@@ -2459,7 +2463,7 @@ impl Handles<Answer<Pong, Ringing>> for Ringer {
 }
 
 /// A root, a singleton, that a sexton reaches at its typed path.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.steeple")]
 pub struct Steeple;
 
@@ -2493,7 +2497,7 @@ impl Handles<Ping> for Steeple {
 
 /// An actor, a root or beneath any other, that declares a send at the steeple's typed path as it begins, and sends nothing: its spawn is checked by
 /// what its section says of the path.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.sexton")]
 pub struct Sexton;
 
@@ -2519,7 +2523,7 @@ impl Actor for Sexton {
 
 /// A root that subscribes to `Start` as it begins, and pings the actor at its keeper's path with seven when it is
 /// sent `Start`: a stage's handler that sends, which its host checks against what that handler declares.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.chimer")]
 pub struct Chimer {
     keeper: ActorPath,
@@ -2563,7 +2567,7 @@ impl Handles<On<Start>> for Chimer {
 /// looks for it again, now that its host's table holds it, and for one beneath its keeper, which has none. It pings
 /// the actor at its keeper's path with what it found: a hundred for the first, ten for the second, and one for the
 /// third, each when it was found.
-#[derive(Bound)]
+#[derive(Bound, Portability)]
 #[kind(name = "aether.guest.usher")]
 pub struct Usher {
     keeper: ActorPath,
@@ -2614,6 +2618,63 @@ impl Handles<On<Start>> for Usher {
     }
 }
 
+/// Says of each type that it moves onto its kind's head as soon as it is asked, and writes no `take_over`: the tests
+/// publish no new code for it (ADR-0054).
+macro_rules! moves_when_asked {
+    ($($actor:ty),+ $(,)?) => {
+        $(
+            impl Upgrades for $actor {
+                fn upgrade(&self) -> Upgrade {
+                    Upgrade::Now
+                }
+            }
+        )+
+    };
+}
+
+moves_when_asked!(
+    Echo,
+    Mirror,
+    Responder,
+    Doomed,
+    Brood,
+    Adder,
+    Seeker,
+    Watcher,
+    Reporter,
+    Hatcher,
+    Boomerang,
+    Heir,
+    Librarian,
+    Forger,
+    Hoarder,
+    Spendthrift,
+    Parting,
+    Archive,
+    Reader,
+    Caster,
+    Porter,
+    Querent,
+    Shelver,
+    Steward,
+    Envoy,
+    Stasher,
+    Nester,
+    Opener,
+    Timekeeper,
+    Starter,
+    Ticker,
+    Metronome,
+    Foreman,
+    Overseer,
+    Bell,
+    Ringer,
+    Steeple,
+    Sexton,
+    Chimer,
+    Usher,
+);
+
 aethereal_actor::guest!(
     Echo,
     Mirror,
@@ -2654,5 +2715,8 @@ aethereal_actor::guest!(
     Steeple,
     Sexton,
     Chimer,
-    Usher
+    Usher,
+    Mover,
+    Keeper,
+    Stubborn
 );

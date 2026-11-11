@@ -24,7 +24,7 @@
 use crate::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
-    Spawning, StageRecord, Staging, StoodRecord, Stopped, TurnEnds, UnreadRecord, WatchRecord,
+    Spawning, StageRecord, Staging, StoodRecord, Stopped, TakenOver, TurnEnds, UnreadRecord, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -32,14 +32,16 @@ use crate::{
     Ended, Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
-use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
+use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
+use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
-    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, from_bytes,
-    to_bytes,
+    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, SchemaNodes,
+    from_bytes, to_bytes,
 };
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
@@ -54,6 +56,18 @@ type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> 
 
 /// Takes an actor of one type in from where it stands and its state, as [`take_out`] wrote them.
 type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Runs>, Standing)>;
+
+/// Builds an actor of one type from where it stands and the state another version of its code left, as that version's
+/// [`take_out`] wrote them, read with the schema that version declared, within a read limit: why it did not, otherwise
+/// (ADR-0054).
+type TakeOver = fn(&[u8], &SchemaNodes, usize) -> Result<(Box<dyn Runs>, Standing), String>;
+
+/// What an actor of one type answers when it is asked whether to move onto its kind's head (ADR-0054).
+type Answers = fn(&dyn Runs) -> Upgrade;
+
+/// The most bytes a state's schema handed in to take a state over allocates as it is read: its host read it from a
+/// section it checked, within as much (ADR-0054).
+const SCHEMA_BYTES: usize = 1 << 20;
 
 /// Where an actor of the guest stands: its path, and what is above it.
 struct Standing {
@@ -87,21 +101,35 @@ impl Standing {
     }
 }
 
-/// What the guest's code does for one actor type it makes: begin one, take one in, and take one out.
+/// What the guest's code does for one actor type it makes: begin one, take one in, take one out, ask one whether to
+/// move onto its kind's head, and build one from the state another version of it left (ADR-0054).
 pub struct Type {
     declared: &'static Declared,
     begin: Begin,
     take_in: TakeIn,
     take_out: fn(&dyn Runs, &Standing, &mut Vec<u8>) -> Option<()>,
+    upgrade: Answers,
+    take_over: TakeOver,
 }
 
 impl Type {
     /// What the guest's code does for actors of type `A`.
     #[must_use]
-    pub const fn of<A: ChildOf>() -> Self {
-        Self { declared: Declared::of::<A>(), begin: begin::<A>, take_in: take_in::<A>, take_out: take_out::<A> }
+    pub const fn of<A: ChildOf + Upgrades>() -> Self {
+        Self {
+            declared: Declared::of::<A>(),
+            begin: begin::<A>,
+            take_in: take_in::<A>,
+            take_out: take_out::<A>,
+            upgrade: upgrade::<A>,
+            take_over: take_over::<A>,
+        }
     }
 }
+
+/// Nothing, for every type that says how it moves onto its kind's head: what `guest!` checks of each type it lists,
+/// on every target, so a guest that does not say does not build (ADR-0054).
+pub const fn upgrades<A: Upgrades>() {}
 
 /// The calls out a guest makes to its host, which the guest's crate imports: each answered from what the call under
 /// way was lent (ADR-0015).
@@ -253,6 +281,33 @@ fn take_in<A: ChildOf>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>
     Some((Box::new(actor), Standing::of(born)))
 }
 
+/// What `runs`, an actor of type `A`, answers when it is asked whether to move onto its kind's head: [`Upgrade::Later`]
+/// when it is not of type `A`, which a guest's own types rule out, as each is found by its kind.
+fn upgrade<A: Upgrades>(runs: &dyn Runs) -> Upgrade {
+    (runs as &dyn Any).downcast_ref::<A>().map_or(Upgrade::Later, Upgrades::upgrade)
+}
+
+/// An actor of type `A` built from `carried`, where it stood and the state another version of its code left, as that
+/// version's [`take_out`] wrote them, the state read by field name with `schema`, the schema that version declared,
+/// within `read_limit` bytes, into `A`'s portable form, which its `take_over` builds it from: why it was not,
+/// otherwise (ADR-0054).
+fn take_over<A: ChildOf + Upgrades>(
+    carried: &[u8],
+    schema: &SchemaNodes,
+    read_limit: usize,
+) -> Result<(Box<dyn Runs>, Standing), String> {
+    let written = carried_in(carried).ok_or_else(|| String::from("the old state was not handed over whole"))?;
+    let (born, rest) = written
+        .reading(read_limit, |reader| Ok((Born::decode(reader)?, reader.input().len())))
+        .map_err(|error| error.to_string())?;
+    let bytes = written.bytes();
+    let state = Written::new(bytes[bytes.len() - rest..].to_vec(), written.pins().to_vec());
+    let form = A::read(&OldState::new(&state, schema, read_limit)).map_err(|error| error.to_string())?;
+    let actor = A::take_over(form).map_err(|error| error.to_string())?;
+
+    Ok((Box::new(actor), Standing::of(born)))
+}
+
 /// `bytes`, which its host handed in as [`records::carried`] reads them, as written: with a pin on each blob they
 /// refer to, which the host offered to the call and checks the pins taken against (ADR-0014, ADR-0015).
 fn carried_in(bytes: &[u8]) -> Option<Written> {
@@ -386,9 +441,11 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
 /// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each an
 /// [`ItemHead`] and then its bytes, one turn for each until one fails or closes the actor. The actor had sent `sent`
 /// pieces of mail and jobs before the first, which its turns count on from, as the engine counts them, so a job's id is
-/// the one its host files it under (ADR-0018). Answers where what the turns asked for lies, as [`out`] does.
+/// the one its host files it under (ADR-0018). While `behind` is one, the actor's code is behind its kind's head, and it
+/// is asked before each turn whether to move onto it: the batch stops before the turn of an actor that answers
+/// [`Upgrade::Now`] (ADR-0054). Answers where what the turns asked for lies, as [`out`] does.
 #[must_use]
-pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64) -> u64 {
+pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64, behind: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
         // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
         // all add to them.
@@ -400,6 +457,14 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
         };
+        // An actor behind its kind's head is asked before each turn, through what its type answers.
+        let is_behind = behind == 1;
+        let asks = if is_behind {
+            let id = runs.declared().id();
+            types.iter().find(|made| made.declared.id() == id).map(|made| made.upgrade)
+        } else {
+            None
+        };
         // Every actor a guest holds is an `Actor`, which computes each turn when it is asked for and has nothing to
         // prepare, so its batch goes straight to its turns.
         let inbox = &inbox[..(len as usize).min(inbox.len())];
@@ -410,6 +475,12 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut counted = Counted::default();
         let mut sent = sent;
         for _ in 0..items {
+            // Each turn runs wholly on one version of the code: an actor that moves now runs none of the rest.
+            let moves = asks.is_some_and(|upgrade| upgrade(&**runs) == Upgrade::Now);
+            if moves {
+                last = Last::Upgrading;
+                break;
+            }
             let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, read_limit) else {
                 break;
             };
@@ -466,6 +537,8 @@ enum Last {
     Ran,
     Failed(Fault),
     Closed,
+    /// The actor answered before the next turn that it moves onto its kind's head now (ADR-0054).
+    Upgrading,
 }
 
 /// An item read from the inbox: one whole, or what became of a request with the request as its host filed it, which
@@ -703,6 +776,7 @@ impl Guest {
         let stopped = match last {
             Last::Ran => Stopped::No,
             Last::Closed => Stopped::Closed,
+            Last::Upgrading => Stopped::Upgrading,
             Last::Failed(fault) => Stopped::Failed {
                 kind: fault.kind(),
                 bytes: Span { at: at(fault_at), len: count(fault.bytes().len()) },
@@ -1115,6 +1189,69 @@ pub fn drop_at(handle: u32) {
             guest.free.push(handle);
         }
     });
+}
+
+/// What the actor `handle` names answers, asked whether to move onto its kind's head in a call with no turn, as an
+/// actor with no mail is once its kind's head moves: one for [`Upgrade::Now`], nought for [`Upgrade::Later`], and
+/// `u32::MAX` when it holds no such actor (ADR-0054).
+#[must_use]
+pub fn upgrade_at(types: &[Type], handle: u32) -> u32 {
+    GUEST.with_borrow(|guest| {
+        let Some(Slot::Live { runs, .. }) = guest.actors.get(handle as usize) else {
+            return NO_HANDLE;
+        };
+        let id = runs.declared().id();
+        let Some(made) = types.iter().find(|made| made.declared.id() == id) else {
+            return NO_HANDLE;
+        };
+
+        match (made.upgrade)(&**runs) {
+            Upgrade::Now => 1,
+            Upgrade::Later => 0,
+        }
+    })
+}
+
+/// Builds an actor of the `of`th type in `types`, as `me` and `seat` name it, from the state another version of its
+/// code left, handed in in the first `len` bytes of the inbox: the length of that version's state schema, the schema,
+/// and then where the actor stood and its state, as that version took them out. Its `take_over` runs on the state's
+/// portable form, read by field name (ADR-0054). Writes a [`TakenOver`] saying whether it was taken and under which
+/// handle, or why not, and answers where it lies, as [`out`] does.
+#[must_use]
+pub fn take_over_at(types: &[Type], of: u32, me: u64, seat: u64, len: u32) -> u64 {
+    GUEST.with_borrow_mut(|guest| {
+        let me = Seated { id: ActorId::new(me), seat: SeatNumber::new(seat) };
+        let inbox = mem::take(&mut guest.inbox);
+        let len = (len as usize).min(inbox.len());
+        let read_limit = guest.read_limit;
+        let built =
+            types.get(of as usize).ok_or_else(|| String::from("the new code makes no such type")).and_then(|made| {
+                let (schema, carried) = handed_over(&inbox[..len])?;
+                (made.take_over)(carried, &schema, read_limit)
+            });
+        guest.inbox = inbox;
+        let taken = match built {
+            Ok((runs, standing)) => TakenOver::Taken { handle: guest.seat(runs, me, standing) },
+            Err(reason) => TakenOver::Refused { reason },
+        };
+        guest.held.clear();
+        let written = to_bytes(&taken).unwrap_or_default();
+        guest.held.extend_from_slice(&written);
+
+        (u64::from(address(guest.held.as_ptr())) << 32) | guest.held.len() as u64
+    })
+}
+
+/// The state schema and the state its host handed over, as [`take_over_at`] reads them: why they do not read,
+/// otherwise.
+fn handed_over(handed: &[u8]) -> Result<(SchemaNodes, &[u8]), String> {
+    let unread = |error: DecodeError| error.to_string();
+    let (len, rest) = handed.split_at_checked(4).ok_or(DecodeError::UnexpectedEnd).map_err(unread)?;
+    let len = len.try_into().map_or(0, u32::from_le_bytes) as usize;
+    let (schema, carried) = rest.split_at_checked(len).ok_or(DecodeError::UnexpectedEnd).map_err(unread)?;
+    let schema = from_bytes::<SchemaNodes>(schema, &mut Budget::new(SCHEMA_BYTES)).map_err(unread)?;
+
+    Ok((schema, carried))
 }
 
 /// Sets the most bytes a read of one piece of mail, config, or state allocates in the guest to `bytes`, as its host's
@@ -1539,6 +1676,11 @@ impl Children for Host {
 #[macro_export]
 macro_rules! guest {
     ($($actor:ty),+ $(,)?) => {
+        // Every type says how it moves onto its kind's head, whatever the target (ADR-0054).
+        const _: () = {
+            $($crate::guest::upgrades::<$actor>();)+
+        };
+
         #[cfg(target_family = "wasm")]
         const _: () = {
             const TYPES: &[&$crate::Declared] = &[$($crate::Declared::of::<$actor>()),+];
@@ -1660,8 +1802,18 @@ macro_rules! guest {
             }
 
             #[unsafe(no_mangle)]
-            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32, sent: u64) -> u64 {
-                $crate::guest::turns(MADE, &CALLS, handle, items, len, sent)
+            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32, sent: u64, behind: u32) -> u64 {
+                $crate::guest::turns(MADE, &CALLS, handle, items, len, sent, behind)
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_upgrade(handle: u32) -> u32 {
+                $crate::guest::upgrade_at(MADE, handle)
+            }
+
+            #[unsafe(no_mangle)]
+            extern "C" fn aethereal_take_over(of: u32, me: u64, seat: u64, len: u32) -> u64 {
+                $crate::guest::take_over_at(MADE, of, me, seat, len)
             }
         };
     };

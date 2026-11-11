@@ -23,6 +23,7 @@ mod setup;
 mod since;
 #[cfg(test)]
 mod tests;
+mod upgrade;
 mod wake;
 
 pub use bring::{Closed, Feed};
@@ -102,6 +103,12 @@ pub struct Engine {
     heads: Folded<Heads>,
     /// Whether the engine's one publisher has been handed to a root yet (ADR-0054).
     publishing: Publishing,
+    /// The actors whose batches stopped in the last step as each answered that it moves onto its kind's head now:
+    /// moved between steps, and emptied as they are (ADR-0054).
+    moving: Vec<Seated>,
+    /// The number of the last publish whose kind's actors with no mail have been asked whether to move: nought before
+    /// any (ADR-0054).
+    asked_through: u64,
     /// Where the program's lifecycle stands, and the stage whose chain it waits on (ADR-0020).
     staging: Staging,
     /// What each actor logged most recently.
@@ -417,6 +424,9 @@ pub struct Lists {
     /// The requests its turns, and the `begin`s of the children they stood up, filed with a deadline, which the engine
     /// keeps by when each is due once the step's turns are taken in (ADR-0041).
     expiring: Vec<Expiring>,
+    /// The actors whose batches stopped as each answered that it moves onto its kind's head now, which the engine moves
+    /// once the step's turns are taken in (ADR-0054).
+    upgrading: Vec<Seated>,
     /// The turns the worker ran, recorded for a harness (ADR-0036).
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
@@ -478,6 +488,8 @@ impl Engine {
             stages: Folded::new(parts),
             heads: Folded::new(parts),
             publishing: Publishing::Unhanded,
+            moving: Vec::new(),
+            asked_through: 0,
             staging: Staging::new(),
             log: Folded::new(parts),
             stats: Stats::new(parts),
@@ -966,6 +978,8 @@ impl Engine {
             self.expected[part] = self.expect(part);
         }
         self.waiting.extend(0..self.seating.len());
+        // A `begin` that published moved a head between steps, and the kind's actors with no mail are asked now.
+        self.upgrade_behind();
     }
 
     /// Hands each resource in `gifts`, given in the `begin` of the root `root`, to the actor its mail goes to, its
@@ -1100,6 +1114,7 @@ impl Engine {
         touched.clear();
         self.spare.touched = touched;
         self.hand_on(forward);
+        self.upgrade_behind();
         self.start_waiting();
         self.arm();
         self.advance();
@@ -1222,6 +1237,7 @@ impl Engine {
             self.stop_job(job);
         }
         self.deadlines.keep(&mut lists.expiring);
+        self.moving.append(&mut lists.upgrading);
         self.lists[slot] = lists;
     }
 
@@ -1348,6 +1364,7 @@ impl Engine {
         }
 
         self.hand_on(forward);
+        self.upgrade_behind();
         self.start_waiting();
         self.arm();
         self.advance();
@@ -1693,16 +1710,7 @@ impl Reading<'_> {
             // A hop to an actor that was cut off in the step would overtake what it carries, so it is carried
             // after that.
             if lists.fusing.carries(hop.to.id) {
-                let Hop { to, from, count, root, depth, kind, tie, due, .. } = hop;
-                let tying = Tying::of(tie, due);
-                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tying };
-                room.streams.carry_hop(
-                    to,
-                    (from.id.bits(), count),
-                    envelope,
-                    lists.fusing.bytes(&hop),
-                    (asked.arena(), hop.sent),
-                );
+                carry_hop(room.streams, &hop, lists, asked);
                 continue;
             }
             self.hop(&mut room, hop, clock, tally, asked, lists);
@@ -1795,6 +1803,7 @@ impl Reading<'_> {
                 let carried = streams.carried();
                 let pins = PinSource::step(self.mail, carried, streams.carried_pins());
                 let mut is_spent = false;
+                let mut upgrades = false;
                 while let Some(handed) = pieces.next() {
                     // A batch is prepared once its first item is in hand, so it holds at least one.
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
@@ -1823,6 +1832,12 @@ impl Reading<'_> {
                         let holds = Holds { keeping: &mut *keeping, gifts };
                         let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
                         actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
+                    }
+                    // An actor that answered it moves onto its kind's head now runs no turn of the batch from here:
+                    // this item and the rest wait for its new code (ADR-0054).
+                    upgrades = seat.prepares && actor.upgrading();
+                    if upgrades {
+                        break;
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
@@ -1893,9 +1908,14 @@ impl Reading<'_> {
                 if stepped.ended {
                     lists.unhanded_all(asked, me, pieces);
                 }
-                if is_spent && !stepped.ended {
+                let cut_off = is_spent && !stepped.ended;
+                let waits = upgrades || cut_off;
+                if waits {
                     streams.carry(&run, slice.taken, self.mail);
                     lists.fusing.carry(me.id.bits());
+                }
+                if upgrades {
+                    lists.upgrading.push(me);
                 }
 
                 // An actor its part may still fuse to is kept, and what it sent is noted once the part has run.
@@ -1982,6 +2002,10 @@ impl Reading<'_> {
     /// it asks for added to `asked` and routed into `lists` (ADR-0013). Nothing when the receiver is gone or has
     /// ended: the hop is dropped, as mail to it would be.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one hop's turn, from its receiver's batch to its routing, sharing locals"
+    )]
     fn hop(
         &self,
         room: &mut Room<'_>,
@@ -1991,7 +2015,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         lists: &mut Lists,
     ) {
-        let Room { lives, seating, actors, instances, .. } = room;
+        let Room { streams, lives, seating, actors, instances, .. } = room;
         let me = hop.to;
         let unhanded = Context { root: hop.root, depth: hop.depth + 1 };
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
@@ -2026,6 +2050,17 @@ impl Reading<'_> {
             let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
             let batch = batch::OneHop { reading: self, waits: waiting, hop: &hop, lists, arena };
             actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
+            // An actor that answered it moves onto its kind's head now runs no turn of the hop, which waits for its
+            // new code after what it carries, as every hop to it in the step does (ADR-0054).
+            let upgrades = actor.upgrading();
+            if upgrades {
+                carry_hop(streams, &hop, lists, asked);
+                lists.fusing.carry(me.id.bits());
+                lists.upgrading.push(me);
+                lists.fusing.keep(me, stepped);
+                held.actor = Holding::Here(actor);
+                return;
+            }
         }
         let sent_before = stepped.sent;
         let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
@@ -2227,6 +2262,17 @@ impl Reading<'_> {
             }
         }
     }
+}
+
+/// Carries `hop`, whose bytes `lists` keeps and which was written in `asked`'s arena, over into the next step in
+/// `streams`, its receiver's part, after what its receiver carries already: its receiver was cut off in the step, at
+/// its slice or as it moves onto its kind's head (ADR-0013, ADR-0054).
+fn carry_hop(streams: &mut stream::Shard, hop: &Hop, lists: &Lists, asked: &Asked) {
+    let Hop { to, from, count, root, depth, kind, tie, due, sent, .. } = *hop;
+    let tying = Tying::of(tie, due);
+    let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tying };
+
+    streams.carry_hop(to, (from.id.bits(), count), envelope, lists.fusing.bytes(hop), (asked.arena(), sent));
 }
 
 /// What a turn ran for: an item that was waiting as the step began, or a hop made in the step (ADR-0013).

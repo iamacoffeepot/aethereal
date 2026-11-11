@@ -29,6 +29,7 @@ use crate::{
     Unreadable, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
@@ -163,6 +164,9 @@ pub enum Stopped {
     Failed { kind: KindId, bytes: Span },
     /// It closed the actor.
     Closed,
+    /// It ran, and the actor answered before the next item's turn that it moves onto its kind's head now: that turn
+    /// and the rest wait for the new code (ADR-0054).
+    Upgrading,
 }
 
 /// The head of a guest's out buffer after a call: how many turns it ran, how the last stopped the batch, and where the
@@ -216,6 +220,7 @@ impl OutHead {
             Stopped::No => (0_u32, [0; 8], 0, 0),
             Stopped::Failed { kind, bytes } => (1, kind.plain_bytes(), bytes.at, bytes.len),
             Stopped::Closed => (2, [0; 8], 0, 0),
+            Stopped::Upgrading => (3, [0; 8], 0, 0),
         };
         out[..4].copy_from_slice(&self.ran.to_le_bytes());
         out[4..8].copy_from_slice(&stopped.to_le_bytes());
@@ -249,6 +254,7 @@ impl OutHead {
                 bytes: Span { at: u32_at(head, 16)?, len: u32_at(head, 20)? },
             },
             2 => Stopped::Closed,
+            3 => Stopped::Upgrading,
             _ => return None,
         };
 
@@ -492,6 +498,14 @@ impl Naming {
 pub struct Born {
     pub path: ActorPath,
     pub parent: Parent,
+}
+
+/// What became of an actor's state its host handed to the new code of its kind to take over: taken, under the handle
+/// the guest keeps it under, or refused, for the reason written (ADR-0054).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub enum TakenOver {
+    Taken { handle: u32 },
+    Refused { reason: String },
 }
 
 /// What is above an actor a guest is handed: nothing for a root, or the actor that spawned it, by its id and seat.

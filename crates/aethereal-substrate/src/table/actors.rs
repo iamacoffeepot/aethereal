@@ -43,6 +43,13 @@ impl Standing {
         self.live.get(&key).or_else(|| self.ended.entries.get(&key))
     }
 
+    /// Notes that the live actor `key` is the id of runs code whose type `declared` declares from now on (ADR-0054).
+    pub(super) fn moved(&mut self, key: u64, declared: &'static Declared) {
+        if let Some(entry) = self.live.get_mut(&key) {
+            entry.declared = declared;
+        }
+    }
+
     /// Keeps the entries of at most `most` actors that ended, the most recent: for the engine's setup, before any fold
     /// (ADR-0053).
     pub(super) const fn keep_ended_at_most(&mut self, most: usize) {
