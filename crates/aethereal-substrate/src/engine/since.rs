@@ -10,7 +10,8 @@ use crate::stats::Stats;
 use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor, Folded, Log};
 use aethereal_actor::{
-    ActorName, BlobHash, BlobId, Bytes, Cycling, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Table, Time,
+    ActorName, BlobHash, BlobId, Bytes, Cycling, Declared, EngineStats, Logged, Moves, Recent, SeatNumber, Seated,
+    Table, Time,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, KindName, PathSegment};
 
@@ -167,5 +168,13 @@ impl Table for Since<'_> {
         let name = |id| self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path);
 
         EngineStats::Read(self.stats.figures(self.blobs, name))
+    }
+
+    /// The heads view is read where it lies, each guest behind its kind's head named by the table while it is live
+    /// (ADR-0054).
+    fn moves(&self) -> Moves {
+        let name = |id| self.table.name(id).filter(|_| self.table.is_live(id)).map(ActorName::Path);
+
+        Moves::Read(self.heads.shard(HEADS).standings(name))
     }
 }

@@ -35,6 +35,7 @@ mod item;
 mod job;
 mod log;
 mod mail;
+mod moves;
 mod path;
 mod placement;
 mod portable;
@@ -93,6 +94,7 @@ pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submi
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
 pub use mail::{Mail, MailId};
+pub use moves::{Behind, HeadMoves, Moves, Standing, Standings};
 pub use path::{
     Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,
     TypeSegment, child, parent, path,

@@ -22,13 +22,13 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held,
-    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented,
-    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
+    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats,
+    Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, config_bytes};
+use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, Unfit, config_bytes};
 #[cfg(feature = "std")]
 use crate::{Fills, JobCode, JobType, Kept, Spares};
 #[cfg(feature = "std")]
@@ -644,6 +644,11 @@ impl Seat<'_> {
     /// The engine's memory against its limits (ADR-0053).
     fn engine_stats(&self) -> EngineStats {
         self.table.engine_stats()
+    }
+
+    /// Each kind's head with what its publish has moved, and each guest behind its kind's head (ADR-0054).
+    fn moves(&self) -> Moves {
+        self.table.moves()
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
@@ -2098,6 +2103,21 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.read(blob)
     }
 
+    /// Takes the blob `code` refers to in as code the engine's guests run, as the chassis's `put_code` does, and
+    /// answers with the kinds of the actor types it makes, each once, sorted: what a library publishes it as the head
+    /// of (ADR-0015, ADR-0054). Its bytes are compiled here, in the turn.
+    ///
+    /// # Errors
+    ///
+    /// Why the guests' host refused it: [`Unfit::NoRuntime`] where the engine runs no guests, as in a guest's code.
+    #[cfg(feature = "std")]
+    pub fn load_code(&mut self, code: &Bytes) -> Result<Vec<KindName>, Unfit> {
+        let guests = self.instances.guests();
+        guests.load(code.id(), self.seat.read(code))?;
+
+        Ok(guests.kinds(code.id()))
+    }
+
     /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
     /// and kept with the blob from the step's fold on.
     #[cfg(feature = "std")]
@@ -2167,6 +2187,14 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn engine_stats(&self) -> EngineStats {
         self.seat.engine_stats()
+    }
+
+    /// Each kind's head, with the publish that made it and how many actors have moved onto it and what their old
+    /// states lacked, and each live guest the engine found behind its kind's head, with what became of asking it, as
+    /// the heads view stood when the step began (ADR-0054). A guest reads [`Moves::Unread`], as it reads no log.
+    #[must_use]
+    pub fn moves(&self) -> Moves {
+        self.seat.moves()
     }
 
     /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of

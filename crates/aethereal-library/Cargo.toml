@@ -1,0 +1,25 @@
+[package]
+name = "aethereal-library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The program's code: one root that publishes every guest module in `Code` as its kinds' heads, and the modules systems ship where nothing else is published (ADR-0054)"
+
+[features]
+# The tools of this capability (ADR-0037, ADR-0054): `publish` and `upgrades`, types only, as a program lists what it
+# serves.
+tools = ["dep:aethereal-tools"]
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-files = { path = "../aethereal-files" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tools = { path = "../aethereal-tools", optional = true }
+
+[dev-dependencies]
+aethereal-tools = { path = "../aethereal-tools" }
+
+[lints]
+workspace = true

@@ -51,8 +51,8 @@ use aethereal_actor::{
     Above, ActorName, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing,
     Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances, JobId,
     JobType, Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
-    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie,
-    Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
+    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -792,6 +792,15 @@ impl Engine {
     #[must_use]
     pub fn head(&self, kind: &KindName) -> Option<&Head> {
         self.heads.shard(HEADS).head(kind)
+    }
+
+    /// Each kind's head with what its publish has moved, and each live guest the engine found behind its kind's head,
+    /// as of the last step, read between steps as a turn reads them (ADR-0054).
+    #[must_use]
+    pub fn moves(&self) -> Standings {
+        let name = |id| self.table.name(id).filter(|_| self.table.is_live(id)).map(ActorName::Path);
+
+        self.heads.shard(HEADS).standings(name)
     }
 
     /// A ticket for a resource the chassis hands in: from the writer of what is sent between steps, which no other
