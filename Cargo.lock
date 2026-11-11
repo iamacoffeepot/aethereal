@@ -38,6 +38,7 @@ name = "aethereal-actor"
 version = "0.1.0"
 dependencies = [
  "aethereal-data",
+ "aethereal-data-derive",
  "blake3",
  "crossbeam-queue",
 ]

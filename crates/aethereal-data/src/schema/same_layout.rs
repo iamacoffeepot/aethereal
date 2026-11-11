@@ -22,6 +22,34 @@ impl SchemaNodes {
     }
 }
 
+/// The layout of each node of one schema, against which other schemas are matched (ADR-0054).
+///
+/// Its nodes are classed once, as it is made, so matching a schema against one of them costs that schema's size alone.
+pub(super) struct NodeLayouts {
+    classes: Classes,
+    nodes: Vec<u32>,
+}
+
+impl NodeLayouts {
+    /// The layout of each node of `schema`.
+    pub(super) fn of(schema: &SchemaNodes) -> Self {
+        let mut classes = Classes::new();
+        let mut nodes = classes.earlier_classes(schema);
+        let root = classes.class_of(nameless(schema.root(), &nodes));
+        nodes.push(root);
+
+        Self { classes, nodes }
+    }
+
+    /// Whether the node at `index` has the layout of `other`'s root: false for an index past the schema's nodes.
+    pub(super) fn matches(&mut self, index: u32, other: &SchemaNodes) -> bool {
+        let theirs = self.classes.root_class(other);
+        let ours = self.nodes.get(index as usize).copied();
+
+        ours == Some(theirs)
+    }
+}
+
 /// A node with every name removed and each child replaced by its layout class.
 ///
 /// Two nodes have the same layout exactly when their nameless forms are equal.
@@ -62,13 +90,20 @@ impl Classes {
 
     /// The class of `schema`'s root, classing every node once in stored order.
     fn root_class(&mut self, schema: &SchemaNodes) -> u32 {
+        let earlier = self.earlier_classes(schema);
+
+        self.class_of(nameless(schema.root(), &earlier))
+    }
+
+    /// The class of every node of `schema` but the root, classing each once in stored order.
+    fn earlier_classes(&mut self, schema: &SchemaNodes) -> Vec<u32> {
         let mut earlier = Vec::new();
         for node in schema.earlier() {
             let class = self.class_of(nameless(node, &earlier));
             earlier.push(class);
         }
 
-        self.class_of(nameless(schema.root(), &earlier))
+        earlier
     }
 
     /// The number of `form`'s class: the one it already has, or the next unused one.
