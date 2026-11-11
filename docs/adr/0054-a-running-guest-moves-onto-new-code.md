@@ -22,7 +22,7 @@ What is already decided:
 
 ## Decision
 
-**A library is a stock root, `Library`, one for each namespace a program lists. It reads guest modules through `Files` from a new namespace, `Code`, and publishes their kinds' heads. A running guest that is behind its kind's head is asked, before each of its turns, whether to move now. When it moves, its old state is read by field name into a portable form of its new state, and its new code builds itself from that. A move that fails leaves the actor on its old code, untouched.**
+**A program's code is held by one stock root, `Library`. It reads every guest module through `Files` from a new namespace, `Code`, as the program starts, and publishes their kinds' heads; the `publish` tool adds or replaces one while it runs. A running guest that is behind its kind's head is asked, before each of its turns, whether to move now. When it moves, its old state is read by field name into a portable form of its new state, and its new code builds itself from that. A move that fails leaves the actor on its old code, untouched.**
 
 ```
 publish tool ──> Library ── Files: Code/<path> ──> blob ── put_code ── Publish { kind, blob } per kind ──> heads view
@@ -35,17 +35,15 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 
 ### Libraries
 
-- **`Library` is an instanced root in a crate of its own, `aethereal-library`,** keyed by its namespace. It reads through `Files` and serves tools, so it stands beside the capabilities, not in `aethereal-substrate`. A program lists it once, after `Files`; its settings name each namespace whose code the program publishes, and its bootstrap begins one `Library` for each, keyed by the namespace (ADR-0029):
+- **`Library` is a singleton root in a crate of its own, `aethereal-library`.** It reads through `Files` and serves tools, so it stands beside the capabilities, not in `aethereal-substrate`. A program lists it after `Files`, with nothing to set:
 
   ```rust
   .root::<Files>()
-  .root_with::<Library>(Libraries {
-      each: vec![Shelf { namespace: KindName::new("ichor.ui"), modules: vec![FilePath::new("ichor_ui.wasm")?] }],
-  })
+  .root::<Library>()
   ```
 
-- **A library registers its namespace in its `begin`,** with a new effect, `What::Register { namespace: KindName }`. Only a root may register, and a namespace is registered once: a second register of it, or one under a namespace already registered, fails the `begin`, which stops the program as it starts (ADR-0029).
-- **A library puts the modules its config lists as it bootstraps,** read from `Code`, and publishes the head of every kind each makes under its namespace. A module that makes a kind outside the namespace is refused, and so is a module the guest host refuses (ADR-0015).
+- **One library holds all of a program's code.** It registers as the program's library in its `begin`, with a new effect, `What::Register`. Only a root may register, and only one may: a second register fails its `begin`, which stops the program as it starts (ADR-0029). The engine takes `Publish` from the registered library alone, so no other actor changes which code a kind runs.
+- **As it bootstraps, `Library` puts every module in `Code`** and publishes the head of every kind each makes. Natively it lists the directory; in a browser it reads a manifest of the modules, written when the page is built, as `Assets` is listed (ADR-0032). Two modules that make one kind at boot fail the bootstrap, naming both, since neither can be chosen over the other. A module the guest host refuses fails it too (ADR-0015).
 - **`Namespace` gains `Code`:** read-only, the guest modules a program runs. Natively its root is a setting of `Files`, `code`, beside `assets`; in a browser it is fetched relative to the page, as `Assets` is. A module is built where `Code` points, so a rebuild is a new file to publish.
 - **A spawn names a library's kind and takes its head.** `turn.spawn_from` takes a `Source`: `Source::Head`, the head the view shows for the child's kind, refused with `Refused::NoHead` when the kind has none; or `Source::Blob(&code)`, a blob the parent holds, for code no library publishes (tests, the chassis). A parent of a library's kind holds none of its code, so updating that kind is one `Publish` for every parent that makes it.
 
@@ -110,7 +108,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 
 - **Each publish is numbered by the engine,** and the number is the head's: `Publish` folds into the heads view with it.
 - **`aethereal-library` serves two tools,** behind its `tools` feature:
-  - **`publish { library, path, wait_millis }`** reads the module at `Code/<path>`, puts it, and publishes each kind it makes under the library's namespace. With `wait_millis`, it answers once every running actor of those kinds has moved, is parked, or has answered `Later`, or when the wait ends. Its answer is the publish's record:
+  - **`publish { path, wait_millis }`** reads the module at `Code/<path>`, puts it, and publishes each kind it makes, moving the heads of kinds another module made before. With `wait_millis`, it answers once every running actor of those kinds has moved, is parked, or has answered `Later`, or when the wait ends. Its answer is the publish's record:
 
     ```
     publish 12 · ichor.ui.hud → 3f9a…
@@ -119,12 +117,13 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
       parked     1   ichor.ui.hud:party       take_over: save missing
     ```
 
-  - **`upgrades { library }`** lists every running actor of the library's kinds that is not on its head: behind, with how many turns it has answered `Later`, or parked, with the publish it failed on and why.
+  - **`upgrades {}`** lists every running guest that is not on its kind's head: behind, with how many turns it has answered `Later`, or parked, with the publish it failed on and why.
 - **Each move and each failure is in the actor's log,** tagged with the publish number, so `actor_logs` and the dev overlay's console show them as they happen (ADR-0044, ADR-0053).
 
 ## Consequences
 
 - **A guest's behaviour can be changed while the program runs,** by building its module and calling `publish`. Its actors keep their state and move at a turn of their own choosing, and the publish says who moved, who waits, and who failed.
+- **This amends ADR-0009's libraries.** ADR-0009 had a library for each namespace, each the only one that could publish its kinds. One library per program holds every kind's head, so no namespace is registered, and a program lists no module: what is in `Code` is what runs.
 - **This amends ADR-0009's "nothing moves a running actor".** An actor still chooses whether and when it moves, as ADR-0009 requires, and is never moved during a turn. What changes is who asks: the engine asks before each turn, so no actor watches the heads, and none can forget to.
 - **This decides what ADR-0015 left open:** a guest's state is taken out to replace its code as it is taken out for another part, and put back when the move fails.
 - **A native actor never moves.** A screen meant to change live is written as a guest. ichor's actors are native today; one of its screens changes live once it is a guest.
@@ -150,5 +149,6 @@ Follow-on work, in order: `What::Register` and `What::Publish` with the heads vi
 - **A failed `take_over` retried every turn.** The same code fails again against nearly the same state, and the log fills with it.
 - **A failed move ends the actor, or begins it again.** A bug in the new version would end actors that work on the old one, or lose their state with no one deciding to lose it; the engine does not keep a config to begin one again.
 - **A scripting language beside Rust.** A second language, runtime, and set of bindings, for what a module already does once it can be replaced live.
+- **A library for each namespace, listing its modules,** as ADR-0009 had it. Ownership by namespace guards libraries in one program from one another, which one library cannot need, and every program would list its namespaces and modules, changing its settings for each new module.
 - **A parent ships its children's code.** Updating a child means rebuilding or re-handing every parent that makes it. A library's head lets a parent name only the kind.
 - **Modules checked into the hub's store and sent to the engine.** The store never gives bytes back (ADR-0039), and how a blob crosses to another engine is not decided (ADR-0014). An engine reads its own `Code` through `Files`, as it reads `Assets`, natively and in a browser.
