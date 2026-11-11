@@ -276,7 +276,8 @@ std::thread_local! {
     static BLOB_TYPES: RefCell<Vec<&'static BlobType>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The handle of an actor that did not begin, or was not kept in this instance.
+/// The handle of an actor that did not begin or was not taken in, and of a child of a turn that failed, which the guest
+/// drops as the engine drops it: never one the guest keeps.
 const NO_HANDLE: u32 = u32::MAX;
 
 /// The top bit of a seat the host gives, set when the seat is in another part.
@@ -679,29 +680,46 @@ impl Guest {
                 kept.push((me, parent, Held::Elsewhere));
                 continue;
             }
-            let standing = Standing { path, above };
             let is_dropped = is_failed && index >= stood_before;
-            let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
             let held = if is_dropped {
+                // The engine drops the children of a failed turn and never ends them, so the guest keeps none.
                 Held::Here(NO_HANDLE)
             } else {
-                match (lodged(types, runs), is_elsewhere) {
-                    (Some(actor), true) => {
-                        let at = self.held.len();
-                        match actor.take_out(&standing, &mut self.held) {
-                            Ok(()) => Held::Out(at, self.held.len() - at),
-                            Err(_) => Held::Here(NO_HANDLE),
-                        }
-                    }
-                    (Some(actor), false) => Held::Here(self.seat(actor, me, standing)),
-                    // Of no type its guest makes, which its turn begins only as a child of other code.
-                    (None, _) => Held::Here(NO_HANDLE),
-                }
+                self.keep(types, runs, me, Standing { path, above })
             };
             kept.push((me, parent, held));
         }
 
         kept
+    }
+
+    /// Keeps `runs`, the child `me` names, standing where `standing` says: under a handle in this instance, or taken
+    /// out when its seat is in another part.
+    ///
+    /// # Panics
+    ///
+    /// When it is of no type in `types`, or where it stands or its state does not encode to be taken out. Each is a
+    /// bug in the guest's code, never a state to recover from: the panic traps the call, so its host reads none of
+    /// what the call asked for, the child's spawn among it, and ends every actor in the instance (ADR-0015).
+    fn keep(&mut self, types: &[Type], runs: Box<dyn Runs>, me: Seated, standing: Standing) -> Held {
+        let kind = runs.declared().name();
+        // `guest!` lists every type the guest makes, and a turn begins a child of no type it makes only as a child
+        // of other code, which is held elsewhere: so a child of no type here is a bug in the guest's library.
+        let Some(actor) = lodged(types, runs) else {
+            panic!("the guest began a child of {kind}, a type it does not make");
+        };
+        let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
+        if !is_elsewhere {
+            return Held::Here(self.seat(actor, me, standing));
+        }
+        let at = self.held.len();
+
+        // A state that does not encode at `Within` holds a value whose codec carries it to no other instance, which
+        // only a broken codec writes: so a child that cannot be taken out is a bug in its type.
+        match actor.take_out(&standing, &mut self.held) {
+            Ok(()) => Held::Out(at, self.held.len() - at),
+            Err(error) => panic!("the guest cannot take out a child of {kind}, seated in another part: {error}"),
+        }
     }
 
     /// Writes the record of each send, line, spawn and child stood up in what the call's `ran` turns asked for, after

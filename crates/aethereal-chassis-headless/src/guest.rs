@@ -249,7 +249,8 @@ enum Ran {
 /// The top bit of a seat given to a guest's child, set when the seat is in another part than its parent's.
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
-/// The handle a guest writes for a child it did not keep.
+/// The handle a guest answers for an actor it did not take in, and writes for a child of a turn that failed, which it
+/// dropped as the engine drops it.
 const NO_HANDLE: u32 = u32::MAX;
 
 impl Runtime {
@@ -4258,6 +4259,62 @@ mod tests {
         assert!(refused_trapped, "the doomed root is refused with its trap");
         assert!(engine.log(echo).any(is_trap), "the echo, in the same instance, ended with it");
         assert!(!engine.table().is_live(echo.id));
+    }
+
+    #[test]
+    fn a_child_its_guest_cannot_take_out_to_its_part_traps_its_instance() {
+        // Catches a child whose state does not encode to be taken out to another part dropped in silence while its
+        // spawn stays, so the table holds it live with no actor; and the trap that bug in the guest's code makes
+        // ending the actors of another instance than the one it trapped, or none.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        // A root sits in the part with fewest actors, so the echo and the mirror are each in an instance of their own,
+        // and the litter in one of theirs.
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("the echo begins");
+        };
+        let Ok(mirror) = engine.add_root_from::<echo::Mirror>(&code, &(), &echo::EchoConfig) else {
+            panic!("the mirror begins");
+        };
+        let (Some(echo_seat), Some(mirror_seat)) = (engine.table().seat(echo), engine.table().seat(mirror)) else {
+            panic!("the echo and the mirror are seated");
+        };
+        let siblings = [Seated { id: echo, seat: echo_seat }, Seated { id: mirror, seat: mirror_seat }];
+
+        // Past the one child its part has room for, the litter's homebodies are seated in the other part.
+        let children = 4;
+        let began = engine.add_root_from::<echo::Litter>(&code, &(), &echo::LitterConfig { children });
+        settle(&mut engine);
+
+        let refused_trapped = matches!(&began, Err(Refused::Began(fault)) if fault.kind() == KindId::of::<Trapped>());
+        assert!(refused_trapped, "the litter is refused with its trap");
+
+        let is_trap = |entry: &aethereal_actor::Entry| match entry {
+            aethereal_actor::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
+            _ => false,
+        };
+        // Whether each sibling ended with the trap in its log, and whether it is live.
+        let mut fates: Vec<(bool, bool)> = siblings
+            .iter()
+            .map(|sibling| (engine.log(*sibling).any(is_trap), engine.table().is_live(sibling.id)))
+            .collect();
+        fates.sort_unstable();
+        assert_eq!(
+            fates,
+            [(false, true), (true, false)],
+            "the actor in the litter's instance ended with the trap in its log, and the other lives on"
+        );
+
+        let litter = ActorPath::from_root(&PathSegment::new(echo::Litter::NAME, &()));
+        for key in 0..children {
+            let Ok(path) = litter.child(&PathSegment::new(echo::Homebody::NAME, &key)) else {
+                panic!("a homebody's path is not too deep");
+            };
+            let seated = engine.table().resolve(&path).and_then(|id| engine.table().seat(id));
+            assert_eq!(seated, None, "{path} is not left in the table");
+        }
     }
 
     /// The word to a brood to spawn one more child, as the echo guest declares it.
