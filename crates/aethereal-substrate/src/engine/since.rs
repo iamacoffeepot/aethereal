@@ -141,6 +141,10 @@ impl Table for Since<'_> {
         self.heads.shard(HEADS).head(kind).map(Head::blob).cloned()
     }
 
+    fn published(&self) -> u64 {
+        self.heads.shard(HEADS).published()
+    }
+
     fn now(&self) -> Time {
         self.now
     }

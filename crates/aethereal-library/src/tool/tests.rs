@@ -1,7 +1,6 @@
-//! The library's tools' tests: their sheets, and a publish's record read from what the engine records of the moves.
+//! The library's tools' tests: their sheets, and what `upgrades` reads from what the engine records of the moves.
 
-use super::{HeadRecord, KindMoves, KindRecord, LibraryTool, ParkedGuest, WaitingGuest};
-use crate::Numbered;
+use super::{BehindGuest, GuestStanding, HeadRecord, LibraryTool, Upgrading};
 use aethereal_actor::{ActorName, Behind, HeadMoves, Standing, Standings};
 use aethereal_data::{ActorPath, KindName, PathSegment};
 use aethereal_tools::{CommandLine, FlagsFault, Tool};
@@ -16,17 +15,17 @@ fn behind(kind: KindName, key: u64, publish: u64, standing: Standing) -> Behind 
     Behind { actor, kind, publish, standing }
 }
 
-/// The name a record gives the guest of the kind `kind` at the root keyed `key`.
+/// The name `upgrades` gives the guest of the kind `kind` at the root keyed `key`.
 fn named(kind: KindName, key: u64) -> String {
     ActorPath::from_root(&PathSegment::new(kind, &key)).to_string()
 }
 
 #[test]
-fn a_record_holds_only_its_own_publish_s_guests_and_settles_once_none_is_still_to_be_asked() {
-    // Catches a guest behind another kind's head, or behind an earlier publish of its own kind, counted in the
-    // record; a kind settled while a guest of it is still to be asked, so a publish answers before its wait has
-    // anything to show; a publish not yet folded read as settled; and a head another publish made since read as this
-    // one's.
+fn upgrades_reads_every_head_s_moves_and_every_guest_behind_with_where_it_stands() {
+    // Catches a head's count of moves, the fields its movers' old states lacked, or its publish's number lost on the
+    // way to the agent; and a guest that is still to be asked, answered `Later`, or is parked dropped, read as another
+    // standing, given another kind or publish, or its batches or reason lost.
+    let reason = String::from("take_over: save missing");
     let standings = Standings {
         heads: vec![
             HeadMoves { kind: HUD, publish: 4, moved: 2, absent: vec![String::from("show_cooldowns")] },
@@ -34,30 +33,23 @@ fn a_record_holds_only_its_own_publish_s_guests_and_settles_once_none_is_still_t
         ],
         behind: vec![
             behind(HUD, 1, 4, Standing::Later { batches: 3 }),
-            behind(HUD, 2, 4, Standing::Parked { reason: String::from("take_over: save missing") }),
-            behind(HUD, 3, 3, Standing::Later { batches: 9 }),
-            behind(MAP, 4, 5, Standing::Unasked),
+            behind(HUD, 2, 3, Standing::Parked { reason: reason.clone() }),
+            behind(MAP, 3, 5, Standing::Unasked),
         ],
     };
 
-    let hud = KindRecord::of(&Numbered { kind: HUD, publish: 4 }, &standings);
-    let map = KindRecord::of(&Numbered { kind: MAP, publish: 5 }, &standings);
-    let replaced = KindRecord::of(&Numbered { kind: MAP, publish: 2 }, &standings);
-    let unfolded = KindRecord::of(&Numbered { kind: MAP, publish: 6 }, &standings);
+    let upgrading = Upgrading::of(&standings);
 
-    let expected = HeadRecord {
-        moved: 2,
-        absent: vec![String::from("show_cooldowns")],
-        waiting: vec![WaitingGuest { actor: named(HUD, 1), batches: 3 }],
-        parked: vec![ParkedGuest { actor: named(HUD, 2), reason: String::from("take_over: save missing") }],
-        unasked: Vec::new(),
-    };
-    assert_eq!(hud.as_ref().map(|record| &record.moves), Some(&KindMoves::Head(expected)));
-    assert_eq!(hud.as_ref().map(KindRecord::is_settled), Some(true), "every guest has answered");
-    assert_eq!(map.as_ref().map(KindRecord::is_settled), Some(false), "a guest is still to be asked");
-    assert_eq!(replaced.as_ref().map(|record| &record.moves), Some(&KindMoves::Replaced { publish: 5 }));
-    assert_eq!(replaced.as_ref().map(KindRecord::is_settled), Some(true));
-    assert_eq!(unfolded, None, "the engine has not folded the publish yet");
+    let heads = vec![
+        HeadRecord { kind: HUD, publish: 4, moved: 2, absent: vec![String::from("show_cooldowns")] },
+        HeadRecord { kind: MAP, publish: 5, moved: 0, absent: Vec::new() },
+    ];
+    let guests = vec![
+        BehindGuest { actor: named(HUD, 1), kind: HUD, publish: 4, standing: GuestStanding::Later { batches: 3 } },
+        BehindGuest { actor: named(HUD, 2), kind: HUD, publish: 3, standing: GuestStanding::Parked { reason } },
+        BehindGuest { actor: named(MAP, 3), kind: MAP, publish: 5, standing: GuestStanding::Unasked },
+    ];
+    assert_eq!(upgrading, Upgrading { heads, guests });
 }
 
 #[test]

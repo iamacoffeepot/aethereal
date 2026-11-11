@@ -35,9 +35,6 @@ pub struct Library {
     publisher: Handle<Publisher>,
     /// Each kind it has published code for: every kind with a head, as it holds the engine's one publisher.
     heads: BTreeSet<KindName>,
-    /// How many publishes it has asked: the number of the last, none before the first. It asks every publish, so the
-    /// engine numbers them in the order it asks, and this is the number the engine gives its last.
-    published: u64,
     stage: Stage,
     /// The publishes asked of it while it is open, each by the number of the read it asked for it.
     fetching: BTreeMap<u64, Fetching>,
@@ -134,7 +131,6 @@ impl Actor for Library {
         Ok(Self {
             publisher,
             heads: BTreeSet::new(),
-            published: 0,
             stage: Stage::Listing(Vec::new()),
             fetching: BTreeMap::new(),
             next: 0,
@@ -169,11 +165,10 @@ impl Library {
     ///
     /// Why the engine refused it, as `turn.publish` says.
     fn publish<S>(&mut self, kind: &KindName, blob: &Bytes, turn: &mut Turn<'_, Self, S>) -> Result<u64, Refused> {
-        turn.publish(&self.publisher, kind, blob)?;
-        self.published += 1;
+        let publish = turn.publish(&self.publisher, kind, blob)?;
         self.heads.insert(kind.clone());
 
-        Ok(self.published)
+        Ok(publish)
     }
 
     /// Whether code has been published for `kind`.

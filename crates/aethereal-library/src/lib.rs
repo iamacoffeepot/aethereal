@@ -7,8 +7,8 @@
 //! in `Code`, or code published since. While the program runs, [`PublishModule`] publishes a module of `Code` again,
 //! moving the heads of the kinds it makes.
 //!
-//! The `tools` feature's `publish` and `upgrades` ask the library to publish for an agent and read who has moved onto
-//! the new code.
+//! The `tools` feature's `publish` asks the library to publish for an agent, and answers at once; its `upgrades` reads,
+//! when the agent asks, who has moved onto each kind's head and who has not.
 
 mod bootstrap;
 mod defaults;
@@ -22,6 +22,6 @@ pub use library::{Library, LibraryConfig};
 pub use publish::{ModulePublished, Numbered, PublishModule, Unloaded};
 #[cfg(feature = "tools")]
 pub use tool::{
-    BehindGuest, Calling, GuestStanding, HeadRecord, KindMoves, KindRecord, LibraryTool, LibraryToolConfig, Looking,
-    ParkedGuest, Publish, PublishRecord, ReadUpgrades, Upgrading, WaitingGuest,
+    BehindGuest, Calling, GuestStanding, HeadRecord, LibraryTool, LibraryToolConfig, Publish, PublishRecord,
+    ReadUpgrades, Upgrading,
 };

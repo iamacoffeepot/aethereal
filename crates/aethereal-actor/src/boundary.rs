@@ -63,6 +63,11 @@ pub trait Table {
     #[cfg(feature = "std")]
     fn head(&self, kind: &KindName) -> Option<crate::Bytes>;
 
+    /// How many publishes the heads view had folded as the step began: the number of the last, none before the first.
+    /// A publish asked in the step is numbered on from it (ADR-0054).
+    #[cfg(feature = "std")]
+    fn published(&self) -> u64;
+
     /// The time the turn's step carries: the host's, as it began the step (ADR-0011, ADR-0018).
     fn now(&self) -> Time;
 

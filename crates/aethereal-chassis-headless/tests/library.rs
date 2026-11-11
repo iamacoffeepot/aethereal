@@ -1,7 +1,7 @@
 //! The library on the native host (ADR-0054): `Code` a directory of the echo guest's builds, published as the program
 //! starts; defaults asked of the library as a system would; and its tools, asked as a holder would, publishing the
-//! echo's second build over running guests and listing who is still behind. What the library published is read in the
-//! engine's heads, and what it answered in the typed mail it answered.
+//! echo's second build over running guests, then, once the engine has run, reading who moved and who is still behind.
+//! What the library published is read in the engine's heads, and what it answered in the typed mail it answered.
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{Actor, ActorRef, Answered, Bytes, Entry, Level, ProtocolRef, Root};
@@ -12,8 +12,8 @@ use aethereal_data::{Budget, FilePath, Kind, KindName, Plain, from_bytes, to_byt
 use aethereal_files::Files;
 use aethereal_guest_echo as echo;
 use aethereal_library::{
-    Defaulted, Defaults, GuestStanding, HeadRecord, KindMoves, KindRecord, Library, LibraryTool, LibraryToolConfig,
-    ParkedGuest, Publish, PublishRecord, ReadUpgrades, Upgrading, WaitingGuest,
+    Defaulted, Defaults, GuestStanding, HeadRecord, Library, LibraryTool, LibraryToolConfig, Publish, PublishRecord,
+    ReadUpgrades, Upgrading,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Head, Host, Lifecycle, Program};
@@ -238,13 +238,41 @@ fn call<I: Plain, O: Plain>(running: &mut Running, tool: &str, input: &I) -> Res
     Ok(answer)
 }
 
-/// The record of the kind `kind` in `record`.
-fn of_kind<'r>(record: &'r PublishRecord, kind: &KindName) -> &'r KindRecord {
+/// The number `record` gives the publish of the kind `kind`.
+fn numbered(record: &PublishRecord, kind: &KindName) -> u64 {
     let Some(found) = record.kinds.iter().find(|found| found.kind == *kind) else {
         panic!("the module makes `{kind}`");
     };
 
+    found.publish
+}
+
+/// The number of the publish that made the head of the kind `kind`, as of the last step.
+fn engine_number(harness: &mut Harness<Headless>, kind: &KindName) -> Option<u64> {
+    harness.host().engine().head(kind).map(Head::number)
+}
+
+/// The head of the kind `kind` in `upgrading`.
+fn head_of<'u>(upgrading: &'u Upgrading, kind: &KindName) -> &'u HeadRecord {
+    let Some(found) = upgrading.heads.iter().find(|head| head.kind == *kind) else {
+        panic!("`{kind}` has a head");
+    };
+
     found
+}
+
+/// How many actors `upgrading` shows moved onto the head of the kind `kind`, and the fields their old states lacked.
+fn moved_onto(upgrading: &Upgrading, kind: &KindName) -> (u64, Vec<String>) {
+    let head = head_of(upgrading, kind);
+
+    (head.moved, head.absent.clone())
+}
+
+/// Every guest `upgrading` lists, as its path, kind, publish, and standing.
+fn listed(upgrading: Upgrading) -> Vec<(String, KindName, u64, GuestStanding)> {
+    let guests = upgrading.guests.into_iter().map(|guest| (guest.actor, guest.kind, guest.publish, guest.standing));
+
+    guests.collect()
 }
 
 /// The path the tools name the root `actor` by.
@@ -256,47 +284,43 @@ fn spoken<A>(actor: ActorRef<A>, harness: &mut Harness<Headless>) -> String {
     path.to_string()
 }
 
-/// `echo2.wasm` published with a wait long past what a healthy run takes.
+/// `echo2.wasm` published, then the engine driven until nothing is left to do: every running guest of its kinds has
+/// been asked once.
 fn publish_second(running: &mut Running) -> Result<PublishRecord, Unheard> {
-    let publish = Publish { path: FilePath::new("echo2.wasm"), wait_millis: Some(30_000) };
+    let record = call(running, "publish", &Publish { path: FilePath::new("echo2.wasm") })?;
+    running.harness.settle();
 
-    call(running, "publish", &publish)
+    Ok(record)
 }
 
 #[test]
-fn publish_answers_who_moved_who_answered_later_and_who_is_parked() -> Result<(), Unheard> {
-    // Catches a publish that answers before every running guest of its kinds has answered; a move not counted, or
-    // the field its old state lacked lost; a guest that answered `Later` or failed its move left out, or put under
-    // another kind; and a library whose publish numbers drift from the engine's, which would read another publish's
-    // record as its own.
+fn upgrades_shows_what_a_publish_moved_who_answered_later_and_who_is_parked() -> Result<(), Unheard> {
+    // Catches a move not counted on its head, or the field its old state lacked lost; a guest that answered `Later` or
+    // failed its move left out, or put under another kind or publish; a guest that moved still listed; and a publish
+    // number that drifts from the engine's, which would read another publish's head as this one's.
     let mut running = running("publish")?;
 
     let record = publish_second(&mut running)?;
+    let published: Upgrading = call(&mut running, "upgrades", &ReadUpgrades {})?;
 
     let (mover, stubborn) = (running.mover, running.stubborn);
     let (mover_path, stubborn_path) = (spoken(mover, &mut running.harness), spoken(stubborn, &mut running.harness));
-    let waiting = HeadRecord {
-        moved: 0,
-        absent: Vec::new(),
-        waiting: vec![WaitingGuest { actor: mover_path, batches: 1 }],
-        parked: Vec::new(),
-        unasked: Vec::new(),
-    };
-    assert_eq!(of_kind(&record, &echo::Mover::NAME).moves, KindMoves::Head(waiting));
-    let onto_head =
-        HeadRecord { moved: 1, absent: Vec::new(), waiting: Vec::new(), parked: Vec::new(), unasked: Vec::new() };
-    assert_eq!(of_kind(&record, &echo::Keeper::NAME).moves, KindMoves::Head(onto_head));
+    for kind in [echo::Mover::NAME, echo::Keeper::NAME, echo::Stubborn::NAME] {
+        let publish = numbered(&record, &kind);
+        let engine = engine_number(&mut running.harness, &kind);
+        assert_eq!(Some(publish), engine, "the engine's number for the publish of `{kind}`");
+        assert_eq!(head_of(&published, &kind).publish, publish, "`upgrades` shows the head `publish` made");
+    }
+    assert_eq!(moved_onto(&published, &echo::Mover::NAME), (0, Vec::new()), "the mover answered `Later`");
+    assert_eq!(moved_onto(&published, &echo::Keeper::NAME), (1, Vec::new()), "the keeper moved");
+    assert_eq!(moved_onto(&published, &echo::Stubborn::NAME), (0, Vec::new()), "the stubborn guest's move failed");
+    let (mover_publish, stubborn_publish) =
+        (numbered(&record, &echo::Mover::NAME), numbered(&record, &echo::Stubborn::NAME));
     let reason = String::from("the old state has no `answered`");
-    let parked = HeadRecord {
-        moved: 0,
-        absent: Vec::new(),
-        waiting: Vec::new(),
-        parked: vec![ParkedGuest { actor: stubborn_path, reason }],
-        unasked: Vec::new(),
-    };
-    assert_eq!(of_kind(&record, &echo::Stubborn::NAME).moves, KindMoves::Head(parked));
-    let number = running.harness.host().engine().head(&echo::Mover::NAME).map(Head::number);
-    assert_eq!(Some(of_kind(&record, &echo::Mover::NAME).publish), number, "the engine's number for the publish");
+    let parked = (stubborn_path, echo::Stubborn::NAME, stubborn_publish, GuestStanding::Parked { reason });
+    let expected =
+        vec![(mover_path, echo::Mover::NAME, mover_publish, GuestStanding::Later { batches: 1 }), parked.clone()];
+    assert_eq!(listed(published), expected, "asked once, with no mail, as the head moved");
 
     running.harness.tell(mover, &echo::LetGo)?;
     running.harness.settle();
@@ -305,11 +329,12 @@ fn publish_answers_who_moved_who_answered_later_and_who_is_parked() -> Result<()
         panic!("the mover answers its probe");
     };
     running.harness.settle();
-    let standings = running.harness.host().engine().moves();
-    let mover_head = standings.head(&echo::Mover::NAME).map(|head| (head.moved, head.absent.clone()));
+    let let_go: Upgrading = call(&mut running, "upgrades", &ReadUpgrades {})?;
 
     assert_eq!(report.version, 2, "let go, the mover moved onto the second build");
-    assert_eq!(mover_head, Some((1, vec![String::from("first_move")])), "its move counted, with what it lacked");
+    let lacked = vec![String::from("first_move")];
+    assert_eq!(moved_onto(&let_go, &echo::Mover::NAME), (1, lacked), "its move counted, with what it lacked");
+    assert_eq!(listed(let_go), vec![parked], "the mover is on its head, and the stubborn guest still parked");
     Ok(())
 }
 
@@ -328,15 +353,13 @@ fn upgrades_lists_each_guest_behind_its_head_with_its_batches_or_why_it_is_parke
 
     let (mover_path, stubborn_path) =
         (spoken(running.mover, &mut running.harness), spoken(running.stubborn, &mut running.harness));
-    let listed: Vec<(String, KindName, u64, GuestStanding)> =
-        upgrading.guests.into_iter().map(|guest| (guest.actor, guest.kind, guest.publish, guest.standing)).collect();
     let (mover_publish, stubborn_publish) =
-        (of_kind(&record, &echo::Mover::NAME).publish, of_kind(&record, &echo::Stubborn::NAME).publish);
+        (numbered(&record, &echo::Mover::NAME), numbered(&record, &echo::Stubborn::NAME));
     let reason = String::from("the old state has no `answered`");
     let expected = vec![
         (mover_path, echo::Mover::NAME, mover_publish, GuestStanding::Later { batches: 2 }),
         (stubborn_path, echo::Stubborn::NAME, stubborn_publish, GuestStanding::Parked { reason }),
     ];
-    assert_eq!(listed, expected, "asked once with no mail as the head moved, and once before the probe's batch");
+    assert_eq!(listed(upgrading), expected, "asked once as the head moved, and once before the probe's batch");
     Ok(())
 }

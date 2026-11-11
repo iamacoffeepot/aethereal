@@ -80,6 +80,11 @@ impl Table for ActorTable {
         None
     }
 
+    /// The table numbers no publish: a turn reads the heads view through what the engine opens it with.
+    fn published(&self) -> u64 {
+        0
+    }
+
     /// The table holds no time: a turn reads its step's through what the engine opens it with, beside the table.
     fn now(&self) -> Time {
         Time::ZERO

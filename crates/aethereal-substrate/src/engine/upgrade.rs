@@ -113,9 +113,8 @@ impl Reading<'_> {
 impl Engine {
     /// Asks each live actor with no mail of a kind whose head moved since the engine last asked, once, whether to move
     /// onto it, and moves it when it answers `Now`: between steps, where the engine holds every part. An idle actor
-    /// would otherwise never be asked, and a publish would never settle. Each live actor of such a kind that has mail
-    /// and is behind the head is recorded as still to be asked, before its next batch, so what a publish waits on is
-    /// known (ADR-0054).
+    /// would otherwise never be asked, and never move. Each live actor of such a kind that has mail and is behind the
+    /// head is recorded as still to be asked, before its next batch, so who has yet to answer is known (ADR-0054).
     pub(super) fn ask_idle(&mut self) {
         let heads = self.heads.shard(HEADS);
         let published = heads.published();

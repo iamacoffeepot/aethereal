@@ -73,6 +73,9 @@ pub struct Asked {
     /// What the turn running did to the debts its actor holds, in the order it did it, for the engine to file once the
     /// turn has run (ADR-0017): empty between turns.
     owes: Vec<Owes>,
+    /// How many publishes the turns that fill it have asked: kept over a worker's whole share of a step, so each is
+    /// numbered on from the last the heads view had folded as the step began (ADR-0054).
+    published: u64,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -153,9 +156,9 @@ impl Asked {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
         let (carrying, claims, asks, owes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let stood = Vec::new();
+        let (stood, stood_seats) = (Vec::new(), BTreeMap::new());
 
-        Self { buffers, stood, stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims, asks, owes }
+        Self { buffers, stood, stood_seats, arena, seats, puts, carrying, claims, asks, owes, published: 0 }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -1197,8 +1200,12 @@ impl Seat<'_> {
     }
 
     /// Asks that the head of the kind `kind` be the blob `blob` pins, with the engine's one publisher, which this actor
-    /// holds under `publisher` (ADR-0009, ADR-0054). Refused, asking nothing, when this actor holds no publisher there,
-    /// or the blob makes no actor of that kind.
+    /// holds under `publisher`, and answers with the number the engine gives the publish (ADR-0009, ADR-0054). Refused,
+    /// asking nothing, when this actor holds no publisher there, or the blob makes no actor of that kind.
+    ///
+    /// The heads view numbers publishes as it folds them, one more than the last, in the order they were asked. Every
+    /// publish of a step is asked by the one actor that holds the engine's one publisher, in one worker's share, so its
+    /// number is the heads view's last as the step began, plus the publishes the share has asked, this one among them.
     #[cfg(feature = "std")]
     fn publish(
         &mut self,
@@ -1206,15 +1213,16 @@ impl Seat<'_> {
         publisher: &Handle<Publisher>,
         kind: &KindName,
         blob: &Bytes,
-    ) -> Result<(), Refused> {
+    ) -> Result<u64, Refused> {
         self.resource(publisher).map_err(|_| Refused::NotPublisher)?;
         let makes = guests.makes(blob.id(), kind);
         if !makes {
             return Err(Refused::NotMade);
         }
         self.ask(What::Publish { kind: kind.clone(), blob: blob.clone() });
+        self.asked.published += 1;
 
-        Ok(())
+        Ok(self.table.published() + self.asked.published)
     }
 
     /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
@@ -1977,15 +1985,16 @@ impl<Me, S> Turn<'_, Me, S> {
     }
 
     /// Makes the blob `blob` pins the head of the kind `kind`, with the engine's one publisher, which this actor holds
-    /// under `publisher` (ADR-0009, ADR-0054). The head moves as the step's effects are folded, numbered by the engine,
-    /// so a spawn from the head sees it from the next step on.
+    /// under `publisher`, and answers with the number the engine gives the publish: the head's (ADR-0009, ADR-0054).
+    /// The head moves as the step's effects are folded, under that number, so a spawn from the head sees it from the
+    /// next step on, as does `moves`.
     ///
     /// # Errors
     ///
     /// [`Refused::NotPublisher`] when this actor holds no publisher under `publisher`, as a guest's code never does,
     /// and [`Refused::NotMade`] when the blob makes no actor of the kind. Either asks nothing.
     #[cfg(feature = "std")]
-    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<u64, Refused> {
         let guests = self.instances.guests();
 
         self.seat.publish(&*guests, publisher, kind, blob)
@@ -2453,14 +2462,15 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.spawn_from::<C>(self.instances, origin, key, config)
     }
 
-    /// Makes the blob `blob` pins the head of the kind `kind`, as a turn's `publish` does: for the root that is handed
-    /// the engine's one publisher, which publishes as it begins (ADR-0054).
+    /// Makes the blob `blob` pins the head of the kind `kind`, and answers with the number the engine gives the
+    /// publish, as a turn's `publish` does: for the root that is handed the engine's one publisher, which publishes as
+    /// it begins (ADR-0054).
     ///
     /// # Errors
     ///
     /// As a turn's `publish`.
     #[cfg(feature = "std")]
-    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<u64, Refused> {
         let guests = self.instances.guests();
 
         self.seat.publish(&*guests, publisher, kind, blob)

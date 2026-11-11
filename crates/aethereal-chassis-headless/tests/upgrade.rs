@@ -83,7 +83,7 @@ impl Handles<Publish> for Library {
 
     fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &publish.kind, &publish.blob);
-        let Ok(()) = published else {
+        let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
         };
 
@@ -124,7 +124,7 @@ impl Handles<PublishLettingGo> for LettingGo {
 
     fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &echo::Mover::NAME, &publish.blob);
-        let Ok(()) = published else {
+        let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
         };
         turn.to(path::<echo::Mover>(())).send(&echo::LetGo)?;
@@ -618,9 +618,8 @@ fn standing<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Option<(u64,
 
 #[test]
 fn a_guest_with_mail_as_its_head_moves_is_recorded_still_to_be_asked_until_its_batch_asks_it() -> Result<(), Unheard> {
-    // Catches a guest that has mail as its kind's head moves left out of what the engine records, so a publish that
-    // waits on every running guest of its kinds answers before that one is asked; and one still recorded as unasked
-    // once its batch has asked it. With no hops, the library's word to the mover waits for the next step, so it is
+    // Catches a guest that has mail as its kind's head moves left out of what the engine records, so `upgrades` would
+    // not list it among the guests still to be asked; and one still recorded as unasked once its batch has asked it. With no hops, the library's word to the mover waits for the next step, so it is
     // waiting as the head moves.
     let mut engine =
         Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 23, 0).with_guests(Arc::new(Runtime::default())).ready();

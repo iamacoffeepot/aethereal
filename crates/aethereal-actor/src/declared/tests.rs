@@ -66,6 +66,11 @@ impl Table for Typed {
         None
     }
 
+    #[cfg(feature = "std")]
+    fn published(&self) -> u64 {
+        0
+    }
+
     fn now(&self) -> crate::Time {
         crate::Time::ZERO
     }
