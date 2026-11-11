@@ -295,8 +295,16 @@ const STRAY_TO_KEEPERS: &[Sending] = &[<ToAny<(Kept,), Stray> as Marker>::SENDIN
 fn a_declaration_whose_handler_sends_a_protocol_a_kind_outside_it_does_not_hold() {
     // Catches a type built that declares, in a handler, a send of a kind to actors that need not take it.
     const HANDLERS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), STRAY_TO_KEEPERS)];
-    let sending =
-        Declared::new(Keeper::NAME, KindId::of::<Keeper>(), Keyed::Singleton, Spawner::Anyone, &[], HANDLERS, &[]);
+    let sending = Declared::new(
+        Keeper::NAME,
+        KindId::of::<Keeper>(),
+        StateSchema::of::<Keeper>(),
+        Keyed::Singleton,
+        Spawner::Anyone,
+        &[],
+        HANDLERS,
+        &[],
+    );
 
     let _ = sending.checked();
 }
@@ -308,6 +316,7 @@ fn a_declaration_whose_begin_sends_a_protocol_a_kind_outside_it_does_not_hold() 
     let beginning = Declared::new(
         Keeper::NAME,
         KindId::of::<Keeper>(),
+        StateSchema::of::<Keeper>(),
         Keyed::Singleton,
         Spawner::Anyone,
         STRAY_TO_KEEPERS,
@@ -325,6 +334,7 @@ fn a_declaration_whose_closing_turn_sends_a_protocol_a_kind_outside_it_does_not_
     let ending = Declared::new(
         Keeper::NAME,
         KindId::of::<Keeper>(),
+        StateSchema::of::<Keeper>(),
         Keyed::Singleton,
         Spawner::Anyone,
         &[],
@@ -360,10 +370,11 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     // Catches the constant writer of a guest's section and the plain types a host reads it as drifting apart: a field
     // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed,
     // or one type's spawner read as another's), so a host reads a declaration other than the one the guest was built
-    // with (ADR-0015, ADR-0022).
+    // with (ADR-0015, ADR-0022); or a state's schema read as another type's, or not kept (ADR-0054).
     const TYPES: &[&Declared] = &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>()];
-    const LEN: usize = section::len(TYPES);
-    const BYTES: [u8; LEN] = section::bytes::<LEN>(TYPES);
+    const ROOM: usize = section::room(TYPES);
+    const LEN: usize = section::len::<ROOM>(TYPES);
+    const BYTES: [u8; LEN] = section::bytes::<LEN, ROOM>(TYPES);
 
     let mut budget = aethereal_data::Budget::new(1 << 16);
     let Ok(made) = aethereal_data::from_bytes::<Vec<section::Made>>(&BYTES, &mut budget) else {
@@ -371,5 +382,7 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     };
 
     let leaked: Vec<&Declared> = made.iter().map(section::Made::leak).collect();
+    let states = |types: &[&Declared]| types.iter().map(|declared| declared.state().nodes()).collect::<Vec<_>>();
     assert_eq!(leaked, TYPES);
+    assert_eq!(states(&leaked), states(TYPES));
 }

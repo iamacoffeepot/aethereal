@@ -267,7 +267,7 @@ impl Runtime {
         let module = Module::new(&self.engine, bytes).map_err(|error| Unfit::Uncompiled(error.to_string()))?;
         let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
-        let made = from_bytes::<Vec<Made>>(section, &mut budget).map_err(|_| Unfit::Undeclared)?;
+        let made = section::read(section, &mut budget)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
         let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_drop"];
         let more = more.into_iter().chain(["aethereal_read_limit", "aethereal_holders"]);
@@ -2386,10 +2386,10 @@ mod tests {
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
-    use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain};
+    use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain, Schema, SchemaNodes};
     use aethereal_guest_echo as echo;
     use aethereal_substrate::harness::{Harness, Unheard};
-    use aethereal_substrate::{Engine, Inline, Jobs, Setup, Taken};
+    use aethereal_substrate::{CodeRefused, Engine, Inline, Jobs, Setup, Taken};
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -5675,6 +5675,67 @@ mod tests {
         engine.step(Time::ZERO, &Monotonic::new());
 
         assert_eq!((was_made, runtime.made(id, echo).is_some()), (true, false));
+    }
+
+    #[test]
+    fn code_whose_section_misstates_a_state_is_refused_where_it_is_put() {
+        // Catches a host that takes a section in without checking each type's state against its id, so a moving
+        // actor's state would be read by a schema of another layout than its kind's (ADR-0006, ADR-0054).
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::new(Runtime::default())).ready();
+        let Some(declared) = declared_section(ECHO) else {
+            panic!("the echo guest declares what it makes");
+        };
+        let Ok(mut made) = section::read(declared, &mut Budget::new(1 << 20)) else {
+            panic!("the echo guest's section reads back");
+        };
+        let Some(first) = made.first_mut() else {
+            panic!("the echo guest makes a type");
+        };
+        first.state = SchemaNodes::of(&u8::SHAPE);
+        let misstated = first.name.clone();
+        let Ok(section) = to_bytes(&made) else {
+            panic!("a section encodes");
+        };
+
+        let refused = engine.put_code(redeclared(ECHO, &section)).err();
+
+        assert_eq!(refused, Some(CodeRefused::Unfit(Unfit::Misstated(misstated))));
+    }
+
+    /// `code`, with a section `aethereal.declared` of `section` before its own, which its host reads in its place.
+    fn redeclared(code: &[u8], section: &[u8]) -> Vec<u8> {
+        let name = section::NAME.as_bytes();
+        let payload: Vec<u8> =
+            leb(name.len()).into_iter().chain(name.iter().copied()).chain(section.iter().copied()).collect();
+        let (header, sections) = code.split_at(8);
+
+        header
+            .iter()
+            .copied()
+            .chain([0])
+            .chain(leb(payload.len()))
+            .chain(payload)
+            .chain(sections.iter().copied())
+            .collect()
+    }
+
+    /// `value` as a module writes a size: seven bits a byte, low first, the high bit set on every byte but the last.
+    fn leb(value: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut left = value;
+        loop {
+            let low = u8::try_from(left & 0x7f).unwrap_or(0);
+            left >>= 7;
+            if left == 0 {
+                bytes.push(low);
+
+                return bytes;
+            }
+            bytes.push(low | 0x80);
+        }
     }
 
     /// When a prober's ping is due: a millisecond after the start of the test's clock.

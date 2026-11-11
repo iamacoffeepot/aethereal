@@ -69,8 +69,9 @@ fn a_send_at_a_typed_path_reads_back_from_a_guests_section() {
     // Catches the writer of a guest's section and the types a host reads it as drifting apart for a send at a typed
     // path: a segment dropped or read in another order, or a keyed one read as a singleton (ADR-0015, ADR-0022).
     const TYPES: &[&Declared] = &[Declared::of::<Teller>()];
-    const LEN: usize = section::len(TYPES);
-    const BYTES: [u8; LEN] = section::bytes::<LEN>(TYPES);
+    const ROOM: usize = section::room(TYPES);
+    const LEN: usize = section::len::<ROOM>(TYPES);
+    const BYTES: [u8; LEN] = section::bytes::<LEN, ROOM>(TYPES);
 
     let mut budget = aethereal_data::Budget::new(1 << 16);
     let Ok(made) = aethereal_data::from_bytes::<Vec<section::Made>>(&BYTES, &mut budget) else {

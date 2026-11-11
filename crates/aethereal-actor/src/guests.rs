@@ -196,6 +196,9 @@ pub enum Unfit {
     Uncompiled(String),
     /// It has no section that declares what it makes, or one that does not read back.
     Undeclared,
+    /// Its section states the type of this name with a state of another layout than the one its id is made from
+    /// (ADR-0006, ADR-0054).
+    Misstated(KindName),
     /// It lacks the export of this name.
     Unexported(&'static str),
     /// It imports what the host does not give.
