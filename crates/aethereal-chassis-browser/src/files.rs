@@ -1,9 +1,9 @@
-//! The browser's storage: the program's assets fetched relative to the page, and its saves in the origin private file
-//! system (ADR-0032, ADR-0039).
+//! The browser's storage: the program's assets and guest modules fetched relative to the page, the modules listed from
+//! a manifest beside them, and its saves in the origin private file system (ADR-0032, ADR-0039, ADR-0054).
 
 use aethereal_actor::Spares;
 use aethereal_data::{FilePath, Plain};
-use aethereal_files::{Namespace, Read, Reading, Storage, Unread, Unwritten, Writing};
+use aethereal_files::{Listing, Manifest, Namespace, Read, Reading, Storage, Unlisted, Unread, Unwritten, Writing};
 use js_sys::{Promise, Uint8Array};
 use std::future;
 use std::iter;
@@ -18,8 +18,8 @@ use web_sys::{
 /// directory of its own.
 const SAVES: &str = "save";
 
-/// Where the browser reads each namespace from: the file capability's section, `files` (ADR-0028, ADR-0032). Its saves
-/// are the origin's, so they have nothing to set (ADR-0039).
+/// Where the browser reads each namespace from: the file capability's section, `files` (ADR-0028, ADR-0032, ADR-0054).
+/// Its saves are the origin's, so they have nothing to set (ADR-0039).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.files.urls")]
 #[settings]
@@ -27,27 +27,37 @@ pub struct FileUrls {
     /// The URL the program's assets are fetched beneath: relative to the page, or absolute.
     #[flag]
     pub assets: String,
+    /// The URL the program's guest modules, and the manifest that lists them, are fetched beneath: relative to the
+    /// page, or absolute.
+    #[flag]
+    pub code: String,
 }
 
 impl Default for FileUrls {
     fn default() -> Self {
-        Self { assets: String::from("assets") }
+        Self { assets: String::from("assets"), code: String::from("code") }
     }
 }
 
-/// The browser's storage (ADR-0032, ADR-0039): each asset fetched from beneath its URL, and each save read and written
-/// in the origin private file system, whose writable stream replaces a file whole as it is closed. Each is a promise
-/// the page's event loop drives. A page served beside its assets, an artifact among them, reads them with no setting.
+/// The browser's storage (ADR-0032, ADR-0039, ADR-0054): each asset and module fetched from beneath its URL, the
+/// modules listed from the [`Manifest`] beneath theirs, and each save read and written in the origin private file
+/// system, whose writable stream replaces a file whole as it is closed. Each is a promise the page's event loop drives.
+/// A page served beside its assets and its code, an artifact among them, reads them with no setting.
 pub struct Fetching {
     /// The URL of the program's assets, with no `/` at its end.
     assets: String,
+    /// The URL of the program's guest modules, with no `/` at its end.
+    code: String,
 }
 
 impl Fetching {
     /// The storage fetching from beneath the URLs `urls` names.
     #[must_use]
     pub fn new(urls: &FileUrls) -> Self {
-        Self { assets: String::from(urls.assets.trim_end_matches('/')) }
+        Self {
+            assets: String::from(urls.assets.trim_end_matches('/')),
+            code: String::from(urls.code.trim_end_matches('/')),
+        }
     }
 }
 
@@ -56,6 +66,7 @@ impl Storage for Fetching {
         Box::pin(async move {
             let array = match namespace {
                 Namespace::Assets => fetch(format!("{}/{path}", self.assets)).await,
+                Namespace::Code => fetch(format!("{}/{path}", self.code)).await,
                 Namespace::Save => read_saved(path).await,
             };
 
@@ -65,9 +76,33 @@ impl Storage for Fetching {
 
     fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
         match namespace {
-            Namespace::Assets => Box::pin(future::ready(Err(Unwritten::ReadOnly))),
+            Namespace::Assets | Namespace::Code => Box::pin(future::ready(Err(Unwritten::ReadOnly))),
             Namespace::Save => Box::pin(write_saved(path, bytes)),
         }
+    }
+
+    fn list(&self, namespace: Namespace) -> Listing<'_> {
+        match namespace {
+            Namespace::Code => Box::pin(listed(format!("{}/{}", self.code, Manifest::PATH), namespace)),
+            Namespace::Assets | Namespace::Save => Box::pin(future::ready(Err(Unlisted::NotListed))),
+        }
+    }
+}
+
+/// What `namespace` lists from the manifest at `url`: missing when the server answers it is not found, as a page
+/// built with no code has none.
+async fn listed(url: String, namespace: Namespace) -> Result<Vec<FilePath>, Unlisted> {
+    let array = fetch(url).await.map_err(unlisted)?;
+
+    Manifest::read(namespace, &array.to_vec()).map(Manifest::into_paths)
+}
+
+/// Why a namespace was not listed, as the fetch of its manifest was not read.
+const fn unlisted(unread: Unread) -> Unlisted {
+    match unread {
+        Unread::Missing => Unlisted::Missing,
+        Unread::Unavailable => Unlisted::Unavailable,
+        Unread::Failed => Unlisted::Failed,
     }
 }
 

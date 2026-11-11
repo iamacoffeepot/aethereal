@@ -1,7 +1,9 @@
 //! One browser example's page, built into `pkg/` in its directory: the example for wasm32, the bindings the page
-//! imports, and the page, made from `shared/index.html` with the example's own layout where it has one. A page is
-//! served over http on localhost, where WebGPU is let run; `--serve` serves it.
+//! imports, the page, made from `shared/index.html` with the example's own layout where it has one, and the manifest
+//! of the modules in its `code/` where it has one. A page is served over http on localhost, where WebGPU is let run;
+//! `--serve` serves it.
 
+mod code;
 mod page;
 mod serve;
 
@@ -49,6 +51,7 @@ pub fn run(name: &str, serving: Serving) -> Result<(), Failure> {
         .and_then(|bindgen| bindgen.typescript(false).omit_default_module_path(false).generate(&pkg))
         .map_err(|error| Failure::new(format_args!("failed bind={name} {error:#}")))?;
     page::write(&examples, name, &pkg)?;
+    code::write(&pkg)?;
 
     let bytes = fs::metadata(pkg.join(format!("{name}_bg.wasm")))?.len();
     println!("built example={name} bytes={bytes} page={EXAMPLES}/{name}/pkg/index.html");
