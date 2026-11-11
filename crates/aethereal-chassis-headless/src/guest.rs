@@ -35,8 +35,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::iter;
 use std::mem;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, PoisonError, RwLock, Weak};
 use wasmtime::{Caller, Extern, InstancePre, Linker, Memory, Module, Store, TypedFunc};
 
 /// What runs guests' code with wasmtime: one compiler, for every blob, and the blobs it has compiled, by their ids,
@@ -47,7 +46,16 @@ pub struct Runtime {
     codes: Arc<Codes>,
     /// Each code compiled, by its bytes' hash, so the same code put again, into this engine or another, is compiled
     /// once. Locked, as one runtime may serve several engines, each of which puts code between its own steps.
-    compiled: RwLock<HashMap<BlobHash, Compiled>>,
+    compiled: RwLock<Compiles>,
+}
+
+/// The code a runtime has compiled and still holds, by its bytes' hash, and how many codes it has compiled.
+#[derive(Default)]
+struct Compiles {
+    by_hash: HashMap<BlobHash, Compiled>,
+    /// How many codes the runtime has compiled: the key the next takes. A part's instances hold only code of the
+    /// runtime that serves its engine, so a key no other code of the runtime took is one no other code in them takes.
+    count: u64,
 }
 
 /// The blobs a runtime has taken in as code, by their ids: each code reaches the rest, as a child of another blob's
@@ -72,8 +80,7 @@ struct Code {
     types: Arc<[&'static BlobType]>,
     /// Every code the runtime that took it in holds, without keeping them.
     codes: Weak<Codes>,
-    /// What its instances are kept under in a part's [`Instances`]: a number no other code compiled in the process
-    /// has.
+    /// What its instances are kept under in a part's [`Instances`]: a number no other code its runtime compiled has.
     key: u64,
     /// The module, with the calls out it imports linked in.
     module: InstancePre<Lending>,
@@ -90,18 +97,10 @@ struct Running {
     pin: Bytes,
 }
 
-/// The key the next code compiled takes. Atomic, as runtimes serving any engine compile at once, and each code's key
-/// must differ from every other's in the instances of a part.
-static CODES: AtomicU64 = AtomicU64::new(0);
-
-/// The number the next instance made takes. Atomic, as instances are made on whichever worker runs their part, and each
-/// instance's number must differ from every other's, so an actor of an instance a trap dropped is never run in one
-/// made after it (ADR-0015).
-static INSTANCES: AtomicU64 = AtomicU64::new(0);
-
 /// One instance of a blob, a part's, and the calls its host makes of it.
 struct Instance {
-    /// Its number among the instances the process has made, which no other takes.
+    /// Its number among the instances its part has loaded, which no other of them takes: an actor of an instance a
+    /// trap dropped is never run in one made after it under the same key (ADR-0015).
     number: u64,
     store: Store<Lending>,
     memory: Memory,
@@ -274,15 +273,13 @@ impl Runtime {
     /// Refused when it is not fit to run.
     fn code(&self, blob: BlobId, bytes: &[u8]) -> Result<Code, Unfit> {
         let hash = BlobHash::of(bytes);
-        let known = self.compiled.read().ok().and_then(|compiled| compiled.get(&hash).cloned());
+        let known = self.compiled.read().ok().and_then(|compiled| compiled.by_hash.get(&hash).cloned());
         let Compiled { key, module, made } = if let Some(compiled) = known {
             compiled
         } else {
-            let compiled = self.compile(bytes)?;
-            if let Ok(mut known) = self.compiled.write() {
-                known.insert(hash, compiled.clone());
-            }
-            compiled
+            let (module, made) = self.compile(bytes)?;
+            // Nothing done under the lock panics, so one poisoned holds what it held.
+            self.compiled.write().unwrap_or_else(PoisonError::into_inner).keep(hash, module, made)
         };
 
         let types = made.iter().map(|&declared| &*Box::leak(Box::new(BlobType { blob, declared }))).collect();
@@ -291,7 +288,7 @@ impl Runtime {
     }
 
     /// Compiles `bytes` as guest code, and reads what it makes: refused when it is not fit to run.
-    fn compile(&self, bytes: &[u8]) -> Result<Compiled, Unfit> {
+    fn compile(&self, bytes: &[u8]) -> Result<(InstancePre<Lending>, Arc<[&'static Declared]>), Unfit> {
         let module = Module::new(&self.engine, bytes).map_err(|error| Unfit::Uncompiled(error.to_string()))?;
         let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
@@ -310,9 +307,19 @@ impl Runtime {
             .and_then(|linker| linker.instantiate_pre(&module))
             .map_err(|error| Unfit::Unlinked(error.to_string()))?;
 
-        let key = CODES.fetch_add(1, Ordering::Relaxed);
+        Ok((module, made.iter().map(Made::leak).collect()))
+    }
+}
 
-        Ok(Compiled { key, module, made: made.iter().map(Made::leak).collect() })
+impl Compiles {
+    /// Keeps `module`, the code of the bytes whose hash is `hash`, which makes `made`, under a key no code compiled
+    /// before took.
+    fn keep(&mut self, hash: BlobHash, module: InstancePre<Lending>, made: Arc<[&'static Declared]>) -> Compiled {
+        let compiled = Compiled { key: self.count, module, made };
+        self.count += 1;
+        self.by_hash.insert(hash, compiled.clone());
+
+        compiled
     }
 }
 
@@ -953,7 +960,7 @@ impl Code {
     fn instance<'i>(&self, instances: &'i mut Instances) -> &'i mut Instance {
         let read_limit = instances.read_limit();
 
-        instances.get_or_load(self.key, || Instance::load(self, read_limit))
+        instances.get_or_load(self.key, |number| Instance::load(self, read_limit, number))
     }
 }
 
@@ -971,13 +978,13 @@ impl Loadable for Instance {
 }
 
 impl Instance {
-    /// A new instance of `code`, whose reads of mail, config, and state allocate at most `read_limit` bytes, as the
-    /// engine's do.
+    /// A new instance of `code`, numbered `number` among its part's, whose reads of mail, config, and state allocate at
+    /// most `read_limit` bytes, as the engine's do.
     ///
     /// # Panics
     ///
     /// Panics when the code cannot be instantiated, which its checks as it entered rule out.
-    fn load(code: &Code, read_limit: usize) -> Self {
+    fn load(code: &Code, read_limit: usize, number: u64) -> Self {
         let mut store = Store::new(code.module.module().engine(), Lending::Between);
         let Ok(instance) = code.module.instantiate(&mut store) else {
             panic!("guest code that entered is instantiated");
@@ -1013,7 +1020,7 @@ impl Instance {
         };
 
         Self {
-            number: INSTANCES.fetch_add(1, Ordering::Relaxed),
+            number,
             store,
             memory,
             inbox,
@@ -1073,7 +1080,7 @@ impl Guests for Runtime {
         // The same bytes put while this lets go of them may be compiled again, under a key of their own: their actors
         // then run in instances of their own, which nothing shares.
         if !is_held && let Ok(mut compiled) = self.compiled.write() {
-            compiled.retain(|_, compiled| compiled.key != gone.key);
+            compiled.by_hash.retain(|_, compiled| compiled.key != gone.key);
         }
     }
 
@@ -1131,7 +1138,7 @@ impl Guests for Runtime {
         let handed: Vec<u8> = count(born.len()).to_le_bytes().into_iter().chain(born).chain(config.to_vec()).collect();
 
         let read_limit = instances.read_limit();
-        let mut held = instances.lend(code.key, || Instance::load(code, read_limit))?;
+        let mut held = instances.lend(code.key, |number| Instance::load(code, read_limit, number))?;
         let (seats, puts, _, gifts) = asked.lent_gifts();
         let holds = Holds { keeping: &mut *keeping, gifts };
         let reads = Reads { table, made: &(), seats, puts, holds };
@@ -1213,7 +1220,7 @@ impl Guest {
     fn ask(&mut self, instances: &mut Instances) -> Result<Upgrade, Upgraded> {
         let key = self.running.code.key;
         let read_limit = instances.read_limit();
-        let instance = instances.get_or_load(key, || Instance::load(&self.running.code, read_limit));
+        let instance = instances.get_or_load(key, |number| Instance::load(&self.running.code, read_limit, number));
         let answer = self.handle_in(instance).and_then(|handle| instance.upgrade(handle));
 
         answer.map_err(|broke| Upgraded::BrokeAsking { ended: self.ended(broke, instances) })
@@ -1246,7 +1253,7 @@ impl Guest {
         let old = self.declared.state().nodes();
         let new = declared.state().nodes();
         let read_limit = instances.read_limit();
-        let fresh = instances.get_or_load(code.key, || Instance::load(&code, read_limit));
+        let fresh = instances.get_or_load(code.key, |number| Instance::load(&code, read_limit, number));
         let is_same = declared.id() == self.declared.id();
         let taken = if is_same {
             fresh.take_in(of, self.me, &state, &carried).map(Ok)
@@ -1423,7 +1430,8 @@ impl Runs for Guest {
         }
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
-        let Ok(mut held) = instances.lend(self.running.code.key, || Instance::load(&self.running.code, read_limit))
+        let Ok(mut held) =
+            instances.lend(self.running.code.key, |number| Instance::load(&self.running.code, read_limit, number))
         else {
             self.ran = Ran::Broke(Broke::Trapped);
             return;
@@ -1533,7 +1541,7 @@ impl Runs for Guest {
         // The engine runs no closing turn while a call into a guest is under way, so the instance is never lent out
         // here.
         let read_limit = instances.read_limit();
-        let Ok(mut held) = instances.lend(key, || Instance::load(&self.running.code, read_limit)) else {
+        let Ok(mut held) = instances.lend(key, |number| Instance::load(&self.running.code, read_limit, number)) else {
             return Ok(());
         };
         let handle = match self.handle_in(&mut held) {
@@ -6060,7 +6068,7 @@ mod tests {
             panic!("the echo guest is fit to run");
         };
         assert_ne!(first.id(), second.id(), "each put is a blob of its own");
-        let compiled = || runtime.compiled.read().map_or(usize::MAX, |compiled| compiled.len());
+        let compiled = || runtime.compiled.read().map_or(usize::MAX, |compiled| compiled.by_hash.len());
         let clock = Monotonic::new();
 
         drop(first);

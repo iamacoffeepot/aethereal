@@ -16,7 +16,9 @@ use core::ops::{Deref, DerefMut};
 /// actors, as it lends them the table; what is in it is the hosts' alone. A part is run by one worker at a time, and
 /// that worker runs one of its actors at a time, so what is lent is lent whole, and nothing in it is locked.
 ///
-/// A host keys what it loads by a number of its own, under the type it loads, so no host reaches another's.
+/// A host keys what it loads by a number of its own, under the type it loads, so no host reaches another's. Each
+/// instance loaded is handed a number no instance loaded into them before took, so a host tells an instance made
+/// again under a key, as a trap dropped the one before it, from the one it replaced (ADR-0015, ADR-0054).
 ///
 /// It also carries the engine's [`Guests`], the code it loads from, so a turn
 /// that spawns a child from a blob reaches it through what it is lent, and the
@@ -30,6 +32,8 @@ pub struct Instances {
     own: Own,
     read_limit: usize,
     loaded: Vec<Loaded>,
+    /// How many instances have been loaded into them: the number the next one loaded is handed.
+    loads: u64,
 }
 
 impl Default for Instances {
@@ -106,7 +110,7 @@ impl Instances {
     /// reads of mail and config allocate at most `read_limit` bytes.
     #[must_use]
     pub fn new(guests: Arc<dyn Guests>, links: Arc<Links>, read_limit: usize) -> Self {
-        Self { guests, links, own: Own::Every, read_limit, loaded: Vec::new() }
+        Self { guests, links, own: Own::Every, read_limit, loaded: Vec::new(), loads: 0 }
     }
 
     /// No instances, for a guest's turns, whose own types are `made`: a child of any other is begun by its host,
@@ -114,7 +118,7 @@ impl Instances {
     #[cfg(feature = "guest")]
     #[must_use]
     pub fn of_guest(host: Arc<dyn Guests>, made: &'static [&'static Declared], read_limit: usize) -> Self {
-        Self { guests: host, links: Arc::default(), own: Own::Made(made), read_limit, loaded: Vec::new() }
+        Self { guests: host, links: Arc::default(), own: Own::Made(made), read_limit, loaded: Vec::new(), loads: 0 }
     }
 
     /// Whether they are a guest's.
@@ -153,17 +157,19 @@ impl Instances {
         }
     }
 
-    /// The instance of type `I` kept under `key`, loaded with `load` when there is none yet.
+    /// The instance of type `I` kept under `key`, loaded with `load` when there is none yet, handed the instance's
+    /// number.
     ///
     /// # Panics
     ///
     /// Panics while the instance is lent to a call into it, which nothing reaches it through until the call gives it
     /// back.
-    pub fn get_or_load<I: Loadable>(&mut self, key: u64, load: impl FnOnce() -> I) -> &mut I {
+    pub fn get_or_load<I: Loadable>(&mut self, key: u64, load: impl FnOnce(u64) -> I) -> &mut I {
         let host = TypeId::of::<I>();
         let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
         let at = found.unwrap_or_else(|| {
-            self.loaded.push(Loaded { host, key, instance: Held::Here(Box::new(load())) });
+            let instance = Held::Here(Box::new(load(self.number())));
+            self.loaded.push(Loaded { host, key, instance });
             self.loaded.len() - 1
         });
         let Held::Here(instance) = &mut self.loaded[at].instance else {
@@ -189,9 +195,9 @@ impl Instances {
         instance.downcast_mut::<I>()
     }
 
-    /// Lends out the instance of type `I` kept under `key`, loaded with `load` when there is none yet, for a call into
-    /// it: [`Self::put_back`] keeps it again once the call returns, and while it is out, what the call is lent reaches
-    /// every other instance of the part, and none of this.
+    /// Lends out the instance of type `I` kept under `key`, loaded with `load` when there is none yet, handed the
+    /// instance's number, for a call into it: [`Self::put_back`] keeps it again once the call returns, and while it is
+    /// out, what the call is lent reaches every other instance of the part, and none of this.
     ///
     /// # Errors
     ///
@@ -201,12 +207,13 @@ impl Instances {
     /// # Panics
     ///
     /// Never: an instance is kept under its own type, so it is always read back as that type.
-    pub fn lend<I: Loadable>(&mut self, key: u64, load: impl FnOnce() -> I) -> Result<Lent<I>, Refused> {
+    pub fn lend<I: Loadable>(&mut self, key: u64, load: impl FnOnce(u64) -> I) -> Result<Lent<I>, Refused> {
         let host = TypeId::of::<I>();
         let found = self.loaded.iter().position(|loaded| loaded.is(host, key));
         let Some(at) = found else {
+            let instance = Box::new(load(self.number()));
             self.loaded.push(Loaded { host, key, instance: Held::Lent });
-            return Ok(Lent { at: self.loaded.len() - 1, instance: Box::new(load()) });
+            return Ok(Lent { at: self.loaded.len() - 1, instance });
         };
         let Held::Here(instance) = mem::replace(&mut self.loaded[at].instance, Held::Lent) else {
             return Err(Refused::Waiting);
@@ -234,6 +241,14 @@ impl Instances {
             Some(at) => self.loaded[at].instance = Held::Here(instance),
             None => self.loaded.push(Loaded { host, key, instance: Held::Here(instance) }),
         }
+    }
+
+    /// The number the instance loaded now takes: one no instance loaded into them before took.
+    fn number(&mut self) -> u64 {
+        let number = self.loads;
+        self.loads += 1;
+
+        number
     }
 
     /// Drops the instance of type `I` kept under `key`, for a host whose last actor that ran in it has ended: the
@@ -289,7 +304,7 @@ mod tests {
         // a drop that takes the wrong instance or none.
         let mut instances = Instances::default();
         let mut loads = 0;
-        let mut load = || {
+        let mut load = |_| {
             loads += 1;
             Made(loads)
         };
@@ -297,7 +312,7 @@ mod tests {
         let first = instances.get_or_load(1, &mut load).0;
         let again = instances.get_or_load(1, &mut load).0;
         let other_key = instances.get_or_load(2, &mut load).0;
-        let other_host = instances.get_or_load(1, || Other(99)).0;
+        let other_host = instances.get_or_load(1, |_| Other(99)).0;
         instances.drop_instance::<Made>(1);
         let reloaded = instances.get_or_load(1, &mut load).0;
         let kept = instances.get_or_load(2, &mut load).0;
@@ -310,12 +325,12 @@ mod tests {
         // Catches a lend that loads a second instance while the first is out, one that gives out the same instance
         // twice, a lend of one key or host that takes another's out, and a give back that loses what was lent.
         let mut instances = Instances::default();
-        instances.get_or_load(1, || Made(7));
+        instances.get_or_load(1, |_| Made(7));
 
-        let lent = instances.lend(1, || Made(0));
-        let again = instances.lend(1, || Made(0)).err();
-        let other = instances.lend(2, || Made(8)).map(|made| made.0);
-        let elsewhere = instances.get_or_load(1, || Other(9)).0;
+        let lent = instances.lend(1, |_| Made(0));
+        let again = instances.lend(1, |_| Made(0)).err();
+        let other = instances.lend(2, |_| Made(8)).map(|made| made.0);
+        let elsewhere = instances.get_or_load(1, |_| Other(9)).0;
         let reached = instances.get::<Made>(1).is_some();
         let Ok(lent) = lent else {
             panic!("an instance no call has is lent");
