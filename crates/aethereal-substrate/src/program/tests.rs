@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::Bootstrap;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Root, Seated, Top};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Publisher, Root, Seated, Top};
 use aethereal_data::config::{ConfigError, ConfigFault};
-use aethereal_data::{ActorPath, JsonFault, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
 use core::error::Error;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -291,6 +291,63 @@ impl<H: Host + Serves<Began>> Bootstrap<H> for Waiter {
     }
 }
 
+/// What a publishing root is made from: the program's one publisher.
+#[derive(Bound)]
+#[kind(name = "test.program.publishes")]
+struct Publishes {
+    publisher: Given<Publisher>,
+}
+
+/// A root that asks for the program's one publisher as it bootstraps and takes it from its config as it begins, as the
+/// root that holds a program's code does (ADR-0054).
+macro_rules! publishing {
+    ($name:ident, $named:literal) => {
+        #[derive(Bound)]
+        #[kind(name = $named)]
+        struct $name {
+            publisher: Handle<Publisher>,
+        }
+
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Publishes;
+            type Key = ();
+            type Handles = ();
+            type BeginSends = ();
+            type EndSends = ();
+
+            fn begin(config: Publishes, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+                Ok(Self { publisher: turn.take(config.publisher)? })
+            }
+
+            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl<H: Host + Serves<Began>> Bootstrap<H> for $name {
+            const SECTION: &'static str = $named;
+            type Settings = ();
+            type Needs = ();
+            type Provides = ();
+
+            async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+                let publisher = cx.publisher()?;
+                cx.begin(&(), Publishes { publisher })?;
+                cx.serve(Began { root: Self::NAME, values: Vec::new() });
+
+                Ok(())
+            }
+        }
+    };
+}
+
+publishing!(Shelf, "test.program.shelf");
+publishing!(Press, "test.program.press");
+
 /// The roots of the program the tests run, the last listed first.
 type Roots = (Scene, (Keeper, (Counter, (Lamp, ()))));
 
@@ -445,5 +502,22 @@ fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
     assert_eq!(bench.served.borrow().began, expected);
     assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(4));
     assert_eq!((bench.pace, bench.hops), (5, 1));
+    Ok(())
+}
+
+#[test]
+fn a_second_root_that_asks_for_the_publisher_fails_the_bootstrap() -> Outcome {
+    // Catches a program that hands out a second publisher, so two roots could each say which blob a kind is, and a
+    // first one handed to no root's config, which its root could then not take.
+    let hosted = Hosted::default();
+
+    let refused =
+        pollster::block_on(Bench::program().root::<Shelf>().root::<Press>().settle()?.bootstrap(Rc::clone(&hosted)));
+
+    let Err(ProgramError::Root { root, why: Unbuilt::SecondPublisher }) = refused else {
+        return Err("the press is refused the publisher the shelf was handed".into());
+    };
+    assert_eq!(root, Press::NAME);
+    assert_eq!(hosted.borrow().began, [began::<Shelf>(&[])]);
     Ok(())
 }

@@ -60,6 +60,12 @@ impl Table for Listed {
         None
     }
 
+    /// Nothing is published to a table of listed actors.
+    #[cfg(feature = "std")]
+    fn head(&self, _: &KindName) -> Option<Bytes> {
+        None
+    }
+
     fn now(&self) -> Time {
         Time::ZERO
     }

@@ -32,6 +32,7 @@ pub use fuse::Hops;
 pub use plan::{Plan, Share, Split, SplitCost, Whole, Workers};
 pub use setup::Setup;
 
+use crate::heads::{HEADS, Head, Heads};
 use crate::id::root_id;
 use crate::log;
 use crate::stages::Stages;
@@ -49,10 +50,10 @@ use aethereal_actor::{
     Above, ActorName, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing,
     Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances, JobId,
     JobType, Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
-    Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie, Tied, Time,
-    Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Stood, Submitted, Tie,
+    Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
-use aethereal_data::{ActorId, ActorPath, Encode, KindId, PathSegment, Writer};
+use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
@@ -97,6 +98,10 @@ pub struct Engine {
     watches: Folded<Watches>,
     /// Who subscribes to each stage of the lifecycle, and whether an actor asked the program to stop (ADR-0020).
     stages: Folded<Stages>,
+    /// The head of each kind code has been published for, each numbered (ADR-0054).
+    heads: Folded<Heads>,
+    /// Whether the engine's one publisher has been handed to a root yet (ADR-0054).
+    publishing: Publishing,
     /// Where the program's lifecycle stands, and the stage whose chain it waits on (ADR-0020).
     staging: Staging,
     /// What each actor logged most recently.
@@ -218,6 +223,18 @@ pub enum CodeRefused {
     Unfit(Unfit),
 }
 
+/// Why the engine handed out no publisher: it makes one in its life, and has handed that one out (ADR-0054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecondPublisher;
+
+/// Whether the engine has handed out its one publisher (ADR-0054).
+enum Publishing {
+    /// Not yet: the engine makes it as it hands it.
+    Unhanded,
+    /// To the config of a root, which holds the right from then on, or dropped it.
+    Handed,
+}
+
 /// Which engine of the process an engine is: the engines a process makes are numbered in turn.
 struct Number(u32);
 
@@ -312,6 +329,8 @@ pub struct Reading<'a> {
     log: &'a Folded<Log>,
     /// What the engine keeps for its figures, as the step began (ADR-0053).
     stats: &'a Stats,
+    /// The heads as the step began, which a spawn from a head reads (ADR-0054).
+    heads: &'a Folded<Heads>,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -413,6 +432,7 @@ struct Routes {
     streams: Routed<Streams>,
     watches: Routed<Watches>,
     stages: Routed<Stages>,
+    heads: Routed<Heads>,
     births: Births,
     /// The resources given with the mail its turns sent, to hand to their receivers (ADR-0010).
     gifts: Gifts,
@@ -456,6 +476,8 @@ impl Engine {
             streams: Folded::new(parts),
             watches: Folded::new(parts),
             stages: Folded::new(parts),
+            heads: Folded::new(parts),
+            publishing: Publishing::Unhanded,
             staging: Staging::new(),
             log: Folded::new(parts),
             stats: Stats::new(parts),
@@ -721,6 +743,33 @@ impl Engine {
         given
     }
 
+    /// Makes the engine's one publisher and hands it in, for the config of the root that is to say which blob each kind
+    /// is (ADR-0010, ADR-0054): the engine holds it until [`Self::add_root`] is given that config, as it holds what
+    /// [`Self::hand`] hands in. The engine makes one in its life, so a program has one, and only its holder publishes.
+    ///
+    /// # Errors
+    ///
+    /// [`SecondPublisher`] once the engine has handed its publisher out.
+    pub fn publisher(&mut self) -> Result<Given<Publisher>, SecondPublisher> {
+        let is_handed = matches!(self.publishing, Publishing::Handed);
+        if is_handed {
+            return Err(SecondPublisher);
+        }
+        let ticket = self.ticket();
+        let (gift, given) = Publisher::handed(ticket);
+        self.handed.push(gift);
+        self.publishing = Publishing::Handed;
+
+        Ok(given)
+    }
+
+    /// The head of the kind `kind`, as of the last step: the blob last published for it, and that publish's number
+    /// (ADR-0054). Nothing when no code has been published for it.
+    #[must_use]
+    pub fn head(&self, kind: &KindName) -> Option<&Head> {
+        self.heads.shard(HEADS).head(kind)
+    }
+
     /// A ticket for a resource the chassis hands in: from the writer of what is sent between steps, which no other
     /// resource has had.
     fn ticket(&mut self) -> u64 {
@@ -833,6 +882,7 @@ impl Engine {
             cycle: self.staging.cycle(),
             log: &self.log,
             stats: &self.stats,
+            heads: &self.heads,
         };
         let mut keeping = Keeping::default();
         // The root begins in the part it is seated in, lent that part's instances.
@@ -900,6 +950,7 @@ impl Engine {
         self.lives.fold_records(sent, written);
         self.watches.fold(&effects, &context, written);
         self.stages.fold(&effects, &context, written);
+        self.heads.fold(&effects, &context, written);
         self.streams.fold_records(mailed.into_iter().map(|mailed| stream::entry(mailed, &context)), written);
         self.give_between(gifts, root);
         // Most `begin`s run no job.
@@ -981,6 +1032,7 @@ impl Engine {
             cycle: self.staging.cycle(),
             log: &self.log,
             stats: &self.stats,
+            heads: &self.heads,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -1040,6 +1092,7 @@ impl Engine {
             self.streams.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), written);
             self.watches.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), written);
             self.stages.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.stages), written);
+            self.heads.fold_part(part, rows.iter_mut().map(|lists| &mut lists.routes.heads), written);
             self.watches.at_mut(part).settle(&mut forward);
             self.expected[part] = self.expect(part);
             self.waiting.push(part);
@@ -1203,6 +1256,7 @@ impl Engine {
             cycle: self.staging.cycle(),
             log: &self.log,
             stats: &self.stats,
+            heads: &self.heads,
         }
     }
 
@@ -1351,6 +1405,7 @@ impl Engine {
         self.streams.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.streams), &mut pile.streams);
         self.watches.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.watches), &mut pile.watches);
         self.stages.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.stages), &mut pile.stages);
+        self.heads.fill(part, rows.iter_mut().map(|lists| &mut lists.routes.heads), &mut pile.heads);
         pile.births.extend(rows.iter_mut().map(|lists| lists.routes.births.take(part)));
         pile.gifts.extend(rows.iter_mut().map(|lists| lists.routes.gifts.take(part)));
         pile.seating = mem::replace(&mut self.seating[part], empty);
@@ -1374,6 +1429,7 @@ impl Engine {
         self.streams.empty(part, &mut pile.streams, rows.iter_mut().map(|lists| &mut lists.routes.streams));
         self.watches.empty(part, &mut pile.watches, rows.iter_mut().map(|lists| &mut lists.routes.watches));
         self.stages.empty(part, &mut pile.stages, rows.iter_mut().map(|lists| &mut lists.routes.stages));
+        self.heads.empty(part, &mut pile.heads, rows.iter_mut().map(|lists| &mut lists.routes.heads));
         for (row, bucket) in rows.iter_mut().zip(pile.births.drain(..)) {
             row.routes.births.give_back(part, bucket);
         }
@@ -1440,6 +1496,7 @@ impl Engine {
             streams: self.streams.routed(),
             watches: self.watches.routed(),
             stages: self.stages.routed(),
+            heads: self.heads.routed(),
             births: Births::of_parts(self.seating.len()),
             gifts: Gifts::of_parts(self.seating.len()),
         };
@@ -1760,6 +1817,7 @@ impl Reading<'_> {
                             cycle: self.cycle,
                             log: self.log,
                             stats: self.stats,
+                            heads: self.heads,
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
@@ -1778,6 +1836,7 @@ impl Reading<'_> {
                             cycle: self.cycle,
                             log: self.log,
                             stats: self.stats,
+                            heads: self.heads,
                         };
                         asked.next_turn();
                         let source = handed.source();
@@ -1888,6 +1947,7 @@ impl Reading<'_> {
                 cycle: self.cycle,
                 log: self.log,
                 stats: self.stats,
+                heads: self.heads,
             };
             let closing = Closing::new(me, path, above, &table, asked, instances, keeps, sent, why);
             let mut ended = actor.end(closing);
@@ -1958,6 +2018,7 @@ impl Reading<'_> {
             cycle: self.cycle,
             log: self.log,
             stats: self.stats,
+            heads: self.heads,
         };
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
@@ -1981,6 +2042,7 @@ impl Reading<'_> {
                     cycle: self.cycle,
                     log: self.log,
                     stats: self.stats,
+                    heads: self.heads,
                 };
                 let bytes = lists.fusing.bytes(&hop);
                 let answering = waiting.answering(hop.tie);
@@ -2402,8 +2464,9 @@ impl Routes {
         let gives = self.births.records(part) + self.gifts.records(part);
 
         let lifecycle = self.watches.records(part) + self.stages.records(part);
+        let code = self.heads.records(part);
 
-        views + self.streams.records(part) + lifecycle + gives
+        views + self.streams.records(part) + lifecycle + code + gives
     }
 
     /// Routes one effect, emitted in `context`, into every view's bucket but the streams'.
@@ -2414,6 +2477,7 @@ impl Routes {
         self.lives.route(effect, context);
         self.watches.route(effect, context);
         self.stages.route(effect, context);
+        self.heads.route(effect, context);
     }
 }
 

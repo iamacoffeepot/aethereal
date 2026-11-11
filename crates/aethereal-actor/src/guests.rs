@@ -34,6 +34,10 @@ pub trait Guests: Send + Sync {
     /// code, or makes no such type.
     fn made(&self, code: BlobId, declared: &'static Declared) -> Option<&'static BlobType>;
 
+    /// Whether the blob `code` makes an actor type of the kind `kind`: what a publish of the blob as that kind's head
+    /// is checked against (ADR-0009, ADR-0054). False when the blob is not code.
+    fn makes(&self, code: BlobId, kind: &KindName) -> bool;
+
     /// Begins `birth`'s child, of the type `made`, from its config's bytes `config`, in its part's instance of the
     /// blob `code` pins, which `made` is of, and answers with the child as the engine runs it: the child keeps a
     /// clone of `code` while it runs (ADR-0009).
@@ -75,6 +79,10 @@ impl Guests for NoGuests {
 
     fn made(&self, _: BlobId, _: &'static Declared) -> Option<&'static BlobType> {
         None
+    }
+
+    fn makes(&self, _: BlobId, _: &KindName) -> bool {
+        false
     }
 
     fn begin(
