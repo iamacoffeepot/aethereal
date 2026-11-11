@@ -2388,11 +2388,10 @@ mod tests {
     use aethereal_actor::{JobId, JobType};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain, Schema, SchemaNodes};
     use aethereal_guest_echo as echo;
-    use aethereal_substrate::harness::{Harness, Unheard};
+    use aethereal_substrate::harness::{Harness, Jobbed, Unheard};
     use aethereal_substrate::{CodeRefused, Engine, Inline, Jobs, Setup, Taken};
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// The echo guest the build script built.
     const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
@@ -2405,6 +2404,19 @@ mod tests {
         };
 
         (engine, code)
+    }
+
+    /// The state of the live native actor `id` stands for, which is a `T`, as of the last step: what it kept of what
+    /// it was told and answered, which is how a test reads what it saw.
+    fn state<T: 'static>(engine: &Engine, id: ActorId) -> &T {
+        let Some(seat) = engine.table().seat(id) else {
+            panic!("the actor is live");
+        };
+        let Some(state) = engine.state(Seated { id, seat }) else {
+            panic!("the actor's state is here, and of the type asked for");
+        };
+
+        state
     }
 
     /// A ping, as the echo guest declares it: the same name and layout, so the same kind.
@@ -2427,13 +2439,13 @@ mod tests {
         pings: u64,
     }
 
-    /// The pongs every pinger has been answered with.
-    static PONGS: AtomicU64 = AtomicU64::new(0);
-
-    /// A native actor that pings the echo guest, and pings it again on each pong while it has pings left.
+    /// A native actor that pings the echo guest, and pings it again on each pong while it has pings left, counting the
+    /// pongs it has been answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.pinger")]
-    struct Pinger;
+    struct Pinger {
+        pongs: u64,
+    }
 
     impl ChildOf for Pinger {
         type Parent = Top;
@@ -2452,7 +2464,7 @@ mod tests {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
-            Ok(Self)
+            Ok(Self { pongs: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -2464,7 +2476,7 @@ mod tests {
         type Sends = (ToSender<Ping>,);
 
         fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            PONGS.fetch_add(1, Ordering::Relaxed);
+            self.pongs += 1;
             if pong.n > 0 {
                 turn.reply(&Ping { n: pong.n - 1 })?;
             }
@@ -2484,7 +2496,7 @@ mod tests {
         let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
-        let Ok(_) = engine.add_root::<Pinger>(&(), Volley { pings: 9 }) else {
+        let Ok(pinger) = engine.add_root::<Pinger>(&(), Volley { pings: 9 }) else {
             panic!("the pinger begins");
         };
         let clock = Monotonic::new();
@@ -2492,7 +2504,7 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        assert_eq!(PONGS.load(Ordering::Relaxed), 10);
+        assert_eq!(state::<Pinger>(&engine, pinger).pongs, 10);
     }
 
     /// The protocol the echo guest is asked through: a ping, answered with a pong.
@@ -2513,14 +2525,13 @@ mod tests {
         at: u64,
     }
 
-    /// What the questioner was answered, each pong with what it kept for its ping.
-    static QUESTIONED: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
-
-    /// A native actor that spawns the echo guest from its code and asks it two pings, keeping which each was.
+    /// A native actor that spawns the echo guest from its code and asks it two pings, keeping which each was, and keeps
+    /// what it was answered: each pong with what it kept for its ping.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.questioner")]
     struct Questioner {
         code: Bytes,
+        questioned: Vec<(u64, u64)>,
     }
 
     impl ChildOf for Questioner {
@@ -2571,9 +2582,7 @@ mod tests {
             let Answered::Yes(pong) = pong else {
                 return Ok(());
             };
-            if let Ok(mut questioned) = QUESTIONED.lock() {
-                questioned.push((pong.n, which.at));
-            }
+            self.questioned.push((pong.n, which.at));
 
             Ok(())
         }
@@ -2587,7 +2596,7 @@ mod tests {
             panic!("four is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 64));
-        let Ok(_) = engine.add_root::<Questioner>(&(), Questioner { code }) else {
+        let Ok(questioner) = engine.add_root::<Questioner>(&(), Questioner { code, questioned: Vec::new() }) else {
             panic!("the questioner begins");
         };
         let clock = Monotonic::new();
@@ -2595,16 +2604,11 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        let questioned = QUESTIONED.lock().map(|questioned| questioned.clone()).unwrap_or_default();
-        assert_eq!(questioned, [(0, 0), (10, 1)]);
+        assert_eq!(state::<Questioner>(&engine, questioner).questioned, [(0, 0), (10, 1)]);
     }
 
-    /// What a petitioner was answered: how its steward released what it held, which ping it was, and its pong's number
-    /// or why it had none.
-    type Petitioned = (u64, u64, Result<u64, Unanswered>);
-
-    /// What each petitioner was answered.
-    static PETITIONED: Mutex<Vec<Petitioned>> = Mutex::new(Vec::new());
+    /// What a petitioner was answered: which request it was, and its answer's number or why it had none.
+    type Petitioned = (u64, Result<u64, Unanswered>);
 
     /// What a petitioner is made from: the steward guest's code, and how the steward is to release what it holds.
     #[derive(aethereal_data::Bound)]
@@ -2615,11 +2619,12 @@ mod tests {
     }
 
     /// A native actor that spawns the steward guest from its code, asks it a ping, a weighing and a ping, one after
-    /// another, and tells it how to release them.
+    /// another, and tells it how to release them, keeping what it was answered.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.petitioner")]
     struct Petitioner {
         petitioning: Petitioning,
+        petitioned: Vec<Petitioned>,
     }
 
     impl ChildOf for Petitioner {
@@ -2636,7 +2641,7 @@ mod tests {
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
-            Ok(Self { petitioning })
+            Ok(Self { petitioning, petitioned: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -2704,10 +2709,8 @@ mod tests {
 
     impl Petitioner {
         /// Keeps what became of the request it asked `at`th.
-        fn petitioned(&self, at: u64, answered: Result<u64, Unanswered>) {
-            if let Ok(mut petitioned) = PETITIONED.lock() {
-                petitioned.push((self.petitioning.how, at, answered));
-            }
+        fn petitioned(&mut self, at: u64, answered: Result<u64, Unanswered>) {
+            self.petitioned.push((at, answered));
         }
     }
 
@@ -2722,21 +2725,25 @@ mod tests {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
             };
-            if let Ok(mut petitioned) = PETITIONED.lock() {
-                petitioned.clear();
-            }
             let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
+            let mut petitioners = Vec::new();
             for how in 0..5 {
-                let Ok(_) = engine.add_root::<Petitioner>(&how, Petitioning { code: code.clone(), how }) else {
+                let petitioning = Petitioning { code: code.clone(), how };
+                let Ok(petitioner) = engine.add_root::<Petitioner>(&how, petitioning) else {
                     panic!("the petitioner begins");
                 };
+                petitioners.push((how, petitioner));
             }
             let clock = Monotonic::new();
             while !engine.is_idle() {
                 engine.step(Time::ZERO, &clock);
             }
 
-            let mut petitioned = PETITIONED.lock().map(|petitioned| petitioned.clone()).unwrap_or_default();
+            let mut petitioned = Vec::new();
+            for (how, petitioner) in petitioners {
+                let answered = &state::<Petitioner>(&engine, petitioner).petitioned;
+                petitioned.extend(answered.iter().map(|(at, answer)| (how, *at, *answer)));
+            }
             petitioned.sort_by_key(|(how, at, _)| (*how, *at));
             let (unreplied, ended) = (Err(Unanswered::Unreplied), Err(Unanswered::Ended));
             let expected = [
@@ -2760,13 +2767,13 @@ mod tests {
         }
     }
 
-    /// What the shelver guest's parent was told: each pong's number, and a hundred and each book's length.
-    static SHELVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-
-    /// A native actor that spawns the shelver guest from its code and pings it, keeping what it is told.
+    /// A native actor that spawns the shelver guest from its code and pings it, keeping what it is told: each pong's
+    /// number, and a hundred and each book's length.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.shelving")]
-    struct Shelving;
+    struct Shelving {
+        shelved: Vec<u64>,
+    }
 
     impl ChildOf for Shelving {
         type Parent = Top;
@@ -2786,7 +2793,7 @@ mod tests {
             };
             turn.to(shelver).send(&echo::Ping { n: 3 })?;
 
-            Ok(Self)
+            Ok(Self { shelved: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -2798,9 +2805,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-            if let Ok(mut shelved) = SHELVED.lock() {
-                shelved.push(pong.n);
-            }
+            self.shelved.push(pong.n);
 
             Ok(())
         }
@@ -2811,9 +2816,7 @@ mod tests {
 
         fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
             let len = 100 + turn.read(&book.blob).len() as u64;
-            if let Ok(mut shelved) = SHELVED.lock() {
-                shelved.push(len);
-            }
+            self.shelved.push(len);
 
             Ok(())
         }
@@ -2824,7 +2827,7 @@ mod tests {
         // Catches the references in a guest's run of mail placed among the call's sends from the run's own first,
         // which pins the blobs of a run that does not come first on other mail.
         let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Shelving>(&(), Inquiring { code }) else {
+        let Ok(shelving) = engine.add_root::<Shelving>(&(), Inquiring { code }) else {
             panic!("the shelving begins");
         };
         let clock = Monotonic::new();
@@ -2832,12 +2835,11 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        let shelved = SHELVED.lock().map(|shelved| shelved.clone()).unwrap_or_default();
-        assert_eq!(shelved, [3, 103, 104]);
+        assert_eq!(state::<Shelving>(&engine, shelving).shelved, [3, 103, 104]);
     }
 
-    /// What the querent guest heard of each request it asked, by which it was: its pong's number, or why it had none.
-    static HEARD: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
+    /// What a guest heard of each request it asked, by which it was: its pong's number, or why it had none.
+    type Heard = (u64, Result<u64, Unanswered>);
 
     /// A native actor that spawns the querent guest from its code and has it ask, keeping what it hears: once more
     /// when it hears its first query's last request went unanswered.
@@ -2845,6 +2847,7 @@ mod tests {
     #[kind(name = "aether.test.inquirer")]
     struct Inquirer {
         querent: ActorRef<echo::Querent>,
+        heard: Vec<Heard>,
     }
 
     /// What an inquirer is made from: the querent guest's code.
@@ -2871,7 +2874,7 @@ mod tests {
             };
             turn.to(querent).send(&echo::Query { first: 0, pings: 2 })?;
 
-            Ok(Self { querent })
+            Ok(Self { querent, heard: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -2892,9 +2895,7 @@ mod tests {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
             };
-            if let Ok(mut all) = HEARD.lock() {
-                all.push(heard);
-            }
+            self.heard.push(heard);
 
             Ok(())
         }
@@ -2911,11 +2912,8 @@ mod tests {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
             };
-            if let Ok(mut heard) = HEARD.lock() {
-                heard.clear();
-            }
             let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
-            let Ok(_) = engine.add_root::<Inquirer>(&(), Inquiring { code }) else {
+            let Ok(inquirer) = engine.add_root::<Inquirer>(&(), Inquiring { code }) else {
                 panic!("the inquirer begins");
             };
             let clock = Monotonic::new();
@@ -2923,7 +2921,7 @@ mod tests {
                 engine.step(Time::ZERO, &clock);
             }
 
-            let mut heard = HEARD.lock().map(|heard| heard.clone()).unwrap_or_default();
+            let mut heard = state::<Inquirer>(&engine, inquirer).heard.clone();
             heard.sort_by_key(|(at, _)| *at);
             let unreplied = Err(Unanswered::Unreplied);
             let expected = [(0, Ok(0)), (1, Ok(10)), (2, unreplied), (3, Ok(30)), (4, unreplied)];
@@ -2931,14 +2929,13 @@ mod tests {
         }
     }
 
-    /// What the opener guests heard of the request each asked as it began, by which it was.
-    static OPENED: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
-
     /// A native actor that spawns the opener guest from its code, which stands up one more beneath it, and that one a
-    /// native inlet, keeping what they hear.
+    /// native inlet, keeping what they hear of the request each asked as it began, by which it was.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.opening")]
-    struct Opening;
+    struct Opening {
+        opened: Vec<Heard>,
+    }
 
     impl ChildOf for Opening {
         type Parent = Top;
@@ -2957,7 +2954,7 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             };
 
-            Ok(Self)
+            Ok(Self { opened: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -2973,9 +2970,7 @@ mod tests {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
             };
-            if let Ok(mut all) = OPENED.lock() {
-                all.push(heard);
-            }
+            self.opened.push(heard);
 
             Ok(())
         }
@@ -2991,12 +2986,9 @@ mod tests {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
             };
-            if let Ok(mut opened) = OPENED.lock() {
-                opened.clear();
-            }
             let engine = Engine::new(parts, 1024, 0, 1 << 20, hops).with_links(Links::default().with::<echo::Inlet>());
             let (mut engine, code) = with_echo(engine);
-            let Ok(_) = engine.add_root::<Opening>(&(), Inquiring { code }) else {
+            let Ok(opening) = engine.add_root::<Opening>(&(), Inquiring { code }) else {
                 panic!("the opening begins");
             };
             let clock = Monotonic::new();
@@ -3004,21 +2996,19 @@ mod tests {
                 engine.step(Time::ZERO, &clock);
             }
 
-            let mut opened = OPENED.lock().map(|opened| opened.clone()).unwrap_or_default();
+            let mut opened = state::<Opening>(&engine, opening).opened.clone();
             opened.sort_by_key(|(at, _)| *at);
             assert_eq!(opened, [(3, Ok(3)), (4, Ok(4)), (5, Ok(5))], "{parts} parts, {hops} hops");
         }
     }
 
-    /// What the stasher guest heard, as its stashing parent keeps it: how many bytes the blob it kept held, and its
-    /// pong's number.
-    static STASHED: Mutex<Vec<(u64, Result<u64, Unanswered>)>> = Mutex::new(Vec::new());
-
     /// A native actor that spawns the stasher guest from its code and has it stash a blob of three bytes, keeping what
-    /// it hears.
+    /// it hears: how many bytes the blob it kept held, and its pong's number.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.stashing")]
-    struct Stashing;
+    struct Stashing {
+        stashed: Vec<Heard>,
+    }
 
     impl ChildOf for Stashing {
         type Parent = Top;
@@ -3038,7 +3028,7 @@ mod tests {
             };
             turn.to(stasher).send(&echo::Stash { len: 3 })?;
 
-            Ok(Self)
+            Ok(Self { stashed: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3054,9 +3044,7 @@ mod tests {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
             };
-            if let Ok(mut all) = STASHED.lock() {
-                all.push(heard);
-            }
+            self.stashed.push(heard);
 
             Ok(())
         }
@@ -3071,11 +3059,8 @@ mod tests {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
             };
-            if let Ok(mut stashed) = STASHED.lock() {
-                stashed.clear();
-            }
             let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, hops));
-            let Ok(_) = engine.add_root::<Stashing>(&(), Inquiring { code }) else {
+            let Ok(stashing) = engine.add_root::<Stashing>(&(), Inquiring { code }) else {
                 panic!("the stashing begins");
             };
             let clock = Monotonic::new();
@@ -3083,13 +3068,9 @@ mod tests {
                 engine.step(Time::ZERO, &clock);
             }
 
-            let stashed = STASHED.lock().map(|stashed| stashed.clone()).unwrap_or_default();
-            assert_eq!(stashed, [(3, Ok(0))], "{parts} parts, {hops} hops");
+            assert_eq!(state::<Stashing>(&engine, stashing).stashed, [(3, Ok(0))], "{parts} parts, {hops} hops");
         }
     }
-
-    /// The pongs the lender has been told.
-    static LENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
     /// The word to a lender to lend its nester a book.
     #[derive(Plain)]
@@ -3102,6 +3083,7 @@ mod tests {
     #[kind(name = "aether.test.lender")]
     struct Lender {
         nester: ActorRef<echo::Nester>,
+        lent: Vec<u64>,
     }
 
     impl ChildOf for Lender {
@@ -3121,7 +3103,7 @@ mod tests {
             };
             turn.to(turn.me()).send(&Lend)?;
 
-            Ok(Self { nester })
+            Ok(Self { nester, lent: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3146,9 +3128,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut lent) = LENT.lock() {
-                lent.push(pong.n);
-            }
+            self.lent.push(pong.n);
 
             Ok(())
         }
@@ -3163,13 +3143,10 @@ mod tests {
             let Some(parts) = NonZeroUsize::new(parts) else {
                 panic!("no engine has no parts");
             };
-            if let Ok(mut lent) = LENT.lock() {
-                lent.clear();
-            }
             let engine =
                 Engine::new(parts, 1024, 0, 1 << 20, hops).with_links(Links::default().with::<echo::Nestling>());
             let (mut engine, code) = with_echo(engine);
-            let Ok(_) = engine.add_root::<Lender>(&(), Inquiring { code }) else {
+            let Ok(lender) = engine.add_root::<Lender>(&(), Inquiring { code }) else {
                 panic!("the lender begins");
             };
             let clock = Monotonic::new();
@@ -3177,8 +3154,7 @@ mod tests {
                 engine.step(Time::ZERO, &clock);
             }
 
-            let lent = LENT.lock().map(|lent| lent.clone()).unwrap_or_default();
-            assert_eq!(lent, [203], "{parts} parts, {hops} hops");
+            assert_eq!(state::<Lender>(&engine, lender).lent, [203], "{parts} parts, {hops} hops");
         }
     }
 
@@ -3187,13 +3163,13 @@ mod tests {
     #[kind(name = "aether.guest.shut")]
     struct Shut;
 
-    /// The pongs the closer has been answered with.
-    static CLOSER_PONGS: AtomicU64 = AtomicU64::new(0);
-
-    /// A native actor that sends the echo guest a ping, the word to close, and another ping, all in its `begin`.
+    /// A native actor that sends the echo guest a ping, the word to close, and another ping, all in its `begin`, and
+    /// counts the pongs it is answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.closer")]
-    struct Closer;
+    struct Closer {
+        pongs: u64,
+    }
 
     impl ChildOf for Closer {
         type Parent = Top;
@@ -3212,7 +3188,7 @@ mod tests {
                 turn.to(echo).send(&Ping { n: 0 })?.send(&Shut)?.send(&Ping { n: 0 })?;
             }
 
-            Ok(Self)
+            Ok(Self { pongs: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3224,7 +3200,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            CLOSER_PONGS.fetch_add(1, Ordering::Relaxed);
+            self.pongs += 1;
 
             Ok(())
         }
@@ -3241,7 +3217,7 @@ mod tests {
         let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
-        let Ok(_) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
+        let Ok(closer) = engine.add_root::<Closer>(&(), Volley { pings: 0 }) else {
             panic!("the closer begins");
         };
         let Some(seat) = engine.table().seat(echo) else {
@@ -3255,7 +3231,7 @@ mod tests {
 
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(!failed, "the echo closed, and did not fail");
-        assert_eq!(CLOSER_PONGS.load(Ordering::Relaxed), 1);
+        assert_eq!(state::<Closer>(&engine, closer).pongs, 1);
     }
 
     #[test]
@@ -3280,15 +3256,13 @@ mod tests {
         assert_eq!(named, Some((aethereal_actor::ActorName::Path(path), 1)));
     }
 
-    /// Which callers have been answered, a bit for each, and how many answers there were.
-    static CALLERS_ANSWERED: AtomicU64 = AtomicU64::new(0);
-    static CALLER_ANSWERS: AtomicU64 = AtomicU64::new(0);
-
-    /// A native actor that pings the echo guest once as it begins, and notes its answer under its key.
+    /// A native actor that pings the echo guest once as it begins, and keeps the number of each pong it is answered
+    /// with, its own or another's.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.caller")]
     struct Caller {
         key: u64,
+        answered: Vec<u64>,
     }
 
     impl ChildOf for Caller {
@@ -3308,7 +3282,7 @@ mod tests {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
-            Ok(Self { key: volley.pings })
+            Ok(Self { key: volley.pings, answered: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3320,11 +3294,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            let is_own = pong.n == self.key;
-            if is_own {
-                CALLERS_ANSWERED.fetch_or(1 << self.key, Ordering::Relaxed);
-            }
-            CALLER_ANSWERS.fetch_add(1, Ordering::Relaxed);
+            self.answered.push(pong.n);
 
             Ok(())
         }
@@ -3341,28 +3311,34 @@ mod tests {
         let Ok(_) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
             panic!("the echo begins");
         };
-        let callers = 50;
-        for key in 0..callers {
-            let Ok(_) = engine.add_root::<Caller>(&key, Volley { pings: key }) else {
+        let mut callers = Vec::new();
+        for key in 0..50 {
+            let Ok(caller) = engine.add_root::<Caller>(&key, Volley { pings: key }) else {
                 panic!("a caller begins");
             };
+            callers.push(caller);
         }
         let clock = Monotonic::new();
         while !engine.is_idle() {
             engine.step(Time::ZERO, &clock);
         }
 
-        assert_eq!(CALLERS_ANSWERED.load(Ordering::Relaxed), (1 << callers) - 1);
-        assert_eq!(CALLER_ANSWERS.load(Ordering::Relaxed), callers);
+        let answered: Vec<(u64, Vec<u64>)> = callers
+            .into_iter()
+            .map(|caller| state::<Caller>(&engine, caller))
+            .map(|caller| (caller.key, caller.answered.clone()))
+            .collect();
+        let each_its_own: Vec<(u64, Vec<u64>)> = (0..50).map(|key| (key, vec![key])).collect();
+        assert_eq!(answered, each_its_own);
     }
 
-    /// The pongs the volleyer has been answered with.
-    static VOLLEYER_PONGS: AtomicU64 = AtomicU64::new(0);
-
-    /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob.
+    /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob, counting
+    /// the pongs it is answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.volleyer")]
-    struct Volleyer;
+    struct Volleyer {
+        pongs: u64,
+    }
 
     impl ChildOf for Volleyer {
         type Parent = Top;
@@ -3385,7 +3361,7 @@ mod tests {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
-            Ok(Self)
+            Ok(Self { pongs: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3397,7 +3373,7 @@ mod tests {
         type Sends = (ToSender<Ping>,);
 
         fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            VOLLEYER_PONGS.fetch_add(1, Ordering::Relaxed);
+            self.pongs += 1;
             if pong.n > 0 {
                 turn.reply(&Ping { n: pong.n - 1 })?;
             }
@@ -3406,13 +3382,12 @@ mod tests {
         }
     }
 
-    /// The time the timekeeper guest last answered with.
-    static TOLD: AtomicU64 = AtomicU64::new(0);
-
-    /// A native actor that asks the timekeeper guest the time as it begins, and keeps what it is told.
+    /// A native actor that asks the timekeeper guest the time as it begins, and keeps the time it was last told.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.time_asker")]
-    struct TimeAsker;
+    struct TimeAsker {
+        told: u64,
+    }
 
     impl ChildOf for TimeAsker {
         type Parent = Top;
@@ -3431,7 +3406,7 @@ mod tests {
                 turn.to(keeper).send(&Ping { n: 0 })?;
             }
 
-            Ok(Self)
+            Ok(Self { told: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -3443,7 +3418,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            TOLD.store(pong.n, Ordering::Relaxed);
+            self.told = pong.n;
 
             Ok(())
         }
@@ -3459,14 +3434,14 @@ mod tests {
         let Ok(_) = engine.add_root_from::<echo::Timekeeper>(&code, &(), &echo::EchoConfig) else {
             panic!("the timekeeper begins");
         };
-        let Ok(_) = engine.add_root::<TimeAsker>(&(), Volley { pings: 0 }) else {
+        let Ok(asker) = engine.add_root::<TimeAsker>(&(), Volley { pings: 0 }) else {
             panic!("the asker begins");
         };
         let clock = Monotonic::new();
         engine.step(Time::from_nanos(5), &clock);
         engine.step(Time::from_nanos(9), &clock);
 
-        assert_eq!(TOLD.load(Ordering::Relaxed), 5);
+        assert_eq!(state::<TimeAsker>(&engine, asker).told, 5);
     }
 
     #[test]
@@ -3639,13 +3614,15 @@ mod tests {
         }
     }
 
-    /// Runs the foreman's jobs as [`Inline`] does, or holds each until it is let go of, and notes each job it is asked
-    /// to stop.
+    /// A host's runner of the foreman's jobs, which runs them as [`Inline`] does, or holds each until it is let go of.
+    /// A test reads what the engine asked of it from the engine's own record, [`stopped`].
     struct Holding {
         inline: Inline,
         holds: bool,
+        /// The jobs it holds. A runner is handed jobs through `&self` from wherever the engine runs, as [`Jobs`] is
+        /// `Send` and `Sync`, so what it keeps between being handed a job and letting it go is behind a lock: no mail
+        /// orders it.
         held: Mutex<Vec<(JobId, JobType, Taken)>>,
-        stopped: Mutex<Vec<JobId>>,
     }
 
     impl Holding {
@@ -3653,7 +3630,7 @@ mod tests {
         fn new(holds: bool) -> Arc<Self> {
             let inline = Inline::new(Arc::new(Services::none()));
 
-            Arc::new(Self { inline, holds, held: Mutex::default(), stopped: Mutex::default() })
+            Arc::new(Self { inline, holds, held: Mutex::default() })
         }
 
         /// Runs each job it holds.
@@ -3662,13 +3639,6 @@ mod tests {
             for (id, of, job) in held {
                 self.inline.start(id, of, job);
             }
-        }
-
-        /// The jobs it was asked to stop, by their counts.
-        fn stopped(&self) -> Vec<u64> {
-            let stopped = self.stopped.lock().map(|stopped| stopped.clone()).unwrap_or_default();
-
-            stopped.iter().map(|id| id.mail().count).collect()
         }
     }
 
@@ -3683,20 +3653,26 @@ mod tests {
             }
         }
 
-        fn stop(&self, id: JobId) {
-            if let Ok(mut stopped) = self.stopped.lock() {
-                stopped.push(id);
-            }
-        }
+        fn stop(&self, _: JobId) {}
 
         fn most(&self) -> usize {
             usize::MAX
         }
     }
 
+    /// The jobs `engine` has asked its host to stop since this was last asked, by their counts, as it records them.
+    fn stopped(engine: &mut Engine) -> Vec<u64> {
+        let stops = engine.take_jobbed().into_iter().filter_map(|jobbed| match jobbed {
+            Jobbed::Stopped(id) => Some(id.mail().count),
+            Jobbed::Started { .. } => None,
+        });
+
+        stops.collect()
+    }
+
     /// An engine of `parts` parts and `hops` hops whose jobs `jobs` runs, letting its guests run the foreman's jobs, the
     /// foreman guest begun in it, and the bosses of each of `orders`, by their keys and orders, begun after it
-    /// together, each settled before the next.
+    /// together, each settled before the next. It records its jobs from the start, so [`stopped`] reads every stop.
     fn foreman(parts: usize, hops: usize, jobs: Arc<Holding>, orders: &[&[(u64, u64)]]) -> (Engine, ActorId) {
         let foremans = vec![JobType::of::<echo::Chore>(), JobType::of::<echo::Measure>()];
 
@@ -3716,6 +3692,7 @@ mod tests {
         };
         let setup = Engine::new(parts, 1024, 0, 1 << 20, hops).with_jobs(jobs).with_guest_jobs(types);
         let (mut engine, code) = with_echo(setup);
+        engine.record_jobs();
         let Ok(foreman) = engine.add_root_from::<echo::Foreman>(&code, &(), &echo::EchoConfig) else {
             panic!("the foreman begins");
         };
@@ -3790,7 +3767,7 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(lines(&engine, foreman), ["ran 1", "ran 3 and 4", "ran 7 and 8", "called off"]);
-        assert_eq!(holding.stopped(), [1, 3, 4, 7, 8]);
+        assert_eq!(stopped(&mut engine), [1, 3, 4, 7, 8]);
     }
 
     #[test]
@@ -3855,7 +3832,7 @@ mod tests {
         let Ok(_) = engine.add_root_from::<echo::Mirror>(&code, &(), &echo::EchoConfig) else {
             panic!("the mirror begins");
         };
-        let Ok(_) = engine.add_root::<Volleyer>(&(), Volley { pings: 3 }) else {
+        let Ok(volleyer) = engine.add_root::<Volleyer>(&(), Volley { pings: 3 }) else {
             panic!("the volleyer begins");
         };
         let Some(seat) = engine.table().seat(echo) else {
@@ -3869,7 +3846,7 @@ mod tests {
 
         let failed = engine.log(echo).any(|entry| matches!(entry, aethereal_actor::Entry::Failed(_)));
         assert!(!failed, "the echo ran on in its instance");
-        assert_eq!(VOLLEYER_PONGS.load(Ordering::Relaxed), 4);
+        assert_eq!(state::<Volleyer>(&engine, volleyer).pongs, 4);
     }
 
     /// The word to crash, as the echo guest declares it.
@@ -3991,22 +3968,44 @@ mod tests {
     #[kind(name = "aether.guest.grow")]
     struct Grow;
 
-    /// What an asker pings, and which of [`ANSWERS`] it keeps its answers in.
+    /// What an asker pings.
     #[derive(Plain)]
     #[kind(name = "aether.test.asks")]
     struct Asks {
         paths: Vec<ActorPath>,
-        tally: u64,
     }
 
-    /// The answers each test's askers were given, by the tally the test keeps them in.
-    static ANSWERS: [Mutex<Vec<u64>>; 16] = [const { Mutex::new(Vec::new()) }; 16];
+    /// A native actor of these tests that keeps a number for each answer, ping, or light it is handed, in its own
+    /// state: what a test reads it saw through.
+    trait Tallies: 'static {
+        /// What it has kept, in the order it kept it.
+        fn tally(&self) -> &[u64];
+    }
+
+    /// What the live native actor `id` stands for, a `T`, has kept.
+    fn kept<T: Tallies>(engine: &Engine, id: ActorId) -> &[u64] {
+        state::<T>(engine, id).tally()
+    }
+
+    /// `kept`, in order of size: for what several actors kept, or one kept in no order a test reasons about.
+    fn sorted<'kept>(kept: impl IntoIterator<Item = &'kept [u64]>) -> Vec<u64> {
+        let mut sorted: Vec<u64> = kept.into_iter().flatten().copied().collect();
+        sorted.sort_unstable();
+
+        sorted
+    }
 
     /// A native actor that pings each actor at the paths it is given with a ping of zero, and keeps what each answers.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.asker")]
     struct Asker {
-        tally: u64,
+        answers: Vec<u64>,
+    }
+
+    impl Tallies for Asker {
+        fn tally(&self) -> &[u64] {
+            &self.answers
+        }
     }
 
     impl ChildOf for Asker {
@@ -4027,7 +4026,7 @@ mod tests {
                 }
             }
 
-            Ok(Self { tally: asks.tally })
+            Ok(Self { answers: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4039,9 +4038,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
-                answers.push(pong.n);
-            }
+            self.answers.push(pong.n);
 
             Ok(())
         }
@@ -4111,17 +4108,6 @@ mod tests {
         }
     }
 
-    /// The answers kept in `tally`, in order.
-    fn answers(tally: usize) -> Vec<u64> {
-        let Ok(answers) = ANSWERS[tally].lock() else {
-            panic!("no asker panicked holding the answers");
-        };
-        let mut answers = answers.clone();
-        answers.sort_unstable();
-
-        answers
-    }
-
     #[test]
     fn a_guest_spawns_children_that_answer_from_their_own_state() {
         // Catches a spawn in a guest's `begin`, one beneath a child in the child's `begin`, or one in a turn, that
@@ -4135,12 +4121,12 @@ mod tests {
         let first = adder(&brood_path(), 0);
         let paths =
             vec![adder(&first, 0), first, adder(&brood_path(), 1), adder(&brood_path(), 2), adder(&brood_path(), 3)];
-        let Ok(_) = engine.add_root::<Asker>(&0, Asks { paths, tally: 0 }) else {
+        let Ok(asker) = engine.add_root::<Asker>(&0, Asks { paths }) else {
             panic!("the asker begins");
         };
         settle(&mut engine);
 
-        assert_eq!(answers(0), [1, 11, 21, 31, 1001]);
+        assert_eq!(sorted([kept::<Asker>(&engine, asker)]), [1, 11, 21, 31, 1001]);
     }
 
     #[test]
@@ -4165,28 +4151,33 @@ mod tests {
         let first = adder(&brood_path(), 0);
         let mut paths: Vec<ActorPath> = (0..8).map(|key| adder(&brood_path(), key)).collect();
         paths.push(adder(&first, 0));
-        let Ok(_) = engine.add_root::<Asker>(&1, Asks { paths, tally: 1 }) else {
+        let Ok(asker) = engine.add_root::<Asker>(&1, Asks { paths }) else {
             panic!("the asker begins");
         };
         settle(&mut engine);
 
-        assert_eq!(answers(1), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
+        assert_eq!(sorted([kept::<Asker>(&engine, asker)]), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
     }
 
-    /// What a keeper is made from: its key, and which of [`ANSWERS`] it keeps the pings it is sent in.
+    /// What a keeper is made from: its key.
     #[derive(Plain)]
     #[kind(name = "aether.test.keeps")]
     struct Keeps {
         key: u64,
-        tally: u64,
     }
 
-    /// A native actor that keeps each ping it is sent in its tally, with a hundred for each of its key.
+    /// A native actor that keeps each ping it is sent, with a hundred for each of its key.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.keeper")]
     struct Keeper {
         key: u64,
-        tally: u64,
+        pings: Vec<u64>,
+    }
+
+    impl Tallies for Keeper {
+        fn tally(&self) -> &[u64] {
+            &self.pings
+        }
     }
 
     impl ChildOf for Keeper {
@@ -4201,7 +4192,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(keeps: Keeps, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            Ok(Self { key: keeps.key, tally: keeps.tally })
+            Ok(Self { key: keeps.key, pings: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4213,9 +4204,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
-                answers.push(100 * self.key + ping.n);
-            }
+            self.pings.push(100 * self.key + ping.n);
 
             Ok(())
         }
@@ -4229,10 +4218,12 @@ mod tests {
             panic!("two is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let mut keepers = Vec::new();
         for key in [0, 1] {
-            let Ok(_) = engine.add_root::<Keeper>(&key, Keeps { key, tally: 2 }) else {
+            let Ok(keeper) = engine.add_root::<Keeper>(&key, Keeps { key }) else {
                 panic!("a keeper begins");
             };
+            keepers.push(keeper);
         }
         let keeper = |key: u64| ActorPath::from_root(&PathSegment::new(Keeper::NAME, &key));
         let seek = echo::Seek { paths: vec![keeper(0), keeper(9), keeper(1)] };
@@ -4241,16 +4232,17 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(2), [0, 102]);
+        assert_eq!(sorted(keepers.iter().map(|keeper| kept::<Keeper>(&engine, *keeper))), [0, 102]);
     }
 
     #[test]
     fn a_guest_asks_the_actor_at_a_typed_path_through_its_host() {
         // Catches a guest's ask at a path that its own table, which holds no other actor's type, never finds, and one
         // at a place that holds no actor that its host never answers, rather than answering it `Ended` (ADR-0022).
+        let mut rung = Vec::new();
         for has_bell in [true, false] {
             let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
-            let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 12 }) else {
+            let Ok(keeper) = engine.add_root::<Keeper>(&0, Keeps { key: 0 }) else {
                 panic!("the keeper begins");
             };
             if has_bell {
@@ -4258,14 +4250,16 @@ mod tests {
                     panic!("the bell begins");
                 };
             }
-            let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
-            let Ok(_) = engine.add_root_from::<echo::Ringer>(&code, &(), &echo::Ring { keeper }) else {
+            let path = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
+            let Ok(_) = engine.add_root_from::<echo::Ringer>(&code, &(), &echo::Ring { keeper: path }) else {
                 panic!("the ringer begins");
             };
             settle(&mut engine);
+            rung.extend_from_slice(kept::<Keeper>(&engine, keeper));
         }
 
-        assert_eq!(answers(12), [5, 90], "the bell's pong of one more than four, and the ask at no bell unanswered");
+        let rung = sorted([rung.as_slice()]);
+        assert_eq!(rung, [5, 90], "the bell's pong of one more than four, and the ask at no bell unanswered");
     }
 
     #[test]
@@ -4290,11 +4284,19 @@ mod tests {
         code: Bytes,
     }
 
-    /// A native actor that spawns a sexton of the echo guest's blob as it begins, and keeps in the fourteenth of
-    /// [`ANSWERS`] one when it was refused for the steeple it reaches, and zero when it was made.
+    /// A native actor that spawns a sexton of the echo guest's blob as it begins, and keeps one when it was refused for
+    /// the steeple it reaches, and zero when it was made.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.vestry")]
-    struct Vestry;
+    struct Vestry {
+        spawned: Vec<u64>,
+    }
+
+    impl Tallies for Vestry {
+        fn tally(&self) -> &[u64] {
+            &self.spawned
+        }
+    }
 
     impl ChildOf for Vestry {
         type Parent = Top;
@@ -4315,11 +4317,8 @@ mod tests {
                 Err(Refused::Missing(name)) if name == echo::Steeple::NAME => 1,
                 Err(_) => 2,
             };
-            if let Ok(mut answers) = ANSWERS[13].lock() {
-                answers.push(answer);
-            }
 
-            Ok(Self)
+            Ok(Self { spawned: vec![answer] })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4331,17 +4330,18 @@ mod tests {
     fn a_native_turn_that_spawns_from_a_guest_s_blob_a_child_that_reaches_an_empty_typed_path_is_refused() {
         // Catches a spawn from a blob that does not check the paths its child's section says it reaches (ADR-0022).
         let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Vestry>(&0, Vestment { code: code.clone() }) else {
+        let Ok(first) = engine.add_root::<Vestry>(&0, Vestment { code: code.clone() }) else {
             panic!("the first vestry begins");
         };
         let Ok(_) = engine.add_root_from::<echo::Steeple>(&code, &(), &echo::EchoConfig) else {
             panic!("the steeple begins");
         };
-        let Ok(_) = engine.add_root::<Vestry>(&1, Vestment { code }) else {
+        let Ok(second) = engine.add_root::<Vestry>(&1, Vestment { code }) else {
             panic!("the second vestry begins");
         };
 
-        assert_eq!(answers(13), [0, 1]);
+        let spawned = (kept::<Vestry>(&engine, first), kept::<Vestry>(&engine, second));
+        assert_eq!(spawned, (&[1][..], &[0][..]), "refused while the steeple is empty, and made once it is not");
     }
 
     #[test]
@@ -4349,7 +4349,7 @@ mod tests {
         // Catches a guest's stage, sent as mail of its kind, taken by its host for mail the guest does not list, so
         // what its handler of the stage declares is not found and its send is refused (ADR-0020).
         let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 14 }) else {
+        let Ok(keeper_id) = engine.add_root::<Keeper>(&0, Keeps { key: 0 }) else {
             panic!("the keeper begins");
         };
         let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
@@ -4359,7 +4359,7 @@ mod tests {
         engine.start();
         settle(&mut engine);
 
-        assert_eq!(answers(14), [7]);
+        assert_eq!(kept::<Keeper>(&engine, keeper_id), [7]);
     }
 
     #[test]
@@ -4368,7 +4368,7 @@ mod tests {
         // yet, one its host's table holds, or finds one beneath an actor that has none, so what its host answers does
         // not cross intact (ADR-0022).
         let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 15 }) else {
+        let Ok(keeper_id) = engine.add_root::<Keeper>(&0, Keeps { key: 0 }) else {
             panic!("the keeper begins");
         };
         let keeper = ActorPath::from_root(&PathSegment::new(Keeper::NAME, &0u64));
@@ -4378,7 +4378,7 @@ mod tests {
         engine.start();
         settle(&mut engine);
 
-        assert_eq!(answers(15), [110]);
+        assert_eq!(kept::<Keeper>(&engine, keeper_id), [110]);
     }
 
     #[test]
@@ -4389,10 +4389,12 @@ mod tests {
             panic!("two is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let mut keepers = Vec::new();
         for key in [0, 1] {
-            let Ok(_) = engine.add_root::<Keeper>(&key, Keeps { key, tally: 9 }) else {
+            let Ok(keeper) = engine.add_root::<Keeper>(&key, Keeps { key }) else {
                 panic!("a keeper begins");
             };
+            keepers.push(keeper);
         }
         let keeper = |key: u64| ActorPath::from_root(&PathSegment::new(Keeper::NAME, &key));
         let seek = echo::Seek { paths: vec![keeper(0), keeper(1)] };
@@ -4401,22 +4403,26 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(9), [0, 101]);
+        assert_eq!(sorted(keepers.iter().map(|keeper| kept::<Keeper>(&engine, *keeper))), [0, 101]);
     }
 
-    /// What a shiner is made from: the tally it keeps the light of each lamp it is handed in.
+    /// What a shiner is made from: nothing.
     #[derive(Plain)]
     #[kind(name = "aether.test.shining")]
-    struct Shining {
-        tally: u64,
-    }
+    struct Shining;
 
-    /// A native actor that takes each lamp it is handed and keeps its light in its tally: what reads that a lamp came
-    /// through a guest whole, as only native code opens one.
+    /// A native actor that takes each lamp it is handed and keeps its light: what reads that a lamp came through a
+    /// guest whole, as only native code opens one.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.shiner")]
     struct Shiner {
-        tally: u64,
+        lights: Vec<u64>,
+    }
+
+    impl Tallies for Shiner {
+        fn tally(&self) -> &[u64] {
+            &self.lights
+        }
     }
 
     impl ChildOf for Shiner {
@@ -4430,8 +4436,8 @@ mod tests {
         type BeginSends = ();
         type EndSends = ();
 
-        fn begin(shining: Shining, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            Ok(Self { tally: shining.tally })
+        fn begin(_: Shining, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            Ok(Self { lights: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4446,9 +4452,7 @@ mod tests {
             for lamp in hand.lamps {
                 let mut lamp = turn.take(lamp)?;
                 let light = turn.open(&mut lamp)?.light;
-                if let Ok(mut answers) = ANSWERS[usize::try_from(self.tally).unwrap_or_default()].lock() {
-                    answers.push(light);
-                }
+                self.lights.push(light);
             }
 
             Ok(())
@@ -4500,25 +4504,26 @@ mod tests {
         }
     }
 
-    /// An engine running the echo blob, keeping the bearer for it, with a shiner keeping its lights in tally `tally`.
-    fn lit(tally: u64) -> (Engine, Bytes, ActorPath) {
+    /// An engine running the echo blob, keeping the bearer for it, with a shiner keeping its lights, and the shiner
+    /// by its path and its id.
+    fn lit() -> (Engine, Bytes, ActorPath, ActorId) {
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
         let engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_links(Links::default().with::<echo::Bearer>());
         let (mut engine, code) = with_echo(engine);
-        let Ok(_) = engine.add_root::<Shiner>(&(), Shining { tally }) else {
+        let Ok(shiner) = engine.add_root::<Shiner>(&(), Shining) else {
             panic!("the shiner begins");
         };
 
-        (engine, code, ActorPath::from_root(&PathSegment::new(Shiner::NAME, &())))
+        (engine, code, ActorPath::from_root(&PathSegment::new(Shiner::NAME, &())), shiner)
     }
 
     #[test]
     fn a_guest_takes_resources_in_mail_and_passes_them_on_to_native_code() {
         // Catches a guest's take, give, or send of a resource its host does not carry out, one carried with the wrong
         // piece of mail of a batch of several, and a resource a guest's mail does not carry to its receiver.
-        let (mut engine, code, shiner) = lit(10);
+        let (mut engine, code, shiner, shiner_id) = lit();
         let porting = echo::Porting { to: shiner, lamps: Vec::new(), how: 0 };
         let Ok(_) = engine.add_root_from::<echo::Porter>(&code, &0, &porting) else {
             panic!("the porter begins");
@@ -4529,7 +4534,7 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(10), [3, 4]);
+        assert_eq!(sorted([kept::<Shiner>(&engine, shiner_id)]), [3, 4]);
     }
 
     #[test]
@@ -4537,7 +4542,7 @@ mod tests {
         // Catches a guest root that cannot take what the chassis handed in for it, a guest's child of its own code
         // that cannot take what its parent gave it, and a native child its host begins for a guest that is not handed
         // what its config holds, or does not keep what it took once it is seated.
-        let (mut engine, code, shiner) = lit(11);
+        let (mut engine, code, shiner, shiner_id) = lit();
         for how in [0, 1, 2] {
             let lamps = vec![engine.hand(echo::Lamp { light: 10 + how })];
             let porting = echo::Porting { to: shiner.clone(), lamps, how };
@@ -4548,7 +4553,7 @@ mod tests {
         }
         settle(&mut engine);
 
-        assert_eq!(answers(11), [10, 11, 12]);
+        assert_eq!(sorted([kept::<Shiner>(&engine, shiner_id)]), [10, 11, 12]);
     }
 
     /// The reason a mortal fails.
@@ -4604,7 +4609,7 @@ mod tests {
             panic!("two is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Keeper>(&0, Keeps { key: 0, tally: 3 }) else {
+        let Ok(keeper) = engine.add_root::<Keeper>(&0, Keeps { key: 0 }) else {
             panic!("the keeper begins");
         };
         for key in [0, 1] {
@@ -4620,12 +4625,12 @@ mod tests {
         };
         settle(&mut engine);
 
-        let Ok(_) = engine.add_root::<Asker>(&2, Asks { paths: vec![mortal(0), mortal(1)], tally: 0 }) else {
+        let Ok(_) = engine.add_root::<Asker>(&2, Asks { paths: vec![mortal(0), mortal(1)] }) else {
             panic!("the asker begins");
         };
         settle(&mut engine);
 
-        assert_eq!(answers(3), [1, 12]);
+        assert_eq!(sorted([kept::<Keeper>(&engine, keeper)]), [1, 12]);
     }
 
     /// What a nest is made from: the blob its reporters are spawned from, and how many.
@@ -4642,11 +4647,18 @@ mod tests {
     struct Poke;
 
     /// A native actor that spawns reporters of the echo guest's blob as it begins, pings each when poked, and keeps
-    /// what each tells it in the fifth of [`ANSWERS`].
+    /// what each tells it.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.nest")]
     struct Nest {
         reporters: Vec<ActorRef<echo::Reporter>>,
+        told: Vec<u64>,
+    }
+
+    impl Tallies for Nest {
+        fn tally(&self) -> &[u64] {
+            &self.told
+        }
     }
 
     impl ChildOf for Nest {
@@ -4670,7 +4682,7 @@ mod tests {
                 reporters.push(reporter);
             }
             let unmade: Result<ActorRef<Keeper>, _> =
-                turn.spawn_from(Origin::Blob(&nesting.code), &0, &Keeps { key: 0, tally: 4 });
+                turn.spawn_from(Origin::Blob(&nesting.code), &0, &Keeps { key: 0 });
             let impostor: Result<ActorRef<Impostor>, _> =
                 turn.spawn_from(Origin::Blob(&nesting.code), &9, &echo::AddBy { by: 0, deeper: 0 });
             let (unmade, impostor) = (unmade.err(), impostor.err());
@@ -4679,7 +4691,7 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             }
 
-            Ok(Self { reporters })
+            Ok(Self { reporters, told: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4701,9 +4713,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[4].lock() {
-                answers.push(pong.n);
-            }
+            self.told.push(pong.n);
 
             Ok(())
         }
@@ -4782,7 +4792,7 @@ mod tests {
             panic!("two is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Nest>(&(), Nesting { code, reporters: 4 }) else {
+        let Ok(nest) = engine.add_root::<Nest>(&(), Nesting { code, reporters: 4 }) else {
             panic!("the nest begins, with its reporters, and is refused the keeper");
         };
         settle(&mut engine);
@@ -4791,7 +4801,7 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(4), [1, 11, 21, 31]);
+        assert_eq!(sorted([kept::<Nest>(&engine, nest)]), [1, 11, 21, 31]);
     }
 
     /// `code`, as other bytes that compile to the same code: with a custom section of its own after it, so it is a blob
@@ -4811,11 +4821,18 @@ mod tests {
         other: Bytes,
     }
 
-    /// A native actor that spawns a hatcher of the echo guest's blob as it begins, and keeps what it tells it in the
-    /// sixth of [`ANSWERS`].
+    /// A native actor that spawns a hatcher of the echo guest's blob as it begins, and keeps what it tells it.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.hen")]
-    struct Hen;
+    struct Hen {
+        told: Vec<u64>,
+    }
+
+    impl Tallies for Hen {
+        fn tally(&self) -> &[u64] {
+            &self.told
+        }
+    }
 
     impl ChildOf for Hen {
         type Parent = Top;
@@ -4834,7 +4851,7 @@ mod tests {
                 return Err(Fault::new(&Doom)?);
             };
 
-            Ok(Self)
+            Ok(Self { told: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4846,9 +4863,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[5].lock() {
-                answers.push(pong.n);
-            }
+            self.told.push(pong.n);
 
             Ok(())
         }
@@ -4902,7 +4917,7 @@ mod tests {
         let Ok(other) = engine.put_code(salted(ECHO)) else {
             panic!("the echo guest, salted, is fit to run");
         };
-        let Ok(_) = engine.add_root::<Hen>(&(), Henning { home, other }) else {
+        let Ok(hen) = engine.add_root::<Hen>(&(), Henning { home, other }) else {
             panic!("the hen begins, with its hatcher");
         };
         settle(&mut engine);
@@ -4911,7 +4926,7 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(5), [20, 102, 112, 306, 400, 505, 505, 605, 605]);
+        assert_eq!(sorted([kept::<Hen>(&engine, hen)]), [20, 102, 112, 306, 400, 505, 505, 605, 605]);
     }
 
     /// What a publishing root is made from: the engine's one publisher, and the kinds it publishes, each the head of
@@ -4924,15 +4939,38 @@ mod tests {
         blobs: Vec<Bytes>,
     }
 
-    /// Each publish a publishing root asked as it began, by its kind, with what it was answered.
-    static PUBLISHED: Mutex<Vec<(KindName, Result<(), Refused>)>> = Mutex::new(Vec::new());
+    /// What a publish or a spawn was answered, as an actor's state can hold it: [`Refused`] does not encode.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+    enum Granted {
+        /// It was done.
+        Done,
+        /// The blob does not make the kind.
+        NotMade,
+        /// The kind has no head.
+        NoHead,
+        /// Anything else, which these tests never expect.
+        Other,
+    }
 
-    /// A native root that takes the engine's one publisher from its config and publishes as it begins, keeping what
-    /// each publish was answered in [`PUBLISHED`], as the root that holds a program's code does (ADR-0054).
+    impl<T> From<Result<T, Refused>> for Granted {
+        fn from(answer: Result<T, Refused>) -> Self {
+            match answer {
+                Ok(_) => Self::Done,
+                Err(Refused::NotMade) => Self::NotMade,
+                Err(Refused::NoHead) => Self::NoHead,
+                Err(_) => Self::Other,
+            }
+        }
+    }
+
+    /// A native root that takes the engine's one publisher from its config and publishes as it begins, as the root
+    /// that holds a program's code does, keeping each publish it asked by its kind, with what it was answered
+    /// (ADR-0054).
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.publishing")]
     struct Publishing {
         publisher: Handle<Publisher>,
+        published: Vec<(KindName, Granted)>,
     }
 
     impl ChildOf for Publishing {
@@ -4949,14 +4987,12 @@ mod tests {
         fn begin(config: Publishes, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let Publishes { publisher, kinds, blobs } = config;
             let held = turn.take(publisher)?;
+            let mut published = Vec::new();
             for (kind, blob) in kinds.iter().zip(&blobs) {
-                let answer = turn.publish(&held, kind, blob);
-                if let Ok(mut answers) = PUBLISHED.lock() {
-                    answers.push((kind.clone(), answer));
-                }
+                published.push((kind.clone(), Granted::from(turn.publish(&held, kind, blob))));
             }
 
-            Ok(Self { publisher: held })
+            Ok(Self { publisher: held, published })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -4969,14 +5005,12 @@ mod tests {
     #[kind(name = "aether.test.inherit")]
     struct Inherit;
 
-    /// What each inheritor's spawn of an echo from its kind's head was answered.
-    static INHERITED: Mutex<Vec<Result<(), Refused>>> = Mutex::new(Vec::new());
-
-    /// A native root that spawns an echo from the head of the echo's kind as it begins, keeping what it was answered in
-    /// [`INHERITED`].
+    /// A native root that spawns an echo from the head of the echo's kind as it begins, keeping what it was answered.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.inheritor")]
-    struct Inheritor;
+    struct Inheritor {
+        inherited: Granted,
+    }
 
     impl ChildOf for Inheritor {
         type Parent = Top;
@@ -4991,11 +5025,8 @@ mod tests {
 
         fn begin(_: Inherit, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Echo>(Origin::Head, &(), &echo::EchoConfig);
-            if let Ok(mut inherited) = INHERITED.lock() {
-                inherited.push(spawned.map(|_| ()));
-            }
 
-            Ok(Self)
+            Ok(Self { inherited: Granted::from(spawned) })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -5015,7 +5046,7 @@ mod tests {
         let Ok(second) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run again, as a blob of its own");
         };
-        let Ok(_) = engine.add_root::<Inheritor>(&1, Inherit) else {
+        let Ok(first_heir) = engine.add_root::<Inheritor>(&1, Inherit) else {
             panic!("the first inheritor begins");
         };
         let Ok(publisher) = engine.publisher() else {
@@ -5024,21 +5055,21 @@ mod tests {
         let unmade = KindName::new("aether.test.unmade");
         let kinds = vec![echo::Echo::NAME, unmade.clone(), echo::Echo::NAME];
         let blobs = vec![first.clone(), first, second.clone()];
-        let Ok(_) = engine.add_root::<Publishing>(&(), Publishes { publisher, kinds, blobs }) else {
+        let Ok(publishing) = engine.add_root::<Publishing>(&(), Publishes { publisher, kinds, blobs }) else {
             panic!("the publishing root begins");
         };
-        let Ok(_) = engine.add_root::<Inheritor>(&2, Inherit) else {
+        let Ok(second_heir) = engine.add_root::<Inheritor>(&2, Inherit) else {
             panic!("the second inheritor begins");
         };
         settle(&mut engine);
 
-        let answers = PUBLISHED.lock().map(|answers| answers.clone()).unwrap_or_default();
-        let expected = [(echo::Echo::NAME, Ok(())), (unmade, Err(Refused::NotMade)), (echo::Echo::NAME, Ok(()))];
-        assert_eq!(answers, expected);
+        let expected =
+            [(echo::Echo::NAME, Granted::Done), (unmade, Granted::NotMade), (echo::Echo::NAME, Granted::Done)];
+        assert_eq!(state::<Publishing>(&engine, publishing).published, expected);
         let head = engine.head(&echo::Echo::NAME).map(|head| (head.blob().id(), head.number()));
         assert_eq!(head, Some((second.id(), 2)));
-        let inherited = INHERITED.lock().map(|inherited| inherited.clone()).unwrap_or_default();
-        assert_eq!(inherited, [Err(Refused::NoHead), Ok(())]);
+        let inherited = [first_heir, second_heir].map(|heir| state::<Inheritor>(&engine, heir).inherited);
+        assert_eq!(inherited, [Granted::NoHead, Granted::Done]);
         let inheritor = ActorPath::from_root(&PathSegment::new(Inheritor::NAME, &2_u64));
         let Ok(echo) = inheritor.child(&PathSegment::new(echo::Echo::NAME, &())) else {
             panic!("an echo stands beneath an inheritor");
@@ -5081,10 +5112,18 @@ mod tests {
         assert!(engine.table().resolve(&reporter).is_some());
     }
 
-    /// A native actor that keeps each pong it is sent in the seventh of [`ANSWERS`].
+    /// A native actor that keeps each pong it is sent.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.ledger")]
-    struct Ledger;
+    struct Ledger {
+        pongs: Vec<u64>,
+    }
+
+    impl Tallies for Ledger {
+        fn tally(&self) -> &[u64] {
+            &self.pongs
+        }
+    }
 
     impl ChildOf for Ledger {
         type Parent = Top;
@@ -5098,7 +5137,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            Ok(Self)
+            Ok(Self { pongs: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -5110,9 +5149,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[6].lock() {
-                answers.push(pong.n);
-            }
+            self.pongs.push(pong.n);
 
             Ok(())
         }
@@ -5123,12 +5160,20 @@ mod tests {
         ActorPath::from_root(&PathSegment::new(echo::Librarian::NAME, &()))
     }
 
-    /// A native actor that pings the librarian for a book of five as it begins, keeps in the seventh of [`ANSWERS`]
-    /// how long the book it is sent is and what its first byte is, read from the store, and sends the book back; and
-    /// keeps the pong it is answered with there too.
+    /// A native actor that pings the librarian for a book of five as it begins, keeps how long the book it is sent is
+    /// and what its first byte is, read from the store, and sends the book back; and keeps the pong it is answered
+    /// with too.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.borrower")]
-    struct Borrower;
+    struct Borrower {
+        read: Vec<u64>,
+    }
+
+    impl Tallies for Borrower {
+        fn tally(&self) -> &[u64] {
+            &self.read
+        }
+    }
 
     impl ChildOf for Borrower {
         type Parent = Top;
@@ -5146,7 +5191,7 @@ mod tests {
                 turn.to(librarian).send(&Ping { n: 5 })?;
             }
 
-            Ok(Self)
+            Ok(Self { read: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -5160,9 +5205,7 @@ mod tests {
         fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
             let bytes = turn.read(&book.blob);
             let read = [bytes.len() as u64, bytes.first().copied().map_or(0, u64::from)];
-            if let Ok(mut answers) = ANSWERS[6].lock() {
-                answers.extend(read);
-            }
+            self.read.extend(read);
             turn.reply(&book)?;
 
             Ok(())
@@ -5173,9 +5216,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[6].lock() {
-                answers.push(pong.n);
-            }
+            self.read.push(pong.n);
 
             Ok(())
         }
@@ -5220,7 +5261,7 @@ mod tests {
             panic!("one is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Ledger>(&(), Volley { pings: 0 }) else {
+        let Ok(ledger) = engine.add_root::<Ledger>(&(), Volley { pings: 0 }) else {
             panic!("the ledger begins");
         };
         let Ok(book) = engine.put_blob(b"hello world".to_vec()) else {
@@ -5233,7 +5274,7 @@ mod tests {
         settle(&mut engine);
         let kept_by_librarian = engine.blobs_held().0;
 
-        let Ok(_) = engine.add_root::<Borrower>(&(), Volley { pings: 0 }) else {
+        let Ok(borrower) = engine.add_root::<Borrower>(&(), Volley { pings: 0 }) else {
             panic!("the borrower begins");
         };
         settle(&mut engine);
@@ -5255,7 +5296,8 @@ mod tests {
         let forge = echo::Forge { engine: secret.id().engine(), bits: secret.id().bits() };
         let forged = engine.add_root_from::<echo::Forger>(&code, &(), &forge);
 
-        assert_eq!(answers(6), [5, 7, 11, 105]);
+        let told = [kept::<Ledger>(&engine, ledger), kept::<Borrower>(&engine, borrower)];
+        assert_eq!(sorted(told), [5, 7, 11, 105]);
         // The blob lent out goes once the mail that carried it is gone, by the time the librarian has closed.
         assert_eq!((kept_by_librarian, after_closing), (2, 1));
         assert!(matches!(forged, Err(Refused::Began(_))));
@@ -5479,10 +5521,18 @@ mod tests {
         assert_eq!(began, [false, true], "a shelf past the engine's limit is not read");
     }
 
-    /// A native actor that keeps in the eighth of [`ANSWERS`] each pong it is told.
+    /// A native actor that keeps each pong it is told.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.mourner")]
-    struct Mourner;
+    struct Mourner {
+        pongs: Vec<u64>,
+    }
+
+    impl Tallies for Mourner {
+        fn tally(&self) -> &[u64] {
+            &self.pongs
+        }
+    }
 
     impl ChildOf for Mourner {
         type Parent = Top;
@@ -5496,7 +5546,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            Ok(Self)
+            Ok(Self { pongs: Vec::new() })
         }
 
         fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -5508,9 +5558,7 @@ mod tests {
         type Sends = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            if let Ok(mut answers) = ANSWERS[7].lock() {
-                answers.push(pong.n);
-            }
+            self.pongs.push(pong.n);
 
             Ok(())
         }
@@ -5558,7 +5606,7 @@ mod tests {
             panic!("one is not zero");
         };
         let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
-        let Ok(_) = engine.add_root::<Mourner>(&(), Volley { pings: 0 }) else {
+        let Ok(mourner) = engine.add_root::<Mourner>(&(), Volley { pings: 0 }) else {
             panic!("the mourner begins");
         };
         let tell = ActorPath::from_root(&PathSegment::new(Mourner::NAME, &()));
@@ -5573,7 +5621,7 @@ mod tests {
         };
         settle(&mut engine);
 
-        assert_eq!(answers(7), [611, 620]);
+        assert_eq!(sorted([kept::<Mourner>(&engine, mourner)]), [611, 620]);
     }
 
     #[test]
@@ -5619,12 +5667,12 @@ mod tests {
         assert!(elsewhere > 0, "some reader is seated in another part than the archive");
         let held_while_reading = engine.blobs_held().0;
 
-        let Ok(_) = engine.add_root::<Asker>(&8, Asks { paths: readers, tally: 8 }) else {
+        let Ok(asker) = engine.add_root::<Asker>(&8, Asks { paths: readers }) else {
             panic!("the asker begins");
         };
         settle(&mut engine);
 
-        assert_eq!(answers(8), [11; 8]);
+        assert_eq!(kept::<Asker>(&engine, asker), [11; 8]);
         // The code and the book while the readers live, and the code alone once they have closed.
         assert_eq!((held_while_reading, engine.blobs_held().0), (2, 1));
     }

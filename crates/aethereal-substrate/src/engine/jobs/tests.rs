@@ -3,6 +3,7 @@
 
 use super::super::*;
 use super::*;
+use crate::harness::Jobbed;
 use aethereal_actor::Entry;
 use aethereal_actor::{
     Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Path, Resource, Runner,
@@ -729,33 +730,13 @@ fn settle(engine: &mut Engine) {
     }
 }
 
-/// Runs jobs inline, as [`Inline`] does, and notes the kind of each it was handed.
-struct Noting {
-    inline: Inline,
-    started: Mutex<Vec<KindId>>,
-}
-
-impl Jobs for Noting {
-    fn start(&self, id: JobId, of: JobType, job: Taken) {
-        if let Ok(mut started) = self.started.lock() {
-            started.push(of.kind());
-        }
-        self.inline.start(id, of, job);
-    }
-
-    fn stop(&self, _: JobId) {}
-
-    fn most(&self) -> usize {
-        usize::MAX
-    }
-}
-
-/// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] and [`Measure`] until it is let go of, and notes
-/// each job it is asked to stop.
+/// Runs jobs inline, as [`Inline`] does, but holds each [`Sleeps`] and [`Measure`] until it is let go of. A test reads
+/// what the engine asked of it from the engine's own record, [`jobbed`].
 struct Holding {
     inline: Inline,
+    /// The jobs it holds. A runner is handed jobs through `&self` from wherever the engine runs, as [`Jobs`] is `Send`
+    /// and `Sync`, so what it keeps between being handed a job and letting it go is behind a lock: no mail orders it.
     held: Mutex<Vec<(JobId, JobType, Taken)>>,
-    stopped: Mutex<Vec<JobId>>,
     /// The most jobs it lets be in flight.
     most: usize,
 }
@@ -763,12 +744,7 @@ struct Holding {
 impl Holding {
     /// Runs every job but [`Sleeps`], [`Measure`]s, and [`Hangs`], which it holds.
     fn new() -> Self {
-        Self {
-            inline: Inline::new(Arc::new(Services::none())),
-            held: Mutex::default(),
-            stopped: Mutex::default(),
-            most: usize::MAX,
-        }
+        Self { inline: Inline::new(Arc::new(Services::none())), held: Mutex::default(), most: usize::MAX }
     }
 
     /// Finishes each job it holds: a sleep as doubling to seven, and a measure by running it.
@@ -786,16 +762,6 @@ impl Holding {
         }
     }
 
-    /// How many jobs it holds.
-    fn holds(&self) -> usize {
-        self.held.lock().map_or(0, |held| held.len())
-    }
-
-    /// The jobs it holds, by their counts.
-    fn holding(&self) -> Vec<u64> {
-        self.held.lock().map_or_else(|_| Vec::new(), |held| held.iter().map(|(id, ..)| id.mail().count).collect())
-    }
-
     /// Takes every job it holds.
     fn take(&self) -> Vec<(JobId, JobType, Taken)> {
         let Ok(mut held) = self.held.lock() else {
@@ -803,15 +769,6 @@ impl Holding {
         };
 
         mem::take(&mut *held)
-    }
-
-    /// The jobs it was asked to stop, by their counts.
-    fn stopped(&self) -> Vec<u64> {
-        let Ok(stopped) = self.stopped.lock() else {
-            panic!("the list is not poisoned");
-        };
-
-        stopped.iter().map(|id| id.mail().count).collect()
     }
 }
 
@@ -830,23 +787,44 @@ impl Jobs for Holding {
         }
     }
 
-    fn stop(&self, id: JobId) {
-        if let Ok(mut stopped) = self.stopped.lock() {
-            stopped.push(id);
-        }
-    }
+    fn stop(&self, _: JobId) {}
 
     fn most(&self) -> usize {
         self.most
     }
 }
 
-/// An engine of four parts whose jobs `jobs` runs, with the worker made.
+/// What `engine` has asked of its host's jobs since this was last asked, as it records it: the jobs it handed out, by
+/// their counts and kinds, and those it asked the host to stop, by their counts.
+fn jobbed(engine: &mut Engine) -> (Vec<(u64, KindId)>, Vec<u64>) {
+    let (mut started, mut stopped) = (Vec::new(), Vec::new());
+    for jobbed in engine.take_jobbed() {
+        match jobbed {
+            Jobbed::Started { id, kind } => started.push((id.mail().count, kind)),
+            Jobbed::Stopped(id) => stopped.push(id.mail().count),
+        }
+    }
+
+    (started, stopped)
+}
+
+/// The counts of `started`.
+fn counts(started: &[(u64, KindId)]) -> Vec<u64> {
+    started.iter().map(|(count, _)| *count).collect()
+}
+
+/// The kinds of `started`.
+fn kinds(started: &[(u64, KindId)]) -> Vec<KindId> {
+    started.iter().map(|(_, kind)| *kind).collect()
+}
+
+/// An engine of four parts whose jobs `jobs` runs, recording its jobs from the start, with the worker made.
 fn engine(jobs: Arc<dyn Jobs>) -> (Engine, Seated) {
     let Some(parts) = NonZeroUsize::new(4) else {
         panic!("four is not zero");
     };
     let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_jobs(jobs).ready();
+    engine.record_jobs();
     let Ok(worker) = engine.add_root::<Worker>(&(), Which { at: 0 }) else {
         panic!("the worker begins");
     };
@@ -965,37 +943,33 @@ fn a_job_that_fails_panics_or_waits_is_answered_faulted_and_logged() {
 fn a_native_turn_s_job_runs_with_its_own_code_though_no_program_lists_its_type() {
     // Catches a native turn's job looked up among the job types the engine lets guests run, as a guest's is, and
     // answered that no runner runs it: an engine that lists none runs it, and its runner is handed its type.
-    let noting = Arc::new(Noting { inline: Inline::new(Arc::new(Services::none())), started: Mutex::new(Vec::new()) });
-    let (mut engine, seated) = engine(Arc::clone(&noting) as Arc<dyn Jobs>);
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
     poke(&mut engine, 4, What::Unlinked);
     engine.bring();
     settle(&mut engine);
 
     assert_eq!(done(&engine, seated), [doubled(0, 2), doubled(4, 0)]);
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (4, 2)]);
-    let started = noting.started.lock().map_or_else(|_| Vec::new(), |started| started.clone());
-    assert_eq!(started, [KindId::of::<Double>(), KindId::of::<Unlinked>()]);
+    let (started, _) = jobbed(&mut engine);
+    assert_eq!(kinds(&started), [KindId::of::<Double>(), KindId::of::<Unlinked>()]);
 }
 
 #[test]
 fn a_turn_that_fails_runs_no_job() {
     // Catches the job of a turn that failed handed to the host, as the mail of one is never sent, and the job of a
     // child whose `begin` failed, which was never live.
-    let noting = Arc::new(Noting { inline: Inline::new(Arc::new(Services::none())), started: Mutex::new(Vec::new()) });
-    let (mut engine, seated) = engine(Arc::clone(&noting) as Arc<dyn Jobs>);
+    let (mut engine, seated) = engine(Arc::new(Inline::new(Arc::new(Services::none()))));
     // The turn that fails ends the worker, so what it ran is read before.
     assert_eq!(worker(&engine, seated).ran, [(0, 1)]);
     poke(&mut engine, 1, What::FailTheTurn);
     assert!(!engine.table().is_live(seated.id), "the turn failed");
-    let (mut nesting, nester) = self::engine(Arc::clone(&noting) as Arc<dyn Jobs>);
+    let (mut nesting, nester) = self::engine(Arc::new(Inline::new(Arc::new(Services::none()))));
     poke(&mut nesting, 2, What::Nest);
     assert_eq!(worker(&nesting, nester).ran, [(0, 1)]);
     assert_eq!(worker(&nesting, nester).refused, [true]);
 
-    let Ok(started) = noting.started.lock() else {
-        panic!("the list is not poisoned");
-    };
-    assert_eq!(*started, [KindId::of::<Double>(), KindId::of::<Double>()], "the `begin`s' jobs alone");
+    let started = [kinds(&jobbed(&mut engine).0), kinds(&jobbed(&mut nesting).0)];
+    assert_eq!(started, [[KindId::of::<Double>()], [KindId::of::<Double>()]], "the `begin`s' jobs alone");
 }
 
 #[test]
@@ -1024,7 +998,8 @@ fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
 
     let answered = [doubled(0, 2), doubled(5, 7)];
     assert_eq!(done(&engine, seated), answered, "the jobs given up on and let go of are not answered");
-    assert_eq!(holding.stopped(), [5, 3], "as they were cancelled: the job given up on after the bring");
+    let (_, stopped) = jobbed(&mut engine);
+    assert_eq!(stopped, [5, 3], "as they were cancelled: the job given up on after the bring");
 }
 
 #[test]
@@ -1074,7 +1049,7 @@ fn a_turn_that_fails_cancels_nothing() {
     poke(&mut engine, 2, What::LetGoAndFail);
 
     assert!(!engine.table().is_live(seated.id), "the turn failed");
-    assert_eq!(holding.stopped(), Vec::<u64>::new());
+    assert_eq!(jobbed(&mut engine).1, Vec::<u64>::new());
 }
 
 #[test]
@@ -1214,19 +1189,21 @@ fn past_the_jobs_its_host_lets_be_in_flight_a_job_waits_in_order_until_one_finis
     // counted in flight. The host lets one be in flight, and holds each.
     let holding = Arc::new(Holding { most: 1, ..Holding::new() });
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    // The `begin`'s job, run at once.
+    let _ = jobbed(&mut engine);
     for key in 1..=3 {
         poke(&mut engine, key, What::Hold);
     }
-    let mut holds = vec![holding.holding()];
+    let mut handed = vec![counts(&jobbed(&mut engine).0)];
 
     for _ in 0..3 {
         holding.let_go();
         engine.bring();
         settle(&mut engine);
-        holds.push(holding.holding());
+        handed.push(counts(&jobbed(&mut engine).0));
     }
 
-    assert_eq!(holds, [vec![2], vec![3], vec![4], vec![]], "each is handed out as the one before it finishes");
+    assert_eq!(handed, [vec![2], vec![3], vec![4], vec![]], "each is handed out as the one before it finishes");
     assert_eq!(done(&engine, seated), [doubled(0, 2), doubled(1, 7), doubled(2, 7), doubled(3, 7)]);
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2), (2, 3), (3, 4)]);
 }
@@ -1239,16 +1216,20 @@ fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
     for end in [What::LetGo, What::Close] {
         let holding = Arc::new(Holding { most: 1, ..Holding::new() });
         let (mut engine, _) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+        // The `begin`'s job, run at once.
+        let _ = jobbed(&mut engine);
         poke(&mut engine, 1, What::Hold);
         poke(&mut engine, 2, What::Hold);
         poke(&mut engine, 3, end);
         holding.let_go();
         engine.bring();
         settle(&mut engine);
-        handed.push((holding.holds(), holding.stopped()));
+        let (started, stopped) = jobbed(&mut engine);
+        handed.push((counts(&started), stopped));
     }
 
-    assert_eq!(handed, [(0, vec![2]), (0, Vec::new())], "the first is stopped, and the second never handed out");
+    let expected = [(vec![2], vec![2]), (vec![2], Vec::new())];
+    assert_eq!(handed, expected, "the first is stopped, and the second never handed out");
 }
 
 /// The counts of the counters the worker took back from its bumps, and what each counter its log records dropped is

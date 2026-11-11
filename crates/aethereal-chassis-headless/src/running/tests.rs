@@ -1,6 +1,7 @@
 //! A program run through its lifecycle on the headless chassis.
 
 use super::*;
+use crate::waiting;
 use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles, Held, On,
     Services, Sleep, Slept, Start, Stop, Tick, ToSender, Top, Turn,
@@ -10,7 +11,7 @@ use aethereal_data::{Bound, Plain};
 use aethereal_pace::{Advance, Advanced, Pace, Pacer, PacerConfig};
 use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// An actor's empty config.
@@ -417,12 +418,14 @@ fn a_program_with_no_cycle_is_woken_by_a_job_that_finishes_while_it_sleeps() {
     let Ok(_) = headless.engine_mut().add_root::<Dozer>(&(), DozerConfig { naps: given }) else {
         panic!("the dozer begins");
     };
-    // A host that is never woken never returns, so it runs on a thread of its own, and the test gives up on it.
-    let (ran, run) = mpsc::channel();
+    // A host that is never woken never returns, so it runs on a thread of its own, which answers what its run came to,
+    // and the test gives up on it.
     #[allow(clippy::disallowed_methods)] // The test runs the host's own loop on a real thread, to bound it.
-    thread::spawn(move || ran.send(timed(headless, Duration::from_secs(30), Duration::from_secs(30))));
-    let Ok((took, exit)) = run.recv_timeout(Duration::from_secs(10)) else {
-        panic!("the program was not woken when the sleep finished");
+    let running = thread::spawn(move || timed(headless, Duration::from_secs(30), Duration::from_secs(30)));
+    waiting::until(Duration::from_secs(10), || running.is_finished());
+    assert!(running.is_finished(), "the program was not woken when the sleep finished");
+    let Ok((took, exit)) = running.join() else {
+        panic!("the host's loop ran to its end");
     };
 
     assert_eq!(exit, Exit::Stopped);
@@ -571,12 +574,14 @@ fn a_program_with_no_cycle_is_woken_by_a_deadline_that_comes_while_it_sleeps() {
     let Ok(_) = headless.engine_mut().add_root::<Waiter>(&(), WaiterConfig { waited: given }) else {
         panic!("the waiter begins");
     };
-    // A host that is never woken never returns, so it runs on a thread of its own, and the test gives up on it.
-    let (ran, run) = mpsc::channel();
+    // A host that is never woken never returns, so it runs on a thread of its own, which answers what its run came to,
+    // and the test gives up on it.
     #[allow(clippy::disallowed_methods)] // The test runs the host's own loop on a real thread, to bound it.
-    thread::spawn(move || ran.send(timed(headless, Duration::from_secs(30), Duration::from_secs(30))));
-    let Ok((took, exit)) = run.recv_timeout(Duration::from_secs(10)) else {
-        panic!("the program was not woken when the deadline came");
+    let running = thread::spawn(move || timed(headless, Duration::from_secs(30), Duration::from_secs(30)));
+    waiting::until(Duration::from_secs(10), || running.is_finished());
+    assert!(running.is_finished(), "the program was not woken when the deadline came");
+    let Ok((took, exit)) = running.join() else {
+        panic!("the host's loop ran to its end");
     };
 
     assert_eq!(exit, Exit::Stopped);

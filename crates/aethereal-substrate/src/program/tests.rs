@@ -8,19 +8,17 @@ use aethereal_data::{ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, P
 use core::error::Error;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use std::cell::RefCell;
-use std::rc::Rc;
 
-/// What a bench's hosting holds of what its roots served it, which a test can read as they bootstrap, and after one
-/// fails, when the engine is dropped.
+/// What a bench's hosting holds of what its roots served it, which the test that lends it to a bootstrap reads once the
+/// bootstrap has come to its end, whether it built or failed.
 #[derive(Default)]
 struct Served {
     lights: Vec<Lit>,
     began: Vec<Began>,
 }
 
-/// A bench's hosting, shared with the test that holds it: for this test's own bench alone.
-type Hosted = Rc<RefCell<Served>>;
+/// A bench's hosting: what it was served, lent for the bootstrap.
+type Hosted<'host> = &'host mut Served;
 
 /// A root that began, by its name, with the values its config carried, given the host as an end once it has.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +35,7 @@ fn began<T: Kind>(values: &[u32]) -> Began {
 /// A host that keeps the engine, the ends its roots serve it, and the settings it read, and runs nothing.
 struct Bench {
     engine: Engine,
-    served: Hosted,
+    served: Served,
     pace: u32,
     hops: u32,
 }
@@ -52,7 +50,7 @@ struct BenchRunning {
 
 impl Host for Bench {
     type Running = BenchRunning;
-    type Hosting<'host> = Hosted;
+    type Hosting<'host> = Hosted<'host>;
     type Exit = Self;
     type Error = ProgramError;
 
@@ -65,7 +63,8 @@ impl Builds for Bench {
     fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
         let pace = settled.running().pace;
         let hops = settled.engine().hops;
-        let (engine, served) = pollster::block_on(settled.bootstrap(Hosted::default()))?;
+        let mut served = Served::default();
+        let (engine, _) = pollster::block_on(settled.bootstrap(&mut served))?;
 
         Ok(Self { engine, served, pace, hops })
     }
@@ -83,14 +82,14 @@ impl Lit {
 }
 
 impl Serves<Lit> for Bench {
-    fn serve(hosting: &mut Hosted, end: Lit) {
-        hosting.borrow_mut().lights.push(end);
+    fn serve(hosting: &mut Hosted<'_>, end: Lit) {
+        hosting.lights.push(end);
     }
 }
 
 impl Serves<Began> for Bench {
-    fn serve(hosting: &mut Hosted, end: Began) {
-        hosting.borrow_mut().began.push(end);
+    fn serve(hosting: &mut Hosted<'_>, end: Began) {
+        hosting.began.push(end);
     }
 }
 
@@ -386,11 +385,11 @@ fn each_root_bootstraps_in_order_from_its_settings_and_what_earlier_roots_provid
     let bench = program.layer(code).build()?;
 
     let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
-    assert_eq!(bench.served.borrow().began, expected);
+    assert_eq!(bench.served.began, expected);
     assert_eq!(root::<Lamp>(&bench.engine).map(|lamp| lamp.values.as_slice()), Some(&[7][..]));
     assert_eq!(root::<Keeper>(&bench.engine).map(|keeper| keeper.values.as_slice()), Some(&[2, 7][..]));
     assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(3));
-    assert_eq!(bench.served.borrow().lights, [Lit(7)]);
+    assert_eq!(bench.served.lights, [Lit(7)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
     assert!(bench.engine.table().resolve(&scene).is_some());
     Ok(())
@@ -434,15 +433,15 @@ fn a_setting_that_does_not_exist_stops_the_program_before_any_root_begins() -> O
 fn a_failed_bootstrap_names_its_root() -> Outcome {
     // Catches a failure blamed on another root, or one that lets the roots after it bootstrap.
     // The waiter comes after the keeper, and serves what it began as the derived scene cannot.
-    let hosted = Hosted::default();
+    let mut hosted = Served::default();
 
-    let refused = pollster::block_on(program().root::<Waiter>().settle()?.bootstrap(Rc::clone(&hosted)));
+    let refused = pollster::block_on(program().root::<Waiter>().settle()?.bootstrap(&mut hosted));
 
     let Err(ProgramError::Root { root, why: Unbuilt::Refused(_) }) = refused else {
         return Err("the keeper is refused as it begins".into());
     };
     assert_eq!(root, Keeper::NAME);
-    assert_eq!(hosted.borrow().began, [began::<Lamp>(&[0]), began::<Counter>(&[])]);
+    assert_eq!(hosted.began, [began::<Lamp>(&[0]), began::<Counter>(&[])]);
     Ok(())
 }
 
@@ -461,23 +460,23 @@ fn the_host_reads_its_own_sections() -> Outcome {
 #[test]
 fn a_host_that_waits_bootstraps_each_root_after_the_one_it_awaits() -> Outcome {
     // Catches roots after a waiting one bootstrapped before it is done, or an end given before the wait lost after it.
-    // The counter comes after the waiter, and serves what it began as the derived scene cannot.
+    // The counter comes after the waiter, and serves what it began as the derived scene cannot. Each root is served
+    // what it began as its bootstrap is done, so a root bootstrapped before the waiter was done is served before it.
     let settled = Bench::program().root::<Lamp>().root::<Waiter>().root::<Counter>().root::<Scene>().settle()?;
-    let hosted = Hosted::default();
-    let mut booting = Box::pin(settled.bootstrap(Rc::clone(&hosted)));
+    let mut hosted = Served::default();
+    let mut booting = Box::pin(settled.bootstrap(&mut hosted));
     let mut cx = Context::from_waker(Waker::noop());
 
     let first = booting.as_mut().poll(&mut cx);
     assert!(first.is_pending());
-    assert_eq!(hosted.borrow().began, [began::<Lamp>(&[0])]);
     let Poll::Ready(made) = booting.as_mut().poll(&mut cx) else {
         return Err("the bootstrap is done once what it awaited is".into());
     };
 
     let (engine, served) = made?;
-    assert_eq!(served.borrow().began, [began::<Lamp>(&[0]), began::<Waiter>(&[0]), began::<Counter>(&[])]);
+    assert_eq!(served.began, [began::<Lamp>(&[0]), began::<Waiter>(&[0]), began::<Counter>(&[])]);
     assert_eq!(root::<Scene>(&engine).map(|scene| scene.seconds), Some(0));
-    assert_eq!(served.borrow().lights, [Lit(0)]);
+    assert_eq!(served.lights, [Lit(0)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
     assert!(engine.table().resolve(&scene).is_some());
     Ok(())
@@ -499,7 +498,7 @@ fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
     let bench = program.layer(file).build()?;
 
     let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
-    assert_eq!(bench.served.borrow().began, expected);
+    assert_eq!(bench.served.began, expected);
     assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(4));
     assert_eq!((bench.pace, bench.hops), (5, 1));
     Ok(())
@@ -509,15 +508,14 @@ fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
 fn a_second_root_that_asks_for_the_publisher_fails_the_bootstrap() -> Outcome {
     // Catches a program that hands out a second publisher, so two roots could each say which blob a kind is, and a
     // first one handed to no root's config, which its root could then not take.
-    let hosted = Hosted::default();
+    let mut hosted = Served::default();
 
-    let refused =
-        pollster::block_on(Bench::program().root::<Shelf>().root::<Press>().settle()?.bootstrap(Rc::clone(&hosted)));
+    let refused = pollster::block_on(Bench::program().root::<Shelf>().root::<Press>().settle()?.bootstrap(&mut hosted));
 
     let Err(ProgramError::Root { root, why: Unbuilt::SecondPublisher }) = refused else {
         return Err("the press is refused the publisher the shelf was handed".into());
     };
     assert_eq!(root, Press::NAME);
-    assert_eq!(hosted.borrow().began, [began::<Shelf>(&[])]);
+    assert_eq!(hosted.began, [began::<Shelf>(&[])]);
     Ok(())
 }
