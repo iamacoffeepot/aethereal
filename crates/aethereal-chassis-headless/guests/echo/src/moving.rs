@@ -1,7 +1,7 @@
 //! Guests a test moves onto new code (ADR-0054): the echo is built a second time with the `echo_v2` cfg set, and a test
 //! publishes that build as their kinds' head. Each answers a probe with the version of the code that handled it and
 //! what its state holds, so a test sees which code ran a turn and what the move carried. When each was asked whether
-//! to move, and what it answered, the test reads in the engine's record of what it ran.
+//! to move, what it answered, and about which publish, the test reads in the engine's record of its asks.
 
 use crate::Shut;
 use aethereal_actor::{
@@ -243,35 +243,37 @@ impl Handles<Probe> for Keeper {
 }
 
 /// An actor whose second version adds a field its `take_over` requires, which the first lacks: its move from the
-/// first always fails.
+/// first always fails. It answers `Later` while it holds.
 #[cfg(not(echo_v2))]
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.stubborn")]
 pub struct Stubborn {
     count: u64,
+    holds: bool,
 }
 
 /// An actor whose second version adds a field its `take_over` requires, which the first lacks: its move from the
-/// first always fails.
+/// first always fails. It answers `Later` while it holds.
 #[cfg(echo_v2)]
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.stubborn")]
 pub struct Stubborn {
     count: u64,
+    holds: bool,
     answered: u64,
 }
 
 impl Stubborn {
     /// One that has answered no probe.
     #[cfg(not(echo_v2))]
-    const fn new() -> Self {
-        Self { count: 0 }
+    const fn new(holds: bool) -> Self {
+        Self { count: 0, holds }
     }
 
     /// One that has answered no probe.
     #[cfg(echo_v2)]
-    const fn new() -> Self {
-        Self { count: 0, answered: 0 }
+    const fn new(holds: bool) -> Self {
+        Self { count: 0, holds, answered: 0 }
     }
 
     /// Counts a probe answered.
@@ -295,12 +297,12 @@ impl ChildOf for Stubborn {
 impl Actor for Stubborn {
     type Config = MoverConfig;
     type Key = ();
-    type Handles = (Probe,);
+    type Handles = (Probe, LetGo);
     type BeginSends = ();
     type EndSends = ();
 
-    fn begin(_: MoverConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        Ok(Self::new())
+    fn begin(config: MoverConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self::new(config.holds))
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -310,7 +312,11 @@ impl Actor for Stubborn {
 
 impl Upgrades for Stubborn {
     fn upgrade(&self) -> Upgrade {
-        Upgrade::Now
+        if self.holds {
+            Upgrade::Later
+        } else {
+            Upgrade::Now
+        }
     }
 
     /// Refused: `answered`, which the first version lacks, is required.
@@ -320,7 +326,7 @@ impl Upgrades for Stubborn {
             return Err(TakeOverError::missing("answered"));
         };
 
-        Ok(Self { count: old.count.unwrap_or(0), answered })
+        Ok(Self { count: old.count.unwrap_or(0), holds: old.holds.unwrap_or(false), answered })
     }
 }
 
@@ -334,6 +340,98 @@ impl Handles<Probe> for Stubborn {
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answer();
         turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<LetGo> for Stubborn {
+    type Sends = ();
+
+    fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.holds = false;
+
+        Ok(())
+    }
+}
+
+/// An actor whose second version's `take_over` panics, which traps the instance it runs in: the second version's in
+/// the actor's part, and every actor living there with it (ADR-0015). It answers `Later` while it holds.
+#[cfg(not(echo_v2))]
+#[derive(Bound, Portability)]
+#[kind(name = "aether.guest.breaker")]
+pub struct Breaker {
+    count: u64,
+    holds: bool,
+}
+
+/// An actor whose second version's `take_over` panics, which traps the instance it runs in: the second version's in
+/// the actor's part, and every actor living there with it (ADR-0015). It answers `Later` while it holds. Its fields
+/// are reordered, so its layout changes and `take_over` is called.
+#[cfg(echo_v2)]
+#[derive(Bound, Portability)]
+#[kind(name = "aether.guest.breaker")]
+pub struct Breaker {
+    holds: bool,
+    count: u64,
+}
+
+impl ChildOf for Breaker {
+    type Parent = Top;
+}
+
+impl Actor for Breaker {
+    type Config = MoverConfig;
+    type Key = ();
+    type Handles = (Probe, LetGo);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(config: MoverConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { count: 0, holds: config.holds })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Upgrades for Breaker {
+    fn upgrade(&self) -> Upgrade {
+        if self.holds {
+            Upgrade::Later
+        } else {
+            Upgrade::Now
+        }
+    }
+
+    /// Panics, which traps.
+    #[cfg(echo_v2)]
+    fn take_over(_: Portable<Self>) -> Result<Self, TakeOverError> {
+        panic!("a breaker's second version takes over no state");
+    }
+}
+
+impl Carries<Probe> for Breaker {
+    type Answers = (Report,);
+}
+
+impl Handles<Probe> for Breaker {
+    type Sends = (ToSender<Report>,);
+
+    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.count += 1;
+        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
+
+        Ok(())
+    }
+}
+
+impl Handles<LetGo> for Breaker {
+    type Sends = ();
+
+    fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.holds = false;
 
         Ok(())
     }

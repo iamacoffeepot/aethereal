@@ -25,8 +25,8 @@
 //! 32-bit memory.
 
 use crate::{
-    AskedToMove, BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated,
-    Time, Unreadable, Why,
+    BlobId, Chain, Claim, Claimed, Due, Fault, JobId, Level, MailId, Owed, Refused, SeatNumber, Seated, Time,
+    Unreadable, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
 use alloc::string::String;
@@ -164,9 +164,6 @@ pub enum Stopped {
     Failed { kind: KindId, bytes: Span },
     /// It closed the actor.
     Closed,
-    /// It ran, and the actor answered before the next item's turn that it moves onto its kind's head now: that turn
-    /// and the rest wait for the new code (ADR-0054).
-    Upgrading,
 }
 
 /// The head of a guest's out buffer after a call: how many turns it ran, how the last stopped the batch, and where the
@@ -220,7 +217,6 @@ impl OutHead {
             Stopped::No => (0_u32, [0; 8], 0, 0),
             Stopped::Failed { kind, bytes } => (1, kind.plain_bytes(), bytes.at, bytes.len),
             Stopped::Closed => (2, [0; 8], 0, 0),
-            Stopped::Upgrading => (3, [0; 8], 0, 0),
         };
         out[..4].copy_from_slice(&self.ran.to_le_bytes());
         out[4..8].copy_from_slice(&stopped.to_le_bytes());
@@ -254,7 +250,6 @@ impl OutHead {
                 bytes: Span { at: u32_at(head, 16)?, len: u32_at(head, 20)? },
             },
             2 => Stopped::Closed,
-            3 => Stopped::Upgrading,
             _ => return None,
         };
 
@@ -328,8 +323,7 @@ impl OutHead {
 }
 
 /// Where one turn's records end: how many sends, lines, spawns, children stood up, watches, claims, holds, stages,
-/// jobs run and jobs cancelled the turns up to and including it asked for; and whether the turn itself was asked first
-/// whether to move onto its kind's head, and what its actor answered (ADR-0054).
+/// jobs run and jobs cancelled the turns up to and including it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnEnds {
     pub sends: u32,
@@ -342,13 +336,11 @@ pub struct TurnEnds {
     pub stages: u32,
     pub jobs: u32,
     pub cancels: u32,
-    /// The turn's own, not counted on from the turns before it.
-    pub asked: AskedToMove,
 }
 
 impl TurnEnds {
     /// How many bytes it is.
-    pub const BYTES: usize = 44;
+    pub const BYTES: usize = 40;
 
     /// It, as the out buffer holds it.
     #[must_use]
@@ -363,13 +355,7 @@ impl TurnEnds {
         out[24..28].copy_from_slice(&self.holds.to_le_bytes());
         out[28..32].copy_from_slice(&self.stages.to_le_bytes());
         out[32..36].copy_from_slice(&self.jobs.to_le_bytes());
-        out[36..40].copy_from_slice(&self.cancels.to_le_bytes());
-        let asked: u32 = match self.asked {
-            AskedToMove::Not => 0,
-            AskedToMove::Later => 1,
-            AskedToMove::Now => 2,
-        };
-        out[40..].copy_from_slice(&asked.to_le_bytes());
+        out[36..].copy_from_slice(&self.cancels.to_le_bytes());
 
         out
     }
@@ -377,13 +363,6 @@ impl TurnEnds {
     /// The record `bytes` begin with.
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
-        let asked = match u32_at(bytes, 40)? {
-            0 => AskedToMove::Not,
-            1 => AskedToMove::Later,
-            2 => AskedToMove::Now,
-            _ => return None,
-        };
-
         Some(Self {
             sends: u32_at(bytes, 0)?,
             lines: u32_at(bytes, 4)?,
@@ -395,7 +374,6 @@ impl TurnEnds {
             stages: u32_at(bytes, 28)?,
             jobs: u32_at(bytes, 32)?,
             cancels: u32_at(bytes, 36)?,
-            asked,
         })
     }
 }

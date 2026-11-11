@@ -126,13 +126,6 @@ impl ActorTable {
         self.actors.fold(effects, context, &[]);
     }
 
-    /// Notes that the live actor `id` runs code whose type `declared` declares from now on, as it moved onto its kind's
-    /// head between steps: its path, seat and place in the table stay as they are (ADR-0054). Nothing when it is not
-    /// live.
-    pub(crate) fn moved(&mut self, id: ActorId, declared: &'static Declared) {
-        self.actors.shard_mut(id.bits()).moved(id.bits(), declared);
-    }
-
     /// Notes that the chassis has made the root `id`, whose key is then never used again.
     pub(crate) fn made_root(&mut self, id: ActorId) {
         self.roots.insert(id.bits());

@@ -22,11 +22,11 @@ use aethereal_actor::records::{
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
-    Above, Arena, Asked, AskedToMove, Batch, Behind, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children,
-    Claimed, Declared, Due, FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances,
-    Item, Keeping, Loadable, Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing,
-    Puts, Reached, Reads, Refused, Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit,
-    Unspawned, Upgrade, Upgraded, Was, Why, Written, holders, take_loose_ticket,
+    Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
+    FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
+    Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused,
+    Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade, Upgraded,
+    Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
@@ -94,8 +94,15 @@ struct Running {
 /// must differ from every other's in the instances of a part.
 static CODES: AtomicU64 = AtomicU64::new(0);
 
+/// The number the next instance made takes. Atomic, as instances are made on whichever worker runs their part, and each
+/// instance's number must differ from every other's, so an actor of an instance a trap dropped is never run in one
+/// made after it (ADR-0015).
+static INSTANCES: AtomicU64 = AtomicU64::new(0);
+
 /// One instance of a blob, a part's, and the calls its host makes of it.
 struct Instance {
+    /// Its number among the instances the process has made, which no other takes.
+    number: u64,
     store: Store<Lending>,
     memory: Memory,
     inbox: TypedFunc<u32, u32>,
@@ -103,7 +110,7 @@ struct Instance {
     begin: TypedFunc<(u32, u64, u64, u32), u32>,
     take_in: TypedFunc<(u32, u64, u64, u32), u32>,
     take_out: TypedFunc<u32, u64>,
-    turns: TypedFunc<(u32, u32, u32, u64, u32), u64>,
+    turns: TypedFunc<(u32, u32, u32, u64), u64>,
     upgrade: TypedFunc<u32, u32>,
     take_over: TypedFunc<(u32, u64, u64, u32), u64>,
     pins: TypedFunc<(), u64>,
@@ -217,8 +224,8 @@ enum Parked {
 
 /// Where a guest actor's state is.
 enum Lives {
-    /// In its part's instance, under the handle the guest knows it by.
-    In { handle: u32 },
+    /// In its part's instance, the one numbered `instance`, under the handle the guest knows it by.
+    In { handle: u32, instance: u64 },
     /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`,
     /// with the pins on the blobs they refer to: taken into its own part's instance on its first batch.
     Out { state: Vec<u8>, carried: Vec<Bytes> },
@@ -234,6 +241,9 @@ enum Ran {
     At { head: OutHead, next: u32, before: TurnEnds },
     /// The call that ran them broke, for why it says: every turn of the batch fails.
     Broke(Broke),
+    /// The instance the actor lived in is gone, as a trap in a call of another actor dropped it: every turn of the
+    /// batch fails, and nothing of the part's instance of its code, made since, is touched (ADR-0015).
+    Lost,
 }
 
 /// The top bit of a seat given to a guest's child, set when the seat is in another part than its parent's.
@@ -1002,6 +1012,7 @@ impl Instance {
         };
 
         Self {
+            number: INSTANCES.fetch_add(1, Ordering::Relaxed),
             store,
             memory,
             inbox,
@@ -1123,10 +1134,11 @@ impl Guests for Runtime {
         let is_here = asked.seats_mut().is_own(me.seat);
         let mut hosted = Hosted::beginning(me, path, above, table, asked, declared, keeping);
         let replayed = began.and_then(|(handle, wrote)| {
-            let Instance { store, memory, actors, holdings, .. } = &mut *held;
+            let Instance { number, store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
             let ends = TurnEnds::default();
-            let replayed = replay(data, &running, &wrote, 0, ends, &mut given, holdings, actors, &mut hosted)?;
+            let living = (*number, actors);
+            let replayed = replay(data, &running, &wrote, 0, ends, &mut given, holdings, living, &mut hosted)?;
             Ok((handle, replayed))
         });
         given.give_back(|seat| hosted.give_back(seat));
@@ -1145,7 +1157,7 @@ impl Guests for Runtime {
         }
         let lives = if is_here {
             held.actors.push(me);
-            Lives::In { handle }
+            Lives::In { handle, instance: held.number }
         } else {
             match held.take_out(handle) {
                 Ok(lives) => lives,
@@ -1167,10 +1179,14 @@ impl Guests for Runtime {
 }
 
 impl Guest {
-    /// Whether the actor is to be asked before each turn whether to move onto its kind's head, as `table` reads the
-    /// head: when it runs other code than the head, and is not parked on it (ADR-0054).
-    fn asks(&self, table: &dyn Table) -> bool {
-        table.head(self.declared.name()).is_some_and(|head| self.is_behind(head.id()))
+    /// Whether the instance the actor lived in is gone, as a trap dropped it: its part has no instance of its code, or
+    /// one made since, which does not hold it. It runs nothing there (ADR-0015).
+    fn is_lost(&self, instances: &mut Instances) -> bool {
+        let Lives::In { instance, .. } = self.lives else {
+            return false;
+        };
+
+        instances.get::<Instance>(self.running.code.key).is_none_or(|held| held.number != instance)
     }
 
     /// Whether the actor runs other code than `head`, the blob its kind's head names, and is not parked on it.
@@ -1181,24 +1197,19 @@ impl Guest {
         runs_other && !is_parked
     }
 
-    /// What the actor answers, asked in a call with no turn whether to move onto `head`, its kind's head, in its part
-    /// whose `instances` are lent: [`AskedToMove::Not`] when it is not behind it, or is parked there, as it is then not
-    /// asked (ADR-0054).
+    /// What the actor answers, asked in a call of its own whether to move onto its kind's head, in its part whose
+    /// `instances` are lent (ADR-0054).
     ///
     /// # Errors
     ///
     /// What became of it when the call broke its instance: it ended, with every other actor of the instance.
-    fn ask(&mut self, head: BlobId, instances: &mut Instances) -> Result<AskedToMove, Upgraded> {
-        let asks = self.is_behind(head);
-        if !asks {
-            return Ok(AskedToMove::Not);
-        }
+    fn ask(&mut self, instances: &mut Instances) -> Result<Upgrade, Upgraded> {
         let key = self.running.code.key;
         let read_limit = instances.read_limit();
         let instance = instances.get_or_load(key, || Instance::load(&self.running.code, read_limit));
         let answer = self.handle_in(instance).and_then(|handle| instance.upgrade(handle));
 
-        answer.map(AskedToMove::from).map_err(|broke| Upgraded::Broke { ended: self.ended(broke, instances) })
+        answer.map_err(|broke| Upgraded::BrokeAsking { ended: self.ended(broke, instances) })
     }
 
     /// Moves the actor onto `head`, its kind's head, in its part whose `instances` are lent: its state taken out of
@@ -1206,8 +1217,6 @@ impl Guest {
     /// it is, when the kinds are the same, or through its new type's `take_over` when their layouts differ. When the
     /// state is not taken, it is put back, the actor runs on its old code, and it is parked (ADR-0054).
     fn move_onto(&mut self, head: &Bytes, instances: &mut Instances) -> Upgraded {
-        // The batch that stopped for the move is done: the next is prepared on whichever code the actor then runs.
-        self.ran = Ran::Nothing;
         let codes = self.running.code.codes.upgrade();
         let code = codes.as_deref().and_then(|codes| codes.read().ok()?.get(&head.id()).cloned());
         let onto = code.and_then(|code| {
@@ -1224,7 +1233,7 @@ impl Guest {
         };
         let (state, carried) = match self.take_out_state(instances) {
             Ok(taken) => taken,
-            Err(broke) => return Upgraded::Broke { ended: self.ended(broke, instances) },
+            Err(broke) => return Upgraded::BrokeMoving { ended: self.ended(broke, instances) },
         };
 
         let old = self.declared.state().nodes();
@@ -1242,10 +1251,10 @@ impl Guest {
         let (reason, ended) = match taken {
             Ok(Ok(handle)) => {
                 fresh.actors.push(self.me);
+                self.lives = Lives::In { handle, instance: fresh.number };
                 self.leave(instances);
                 self.running = Running { code, pin: head.clone() };
                 self.declared = declared;
-                self.lives = Lives::In { handle };
                 self.parked = Parked::No;
                 return Upgraded::Moved { declared, absent: absent(&old, &new) };
             }
@@ -1267,7 +1276,7 @@ impl Guest {
         if let Err(broke) = self.put_back(was, &state, &carried, instances) {
             let mut own = self.ended(broke, instances);
             own.extend(ended);
-            return Upgraded::Broke { ended: own };
+            return Upgraded::BrokeMoving { ended: own };
         }
         self.parked = Parked::On(head.id());
 
@@ -1282,7 +1291,7 @@ impl Guest {
     /// Why the call that took it out broke.
     fn take_out_state(&mut self, instances: &mut Instances) -> Result<(Vec<u8>, Vec<Bytes>), Broke> {
         let handle = match &self.lives {
-            Lives::In { handle } => *handle,
+            Lives::In { handle, .. } => *handle,
             Lives::Out { state, carried } => return Ok((state.clone(), carried.clone())),
         };
         // An actor in its part's instance is kept there, which only a trap drops, and that ends it.
@@ -1309,7 +1318,7 @@ impl Guest {
         let held = instances.get::<Instance>(self.running.code.key).ok_or(Broke::Trapped)?;
         let handle = held.take_in(was, self.me, state, carried)?;
         held.actors.push(self.me);
-        self.lives = Lives::In { handle };
+        self.lives = Lives::In { handle, instance: held.number };
 
         Ok(())
     }
@@ -1343,13 +1352,13 @@ impl Guest {
     /// Why the call that took it in broke.
     fn handle_in(&mut self, held: &mut Instance) -> Result<u32, Broke> {
         let handle = match &self.lives {
-            Lives::In { handle } => *handle,
+            Lives::In { handle, .. } => *handle,
             Lives::Out { state, carried } => {
                 // The actor's type is one its code makes, as it began from that code.
                 let (of, _) = self.running.code.made_of(self.declared.id()).ok_or(Broke::Garbled)?;
                 let handle = held.take_in(of, self.me, state, carried)?;
                 held.actors.push(self.me);
-                self.lives = Lives::In { handle };
+                self.lives = Lives::In { handle, instance: held.number };
                 handle
             }
         };
@@ -1399,6 +1408,12 @@ impl Runs for Guest {
     /// first taken into this part's.
     fn prepare(&mut self, preparing: Preparing<'_>) {
         let (batch, instances, reads, sent) = preparing.hosted();
+        // An actor a trap ended runs nothing more, though its ending is folded only once the step is.
+        let is_lost = self.is_lost(instances);
+        if is_lost {
+            self.ran = Ran::Lost;
+            return;
+        }
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
         let Ok(mut held) = instances.lend(self.running.code.key, || Instance::load(&self.running.code, read_limit))
@@ -1417,13 +1432,11 @@ impl Runs for Guest {
         let (items, len) = held.hand_in(batch, &mut self.given.offered);
         let mut holdings = mem::take(&mut held.holdings);
         let Reads { table, made, seats, puts, holds } = reads;
-        // An actor whose code is behind its kind's head is asked before each turn whether to move (ADR-0054).
-        let behind = u32::from(self.asks(table));
         let lent = Reads { table, made, seats: &mut *seats, puts, holds };
         let codes = &self.running.code.codes;
         let mut answering = Answering::of(lent, &mut *instances, codes, &mut self.given, &holdings, self.me);
         let Instance { store, turns, .. } = &mut *held;
-        let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent, behind)));
+        let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
         // The references a child taken out of the instance in the call holds go with it, so their pins are offered
         // to its turn before the call's own changes, which drop the instance's references to them, are taken in.
@@ -1441,12 +1454,6 @@ impl Runs for Guest {
                 Ran::Broke(broke)
             }
         };
-        // An actor that moves before the batch's first turn has no turn handed back, which would give back what the
-        // call was given.
-        let runs_none = matches!(self.ran, Ran::At { head, .. } if head.ran == 0);
-        if runs_none {
-            self.given.give_back(|seat| seats.give_back(seat));
-        }
     }
 
     /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
@@ -1465,15 +1472,18 @@ impl Runs for Guest {
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
-                let Instance { store, memory, actors, holdings, .. } = self.running.code.instance(instances);
+                let Instance { number, store, memory, actors, holdings, .. } = self.running.code.instance(instances);
                 let data = memory.data(&*store);
-                replay(data, &self.running, &head, next, before, &mut self.given, holdings, actors, &mut hosted)
+                let living = (*number, actors);
+                replay(data, &self.running, &head, next, before, &mut self.given, holdings, living, &mut hosted)
                     .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
             }
             // The engine hands back no turn of a batch it did not prepare: were it to, no record of the turn would be
             // there to read.
             Ran::Nothing => Err(Broke::Garbled),
             Ran::Broke(broke) => Err(broke),
+            // The trap that dropped its instance ended every actor of it.
+            Ran::Lost => return Err(Broke::Trapped.fault()),
         };
         let (replayed, ran) = match replayed {
             Ok(replayed) => replayed,
@@ -1509,9 +1519,7 @@ impl Runs for Guest {
     fn end(mut self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         let (mut hosted, why, instances) = closing.hosted(self.declared);
         let key = self.running.code.key;
-        let is_in = matches!(self.lives, Lives::In { .. });
-        let has_instance = instances.get::<Instance>(key).is_some();
-        let was_trapped = is_in && !has_instance;
+        let was_trapped = self.is_lost(instances);
         if was_trapped {
             return Ok(());
         }
@@ -1545,9 +1553,10 @@ impl Runs for Guest {
         held.holdings = holdings;
         held.actors.retain(|actor| *actor != self.me);
         let replayed = wrote.and_then(|wrote| {
-            let Instance { store, memory, actors, holdings, .. } = &mut *held;
+            let Instance { number, store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
-            replay(data, &self.running, &wrote, 0, TurnEnds::default(), &mut given, holdings, actors, &mut hosted)
+            let living = (*number, actors);
+            replay(data, &self.running, &wrote, 0, TurnEnds::default(), &mut given, holdings, living, &mut hosted)
         });
         let (ended, _) = match replayed {
             Ok(replayed) => replayed,
@@ -1569,48 +1578,22 @@ impl Runs for Guest {
         ended
     }
 
-    /// Whether the batch prepared last stopped before its next turn, as the actor answered there that it moves onto
-    /// its kind's head now (ADR-0054).
-    fn upgrading(&self) -> bool {
-        matches!(self.ran, Ran::At { head, next, .. } if next == head.ran && head.stopped == Stopped::Upgrading)
-    }
-
-    /// Whether the turn handed back last was asked first whether to move onto its kind's head, and what the actor
-    /// answered, as the guest's record of it says (ADR-0054).
-    fn asked_to_move(&self) -> AskedToMove {
-        match self.ran {
-            Ran::At { before, .. } => before.asked,
-            Ran::Nothing | Ran::Broke(_) => AskedToMove::Not,
+    /// Asked before each batch, and once between steps when the actor has no mail as its kind's head moves: when it
+    /// runs other code than `moving`'s head and is not parked there, asks it whether to move, and moves it as
+    /// [`Self::move_onto`] says when it answers `Now` (ADR-0054). An actor a trap ended is not asked.
+    fn upgrade(&mut self, moving: Moving<'_>) -> Upgraded {
+        let Moving { head, instances } = moving;
+        let is_behind = self.is_behind(head.id());
+        let asks = is_behind && !self.is_lost(instances);
+        if !asks {
+            return Upgraded::Unasked;
         }
-    }
 
-    /// Moves the actor onto its kind's head between steps, as it answered before a turn this step, or once it answers
-    /// so asked in a call with no turn: as [`Self::move_onto`] says. It stays on the code it runs while that is the
-    /// head (ADR-0054).
-    fn upgrade(&mut self, moving: Moving<'_>) -> Reached {
-        let Moving { behind, head, instances } = moving;
-        let is_head = head.id() == self.running.pin.id();
-        if is_head {
-            return Reached::stays();
+        match self.ask(instances) {
+            Ok(Upgrade::Later) => Upgraded::Later,
+            Ok(Upgrade::Now) => self.move_onto(head, instances),
+            Err(broke) => broke,
         }
-        // An actor reached for the answer it gave before a turn was asked in that turn's call, not here.
-        let asked = match behind {
-            Behind::Answered => AskedToMove::Not,
-            Behind::Idle => match self.ask(head.id(), instances) {
-                Ok(asked) => asked,
-                Err(broke) => return Reached { asked: AskedToMove::Not, upgraded: broke },
-            },
-        };
-        let answered_before = behind == Behind::Answered;
-        let answers_now = asked == AskedToMove::Now;
-        let moves = answered_before || answers_now;
-        let upgraded = if moves {
-            self.move_onto(head, instances)
-        } else {
-            Upgraded::Stays
-        };
-
-        Reached { asked, upgraded }
     }
 }
 
@@ -2000,7 +1983,8 @@ impl Instance {
 /// it wrote them, the turns before it ending where `before` says: the children it spawned, their seats taken from
 /// those `given` holds, which the host gave the call; the children of other code the host began for it, from
 /// `given`; its sends, each checked against what its sender declares; its lines; the children that began, each kept
-/// in the instance added to `actors` unless the turn failed; and how it ended. Answers with that, and where it ends.
+/// in the instance, the one `living` numbers, added to the actors `living` holds unless the turn failed; and how it
+/// ended. Answers with that, and where it ends.
 ///
 /// # Errors
 ///
@@ -2015,11 +1999,11 @@ fn replay(
     before: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    (instance, actors): (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(Result<(), Fault>, TurnEnds), Broke> {
     let actors_before = actors.len();
-    let replayed = replay_records(data, running, head, next, before, given, holdings, actors, hosted);
+    let replayed = replay_records(data, running, head, next, before, given, holdings, (instance, actors), hosted);
     // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
     // records do not read back.
     let has_more = actors.len() > actors_before;
@@ -2031,7 +2015,8 @@ fn replay(
     replayed
 }
 
-/// What [`replay`] hands back, the children kept in the instance added to `actors` whatever the turn's end.
+/// What [`replay`] hands back, the children kept in the instance added to the actors `living` holds whatever the turn's
+/// end.
 #[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn replay_records(
     data: &[u8],
@@ -2041,7 +2026,7 @@ fn replay_records(
     before: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    living: (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(Result<(), Fault>, TurnEnds), Broke> {
     let was_run = next < head.ran;
@@ -2107,7 +2092,7 @@ fn replay_records(
     }
     let stands = ends.stood > before.stood;
     if stands {
-        stand(data, running, head, before, ends, given, holdings, actors, hosted)?;
+        stand(data, running, head, before, ends, given, holdings, living, hosted)?;
     }
     for index in before.watches..ends.watches {
         let watch = record(data, head.watches_at, index, WatchRecord::BYTES)
@@ -2137,9 +2122,7 @@ fn replay_records(
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
         _ if !is_last => Ok(()),
-        // The batch stopped before the next turn, as the actor moves onto its kind's head, or did not stop: this one
-        // ran either way (ADR-0054).
-        Stopped::No | Stopped::Upgrading => Ok(()),
+        Stopped::No => Ok(()),
         // A `begin` cannot close its actor, so a record that says one did does not read back.
         Stopped::Closed if !hosted.may_close() => return Err(Broke::Garbled),
         Stopped::Closed => {
@@ -2290,8 +2273,8 @@ fn spawn(
 }
 
 /// Stands up, in `hosted`, the children that began in a turn, from the first after those `before` ends at to the
-/// last `ends` does, each kept in the instance added to `actors`, and the seat of each the guest dropped put back in
-/// `handed`.
+/// last `ends` does, each kept in the instance, the one `living` numbers, added to the actors `living` holds, and the
+/// seat of each the guest dropped put back in `handed`.
 ///
 /// # Errors
 ///
@@ -2306,7 +2289,7 @@ fn stand(
     ends: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    (instance, actors): (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(), Broke> {
     let handed = &mut given.seats;
@@ -2329,7 +2312,7 @@ fn stand(
             }
             Kept::Here { handle } => {
                 actors.push(me);
-                Lives::In { handle }
+                Lives::In { handle, instance }
             }
             Kept::Out { state } => {
                 let state = lying(data, state).ok_or(Broke::Garbled)?;

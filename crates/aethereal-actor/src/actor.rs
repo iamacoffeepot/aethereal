@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, AskedToMove, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault,
-    HandledList, Holds, Instances, Item, Moving, Puts, Reached, Seated, Seats, Sends, Table, Tie, Turning, Within,
+    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault, HandledList, Holds,
+    Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -59,10 +59,8 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
 /// 2. Turns are asked for in the order `prepare` showed their items, each item once, and `turn` is handed the item
 ///    itself.
 /// 3. Every prepared item's turn is asked for, unless one of the actor's own turns fails or asks to close it: then no
-///    turn after that one is asked for, in this batch or any other. Or unless [`Self::upgrading`] says, before a
-///    turn, that the actor moves onto its kind's head now: then neither that turn nor any after it in the batch is
-///    asked for, its items wait for the next step, and the actor is moved between steps (ADR-0054). Nothing else
-///    cuts a batch short: the engine looks at the clock for the actor's slice only between batches.
+///    turn after that one is asked for, in this batch or any other. Nothing else cuts a batch short: the engine looks
+///    at the clock for the actor's slice only between batches.
 /// 4. A batch holds at least one item. A hop is a batch of one (ADR-0013).
 ///
 /// **How to use it.** Only the engine calls these. An actor written in Rust implements [`Actor`], and every `Actor`
@@ -104,25 +102,12 @@ pub trait Runs: Any + Send {
     /// The actor's closing turn, which takes the actor.
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault>;
 
-    /// Whether the batch prepared last stops before its next turn, as the actor answered there that it moves onto
-    /// its kind's head now: the engine asks it before each turn of an actor that prepares, and asks for no turn of
-    /// the batch from there (ADR-0054). Never, for code no head names, whose kind is the program's own.
-    fn upgrading(&self) -> bool {
-        false
-    }
-
-    /// Whether the turn [`Self::turn`] handed back last was asked first whether to move onto its kind's head, and what
-    /// the actor answered: read only for the engine's record of the turns it ran (ADR-0036, ADR-0054). Never asked,
-    /// for code no head names, whose kind is the program's own.
-    fn asked_to_move(&self) -> AskedToMove {
-        AskedToMove::Not
-    }
-
-    /// Asked between steps, in the actor's part, to move onto its kind's head as `moving` says, or first whether to:
-    /// answers with what it answered when it was asked there, and what became of it (ADR-0054). Code no head names
-    /// is never asked, and stays on its code.
-    fn upgrade(&mut self, _moving: Moving<'_>) -> Reached {
-        Reached::stays()
+    /// Asked before each batch it prepares, and once between steps when it has no mail as its kind's head moves, in
+    /// its part, whose instances `moving` lends: when its code is behind the head `moving` names, and it is not
+    /// parked there, whether it moves now, and if it does, moved at once, so the batch runs on the code it then runs
+    /// (ADR-0054). Code no head names is never asked, and stays on its code.
+    fn upgrade(&mut self, _moving: Moving<'_>) -> Upgraded {
+        Upgraded::Unasked
     }
 }
 

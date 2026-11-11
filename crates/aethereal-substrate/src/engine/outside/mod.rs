@@ -4,9 +4,9 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, AskedToMove, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item,
-    Mail, MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied,
-    Top, Turning, Unanswered, Upgrade, Why, Written,
+    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, Mail, MailId,
+    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top, Turning,
+    Unanswered, Upgrade, Upgraded, Why, Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -186,19 +186,16 @@ pub struct Turned {
     pub ran: Ran,
     pub handed: Handed,
     pub outcome: Result<(), Fault>,
-    /// Whether its actor was asked before it whether to move onto its kind's head, and what it answered, as its code
-    /// handed back: never [`AskedToMove::Now`], before which no turn runs on the old code (ADR-0054).
-    pub asked: AskedToMove,
 }
 
-/// An ask the engine made between steps of an actor behind its kind's head that had no mail as the head moved, in a
-/// call with no turn, as it recorded it (ADR-0036, ADR-0054). An ask before a turn is on the turn's [`Turned`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AskedIdle {
+/// An ask the engine made of an actor behind its kind's head, whether to move onto it, as it recorded it: before a
+/// batch of the actor's turns, or once between steps as it had no mail when the head moved (ADR-0036, ADR-0054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AskedToMove {
     pub actor: Seated,
-    /// The step after which it was asked.
-    pub step: u64,
     pub answer: Upgrade,
+    /// The number of the publish that made the head it was asked about.
+    pub publish: u64,
 }
 
 impl Turned {
@@ -263,6 +260,16 @@ impl Recording {
         Noted::Recorded { step, depth, handed }
     }
 
+    /// Records that `actor` was asked whether to move onto the head the publish numbered `publish` made, when it was
+    /// asked and answered, as `upgraded` says: nothing when the step is not recorded (ADR-0054).
+    pub(super) fn asked_to_move(self, actor: Seated, upgraded: &Upgraded, publish: u64, asked: &mut Vec<AskedToMove>) {
+        let (Self::At(_), Some(answer)) = (self, upgraded.answer()) else {
+            return;
+        };
+
+        asked.push(AskedToMove { actor, answer, publish });
+    }
+
     /// Records the closing turn of `me`, at `path` and `depth`, which runs for `why` and ended as `outcome` says.
     pub(super) fn closing(
         self,
@@ -274,27 +281,24 @@ impl Recording {
     ) {
         if let Self::At(step) = self {
             let (ran, handed, outcome, path) = (Ran::Closing, Handed::Closing(why), outcome.clone(), path.clone());
-            // A closing turn runs on whatever code the actor is on, unasked.
-            let asked = AskedToMove::Not;
-            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome, asked });
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
         }
     }
 }
 
 impl Noted {
-    /// Records the turn of `me`, at `path`, it was noted for, which ran as `ran` and ended as `outcome` says, and which
-    /// `actor`, its code, hands back as asked first whether to move or not.
+    /// Records the turn of `me`, at `path`, it was noted for, which ran as `ran` and ended as `outcome` says.
     pub(super) fn finish(
         self,
-        (me, actor): (Seated, &dyn Runs),
+        me: Seated,
         path: &ActorPath,
         ran: Ran,
         outcome: &Result<(), Fault>,
         turned: &mut Vec<Turned>,
     ) {
         if let Self::Recorded { step, depth, handed } = self {
-            let (path, outcome, asked) = (path.clone(), outcome.clone(), actor.asked_to_move());
-            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome, asked });
+            let (path, outcome) = (path.clone(), outcome.clone());
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
         }
     }
 }
@@ -342,23 +346,10 @@ impl Engine {
         turned
     }
 
-    /// Takes the asks made in calls with no turn recorded since this was last asked, in the order they were made
-    /// (ADR-0054).
-    pub fn take_asked_idle(&mut self) -> Vec<AskedIdle> {
-        mem::take(&mut self.asked_idle)
-    }
-
-    /// Records that `me` answered `asked` between steps, asked in a call with no turn whether to move onto its kind's
-    /// head, while the engine records: nothing when no such call asked it (ADR-0054).
-    pub(super) fn record_asked_idle(&mut self, me: Seated, asked: AskedToMove) {
-        let answer = match asked {
-            AskedToMove::Not => return,
-            AskedToMove::Later => Upgrade::Later,
-            AskedToMove::Now => Upgrade::Now,
-        };
-        if self.recording {
-            self.asked_idle.push(AskedIdle { actor: me, step: self.step, answer });
-        }
+    /// Takes the asks whether to move onto a kind's head recorded since this was last asked: each actor's in the order
+    /// it was asked (ADR-0054).
+    pub fn take_asked_to_move(&mut self) -> Vec<AskedToMove> {
+        mem::take(&mut self.asked_to_move)
     }
 
     /// The state of the actor `seated` names, as of the last step, when one of type `T` sits there and its code is here.

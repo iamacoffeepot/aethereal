@@ -31,9 +31,9 @@ use crate::{
     Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Bytes, ChildOf, Children, Declared, Due,
     Ended, Fault, How, Item, Tie, Tied, Unanswered,
 };
-use crate::{AskedToMove, Upgrade, Upgrades};
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
+use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
     ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, SchemaNodes,
@@ -441,12 +441,9 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
 /// Runs the actor `handle` names on the `items` items written into the first `len` bytes of the inbox, each an
 /// [`ItemHead`] and then its bytes, one turn for each until one fails or closes the actor. The actor had sent `sent`
 /// pieces of mail and jobs before the first, which its turns count on from, as the engine counts them, so a job's id is
-/// the one its host files it under (ADR-0018). While `behind` is one, the actor's code is behind its kind's head, and it
-/// is asked before each turn whether to move onto it: the batch stops before the turn of an actor that answers
-/// [`Upgrade::Now`], and each turn's [`TurnEnds`] says whether it was asked first, and what was answered (ADR-0054).
-/// Answers where what the turns asked for lies, as [`out`] does.
+/// the one its host files it under (ADR-0018). Answers where what the turns asked for lies, as [`out`] does.
 #[must_use]
-pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64, behind: u32) -> u64 {
+pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len: u32, sent: u64) -> u64 {
     GUEST.with_borrow_mut(|guest| {
         // What the last call asked for has been read by now, so its buffers are emptied for this batch, whose turns
         // all add to them.
@@ -458,14 +455,6 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let Some(Slot::Live { runs, me, standing }) = actors.get_mut(handle as usize) else {
             return 0;
         };
-        // An actor behind its kind's head is asked before each turn, through what its type answers.
-        let is_behind = behind == 1;
-        let asks = if is_behind {
-            let id = runs.declared().id();
-            types.iter().find(|made| made.declared.id() == id).map(|made| made.upgrade)
-        } else {
-            None
-        };
         // Every actor a guest holds is an `Actor`, which computes each turn when it is asked for and has nothing to
         // prepare, so its batch goes straight to its turns.
         let inbox = &inbox[..(len as usize).min(inbox.len())];
@@ -476,14 +465,6 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut counted = Counted::default();
         let mut sent = sent;
         for _ in 0..items {
-            // Each turn runs wholly on one version of the code: an actor that moves now runs none of the rest. What it
-            // answered otherwise is handed back with the turn's ends, for its engine's record.
-            let answered = asks.map_or(AskedToMove::Not, |upgrade| AskedToMove::from(upgrade(&**runs)));
-            let moves = answered == AskedToMove::Now;
-            if moves {
-                last = Last::Upgrading;
-                break;
-            }
             let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, read_limit) else {
                 break;
             };
@@ -516,7 +497,6 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
                 Turning::new(*me, path, *above, &host, &host, asked, instances, keeps, sent, source, chain, tie, due);
             let result = runs.turn(item, turning);
             sent = asked.last_sent(*me).unwrap_or(sent);
-            counted.ends.asked = answered;
             write_ends(out, asked, (ran, unread), &mut counted);
             ran += 1;
             last = match result {
@@ -541,8 +521,6 @@ enum Last {
     Ran,
     Failed(Fault),
     Closed,
-    /// The actor answered before the next turn that it moves onto its kind's head now (ADR-0054).
-    Upgrading,
 }
 
 /// An item read from the inbox: one whole, or what became of a request with the request as its host filed it, which
@@ -780,7 +758,6 @@ impl Guest {
         let stopped = match last {
             Last::Ran => Stopped::No,
             Last::Closed => Stopped::Closed,
-            Last::Upgrading => Stopped::Upgrading,
             Last::Failed(fault) => Stopped::Failed {
                 kind: fault.kind(),
                 bytes: Span { at: at(fault_at), len: count(fault.bytes().len()) },
@@ -1195,9 +1172,9 @@ pub fn drop_at(handle: u32) {
     });
 }
 
-/// What the actor `handle` names answers, asked whether to move onto its kind's head in a call with no turn, as an
-/// actor with no mail is once its kind's head moves: one for [`Upgrade::Now`], nought for [`Upgrade::Later`], and
-/// `u32::MAX` when it holds no such actor (ADR-0054).
+/// What the actor `handle` names answers, asked in a call of its own whether to move onto its kind's head: before each
+/// batch of its turns while it is behind the head, and once when it has no mail as the head moves. One for
+/// [`Upgrade::Now`], nought for [`Upgrade::Later`], and `u32::MAX` when it holds no such actor (ADR-0054).
 #[must_use]
 pub fn upgrade_at(types: &[Type], handle: u32) -> u32 {
     GUEST.with_borrow(|guest| {
@@ -1806,8 +1783,8 @@ macro_rules! guest {
             }
 
             #[unsafe(no_mangle)]
-            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32, sent: u64, behind: u32) -> u64 {
-                $crate::guest::turns(MADE, &CALLS, handle, items, len, sent, behind)
+            extern "C" fn aethereal_turns(handle: u32, items: u32, len: u32, sent: u64) -> u64 {
+                $crate::guest::turns(MADE, &CALLS, handle, items, len, sent)
             }
 
             #[unsafe(no_mangle)]

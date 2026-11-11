@@ -1,25 +1,25 @@
 //! Guests moving onto their kind's new code while the program runs (ADR-0054): the echo guest, and its second build,
 //! `v2`, which a library root publishes as the head of a kind the echo makes. Each guest answers a probe with the
-//! version of the code that handled it and what its state holds; when the engine asked each whether to move, and what
-//! it answered, is read in the engine's record of what it ran.
+//! version of the code that handled it and what its state holds; what each answered when the engine asked it whether
+//! to move, and about which publish, is read in the engine's record of its asks.
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answered, AskedToMove, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault, Given,
-    Handle, Handles, How, Level, Publisher, Root, ToSender, Top, Turn, Unanswered, Upgrade,
+    Actor, ActorRef, Answered, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault, Given, Handle, Handles,
+    How, Level, Publisher, Root, ToSender, Top, Turn, Unanswered, Upgrade,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
 use aethereal_guest_echo as echo;
 use aethereal_substrate::Engine;
-use aethereal_substrate::harness::{Askable, Bench, Harness, Steps, Unheard};
+use aethereal_substrate::harness::{Askable, Bench, Harness, Steps, Turned, Unheard};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// The echo guest the build script built.
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
-/// The echo guest's second build, with its `v2` feature: the second version of the guests the tests move.
+/// The echo guest's second build, with its `echo_v2` cfg: the second version of the guests the tests move.
 const ECHO_V2: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO_V2"));
 
 /// What the library is made from: the engine's one publisher.
@@ -248,20 +248,18 @@ fn recall(
     harness.answer(asked).map(endings)
 }
 
-/// How the engine asked `actor` before each of its turns recorded since the record was last taken, whether to move
-/// onto its kind's head, oldest first: the turns of every other actor are taken with them.
-fn turn_asks<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Vec<AskedToMove> {
-    let turned = harness.host().engine().take_turned();
+/// What `actor` answered each time the engine asked it whether to move onto its kind's head, and the number of the
+/// publish that made the head it was asked about, since the record was last taken, oldest first: every other actor's
+/// asks are taken with them.
+fn asks<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Vec<(Upgrade, u64)> {
+    let asked = harness.host().engine().take_asked_to_move();
 
-    turned.iter().filter(|turn| turn.actor == actor.seated()).map(|turn| turn.asked).collect()
+    asked.iter().filter(|ask| ask.actor == actor.seated()).map(|ask| (ask.answer, ask.publish)).collect()
 }
 
-/// What `actor` answered each time the engine asked it whether to move onto its kind's head in a call with no turn,
-/// as it had no mail, recorded since the record was last taken, oldest first: every other actor's are taken with them.
-fn idle_asks<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Vec<Upgrade> {
-    let asked = harness.host().engine().take_asked_idle();
-
-    asked.iter().filter(|ask| ask.actor == actor.seated()).map(|ask| ask.answer).collect()
+/// How many turns of `actor` are among `turned`.
+fn turns_of<A>(turned: &[Turned], actor: ActorRef<A>) -> usize {
+    turned.iter().filter(|turn| turn.actor == actor.seated()).count()
 }
 
 /// The lines `actor` has logged at `level`, oldest first.
@@ -275,51 +273,154 @@ fn lines<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>, level: Level) -> V
     lines.collect()
 }
 
+/// What a probe's report, `report`, says of the code that handled it and the count it kept: its version and count, or
+/// why no report came.
+fn handled(report: Result<echo::Report, Unanswered>) -> Result<(u64, u64), Unanswered> {
+    report.map(|report| (report.version, report.count))
+}
+
 #[test]
-fn a_guest_that_answers_later_runs_its_turn_on_its_old_code_and_is_asked_again_before_the_next() -> Result<(), Unheard>
-{
-    // Catches a turn run on the new code though its actor answered `Later`, an actor never asked again once it has
-    // answered `Later`, an actor still asked once it is on its kind's head, and a move that loses what the old code
-    // counted.
+fn a_guest_that_answers_later_runs_its_whole_batch_on_its_old_code_and_is_asked_again_at_its_next()
+-> Result<(), Unheard> {
+    // Catches an actor asked before each turn instead of once a batch, so it moves in the middle of one; a batch run on
+    // the new code though its actor answered `Later`; an actor never asked again once it has answered `Later`; and a
+    // move that loses what the old code counted.
     let Program { mut harness, guest: mover, library, second } =
         program::<echo::Mover>(&echo::MoverConfig { holds: true }, 1)?;
     let blob = second[0].clone();
     harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
     harness.settle();
-    let _ = turn_asks(&mut harness, mover);
+    let idle = asks(&mut harness, mover);
 
-    let held = probe(&mut harness, mover)?.map(|report| (report.version, report.count));
     harness.tell(mover, &echo::LetGo)?;
-    harness.settle();
-    let holding = turn_asks(&mut harness, mover);
-    let after = probe(&mut harness, mover)?.map(|report| (report.version, report.count));
-    let on_head = turn_asks(&mut harness, mover);
+    let held = harness.ask(mover, &echo::Probe)?;
+    let held = handled(report(harness.answer(held)?));
+    let holding = asks(&mut harness, mover);
+    let after = handled(probe(&mut harness, mover)?);
+    let moving = asks(&mut harness, mover);
+    let on_head = handled(probe(&mut harness, mover)?);
+    let asked_on_head = asks(&mut harness, mover);
 
-    assert_eq!(held, Ok((1, 1)), "the turn it answered `Later` before ran on its old code");
-    assert_eq!(holding, [AskedToMove::Later, AskedToMove::Later], "each turn while it held was asked first");
-    assert_eq!(after, Ok((2, 2)), "asked again, it moved, and its count came with it");
-    assert_eq!(on_head, [AskedToMove::Not], "on its kind's head, its turn is not asked");
+    assert_eq!(idle, [(Upgrade::Later, 1)], "asked once as the head moved, with no mail");
+    assert_eq!(held, Ok((1, 1)), "the probe after the letting go ran on the old code, in the batch asked `Later`");
+    assert_eq!(holding, [(Upgrade::Later, 1)], "asked once for the batch, before the letting go");
+    assert_eq!(after, Ok((2, 2)), "asked again at its next batch, it moved, and its count came with it");
+    assert_eq!(moving, [(Upgrade::Now, 1)]);
+    assert_eq!(on_head, Ok((2, 3)));
+    assert_eq!(asked_on_head, [], "on its kind's head, it is not asked");
     Ok(())
 }
 
 #[test]
-fn a_guest_that_answers_now_moves_before_its_turn_and_the_new_code_handles_its_mail() -> Result<(), Unheard> {
-    // Catches a batch that runs the turn an actor answered `Now` before on its old code, mail dropped where the batch
-    // stopped, and a move that waits for a step with no mail.
+fn a_guest_that_answers_now_moves_and_its_batch_runs_on_the_new_code_in_the_same_step() -> Result<(), Unheard> {
+    // Catches a batch run on the old code though its actor answered `Now` before it; a move put off to between steps,
+    // with the batch's mail waiting a step for it; and mail dropped where the move happened.
     let Program { mut harness, guest: mover, library, second } =
         program::<echo::Mover>(&echo::MoverConfig { holds: true }, 1)?;
     let blob = second[0].clone();
     harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
     harness.settle();
-
     harness.tell(mover, &echo::LetGo)?;
+    harness.settle();
+    let _ = asks(&mut harness, mover);
+
     let asked = harness.ask(mover, &echo::Probe)?;
     let turned = harness.step_turns();
-    let ran = turned.iter().filter(|turn| turn.actor == mover.seated()).count();
-    let answered = harness.answer(asked).map(report)?.map(|report| (report.version, report.count));
+    let asked_in_step = asks(&mut harness, mover);
+    let answered = handled(report(harness.answer(asked)?));
 
-    assert_eq!(ran, 1, "the letting go ran, and the probe waited for the new code");
-    assert_eq!(answered, Ok((2, 1)), "the new code handled the probe that waited");
+    assert_eq!(asked_in_step, [(Upgrade::Now, 1)], "asked before the probe's batch, in the step it ran in");
+    assert_eq!(turns_of(&turned, mover), 1, "the probe ran in the step it was sent for");
+    assert_eq!(answered, Ok((2, 1)), "on the new code");
+    assert_eq!(lines(&mut harness, mover, Level::Info), ["moved to publish 1; absent: first_move"]);
+    Ok(())
+}
+
+#[test]
+fn a_failed_move_runs_the_batch_on_the_old_code_and_parks_the_guest() -> Result<(), Unheard> {
+    // Catches a failed move that loses the batch's mail, runs it on no code, or loses the state; and a parked actor
+    // asked again before each batch, failing the same way each time.
+    let Program { mut harness, guest: stubborn, library, second } =
+        program::<echo::Stubborn>(&echo::MoverConfig { holds: true }, 1)?;
+    let blob = second[0].clone();
+    harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob })?;
+    harness.settle();
+    harness.tell(stubborn, &echo::LetGo)?;
+    harness.settle();
+    let _ = asks(&mut harness, stubborn);
+
+    let asked = harness.ask(stubborn, &echo::Probe)?;
+    let turned = harness.step_turns();
+    let failed = handled(report(harness.answer(asked)?));
+    let asked_failing = asks(&mut harness, stubborn);
+    let parked = handled(probe(&mut harness, stubborn)?);
+    let asked_parked = asks(&mut harness, stubborn);
+
+    assert_eq!(asked_failing, [(Upgrade::Now, 1)]);
+    assert_eq!(turns_of(&turned, stubborn), 1, "the probe ran in the step its move failed in");
+    assert_eq!(failed, Ok((1, 1)), "on its old code, with its state");
+    assert_eq!(parked, Ok((1, 2)));
+    assert_eq!(asked_parked, [], "parked: not asked before its next batch");
+    let errors = lines(&mut harness, stubborn, Level::Error);
+    assert_eq!(errors, ["did not move to publish 1: the old state has no `answered`; parked"]);
+    Ok(())
+}
+
+#[test]
+fn a_parked_guest_is_not_asked_again_until_its_kinds_head_moves_on() -> Result<(), Unheard> {
+    // Catches a parked actor asked again while the head it failed on stands, and one never asked again once its
+    // kind's head moves on.
+    let Program { mut harness, guest: stubborn, library, second } =
+        program::<echo::Stubborn>(&echo::MoverConfig { holds: false }, 2)?;
+    let first = second[0].clone();
+    harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: first })?;
+    harness.settle();
+    let failed = asks(&mut harness, stubborn);
+
+    let parked = handled(probe(&mut harness, stubborn)?);
+    let again = handled(probe(&mut harness, stubborn)?);
+    let while_parked = asks(&mut harness, stubborn);
+    let next = second[1].clone();
+    harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: next })?;
+    harness.settle();
+    let after_publish = asks(&mut harness, stubborn);
+    let unparked = handled(probe(&mut harness, stubborn)?);
+
+    assert_eq!(failed, [(Upgrade::Now, 1)], "asked once, with no mail, as the head moved");
+    assert_eq!(parked, Ok((1, 1)), "on its old code with its state");
+    assert_eq!(again, Ok((1, 2)));
+    assert_eq!(while_parked, [], "parked: not asked before its batches");
+    assert_eq!(after_publish, [(Upgrade::Now, 2)], "asked again once its kind's head moved on");
+    assert_eq!(unparked, Ok((1, 3)), "parked again, on its old code with its state");
+    let errors = lines(&mut harness, stubborn, Level::Error);
+    let expected = [
+        "did not move to publish 1: the old state has no `answered`; parked",
+        "did not move to publish 2: the old state has no `answered`; parked",
+    ];
+    assert_eq!(errors, expected);
+    Ok(())
+}
+
+#[test]
+fn an_idle_guest_behind_its_head_is_asked_once() -> Result<(), Unheard> {
+    // Catches an idle actor never asked, so a publish would never settle, and one asked again every step while it has
+    // no mail.
+    let Program { mut harness, guest: mover, library, second } =
+        program::<echo::Mover>(&echo::MoverConfig { holds: true }, 1)?;
+    let blob = second[0].clone();
+    harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
+    harness.settle();
+    for _ in 0..4 {
+        harness.step();
+    }
+    let idle = asks(&mut harness, mover);
+
+    let version = probe(&mut harness, mover)?.map(|report| report.version);
+    let batch = asks(&mut harness, mover);
+
+    assert_eq!(idle, [(Upgrade::Later, 1)], "asked once while it had no mail, however many steps passed");
+    assert_eq!(version, Ok(1));
+    assert_eq!(batch, [(Upgrade::Later, 1)], "and once before its next batch");
     Ok(())
 }
 
@@ -329,12 +430,12 @@ fn a_guest_whose_state_keeps_its_layout_is_taken_in_as_it_is() -> Result<(), Unh
     // and a same-layout move that loses its state.
     let Program { mut harness, guest: keeper, library, second } =
         program::<echo::Keeper>(&echo::MoverConfig { holds: false }, 1)?;
-    let before = probe(&mut harness, keeper)?.map(|report| (report.version, report.count));
+    let before = handled(probe(&mut harness, keeper)?);
     let blob = second[0].clone();
     harness.tell(library, &Publish { kind: echo::Keeper::NAME, blob })?;
     harness.settle();
 
-    let after = probe(&mut harness, keeper)?.map(|report| (report.version, report.count));
+    let after = handled(probe(&mut harness, keeper)?);
 
     assert_eq!(before, Ok((1, 1)));
     assert_eq!(after, Ok((2, 2)), "it moved with its count, through no `take_over`");
@@ -358,67 +459,6 @@ fn a_changed_layout_is_read_by_field_name_and_a_field_the_old_state_lacks_is_abs
     assert_eq!(before, Ok((1, 1, false)));
     assert_eq!(after, Ok((2, 2, true)), "its count read by name, and the field the first version lacks absent");
     assert_eq!(lines(&mut harness, mover, Level::Info), ["moved to publish 1; absent: first_move"]);
-    Ok(())
-}
-
-#[test]
-fn a_failing_take_over_leaves_the_guest_on_its_old_code_parked_until_the_next_publish() -> Result<(), Unheard> {
-    // Catches a failed move that loses the state or leaves the actor on no code, an actor asked again every turn
-    // after it failed, and one never asked again once its kind's head moves on.
-    let Program { mut harness, guest: stubborn, library, second } =
-        program::<echo::Stubborn>(&echo::MoverConfig { holds: false }, 2)?;
-    let first = second[0].clone();
-    harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: first })?;
-    harness.settle();
-    let first_asked = idle_asks(&mut harness, stubborn);
-    let _ = turn_asks(&mut harness, stubborn);
-
-    let seen = |report: echo::Report| (report.version, report.count);
-    let parked = probe(&mut harness, stubborn)?.map(seen);
-    let again = probe(&mut harness, stubborn)?.map(seen);
-    let parked_turns = turn_asks(&mut harness, stubborn);
-    let next = second[1].clone();
-    harness.tell(library, &Publish { kind: echo::Stubborn::NAME, blob: next })?;
-    harness.settle();
-    let next_asked = idle_asks(&mut harness, stubborn);
-    let unparked = probe(&mut harness, stubborn)?.map(seen);
-
-    assert_eq!(first_asked, [Upgrade::Now], "asked once, with no mail, as the head moved");
-    assert_eq!(parked, Ok((1, 1)), "on its old code with its state");
-    assert_eq!(again, Ok((1, 2)));
-    assert_eq!(parked_turns, [AskedToMove::Not, AskedToMove::Not], "parked: not asked before its turns");
-    assert_eq!(next_asked, [Upgrade::Now], "asked again once its kind's head moved on");
-    assert_eq!(unparked, Ok((1, 3)), "parked again, on its old code with its state");
-    let errors = lines(&mut harness, stubborn, Level::Error);
-    let expected = [
-        "did not move to publish 1: the old state has no `answered`; parked",
-        "did not move to publish 2: the old state has no `answered`; parked",
-    ];
-    assert_eq!(errors, expected);
-    Ok(())
-}
-
-#[test]
-fn an_idle_guest_behind_its_head_is_asked_once() -> Result<(), Unheard> {
-    // Catches an idle actor never asked, so a publish would never settle, and one asked again every step while it has
-    // no mail.
-    let Program { mut harness, guest: mover, library, second } =
-        program::<echo::Mover>(&echo::MoverConfig { holds: true }, 1)?;
-    let blob = second[0].clone();
-    harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
-    harness.settle();
-    for _ in 0..4 {
-        harness.step();
-    }
-    let idle = idle_asks(&mut harness, mover);
-    let _ = turn_asks(&mut harness, mover);
-
-    let version = probe(&mut harness, mover)?.map(|report| report.version);
-    let turns = turn_asks(&mut harness, mover);
-
-    assert_eq!(idle, [Upgrade::Later], "asked once while it had no mail, however many steps passed");
-    assert_eq!(version, Ok(1));
-    assert_eq!(turns, [AskedToMove::Later], "and once before its next turn");
     Ok(())
 }
 
@@ -448,5 +488,70 @@ fn a_moved_guest_keeps_its_path_its_watchers_and_the_references_it_holds() -> Re
     assert_eq!(resolved, Some(mover.seated().id), "its path still names it");
     assert_eq!(seen_moving, Ok(Vec::new()), "moving is not ending");
     assert_eq!(seen_closing, Ok(vec![Sighting::Closed]), "the watch made on its old code sees it close on its new");
+    Ok(())
+}
+
+/// A program of one part that runs guests with wasmtime, and in it, from the echo, a breaker, a mover and a keeper,
+/// seated in that order, each holding until it is told to let go, and the library: its harness, those, and a blob
+/// of the echo's second build put as code.
+struct Crowd {
+    harness: Harness<Bench>,
+    breaker: ActorRef<echo::Breaker>,
+    mover: ActorRef<echo::Mover>,
+    keeper: ActorRef<echo::Keeper>,
+    library: ActorRef<Library>,
+    second: Bytes,
+}
+
+/// The [`Crowd`].
+fn crowd() -> Result<Crowd, Unheard> {
+    let mut engine =
+        Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 23, 64).with_guests(Arc::new(Runtime::default())).ready();
+    let (Ok(first), Ok(second)) = (engine.put_code(ECHO.to_vec()), engine.put_code(ECHO_V2.to_vec())) else {
+        panic!("the echo guest's builds are fit to run");
+    };
+    let holds = echo::MoverConfig { holds: true };
+    engine.add_root_from::<echo::Breaker>(&first, &(), &holds)?;
+    engine.add_root_from::<echo::Mover>(&first, &(), &holds)?;
+    engine.add_root_from::<echo::Keeper>(&first, &(), &holds)?;
+    let Ok(publisher) = engine.publisher() else {
+        panic!("the engine hands out its publisher once");
+    };
+    engine.add_root::<Library>(&(), Shelves { publisher })?;
+    let mut harness = Harness::bare(engine)?;
+    let (breaker, mover, keeper) = (harness.root(), harness.root(), harness.root());
+    let library = harness.root::<Library>();
+
+    Ok(Crowd { harness, breaker, mover, keeper, library, second })
+}
+
+#[test]
+fn a_guest_whose_instance_broke_as_another_moved_runs_nothing_more_in_that_instances_place() -> Result<(), Unheard> {
+    // Catches an actor of an instance a trap in another's `take_over` dropped, mid-step, running later in the step on
+    // the instance of the same code the next move made: on whichever actor that instance keeps under its handle,
+    // answering for it and changing its state. The keeper moves first, into the second build's instance; the
+    // breaker's move traps there, ending the keeper; the mover's then makes the instance again; the keeper's probe
+    // runs after both.
+    let Crowd { mut harness, breaker, mover, keeper, library, second } = crowd()?;
+    for kind in [echo::Breaker::NAME, echo::Mover::NAME, echo::Keeper::NAME] {
+        harness.tell(library, &Publish { kind, blob: second.clone() })?;
+    }
+    harness.settle();
+    harness.tell(breaker, &echo::LetGo)?;
+    harness.tell(mover, &echo::LetGo)?;
+    harness.settle();
+
+    let probes =
+        (harness.ask(breaker, &echo::Probe)?, harness.ask(mover, &echo::Probe)?, harness.ask(keeper, &echo::Probe)?);
+    let (broke, moved, lost) = harness.answers(probes)?;
+    let again = handled(probe(&mut harness, mover)?);
+
+    assert_eq!(handled(report(broke)), Ok((1, 1)), "the breaker's batch ran on its old code");
+    assert_eq!(handled(report(moved)), Ok((2, 1)), "the mover's on its new code");
+    assert_eq!(handled(report(lost)), Err(Unanswered::Failed), "the keeper ended with its instance");
+    assert_eq!(again, Ok((2, 2)), "the mover's state is its own");
+    let errors = lines(&mut harness, breaker, Level::Error);
+    let broke_taking_over = errors.iter().any(|line| line.contains("broke taking it over"));
+    assert!(broke_taking_over, "the breaker's move failed as its new code broke: {errors:?}");
     Ok(())
 }

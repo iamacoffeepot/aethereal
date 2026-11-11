@@ -131,7 +131,7 @@ pub use turn::{
     Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,
     Unspawned, Vantage, Why,
 };
-pub use upgrade::{AskedToMove, Behind, Moving, Reached, Upgrade, Upgraded, Upgrades};
+pub use upgrade::{Moving, Upgrade, Upgraded, Upgrades};
 pub use written::Written;
 
 /// Derives `Portability` for a struct: its portable form, a struct named `Portable` and the state's name, of its fields

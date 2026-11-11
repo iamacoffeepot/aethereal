@@ -2,7 +2,7 @@
 
 mod moving;
 
-pub use moving::{Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report, Stubborn};
+pub use moving::{Breaker, Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report, Stubborn};
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
@@ -2718,5 +2718,6 @@ aethereal_actor::guest!(
     Usher,
     Mover,
     Keeper,
-    Stubborn
+    Stubborn,
+    Breaker
 );

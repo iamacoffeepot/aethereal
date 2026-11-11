@@ -43,13 +43,6 @@ impl Standing {
         self.live.get(&key).or_else(|| self.ended.entries.get(&key))
     }
 
-    /// Notes that the live actor `key` is the id of runs code whose type `declared` declares from now on (ADR-0054).
-    pub(super) fn moved(&mut self, key: u64, declared: &'static Declared) {
-        if let Some(entry) = self.live.get_mut(&key) {
-            entry.declared = declared;
-        }
-    }
-
     /// Keeps the entries of at most `most` actors that ended, the most recent: for the engine's setup, before any fold
     /// (ADR-0053).
     pub(super) const fn keep_ended_at_most(&mut self, most: usize) {
@@ -106,6 +99,8 @@ pub enum Record {
     Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber, declared: &'static Declared },
     /// The actor ended.
     Ended,
+    /// The actor runs code whose type `declared` declares from now on, as it moved onto its kind's head (ADR-0054).
+    Moved { declared: &'static Declared },
 }
 
 impl Entry {
@@ -156,6 +151,12 @@ impl View for Actors {
                     shard.ended.keep(key, entry);
                 }
             }
+            // An actor that ended in the step it moved in is kept as it was.
+            Record::Moved { declared } => {
+                if let Some(entry) = shard.live.get_mut(&key) {
+                    entry.declared = declared;
+                }
+            }
         }
     }
 }
@@ -172,6 +173,7 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
             (by, Record::Made { above: None, segment: from.instanced(key), seat, declared: from.declared() })
         }
         What::Failed(_) | What::Close => (by, Record::Ended),
+        What::Moved { declared } => (by, Record::Moved { declared }),
         _ => {
             let (child, segment) = spawned(effect)?;
             let declared = made_from(effect)?;
