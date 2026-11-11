@@ -3,7 +3,7 @@
 use super::*;
 use crate::Context;
 use crate::id::{child_id, root_id};
-use aethereal_actor::{Code, Declared, Fault, MailId, SeatNumber, Seated, Spawner, Unreadable, What};
+use aethereal_actor::{Code, Declared, Fault, MailId, SeatNumber, Seated, Spawner, StateSchema, Unreadable, What};
 use aethereal_data::{KeyName, Keyed, Kind, KindId, KindName, PathSegment, Plain};
 
 /// The context the effects of these tests were emitted in, which the table does not read.
@@ -28,12 +28,36 @@ const WINDOW: KindName = Window::NAME;
 const SURFACE: KindName = Surface::NAME;
 const LAYER: KindName = Layer::NAME;
 /// What the types of these actors declare: nothing they send or handle, which the table does not read.
-const WINDOW_TYPE: &Declared =
-    &Declared::new(WINDOW, KindId::of::<Window>(), Keyed::Singleton, Spawner::Anyone, &[], &[], &[]);
-const SURFACE_TYPE: &Declared =
-    &Declared::new(SURFACE, KindId::of::<Surface>(), Keyed::Instanced, Spawner::Anyone, &[], &[], &[]);
-const LAYER_TYPE: &Declared =
-    &Declared::new(LAYER, KindId::of::<Layer>(), Keyed::Singleton, Spawner::Anyone, &[], &[], &[]);
+const WINDOW_TYPE: &Declared = &Declared::new(
+    WINDOW,
+    KindId::of::<Window>(),
+    StateSchema::of::<Window>(),
+    Keyed::Singleton,
+    Spawner::Anyone,
+    &[],
+    &[],
+    &[],
+);
+const SURFACE_TYPE: &Declared = &Declared::new(
+    SURFACE,
+    KindId::of::<Surface>(),
+    StateSchema::of::<Surface>(),
+    Keyed::Instanced,
+    Spawner::Anyone,
+    &[],
+    &[],
+    &[],
+);
+const LAYER_TYPE: &Declared = &Declared::new(
+    LAYER,
+    KindId::of::<Layer>(),
+    StateSchema::of::<Layer>(),
+    Keyed::Singleton,
+    Spawner::Anyone,
+    &[],
+    &[],
+    &[],
+);
 const LEFT: KeyName = KeyName::new("left");
 
 /// A table of `parts` parts.

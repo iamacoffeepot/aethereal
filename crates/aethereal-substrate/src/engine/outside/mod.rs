@@ -5,8 +5,8 @@ use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
     Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, Mail, MailId,
-    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, Tie, Tied, Top, Turning, Unanswered, Why,
-    Written,
+    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top, Turning,
+    Unanswered, Why, Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -42,7 +42,8 @@ impl Actor for OutsideSeat {
 
 /// What the table knows the outside by: a type that handles nothing, and that every kind may be cast to, as its code
 /// takes whatever it is handed.
-static DECLARED: Declared = Declared::taking_every_kind(OutsideSeat::NAME, KindId::of::<OutsideSeat>());
+static DECLARED: Declared =
+    Declared::taking_every_kind(OutsideSeat::NAME, KindId::of::<OutsideSeat>(), StateSchema::of::<OutsideSeat>());
 
 /// What a piece of mail that reached the outside is to a request (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

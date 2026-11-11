@@ -12,6 +12,7 @@ mod handles;
 mod protocols;
 mod replies;
 mod sends;
+mod state;
 #[cfg(test)]
 mod tests;
 
@@ -20,18 +21,22 @@ pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Pr
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
 pub use sends::Last;
 pub use sends::{Allows, At, Kinds, Marker, Sends, Tells, ToAny, ToSender, ToType};
+pub use state::StateSchema;
 
 use crate::{ChildOf, Placement, Spawner, TypeSegment};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
-/// What an actor type declares, as the engine reads it: its name, what each of its turns may send, and what it
-/// handles (ADR-0013).
-#[derive(Debug, PartialEq, Eq)]
+/// What an actor type declares, as the engine reads it: its name, its state's schema, what each of its turns may
+/// send, and what it handles (ADR-0013, ADR-0054).
+#[derive(Debug)]
 pub struct Declared {
     name: KindName,
     /// The type's id, made from its name and layout when the program is built: what the engine knows its kind by.
     id: KindId,
+    /// The schema of an actor's state, its names included, of the layout `id` is made from: what its state is read by
+    /// when it moves onto new code (ADR-0054).
+    state: StateSchema,
     /// Whether it has one actor or many, each under its own key.
     keyed: Keyed,
     /// Who may spawn an actor of it, as its parent says (ADR-0022).
@@ -57,28 +62,31 @@ enum Takes {
 }
 
 impl Declared {
-    /// The declaration of the type named `name`, of id `id`, keyed as `keyed`, that `spawner` may spawn, whose `begin`
-    /// may send `begins`, which handles `handlers`, and whose closing turn may send `ends`.
+    /// The declaration of the type named `name`, of id `id`, whose state is of the schema `state`, keyed as `keyed`,
+    /// that `spawner` may spawn, whose `begin` may send `begins`, which handles `handlers`, and whose closing turn may
+    /// send `ends`.
+    #[allow(clippy::too_many_arguments, reason = "what a type declares, each its own")]
     #[must_use]
     pub const fn new(
         name: KindName,
         id: KindId,
+        state: StateSchema,
         keyed: Keyed,
         spawner: Spawner,
         begins: &'static [Sending],
         handlers: &'static [Handler],
         ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, keyed, spawner, begins, handlers, ends, takes: Takes::Listed }
+        Self { name, id, state, keyed, spawner, begins, handlers, ends, takes: Takes::Listed }
     }
 
-    /// The declaration of the root type named `name`, of id `id`, that handles and sends nothing, and that every kind
-    /// may be cast to: for the engine's outside (ADR-0036).
+    /// The declaration of the root type named `name`, of id `id`, whose state is of the schema `state`, that handles
+    /// and sends nothing, and that every kind may be cast to: for the engine's outside (ADR-0036).
     #[must_use]
-    pub const fn taking_every_kind(name: KindName, id: KindId) -> Self {
+    pub const fn taking_every_kind(name: KindName, id: KindId, state: StateSchema) -> Self {
         let (keyed, spawner, takes) = (Keyed::Singleton, Spawner::Nobody, Takes::Every);
 
-        Self { name, id, keyed, spawner, begins: &[], handlers: &[], ends: &[], takes }
+        Self { name, id, state, keyed, spawner, begins: &[], handlers: &[], ends: &[], takes }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -97,6 +105,13 @@ impl Declared {
     #[must_use]
     pub const fn id(&self) -> KindId {
         self.id
+    }
+
+    /// The schema of an actor's state, its names included: what its state is read by when it moves onto new code
+    /// (ADR-0054).
+    #[must_use]
+    pub const fn state(&self) -> StateSchema {
+        self.state
     }
 
     /// Whether it has one actor or many, each under its own key.
@@ -209,6 +224,25 @@ impl Declared {
     }
 }
 
+impl PartialEq for Declared {
+    /// Whether the two declare the same: all but the names in their states' schemas, which a spawn does not read, as
+    /// each id holds its state's layout (ADR-0006).
+    fn eq(&self, other: &Self) -> bool {
+        let Self { name, id, state: _, keyed, spawner, begins, handlers, ends, takes } = self;
+
+        *name == other.name
+            && *id == other.id
+            && *keyed == other.keyed
+            && *spawner == other.spawner
+            && *begins == other.begins
+            && *handlers == other.handlers
+            && *ends == other.ends
+            && *takes == other.takes
+    }
+}
+
+impl Eq for Declared {}
+
 /// The declaration of `A`, as a constant.
 struct Of<A>(PhantomData<A>);
 
@@ -216,6 +250,7 @@ impl<A: ChildOf> Of<A> {
     const DECLARED: &'static Declared = &Declared::new(
         A::NAME,
         KindId::of::<A>(),
+        StateSchema::of::<A>(),
         <A::Key as ActorKey>::KEYED,
         <A::Parent as Placement>::SPAWNER,
         <A::BeginSends as Sends>::SENDINGS,

@@ -1518,10 +1518,11 @@ macro_rules! guest {
         #[cfg(target_family = "wasm")]
         const _: () = {
             const TYPES: &[&$crate::Declared] = &[$($crate::Declared::of::<$actor>()),+];
-            const LEN: usize = $crate::section::len(TYPES);
+            const ROOM: usize = $crate::section::room(TYPES);
+            const LEN: usize = $crate::section::len::<ROOM>(TYPES);
             #[unsafe(link_section = "aethereal.declared")]
             #[used]
-            static SECTION: [u8; LEN] = $crate::section::bytes::<LEN>(TYPES);
+            static SECTION: [u8; LEN] = $crate::section::bytes::<LEN, ROOM>(TYPES);
             static MADE: &[$crate::guest::Type] = &[$($crate::guest::Type::of::<$actor>()),+];
 
             #[link(wasm_import_module = "aethereal")]
