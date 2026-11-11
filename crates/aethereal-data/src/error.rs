@@ -103,6 +103,9 @@ pub enum DecodeError {
     },
     /// A reference named something the bytes it was read from hold none of.
     Unheld,
+    /// Bytes read by their fields' names hold a value whose schema is not a struct, so it has no fields to name
+    /// (ADR-0054).
+    NotAStruct,
     /// A decode would allocate past its budget.
     BudgetExceeded {
         /// The bytes the decode asked to allocate.
@@ -140,6 +143,7 @@ impl fmt::Display for DecodeError {
                 write!(f, "plain data: invalid schema at node {node}: {fault}")
             }
             Self::Unheld => f.write_str("plain data: a reference names what its bytes hold none of"),
+            Self::NotAStruct => f.write_str("plain data: a value read by its fields' names is not a struct"),
             Self::BudgetExceeded { requested, remaining } => {
                 write!(f, "plain data: budget exceeded: requested {requested}, remaining {remaining}")
             }

@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+extern crate self as aethereal_actor;
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -36,6 +37,7 @@ mod log;
 mod mail;
 mod path;
 mod placement;
+mod portable;
 pub mod records;
 mod reference;
 mod resource;
@@ -94,6 +96,7 @@ pub use path::{
     TypeSegment, child, parent, path,
 };
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
+pub use portable::{OldFields, OldState, Portability, Portable, TakeOverError};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
@@ -124,3 +127,27 @@ pub use turn::{
     Unspawned, Vantage, Why,
 };
 pub use written::Written;
+
+/// Derives `Portability` for a struct: its portable form, a struct named `Portable` and the state's name, of its fields
+/// under the same names, each an `Option` of the field's type, read by field name out of the state an earlier or a
+/// later version of its code left (ADR-0054).
+///
+/// Only a struct's fields have names to be read by, so an enum is a compile error saying so.
+///
+/// ```compile_fail
+/// use aethereal_actor::Portability;
+///
+/// #[derive(Portability)]
+/// enum Mode {
+///     Walk,
+///     Run,
+/// }
+/// ```
+pub use aethereal_data_derive::Portability;
+
+/// Items the derives expand to; not part of the public interface.
+#[doc(hidden)]
+pub mod __derive {
+    /// The codec a field of a portable form is read with.
+    pub use aethereal_data::{Decode, Schema};
+}

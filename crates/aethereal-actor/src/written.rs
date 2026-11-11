@@ -76,16 +76,7 @@ impl Written {
     /// Why they do not read back as `T`: [`DecodeError::Unheld`] when a reference in them names a blob they keep no pin
     /// on, and [`DecodeError::TrailingBytes`] when bytes are left over.
     pub fn read<T: Decode<Within>>(&self, limit: usize) -> Result<T, DecodeError> {
-        self.reading(limit, |reader| {
-            let value = T::decode(reader)?;
-            let count = reader.input().len();
-            let is_whole = count == 0;
-            if !is_whole {
-                return Err(DecodeError::TrailingBytes { count });
-            }
-
-            Ok(value)
-        })
+        self.reading(limit, whole)
     }
 
     /// What `read` reads of the bytes, allocating at most `limit` bytes: for a value read in parts.
@@ -108,6 +99,24 @@ impl Written {
         read(&mut reader)
     }
 
+    /// `part`, a piece of these bytes, read back as `T`, allocating out of `budget`, all of the piece read: for a value
+    /// read a piece at a time, each piece's references copies of the pins these bytes keep (ADR-0054). A piece of other
+    /// bytes reads only references to blobs these keep, so it is refused a reference, never handed one to a blob let go
+    /// of.
+    ///
+    /// # Errors
+    ///
+    /// Why the piece does not read back as `T`, as [`Self::read`] says.
+    pub(crate) fn read_part<T: Decode<Within>>(&self, part: &[u8], budget: &mut Budget) -> Result<T, DecodeError> {
+        #[cfg(feature = "std")]
+        let offers = WithinReader::of(&self.pins);
+        #[cfg(not(feature = "std"))]
+        let offers = WithinReader::of();
+        let mut reader = Reader::<Within>::new(part, budget, offers);
+
+        whole(&mut reader)
+    }
+
     /// The bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
@@ -120,4 +129,20 @@ impl Written {
     pub fn pins(&self) -> &[Bytes] {
         &self.pins
     }
+}
+
+/// The value `reader` holds read as `T`, all of its bytes read.
+///
+/// # Errors
+///
+/// Why they do not read as `T`, and [`DecodeError::TrailingBytes`] when bytes are left over.
+fn whole<T: Decode<Within>>(reader: &mut Reader<'_, Within>) -> Result<T, DecodeError> {
+    let value = T::decode(reader)?;
+    let count = reader.input().len();
+    let is_whole = count == 0;
+    if !is_whole {
+        return Err(DecodeError::TrailingBytes { count });
+    }
+
+    Ok(value)
 }

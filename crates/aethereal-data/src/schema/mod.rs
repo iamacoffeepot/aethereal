@@ -1,8 +1,10 @@
 //! The schema vocabulary: the shapes a value's bytes can take (ADR-0003).
 
+mod named_fields;
 mod nodes;
 mod same_layout;
 
+pub use named_fields::{FieldBytes, NamedFields};
 pub use nodes::{FieldNode, FieldsNode, SchemaFault, SchemaNode, SchemaNodes, VariantNode};
 
 use crate::Plain;
