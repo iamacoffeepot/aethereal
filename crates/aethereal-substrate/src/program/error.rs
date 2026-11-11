@@ -1,6 +1,6 @@
 //! Why a program did not start: a refusal as it is put together, a setting, or a root's bootstrap (ADR-0029).
 
-use crate::CodeRefused;
+use crate::{CodeRefused, SecondPublisher};
 use aethereal_actor::Refused;
 use aethereal_data::KindName;
 use aethereal_data::config::{ConfigError, FlagError};
@@ -14,6 +14,8 @@ pub enum Unbuilt {
     Refused(Refused),
     /// Code it put was refused.
     Code(CodeRefused),
+    /// It asked for the program's one publisher, which a root bootstrapped before it was handed (ADR-0054).
+    SecondPublisher,
     /// Something the host opens did not open: a window, a GPU, a canvas.
     Unopened(Box<dyn Error + Send + Sync>),
     /// The bootstrap's own failure, such as a module file that could not be read.
@@ -23,6 +25,12 @@ pub enum Unbuilt {
 impl From<Refused> for Unbuilt {
     fn from(refused: Refused) -> Self {
         Self::Refused(refused)
+    }
+}
+
+impl From<SecondPublisher> for Unbuilt {
+    fn from(SecondPublisher: SecondPublisher) -> Self {
+        Self::SecondPublisher
     }
 }
 
@@ -37,6 +45,7 @@ impl fmt::Display for Unbuilt {
         match self {
             Self::Refused(refused) => write!(f, "refused as it began: {refused}"),
             Self::Code(refused) => write!(f, "its code was refused: {refused:?}"),
+            Self::SecondPublisher => write!(f, "the program's one publisher was handed to a root before it"),
             Self::Unopened(error) => write!(f, "what the host opens did not open: {error}"),
             Self::Failed(error) => write!(f, "{error}"),
         }

@@ -1,5 +1,6 @@
 //! The derives of `aethereal-data`: `Plain`, `Bound`, and `Key` (ADR-0004), and a kind named on the first two (ADR-0006);
-//! and `Bootstrap`, which the substrate re-exports, for an actor whose config is its settings (ADR-0029).
+//! `Bootstrap`, which the substrate re-exports, for an actor whose config is its settings (ADR-0029); and `Portability`,
+//! which the actor crate re-exports, for a state read by field name into its next version's form (ADR-0054).
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
@@ -8,6 +9,7 @@ mod bootstrap;
 mod key;
 mod lifetimes;
 mod plain;
+mod portability;
 
 /// Derives `Schema`, the codec, and `Plain` from one field list (ADR-0004).
 ///
@@ -68,6 +70,19 @@ pub fn derive_key(input: TokenStream) -> TokenStream {
 pub fn derive_bootstrap(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match bootstrap::expand(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Derives `Portability` for a state struct: its portable form, a struct named `Portable` and the state's name, of its
+/// fields under the same names and visibilities, each an `Option` of the field's type, read by field name (ADR-0054).
+///
+/// Use it through `aethereal_actor::Portability`, which re-exports it beside the trait.
+#[proc_macro_derive(Portability)]
+pub fn derive_portability(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match portability::expand(&input) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

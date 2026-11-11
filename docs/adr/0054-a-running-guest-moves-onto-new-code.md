@@ -45,7 +45,7 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **The right to publish is a handle, `Publisher`, and only the chassis makes one.** It makes it once as the program starts and hands it to `Library` as it bootstraps, as it hands other roots their handles (ADR-0029, ADR-0010). `Publish` is asked with it, `turn.publish(&self.publisher, kind, &blob)`, and the heads view is folded only from what it publishes. The engine keeps no record of which actor is the library: the handle is the right, so no other actor changes which code a kind runs, and one program has one library because there is one handle.
 - **As it bootstraps, `Library` puts every module in `Code`** and publishes the head of every kind each makes. Natively it lists the directory; in a browser it reads a manifest of the modules, written when the page is built, as `Assets` is listed (ADR-0032). Two modules that make one kind at boot fail the bootstrap, naming both, since neither can be chosen over the other. A module the guest host refuses fails it too (ADR-0015).
 - **`Namespace` gains `Code`:** read-only, the guest modules a program runs. Natively its root is a setting of `Files`, `code`, beside `assets`; in a browser it is fetched relative to the page, as `Assets` is. A module is built where `Code` points, so a rebuild is a new file to publish.
-- **A spawn names a library's kind and takes its head.** `turn.spawn_from` takes a `Source`: `Source::Head`, the head the view shows for the child's kind, refused with `Refused::NoHead` when the kind has none; or `Source::Blob(&code)`, a blob the parent holds, for code no library publishes (tests, the chassis). A parent of a library's kind holds none of its code, so updating that kind is one `Publish` for every parent that makes it.
+- **A spawn names a library's kind and takes its head.** `turn.spawn_from` takes an `Origin`: `Origin::Head`, the head the view shows for the child's kind, refused with `Refused::NoHead` when the kind has none; or `Origin::Blob(&code)`, a blob the parent holds, for code no library publishes (tests, the chassis). It is not called `Source`, which is the resource a host brings mail in through (ADR-0010). A parent of a library's kind holds none of its code, so updating that kind is one `Publish` for every parent that makes it.
 
 ### Asking a guest to move
 
@@ -143,11 +143,11 @@ engine: state taken out (Written, old schema) ──> new code: same layout? tak
 - **Every guest type writes `upgrade`,** a few lines when it has nothing to wait for. `take_over` is written only when a version changes the state's layout.
 - **The declarations of replaced code are kept for the life of the process.** ADR-0015 names guest types by pointers never freed, and left a registry that frees them "until code is put again and again as a program runs". A publish now does that. A declaration is small beside the compiled code, which goes with the last blob of its bytes; whether the declarations a long session of publishing leaves behind need a registry is decided once they are measured.
 - **`aethereal.declared` grows by each type's state schema,** read once when a module is put.
-- **`turn.spawn_from` takes a `Source`,** and every caller names `Source::Blob` or `Source::Head`.
+- **`turn.spawn_from` takes an `Origin`,** and every caller names `Origin::Blob` or `Origin::Head`.
 - **`Files` gains `Code`, and each host's settings gain its root.**
 - **Two versions of one kind can run at once** while some actors answer `Later` or are parked. Mail between them is safe, as ADR-0009 already holds: a changed kind is another id.
 
-Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Source` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portability`, its derive, and `Portable`; `aethereal-library` with `Library`, `publish`, and `upgrades`.
+Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `Origin` on `spawn_from`; `Namespace::Code`; the state schema in `aethereal.declared`; `Upgrade`, `Answer`, and the `Upgrading` ending in the guest's library and both hosts; taking a state into a new blob's instance and back; `Portability`, its derive, and `Portable`; `aethereal-library` with `Library`, `publish`, and `upgrades`.
 
 ## Alternatives considered
 

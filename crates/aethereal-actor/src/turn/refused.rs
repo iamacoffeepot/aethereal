@@ -5,7 +5,8 @@ use aethereal_data::{ActorPath, KindId, KindName};
 use core::error::Error;
 use core::fmt;
 
-/// Why a spawn gave no child (ADR-0009), or a put no blob (ADR-0014). The actor handles it in the handler that asked.
+/// Why a spawn gave no child (ADR-0009), a put no blob (ADR-0014), or a publish no head (ADR-0054). The actor handles it
+/// in the handler that asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
     /// The kind and key have been used beneath this actor, by a child that is live or one that has ended.
@@ -16,7 +17,8 @@ pub enum Refused {
     Began(Fault),
     /// The blob's bytes would take the turn's worker past its share of the budget for blobs in this step.
     NoRoom,
-    /// The blob is not code the engine holds, or makes no actor of the child's type (ADR-0009).
+    /// The blob is not code the engine holds, or makes no actor of the child's type, or of the kind published
+    /// (ADR-0009).
     NotMade,
     /// The child would begin in an instance that is waiting on a call out of its own: a chain of `begin`s left its
     /// blob and came back to it within one turn (ADR-0015).
@@ -26,6 +28,12 @@ pub enum Refused {
     /// The child's type sends at a typed path of singletons that holds no live actor of the path's type, of this
     /// name (ADR-0022).
     Missing(KindName),
+    /// The child was to be made from its kind's head, and the heads view shows its kind none: nothing has published
+    /// code for it (ADR-0054).
+    NoHead,
+    /// The handle a publish was asked with names no publisher this actor holds: only the actor that holds the engine's
+    /// one publisher moves a head, and a guest's code, which opens no resource, never does (ADR-0054).
+    NotPublisher,
 }
 
 impl fmt::Display for Refused {
@@ -35,7 +43,7 @@ impl fmt::Display for Refused {
             Self::TooDeep => write!(f, "spawn: a child would stand deeper than {} segments", ActorPath::MAX_DEPTH),
             Self::Began(_) => write!(f, "spawn: the child's begin returned a fault"),
             Self::NoRoom => write!(f, "put: the blob would take its worker past its share of the budget for blobs"),
-            Self::NotMade => write!(f, "spawn: the blob makes no actor of the child's type"),
+            Self::NotMade => write!(f, "spawn or publish: the blob makes no actor of that type"),
             Self::Waiting => write!(f, "spawn: the child's instance is waiting on a call out of its own"),
             Self::Unstaged(stage) => {
                 write!(f, "spawn: the child's type subscribes to {stage:?}, a stage the engine does not run")
@@ -47,6 +55,8 @@ impl fmt::Display for Refused {
                     name.as_str()
                 )
             }
+            Self::NoHead => write!(f, "spawn: the child's kind has no head: no code has been published for it"),
+            Self::NotPublisher => write!(f, "publish: the handle names no publisher this actor holds"),
         }
     }
 }

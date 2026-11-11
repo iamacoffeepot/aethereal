@@ -15,6 +15,7 @@ guest = ["std"]
 
 [dependencies]
 aethereal-data = { path = "../aethereal-data" }
+aethereal-data-derive = { path = "../aethereal-data-derive" }
 blake3 = { workspace = true, optional = true }
 crossbeam-queue = { workspace = true, optional = true }
 

@@ -1,5 +1,5 @@
-//! The file capability bootstrapped on the browser: the program's assets fetched relative to the page, served to the
-//! host for its runner (ADR-0029, ADR-0032).
+//! The file capability bootstrapped on the browser: the program's assets and code fetched relative to the page, served
+//! to the host for its runner (ADR-0029, ADR-0032, ADR-0054).
 
 use crate::files::{Fetching, FileUrls};
 use crate::{Browser, Performance};

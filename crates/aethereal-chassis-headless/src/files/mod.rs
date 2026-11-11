@@ -1,5 +1,5 @@
-//! The native host's storage: a directory for each namespace, read and written on threads of its own (ADR-0032,
-//! ADR-0039).
+//! The native host's storage: a directory for each namespace, read, written, and listed on threads of its own
+//! (ADR-0032, ADR-0039, ADR-0054).
 
 #[cfg(test)]
 mod tests;
@@ -7,7 +7,9 @@ mod tests;
 use crate::Headless;
 use aethereal_actor::{Service, Spares};
 use aethereal_data::{FilePath, Plain};
-use aethereal_files::{Files, FilesConfig, Namespace, Read, Reading, Storage, Unread, Unwritten, Writing};
+use aethereal_files::{
+    Files, FilesConfig, Listing, Namespace, Read, Reading, Storage, Unlisted, Unread, Unwritten, Writing,
+};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use crossbeam_queue::SegQueue;
 use std::fs::{self, File};
@@ -24,7 +26,7 @@ use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle, Thread};
 
 /// Where the native host reads and writes each namespace, and how many threads do it: the file capability's section,
-/// `files` (ADR-0028, ADR-0032, ADR-0039).
+/// `files` (ADR-0028, ADR-0032, ADR-0039, ADR-0054).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.files.directories")]
 #[settings]
@@ -36,6 +38,10 @@ pub struct FileRoots {
     /// absolute.
     #[flag]
     pub save: String,
+    /// The directory the program's guest modules are read and listed from: relative to where the program runs, or
+    /// absolute. A module is built where it points, so a rebuild is a new file to read (ADR-0054).
+    #[flag]
+    pub code: String,
     /// How many threads read and write files.
     #[flag]
     pub readers: u32,
@@ -43,12 +49,12 @@ pub struct FileRoots {
 
 impl Default for FileRoots {
     fn default() -> Self {
-        Self { assets: String::from("assets"), save: String::from("save"), readers: 4 }
+        Self { assets: String::from("assets"), save: String::from("save"), code: String::from("code"), readers: 4 }
     }
 }
 
-/// The native host's storage (ADR-0032, ADR-0039): each namespace a directory, each read and write done on one of
-/// threads of its own, so neither blocks the thread that polls it, and woken once it is done. A write goes to a
+/// The native host's storage (ADR-0032, ADR-0039, ADR-0054): each namespace a directory, each read, write, and listing
+/// done on one of threads of its own, so none blocks the thread that polls it, and woken once it is done. A write goes to a
 /// sibling of its file, synced, and renamed over the file, so a reader sees the file as it was or as it is written,
 /// never half of it. Dropping the last reference to it stops its threads once each has finished what it was doing.
 pub struct Directories {
@@ -56,6 +62,8 @@ pub struct Directories {
     assets: PathBuf,
     /// The directory of the program's saves.
     save: PathBuf,
+    /// The directory of the program's guest modules.
+    code: PathBuf,
     shared: Arc<Shared>,
     /// The threads that read and write, which the work asked wakes in turn.
     readers: Vec<Thread>,
@@ -65,7 +73,7 @@ pub struct Directories {
     threads: Vec<JoinHandle<()>>,
 }
 
-/// What the threads share: the reads and writes asked and not yet taken, and whether to stop. The queue is how each
+/// What the threads share: the reads, writes, and listings asked and not yet taken, and whether to stop. The queue is how each
 /// crosses from the thread that polls it to one that blocks on the disk, which no turn's mail reaches.
 struct Shared {
     asked: SegQueue<Asked>,
@@ -81,6 +89,8 @@ enum Asked {
     Read { file: PathBuf, lent: Spares, delivery: Shelf<Read> },
     /// Write `bytes` as the whole of `file`, by way of `sibling`.
     Write { file: PathBuf, sibling: PathBuf, bytes: Vec<u8>, delivery: Shelf<Result<(), Unwritten>> },
+    /// List the files directly in `directory` that `namespace`'s listing holds.
+    List { directory: PathBuf, namespace: Namespace, delivery: Shelf<Result<Vec<FilePath>, Unlisted>> },
 }
 
 /// Where a read or a write stands, as the thread that does it and the job that polls it both see it. A lock, as the
@@ -110,6 +120,10 @@ impl Outcome for Result<(), Unwritten> {
     const HANDED: Self = Err(Unwritten::Failed);
 }
 
+impl Outcome for Result<Vec<FilePath>, Unlisted> {
+    const HANDED: Self = Err(Unlisted::Failed);
+}
+
 impl Directories {
     /// The storage reading the directories `roots` names, on as many threads as it says, one at the least.
     ///
@@ -137,6 +151,7 @@ impl Directories {
         Self {
             assets: PathBuf::from(&roots.assets),
             save: PathBuf::from(&roots.save),
+            code: PathBuf::from(&roots.code),
             shared,
             readers,
             next: AtomicUsize::new(0),
@@ -149,6 +164,7 @@ impl Directories {
         match namespace {
             Namespace::Assets => &self.assets,
             Namespace::Save => &self.save,
+            Namespace::Code => &self.code,
         }
     }
 
@@ -177,6 +193,15 @@ impl Storage for Directories {
         let file = self.root(namespace).join(path.as_str());
 
         Box::pin(self.ask(|number, delivery| Asked::Write { sibling: sibling(&file, number), file, bytes, delivery }))
+    }
+
+    fn list(&self, namespace: Namespace) -> Listing<'_> {
+        if !namespace.is_listed() {
+            return Box::pin(future::ready(Err(Unlisted::NotListed)));
+        }
+        let directory = self.root(namespace).clone();
+
+        Box::pin(self.ask(|_, delivery| Asked::List { directory, namespace, delivery }))
     }
 }
 
@@ -207,7 +232,7 @@ impl Bootstrap<Headless> for Files {
     }
 }
 
-/// Takes reads and writes and does each until it is told to stop, parking whenever there is none to take.
+/// Takes reads, writes, and listings and does each until it is told to stop, parking whenever there is none to take.
 fn work(shared: &Shared) {
     loop {
         while let Some(asked) = shared.asked.pop() {
@@ -218,6 +243,9 @@ fn work(shared: &Shared) {
                 }
                 Asked::Write { file, sibling, bytes, delivery } => {
                     deliver(&delivery, write_whole(&file, &sibling, &bytes).map_err(|_| Unwritten::Failed));
+                }
+                Asked::List { directory, namespace, delivery } => {
+                    deliver(&delivery, list_whole(&directory, namespace).map_err(|error| unlisted(error.kind())));
                 }
             }
         }
@@ -285,6 +313,34 @@ fn write_synced(file: &Path, bytes: &[u8]) -> io::Result<()> {
     made.write_all(bytes)?;
 
     made.sync_all()
+}
+
+/// The files directly in `directory` that `namespace`'s listing holds. Each is a file, or a link to one; a name no path
+/// spells is not listed, as no path could read it.
+fn list_whole(directory: &Path, namespace: Namespace) -> io::Result<Vec<FilePath>> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(path) = FilePath::parse(name) else {
+            continue;
+        };
+        if entry.path().is_file() {
+            found.push(path);
+        }
+    }
+
+    Ok(namespace.listing(found))
+}
+
+/// Why a namespace was not listed, as the disk said.
+fn unlisted(kind: ErrorKind) -> Unlisted {
+    match kind {
+        ErrorKind::NotFound | ErrorKind::NotADirectory => Unlisted::Missing,
+        _ => Unlisted::Failed,
+    }
 }
 
 /// Why a file was not read, as the disk said.

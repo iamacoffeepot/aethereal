@@ -3,6 +3,8 @@
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
 use crate::{BlobHash, BlobId, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Time};
+#[cfg(feature = "std")]
+use aethereal_data::KindName;
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -55,6 +57,11 @@ pub trait Table {
 
     /// The hash the store kept for the blob `id` names as the step began, when it held one.
     fn blob_hash(&self, id: BlobId) -> Option<BlobHash>;
+
+    /// A pin on the head of the kind `kind`, as the heads view stood when the step began: the blob last published for
+    /// it, which a spawn from the head is made from. Nothing when no code has been published for it (ADR-0054).
+    #[cfg(feature = "std")]
+    fn head(&self, kind: &KindName) -> Option<crate::Bytes>;
 
     /// The time the turn's step carries: the host's, as it began the step (ADR-0011, ADR-0018).
     fn now(&self) -> Time;

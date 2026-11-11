@@ -561,6 +561,11 @@ pub fn refusal(refused: &Refused) -> u64 {
         // A guest's turn checks the paths a child reaches before it asks its host to begin the child, as it checks its
         // stages, so no host refuses a spawn for them, and the name is not written (ADR-0022).
         Refused::Missing(_) => 8,
+        // A guest's turn reads a child's head in a call out of its own before it asks its host to begin the child, and
+        // spawns from the blob it was offered, so no host refuses a spawn for having none (ADR-0054).
+        Refused::NoHead => 9,
+        // A guest's code opens no publisher, so its turn refuses its own publish, and no host is asked one (ADR-0054).
+        Refused::NotPublisher => 10,
     }
 }
 

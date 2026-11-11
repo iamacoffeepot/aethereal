@@ -1,6 +1,8 @@
 //! What an actor asks of the engine, in three lists a turn fills as it runs: the mail it sends, the lines it logs,
 //! and the rest, its effects on the lives of actors (ADR-0009).
 
+#[cfg(feature = "std")]
+use crate::Bytes;
 use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated, Unreadable};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
@@ -90,6 +92,11 @@ pub enum What {
     /// otherwise drops it, as the actor's log records (ADR-0017). Written by the engine, or by a guest's host as its
     /// library reports it, since the actor's code asked for nothing.
     Unread(Unreadable),
+    /// The head of the kind `kind` is the blob `blob` pins from now on, asked with the engine's one publisher, and
+    /// checked where it was asked to make that kind (ADR-0009, ADR-0054). The engine numbers it as it folds it into the
+    /// heads view, which keeps the pin.
+    #[cfg(feature = "std")]
+    Publish { kind: KindName, blob: Bytes },
 }
 
 impl Effect {

@@ -60,6 +60,12 @@ impl Table for Typed {
         None
     }
 
+    /// Nothing is published to a table of typed actors.
+    #[cfg(feature = "std")]
+    fn head(&self, _: &KindName) -> Option<crate::Bytes> {
+        None
+    }
+
     fn now(&self) -> crate::Time {
         crate::Time::ZERO
     }
