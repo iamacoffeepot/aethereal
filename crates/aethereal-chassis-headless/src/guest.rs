@@ -1091,6 +1091,20 @@ impl Guests for Runtime {
         codes.get(&code).is_some_and(|code| code.of_kind(kind).is_some())
     }
 
+    fn kinds(&self, code: BlobId) -> Vec<KindName> {
+        let Ok(codes) = self.codes.read() else {
+            return Vec::new();
+        };
+        let Some(code) = codes.get(&code) else {
+            return Vec::new();
+        };
+        let mut kinds: Vec<KindName> = code.types.iter().map(|made| made.declared.name().clone()).collect();
+        kinds.sort();
+        kinds.dedup();
+
+        kinds
+    }
+
     /// Begins the child in its part's instance of the blob: its `begin` runs there, handed where it stands and its
     /// config, and what it asked for is read back as a root's or a child's `begin` is (ADR-0015). Refused while that
     /// instance is lent to a call into it that is under way.
@@ -1188,14 +1202,6 @@ impl Guest {
         };
 
         instances.get::<Instance>(self.running.code.key).is_none_or(|held| held.number != instance)
-    }
-
-    /// Whether the actor runs other code than `head`, the blob its kind's head names, and is not parked on it.
-    fn is_behind(&self, head: BlobId) -> bool {
-        let runs_other = head != self.running.pin.id();
-        let is_parked = self.parked == Parked::On(head);
-
-        runs_other && !is_parked
     }
 
     /// What the actor answers, asked in a call of its own whether to move onto its kind's head, in its part whose
@@ -1595,6 +1601,14 @@ impl Runs for Guest {
             Ok(Upgrade::Now) => self.move_onto(head, instances),
             Err(broke) => broke,
         }
+    }
+
+    /// Whether the actor runs other code than `head`, the blob its kind's head names, and is not parked on it.
+    fn is_behind(&self, head: BlobId) -> bool {
+        let runs_other = head != self.running.pin.id();
+        let is_parked = self.parked == Parked::On(head);
+
+        runs_other && !is_parked
     }
 }
 

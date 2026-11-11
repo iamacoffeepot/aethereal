@@ -1,6 +1,6 @@
 //! Plain data that may be a map key or a set element (ADR-0004).
 
-use crate::Plain;
+use crate::{KindName, Plain};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::num::{NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64};
@@ -28,5 +28,7 @@ impl Key for NonZeroI16 {}
 impl Key for NonZeroI32 {}
 impl Key for NonZeroI64 {}
 impl Key for String {}
+// Written as its text, and ordered as that text is.
+impl Key for KindName {}
 impl Key for Vec<u8> {}
 impl<const LENGTH: usize> Key for [u8; LENGTH] {}

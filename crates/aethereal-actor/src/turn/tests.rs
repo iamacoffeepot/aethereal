@@ -66,6 +66,11 @@ impl Table for Listed {
         None
     }
 
+    #[cfg(feature = "std")]
+    fn published(&self) -> u64 {
+        0
+    }
+
     fn now(&self) -> Time {
         Time::ZERO
     }

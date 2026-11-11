@@ -38,6 +38,12 @@ pub trait Guests: Send + Sync {
     /// is checked against (ADR-0009, ADR-0054). False when the blob is not code.
     fn makes(&self, code: BlobId, kind: &KindName) -> bool;
 
+    /// The kinds of the actor types the blob `code` makes, each once, sorted: what a library publishes the blob as the
+    /// head of (ADR-0054). None when the blob is not code, as for a host that runs no guests.
+    fn kinds(&self, _code: BlobId) -> Vec<KindName> {
+        Vec::new()
+    }
+
     /// Begins `birth`'s child, of the type `made`, from its config's bytes `config`, in its part's instance of the
     /// blob `code` pins, which `made` is of, and answers with the child as the engine runs it: the child keeps a
     /// clone of `code` while it runs (ADR-0009).

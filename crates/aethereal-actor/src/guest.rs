@@ -1684,6 +1684,11 @@ impl Table for Host {
 
         records::blob_at(&blob).map(Bytes::pin)
     }
+
+    /// A guest's code holds no publisher, so it numbers no publish.
+    fn published(&self) -> u64 {
+        0
+    }
 }
 
 impl Children for Host {

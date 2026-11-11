@@ -22,13 +22,13 @@ use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held,
-    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, NotOwed, On, Owed, Owes, ParentOf, Parented,
-    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats, Seen,
-    Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
+    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats,
+    Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, config_bytes};
+use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, Unfit, config_bytes};
 #[cfg(feature = "std")]
 use crate::{Fills, JobCode, JobType, Kept, Spares};
 #[cfg(feature = "std")]
@@ -73,6 +73,9 @@ pub struct Asked {
     /// What the turn running did to the debts its actor holds, in the order it did it, for the engine to file once the
     /// turn has run (ADR-0017): empty between turns.
     owes: Vec<Owes>,
+    /// How many publishes the turns that fill it have asked: kept over a worker's whole share of a step, so each is
+    /// numbered on from the last the heads view had folded as the step began (ADR-0054).
+    published: u64,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -153,9 +156,9 @@ impl Asked {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
         let (carrying, claims, asks, owes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let stood = Vec::new();
+        let (stood, stood_seats) = (Vec::new(), BTreeMap::new());
 
-        Self { buffers, stood, stood_seats: BTreeMap::new(), arena, seats, puts, carrying, claims, asks, owes }
+        Self { buffers, stood, stood_seats, arena, seats, puts, carrying, claims, asks, owes, published: 0 }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -644,6 +647,11 @@ impl Seat<'_> {
     /// The engine's memory against its limits (ADR-0053).
     fn engine_stats(&self) -> EngineStats {
         self.table.engine_stats()
+    }
+
+    /// Each kind's head with what its publish has moved, and each guest behind its kind's head (ADR-0054).
+    fn moves(&self) -> Moves {
+        self.table.moves()
     }
 
     /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
@@ -1192,8 +1200,12 @@ impl Seat<'_> {
     }
 
     /// Asks that the head of the kind `kind` be the blob `blob` pins, with the engine's one publisher, which this actor
-    /// holds under `publisher` (ADR-0009, ADR-0054). Refused, asking nothing, when this actor holds no publisher there,
-    /// or the blob makes no actor of that kind.
+    /// holds under `publisher`, and answers with the number the engine gives the publish (ADR-0009, ADR-0054). Refused,
+    /// asking nothing, when this actor holds no publisher there, or the blob makes no actor of that kind.
+    ///
+    /// The number is given here, once, and the heads view takes it as it folds the publish. Every publish of a step is
+    /// asked by the one actor that holds the engine's one publisher, in one worker's share, so its number is the heads
+    /// view's last as the step began, plus the publishes the share has asked, this one among them.
     #[cfg(feature = "std")]
     fn publish(
         &mut self,
@@ -1201,15 +1213,17 @@ impl Seat<'_> {
         publisher: &Handle<Publisher>,
         kind: &KindName,
         blob: &Bytes,
-    ) -> Result<(), Refused> {
+    ) -> Result<u64, Refused> {
         self.resource(publisher).map_err(|_| Refused::NotPublisher)?;
         let makes = guests.makes(blob.id(), kind);
         if !makes {
             return Err(Refused::NotMade);
         }
-        self.ask(What::Publish { kind: kind.clone(), blob: blob.clone() });
+        self.asked.published += 1;
+        let number = self.table.published() + self.asked.published;
+        self.ask(What::Publish { kind: kind.clone(), blob: blob.clone(), number });
 
-        Ok(())
+        Ok(number)
     }
 
     /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
@@ -1972,15 +1986,16 @@ impl<Me, S> Turn<'_, Me, S> {
     }
 
     /// Makes the blob `blob` pins the head of the kind `kind`, with the engine's one publisher, which this actor holds
-    /// under `publisher` (ADR-0009, ADR-0054). The head moves as the step's effects are folded, numbered by the engine,
-    /// so a spawn from the head sees it from the next step on.
+    /// under `publisher`, and answers with the number the engine gives the publish: the head's (ADR-0009, ADR-0054).
+    /// The head moves as the step's effects are folded, under that number, so a spawn from the head sees it from the
+    /// next step on, as does `moves`.
     ///
     /// # Errors
     ///
     /// [`Refused::NotPublisher`] when this actor holds no publisher under `publisher`, as a guest's code never does,
     /// and [`Refused::NotMade`] when the blob makes no actor of the kind. Either asks nothing.
     #[cfg(feature = "std")]
-    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<u64, Refused> {
         let guests = self.instances.guests();
 
         self.seat.publish(&*guests, publisher, kind, blob)
@@ -2098,6 +2113,21 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.read(blob)
     }
 
+    /// Takes the blob `code` refers to in as code the engine's guests run, as the chassis's `put_code` does, and
+    /// answers with the kinds of the actor types it makes, each once, sorted: what a library publishes it as the head
+    /// of (ADR-0015, ADR-0054). Its bytes are compiled here, in the turn.
+    ///
+    /// # Errors
+    ///
+    /// Why the guests' host refused it: [`Unfit::NoRuntime`] where the engine runs no guests, as in a guest's code.
+    #[cfg(feature = "std")]
+    pub fn load_code(&mut self, code: &Bytes) -> Result<Vec<KindName>, Unfit> {
+        let guests = self.instances.guests();
+        guests.load(code.id(), self.seat.read(code))?;
+
+        Ok(guests.kinds(code.id()))
+    }
+
     /// The content hash of the blob `blob` refers to: BLAKE3 over its bytes, computed the first time it is asked for
     /// and kept with the blob from the step's fold on.
     #[cfg(feature = "std")]
@@ -2167,6 +2197,14 @@ impl<Me, S> Turn<'_, Me, S> {
     #[must_use]
     pub fn engine_stats(&self) -> EngineStats {
         self.seat.engine_stats()
+    }
+
+    /// Each kind's head, with the publish that made it and how many actors have moved onto it and what their old
+    /// states lacked, and each live guest the engine found behind its kind's head, with what became of asking it, as
+    /// the heads view stood when the step began (ADR-0054). A guest reads [`Moves::Unread`], as it reads no log.
+    #[must_use]
+    pub fn moves(&self) -> Moves {
+        self.seat.moves()
     }
 
     /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
@@ -2425,14 +2463,15 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.spawn_from::<C>(self.instances, origin, key, config)
     }
 
-    /// Makes the blob `blob` pins the head of the kind `kind`, as a turn's `publish` does: for the root that is handed
-    /// the engine's one publisher, which publishes as it begins (ADR-0054).
+    /// Makes the blob `blob` pins the head of the kind `kind`, and answers with the number the engine gives the
+    /// publish, as a turn's `publish` does: for the root that is handed the engine's one publisher, which publishes as
+    /// it begins (ADR-0054).
     ///
     /// # Errors
     ///
     /// As a turn's `publish`.
     #[cfg(feature = "std")]
-    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<u64, Refused> {
         let guests = self.instances.guests();
 
         self.seat.publish(&*guests, publisher, kind, blob)

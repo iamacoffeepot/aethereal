@@ -44,6 +44,7 @@ aethereal-guest-echo = { path = "guests/echo" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-http = { path = "../aethereal-http" }
+aethereal-library = { path = "../aethereal-library", features = ["tools"] }
 aethereal-link = { path = "../aethereal-link", features = ["tools"] }
 aethereal-mcp = { path = "../aethereal-mcp" }
 aethereal-store = { path = "../aethereal-store", features = ["tools"] }

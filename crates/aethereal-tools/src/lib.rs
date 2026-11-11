@@ -30,6 +30,7 @@ pub use command::{
 pub use holder::Holder;
 pub use logs::{
     ActorLog, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentEntry, RecentLog,
+    spoken_name,
 };
 pub use stats::{
     BacklogFigure, EngineFigures, EngineStatsTool, EngineStatsToolConfig, GuestFigure, Meter, ProcessMemory,

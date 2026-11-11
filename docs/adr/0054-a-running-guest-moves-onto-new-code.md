@@ -22,10 +22,10 @@ What is already decided:
 
 ## Decision
 
-**A program's code is held by one stock root, `Library`. It reads every guest module through `Files` from a new namespace, `Code`, as the program starts, and publishes their kinds' heads; the `publish` tool adds or replaces one while it runs. A running guest that is behind its kind's head is asked, before each batch of its turns, whether to move now. When it answers that it does, it moves at once, and the batch runs on its new code; its old state is read by field name into a portable form of its new state, and its new code builds itself from that. A move that fails leaves the actor on its old code, untouched, and the batch runs there.**
+**A program's code is held by one stock root, `Library`. It reads every guest module through `Files` from a new namespace, `Code`, as the program starts, and publishes their kinds' heads; a system that ships its own modules has them published only for kinds with no head, and the `publish` tool adds or replaces one while it runs. A running guest that is behind its kind's head is asked, before each batch of its turns, whether to move now. When it answers that it does, it moves at once, and the batch runs on its new code; its old state is read by field name into a portable form of its new state, and its new code builds itself from that. A move that fails leaves the actor on its old code, untouched, and the batch runs there.**
 
 ```
-publish tool ──> Library ── Files: Code/<path> ──> blob ── put_code ── Publish { kind, blob } per kind ──> heads view
+publish tool ──> Library ── Files: Code/<path> ──> blob ── load_code ── Publish { kind, blob } per kind ──> heads view
 each guest of kind K behind K's head and not parked on it, before each batch: upgrade(&self)
   ├─> Later: the batch runs on the old code
   └─> Now: moved at once, on the worker that runs its part:
@@ -38,15 +38,17 @@ each guest of kind K with no mail as K's head moves: asked once, between steps, 
 
 ### Libraries
 
-- **`Library` is a singleton root in a crate of its own, `aethereal-library`.** It reads through `Files` and serves tools, so it stands beside the capabilities, not in `aethereal-substrate`. A program lists it after `Files`, with nothing to set:
+- **`Library` is a singleton root in a crate of its own, `aethereal-library`, and a program has one.** It reads through `Files` and serves tools, so it stands beside the capabilities, not in `aethereal-substrate`. It holds every kind's head and has no children. A program lists it after `Files`, with nothing to set:
 
   ```rust
   .root::<Files>()
   .root::<Library>()
   ```
 
-- **The right to publish is a handle, `Publisher`, and only the chassis makes one.** It makes it once as the program starts and hands it to `Library` as it bootstraps, as it hands other roots their handles (ADR-0029, ADR-0010). `Publish` is asked with it, `turn.publish(&self.publisher, kind, &blob)`, and the heads view is folded only from what it publishes. The engine keeps no record of which actor is the library: the handle is the right, so no other actor changes which code a kind runs, and one program has one library because there is one handle.
-- **As it bootstraps, `Library` puts every module in `Code`** and publishes the head of every kind each makes. Natively it lists the directory; in a browser it reads a manifest of the modules, written when the page is built, as `Assets` is listed (ADR-0032). Two modules that make one kind at boot fail the bootstrap, naming both, since neither can be chosen over the other. A module the guest host refuses fails it too (ADR-0015).
+- **The right to publish is a handle, `Publisher`, and only the chassis makes one.** It makes it once as the program starts and hands it to `Library` as it bootstraps, as it hands other roots their handles (ADR-0029, ADR-0010). `Publish` is asked with it, `turn.publish(&self.publisher, kind, &blob)`, which answers the number the engine gives the publish, and the heads view is folded only from what it publishes. The engine keeps no record of which actor is the library: the handle is the right, so no other actor changes which code a kind runs, and one program has one library because there is one handle.
+- **As it begins, `Library` lists `Code` through `Files`, reads every module there, takes each in as code, and publishes the head of every kind each makes.** A turn takes a blob in as code with `turn.load_code(&blob)`, which answers the kinds its types make. Natively `Files` lists the directory; in a browser it reads a manifest of the modules, written when the page is built (ADR-0032). The reads are mail, answered in later steps, so what keeps `Code` from being published stops the program as it starts, as a refused tool offer does (ADR-0037), logged as the library's naming the modules: two modules that make one kind, since neither can be chosen over the other, a module the guest host refuses (ADR-0015), and a listing or a read that fails. A program with no `Code` publishes nothing from it.
+- **A system that owns guests ships their modules and registers them with `Library` by message,** as a tool is offered to its holder (ADR-0037). It builds them into its own code with `include_bytes!`, puts each as a blob, and asks `Defaults { modules }`, answered `Defaulted`. A default fills only a kind that has no head, and never replaces code that has one, whether `Code` made it or a publish since; `Defaulted::Taken` names the kinds it published and the kinds it kept. A library still publishing `Code` holds the ask until it has, so `Code` always comes first. The modules are taken all or none: one the guest host refuses, or two that make one kind, takes none. The program's own modules are then the code a program runs with nothing in `Code`, and a module in `Code` replaces one of them for a build.
+- **While it runs, `Library` publishes a module of `Code` for whoever asks it `PublishModule { path }`,** answered `ModulePublished` with each kind and the number of its publish. What can be published is what `Code` holds, which no actor writes; the right to publish any other blob stays with the handle. Each number is the one `turn.publish` answered: the engine's, under which the heads view folds the publish. The library keeps no count of its own.
 - **`Namespace` gains `Code`:** read-only, the guest modules a program runs. Natively its root is a setting of `Files`, `code`, beside `assets`; in a browser it is fetched relative to the page, as `Assets` is. A module is built where `Code` points, so a rebuild is a new file to publish.
 - **A spawn names a library's kind and takes its head.** `turn.spawn_from` takes an `Origin`: `Origin::Head`, the head the view shows for the child's kind, refused with `Refused::NoHead` when the kind has none; or `Origin::Blob(&code)`, a blob the parent holds, for code no library publishes (tests, the chassis). It is not called `Source`, which is the resource a host brings mail in through (ADR-0010). A parent of a library's kind holds none of its code, so updating that kind is one `Publish` for every parent that makes it.
 
@@ -73,7 +75,7 @@ each guest of kind K with no mail as K's head moves: asked once, between steps, 
   - **`Later`:** the batch runs on the old code, as if nothing were published. The actor is asked again before its next.
   - **`Now`:** the actor moves at once, on the worker that runs its part, with the part's instances it is lent, as a batch's `prepare` is (ADR-0015), and the batch is prepared and run on its new code, in the same step. When the move fails, the actor is parked and the batch runs on its old code.
   - Each batch runs wholly on one version of the code. Nothing moves an actor during a turn, or between two turns of one batch, and nothing an actor does in a turn arranges a move for later.
-- **An actor that is behind and has no mail is asked once, between steps, after the head moved,** in the same call, and moved there when it answers `Now`, where the engine holds every part. An idle actor would otherwise never be asked, and a publish would never settle. Asking it in a step would need the plan to hand out work no mail made, so it stays between steps, where the engine already folds and seats.
+- **An actor that is behind and has no mail is asked once, between steps, after the head moved,** in the same call, and moved there when it answers `Now`, where the engine holds every part. An idle actor would otherwise never be asked, and never move. Asking it in a step would need the plan to hand out work no mail made, so it stays between steps, where the engine already folds and seats.
 - **A head that moves again while an actor is behind changes only where it moves to.** It moves to the head as it stands when it answers `Now`, never to a version in between.
 
 ### Moving
@@ -132,24 +134,25 @@ A step's turns read what the engine holds as the step began, and its changes are
 
 ### Seeing a publish
 
-- **Each publish is numbered by the engine,** and the number is the head's: `Publish` folds into the heads view with it.
-- **`aethereal-library` serves two tools,** behind its `tools` feature:
-  - **`publish { path, wait_millis }`** reads the module at `Code/<path>`, puts it, and publishes each kind it makes, moving the heads of kinds another module made before. With `wait_millis`, it answers once every running actor of those kinds has moved, is parked, or has answered `Later`, or when the wait ends. Its answer is the publish's record:
+- **Each publish is numbered by the engine, once, as it is asked,** and the number is the head's: `turn.publish` answers with it, and `Publish` carries it into the heads view, which takes it as it folds and counts nothing itself. Every publish of a step is asked by the one actor that holds the publisher, so the number is the view's last as the step began, on by each publish asked before it in the step.
+- **The heads view records what became of each guest found behind its kind's head.** Each ask before a batch or between steps is folded into it: a move counts on the head it moved onto, with the fields its old state lacked; an answer of `Later` counts one more batch on the head it was asked about; a failed move parks it there; a guest that has mail as the head moves is recorded as still to be asked, so who has yet to answer is known. A guest is kept until it moves or its life is over. A turn reads it as the step began with `turn.moves()`, as it reads the log (ADR-0044).
+- **`aethereal-library` serves two tools, and no other,** behind its `tools` feature. It serves no spawn tool: a guest is spawned by the actor that owns it, from its kind's head.
+  - **`publish { path }`** asks `Library` to publish the module at `Code/<path>`, moving the heads of kinds another module made before, and answers as soon as the library has: the module's hash, and each kind it makes with the number of its publish. It has no wait: what became of the guests of those kinds is read when it is wanted, with `upgrades`.
+  - **`upgrades {}`** reads the heads view as the step began: each kind's head, with the number of the publish that made it, how many actors have moved onto it, and the fields their old states lacked; and every running guest that is not on its kind's head, still to be asked, behind with how many batches it has answered `Later` before, or parked, with the publish it failed on and why. Read for the kinds a publish made, under the numbers it answered, it is that publish's record:
 
     ```
     publish 12 · ichor.ui.hud → 3f9a…
       moved     38   absent: show_cooldowns
-      waiting    1   ichor.ui.hud:inventory   answered Later, 3 batches
+      later      1   ichor.ui.hud:inventory   answered Later, 3 batches
       parked     1   ichor.ui.hud:party       take_over: save missing
     ```
 
-  - **`upgrades {}`** lists every running guest that is not on its kind's head: behind, with how many batches it has answered `Later` before, or parked, with the publish it failed on and why.
 - **Each move and each failure is in the actor's log,** tagged with the publish number, so `actor_logs` and the dev overlay's console show them as they happen (ADR-0044, ADR-0053).
 
 ## Consequences
 
-- **A guest's behaviour can be changed while the program runs,** by building its module and calling `publish`. Its actors keep their state and move before a batch of their own choosing, and the publish says who moved, who waits, and who failed.
-- **This amends ADR-0009's libraries.** ADR-0009 had a library for each namespace, each the only one that could publish its kinds. One library per program holds every kind's head, so no namespace is registered, and a program lists no module: what is in `Code` is what runs.
+- **A guest's behaviour can be changed while the program runs,** by building its module and calling `publish`. Its actors keep their state and move before a batch of their own choosing, and `upgrades` says who moved, who answered `Later`, and who failed.
+- **This amends ADR-0009's libraries.** ADR-0009 had a library for each namespace, each the only one that could publish its kinds. One library per program holds every kind's head, so no namespace is registered, and a program lists no module: what is in `Code` runs, and its systems' own modules run for the kinds `Code` does not make.
 - **This amends ADR-0009's "nothing moves a running actor".** An actor still chooses whether and when it moves, as ADR-0009 requires, and is never moved during a turn or a batch. What changes is who asks: the engine asks before each batch, so no actor watches the heads, and none can forget to.
 - **This decides what ADR-0015 left open:** a guest's state is taken out to replace its code as it is taken out for another part, and put back when the move fails.
 - **A native actor never moves.** A screen meant to change live is written as a guest. ichor's actors are native today; one of its screens changes live once it is a guest.
@@ -180,5 +183,9 @@ Follow-on work, in order: `Publisher` and `What::Publish` with the heads view; `
 - **An effect that registers the library, and `Publish` taken from the registered root alone.** The engine would remember one actor as special. A handle carries the right the way every other right is carried, and a program cannot make a second.
 - **The engine reads `Code` and serves the tools itself.** No actor holds the right. The core would then do file I/O and name the tool machinery, and the tools must be actors anyway, so one would need the right regardless.
 - **A library for each namespace, listing its modules,** as ADR-0009 had it. Ownership by namespace guards libraries in one program from one another, which one library cannot need, and every program would list its namespaces and modules, changing its settings for each new module.
+- **A default that replaces what `Code` holds, or the first publish of a kind wins.** A system's module would then take a kind from the module the program was built with, or whichever was asked first would, and which code runs would depend on the order roots begin. A default fills only a kind with no head, and waits for `Code`.
+- **Defaults listed in the library's settings, or handed it by the chassis.** Every program would list each system's modules where it lists the library. A system that owns guests knows its modules, so it asks for them as a toolbox offers its tools, and a program that lists the system has them.
+- **A publish that waits for its guests to settle,** answering once every running actor of its kinds has moved, is parked, or has answered `Later`, or when a wait ends. A call that waits either polls the heads view, looking again every few milliseconds, or needs the engine to raise an event as a kind settles, which nothing else reads. What it would answer is already in the heads view, kept as each guest is asked, so it is there to query when it is wanted: `publish` answers at once, and `upgrades` reads the moves.
+- **A `spawn` tool beside `publish`.** An agent could stand up a guest no actor owns, which nothing would end or reach by a typed path. A guest is spawned by the actor that owns it, from its kind's head.
 - **A parent ships its children's code.** Updating a child means rebuilding or re-handing every parent that makes it. A library's head lets a parent name only the kind.
 - **Modules checked into the hub's store and sent to the engine.** The store never gives bytes back (ADR-0039), and how a blob crosses to another engine is not decided (ADR-0014). An engine reads its own `Code` through `Files`, as it reads `Assets`, natively and in a browser.

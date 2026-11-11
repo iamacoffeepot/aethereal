@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault, HandledList, Holds,
-    Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
+    Actors, Beginning, BlobId, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault,
+    HandledList, Holds, Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -108,6 +108,13 @@ pub trait Runs: Any + Send {
     /// (ADR-0054). Code no head names is never asked, and stays on its code.
     fn upgrade(&mut self, _moving: Moving<'_>) -> Upgraded {
         Upgraded::Unasked
+    }
+
+    /// Whether its code is behind the head of the blob `head`, its kind's, and it is not parked there: whether it
+    /// would be asked before its next batch. The engine reads it between steps as the head moves, for an actor it
+    /// does not ask then, so what is still to be asked is known (ADR-0054). Code no head names is never behind.
+    fn is_behind(&self, _head: BlobId) -> bool {
+        false
     }
 }
 

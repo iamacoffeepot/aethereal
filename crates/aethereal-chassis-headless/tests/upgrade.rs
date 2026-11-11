@@ -5,8 +5,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answered, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault, Given, Handle, Handles,
-    How, Level, Publisher, Root, ToSender, Top, Turn, Unanswered, Upgrade,
+    Actor, ActorName, ActorRef, Answered, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault, Given,
+    Handle, Handles, How, Level, Path, Publisher, Root, Standing, Tells, ToSender, Top, Turn, Unanswered, Upgrade,
+    path,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -34,6 +35,14 @@ struct Shelves {
 #[kind(name = "aether.test.publish")]
 struct Publish {
     kind: KindName,
+    blob: Bytes,
+}
+
+/// A word to the library to publish `blob` as the head of the mover's kind, and in the same turn to tell the mover to
+/// let go: the mover has mail as the head moves.
+#[derive(Bound)]
+#[kind(name = "aether.test.publish_letting_go")]
+struct PublishLettingGo {
     blob: Bytes,
 }
 
@@ -74,9 +83,51 @@ impl Handles<Publish> for Library {
 
     fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &publish.kind, &publish.blob);
-        let Ok(()) = published else {
+        let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
         };
+
+        Ok(())
+    }
+}
+
+/// A native root that holds the engine's publisher, publishes the mover's kind's head, and tells the mover to let go
+/// in the same turn: a library of its own, as one that reaches the mover's path stands only where a mover does.
+#[derive(Bound)]
+#[kind(name = "aether.test.letting_go")]
+struct LettingGo {
+    publisher: Handle<Publisher>,
+}
+
+impl ChildOf for LettingGo {
+    type Parent = Top;
+}
+
+impl Actor for LettingGo {
+    type Config = Shelves;
+    type Key = ();
+    type Handles = (PublishLettingGo,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { publisher: turn.take(shelves.publisher)? })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<PublishLettingGo> for LettingGo {
+    type Sends = (Tells<Path<echo::Mover>, echo::LetGo>,);
+
+    fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let published = turn.publish(&self.publisher, &echo::Mover::NAME, &publish.blob);
+        let Ok(_) = published else {
+            return Err(Fault::new(&Unpublished)?);
+        };
+        turn.to(path::<echo::Mover>(())).send(&echo::LetGo)?;
 
         Ok(())
     }
@@ -553,5 +604,43 @@ fn a_guest_whose_instance_broke_as_another_moved_runs_nothing_more_in_that_insta
     let errors = lines(&mut harness, breaker, Level::Error);
     let broke_taking_over = errors.iter().any(|line| line.contains("broke taking it over"));
     assert!(broke_taking_over, "the breaker's move failed as its new code broke: {errors:?}");
+    Ok(())
+}
+
+/// What the engine records of `actor`, behind its kind's head: the publish it was found behind, and where it stands.
+fn standing<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>) -> Option<(u64, Standing)> {
+    let found = harness.host().engine().moves();
+    let name = harness.host().engine().table().name(actor.seated().id)?;
+    let behind = found.behind.into_iter().find(|behind| behind.actor == ActorName::Path(name.clone()))?;
+
+    Some((behind.publish, behind.standing))
+}
+
+#[test]
+fn a_guest_with_mail_as_its_head_moves_is_recorded_still_to_be_asked_until_its_batch_asks_it() -> Result<(), Unheard> {
+    // Catches a guest that has mail as its kind's head moves left out of what the engine records, so `upgrades` would
+    // not list it among the guests still to be asked; and one still recorded as unasked once its batch has asked it. With no hops, the library's word to the mover waits for the next step, so it is
+    // waiting as the head moves.
+    let mut engine =
+        Engine::new(NonZeroUsize::MIN, 1024, 1 << 20, 1 << 23, 0).with_guests(Arc::new(Runtime::default())).ready();
+    let (Ok(first), Ok(second)) = (engine.put_code(ECHO.to_vec()), engine.put_code(ECHO_V2.to_vec())) else {
+        panic!("the echo guest's builds are fit to run");
+    };
+    engine.add_root_from::<echo::Mover>(&first, &(), &echo::MoverConfig { holds: true })?;
+    let Ok(publisher) = engine.publisher() else {
+        panic!("the engine hands out its publisher once");
+    };
+    engine.add_root::<LettingGo>(&(), Shelves { publisher })?;
+    let mut harness = Harness::bare(engine)?;
+    let (mover, library) = (harness.root::<echo::Mover>(), harness.root::<LettingGo>());
+
+    harness.tell(library, &PublishLettingGo { blob: second })?;
+    harness.step();
+    let as_the_head_moved = standing(&mut harness, mover);
+    harness.step();
+    let once_asked = standing(&mut harness, mover);
+
+    assert_eq!(as_the_head_moved, Some((1, Standing::Unasked)), "its word to let go waits as the head moves");
+    assert_eq!(once_asked, Some((1, Standing::Later { batches: 1 })), "asked before the batch that let it go");
     Ok(())
 }

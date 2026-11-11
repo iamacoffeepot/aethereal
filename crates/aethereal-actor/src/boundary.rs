@@ -2,7 +2,7 @@
 
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
-use crate::{BlobHash, BlobId, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Time};
+use crate::{BlobHash, BlobId, Declared, EngineStats, Logged, Moves, Recent, SeatNumber, Seated, Time};
 #[cfg(feature = "std")]
 use aethereal_data::KindName;
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
@@ -63,6 +63,11 @@ pub trait Table {
     #[cfg(feature = "std")]
     fn head(&self, kind: &KindName) -> Option<crate::Bytes>;
 
+    /// How many publishes the heads view had folded as the step began: the number of the last, none before the first.
+    /// A publish asked in the step is numbered on from it (ADR-0054).
+    #[cfg(feature = "std")]
+    fn published(&self) -> u64;
+
     /// The time the turn's step carries: the host's, as it began the step (ADR-0011, ADR-0018).
     fn now(&self) -> Time;
 
@@ -87,6 +92,13 @@ pub trait Table {
     /// engine, as a guest's does, reads [`EngineStats::Unread`].
     fn engine_stats(&self) -> EngineStats {
         EngineStats::Unread
+    }
+
+    /// Each kind's head with what its publish has moved, and each live guest the engine found behind its kind's head,
+    /// as the heads view stood when the step began (ADR-0054). A table that reads no heads view, as a guest's does,
+    /// reads [`Moves::Unread`].
+    fn moves(&self) -> Moves {
+        Moves::Unread
     }
 }
 
