@@ -1203,9 +1203,9 @@ impl Seat<'_> {
     /// holds under `publisher`, and answers with the number the engine gives the publish (ADR-0009, ADR-0054). Refused,
     /// asking nothing, when this actor holds no publisher there, or the blob makes no actor of that kind.
     ///
-    /// The heads view numbers publishes as it folds them, one more than the last, in the order they were asked. Every
-    /// publish of a step is asked by the one actor that holds the engine's one publisher, in one worker's share, so its
-    /// number is the heads view's last as the step began, plus the publishes the share has asked, this one among them.
+    /// The number is given here, once, and the heads view takes it as it folds the publish. Every publish of a step is
+    /// asked by the one actor that holds the engine's one publisher, in one worker's share, so its number is the heads
+    /// view's last as the step began, plus the publishes the share has asked, this one among them.
     #[cfg(feature = "std")]
     fn publish(
         &mut self,
@@ -1219,10 +1219,11 @@ impl Seat<'_> {
         if !makes {
             return Err(Refused::NotMade);
         }
-        self.ask(What::Publish { kind: kind.clone(), blob: blob.clone() });
         self.asked.published += 1;
+        let number = self.table.published() + self.asked.published;
+        self.ask(What::Publish { kind: kind.clone(), blob: blob.clone(), number });
 
-        Ok(self.table.published() + self.asked.published)
+        Ok(number)
     }
 
     /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does

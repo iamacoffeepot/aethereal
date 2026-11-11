@@ -92,11 +92,11 @@ pub enum What {
     /// otherwise drops it, as the actor's log records (ADR-0017). Written by the engine, or by a guest's host as its
     /// library reports it, since the actor's code asked for nothing.
     Unread(Unreadable),
-    /// The head of the kind `kind` is the blob `blob` pins from now on, asked with the engine's one publisher, and
-    /// checked where it was asked to make that kind (ADR-0009, ADR-0054). The engine numbers it as it folds it into the
-    /// heads view, which keeps the pin.
+    /// The head of the kind `kind` is the blob `blob` pins from now on, under the publish numbered `number`, asked with
+    /// the engine's one publisher, and checked where it was asked to make that kind (ADR-0009, ADR-0054). The heads
+    /// view takes the number as it folds it, and keeps the pin.
     #[cfg(feature = "std")]
-    Publish { kind: KindName, blob: Bytes },
+    Publish { kind: KindName, blob: Bytes, number: u64 },
     /// The asking actor moved onto its kind's head in the step, and runs code whose type `declared` declares from now
     /// on: its path, seat and place in the table are as they were. Written by the engine for the actor's host, which
     /// moved it before a batch of its turns (ADR-0054).

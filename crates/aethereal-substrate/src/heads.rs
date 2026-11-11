@@ -58,8 +58,8 @@ struct Found {
 
 /// What the view keeps of a publish, of an ask whether to move onto a head, or of an actor whose life is over.
 pub enum Record {
-    /// The blob, with a pin of the view's own, published as the kind's head.
-    Published { kind: KindName, blob: Bytes },
+    /// The blob, with a pin of the view's own, published as the kind's head under the publish numbered `number`.
+    Published { kind: KindName, blob: Bytes, number: u64 },
     /// The actor, of the kind, was found behind the head the publish numbered `publish` made, and this became of it.
     Asked { actor: ActorId, kind: KindName, publish: u64, became: Became },
     /// The actor's closing turn has run.
@@ -211,7 +211,10 @@ impl View for Heads {
 
     fn takes<'a>(effect: &'a Effect, _: &'a Context) -> impl Iterator<Item = (u64, Record)> + 'a {
         let record = match effect.what() {
-            What::Publish { kind, blob } => Some((HEADS, Record::Published { kind: kind.clone(), blob: blob.clone() })),
+            What::Publish { kind, blob, number } => {
+                let published = Record::Published { kind: kind.clone(), blob: blob.clone(), number: *number };
+                Some((HEADS, published))
+            }
             What::Ended(_) => Some((HEADS, Record::Over(effect.seated().id))),
             _ => None,
         };
@@ -219,14 +222,14 @@ impl View for Heads {
         record.into_iter()
     }
 
-    /// A publish makes the record's blob the kind's head, under the next number, which no actor has moved onto yet:
-    /// the pin on the blob it replaces is dropped. An ask is taken in as [`Shard::ask`] says, and a life that is over
-    /// lets its actor go.
+    /// A publish makes the record's blob the kind's head, under the number it was asked with, which no actor has moved
+    /// onto yet: the pin on the blob it replaces is dropped. An ask is taken in as [`Shard::ask`] says, and a life that
+    /// is over lets its actor go.
     fn fold(shard: &mut Shard, _: u64, record: Record, _: &[Arena]) {
         match record {
-            Record::Published { kind, blob } => {
-                shard.published += 1;
-                let head = Head { blob, number: shard.published, moved: 0, absent: BTreeSet::new() };
+            Record::Published { kind, blob, number } => {
+                shard.published = number;
+                let head = Head { blob, number, moved: 0, absent: BTreeSet::new() };
                 shard.heads.insert(kind, head);
             }
             Record::Asked { actor, kind, publish, became } => shard.ask(actor, kind, publish, became),
