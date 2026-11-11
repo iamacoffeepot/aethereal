@@ -28,16 +28,16 @@ use crate::records::{
 };
 use crate::section;
 use crate::{
-    Above, Actor, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Bytes, ChildOf, Children, Declared, Due,
-    Ended, Fault, How, Item, Tie, Tied, Unanswered,
+    Above, Actors, ActorsReader, Asked, Asking, BlobHash, BlobId, Bytes, ChildOf, Children, Declared, Due, Ended,
+    Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
 use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
 use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
-    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, SchemaNodes,
-    from_bytes, to_bytes,
+    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, EncodeError, KindId, KindName, PathSegment, Reader,
+    SchemaNodes, from_bytes, to_bytes,
 };
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -52,18 +52,19 @@ use core::mem;
 use core::slice;
 
 /// Begins an actor of one type as it is seated, where it stands, from its config's bytes.
-type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Runs>, Fault>;
+type Begin = fn(&[u8], Seated, &Standing, &Host, &mut Asked, &mut Instances) -> Result<Box<dyn Lodged>, Fault>;
 
-/// Takes an actor of one type in from where it stands and its state, as [`take_out`] wrote them.
-type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Runs>, Standing)>;
+/// Takes an actor of one type in from where it stands and its state, as [`Lodged::take_out`] wrote them.
+type TakeIn = fn(&[u8], usize) -> Option<(Box<dyn Lodged>, Standing)>;
 
 /// Builds an actor of one type from where it stands and the state another version of its code left, as that version's
-/// [`take_out`] wrote them, read with the schema that version declared, within a read limit: why it did not, otherwise
-/// (ADR-0054).
-type TakeOver = fn(&[u8], &SchemaNodes, usize) -> Result<(Box<dyn Runs>, Standing), String>;
+/// [`Lodged::take_out`] wrote them, read with the schema that version declared, within a read limit: why it did not,
+/// otherwise (ADR-0054).
+type TakeOver = fn(&[u8], &SchemaNodes, usize) -> Result<(Box<dyn Lodged>, Standing), String>;
 
-/// What an actor of one type answers when it is asked whether to move onto its kind's head (ADR-0054).
-type Answers = fn(&dyn Runs) -> Upgrade;
+/// Holds a child of one type that a turn of the guest's code stood up, which the turn holds as any actor: nothing when
+/// it is not of that type.
+type Lodge = fn(Box<dyn Runs>) -> Option<Box<dyn Lodged>>;
 
 /// The most bytes a state's schema handed in to take a state over allocates as it is read: its host read it from a
 /// section it checked, within as much (ADR-0054).
@@ -101,15 +102,15 @@ impl Standing {
     }
 }
 
-/// What the guest's code does for one actor type it makes: begin one, take one in, take one out, ask one whether to
-/// move onto its kind's head, and build one from the state another version of it left (ADR-0054).
+/// What the guest's code does for one actor type it makes before there is an actor of it to ask: begin one, take one
+/// in, build one from the state another version of it left (ADR-0054), and hold a child of it its turn stood up. What
+/// an actor of it does itself, [`Lodged`] asks of it.
 pub struct Type {
     declared: &'static Declared,
     begin: Begin,
     take_in: TakeIn,
-    take_out: fn(&dyn Runs, &Standing, &mut Vec<u8>) -> Option<()>,
-    upgrade: Answers,
     take_over: TakeOver,
+    lodge: Lodge,
 }
 
 impl Type {
@@ -120,10 +121,40 @@ impl Type {
             declared: Declared::of::<A>(),
             begin: begin::<A>,
             take_in: take_in::<A>,
-            take_out: take_out::<A>,
-            upgrade: upgrade::<A>,
             take_over: take_over::<A>,
+            lodge: lodge::<A>,
         }
+    }
+}
+
+/// What the guest holds each of its actors as: one that runs, and answers itself whether it moves onto its kind's
+/// head and how it is written out of the instance. Every type `guest!` lists is one.
+trait Lodged: Runs {
+    /// What it answers when it is asked whether to move onto its kind's head (ADR-0054).
+    fn upgrade(&self) -> Upgrade;
+
+    /// Writes it, standing where `standing` says, after `out`, as [`records::carried`] reads it: the length of what
+    /// follows, where it stands and then its state, at [`Within`], and then the blob of each reference in them.
+    ///
+    /// # Errors
+    ///
+    /// Why where it stands or its state does not encode: nothing is written then.
+    fn take_out(&self, standing: &Standing, out: &mut Vec<u8>) -> Result<(), EncodeError>;
+}
+
+impl<A: ChildOf + Upgrades> Lodged for A {
+    fn upgrade(&self) -> Upgrade {
+        Upgrades::upgrade(self)
+    }
+
+    fn take_out(&self, standing: &Standing, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let written = Written::writing(|writer| {
+            standing.born().encode(writer)?;
+            self.encode(writer)
+        })?;
+        records::write_carried(out, written.bytes(), written.pins().iter().map(Bytes::id));
+
+        Ok(())
     }
 }
 
@@ -226,7 +257,7 @@ struct Guest {
 /// One actor of the guest, by the handle its host knows it by.
 enum Slot {
     Live {
-        runs: Box<dyn Runs>,
+        runs: Box<dyn Lodged>,
         me: Seated,
         standing: Standing,
     },
@@ -252,14 +283,14 @@ const NO_HANDLE: u32 = u32::MAX;
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
 /// Begins an actor of type `A` as `me`, where it stands, from its config's bytes.
-fn begin<A: ChildOf>(
+fn begin<A: ChildOf + Upgrades>(
     config: &[u8],
     me: Seated,
     standing: &Standing,
     host: &Host,
     asked: &mut Asked,
     instances: &mut Instances,
-) -> Result<Box<dyn Runs>, Fault> {
+) -> Result<Box<dyn Lodged>, Fault> {
     let mut budget = Budget::new(instances.read_limit());
     // Its host offered the call the pins the config holds (ADR-0014).
     let mut reader = Reader::<Actors>::new(config, &mut budget, ActorsReader::of(&PinSource::OFFERED));
@@ -272,30 +303,24 @@ fn begin<A: ChildOf>(
     Ok(Box::new(actor))
 }
 
-/// An actor of type `A` taken in from `bytes`, its path and state as [`take_out`] wrote them, read within `read_limit`
-/// bytes: nothing when they do not read back.
-fn take_in<A: ChildOf>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Runs>, Standing)> {
+/// An actor of type `A` taken in from `bytes`, its path and state as [`Lodged::take_out`] wrote them, read within
+/// `read_limit` bytes: nothing when they do not read back.
+fn take_in<A: ChildOf + Upgrades>(bytes: &[u8], read_limit: usize) -> Option<(Box<dyn Lodged>, Standing)> {
     let (born, actor) =
         carried_in(bytes)?.reading(read_limit, |reader| Ok((Born::decode(reader)?, A::decode(reader)?))).ok()?;
 
     Some((Box::new(actor), Standing::of(born)))
 }
 
-/// What `runs`, an actor of type `A`, answers when it is asked whether to move onto its kind's head: [`Upgrade::Later`]
-/// when it is not of type `A`, which a guest's own types rule out, as each is found by its kind.
-fn upgrade<A: Upgrades>(runs: &dyn Runs) -> Upgrade {
-    (runs as &dyn Any).downcast_ref::<A>().map_or(Upgrade::Later, Upgrades::upgrade)
-}
-
 /// An actor of type `A` built from `carried`, where it stood and the state another version of its code left, as that
-/// version's [`take_out`] wrote them, the state read by field name with `schema`, the schema that version declared,
-/// within `read_limit` bytes, into `A`'s portable form, which its `take_over` builds it from: why it was not,
+/// version's [`Lodged::take_out`] wrote them, the state read by field name with `schema`, the schema that version
+/// declared, within `read_limit` bytes, into `A`'s portable form, which its `take_over` builds it from: why it was not,
 /// otherwise (ADR-0054).
 fn take_over<A: ChildOf + Upgrades>(
     carried: &[u8],
     schema: &SchemaNodes,
     read_limit: usize,
-) -> Result<(Box<dyn Runs>, Standing), String> {
+) -> Result<(Box<dyn Lodged>, Standing), String> {
     let written = carried_in(carried).ok_or_else(|| String::from("the old state was not handed over whole"))?;
     let (born, rest) = written
         .reading(read_limit, |reader| Ok((Born::decode(reader)?, reader.input().len())))
@@ -316,19 +341,22 @@ fn carried_in(bytes: &[u8]) -> Option<Written> {
     Some(Written::new(written.to_vec(), blobs.into_iter().map(Bytes::pin).collect()))
 }
 
-/// Writes `runs`, an actor of type `A` that stands where `standing` says, after `out`, as
-/// [`records::carried`] reads it: the length of what follows, where it stands and then its state, at [`Within`], and
-/// then the blob of each reference in them. Nothing when it is not of type `A`, or does not encode.
-fn take_out<A: Actor>(runs: &dyn Runs, standing: &Standing, out: &mut Vec<u8>) -> Option<()> {
-    let actor = (runs as &dyn Any).downcast_ref::<A>()?;
-    let written = Written::writing(|writer| {
-        standing.born().encode(writer)?;
-        actor.encode(writer)
-    })
-    .ok()?;
-    records::write_carried(out, written.bytes(), written.pins().iter().map(Bytes::id));
+/// `runs`, a child a turn of the guest's code stood up, held as what it is, an actor of type `A`: nothing when it is
+/// not, which a guest's own types rule out, as [`lodged`] finds each child's type by its kind.
+fn lodge<A: ChildOf + Upgrades>(runs: Box<dyn Runs>) -> Option<Box<dyn Lodged>> {
+    let actor = (runs as Box<dyn Any>).downcast::<A>().ok()?;
 
-    Some(())
+    Some(actor)
+}
+
+/// `runs`, a child a turn of the guest's code stood up, held as what the type of its kind in `types` is: nothing when
+/// `types` makes no such type. The turn holds it as any actor, as it begins a child of the guest's own type as a
+/// native program does, so it is held as what it is here, once, as it comes to the guest to keep.
+fn lodged(types: &[Type], runs: Box<dyn Runs>) -> Option<Box<dyn Lodged>> {
+    let id = runs.declared().id();
+    let made = types.iter().find(|made| made.declared.id() == id)?;
+
+    (made.lodge)(runs)
 }
 
 /// Where the host writes up to `len` bytes to hand in: an address in the guest's memory, which stays where it is until
@@ -417,7 +445,7 @@ pub fn take_in_at(types: &[Type], of: u32, me: u64, seat: u64, len: u32) -> u32 
 /// taken out is written, and answers where they lie, as [`out`] does. Nothing, `0`, when it holds no such actor or
 /// its state does not encode.
 #[must_use]
-pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
+pub fn take_out_at(handle: u32) -> u64 {
     GUEST.with_borrow_mut(|guest| {
         let Some(slot) = guest.actors.get_mut(handle as usize) else {
             return 0;
@@ -426,11 +454,9 @@ pub fn take_out_at(types: &[Type], handle: u32) -> u64 {
             return 0;
         };
         guest.free.push(handle);
-        let id = runs.declared().id();
-        let made = types.iter().find(|made| made.declared.id() == id);
         guest.held.clear();
-        let wrote = made.and_then(|made| (made.take_out)(&*runs, &standing, &mut guest.held));
-        if wrote.is_none() {
+        let wrote = runs.take_out(&standing, &mut guest.held);
+        if wrote.is_err() {
             return 0;
         }
 
@@ -621,7 +647,7 @@ impl Guest {
     }
 
     /// Keeps `runs`, the actor `me` names at `path`, under the handle of an empty slot, or a new one when none is.
-    fn seat(&mut self, runs: Box<dyn Runs>, me: Seated, standing: Standing) -> u32 {
+    fn seat(&mut self, runs: Box<dyn Lodged>, me: Seated, standing: Standing) -> u32 {
         let live = Slot::Live { runs, me, standing };
         let Some(handle) = self.free.pop() else {
             self.actors.push(live);
@@ -658,17 +684,19 @@ impl Guest {
             let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
             let held = if is_dropped {
                 Held::Here(NO_HANDLE)
-            } else if is_elsewhere {
-                let at = self.held.len();
-                let id = runs.declared().id();
-                let made = types.iter().find(|made| made.declared.id() == id);
-                let wrote = made.and_then(|made| (made.take_out)(&*runs, &standing, &mut self.held));
-                match wrote {
-                    Some(()) => Held::Out(at, self.held.len() - at),
-                    None => Held::Here(NO_HANDLE),
-                }
             } else {
-                Held::Here(self.seat(runs, me, standing))
+                match (lodged(types, runs), is_elsewhere) {
+                    (Some(actor), true) => {
+                        let at = self.held.len();
+                        match actor.take_out(&standing, &mut self.held) {
+                            Ok(()) => Held::Out(at, self.held.len() - at),
+                            Err(_) => Held::Here(NO_HANDLE),
+                        }
+                    }
+                    (Some(actor), false) => Held::Here(self.seat(actor, me, standing)),
+                    // Of no type its guest makes, which its turn begins only as a child of other code.
+                    (None, _) => Held::Here(NO_HANDLE),
+                }
             };
             kept.push((me, parent, held));
         }
@@ -1176,17 +1204,13 @@ pub fn drop_at(handle: u32) {
 /// batch of its turns while it is behind the head, and once when it has no mail as the head moves. One for
 /// [`Upgrade::Now`], nought for [`Upgrade::Later`], and `u32::MAX` when it holds no such actor (ADR-0054).
 #[must_use]
-pub fn upgrade_at(types: &[Type], handle: u32) -> u32 {
+pub fn upgrade_at(handle: u32) -> u32 {
     GUEST.with_borrow(|guest| {
         let Some(Slot::Live { runs, .. }) = guest.actors.get(handle as usize) else {
             return NO_HANDLE;
         };
-        let id = runs.declared().id();
-        let Some(made) = types.iter().find(|made| made.declared.id() == id) else {
-            return NO_HANDLE;
-        };
 
-        match (made.upgrade)(&**runs) {
+        match runs.upgrade() {
             Upgrade::Now => 1,
             Upgrade::Later => 0,
         }
@@ -1779,7 +1803,7 @@ macro_rules! guest {
 
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_take_out(handle: u32) -> u64 {
-                $crate::guest::take_out_at(MADE, handle)
+                $crate::guest::take_out_at(handle)
             }
 
             #[unsafe(no_mangle)]
@@ -1789,7 +1813,7 @@ macro_rules! guest {
 
             #[unsafe(no_mangle)]
             extern "C" fn aethereal_upgrade(handle: u32) -> u32 {
-                $crate::guest::upgrade_at(MADE, handle)
+                $crate::guest::upgrade_at(handle)
             }
 
             #[unsafe(no_mangle)]
