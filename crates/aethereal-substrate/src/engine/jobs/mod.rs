@@ -242,7 +242,7 @@ impl Engine {
     /// context the job's actor keeps pins it, and the blobs a step put are taken in before its jobs are handed out. A
     /// guest's job whose type the program does not let its guests run is answered with [`NoRunner`], and never handed
     /// out (ADR-0015).
-    fn hand_out(&self, job: Submitted) {
+    fn hand_out(&mut self, job: Submitted) {
         let id = job.id();
         let Submitted { by, count, code, answer, bytes, refers, buffers, given } = job;
         let feed = Arc::clone(&self.finished);
@@ -256,6 +256,8 @@ impl Engine {
         let lent = Lending::new(self.number.0, self.copied(refers), buffers, given, Arc::clone(&self.job_pins));
         if let Runner::Made(jobs) = &self.runner {
             jobs.start(id, of, Taken { bytes, lent, limit: self.read_limit, finish });
+            #[cfg(any(test, feature = "harness"))]
+            self.note_job(super::outside::Jobbed::Started { id, kind: of.kind() });
         }
     }
 
@@ -276,7 +278,11 @@ impl Engine {
         let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
         match (waiting, &self.runner) {
             (Some(at), _) => self.drop_waiting(at),
-            (None, Runner::Made(jobs)) => jobs.stop(job),
+            (None, Runner::Made(jobs)) => {
+                jobs.stop(job);
+                #[cfg(any(test, feature = "harness"))]
+                self.note_job(super::outside::Jobbed::Stopped(job));
+            }
             (None, Runner::Unmade) => {}
         }
     }

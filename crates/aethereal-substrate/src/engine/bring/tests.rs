@@ -408,7 +408,8 @@ fn the_host_takes_what_a_capability_asks_through_its_controller_in_the_order_ask
     assert_eq!(once_it_ended, (vec![Make::Window(3)], true));
 }
 
-/// A waker that counts how often it is woken.
+/// A waker that counts how often it is woken: what a push does is wake the host's waker, which is `Send` and `Sync` and
+/// woken from wherever a feed is pushed, so its count is an atomic, and no mail orders it.
 struct Counted {
     wakes: AtomicUsize,
 }

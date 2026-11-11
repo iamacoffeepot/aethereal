@@ -30,6 +30,9 @@ fn spawn(task: Task) {
 #[derive(Default)]
 struct Pump {
     tasks: HashMap<usize, Task>,
+    /// The tasks woken since the last pump. A waker is `Send` and `Sync`, and wakes from wherever its task's job is
+    /// woken, so the list it puts its task on is behind a lock: no mail orders it. It is the fake loop's own machinery,
+    /// and no report.
     woken: Arc<Mutex<Vec<usize>>>,
     made: usize,
 }
@@ -78,7 +81,9 @@ impl Pump {
     }
 }
 
-/// A timer whose time the test sets, which wakes what waits once the time it waits for is set.
+/// A timer whose time the test sets, which wakes what waits once the time it waits for is set. A [`Timer`] is `Sync`
+/// and read and asked through `&self` from wherever a job runs, so its time is an atomic and what waits on it is
+/// behind a lock: no mail orders them. It is the fake timer's own machinery, and no report.
 #[derive(Default)]
 struct Hands {
     nanos: AtomicU64,
@@ -124,21 +129,13 @@ impl Clock for Still {
 #[kind(name = "aether.test.nothing")]
 struct Nothing;
 
-/// A test's own count of the jobs that wait for good, served to them: how many began to run, and how many of those were
-/// dropped. It says more than an `Arc`'s count could, which reads the same for a job dropped and one that never began.
+/// How many of the jobs that wait for good began to run, served to them. A job stopped before it begins answers no one
+/// and leaves nothing the engine records, by design, so only the job itself can say it began; and it reaches the test
+/// only through a service, which a runner hands every job it runs from wherever it runs it, so it is `Send` and `Sync`
+/// and the count is an atomic: no mail orders it.
 #[derive(Default)]
 struct Forevers {
     began: AtomicUsize,
-    dropped: AtomicUsize,
-}
-
-/// What a job that waits for good holds: it notes when it is dropped.
-struct Guard<'job>(&'job Forevers);
-
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        self.0.dropped.fetch_add(1, Ordering::AcqRel);
-    }
 }
 
 /// A job that waits for good, until it is dropped.
@@ -160,7 +157,6 @@ impl Job for Forever {
             return Ok(Ran);
         };
         forevers.began.fetch_add(1, Ordering::AcqRel);
-        let _guard = Guard(forevers);
         future::pending::<()>().await;
 
         Ok(Ran)
@@ -311,7 +307,7 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
     assert!(early.is_empty(), "nothing is answered before the sleep's time: {early:?}");
     assert_eq!(seen(&mut engine), [Seen::Slept]);
     assert_eq!(forevers.began.load(Ordering::Acquire), 1, "the job stopped before it was polled never began");
-    assert_eq!(forevers.dropped.load(Ordering::Acquire), 1, "the job stopped while it waited is dropped");
+    assert_eq!(engine.jobs_in_flight(), 0, "both jobs stopped are dropped, with where they were to answer");
     assert_eq!(pump.pending(), 0, "no task is left on the loop");
 }
 

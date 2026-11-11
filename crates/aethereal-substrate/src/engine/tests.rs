@@ -1150,7 +1150,9 @@ fn item_placed_under_a_seat_reaches_only_the_actor_it_was_placed_for() {
     assert_eq!(step(&mut engine), [saw(1, How::Closed)]);
 }
 
-/// A clock that moves a microsecond each time it is read, so every turn is measured to cost something.
+/// A clock that moves a microsecond each time it is read, so every turn is measured to cost something. A [`Clock`] is
+/// `Sync` and read through `&self` on every worker a step runs on, so the time it moves is an atomic: no mail orders
+/// it. It is what the test hands the engine, and no report.
 #[derive(Default)]
 struct Ticking(AtomicU64);
 
