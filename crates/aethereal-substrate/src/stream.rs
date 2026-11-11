@@ -538,6 +538,17 @@ impl Shard {
         !self.arrived.is_empty() || !self.segments.is_empty()
     }
 
+    /// Whether an item waits here for `me`, between steps: arrived since the step began, or carried over to hand out
+    /// at the next (ADR-0054).
+    #[must_use]
+    pub fn holds_for(&self, me: Seated) -> bool {
+        let (seat, to) = (me.seat.number(), me.id.bits());
+        let arrived = self.arrived.iter().any(|(at, entry)| *at == seat && entry.to == to);
+        let carried = self.segments.iter().any(|segment| segment.seat == seat && segment.to == to);
+
+        arrived || carried
+    }
+
     /// Whether an item of the chain `root` begins waits here, between steps: arrived since the step began, or carried
     /// over to hand out at the next (ADR-0020). What was handed out at the start of the step has been taken, and its
     /// turns' sends have arrived.

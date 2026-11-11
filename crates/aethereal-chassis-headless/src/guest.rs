@@ -18,18 +18,21 @@
 use aethereal_actor::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
-    Spawning, StageRecord, StoodRecord, Stopped, TurnEnds, UnreadRecord, WatchRecord, blob_at, refusal,
+    Spawning, StageRecord, StoodRecord, Stopped, TakenOver, TurnEnds, UnreadRecord, WatchRecord, blob_at, refusal,
 };
 use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
-    Maker, Memory as InstanceMemory, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused, Request, Role,
-    Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Was, Why, Written, holders,
-    take_loose_ticket,
+    Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused,
+    Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade, Upgraded,
+    Was, Why, Written, holders, take_loose_ticket,
 };
-use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, from_bytes, to_bytes};
+use aethereal_data::{
+    ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
+};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::iter;
 use std::mem;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,7 +85,8 @@ struct Code {
 #[derive(Clone)]
 struct Running {
     code: Code,
-    #[expect(dead_code, reason = "a pin is held for as long as it lives, and never read")]
+    /// Held for as long as the actor runs on the code, and read for which blob it is, to tell whether the actor is
+    /// behind its kind's head (ADR-0054).
     pin: Bytes,
 }
 
@@ -90,8 +94,15 @@ struct Running {
 /// must differ from every other's in the instances of a part.
 static CODES: AtomicU64 = AtomicU64::new(0);
 
+/// The number the next instance made takes. Atomic, as instances are made on whichever worker runs their part, and each
+/// instance's number must differ from every other's, so an actor of an instance a trap dropped is never run in one
+/// made after it (ADR-0015).
+static INSTANCES: AtomicU64 = AtomicU64::new(0);
+
 /// One instance of a blob, a part's, and the calls its host makes of it.
 struct Instance {
+    /// Its number among the instances the process has made, which no other takes.
+    number: u64,
     store: Store<Lending>,
     memory: Memory,
     inbox: TypedFunc<u32, u32>,
@@ -100,6 +111,8 @@ struct Instance {
     take_in: TypedFunc<(u32, u64, u64, u32), u32>,
     take_out: TypedFunc<u32, u64>,
     turns: TypedFunc<(u32, u32, u32, u64), u64>,
+    upgrade: TypedFunc<u32, u32>,
+    take_over: TypedFunc<(u32, u64, u64, u32), u64>,
     pins: TypedFunc<(), u64>,
     holders: TypedFunc<(), u64>,
     end: TypedFunc<(u32, u32), u64>,
@@ -196,12 +209,23 @@ struct Guest {
     ran: Ran,
     /// What the host gave the batch prepared last, not yet handed to the engine.
     given: Given,
+    /// Whether a move onto its kind's head failed, so it is not asked again until the head moves on (ADR-0054).
+    parked: Parked,
+}
+
+/// Whether a guest actor is parked: its move onto its kind's head failed, and the same code would fail again against
+/// nearly the same state, so it is not asked again until the head moves on (ADR-0054).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Parked {
+    No,
+    /// On the head of this blob, which its move onto failed.
+    On(BlobId),
 }
 
 /// Where a guest actor's state is.
 enum Lives {
-    /// In its part's instance, under the handle the guest knows it by.
-    In { handle: u32 },
+    /// In its part's instance, the one numbered `instance`, under the handle the guest knows it by.
+    In { handle: u32, instance: u64 },
     /// Taken out of the instance it began in, which is another part's, as its path and state written at `Within`,
     /// with the pins on the blobs they refer to: taken into its own part's instance on its first batch.
     Out { state: Vec<u8>, carried: Vec<Bytes> },
@@ -217,12 +241,16 @@ enum Ran {
     At { head: OutHead, next: u32, before: TurnEnds },
     /// The call that ran them broke, for why it says: every turn of the batch fails.
     Broke(Broke),
+    /// The instance the actor lived in is gone, as a trap in a call of another actor dropped it: every turn of the
+    /// batch fails, and nothing of the part's instance of its code, made since, is touched (ADR-0015).
+    Lost,
 }
 
 /// The top bit of a seat given to a guest's child, set when the seat is in another part than its parent's.
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
-/// The handle a guest writes for a child it did not keep.
+/// The handle a guest answers for an actor it did not take in, and writes for a child of a turn that failed, which it
+/// dropped as the engine drops it.
 const NO_HANDLE: u32 = u32::MAX;
 
 impl Runtime {
@@ -270,7 +298,8 @@ impl Runtime {
         let made = section::read(section, &mut budget)?;
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
         let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_drop"];
-        let more = more.into_iter().chain(["aethereal_read_limit", "aethereal_holders"]);
+        let more = more.into_iter().chain(["aethereal_read_limit", "aethereal_holders", "aethereal_upgrade"]);
+        let more = more.chain(["aethereal_take_over"]);
         for export in exports.into_iter().chain(more) {
             let has = module.get_export(export).is_some();
             if !has {
@@ -964,12 +993,17 @@ impl Instance {
         let end = instance.get_typed_func(&mut store, "aethereal_end");
         let drop = instance.get_typed_func(&mut store, "aethereal_drop");
         let limit = instance.get_typed_func::<u32, ()>(&mut store, "aethereal_read_limit");
+        let upgrade = instance.get_typed_func(&mut store, "aethereal_upgrade");
+        let take_over = instance.get_typed_func(&mut store, "aethereal_take_over");
         let (Some(memory), Ok(inbox), Ok(out), Ok(begin), Ok(take_in), Ok(take_out), Ok(turns), Ok(pins), Ok(end)) =
             (memory, inbox, out, begin, take_in, take_out, turns, pins, end)
         else {
             panic!("guest code that entered has its exports");
         };
         let (Ok(drop), Ok(holders)) = (drop, instance.get_typed_func(&mut store, "aethereal_holders")) else {
+            panic!("guest code that entered has its exports");
+        };
+        let (Ok(upgrade), Ok(take_over)) = (upgrade, take_over) else {
             panic!("guest code that entered has its exports");
         };
         // A limit past what a guest's memory can address holds it to that memory.
@@ -979,6 +1013,7 @@ impl Instance {
         };
 
         Self {
+            number: INSTANCES.fetch_add(1, Ordering::Relaxed),
             store,
             memory,
             inbox,
@@ -987,6 +1022,8 @@ impl Instance {
             take_in,
             take_out,
             turns,
+            upgrade,
+            take_over,
             pins,
             holders,
             end,
@@ -1098,10 +1135,11 @@ impl Guests for Runtime {
         let is_here = asked.seats_mut().is_own(me.seat);
         let mut hosted = Hosted::beginning(me, path, above, table, asked, declared, keeping);
         let replayed = began.and_then(|(handle, wrote)| {
-            let Instance { store, memory, actors, holdings, .. } = &mut *held;
+            let Instance { number, store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
             let ends = TurnEnds::default();
-            let replayed = replay(data, &running, &wrote, 0, ends, &mut given, holdings, actors, &mut hosted)?;
+            let living = (*number, actors);
+            let replayed = replay(data, &running, &wrote, 0, ends, &mut given, holdings, living, &mut hosted)?;
             Ok((handle, replayed))
         });
         given.give_back(|seat| hosted.give_back(seat));
@@ -1120,7 +1158,7 @@ impl Guests for Runtime {
         }
         let lives = if is_here {
             held.actors.push(me);
-            Lives::In { handle }
+            Lives::In { handle, instance: held.number }
         } else {
             match held.take_out(handle) {
                 Ok(lives) => lives,
@@ -1135,11 +1173,178 @@ impl Guests for Runtime {
         };
         instances.put_back(code.key, held);
 
-        Ok(Box::new(Guest { running, me, lives, declared, ran: Ran::Nothing, given: Given::default() }))
+        let given = Given::default();
+
+        Ok(Box::new(Guest { running, me, lives, declared, ran: Ran::Nothing, given, parked: Parked::No }))
     }
 }
 
 impl Guest {
+    /// Whether the instance the actor lived in is gone, as a trap dropped it: its part has no instance of its code, or
+    /// one made since, which does not hold it. It runs nothing there (ADR-0015).
+    fn is_lost(&self, instances: &mut Instances) -> bool {
+        let Lives::In { instance, .. } = self.lives else {
+            return false;
+        };
+
+        instances.get::<Instance>(self.running.code.key).is_none_or(|held| held.number != instance)
+    }
+
+    /// Whether the actor runs other code than `head`, the blob its kind's head names, and is not parked on it.
+    fn is_behind(&self, head: BlobId) -> bool {
+        let runs_other = head != self.running.pin.id();
+        let is_parked = self.parked == Parked::On(head);
+
+        runs_other && !is_parked
+    }
+
+    /// What the actor answers, asked in a call of its own whether to move onto its kind's head, in its part whose
+    /// `instances` are lent (ADR-0054).
+    ///
+    /// # Errors
+    ///
+    /// What became of it when the call broke its instance: it ended, with every other actor of the instance.
+    fn ask(&mut self, instances: &mut Instances) -> Result<Upgrade, Upgraded> {
+        let key = self.running.code.key;
+        let read_limit = instances.read_limit();
+        let instance = instances.get_or_load(key, || Instance::load(&self.running.code, read_limit));
+        let answer = self.handle_in(instance).and_then(|handle| instance.upgrade(handle));
+
+        answer.map_err(|broke| Upgraded::BrokeAsking { ended: self.ended(broke, instances) })
+    }
+
+    /// Moves the actor onto `head`, its kind's head, in its part whose `instances` are lent: its state taken out of
+    /// the code it runs, at `Within`, and into the head's instance in the part, made there when the part has none: as
+    /// it is, when the kinds are the same, or through its new type's `take_over` when their layouts differ. When the
+    /// state is not taken, it is put back, the actor runs on its old code, and it is parked (ADR-0054).
+    fn move_onto(&mut self, head: &Bytes, instances: &mut Instances) -> Upgraded {
+        let codes = self.running.code.codes.upgrade();
+        let code = codes.as_deref().and_then(|codes| codes.read().ok()?.get(&head.id()).cloned());
+        let onto = code.and_then(|code| {
+            let made = code.of_kind(self.declared.name())?;
+            let (of, declared) = code.made_of(made.declared.id())?;
+            Some((code, of, declared))
+        });
+        let from = self.running.code.made_of(self.declared.id());
+        let (Some((code, of, declared)), Some((was, _))) = (onto, from) else {
+            // A head is published only for a blob that makes its kind, so this is code its host lost track of.
+            self.parked = Parked::On(head.id());
+            let reason = String::from("the head is not code that makes the kind");
+            return Upgraded::Parked { reason, ended: Vec::new() };
+        };
+        let (state, carried) = match self.take_out_state(instances) {
+            Ok(taken) => taken,
+            Err(broke) => return Upgraded::BrokeMoving { ended: self.ended(broke, instances) },
+        };
+
+        let old = self.declared.state().nodes();
+        let new = declared.state().nodes();
+        let read_limit = instances.read_limit();
+        let fresh = instances.get_or_load(code.key, || Instance::load(&code, read_limit));
+        let is_same = declared.id() == self.declared.id();
+        let taken = if is_same {
+            fresh.take_in(of, self.me, &state, &carried).map(Ok)
+        } else {
+            to_bytes(&*old)
+                .map_err(|_| Broke::Garbled)
+                .and_then(|schema| fresh.take_over(of, self.me, (&schema, &state), &carried, read_limit))
+        };
+        let (reason, ended) = match taken {
+            Ok(Ok(handle)) => {
+                fresh.actors.push(self.me);
+                self.lives = Lives::In { handle, instance: fresh.number };
+                self.leave(instances);
+                self.running = Running { code, pin: head.clone() };
+                self.declared = declared;
+                self.parked = Parked::No;
+                return Upgraded::Moved { declared, absent: absent(&old, &new) };
+            }
+            Ok(Err(reason)) => {
+                let is_empty = fresh.actors.is_empty();
+                if is_empty {
+                    instances.drop_instance::<Instance>(code.key);
+                }
+                (reason, Vec::new())
+            }
+            Err(broke) => {
+                // What the call left in the new code's instance cannot be trusted, so nothing runs in it again
+                // (ADR-0015).
+                let ended = fresh.actors.iter().map(|actor| (*actor, broke.fault())).collect();
+                instances.drop_instance::<Instance>(code.key);
+                (format!("its new code broke taking it over: {broke:?}"), ended)
+            }
+        };
+        if let Err(broke) = self.put_back(was, &state, &carried, instances) {
+            let mut own = self.ended(broke, instances);
+            own.extend(ended);
+            return Upgraded::BrokeMoving { ended: own };
+        }
+        self.parked = Parked::On(head.id());
+
+        Upgraded::Parked { reason, ended }
+    }
+
+    /// The actor's state, taken out of the code it runs, at `Within`, with a pin on each blob it refers to: out of its
+    /// part's instance, which `instances` holds, or as it was taken out of another part's instance it began in.
+    ///
+    /// # Errors
+    ///
+    /// Why the call that took it out broke.
+    fn take_out_state(&mut self, instances: &mut Instances) -> Result<(Vec<u8>, Vec<Bytes>), Broke> {
+        let handle = match &self.lives {
+            Lives::In { handle, .. } => *handle,
+            Lives::Out { state, carried } => return Ok((state.clone(), carried.clone())),
+        };
+        // An actor in its part's instance is kept there, which only a trap drops, and that ends it.
+        let held = instances.get::<Instance>(self.running.code.key).ok_or(Broke::Trapped)?;
+        let Lives::Out { state, carried } = held.take_out(handle)? else {
+            return Err(Broke::Garbled);
+        };
+        held.actors.retain(|actor| *actor != self.me);
+
+        Ok((state, carried))
+    }
+
+    /// Puts the state taken out of the actor, `state` and the pins it carries, `carried`, back where it was: into its
+    /// part's instance as the `was`th type of its code, or kept out as it was (ADR-0054).
+    ///
+    /// # Errors
+    ///
+    /// Why the call that took it back in broke.
+    fn put_back(&mut self, was: u32, state: &[u8], carried: &[Bytes], instances: &mut Instances) -> Result<(), Broke> {
+        let is_out = matches!(self.lives, Lives::Out { .. });
+        if is_out {
+            return Ok(());
+        }
+        let held = instances.get::<Instance>(self.running.code.key).ok_or(Broke::Trapped)?;
+        let handle = held.take_in(was, self.me, state, carried)?;
+        held.actors.push(self.me);
+        self.lives = Lives::In { handle, instance: held.number };
+
+        Ok(())
+    }
+
+    /// Leaves the instance of the code the actor ran, which drops it when no other actor runs in it (ADR-0015).
+    fn leave(&self, instances: &mut Instances) {
+        let key = self.running.code.key;
+        let is_last = instances.get::<Instance>(key).is_some_and(|held| held.actors.is_empty());
+        if is_last {
+            instances.drop_instance::<Instance>(key);
+        }
+    }
+
+    /// The actors that end as a call into the instance of the code the actor runs broke, for why `broke` says: the
+    /// actor, and every other actor of the instance, which the part drops (ADR-0015).
+    fn ended(&self, broke: Broke, instances: &mut Instances) -> Vec<(Seated, Fault)> {
+        let key = self.running.code.key;
+        let others = instances.get::<Instance>(key).map(|held| held.actors.clone()).unwrap_or_default();
+        let others = others.into_iter().filter(|actor| *actor != self.me);
+        let ended = iter::once(self.me).chain(others).map(|actor| (actor, broke.fault())).collect();
+        instances.drop_instance::<Instance>(key);
+
+        ended
+    }
+
     /// The handle the guest keeps the actor under in `held`, its part's instance: taken in first when it was taken out
     /// of another part's.
     ///
@@ -1148,13 +1353,13 @@ impl Guest {
     /// Why the call that took it in broke.
     fn handle_in(&mut self, held: &mut Instance) -> Result<u32, Broke> {
         let handle = match &self.lives {
-            Lives::In { handle } => *handle,
+            Lives::In { handle, .. } => *handle,
             Lives::Out { state, carried } => {
                 // The actor's type is one its code makes, as it began from that code.
                 let (of, _) = self.running.code.made_of(self.declared.id()).ok_or(Broke::Garbled)?;
                 let handle = held.take_in(of, self.me, state, carried)?;
                 held.actors.push(self.me);
-                self.lives = Lives::In { handle };
+                self.lives = Lives::In { handle, instance: held.number };
                 handle
             }
         };
@@ -1204,6 +1409,12 @@ impl Runs for Guest {
     /// first taken into this part's.
     fn prepare(&mut self, preparing: Preparing<'_>) {
         let (batch, instances, reads, sent) = preparing.hosted();
+        // An actor a trap ended runs nothing more, though its ending is folded only once the step is.
+        let is_lost = self.is_lost(instances);
+        if is_lost {
+            self.ran = Ran::Lost;
+            return;
+        }
         // The engine prepares no batch while a call into a guest is under way, so the instance is never lent out here.
         let read_limit = instances.read_limit();
         let Ok(mut held) = instances.lend(self.running.code.key, || Instance::load(&self.running.code, read_limit))
@@ -1262,15 +1473,18 @@ impl Runs for Guest {
         let (mut hosted, instances) = turning.hosted(self.declared, role);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
-                let Instance { store, memory, actors, holdings, .. } = self.running.code.instance(instances);
+                let Instance { number, store, memory, actors, holdings, .. } = self.running.code.instance(instances);
                 let data = memory.data(&*store);
-                replay(data, &self.running, &head, next, before, &mut self.given, holdings, actors, &mut hosted)
+                let living = (*number, actors);
+                replay(data, &self.running, &head, next, before, &mut self.given, holdings, living, &mut hosted)
                     .map(|(replayed, ends)| (replayed, Ran::At { head, next: next + 1, before: ends }))
             }
             // The engine hands back no turn of a batch it did not prepare: were it to, no record of the turn would be
             // there to read.
             Ran::Nothing => Err(Broke::Garbled),
             Ran::Broke(broke) => Err(broke),
+            // The trap that dropped its instance ended every actor of it.
+            Ran::Lost => return Err(Broke::Trapped.fault()),
         };
         let (replayed, ran) = match replayed {
             Ok(replayed) => replayed,
@@ -1306,9 +1520,7 @@ impl Runs for Guest {
     fn end(mut self: Box<Self>, closing: aethereal_actor::Closing<'_>) -> Result<(), Fault> {
         let (mut hosted, why, instances) = closing.hosted(self.declared);
         let key = self.running.code.key;
-        let is_in = matches!(self.lives, Lives::In { .. });
-        let has_instance = instances.get::<Instance>(key).is_some();
-        let was_trapped = is_in && !has_instance;
+        let was_trapped = self.is_lost(instances);
         if was_trapped {
             return Ok(());
         }
@@ -1342,9 +1554,10 @@ impl Runs for Guest {
         held.holdings = holdings;
         held.actors.retain(|actor| *actor != self.me);
         let replayed = wrote.and_then(|wrote| {
-            let Instance { store, memory, actors, holdings, .. } = &mut *held;
+            let Instance { number, store, memory, actors, holdings, .. } = &mut *held;
             let data = memory.data(&*store);
-            replay(data, &self.running, &wrote, 0, TurnEnds::default(), &mut given, holdings, actors, &mut hosted)
+            let living = (*number, actors);
+            replay(data, &self.running, &wrote, 0, TurnEnds::default(), &mut given, holdings, living, &mut hosted)
         });
         let (ended, _) = match replayed {
             Ok(replayed) => replayed,
@@ -1364,6 +1577,24 @@ impl Runs for Guest {
         }
 
         ended
+    }
+
+    /// Asked before each batch, and once between steps when the actor has no mail as its kind's head moves: when it
+    /// runs other code than `moving`'s head and is not parked there, asks it whether to move, and moves it as
+    /// [`Self::move_onto`] says when it answers `Now` (ADR-0054). An actor a trap ended is not asked.
+    fn upgrade(&mut self, moving: Moving<'_>) -> Upgraded {
+        let Moving { head, instances } = moving;
+        let is_behind = self.is_behind(head.id());
+        let asks = is_behind && !self.is_lost(instances);
+        if !asks {
+            return Upgraded::Unasked;
+        }
+
+        match self.ask(instances) {
+            Ok(Upgrade::Later) => Upgraded::Later,
+            Ok(Upgrade::Now) => self.move_onto(head, instances),
+            Err(broke) => broke,
+        }
     }
 }
 
@@ -1442,6 +1673,58 @@ impl Instance {
         }
 
         Ok(handle)
+    }
+
+    /// What the actor the guest keeps under `handle` answers, asked whether to move onto its kind's head in a call with
+    /// no turn (ADR-0054).
+    ///
+    /// # Errors
+    ///
+    /// Why the call broke: [`Broke::Garbled`] too when it answered neither, as it holds no such actor.
+    fn upgrade(&mut self, handle: u32) -> Result<Upgrade, Broke> {
+        let answer = self.upgrade.call(&mut self.store, handle).map_err(|_| Broke::Trapped)?;
+
+        match answer {
+            0 => Ok(Upgrade::Later),
+            1 => Ok(Upgrade::Now),
+            _ => Err(Broke::Garbled),
+        }
+    }
+
+    /// Builds `me`, an actor of the `of`th type the code makes, in the instance from the state another version of its
+    /// code left: that version's state schema, as it is written, and the state as that version took it out, the
+    /// references in it to the blobs `carried` pins, its new type's `take_over` handed its portable form. The handle
+    /// the guest keeps it under, or the reason it was refused, read within `read_limit` bytes (ADR-0054).
+    ///
+    /// # Errors
+    ///
+    /// Why the call broke: a trap in `take_over` among them.
+    fn take_over(
+        &mut self,
+        of: u32,
+        me: Seated,
+        (schema, state): (&[u8], &[u8]),
+        carried: &[Bytes],
+        read_limit: usize,
+    ) -> Result<Result<u32, String>, Broke> {
+        let handed: Vec<u8> = count(schema.len()).to_le_bytes().iter().chain(schema).chain(state).copied().collect();
+        let len = self.write_inbox(&handed);
+        let out = self.take_over.call(&mut self.store, (of, me.id.bits(), me.seat.number(), len));
+        let out = out.map_err(|_| Broke::Trapped)?;
+        let taken = from_bytes::<TakenOver>(self.written(out)?, &mut Budget::new(read_limit));
+        let taken = taken.map_err(|_| Broke::Garbled)?;
+        self.holders(&[me])?;
+        let pins = self.pins()?;
+        let is_honest = self.holdings.change(pins, carried);
+        if !is_honest {
+            return Err(Broke::Forged);
+        }
+        let built = match taken {
+            TakenOver::Taken { handle } => Ok(handle),
+            TakenOver::Refused { reason } => Err(reason),
+        };
+
+        Ok(built)
     }
 
     /// Runs the closing turn of the actor the guest keeps under `handle`, which runs as `why` says, its calls out
@@ -1701,7 +1984,8 @@ impl Instance {
 /// it wrote them, the turns before it ending where `before` says: the children it spawned, their seats taken from
 /// those `given` holds, which the host gave the call; the children of other code the host began for it, from
 /// `given`; its sends, each checked against what its sender declares; its lines; the children that began, each kept
-/// in the instance added to `actors` unless the turn failed; and how it ended. Answers with that, and where it ends.
+/// in the instance, the one `living` numbers, added to the actors `living` holds unless the turn failed; and how it
+/// ended. Answers with that, and where it ends.
 ///
 /// # Errors
 ///
@@ -1716,11 +2000,11 @@ fn replay(
     before: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    (instance, actors): (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(Result<(), Fault>, TurnEnds), Broke> {
     let actors_before = actors.len();
-    let replayed = replay_records(data, running, head, next, before, given, holdings, actors, hosted);
+    let replayed = replay_records(data, running, head, next, before, given, holdings, (instance, actors), hosted);
     // A failed turn's children are dropped by the engine, and never live in the instance; nor do those of a turn whose
     // records do not read back.
     let has_more = actors.len() > actors_before;
@@ -1732,7 +2016,8 @@ fn replay(
     replayed
 }
 
-/// What [`replay`] hands back, the children kept in the instance added to `actors` whatever the turn's end.
+/// What [`replay`] hands back, the children kept in the instance added to the actors `living` holds whatever the turn's
+/// end.
 #[allow(clippy::too_many_arguments, reason = "what a replay reads and what it hands back to, each its own")]
 fn replay_records(
     data: &[u8],
@@ -1742,7 +2027,7 @@ fn replay_records(
     before: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    living: (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(Result<(), Fault>, TurnEnds), Broke> {
     let was_run = next < head.ran;
@@ -1808,7 +2093,7 @@ fn replay_records(
     }
     let stands = ends.stood > before.stood;
     if stands {
-        stand(data, running, head, before, ends, given, holdings, actors, hosted)?;
+        stand(data, running, head, before, ends, given, holdings, living, hosted)?;
     }
     for index in before.watches..ends.watches {
         let watch = record(data, head.watches_at, index, WatchRecord::BYTES)
@@ -1989,8 +2274,8 @@ fn spawn(
 }
 
 /// Stands up, in `hosted`, the children that began in a turn, from the first after those `before` ends at to the
-/// last `ends` does, each kept in the instance added to `actors`, and the seat of each the guest dropped put back in
-/// `handed`.
+/// last `ends` does, each kept in the instance, the one `living` numbers, added to the actors `living` holds, and the
+/// seat of each the guest dropped put back in `handed`.
 ///
 /// # Errors
 ///
@@ -2005,7 +2290,7 @@ fn stand(
     ends: TurnEnds,
     given: &mut Given,
     holdings: &Holdings,
-    actors: &mut Vec<Seated>,
+    (instance, actors): (u64, &mut Vec<Seated>),
     hosted: &mut Hosted<'_>,
 ) -> Result<(), Broke> {
     let handed = &mut given.seats;
@@ -2028,7 +2313,7 @@ fn stand(
             }
             Kept::Here { handle } => {
                 actors.push(me);
-                Lives::In { handle }
+                Lives::In { handle, instance }
             }
             Kept::Out { state } => {
                 let state = lying(data, state).ok_or(Broke::Garbled)?;
@@ -2036,7 +2321,8 @@ fn stand(
                 Lives::Out { state: state.to_vec(), carried }
             }
         };
-        let runs = Guest { running: running.clone(), me, lives, declared, ran: Ran::Nothing, given: Given::default() };
+        let (running, ran, given, parked) = (running.clone(), Ran::Nothing, Given::default(), Parked::No);
+        let runs = Guest { running, me, lives, declared, ran, given, parked };
         hosted.stand(me, Box::new(runs)).ok_or(Broke::Garbled)?;
     }
 
@@ -2361,6 +2647,18 @@ fn asks(
 /// A count the guest's 32-bit memory holds.
 fn count(count: usize) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// The names of the top-level fields of `new`, an actor's state schema in the code it moves onto, that `old`, its
+/// schema in the code it ran, lacks: the fields the new code was handed absent and worked out, as the move logs them
+/// (ADR-0054). None when either is not a struct's, whose fields have no names.
+fn absent(old: &SchemaNodes, new: &SchemaNodes) -> Vec<String> {
+    let (SchemaNode::Struct { fields: was, .. }, SchemaNode::Struct { fields: now, .. }) = (old.root(), new.root())
+    else {
+        return Vec::new();
+    };
+
+    now.iter().filter(|field| was.iter().all(|had| had.name != field.name)).map(|field| field.name.clone()).collect()
 }
 
 /// The bytes of the `aethereal.declared` section of the module `bytes`, when it has one.
@@ -3963,6 +4261,62 @@ mod tests {
         assert!(!engine.table().is_live(echo.id));
     }
 
+    #[test]
+    fn a_child_its_guest_cannot_take_out_to_its_part_traps_its_instance() {
+        // Catches a child whose state does not encode to be taken out to another part dropped in silence while its
+        // spawn stays, so the table holds it live with no actor; and the trap that bug in the guest's code makes
+        // ending the actors of another instance than the one it trapped, or none.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, code) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        // A root sits in the part with fewest actors, so the echo and the mirror are each in an instance of their own,
+        // and the litter in one of theirs.
+        let Ok(echo) = engine.add_root_from::<echo::Echo>(&code, &(), &echo::EchoConfig) else {
+            panic!("the echo begins");
+        };
+        let Ok(mirror) = engine.add_root_from::<echo::Mirror>(&code, &(), &echo::EchoConfig) else {
+            panic!("the mirror begins");
+        };
+        let (Some(echo_seat), Some(mirror_seat)) = (engine.table().seat(echo), engine.table().seat(mirror)) else {
+            panic!("the echo and the mirror are seated");
+        };
+        let siblings = [Seated { id: echo, seat: echo_seat }, Seated { id: mirror, seat: mirror_seat }];
+
+        // Past the one child its part has room for, the litter's homebodies are seated in the other part.
+        let children = 4;
+        let began = engine.add_root_from::<echo::Litter>(&code, &(), &echo::LitterConfig { children });
+        settle(&mut engine);
+
+        let refused_trapped = matches!(&began, Err(Refused::Began(fault)) if fault.kind() == KindId::of::<Trapped>());
+        assert!(refused_trapped, "the litter is refused with its trap");
+
+        let is_trap = |entry: &aethereal_actor::Entry| match entry {
+            aethereal_actor::Entry::Failed(fault) => fault.kind() == KindId::of::<Trapped>(),
+            _ => false,
+        };
+        // Whether each sibling ended with the trap in its log, and whether it is live.
+        let mut fates: Vec<(bool, bool)> = siblings
+            .iter()
+            .map(|sibling| (engine.log(*sibling).any(is_trap), engine.table().is_live(sibling.id)))
+            .collect();
+        fates.sort_unstable();
+        assert_eq!(
+            fates,
+            [(false, true), (true, false)],
+            "the actor in the litter's instance ended with the trap in its log, and the other lives on"
+        );
+
+        let litter = ActorPath::from_root(&PathSegment::new(echo::Litter::NAME, &()));
+        for key in 0..children {
+            let Ok(path) = litter.child(&PathSegment::new(echo::Homebody::NAME, &key)) else {
+                panic!("a homebody's path is not too deep");
+            };
+            let seated = engine.table().resolve(&path).and_then(|id| engine.table().seat(id));
+            assert_eq!(seated, None, "{path} is not left in the table");
+        }
+    }
+
     /// The word to a brood to spawn one more child, as the echo guest declares it.
     #[derive(Plain)]
     #[kind(name = "aether.guest.grow")]
@@ -4912,7 +5266,7 @@ mod tests {
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
-        let engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_links(Links::default().with::<echo::Chick>());
+        let engine = Engine::new(parts, 1024, 0, 1 << 21, 0).with_links(Links::default().with::<echo::Chick>());
         let (mut engine, home) = with_echo(engine);
         let Ok(other) = engine.put_code(salted(ECHO)) else {
             panic!("the echo guest, salted, is fit to run");
@@ -5042,7 +5396,7 @@ mod tests {
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
-        let (mut engine, first) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let (mut engine, first) = with_echo(Engine::new(parts, 1024, 0, 1 << 21, 0));
         let Ok(second) = engine.put_code(ECHO.to_vec()) else {
             panic!("the echo guest is fit to run again, as a blob of its own");
         };
@@ -5084,7 +5438,7 @@ mod tests {
         let Some(parts) = NonZeroUsize::new(2) else {
             panic!("two is not zero");
         };
-        let (mut engine, home) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let (mut engine, home) = with_echo(Engine::new(parts, 1024, 0, 1 << 21, 0));
         let Ok(reporters) = engine.put_code(salted(ECHO)) else {
             panic!("the echo guest, salted, is fit to run");
         };
@@ -5687,7 +6041,7 @@ mod tests {
         };
         let runtime = Arc::new(Runtime::default());
         let mut engine =
-            Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
+            Engine::new(parts, 1024, 0, 1 << 21, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
         let (Ok(first), Ok(second)) = (engine.put_code(ECHO.to_vec()), engine.put_code(ECHO.to_vec())) else {
             panic!("the echo guest is fit to run");
         };

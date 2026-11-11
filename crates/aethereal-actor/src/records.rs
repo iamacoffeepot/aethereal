@@ -29,6 +29,7 @@ use crate::{
     Unreadable, Why,
 };
 use aethereal_data::{ActorId, ActorPath, Budget, KeyName, KindId, KindName, PathSegment, Plain, from_bytes};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The head of an item in the inbox: what it is, its source's id and seat, its chain's root, sender and count, its
@@ -492,6 +493,14 @@ impl Naming {
 pub struct Born {
     pub path: ActorPath,
     pub parent: Parent,
+}
+
+/// What became of an actor's state its host handed to the new code of its kind to take over: taken, under the handle
+/// the guest keeps it under, or refused, for the reason written (ADR-0054).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+pub enum TakenOver {
+    Taken { handle: u32 },
+    Refused { reason: String },
 }
 
 /// What is above an actor a guest is handed: nothing for a root, or the actor that spawned it, by its id and seat.

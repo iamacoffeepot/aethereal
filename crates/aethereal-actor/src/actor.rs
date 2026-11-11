@@ -2,7 +2,7 @@
 
 use crate::{
     Actors, Beginning, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault, HandledList, Holds,
-    Instances, Item, Puts, Seated, Seats, Sends, Table, Tie, Turning, Within,
+    Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -101,6 +101,14 @@ pub trait Runs: Any + Send {
 
     /// The actor's closing turn, which takes the actor.
     fn end(self: Box<Self>, closing: Closing<'_>) -> Result<(), Fault>;
+
+    /// Asked before each batch it prepares, and once between steps when it has no mail as its kind's head moves, in
+    /// its part, whose instances `moving` lends: when its code is behind the head `moving` names, and it is not
+    /// parked there, whether it moves now, and if it does, moved at once, so the batch runs on the code it then runs
+    /// (ADR-0054). Code no head names is never asked, and stays on its code.
+    fn upgrade(&mut self, _moving: Moving<'_>) -> Upgraded {
+        Upgraded::Unasked
+    }
 }
 
 /// The items of a batch, as [`Runs::prepare`] is shown them: as many as the engine takes turns of between two looks at

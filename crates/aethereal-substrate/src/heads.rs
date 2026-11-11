@@ -61,6 +61,17 @@ impl Shard {
     pub fn head(&self, kind: &KindName) -> Option<&Head> {
         self.heads.get(kind)
     }
+
+    /// How many publishes have been folded: the number of the last, nought before the first.
+    #[must_use]
+    pub const fn published(&self) -> u64 {
+        self.published
+    }
+
+    /// Each kind whose head a publish numbered past `after` made, as of the last fold (ADR-0054).
+    pub fn since(&self, after: u64) -> impl Iterator<Item = &KindName> {
+        self.heads.iter().filter(move |(_, head)| head.number > after).map(|(kind, _)| kind)
+    }
 }
 
 impl View for Heads {

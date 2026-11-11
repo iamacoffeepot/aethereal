@@ -99,6 +99,8 @@ pub enum Record {
     Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber, declared: &'static Declared },
     /// The actor ended.
     Ended,
+    /// The actor runs code whose type `declared` declares from now on, as it moved onto its kind's head (ADR-0054).
+    Moved { declared: &'static Declared },
 }
 
 impl Entry {
@@ -149,6 +151,12 @@ impl View for Actors {
                     shard.ended.keep(key, entry);
                 }
             }
+            // An actor that ended in the step it moved in is kept as it was.
+            Record::Moved { declared } => {
+                if let Some(entry) = shard.live.get_mut(&key) {
+                    entry.declared = declared;
+                }
+            }
         }
     }
 }
@@ -165,6 +173,7 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
             (by, Record::Made { above: None, segment: from.instanced(key), seat, declared: from.declared() })
         }
         What::Failed(_) | What::Close => (by, Record::Ended),
+        What::Moved { declared } => (by, Record::Moved { declared }),
         _ => {
             let (child, segment) = spawned(effect)?;
             let declared = made_from(effect)?;

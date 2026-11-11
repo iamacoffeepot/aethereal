@@ -6,7 +6,7 @@ use crate::{Life, lives, table};
 use aethereal_actor::{
     Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, JobId, Mail,
     MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top,
-    Turning, Unanswered, Why, Written,
+    Turning, Unanswered, Upgrade, Upgraded, Why, Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -188,6 +188,16 @@ pub struct Turned {
     pub outcome: Result<(), Fault>,
 }
 
+/// An ask the engine made of an actor behind its kind's head, whether to move onto it, as it recorded it: before a
+/// batch of the actor's turns, or once between steps as it had no mail when the head moved (ADR-0036, ADR-0054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AskedToMove {
+    pub actor: Seated,
+    pub answer: Upgrade,
+    /// The number of the publish that made the head it was asked about.
+    pub publish: u64,
+}
+
 impl Turned {
     /// Whether it ran as a hop.
     #[must_use]
@@ -248,6 +258,16 @@ impl Recording {
         };
 
         Noted::Recorded { step, depth, handed }
+    }
+
+    /// Records that `actor` was asked whether to move onto the head the publish numbered `publish` made, when it was
+    /// asked and answered, as `upgraded` says: nothing when the step is not recorded (ADR-0054).
+    pub(super) fn asked_to_move(self, actor: Seated, upgraded: &Upgraded, publish: u64, asked: &mut Vec<AskedToMove>) {
+        let (Self::At(_), Some(answer)) = (self, upgraded.answer()) else {
+            return;
+        };
+
+        asked.push(AskedToMove { actor, answer, publish });
     }
 
     /// Records the closing turn of `me`, at `path` and `depth`, which runs for `why` and ended as `outcome` says.
@@ -359,6 +379,12 @@ impl Engine {
         turned.sort_by_key(|turn| (turn.step, self.part(turn.actor.seat)));
 
         turned
+    }
+
+    /// Takes the asks whether to move onto a kind's head recorded since this was last asked: each actor's in the order
+    /// it was asked (ADR-0054).
+    pub fn take_asked_to_move(&mut self) -> Vec<AskedToMove> {
+        mem::take(&mut self.asked_to_move)
     }
 
     /// The state of the actor `seated` names, as of the last step, when one of type `T` sits there and its code is here.

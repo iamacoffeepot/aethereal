@@ -97,6 +97,10 @@ pub enum What {
     /// heads view, which keeps the pin.
     #[cfg(feature = "std")]
     Publish { kind: KindName, blob: Bytes },
+    /// The asking actor moved onto its kind's head in the step, and runs code whose type `declared` declares from now
+    /// on: its path, seat and place in the table are as they were. Written by the engine for the actor's host, which
+    /// moved it before a batch of its turns (ADR-0054).
+    Moved { declared: &'static Declared },
 }
 
 impl Effect {

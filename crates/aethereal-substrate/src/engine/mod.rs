@@ -23,6 +23,7 @@ mod setup;
 mod since;
 #[cfg(test)]
 mod tests;
+mod upgrade;
 mod wake;
 
 pub use bring::{Closed, Feed};
@@ -73,6 +74,7 @@ use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use upgrade::Upgrading;
 
 /// The engine: its actors, the views of them, and the steps their turns run in (ADR-0011).
 ///
@@ -102,6 +104,9 @@ pub struct Engine {
     heads: Folded<Heads>,
     /// Whether the engine's one publisher has been handed to a root yet (ADR-0054).
     publishing: Publishing,
+    /// The number of the last publish whose kind's actors with no mail have been asked whether to move: nought before
+    /// any (ADR-0054).
+    asked_through: u64,
     /// Where the program's lifecycle stands, and the stage whose chain it waits on (ADR-0020).
     staging: Staging,
     /// What each actor logged most recently.
@@ -166,6 +171,9 @@ pub struct Engine {
     /// The turns recorded and not yet taken.
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
+    /// The asks whether to move onto a kind's head recorded and not yet taken (ADR-0054).
+    #[cfg(any(test, feature = "harness"))]
+    asked_to_move: Vec<outside::AskedToMove>,
     /// Whether what it asks of the host's jobs is recorded: from when a test asks it to.
     #[cfg(any(test, feature = "harness"))]
     recording_jobs: bool,
@@ -426,6 +434,9 @@ pub struct Lists {
     /// The turns the worker ran, recorded for a harness (ADR-0036).
     #[cfg(any(test, feature = "harness"))]
     turned: Vec<outside::Turned>,
+    /// The asks whether to move onto a kind's head the worker made before batches, recorded for a harness (ADR-0054).
+    #[cfg(any(test, feature = "harness"))]
+    asked_to_move: Vec<outside::AskedToMove>,
 }
 
 /// One writer's row of buckets for each view, and for the children its turns stood up, to seat.
@@ -484,6 +495,7 @@ impl Engine {
             stages: Folded::new(parts),
             heads: Folded::new(parts),
             publishing: Publishing::Unhanded,
+            asked_through: 0,
             staging: Staging::new(),
             log: Folded::new(parts),
             stats: Stats::new(parts),
@@ -511,6 +523,8 @@ impl Engine {
             recording: false,
             #[cfg(any(test, feature = "harness"))]
             turned: Vec::new(),
+            #[cfg(any(test, feature = "harness"))]
+            asked_to_move: Vec::new(),
             #[cfg(any(test, feature = "harness"))]
             recording_jobs: false,
             #[cfg(any(test, feature = "harness"))]
@@ -976,6 +990,8 @@ impl Engine {
             self.expected[part] = self.expect(part);
         }
         self.waiting.extend(0..self.seating.len());
+        // A `begin` that published moved a head between steps, and the kind's actors with no mail are asked now.
+        self.ask_idle();
     }
 
     /// Hands each resource in `gifts`, given in the `begin` of the root `root`, to the actor its mail goes to, its
@@ -1110,6 +1126,7 @@ impl Engine {
         touched.clear();
         self.spare.touched = touched;
         self.hand_on(forward);
+        self.ask_idle();
         self.start_waiting();
         self.arm();
         self.advance();
@@ -1211,6 +1228,8 @@ impl Engine {
     fn take_in(&mut self, mut lists: Lists, arena: Arena, mut puts: Puts) {
         #[cfg(any(test, feature = "harness"))]
         self.turned.append(&mut lists.turned);
+        #[cfg(any(test, feature = "harness"))]
+        self.asked_to_move.append(&mut lists.asked_to_move);
         self.costs.merge(&mut lists.tally);
         self.blobs.take_in(&mut puts);
         self.blobs.change(&mut lists.pins);
@@ -1358,6 +1377,7 @@ impl Engine {
         }
 
         self.hand_on(forward);
+        self.ask_idle();
         self.start_waiting();
         self.arm();
         self.advance();
@@ -1760,7 +1780,7 @@ impl Reading<'_> {
             return;
         };
         let (keeping, waiting, debts) = (&mut held.keeping, &mut held.waiting, &mut held.debts);
-        let key = |item| CostKey { actor: seat.kind, item };
+        let mut kind = seat.kind;
 
         match (work, life.state()) {
             (Work::Closing, State::Ending(ending)) => {
@@ -1810,6 +1830,17 @@ impl Reading<'_> {
                     let begins_batch = slice.taken.is_multiple_of(SLICE_EVERY);
                     let is_prepared = begins_batch && seat.prepares;
                     if is_prepared {
+                        // An actor behind its kind's head is asked first, and moved at once when it answers `Now`, so
+                        // the batch runs on the code it then runs (ADR-0054).
+                        match self.upgrade(me, &mut *actor, instances, chain_of(handed), lists) {
+                            Upgrading::Stays => {}
+                            Upgrading::Moved(onto) => kind = onto,
+                            Upgrading::Ended => {
+                                stepped.ended = true;
+                                lists.unhanded(asked, me, handed);
+                                break;
+                            }
+                        }
                         let batch = batch::Waiting {
                             reading: self,
                             waits: waiting,
@@ -1836,7 +1867,7 @@ impl Reading<'_> {
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
                     // worker, beyond what the actor's code takes.
-                    tally.time(key(item_kind(handed)), clock, || {
+                    tally.time(CostKey { actor: kind, item: item_kind(handed) }, clock, || {
                         let table = Since {
                             table: self.table,
                             stood: &lists.fusing.stood,
@@ -1906,6 +1937,11 @@ impl Reading<'_> {
                 if is_spent && !stepped.ended {
                     streams.carry(&run, slice.taken, self.mail);
                     lists.fusing.carry(me.id.bits());
+                }
+                // A seat is its part's own, and the plan weighs the actor's next turns by the type it moved onto.
+                let has_moved = kind != seat.kind;
+                if has_moved && let Some(sitting) = seating.seated.get_mut(me) {
+                    sitting.kind = kind;
                 }
 
                 // An actor its part may still fuse to is kept, and what it sent is noted once the part has run.
@@ -1992,6 +2028,10 @@ impl Reading<'_> {
     /// it asks for added to `asked` and routed into `lists` (ADR-0013). Nothing when the receiver is gone or has
     /// ended: the hop is dropped, as mail to it would be.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one hop's turn, from its receiver's batch to its routing, sharing locals"
+    )]
     fn hop(
         &self,
         room: &mut Room<'_>,
@@ -2018,6 +2058,21 @@ impl Reading<'_> {
             return;
         };
         let (keeping, waiting, debts) = (&mut held.keeping, &mut held.waiting, &mut held.debts);
+        let mut kind = seat.kind;
+        if seat.prepares {
+            // As before a batch of waiting items, as a hop is a batch of one (ADR-0054).
+            match self.upgrade(me, &mut *actor, instances, unhanded, lists) {
+                Upgrading::Stays => {}
+                Upgrading::Moved(onto) => kind = onto,
+                Upgrading::Ended => {
+                    stepped.ended = true;
+                    lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
+                    lists.fusing.keep(me, stepped);
+                    held.actor = Holding::Here(actor);
+                    return;
+                }
+            }
+        }
 
         let table = Since {
             table: self.table,
@@ -2038,7 +2093,7 @@ impl Reading<'_> {
             actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
         }
         let sent_before = stepped.sent;
-        let key = CostKey { actor: seat.kind, item: ItemKind::Mail(hop.kind) };
+        let key = CostKey { actor: kind, item: ItemKind::Mail(hop.kind) };
         // Timed whole, as a turn of a waiting item is.
         tally.time(key, clock, || {
             asked.next_turn();
@@ -2104,6 +2159,10 @@ impl Reading<'_> {
 
         lists.fusing.keep(me, stepped);
         held.actor = Holding::Here(actor);
+        let has_moved = kind != seat.kind;
+        if has_moved && let Some(sitting) = seating.seated.get_mut(me) {
+            sitting.kind = kind;
+        }
     }
 
     /// Routes the finished turn `ran` of the actor `me` names into `lists`, and notes in `stepped` what it did: the
@@ -2408,10 +2467,17 @@ impl Lists {
     #[inline(never)]
     fn unhanded_all(&mut self, asked: &mut Asked, to: Seated, items: Pieces<'_>) {
         for handed in items {
-            if let Handed::Mail { envelope, .. } = handed {
-                let context = Context { root: envelope.root, depth: envelope.depth + 1 };
-                self.ended_before(asked, to, handed.source(), handed.tie(), context);
-            }
+            self.unhanded(asked, to, handed);
+        }
+    }
+
+    /// Says of `handed`, an item for `to` that is never handed to it, what [`Self::unhanded_all`] says of each of its
+    /// items.
+    #[cold]
+    fn unhanded(&mut self, asked: &mut Asked, to: Seated, handed: Handed<'_>) {
+        if let Handed::Mail { envelope, .. } = handed {
+            let context = Context { root: envelope.root, depth: envelope.depth + 1 };
+            self.ended_before(asked, to, handed.source(), handed.tie(), context);
         }
     }
 
@@ -2614,6 +2680,14 @@ fn is_reported_failure(effect: &Effect, me: Seated) -> bool {
     let is_other = effect.by() != me.id;
 
     is_failure && is_other
+}
+
+/// The chain what a turn of `handed` asks for belongs to.
+const fn chain_of(handed: Handed<'_>) -> Context {
+    match handed {
+        Handed::Mail { envelope, .. } => Context { root: envelope.root, depth: envelope.depth + 1 },
+        Handed::Ended { context, .. } => *context,
+    }
 }
 
 /// What a pending item is, as far as the cost of reacting to it goes.

@@ -149,6 +149,9 @@ pub enum Logged {
     JobFaulted(Fault),
     /// Mail the actor was handed did not read, for this reason.
     Unread(Unreadable),
+    /// A line the engine wrote of the actor between steps, as its own: what became of its move onto its kind's new
+    /// code (ADR-0054).
+    Said { level: Level, text: String },
 }
 
 impl View for Log {
@@ -225,6 +228,7 @@ fn entry(logged: Logged, left: Option<Entry>, written: &[Arena]) -> Entry {
         Logged::Unbrought(name) => Entry::Unbrought(name),
         Logged::JobFaulted(fault) => Entry::JobFaulted(fault),
         Logged::Unread(reason) => Entry::Unread(reason),
+        Logged::Said { level, text } => Entry::Line { level, text },
     }
 }
 
@@ -234,6 +238,13 @@ pub fn line(line: Line) -> (u64, (ActorId, Logged)) {
     let Line { by, level, text } = line;
 
     (by.seat.number(), (by.id, Logged::Line { level, text }))
+}
+
+/// The key and record the view keeps of `text`, a line at `level` the engine wrote of the actor `by` between steps, as
+/// the actor's own (ADR-0054).
+#[must_use]
+pub const fn said(by: Seated, level: Level, text: String) -> (u64, (ActorId, Logged)) {
+    (by.seat.number(), (by.id, Logged::Said { level, text }))
 }
 
 /// The key and record the view keeps of a resource of the name `name` dropped on its way, under the actor `by`, which
