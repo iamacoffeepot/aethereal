@@ -214,7 +214,7 @@ pub enum Code {
 - **A head points only at code that makes its kind.** A `Publish` names a blob that makes the kind, and one naming a blob that does not is refused where it is asked for. A library does not take a kind away. A kind that a newer blob no longer makes keeps the head it had. Actors of that kind already running stay on their blob and end as any actor does, and a blob the engine still holds can still be spawned from.
 - **Everyone else sees a library's heads and does not hold them.** A library stores its code and makes known where each head points. What the others get is a view of those heads, folded from `Publish` (ADR-0011). It is not mail that one actor sends another. An actor spawns with the head the view shows it.
 - **The child stands beneath the actor that spawned it**, as every child does (ADR-0008). A library holds code. The actors made from it stand elsewhere.
-- **Nothing moves a running actor.** An actor stays on the blob it was made from. It sees that a head moved later, in a turn of its own, and whether and when it moves onto the new blob is its own choice.
+- **Nothing moves a running actor.** An actor stays on the blob it was made from. It sees that a head moved later, in a turn of its own, and whether and when it moves onto the new blob is its own choice. *Amended by ADR-0054: the actor no longer watches the heads; while it is behind its kind's head, its guest is asked before each turn whether to move now, and moves between steps when it answers so.*
 - **No actor changes code that is not its own.** Changing which blob a kind is belongs to the library that registered the kind's namespace, and to nothing else in the engine.
 
 - Whichever runtime runs the parent stands the child up, inside the parent's turn. A native child's `begin` is called directly. A guest child's is called by its host, and a guest parent's spawn is a call out to that host.
@@ -226,7 +226,7 @@ pub enum Code {
 - Every field of an actor crosses `Within`. What an actor holds that is not data, it holds as a handle (ADR-0010). This is the same for a native actor and a guest.
 - The engine can take any actor's state out, by encoding the actor, and put it back by decoding it. It does so to replace the actor's code, and may do so to show the state or record a turn.
 - An actor's name is its kind's name. It is the name in a path (ADR-0008) and in a spawn effect.
-- Whether new code can take over an actor's state as it is has a test: its kind has the same name and the same layout (ADR-0006). Replacing an actor's code is a later ADR.
+- Whether new code can take over an actor's state as it is has a test: its kind has the same name and the same layout (ADR-0006). Replacing an actor's code is a later ADR. *Decided by ADR-0054: the same id takes the state as it is; another layout is read by field name into the new code's `Portable` form, and its `take_over` builds the state.*
 - An actor lives decoded, where its runtime keeps it: a native actor as a value the engine owns, a guest in its own memory. The engine does not hold its bytes and does not copy it per turn.
 
 ## Consequences

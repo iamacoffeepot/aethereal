@@ -30,7 +30,7 @@ pub enum FileRead {
 }
 ```
 
-- **A namespace is a name, never a place.** `Namespace` is an enum the engine fixes, `Assets` first: read-only, the files the program ships with. With only reads, no request is refused; a request a namespace does not allow, such as a write to `Assets`, comes with writing, and its answer with it. Its root is a setting of `Files` on each host (ADR-0028: `#[settings]`), and an actor never learns where a namespace's files are.
+- **A namespace is a name, never a place.** `Namespace` is an enum the engine fixes, `Assets` first: read-only, the files the program ships with. With only reads, no request is refused; a request a namespace does not allow, such as a write to `Assets`, comes with writing, and its answer with it. Its root is a setting of `Files` on each host (ADR-0028: `#[settings]`), and an actor never learns where a namespace's files are. *Amended by ADR-0054: `Namespace` gains `Code`, read-only, the guest modules a program runs.*
 - **A path is checked when it is read.** `FilePath` is plain data whose decoder refuses a path that is not one or more segments joined by single `/`, each of `a`–`z`, `0`–`9`, `.`, `_`, and `-`, none `.` or `..`, at most 255 bytes a segment and 1024 a path (ADR-0004: a type's decoder holds the rules it adds to its shape). So no path climbs out of its namespace, and a path names one file on a host that ignores case and on one that does not.
 - **The whole file comes back as a blob,** put by the job (ADR-0018: `Running::put`), so its bytes are written once, and a guest's code is a read away from `spawn_from`.
 
