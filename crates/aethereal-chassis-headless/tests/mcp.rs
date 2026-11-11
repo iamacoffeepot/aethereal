@@ -1090,6 +1090,7 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
         assets: assets.0.display().to_string(),
         save: assets.0.join("save").display().to_string(),
         readers: 2,
+        ..FileRoots::default()
     };
     let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,), Mcp>>();
     let mut harness = Harness::of(program)?;
@@ -1131,7 +1132,12 @@ fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), U
     // bytes, a write to `Assets` or past the namespace taken, and a write the disk refused answered as done.
     let assets = Assets::new("write", &[("a.txt", b"an asset")]);
     let save = assets.0.join("save");
-    let roots = FileRoots { assets: assets.0.display().to_string(), save: save.display().to_string(), readers: 2 };
+    let roots = FileRoots {
+        assets: assets.0.display().to_string(),
+        save: save.display().to_string(),
+        readers: 2,
+        ..FileRoots::default()
+    };
     let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool, WriteTool), Mcp>>();
     let mut harness = Harness::of(program)?;
     let port = port_of(&mut harness)?;
