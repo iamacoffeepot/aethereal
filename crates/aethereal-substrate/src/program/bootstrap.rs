@@ -3,7 +3,7 @@
 
 use super::{Host, Serves, Stage, Unbuilt};
 use crate::Feed;
-use aethereal_actor::{Actors, Bytes, Controller, Given, Requests, Resource, Root, Source};
+use aethereal_actor::{Actors, Bytes, Controller, Given, Publisher, Requests, Resource, Root, Source};
 use aethereal_data::config::RootSettings;
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -118,6 +118,17 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// from, as [`Engine::controller`](crate::Engine::controller) does.
     pub fn controller<K: Send + 'static>(&mut self) -> (Given<Controller<K>>, Requests<K>) {
         self.stage.engine.controller()
+    }
+
+    /// The program's one publisher, for the root's config to carry: the right to say which blob each kind is, which the
+    /// root that holds a program's code takes (ADR-0054). Any root's bootstrap may ask, and the first to ask has it, as
+    /// [`Engine::publisher`](crate::Engine::publisher) hands it out once.
+    ///
+    /// # Errors
+    ///
+    /// [`Unbuilt::SecondPublisher`] when a root bootstrapped earlier was handed it.
+    pub fn publisher(&mut self) -> Result<Given<Publisher>, Unbuilt> {
+        Ok(self.stage.engine.publisher()?)
     }
 
     /// Puts `bytes` in the store as code, for the root to begin from, as [`Engine::put_code`](crate::Engine::put_code)

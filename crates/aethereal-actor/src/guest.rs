@@ -19,7 +19,7 @@
 //! its host what the call's pin changes came to for each blob, where each
 //! reference lies in what it sent, and the blobs an actor's state taken out
 //! refers to, and its host holds the instance to them (ADR-0014). A read of a
-//! blob, its hash, and a put are calls out.
+//! blob, its hash, a put, and a kind's head are calls out.
 
 use crate::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
@@ -35,7 +35,8 @@ use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail,
 use crate::{Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
 use crate::{holders, pins};
 use aethereal_data::{
-    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, PathSegment, Reader, from_bytes, to_bytes,
+    ActorId, ActorPath, Budget, Decode, DecodeError, Encode, KindId, KindName, PathSegment, Reader, from_bytes,
+    to_bytes,
 };
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -157,6 +158,10 @@ pub struct Calls {
     /// Whether the engine's lifecycle runs the stage of the kind of these bits, its plain bytes read as little-endian:
     /// one when it does (ADR-0020).
     pub runs_stage: extern "C" fn(u64) -> u32,
+    /// Whether the kind whose name is written at the address, of the length, has a head: one when it has, and then the
+    /// blob's engine and bits are written at the third address, as 12 bytes, and a pin on it is offered to the call
+    /// (ADR-0054).
+    pub head: extern "C" fn(u32, u32, u32) -> u32,
 }
 
 /// What the guest holds: its actors, where its host writes what it hands in, and where it writes what it asked for.
@@ -1248,6 +1253,11 @@ impl Guests for Calling {
         })
     }
 
+    /// False: a guest takes in no code, and opens no publisher to publish any with.
+    fn makes(&self, _: BlobId, _: &KindName) -> bool {
+        false
+    }
+
     fn begin(
         &self,
         _: &Bytes,
@@ -1500,6 +1510,20 @@ impl Table for Host {
     fn runs_stage(&self, stage: KindId) -> bool {
         (self.calls.runs_stage)(u64::from_le_bytes(stage.plain_bytes())) == 1
     }
+
+    /// The kind's head, asked of the host, which reads the heads view and offers the call a pin on the blob: the
+    /// guest's own pin is noted in its buffer as any reference it comes by is, and handed to its host after the call
+    /// (ADR-0014, ADR-0054).
+    fn head(&self, kind: &KindName) -> Option<Bytes> {
+        let kind = to_bytes(kind).ok()?;
+        let mut blob = [0u8; 12];
+        let has_head = (self.calls.head)(address(kind.as_ptr()), count(kind.len()), address(blob.as_mut_ptr())) == 1;
+        if !has_head {
+            return None;
+        }
+
+        records::blob_at(&blob).map(Bytes::pin)
+    }
 }
 
 impl Children for Host {
@@ -1545,6 +1569,7 @@ macro_rules! guest {
                 safe fn aethereal_put(at: u32, len: u32, id: u32) -> u64;
                 safe fn aethereal_now() -> u64;
                 safe fn aethereal_runs_stage(stage: u64) -> u32;
+                safe fn aethereal_head(kind: u32, len: u32, blob: u32) -> u32;
             }
 
             fn put(bytes: Vec<u8>) -> Result<$crate::BlobId, $crate::Refused> {
@@ -1580,6 +1605,7 @@ macro_rules! guest {
                 put,
                 now: aethereal_now,
                 runs_stage: aethereal_runs_stage,
+                head: aethereal_head,
             };
 
             #[unsafe(no_mangle)]

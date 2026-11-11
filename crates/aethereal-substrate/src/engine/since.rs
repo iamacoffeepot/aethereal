@@ -3,15 +3,16 @@
 
 use super::fuse::Run;
 use super::lifecycle::runs;
+use crate::heads::{HEADS, Head, Heads};
 use crate::id::path_id;
 use crate::log::{find, recent};
 use crate::stats::Stats;
 use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor, Folded, Log};
 use aethereal_actor::{
-    ActorName, BlobHash, BlobId, Cycling, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Table, Time,
+    ActorName, BlobHash, BlobId, Bytes, Cycling, Declared, EngineStats, Logged, Recent, SeatNumber, Seated, Table, Time,
 };
-use aethereal_data::{ActorId, ActorPath, KindId, PathSegment};
+use aethereal_data::{ActorId, ActorPath, KindId, KindName, PathSegment};
 
 /// The table as one actor's turn reads it (ADR-0009, ADR-0013).
 ///
@@ -38,6 +39,8 @@ pub(super) struct Since<'a> {
     pub(super) log: &'a Folded<Log>,
     /// What the engine keeps for its figures, as the step began (ADR-0053).
     pub(super) stats: &'a Stats,
+    /// The heads as the step began (ADR-0054).
+    pub(super) heads: &'a Folded<Heads>,
 }
 
 /// What a turn sees over the table as the step began and the children stood up since (ADR-0013).
@@ -130,6 +133,11 @@ impl Table for Since<'_> {
 
     fn blob_hash(&self, id: BlobId) -> Option<BlobHash> {
         self.blobs.hash(id)
+    }
+
+    /// A pin of its own on the head's blob, as the heads view stood when the step began (ADR-0054).
+    fn head(&self, kind: &KindName) -> Option<Bytes> {
+        self.heads.shard(HEADS).head(kind).map(Head::blob).cloned()
     }
 
     fn now(&self) -> Time {

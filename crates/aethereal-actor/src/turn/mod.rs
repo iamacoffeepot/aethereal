@@ -1,12 +1,16 @@
 //! A turn: what an actor asks of the engine while it handles one item (ADR-0009).
 
 mod hosted;
+#[cfg(feature = "std")]
+mod origin;
 mod refused;
 #[cfg(test)]
 mod tests;
 mod to;
 
 pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Hosted, Request, Trapped, Unspawned};
+#[cfg(feature = "std")]
+pub use origin::Origin;
 pub use refused::Refused;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
@@ -24,9 +28,11 @@ use crate::{
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
-use crate::{Birth, BlobHash, Bytes, Config, Maker, config_bytes};
+use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, config_bytes};
 #[cfg(feature = "std")]
 use crate::{Fills, JobCode, JobType, Kept, Spares};
+#[cfg(feature = "std")]
+use aethereal_data::KindName;
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -1151,14 +1157,15 @@ impl Seat<'_> {
         }
     }
 
-    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins: adds its spawn effect, then has
-    /// the blob's host run its `begin` here, in its part's instance of the blob, lent `instances` (ADR-0009,
-    /// ADR-0015). Refused when the blob makes no actor of `C`'s type, as `C` declares it.
+    /// Stands up a child of type `C` under `key` whose code is the blob `origin` names: the head the heads view shows
+    /// for `C`'s kind, or a blob this actor holds. Adds its spawn effect, then has the blob's host run its `begin` here,
+    /// in its part's instance of the blob, lent `instances` (ADR-0009, ADR-0015, ADR-0054). Refused when `C`'s kind has
+    /// no head, or the blob makes no actor of `C`'s type, as `C` declares it.
     #[cfg(feature = "std")]
     fn spawn_from<C: ChildOf>(
         &mut self,
         instances: &mut Instances,
-        code: &Bytes,
+        origin: Origin<'_>,
         key: &C::Key,
         config: &C::Config,
     ) -> Result<ActorRef<C>, Refused> {
@@ -1167,6 +1174,14 @@ impl Seat<'_> {
         let declared = Declared::of::<C>();
         self.staged(declared)?;
         self.reaching(declared)?;
+        let head;
+        let code = match origin {
+            Origin::Head => {
+                head = self.table.head(declared.name()).ok_or(Refused::NoHead)?;
+                &head
+            }
+            Origin::Blob(code) => code,
+        };
         let guests = instances.guests();
         let made = guests.made(code.id(), declared).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
@@ -1174,6 +1189,27 @@ impl Seat<'_> {
         self.spawn_other(instances, id, &segment, path, Code::Blob(made), &config, |config, birth| {
             guests.begin(code, made, config, birth)
         })
+    }
+
+    /// Asks that the head of the kind `kind` be the blob `blob` pins, with the engine's one publisher, which this actor
+    /// holds under `publisher` (ADR-0009, ADR-0054). Refused, asking nothing, when this actor holds no publisher there,
+    /// or the blob makes no actor of that kind.
+    #[cfg(feature = "std")]
+    fn publish(
+        &mut self,
+        guests: &dyn Guests,
+        publisher: &Handle<Publisher>,
+        kind: &KindName,
+        blob: &Bytes,
+    ) -> Result<(), Refused> {
+        self.resource(publisher).map_err(|_| Refused::NotPublisher)?;
+        let makes = guests.makes(blob.id(), kind);
+        if !makes {
+            return Err(Refused::NotMade);
+        }
+        self.ask(What::Publish { kind: kind.clone(), blob: blob.clone() });
+
+        Ok(())
     }
 
     /// Stands up the child `id`, which `segment` names beneath this actor at `path`, from `from`, code the turn does
@@ -1916,15 +1952,38 @@ impl<Me, S> Turn<'_, Me, S> {
         self.seat.spawn::<C>(self.instances, key, config)
     }
 
-    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
-    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    /// Stands up a child of type `C` under `key` whose code is the blob `origin` names, running its `begin` here in the
+    /// blob, and answers with a reference to it (ADR-0009, ADR-0054): [`Origin::Head`], the head the heads view shows
+    /// for `C`'s kind as this turn's step began, or [`Origin::Blob`], a blob this actor holds. Refused with
+    /// [`Refused::NoHead`] when `C`'s kind has no head, and [`Refused::NotMade`] when the blob makes no actor of `C`'s
+    /// type.
     #[cfg(feature = "std")]
-    pub fn spawn_from<C>(&mut self, code: &Bytes, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(
+        &mut self,
+        origin: Origin<'_>,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
         C::Parent: Admits<Me, C>,
     {
-        self.seat.spawn_from::<C>(self.instances, code, key, config)
+        self.seat.spawn_from::<C>(self.instances, origin, key, config)
+    }
+
+    /// Makes the blob `blob` pins the head of the kind `kind`, with the engine's one publisher, which this actor holds
+    /// under `publisher` (ADR-0009, ADR-0054). The head moves as the step's effects are folded, numbered by the engine,
+    /// so a spawn from the head sees it from the next step on.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::NotPublisher`] when this actor holds no publisher under `publisher`, as a guest's code never does,
+    /// and [`Refused::NotMade`] when the blob makes no actor of the kind. Either asks nothing.
+    #[cfg(feature = "std")]
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+        let guests = self.instances.guests();
+
+        self.seat.publish(&*guests, publisher, kind, blob)
     }
 
     /// Keeps `value`, a resource this actor made, as its own, and answers with the handle to it (ADR-0010). Keeping
@@ -2350,15 +2409,33 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.spawn::<C>(self.instances, key, config)
     }
 
-    /// Stands up a child of type `C` under `key` whose code is the blob `code` pins, running its `begin` here in the
-    /// blob, and answers with a reference to it (ADR-0009). Refused when the blob makes no actor of `C`'s type.
+    /// Stands up a child of type `C` under `key` whose code is the blob `origin` names, as a turn's `spawn_from` does
+    /// (ADR-0009, ADR-0054).
     #[cfg(feature = "std")]
-    pub fn spawn_from<C>(&mut self, code: &Bytes, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
+    pub fn spawn_from<C>(
+        &mut self,
+        origin: Origin<'_>,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
         C::Parent: Admits<Me, C>,
     {
-        self.seat.spawn_from::<C>(self.instances, code, key, config)
+        self.seat.spawn_from::<C>(self.instances, origin, key, config)
+    }
+
+    /// Makes the blob `blob` pins the head of the kind `kind`, as a turn's `publish` does: for the root that is handed
+    /// the engine's one publisher, which publishes as it begins (ADR-0054).
+    ///
+    /// # Errors
+    ///
+    /// As a turn's `publish`.
+    #[cfg(feature = "std")]
+    pub fn publish(&mut self, publisher: &Handle<Publisher>, kind: &KindName, blob: &Bytes) -> Result<(), Refused> {
+        let guests = self.instances.guests();
+
+        self.seat.publish(&*guests, publisher, kind, blob)
     }
 
     /// Watches the actor `of` refers to, or the one at the typed path it is, as a turn's `watch` does: when it ends,

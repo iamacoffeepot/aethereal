@@ -2,9 +2,9 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Path, Protocol, ProtocolRef,
-    Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top, Turn,
-    Unanswered, parent, path,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Path, Protocol,
+    ProtocolRef, Recursive, Refused, Resource, Runner, Running, Start, Stop, Tells, Tick, ToAny, ToSender, ToType, Top,
+    Turn, Unanswered, parent, path,
 };
 use aethereal_data::{ActorPath, Bound, KindId, KindName, Plain};
 use core::mem;
@@ -941,6 +941,8 @@ const fn refused(refused: &Refused) -> u64 {
         Refused::Waiting => 6,
         Refused::Unstaged(_) => 7,
         Refused::Missing(_) => 8,
+        Refused::NoHead => 9,
+        Refused::NotPublisher => 10,
     }
 }
 
@@ -1076,7 +1078,7 @@ impl Actor for Hatcher {
     type EndSends = ();
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let reporter = turn.spawn_from(&hatch.other, &7, &AddBy { by: 20, deeper: 0 });
+        let reporter = turn.spawn_from(Origin::Blob(&hatch.other), &7, &AddBy { by: 20, deeper: 0 });
         turn.to(reporter.map_err(|why| unhatched(&why))?).send(&Ping { n: 0 })?;
 
         Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
@@ -1114,7 +1116,7 @@ impl Handles<Grow> for Hatcher {
         let is_first = self.grown == 0;
         if is_first {
             let home = Home { home: self.home.clone() };
-            let boomerang = turn.spawn_from(&self.other, &(), &home).map_err(|why| unhatched(&why))?;
+            let boomerang = turn.spawn_from(Origin::Blob(&self.other), &(), &home).map_err(|why| unhatched(&why))?;
             turn.to(boomerang).send(&Ping { n: 0 })?;
         }
         self.grown += 1;
@@ -1151,7 +1153,7 @@ impl Actor for Boomerang {
     type EndSends = ();
 
     fn begin(home: Home, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let spawned = turn.spawn_from::<Reporter>(&home.home, &0, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&home.home), &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
         turn.to(turn.parent()).send(&Pong { n })?;
 
@@ -1167,10 +1169,39 @@ impl Handles<Ping> for Boomerang {
     type Sends = (ToType<Hatcher, Pong>,);
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let spawned = turn.spawn_from::<Reporter>(&self.home, &1, &AddBy { by: 0, deeper: 0 });
+        let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&self.home), &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
         turn.to(turn.parent()).send(&Pong { n })?;
 
+        Ok(())
+    }
+}
+
+/// An actor that, as it begins, spawns a reporter of key five, adding one, from the head of the reporter's kind: refused
+/// while no code has been published for that kind, which fails its `begin` with why (ADR-0054).
+#[derive(Bound)]
+#[kind(name = "aether.guest.heir")]
+pub struct Heir;
+
+impl ChildOf for Heir {
+    type Parent = Top;
+}
+
+impl Actor for Heir {
+    type Config = EchoConfig;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let spawned = turn.spawn_from(Origin::Head, &5, &AddBy { by: 1, deeper: 0 });
+        let _: ActorRef<Reporter> = spawned.map_err(|why| unhatched(&why))?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2595,6 +2626,7 @@ aethereal_actor::guest!(
     Reporter,
     Hatcher,
     Boomerang,
+    Heir,
     Librarian,
     Forger,
     Hoarder,

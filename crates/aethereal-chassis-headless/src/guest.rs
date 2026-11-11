@@ -411,7 +411,7 @@ fn write_seated(caller: &mut Caller<'_, Lending>, seated: Seated, at: u32) -> wa
     write_guest(caller, at, &bytes)
 }
 
-/// Links the calls out that seat and spawn children into `linker`.
+/// Links the calls out that seat and spawn children, and that read the head a child is spawned from, into `linker`.
 fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap("aethereal", "aethereal_take_seat", |mut caller: Caller<'_, Lending>| {
         answer(&mut caller, |answering| {
@@ -454,6 +454,25 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
             spawning.map_or_else(|| refusal(&Refused::NotMade), |spawning| answering.spawn(&spawning))
         })
     })?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_head",
+        |mut caller: Caller<'_, Lending>, at: u32, len: u32, blob: u32| {
+            let kind = guest_bytes(&mut caller, Span { at, len });
+            let kind = kind.and_then(|kind| from_bytes::<KindName>(&kind, &mut Budget::new(1 << 10)).ok());
+            // A name the guest wrote that does not read back has no head.
+            let head = answer(&mut caller, |answering| kind.and_then(|kind| answering.head(&kind)))?;
+            let Some(head) = head else {
+                return Ok(0);
+            };
+            let mut written = [0u8; 12];
+            written[..4].copy_from_slice(&head.engine().to_le_bytes());
+            written[4..].copy_from_slice(&head.bits().to_le_bytes());
+            write_guest(&mut caller, blob, &written)?;
+
+            Ok(1)
+        },
+    )?;
 
     Ok(())
 }
@@ -618,6 +637,16 @@ impl<'a> Answering<'a> {
     /// guest puts into (ADR-0042).
     fn buffer(&mut self, room: usize) -> Vec<u8> {
         self.holds.keeping.buffer(room)
+    }
+
+    /// The head of the kind `kind`, as the heads view stood when the step began, offered to the call so its guest may
+    /// spawn from it: answers with its blob's id, and nothing when the kind has no head (ADR-0054).
+    fn head(&mut self, kind: &KindName) -> Option<BlobId> {
+        let pin = self.table.head(kind)?;
+        let id = pin.id();
+        self.given.offered.push(pin);
+
+        Some(id)
     }
 
     /// Puts `bytes` as a blob made by the actor whose call it is, into the worker's puts, and offers it to the call:
@@ -1015,6 +1044,14 @@ impl Guests for Runtime {
         let codes = self.codes.read().ok()?;
 
         codes.get(&code)?.types.iter().copied().find(|made| *made.declared == *declared)
+    }
+
+    fn makes(&self, code: BlobId, kind: &KindName) -> bool {
+        let Ok(codes) = self.codes.read() else {
+            return false;
+        };
+
+        codes.get(&code).is_some_and(|code| code.of_kind(kind).is_some())
     }
 
     /// Begins the child in its part's instance of the blob: its `begin` runs there, handed where it stands and its
@@ -2344,8 +2381,8 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Handles, Links, Protocol, Seated,
-        Services, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
+        Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Given, Handle, Handles, Links,
+        Origin, Protocol, Publisher, Seated, Services, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, ChildOf, Level, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
@@ -2512,7 +2549,7 @@ mod tests {
         type Sends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
 
         fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-            let Ok(echo) = turn.spawn_from::<echo::Echo>(&self.code, &(), &echo::EchoConfig) else {
+            let Ok(echo) = turn.spawn_from::<echo::Echo>(Origin::Blob(&self.code), &(), &echo::EchoConfig) else {
                 return Ok(());
             };
             for at in 0..volley.pings {
@@ -2616,7 +2653,7 @@ mod tests {
 
         fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
             let Petitioning { code, how } = &self.petitioning;
-            let Ok(steward) = turn.spawn_from::<echo::Steward>(code, &(), &echo::EchoConfig) else {
+            let Ok(steward) = turn.spawn_from::<echo::Steward>(Origin::Blob(code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             // Held in one call into the guest, each answered with its own kind.
@@ -2743,7 +2780,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(shelver) = turn.spawn_from::<echo::Shelver>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(shelver) = turn.spawn_from::<echo::Shelver>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
+            else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.to(shelver).send(&echo::Ping { n: 3 })?;
@@ -2828,7 +2866,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(querent) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(querent) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.to(querent).send(&echo::Query { first: 0, pings: 2 })?;
@@ -2915,7 +2953,7 @@ mod tests {
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let opening = echo::Opening { n: 3, below: 1 };
-            let Ok(_) = turn.spawn_from::<echo::Opener>(&inquiring.code, &3, &opening) else {
+            let Ok(_) = turn.spawn_from::<echo::Opener>(Origin::Blob(&inquiring.code), &3, &opening) else {
                 return Err(Fault::new(&Doom)?);
             };
 
@@ -2994,7 +3032,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(stasher) = turn.spawn_from::<echo::Stasher>(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(stasher) = turn.spawn_from::<echo::Stasher>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
+            else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.to(stasher).send(&echo::Stash { len: 3 })?;
@@ -3077,7 +3116,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(nester) = turn.spawn_from(&inquiring.code, &(), &echo::EchoConfig) else {
+            let Ok(nester) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             turn.to(turn.me()).send(&Lend)?;
@@ -3481,7 +3520,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(breeder: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let spawned = turn.spawn_from::<echo::Ticker>(&breeder.code, &(), &echo::EchoConfig);
+            let spawned = turn.spawn_from::<echo::Ticker>(Origin::Blob(&breeder.code), &(), &echo::EchoConfig);
             let said = match spawned {
                 Ok(_) => "ticker made",
                 Err(Refused::Unstaged(stage)) if stage.same(KindId::of::<Tick>()) => "ticker refused for tick",
@@ -4269,7 +4308,8 @@ mod tests {
         type EndSends = ();
 
         fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let sexton: Result<ActorRef<echo::Sexton>, _> = turn.spawn_from(&vestment.code, &(), &echo::EchoConfig);
+            let sexton: Result<ActorRef<echo::Sexton>, _> =
+                turn.spawn_from(Origin::Blob(&vestment.code), &(), &echo::EchoConfig);
             let answer = match sexton {
                 Ok(_) => 0,
                 Err(Refused::Missing(name)) if name == echo::Steeple::NAME => 1,
@@ -4624,14 +4664,15 @@ mod tests {
             let mut reporters = Vec::new();
             for key in 0..nesting.reporters {
                 let config = echo::AddBy { by: 10 * key, deeper: 0 };
-                let Ok(reporter) = turn.spawn_from(&nesting.code, &key, &config) else {
+                let Ok(reporter) = turn.spawn_from(Origin::Blob(&nesting.code), &key, &config) else {
                     return Err(Fault::new(&Doom)?);
                 };
                 reporters.push(reporter);
             }
-            let unmade: Result<ActorRef<Keeper>, _> = turn.spawn_from(&nesting.code, &0, &Keeps { key: 0, tally: 4 });
+            let unmade: Result<ActorRef<Keeper>, _> =
+                turn.spawn_from(Origin::Blob(&nesting.code), &0, &Keeps { key: 0, tally: 4 });
             let impostor: Result<ActorRef<Impostor>, _> =
-                turn.spawn_from(&nesting.code, &9, &echo::AddBy { by: 0, deeper: 0 });
+                turn.spawn_from(Origin::Blob(&nesting.code), &9, &echo::AddBy { by: 0, deeper: 0 });
             let (unmade, impostor) = (unmade.err(), impostor.err());
             let both_refused = unmade == Some(Refused::NotMade) && impostor == Some(Refused::NotMade);
             if !both_refused {
@@ -4789,7 +4830,7 @@ mod tests {
 
         fn begin(henning: Henning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
             let hatch = echo::Hatch { other: henning.other, home: henning.home.clone() };
-            let Ok(_) = turn.spawn_from::<echo::Hatcher>(&henning.home, &(), &hatch) else {
+            let Ok(_) = turn.spawn_from::<echo::Hatcher>(Origin::Blob(&henning.home), &(), &hatch) else {
                 return Err(Fault::new(&Doom)?);
             };
 
@@ -4871,6 +4912,173 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(answers(5), [20, 102, 112, 306, 400, 505, 505, 605, 605]);
+    }
+
+    /// What a publishing root is made from: the engine's one publisher, and the kinds it publishes, each the head of
+    /// the blob at the same place, in order.
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.publishes")]
+    struct Publishes {
+        publisher: Given<Publisher>,
+        kinds: Vec<KindName>,
+        blobs: Vec<Bytes>,
+    }
+
+    /// Each publish a publishing root asked as it began, by its kind, with what it was answered.
+    static PUBLISHED: Mutex<Vec<(KindName, Result<(), Refused>)>> = Mutex::new(Vec::new());
+
+    /// A native root that takes the engine's one publisher from its config and publishes as it begins, keeping what
+    /// each publish was answered in [`PUBLISHED`], as the root that holds a program's code does (ADR-0054).
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.publishing")]
+    struct Publishing {
+        publisher: Handle<Publisher>,
+    }
+
+    impl ChildOf for Publishing {
+        type Parent = Top;
+    }
+
+    impl Actor for Publishing {
+        type Config = Publishes;
+        type Key = ();
+        type Handles = ();
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(config: Publishes, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            let Publishes { publisher, kinds, blobs } = config;
+            let held = turn.take(publisher)?;
+            for (kind, blob) in kinds.iter().zip(&blobs) {
+                let answer = turn.publish(&held, kind, blob);
+                if let Ok(mut answers) = PUBLISHED.lock() {
+                    answers.push((kind.clone(), answer));
+                }
+            }
+
+            Ok(Self { publisher: held })
+        }
+
+        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    /// What an inheritor is made from: nothing.
+    #[derive(Plain)]
+    #[kind(name = "aether.test.inherit")]
+    struct Inherit;
+
+    /// What each inheritor's spawn of an echo from its kind's head was answered.
+    static INHERITED: Mutex<Vec<Result<(), Refused>>> = Mutex::new(Vec::new());
+
+    /// A native root that spawns an echo from the head of the echo's kind as it begins, keeping what it was answered in
+    /// [`INHERITED`].
+    #[derive(aethereal_data::Bound)]
+    #[kind(name = "aether.test.inheritor")]
+    struct Inheritor;
+
+    impl ChildOf for Inheritor {
+        type Parent = Top;
+    }
+
+    impl Actor for Inheritor {
+        type Config = Inherit;
+        type Key = u64;
+        type Handles = ();
+        type BeginSends = ();
+        type EndSends = ();
+
+        fn begin(_: Inherit, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            let spawned = turn.spawn_from::<echo::Echo>(Origin::Head, &(), &echo::EchoConfig);
+            if let Ok(mut inherited) = INHERITED.lock() {
+                inherited.push(spawned.map(|_| ()));
+            }
+
+            Ok(Self)
+        }
+
+        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_spawn_from_a_kind_s_head_takes_the_blob_published_last_for_it() {
+        // Catches a spawn from the head that does not read the heads view, or is not refused while the kind has none;
+        // a publish of a blob that does not make its kind that is not refused, or that moves the head all the same; and
+        // the publishes of one step folded out of the order asked, or numbered otherwise than one after another.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, first) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(second) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run again, as a blob of its own");
+        };
+        let Ok(_) = engine.add_root::<Inheritor>(&1, Inherit) else {
+            panic!("the first inheritor begins");
+        };
+        let Ok(publisher) = engine.publisher() else {
+            panic!("the engine hands out its publisher once");
+        };
+        let unmade = KindName::new("aether.test.unmade");
+        let kinds = vec![echo::Echo::NAME, unmade.clone(), echo::Echo::NAME];
+        let blobs = vec![first.clone(), first, second.clone()];
+        let Ok(_) = engine.add_root::<Publishing>(&(), Publishes { publisher, kinds, blobs }) else {
+            panic!("the publishing root begins");
+        };
+        let Ok(_) = engine.add_root::<Inheritor>(&2, Inherit) else {
+            panic!("the second inheritor begins");
+        };
+        settle(&mut engine);
+
+        let answers = PUBLISHED.lock().map(|answers| answers.clone()).unwrap_or_default();
+        let expected = [(echo::Echo::NAME, Ok(())), (unmade, Err(Refused::NotMade)), (echo::Echo::NAME, Ok(()))];
+        assert_eq!(answers, expected);
+        let head = engine.head(&echo::Echo::NAME).map(|head| (head.blob().id(), head.number()));
+        assert_eq!(head, Some((second.id(), 2)));
+        let inherited = INHERITED.lock().map(|inherited| inherited.clone()).unwrap_or_default();
+        assert_eq!(inherited, [Err(Refused::NoHead), Ok(())]);
+        let inheritor = ActorPath::from_root(&PathSegment::new(Inheritor::NAME, &2_u64));
+        let Ok(echo) = inheritor.child(&PathSegment::new(echo::Echo::NAME, &())) else {
+            panic!("an echo stands beneath an inheritor");
+        };
+        assert!(engine.table().resolve(&echo).is_some());
+    }
+
+    #[test]
+    fn a_guest_spawns_a_child_from_its_kind_s_head_through_its_host() {
+        // Catches a guest's read of a head its host does not answer, answers without offering the blob's pin, so the
+        // spawn from it is refused, or answers while the kind has none.
+        let Some(parts) = NonZeroUsize::new(2) else {
+            panic!("two is not zero");
+        };
+        let (mut engine, home) = with_echo(Engine::new(parts, 1024, 0, 1 << 20, 0));
+        let Ok(reporters) = engine.put_code(salted(ECHO)) else {
+            panic!("the echo guest, salted, is fit to run");
+        };
+        let unpublished = engine.add_root_from::<echo::Heir>(&home, &(), &echo::EchoConfig);
+        let Err(Refused::Began(fault)) = unpublished else {
+            panic!("the heir is refused as it begins, with no head to spawn from");
+        };
+        let why = fault.read::<echo::Unhatched>(&mut Budget::new(64));
+        assert_eq!(why.ok().flatten().map(|unhatched| unhatched.why), Some(9), "refused for having no head");
+        let Ok(publisher) = engine.publisher() else {
+            panic!("the engine hands out its publisher once");
+        };
+        let config = Publishes { publisher, kinds: vec![echo::Reporter::NAME], blobs: vec![reporters] };
+        let Ok(_) = engine.add_root::<Publishing>(&(), config) else {
+            panic!("the publishing root begins");
+        };
+
+        let inherited = engine.add_root_from::<echo::Heir>(&home, &(), &echo::EchoConfig);
+
+        assert!(inherited.is_ok(), "the heir spawns its reporter from the head");
+        let heir = ActorPath::from_root(&PathSegment::new(echo::Heir::NAME, &()));
+        let Ok(reporter) = heir.child(&PathSegment::new(echo::Reporter::NAME, &5_u64)) else {
+            panic!("a reporter stands beneath the heir");
+        };
+        assert!(engine.table().resolve(&reporter).is_some());
     }
 
     /// A native actor that keeps each pong it is sent in the seventh of [`ANSWERS`].
@@ -5520,7 +5728,7 @@ mod tests {
         type EndSends = ();
 
         fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            let Ok(envoy) = turn.spawn_from::<echo::Envoy>(&config.code, &(), &echo::EchoConfig) else {
+            let Ok(envoy) = turn.spawn_from::<echo::Envoy>(Origin::Blob(&config.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&echo::Shut)?);
             };
             turn.to(envoy.protocol()).within(PROBE_DUE).ask(&echo::Ping { n: 7 }, &Which { at: 7 })?;
