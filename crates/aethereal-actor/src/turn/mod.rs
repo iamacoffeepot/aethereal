@@ -365,6 +365,48 @@ impl Asked {
         self.stood_seats.extend(stood_seats);
     }
 
+    /// Takes back each of `gone`, a child a hosted turn spawned, with who spawned it, whose `begin` its guest ran but
+    /// which the guest could not keep, as a `begin` that failed is taken back (ADR-0009, ADR-0015): its spawn, and what
+    /// it asked for but the lines it logged, and the same of every child stood up beneath it. A child among them that
+    /// was stood up is dropped, and its seat given back; one never stood up holds a seat its host gives back.
+    fn take_back_unkept(&mut self, mut gone: Vec<(Seated, Seated)>) {
+        // A child stands up after the children its `begin` stood up, so from the last each is met after its parent.
+        for child in self.stood.iter().rev() {
+            let (Above::Actor(by, _) | Above::Elsewhere(by)) = child.above else {
+                continue;
+            };
+            let is_beneath = gone.iter().any(|(_, me)| *me == by);
+            if is_beneath {
+                gone.push((by, child.me));
+            }
+        }
+        let is_gone = |actor: Seated| gone.iter().any(|(_, me)| *me == actor);
+        let spawns_gone = |effect: &Effect| {
+            let (What::Spawn { seat, .. } | What::SpawnInstanced { seat, .. }) = effect.what() else {
+                return false;
+            };
+
+            gone.iter().any(|(by, me)| *by == effect.seated() && me.seat == *seat)
+        };
+        self.buffers.mailed.retain(|mailed| !is_gone(mailed.by));
+        self.buffers.effects.retain(|effect| !is_gone(effect.seated()) && !spawns_gone(effect));
+        self.buffers.jobs.retain(|job| !is_gone(job.by));
+        self.buffers.gifts.retain(|gift| match gift.by {
+            Giver::Actor(by) => !is_gone(by),
+            Giver::Chassis => true,
+        });
+        self.claims.retain(|claim| !is_gone(claim.by));
+        self.asks.retain(|(by, _)| !is_gone(*by));
+        for child in mem::take(&mut self.stood) {
+            if is_gone(child.me) {
+                self.stood_seats.remove(&child.me.id.bits());
+                self.seats.give_back(child.me.seat);
+            } else {
+                self.stood.push(child);
+            }
+        }
+    }
+
     /// Copies the lines `other` logged into this arena, after this turn's own: what a child's `begin` its host ran
     /// apart leaves when it was refused, as a refused child's lines are kept.
     pub fn take_lines(&mut self, other: &Self) {

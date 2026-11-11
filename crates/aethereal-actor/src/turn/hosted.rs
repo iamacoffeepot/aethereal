@@ -1,7 +1,7 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
 use super::{Closing, Owing, Seat, Stood, Turning, Why};
-use crate::records::Staging;
+use crate::records::{Staging, Unkept};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
     Instances, JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
@@ -27,6 +27,9 @@ pub struct Hosted<'a> {
     /// Where the pieces of mail handed in lie among what the turn asked for, for what the guest claims goes with one
     /// (ADR-0010).
     sent: Sent,
+    /// The children the turn spawned that its guest could not keep, in the order handed in: what each, and each child
+    /// beneath it, asks for is passed over, and what they asked for before is taken back (ADR-0009).
+    unkept: Vec<Seated>,
 }
 
 /// Where a hosted turn's pieces of mail lie in its mail buffer: one after another, from the first handed in, as
@@ -163,7 +166,15 @@ impl<'a> Turning<'a> {
         let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due };
 
         (
-            Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
+            Hosted {
+                seat,
+                sends,
+                source: Source::Item(source),
+                chain,
+                spawned: Vec::new(),
+                sent: Sent::Nothing,
+                unkept: Vec::new(),
+            },
             instances,
         )
     }
@@ -187,6 +198,7 @@ impl<'a> Closing<'a> {
             chain,
             spawned: Vec::new(),
             sent: Sent::Nothing,
+            unkept: Vec::new(),
         };
 
         (hosted, why, instances)
@@ -223,7 +235,15 @@ impl<'a> Hosted<'a> {
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
-        Self { seat, sends: declared.begins(), source: Source::Begin, chain, spawned: Vec::new(), sent: Sent::Nothing }
+        Self {
+            seat,
+            sends: declared.begins(),
+            source: Source::Begin,
+            chain,
+            spawned: Vec::new(),
+            sent: Sent::Nothing,
+            unkept: Vec::new(),
+        }
     }
 
     /// The actor whose turn this is.
@@ -331,6 +351,10 @@ impl<'a> Hosted<'a> {
     /// names was not sent by it.
     pub fn claim(&mut self, claim: Claim) -> Result<(), NotHeld> {
         let Claim { by, ticket, what } = claim;
+        // A child its guest could not keep asks for nothing, as one whose `begin` failed.
+        if self.is_unkept(by) {
+            return Ok(());
+        }
         match what {
             Claimed::Took => {
                 let Source::Item(source) = self.source else {
@@ -669,6 +693,64 @@ impl<'a> Hosted<'a> {
         self.seat.asked.take_lines(asked);
     }
 
+    /// Notes that its guest could not keep `me`, a child [`Self::spawn`] spawned whose `begin` the guest ran, for the
+    /// reason `why`, and logs that at `Error` as the child, naming its path: a `begin` that failed keeps its lines under
+    /// the path that never went live (ADR-0009). What it, and each child beneath it, asks for from here on is passed
+    /// over, and [`Self::take_back_unkept`] takes back what they asked for before. Nothing when the turn spawned no such
+    /// child.
+    pub fn unkept(&mut self, me: Seated, why: Unkept) -> Option<()> {
+        let child = self.spawned.iter().find(|child| child.me == me)?;
+        let said = format_args!("{} was not kept, and never went live: {why}", child.path);
+        if let Ok(text) = self.seat.asked.arena.write_text(said) {
+            self.seat.asked.buffers.lines.push(Line { by: me, level: Level::Error, text });
+        }
+        self.unkept.push(me);
+
+        Some(())
+    }
+
+    /// Takes back each child its guest could not keep, and every child spawned beneath one, as a `begin` that failed is
+    /// taken back (ADR-0009): its spawn, and what it asked for but the lines it logged. For its host, once the turn's
+    /// records are all handed in, as a claim of the turn's may name a piece of mail one of them sent.
+    pub fn take_back_unkept(&mut self) {
+        // Most turns keep every child they stand up.
+        if self.unkept.is_empty() {
+            return;
+        }
+        let mut gone: Vec<(Seated, Seated)> = Vec::new();
+        // A child is spawned after the one whose `begin` spawned it, so each is met after the one above it.
+        for child in &self.spawned {
+            let is_unkept = self.unkept.contains(&child.me);
+            let is_beneath = gone.iter().any(|(_, me)| *me == child.by);
+            let goes = is_unkept || is_beneath;
+            if goes {
+                gone.push((child.by, child.me));
+            }
+        }
+        self.spawned.retain(|child| !gone.iter().any(|(_, me)| *me == child.me));
+        self.seat.asked.take_back_unkept(gone);
+    }
+
+    /// Whether `by` is a child its guest could not keep, or stands beneath one: what it asks for is passed over, as a
+    /// child whose `begin` failed asks for nothing.
+    fn is_unkept(&self, by: Seated) -> bool {
+        // Most turns keep every child they stand up.
+        if self.unkept.is_empty() {
+            return false;
+        }
+        // A child is spawned only beneath this actor or one spawned before it, so the walk up ends.
+        let mut at = by;
+        loop {
+            if self.unkept.contains(&at) {
+                return true;
+            }
+            let Some(child) = self.spawned.iter().find(|child| child.me == at) else {
+                return false;
+            };
+            at = child.by;
+        }
+    }
+
     /// Who spawned `me`, a child [`Self::spawn`] spawned in this turn, and what its type declares: nothing when the
     /// turn spawned no such child.
     #[must_use]
@@ -687,6 +769,10 @@ impl<'a> Hosted<'a> {
     /// [`FalseWatch`] when the watcher's type does not handle endings, or the turn spawned no such child: what a
     /// guest's library would not have built (ADR-0013).
     pub fn watch(&mut self, by: Seated, of: Seated) -> Result<(), FalseWatch> {
+        // A child its guest could not keep asks for nothing, as one whose `begin` failed.
+        if self.is_unkept(by) {
+            return Ok(());
+        }
         let declared = if by == self.seat.me {
             self.seat.declared
         } else {
@@ -713,6 +799,10 @@ impl<'a> Hosted<'a> {
     /// no such child, a stop is asked by a child's `begin` or the actor's own, or a child tells what it holds unsent:
     /// what a guest's library would not have built (ADR-0013).
     pub fn stage(&mut self, by: Seated, asked: Staging) -> Result<(), FalseStage> {
+        // A child its guest could not keep asks for nothing, as one whose `begin` failed.
+        if self.is_unkept(by) {
+            return Ok(());
+        }
         let declared = if by == self.seat.me {
             self.seat.declared
         } else {

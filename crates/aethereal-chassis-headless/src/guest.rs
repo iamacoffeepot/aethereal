@@ -249,7 +249,7 @@ enum Ran {
 /// The top bit of a seat given to a guest's child, set when the seat is in another part than its parent's.
 const ELSEWHERE_BIT: u64 = 1 << 63;
 
-/// The handle a guest writes for a child it did not keep.
+/// The handle a guest writes for a child of a turn that failed, which it dropped as the engine drops it.
 const NO_HANDLE: u32 = u32::MAX;
 
 impl Runtime {
@@ -2119,6 +2119,7 @@ fn replay_records(
             return Ok((Err(fault), ends));
         }
     }
+    hosted.take_back_unkept();
     let is_last = next + 1 == head.ran;
     let ended = match head.stopped {
         _ if !is_last => Ok(()),
@@ -2307,6 +2308,13 @@ fn stand(
             Kept::Elsewhere => continue,
             // A child the guest dropped, as the turn that stood it up failed, is not handed to the engine.
             Kept::Here { handle: NO_HANDLE } => {
+                handed.push(me.seat);
+                continue;
+            }
+            // A child the guest could not keep is taken back as a `begin` that failed is, and why is logged as its
+            // own, once the turn's records are all handed in (ADR-0009).
+            Kept::Not { why } => {
+                hosted.unkept(me, why).ok_or(Broke::Garbled)?;
                 handed.push(me.seat);
                 continue;
             }
@@ -4454,6 +4462,51 @@ mod tests {
         settle(&mut engine);
 
         assert_eq!(sorted([kept::<Asker>(&engine, asker)]), [1, 11, 21, 31, 41, 51, 61, 71, 1001]);
+    }
+
+    #[test]
+    fn a_child_its_guest_cannot_take_out_to_its_part_is_taken_back_and_says_why() {
+        // Catches a child whose state did not encode to be taken out to another part left in the table as live with
+        // nothing seated, or gone with no line saying why; and one kept in its parent's part taken back with it.
+        let parts = 2;
+        let Some(engine_parts) = NonZeroUsize::new(parts) else {
+            panic!("the engine has parts");
+        };
+        let (mut engine, code) = with_echo(Engine::new(engine_parts, 1024, 0, 1 << 20, 0));
+        let children = 8;
+        let config = echo::LitterConfig { children };
+        let Ok(_) = engine.add_root_from::<echo::Litter>(&code, &(), &config) else {
+            panic!("the litter begins");
+        };
+        settle(&mut engine);
+
+        let litter = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.litter"), &()));
+        let part_of = |path: &ActorPath| {
+            let seat = engine.table().resolve(path).and_then(|id| engine.table().seat(id));
+            seat.map(|seat| seat.index() % parts)
+        };
+        let Some(litter_part) = part_of(&litter) else {
+            panic!("the litter is live");
+        };
+        let mut taken_back = 0;
+        for key in 0..children {
+            let Ok(path) = litter.child(&PathSegment::new(KindName::new("aether.guest.homebody"), &key)) else {
+                panic!("a homebody's path is not too deep");
+            };
+            let said = format!("{path} was not kept");
+            let says_why = |entry: &aethereal_actor::Entry| match entry {
+                aethereal_actor::Entry::Line { level, text } => *level == Level::Error && text.starts_with(&said),
+                _ => false,
+            };
+            let Some(part) = part_of(&path) else {
+                assert!(engine.log_of(&path).any(says_why), "{path} says why it was not kept");
+                taken_back += 1;
+                continue;
+            };
+            assert_eq!(part, litter_part, "{path} is live only in its parent's part");
+        }
+        assert!(taken_back > 0, "some homebody is seated in another part than the litter");
+        assert!(taken_back < children, "some homebody is kept in the litter's part");
     }
 
     /// What a keeper is made from: its key.

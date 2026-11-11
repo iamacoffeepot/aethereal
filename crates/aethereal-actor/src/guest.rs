@@ -24,7 +24,7 @@
 use crate::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
-    Spawning, StageRecord, Staging, StoodRecord, Stopped, TakenOver, TurnEnds, UnreadRecord, WatchRecord,
+    Spawning, StageRecord, Staging, StoodRecord, Stopped, TakenOver, TurnEnds, Unkept, UnreadRecord, WatchRecord,
 };
 use crate::section;
 use crate::{
@@ -276,7 +276,8 @@ std::thread_local! {
     static BLOB_TYPES: RefCell<Vec<&'static BlobType>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The handle of an actor that did not begin, or was not kept in this instance.
+/// The handle of an actor that did not begin or was not taken in, and of a child of a turn that failed, which the guest
+/// drops as the engine drops it: never one the guest keeps.
 const NO_HANDLE: u32 = u32::MAX;
 
 /// The top bit of a seat the host gives, set when the seat is in another part.
@@ -607,11 +608,13 @@ fn ended(gone: Gone, source: Seated, bytes: &[u8]) -> Ended {
 }
 
 /// Where a child's state is, as its stood record is written: under a handle in this instance, taken out, at an
-/// offset into the guest's held bytes and of a length, or with its host, as it is of other code.
+/// offset into the guest's held bytes and of a length, with its host, as it is of other code, or nowhere, as the guest
+/// could not keep it, for the reason it holds.
 enum Held {
     Here(u32),
     Out(usize, usize),
     Elsewhere,
+    Not(Unkept),
 }
 
 impl Guest {
@@ -665,11 +668,15 @@ impl Guest {
 
     /// Keeps each child the call's turns stood up: under a handle, or taken out when its seat is in another part. The
     /// children stood up by the last turn, from the `stood_before`th, are dropped when it failed, as the engine drops
-    /// them. Answers with each, and where it is held.
+    /// them. A child the guest cannot keep is not kept, nor is any child stood up beneath it, each with why, for its
+    /// host to take back as a `begin` that failed is (ADR-0009). Answers with each, and where it is held, in the order
+    /// they stood up.
     fn keep_stood(&mut self, types: &[Type], stood_before: usize, is_failed: bool) -> Vec<(Seated, Seated, Held)> {
         let stood = self.asked.take_stood();
         let mut kept = Vec::with_capacity(stood.len());
-        for (index, child) in stood.into_iter().enumerate() {
+        let mut unkept = Vec::new();
+        // A child stands up after the children its `begin` stood up, so from the last each is met before any beneath it.
+        for (index, child) in stood.into_iter().enumerate().rev() {
             let (me, path, above, runs, _) = child.into_parts();
             let Above::Actor(parent, _) = above else {
                 continue;
@@ -679,29 +686,45 @@ impl Guest {
                 kept.push((me, parent, Held::Elsewhere));
                 continue;
             }
-            let standing = Standing { path, above };
             let is_dropped = is_failed && index >= stood_before;
-            let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
+            let is_beneath_unkept = unkept.contains(&parent);
             let held = if is_dropped {
+                // The engine drops the children of a failed turn and never ends them, so the guest keeps none.
                 Held::Here(NO_HANDLE)
+            } else if is_beneath_unkept {
+                Held::Not(Unkept::Above)
             } else {
-                match (lodged(types, runs), is_elsewhere) {
-                    (Some(actor), true) => {
-                        let at = self.held.len();
-                        match actor.take_out(&standing, &mut self.held) {
-                            Ok(()) => Held::Out(at, self.held.len() - at),
-                            Err(_) => Held::Here(NO_HANDLE),
-                        }
-                    }
-                    (Some(actor), false) => Held::Here(self.seat(actor, me, standing)),
-                    // Of no type its guest makes, which its turn begins only as a child of other code.
-                    (None, _) => Held::Here(NO_HANDLE),
-                }
+                self.keep(types, runs, me, Standing { path, above })
             };
+            let is_unkept = matches!(held, Held::Not(_));
+            if is_unkept {
+                unkept.push(me);
+            }
             kept.push((me, parent, held));
         }
+        kept.reverse();
 
         kept
+    }
+
+    /// Keeps `runs`, the child `me` names, standing where `standing` says: under a handle in this instance, or taken
+    /// out when its seat is in another part. Not kept, and why, when it is of no type in `types`, or where it stands or
+    /// its state does not encode to be taken out.
+    fn keep(&mut self, types: &[Type], runs: Box<dyn Runs>, me: Seated, standing: Standing) -> Held {
+        // A turn begins a child of no type its guest makes only as a child of other code, which is held elsewhere.
+        let Some(actor) = lodged(types, runs) else {
+            return Held::Not(Unkept::Unmade);
+        };
+        let is_elsewhere = ELSEWHERE.with_borrow(|elsewhere| elsewhere.contains(&me.seat));
+        if !is_elsewhere {
+            return Held::Here(self.seat(actor, me, standing));
+        }
+        let at = self.held.len();
+
+        match actor.take_out(&standing, &mut self.held) {
+            Ok(()) => Held::Out(at, self.held.len() - at),
+            Err(_) => Held::Not(Unkept::Unencoded),
+        }
     }
 
     /// Writes the record of each send, line, spawn and child stood up in what the call's `ran` turns asked for, after
@@ -754,6 +777,7 @@ impl Guest {
                 Held::Here(handle) => Kept::Here { handle },
                 Held::Out(at, len) => Kept::Out { state: in_held((at, len)) },
                 Held::Elsewhere => Kept::Elsewhere,
+                Held::Not(why) => Kept::Not { why },
             };
             out.extend_from_slice(&StoodRecord { me, above, held }.to_bytes());
         }
