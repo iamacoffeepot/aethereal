@@ -13,22 +13,20 @@
 //! once the host has said, through the root's one source, what it did; the chassis takes the requests and says so
 //! with the [`Hosting`] it kept.
 //!
-//! Any actor may also ask a window's actor to perform input, [`Perform`]: what a person does at the window, sent to
-//! its subscribers as though its host had heard it (ADR-0046). The `tools` feature's `send_input` asks it for an agent.
-//!
-//! An actor takes a window's key focus by asking its actor, [`TakeKeyFocus`], and gives it up, [`ReleaseKeyFocus`]:
-//! while it holds it, the window's keys, typed text, and wheel turns are sent to it alone, and it is told as it gains and loses it,
-//! [`KeyFocusGained`] and [`KeyFocusLost`] (ADR-0053). Both chassis push what they hear through the window root, so
-//! both are routed by it.
+//! Any actor may also ask a window's actor to perform input, [`Perform`]: what a person does at the window, sent on
+//! as though its host had heard it (ADR-0046). The `tools` feature's `send_input` asks it for an agent.
 //!
 //! A window's pointer events also cascade through what was drawn under the pointer (ADR-0055): the renderer subscribes
 //! to each window's probes, [`SubscribeProbes`], is sent each pointer event's place, [`Probed`], and answers what each
 //! frame drew there, [`Picked`]; the window then sends each event, as [`Pointed`], to the actors whose draw lists hold
-//! the entries it reaches, from the top, until one blocks.
+//! the entries it reaches, from the top, until one blocks. Its keys and typed text go only through the keys the draw
+//! lists declare: the renderer sends it the `Keys` entries a frame lists, [`KeysListed`], the last called first, and
+//! the window sends each key, as [`Keyed`], to the actor of each entry whose [`KeySet`] holds it, from the top, until
+//! one blocks, and typed text where the key that typed it went. A raw subscriber hears neither.
 
 mod event;
-mod focus;
 mod host;
+mod keys;
 mod perform;
 mod pointing;
 #[cfg(feature = "tools")]
@@ -37,8 +35,8 @@ mod window;
 mod windows;
 
 pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
-pub use focus::{KeyFocusGained, KeyFocusHolder, KeyFocusLost, ReleaseKeyFocus, TakeKeyFocus};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
+pub use keys::{KeyEvent, KeyHearer, KeySet, Keyed, KeysEntry, KeysListed};
 pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES, Perform, Performed, Unperformed};
 pub use pointing::{Hearer, Picked, Pointed, PointerEvent, Pressed, Probed, Reach, SubscribeProbes};
 #[cfg(feature = "tools")]

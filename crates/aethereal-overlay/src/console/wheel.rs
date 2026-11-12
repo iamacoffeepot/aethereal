@@ -1,4 +1,4 @@
-//! The wheel at the console (ADR-0053: Key focus): a turn, in the window's surface pixels, taken as rows of the
+//! The wheel at the console (ADR-0053, ADR-0055): a turn, in the window's surface pixels, taken as rows of the
 //! scrollback, three to a notch, and what a turn comes to short of a whole row carried to the next, so a trackpad's
 //! many small turns scroll as smoothly as a wheel's notches.
 

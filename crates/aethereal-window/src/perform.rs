@@ -1,5 +1,6 @@
-//! Input performed on a window: what a person does at it, asked of the window's actor, which sends it to its
-//! subscribers as though its host had heard it (ADR-0046).
+//! Input performed on a window: what a person does at it, asked of the window's actor, which sends it on as though its
+//! host had heard it (ADR-0046): a key and typed text through the keys the draw lists declare, and the rest to its
+//! subscribers (ADR-0055).
 
 use crate::event::{Button, Event};
 use aethereal_data::Plain;
@@ -99,8 +100,8 @@ impl From<Input> for Event {
     }
 }
 
-/// Asks a window's actor, at `path::<Window>(window)`, to send its subscribers `inputs`, in order, as its host would
-/// have, whether or not the window has the keyboard: answered with [`Performed`] once it has, or would not.
+/// Asks a window's actor, at `path::<Window>(window)`, to send `inputs` on, in order, as its host's would have been,
+/// whether or not the window has the keyboard: answered with [`Performed`] once it has, or would not.
 #[derive(Debug, Clone, PartialEq, Plain)]
 #[kind(name = "aether.window.perform")]
 pub struct Perform {
@@ -111,7 +112,7 @@ pub struct Perform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.window.performed")]
 pub enum Performed {
-    /// Every input was sent to the window's subscribers, before this answer.
+    /// Every input was sent on, before this answer.
     Performed,
     /// None was sent, for this reason.
     Refused(Unperformed),

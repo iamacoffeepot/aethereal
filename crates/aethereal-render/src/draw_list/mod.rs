@@ -6,6 +6,10 @@
 //! What a list draws is also what the pointer reaches: each draw says whether it blocks the pointer, lets it through, or
 //! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
 //! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055).
+//!
+//! The keys follow the same sequence: an entry declares the keys its sender hears in a window, and the renderer sends
+//! each window the declarations its main frame's walk holds, the last called first, whenever they change. The window
+//! delivers each key, top-down, to the sender of each declaration whose keys hold it, until one blocks (ADR-0055).
 
 #[cfg(test)]
 mod tests;
@@ -17,7 +21,7 @@ use aethereal_actor::records::Naming;
 use aethereal_actor::{Child, ChildOf, ProtocolRef};
 use aethereal_data::{ActorId, ActorPath, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
-use aethereal_window::{Hearer, Reach};
+use aethereal_window::{Hearer, KeyHearer, KeySet, KeysEntry, Reach};
 use std::collections::HashMap;
 use std::{slice, vec};
 
@@ -27,7 +31,9 @@ use std::{slice, vec};
 /// list refused is logged, and the last stands.
 ///
 /// A sender with an entry the pointer reaches handles [`Pointed`](aethereal_window::Pointed): it is sent each pointer
-/// event that reaches the entry, numbered as it is from 0 in the list. A list from one that does not is refused.
+/// event that reaches the entry, numbered as it is from 0 in the list. A sender with an entry that declares keys handles
+/// [`Keyed`](aethereal_window::Keyed), which each key that reaches the entry is sent as. A list from one that does not
+/// handle what its entries would send it is refused.
 #[derive(Debug, Clone, PartialEq, Plain)]
 #[kind(name = "aether.render.draw_list")]
 pub struct DrawList {
@@ -47,6 +53,11 @@ pub enum Entry {
     /// surface pixels, as `pointer` says: a modal's backdrop, an invisible handle, or the world's catch-all. A frame
     /// that ends on a texture has no pointer, and nothing there is reached.
     Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer },
+    /// The keys the sender hears in the window whose main frame is `frame`, at this place in the sequence: each key
+    /// `keys` holds reaches it, after the declarations called after this one, and, when it `blocks`, none called
+    /// before it. Focus is a declaration: a screen that takes the keys lists every key, blocking, while it wants them.
+    /// A frame that ends on a texture has no keys, and nothing there hears any.
+    Keys { frame: Frame, keys: KeySet, blocks: bool },
 }
 
 /// How the pointer reaches an entry where it draws.
@@ -86,12 +97,13 @@ impl Entry {
 
     /// What the renderer keeps of it, the entry numbered `at` of its list: a placement by its id, a call by its child's,
     /// which `child_id` answers for the child's segment beneath the list's sender, and a hit as it is, each the pointer
-    /// reaches with the entry of `hearer`, the list's sender, when its sender handles the pointer's events. Refused
-    /// when the pointer reaches it and its sender handles none.
+    /// reaches with the entry of `hearer`, the list's sender, when its sender handles the pointer's events; and a
+    /// declaration of keys as the entry of `key_hearer`, the list's sender, when it handles the keys. Refused when the
+    /// pointer reaches it or it declares keys, and its sender handles none.
     pub(crate) fn listed(
         &self,
         at: u32,
-        hearer: Option<ProtocolRef<Hearer>>,
+        (hearer, key_hearer): (Option<ProtocolRef<Hearer>>, Option<ProtocolRef<KeyHearer>>),
         child_id: impl Fn(&PathSegment) -> ActorId,
     ) -> Result<Listed, EntryRefused> {
         let picks = |pointer| match (pointer, hearer) {
@@ -106,6 +118,13 @@ impl Entry {
             Self::Hit { frame, pass, rect, pointer } => {
                 Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(*pointer)? }
             }
+            Self::Keys { frame, keys, blocks } => {
+                let actor = key_hearer.ok_or(EntryRefused::KeysUnheard)?;
+                Listed::Keys {
+                    frame: *frame,
+                    entry: KeysEntry { actor, entry: at, keys: keys.clone(), blocks: *blocks },
+                }
+            }
         };
 
         Ok(listed)
@@ -113,12 +132,14 @@ impl Entry {
 }
 
 /// One entry of a list the renderer keeps: a placement of its sender's, by its id, a child its sender calls, by the
-/// child's id, or a hit, each drawn or hit as the pointer reaches it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// child's id, or a hit, each drawn or hit as the pointer reaches it; or the keys its sender hears in a window's main
+/// frame, as the window is sent them.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Listed {
     Draw { placement: u64, picks: Picks },
     Call(ActorId),
     Hit { frame: Frame, pass: PassName, rect: Rect2, picks: Picks },
+    Keys { frame: Frame, entry: KeysEntry },
 }
 
 /// What the pointer reaches where an entry draws: nothing, or the entry of its list's sender, which blocks it or not.
@@ -169,6 +190,8 @@ pub(crate) enum EntryRefused {
     Twice,
     /// The pointer reaches the entry, and the list's sender does not handle the pointer's events.
     Unheard,
+    /// The entry declares keys, and the list's sender does not handle the keys.
+    KeysUnheard,
 }
 
 /// What is kept, as a list's check looks it up.
@@ -243,7 +266,7 @@ impl Lists {
                         return Err(refused(EntryRefused::Twice));
                     }
                 }
-                Listed::Hit { .. } => {}
+                Listed::Hit { .. } | Listed::Keys { .. } => {}
             }
         }
         self.kept.insert(by, list);
@@ -268,11 +291,11 @@ impl Lists {
     pub fn all(&self) -> impl Iterator<Item = u64> {
         self.kept.values().flatten().filter_map(|entry| match entry {
             Listed::Draw { placement, .. } => Some(*placement),
-            Listed::Call(_) | Listed::Hit { .. } => None,
+            Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
     }
 
-    /// The draws and hits listed from `roots`, in the order of the walk: each root's list in turn, each entered where
+    /// The draws, hits, and keys listed from `roots`, in the order of the walk: each root's list in turn, each entered where
     /// it is called, so a list's calls draw between its own entries as it lists them (ADR-0055). An actor no list from
     /// `roots` calls is not drawn.
     pub fn walk(&self, roots: Vec<ActorId>) -> Walked<'_> {
@@ -314,7 +337,7 @@ impl<'a> Iterator for Walked<'a> {
             };
             match list.next() {
                 Some(Listed::Call(child)) => self.enter(*child),
-                Some(entry @ (Listed::Draw { .. } | Listed::Hit { .. })) => return Some(entry),
+                Some(entry @ (Listed::Draw { .. } | Listed::Hit { .. } | Listed::Keys { .. })) => return Some(entry),
                 None => {
                     self.entered.pop();
                 }

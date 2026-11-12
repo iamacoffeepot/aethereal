@@ -25,6 +25,8 @@ What is already decided:
 
 **A window sends its subscribers the text typed in it, as a new event, `Text`, after the key that typed it. Its input method starts off. A program turns it on for a window while a text field there has focus, and off again after, by asking the window root. `send_input` can perform `Text`, as it performs keys.**
 
+Under ADR-0055 a window's keys and its `Text` go to the actors whose draw lists declare the keys, not to its subscribers: the text goes where the `KeyDown` before it went, as a `Keyed` beside its key.
+
 ```
 key pressed ── KeyDown { code, key, repeat } ──> subscribers
             └─ Text { text } ──────────────────> subscribers   (when the key typed text)

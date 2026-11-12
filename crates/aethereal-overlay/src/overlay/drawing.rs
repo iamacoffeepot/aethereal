@@ -1,5 +1,5 @@
-//! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): what its window hears steps it and lays it
-//! out again, and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
+//! How the overlay draws once it has made its pieces (ADR-0031, ADR-0052): the keys its list declares step it and
+//! edit the console, its window's size lays it out again, the wheel over the console's panel scrolls it (ADR-0055), and each `Tick` while it is shown keeps the cycle's time, writes the placement's records again in one
 //! write, writes the figures' texts when what they show changes, and reads the engine's recent log about once a second.
 //! While it is shown it also hears each frame's statistics, for the budget the chart is drawn against, the lines'
 //! rows, and the GPU meter, and the GPU's time over each frame's passes, for its graph (ADR-0053).
@@ -18,8 +18,10 @@ use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
-use aethereal_render::frame::ShapeOf;
+use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::instances::WriteInstances;
+use aethereal_render::pass::Interface;
+use aethereal_render::placement::PlacementId;
 use aethereal_render::stats::{
     FrameDrawing, FrameStats, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats,
     UnsubscribeGpuTimes,
@@ -27,15 +29,15 @@ use aethereal_render::stats::{
 use aethereal_render::text::{CreateText, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
 use aethereal_tools::{CallTool, Tools};
-use aethereal_window::{Event, ReleaseKeyFocus, Surface, TakeKeyFocus, Window};
+use aethereal_window::{Event, KeyEvent, KeySet, Keyed, Pointed, PointerEvent, Surface, WindowId};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
 
-/// What the overlay sends as it hears its window: its list as it steps, its records as they change, the surface's
-/// size and its texts' places as the window is resized, the first asks for what it draws, the frame statistics and
-/// the GPU's times it hears while shown, the window's key focus while the console is open, the console's texts as keys change them, and
-/// the tools the console's line calls.
+/// What the overlay sends as it hears its window and its keys: its list as it steps, its records as they change, the
+/// surface's size and its texts' places as the window is resized, the first asks for what it draws, the frame
+/// statistics and the GPU's times it hears while shown, the console's texts as keys change them, and the tools the
+/// console's line calls.
 pub(super) type Heard = (
     Tells<Path<Renderer>, DrawList>,
     Tells<Path<Renderer>, WriteInstances>,
@@ -47,28 +49,50 @@ pub(super) type Heard = (
     Tells<Path<Renderer>, UnsubscribeFrameStats>,
     Tells<Path<Renderer>, SubscribeGpuTimes>,
     Tells<Path<Renderer>, UnsubscribeGpuTimes>,
-    Tells<Path<Window>, TakeKeyFocus>,
-    Tells<Path<Window>, ReleaseKeyFocus>,
     Tells<Path<Renderer>, WriteText>,
     Asks<Path<Tools>, CallTool, Calling>,
 );
 
-/// A backtick steps the overlay, a resize lays it out again, and at the console's stop the keys and typed text edit
-/// and enter its line and the wheel scrolls its scrollback; the overlay hears nothing else of its window.
+/// A resize lays the overlay out again; the overlay hears nothing else of its window raw.
 impl Handles<Event> for Overlay {
     type Sends = Heard;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
-        let console = self.stop.console();
         match event {
             Event::Resized(surface) => self.resized(surface, turn),
-            Event::KeyDown { code, repeat: false, .. } if code == STEP_KEY => self.step(turn),
-            Event::KeyDown { key, .. } if console => self.pressed(&key, turn),
-            Event::Text { text } if console => {
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A backtick steps the overlay, and at the console's stop the keys and typed text edit and enter its line: the keys
+/// its list declares, the backtick alone while the console is closed, and every key while it is open.
+impl Handles<Keyed> for Overlay {
+    type Sends = Heard;
+
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
+        let console = self.stop.console();
+        match keyed.event {
+            KeyEvent::KeyDown { code, repeat: false, .. } if code == STEP_KEY => self.step(turn),
+            KeyEvent::KeyDown { key, .. } if console => self.pressed(&key, turn),
+            KeyEvent::Text { text } if console => {
                 self.console.typed(&text);
                 self.write_console(turn)
             }
-            Event::Wheel { delta_y, .. } if console => {
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The wheel over the console's panel, which blocks the pointer from what is beneath it, scrolls its scrollback; the
+/// overlay hears nothing else of the pointer.
+impl Handles<Pointed> for Overlay {
+    type Sends = Heard;
+
+    fn handle(&mut self, pointed: Pointed, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
+        let console = self.stop.console();
+        match pointed.event {
+            PointerEvent::Wheel { delta_y, .. } if console => {
                 let (notch_pixels, view) = (Layout::of(self.surface).notch_pixels(), self.view());
                 self.console.wheeled(delta_y, notch_pixels, view);
                 self.write_console(turn)
@@ -92,15 +116,17 @@ impl Overlay {
         if self.stop.draws() {
             self.write_chart(turn)?;
         }
+        if self.stop.console() {
+            self.send_list(turn)?;
+        }
 
         Ok(())
     }
 
     /// Steps to the next stop: shown, it hears each `Tick`, each frame's statistics, and the GPU's times, and draws its
-    /// list, written for
-    /// the stop at once; hidden, it hears neither and draws an empty list. Opening the console takes the window's key
-    /// focus and clears the count of warnings and errors, which the console shows; closing it gives the focus up. The
-    /// text the backtick typed, which comes next, is dropped.
+    /// list, written for the stop at once; hidden, it hears neither and draws nothing. Opening the console takes every
+    /// key, as its list declares, and clears the count of warnings and errors, which the console shows; closing it
+    /// leaves the backtick alone. The text the backtick typed, which comes next, is dropped.
     fn step(&mut self, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         let was = self.stop;
         self.stop = was.next();
@@ -120,17 +146,11 @@ impl Overlay {
             }
             (false, false) | (true, true) => {}
         }
-        match (was.console(), self.stop.console()) {
-            (false, true) => {
-                turn.to(path::<Window>(self.window)).send(&TakeKeyFocus)?;
-                self.alerts.clear();
-                self.write_text(TextRole::Alerts, turn)?;
-                self.write_console(turn)?;
-            }
-            (true, false) => {
-                turn.to(path::<Window>(self.window)).send(&ReleaseKeyFocus)?;
-            }
-            (false, false) | (true, true) => {}
+        let opened = !was.console() && self.stop.console();
+        if opened {
+            self.alerts.clear();
+            self.write_text(TextRole::Alerts, turn)?;
+            self.write_console(turn)?;
         }
         if self.stop.draws() {
             self.write_chart(turn)?;
@@ -139,19 +159,18 @@ impl Overlay {
         self.send_list(turn)
     }
 
-    /// Closes the console back to the band, giving up the window's key focus.
+    /// Closes the console back to the band, its list leaving the backtick alone.
     pub(super) fn close(&mut self, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
         self.stop = Stop::Band;
-        turn.to(path::<Window>(self.window)).send(&ReleaseKeyFocus)?;
         self.write_chart(turn)?;
 
         self.send_list(turn)
     }
 
-    /// Sends the overlay's list: what it has placed, each joined listed to the window's interface pass, the panels
-    /// and chart first and the texts over them, the console's only at its stop, while it is shown; nothing while it is
-    /// hidden. The overlay is the last root the program's root list names, so its list is drawn over the program's
-    /// (ADR-0031, ADR-0055).
+    /// Sends the overlay's list, as [`listing`] lays it out for the stop, with what it has placed, each joined listed
+    /// to the window's interface pass, the panels and chart first and the texts over them, the console's only at its
+    /// stop, while it is shown. The overlay is the last root the program's root list names, so its list is drawn over
+    /// the program's, and its keys are declared above the program's (ADR-0031, ADR-0055).
     pub(super) fn send_list<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, DrawList>, I>,
@@ -169,8 +188,7 @@ impl Overlay {
             };
             placements.extend(roles.iter().filter_map(|role| self.texts.placement(*role)));
         }
-        let entries =
-            placements.into_iter().map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores }).collect();
+        let entries = listing(self.window, self.stop, self.surface, placements);
         turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 
         Ok(())
@@ -272,6 +290,27 @@ impl Overlay {
             }
         }
     }
+}
+
+/// The overlay's list on `window` at `stop`, its surface `surface`, drawing `placements`: first the keys it hears in
+/// the window, which block every key beneath them, the backtick alone, or every key while the console is open; then,
+/// at the console's stop, a hit over the console's panel that blocks the pointer, so the wheel over it scrolls the
+/// console and reaches nothing beneath; then each placement, which the pointer passes through.
+pub(super) fn listing(window: WindowId, stop: Stop, surface: Surface, placements: Vec<PlacementId>) -> Vec<Entry> {
+    let frame = Frame::Main(window);
+    let console = stop.console();
+    let keys = if console {
+        KeySet::All
+    } else {
+        KeySet::of([STEP_KEY])
+    };
+    let mut entries = vec![Entry::Keys { frame, keys, blocks: true }];
+    if console {
+        entries.push(Entry::hit::<Interface>(frame, Layout::of(surface).console(), Pointer::Blocks));
+    }
+    entries.extend(placements.into_iter().map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores }));
+
+    entries
 }
 
 /// Each cycle's time is kept, the marks told since the last stamped with it, the chart written again, the figures,

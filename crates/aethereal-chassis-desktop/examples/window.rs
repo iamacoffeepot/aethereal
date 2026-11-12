@@ -44,9 +44,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Launches the program of the window root, the renderer, which draws on the window it opened, and the scene, on as
-/// many workers as the machine has cores, at most four, the engine's views in a part for each, with what its command
-/// line and environment set over that.
+/// Launches the program of the window root, the renderer, which draws on the window it opened, and the scene, the root
+/// list, on as many workers as the machine has cores, at most four, the engine's views in a part for each, with what
+/// its command line and environment set over that.
 fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let workers = NonZeroU32::try_from(
         thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
@@ -58,6 +58,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Scene>()
+        .draws::<(Scene,)>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

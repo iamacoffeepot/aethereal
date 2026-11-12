@@ -10,6 +10,7 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::effect::{CreateEffect, Effected};
 use aethereal_render::frame::{
     CreateFrame, DepthUse, Does, Ends, Frame, FrameId, Framed, Load, PassSpec, Scale, ShapeOf, Shaped, Target,
@@ -25,7 +26,7 @@ use aethereal_render::shape::Shape;
 use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
+use aethereal_window::{self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Window, WindowId};
 use core::f32::consts::TAU;
 
 /// The triangles in the ring.
@@ -171,7 +172,8 @@ pub struct Shows {
 
 /// The scene: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
 /// carrying what was made so far, places it, and from then writes the ring at each `Tick`, about the pointer. It
-/// subscribes to its window, prints what it hears, and keeps the time between each `Tick` and the last.
+/// subscribes to its window, declares every key of it in its draw list, as the program's root list names it
+/// (ADR-0055), prints what it hears, and keeps the time between each `Tick` and the last.
 #[derive(Bound)]
 #[kind(name = "aether.example.scene")]
 pub struct Scene {
@@ -289,6 +291,7 @@ impl Actor for Scene {
         On<Start>,
         On<Tick>,
         Event,
+        Keyed,
         ReadTuning,
         Tune,
         Answer<Shaped, Shaping>,
@@ -300,13 +303,15 @@ impl Actor for Scene {
         Answer<Uniformed, Looking>,
         Answer<Placed, MadeAll>,
     );
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
+    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Tells<Path<Renderer>, DrawList>);
     type EndSends = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
+        let hears = Entry::Keys { frame: Frame::Main(shows.window), keys: KeySet::All, blocks: false };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
 
         Ok(Self {
             window: shows.window,
@@ -394,10 +399,36 @@ impl Handles<On<Start>> for Scene {
     }
 }
 
+/// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
+impl Handles<Keyed> for Scene {
+    type Sends = ();
+
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        match keyed.event {
+            KeyEvent::KeyDown { code, key, repeat } => {
+                println!("key_down code={code} key={key:?} repeat={repeat}");
+                if !repeat {
+                    self.held += 1;
+                }
+                if code == "Escape" {
+                    turn.quit();
+                }
+            }
+            KeyEvent::KeyUp { code, key } => {
+                println!("key_up code={code} key={key:?}");
+                self.held = self.held.saturating_sub(1);
+            }
+            KeyEvent::Text { text } => println!("text text={text:?}"),
+        }
+
+        Ok(())
+    }
+}
+
 impl Handles<Event> for Scene {
     type Sends = ();
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match event {
             Event::PointerMoved { x, y } => {
                 // A surface is some thousands of pixels across, which an f32 holds exactly.
@@ -416,20 +447,6 @@ impl Handles<Event> for Scene {
             Event::Wheel { x, y, delta_x, delta_y } => {
                 println!("wheel x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
             }
-            Event::KeyDown { code, key, repeat } => {
-                println!("key_down code={code} key={key:?} repeat={repeat}");
-                if !repeat {
-                    self.held += 1;
-                }
-                if code == "Escape" {
-                    turn.quit();
-                }
-            }
-            Event::KeyUp { code, key } => {
-                println!("key_up code={code} key={key:?}");
-                self.held = self.held.saturating_sub(1);
-            }
-            Event::Text { text } => println!("text text={text:?}"),
             Event::Resized(surface) => {
                 println!("resized width={} height={} scale={}", surface.width, surface.height, surface.scale);
                 (self.width, self.height) = (surface.width, surface.height);
@@ -442,6 +459,8 @@ impl Handles<Event> for Scene {
             }
             Event::CloseRequested => println!("close=requested"),
             Event::Closed => println!("closed"),
+            // Keys and text come through the scene's list, never raw (ADR-0055).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } => {}
         }
 
         Ok(())

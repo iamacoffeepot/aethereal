@@ -4,6 +4,7 @@
 use super::*;
 use crate::event::{Mode, Surface};
 use crate::host::{Opening, WindowFeed};
+use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{
@@ -156,18 +157,20 @@ fn a_press_goes_through_the_stack_at_its_own_place_and_the_wheel_through_the_poi
 /// What a test tells the prober to do.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.test.probe_order")]
-enum ProbeOrder {
+pub enum ProbeOrder {
     /// Subscribe to the window's probes.
     Subscribe,
     /// Send the window these stacks.
     Pick(Picked),
+    /// Send the window these `Keys` entries.
+    List(KeysListed),
 }
 
-/// An actor that stands where the renderer would: it subscribes to the window's probes, and sends it stacks, as it is
-/// told; what it is sent is read from the turns the engine recorded.
+/// An actor that stands where the renderer would: it subscribes to the window's probes, and sends it stacks and the
+/// `Keys` entries listed, as it is told; what it is sent is read from the turns the engine recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.prober")]
-struct Prober;
+pub struct Prober;
 
 impl ChildOf for Prober {
     type Parent = Top;
@@ -190,7 +193,7 @@ impl Actor for Prober {
 }
 
 impl Handles<ProbeOrder> for Prober {
-    type Sends = (Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, Picked>);
+    type Sends = (Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, Picked>, Tells<Path<Window>, KeysListed>);
 
     fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let window = path::<Window>(WINDOW);
@@ -200,6 +203,9 @@ impl Handles<ProbeOrder> for Prober {
             }
             ProbeOrder::Pick(picked) => {
                 turn.to(window).send(&picked)?;
+            }
+            ProbeOrder::List(listed) => {
+                turn.to(window).send(&listed)?;
             }
         }
 
@@ -249,7 +255,7 @@ impl Handles<Pointed> for Widget {
 }
 
 /// The actor at `place`, of the type `T`, as the engine's table has it.
-fn found<T: Kind>(harness: &mut Harness<Bench>, place: &ActorPath) -> Seated {
+pub fn found<T: Kind>(harness: &mut Harness<Bench>, place: &ActorPath) -> Seated {
     harness.host().engine().table().reach(place, KindId::of::<T>())
 }
 

@@ -1,23 +1,26 @@
-//! `send_input`'s tests: the inputs asked reach the window's subscribers in order, before the answer; inputs that
-//! cannot be performed are refused, and none of them is sent; a window with no actor is answered as not open; and text
-//! is performed as typed, unless no host would send it.
+//! `send_input`'s tests: the inputs asked reach the window's subscriber in order, before the answer, the keys and text
+//! through the keys it declares; inputs that cannot be performed are refused, and none of them is sent; a window with
+//! no actor is answered as not open; and text is performed as typed, unless no host would send it.
 
 use super::*;
 use crate::event::{Button, Event, Mode, Subscribe, Surface};
 use crate::host::Opening;
+use crate::keys::{KeyEvent, KeySet, Keyed, KeysEntry, KeysListed};
 use crate::perform::{MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES};
+use crate::pointing::{Probed, SubscribeProbes};
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{Tells, Top};
 use aethereal_data::{ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
-use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};
+use aethereal_substrate::harness::{Bench, Harness, Steps, Turned, Unheard};
 use aethereal_tools::{CommandLine, FlagsFault};
 use std::num::NonZeroUsize;
 
 /// The surface the window is opened at.
 const SURFACE: Surface = Surface { width: 640, height: 480, scale: 1.0 };
 
-/// An actor that subscribes to the first window as it begins. The events it is sent are read from the turns the
+/// An actor that subscribes to the first window as it begins, and stands where the renderer would, subscribed to its
+/// probes, to list itself as hearing every key there. The events and keys it is sent are read from the turns the
 /// engine recorded.
 #[derive(Bound)]
 #[kind(name = "aether.test.subscriber")]
@@ -30,12 +33,15 @@ impl ChildOf for Subscriber {
 impl Actor for Subscriber {
     type Config = InputToolConfig;
     type Key = ();
-    type Handles = (Event,);
-    type BeginSends = (Tells<Path<Window>, Subscribe>,);
+    type Handles = (Event, Keyed, Probed);
+    type BeginSends =
+        (Tells<Path<Window>, Subscribe>, Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, KeysListed>);
     type EndSends = ();
 
     fn begin(_: InputToolConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to(path::<Window>(WindowId::nth(0))).send(&Subscribe)?;
+        let hears = KeysEntry { actor: turn.me().protocol(), entry: 0, keys: KeySet::All, blocks: true };
+        let window = path::<Window>(WindowId::nth(0));
+        turn.to(window).send(&Subscribe)?.send(&SubscribeProbes)?.send(&KeysListed { entries: vec![hears] })?;
 
         Ok(Self)
     }
@@ -51,6 +57,38 @@ impl Handles<Event> for Subscriber {
     fn handle(&mut self, _: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
     }
+}
+
+impl Handles<Keyed> for Subscriber {
+    type Sends = ();
+
+    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Probed> for Subscriber {
+    type Sends = ();
+
+    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// What `turned` handed the subscriber, as the window heard it: an event, or a key or text its entry was sent; none
+/// for a probe.
+fn heard(turned: &Turned) -> Option<Event> {
+    if let Ok(event) = turned.read() {
+        return Some(event);
+    }
+    let Keyed { event, .. } = turned.read().ok()?;
+    let event = match event {
+        KeyEvent::KeyDown { code, key, repeat } => Event::KeyDown { code, key, repeat },
+        KeyEvent::KeyUp { code, key } => Event::KeyUp { code, key },
+        KeyEvent::Text { text } => Event::Text { text },
+    };
+
+    Some(event)
 }
 
 /// A harness over an engine with one window open, its subscriber, and the tool, recording its turns.
@@ -85,14 +123,8 @@ fn send(harness: &mut Harness<Bench>, window: u64, inputs: Vec<Input>) -> Result
     let performed = from_bytes::<Performed>(bytes, &mut Budget::new(INPUT_BYTES))?;
     harness.settle();
     let subscriber = ActorPath::from_root(&PathSegment::new(Subscriber::NAME, &()));
-    let heard = harness
-        .host()
-        .engine()
-        .take_turned()
-        .iter()
-        .filter(|turn| turn.path == subscriber)
-        .filter_map(|turn| turn.read().ok())
-        .collect();
+    let heard =
+        harness.host().engine().take_turned().iter().filter(|turn| turn.path == subscriber).filter_map(heard).collect();
 
     Ok((performed, heard))
 }
