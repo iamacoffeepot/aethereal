@@ -1,13 +1,14 @@
 //! Dispatches as the lists name them (ADR-0055), on the device that draws nothing: one runs only where its maker's
-//! list names it, in the list's order, after those asked to run once, and a list that names another's is refused.
+//! list names it, in the list's order, whether it runs until released or once, and a list that names another's is
+//! refused.
 
 use super::lists::OTHER;
-use super::once::{asked_once, counting, counts, run_once};
+use super::once::{counting, counts, run_once};
 use super::*;
 use crate::dispatch::CreateDispatch;
 
-/// Makes the dispatch `create` for `maker`, as the renderer does: checked and kept until released. Its id.
-fn dispatched(device: &wgpu::Device, kept: &mut Kept, create: &CreateDispatch, maker: ActorId) -> u64 {
+/// Makes the dispatch `create` for `maker`, as the renderer does: checked and kept until released or run. Its id.
+pub(super) fn dispatched(device: &wgpu::Device, kept: &mut Kept, create: &CreateDispatch, maker: ActorId) -> u64 {
     let made = kept.checked_dispatch(device, create, maker);
     let Ok(made) = made else {
         panic!("the dispatch is refused: {:?}", made.err());
@@ -20,7 +21,7 @@ fn dispatched(device: &wgpu::Device, kept: &mut Kept, create: &CreateDispatch, m
 }
 
 /// A list running `dispatches`, in order.
-fn runs(dispatches: &[u64]) -> Vec<Listed> {
+pub(super) fn runs(dispatches: &[u64]) -> Vec<Listed> {
     dispatches.iter().map(|dispatch| Listed::Run(*dispatch)).collect()
 }
 
@@ -30,11 +31,11 @@ fn run_in_compute(kept: &Kept) -> Vec<u64> {
 }
 
 #[test]
-fn a_dispatch_runs_only_while_a_list_names_it_in_the_list_s_order_after_those_run_once() {
+fn a_dispatch_runs_only_while_a_list_names_it_in_the_list_s_order_whether_it_runs_until_released_or_once() {
     // Catches a dispatch run before any list names it, as every dispatch once was, or still run once a newer list
     // leaves it out; the dispatches of a pass run in the order of their ids or grouped by compute program, as the
-    // renderer once sorted them, rather than as listed; and a dispatch asked to run once, which no list can name, left
-    // waiting for one.
+    // renderer once sorted them, rather than as listed; and a dispatch that runs once run where no list puts it, ahead
+    // of those listed, as one once was.
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let gpu = Gpu::new(device.clone(), queue);
     let mut kept = kept(&device);
@@ -49,9 +50,12 @@ fn a_dispatch_runs_only_while_a_list_names_it_in_the_list_s_order_after_those_ru
 
     assert_eq!(kept.listed(runs(&[c, b, a]), MAKER), Ok(()));
     assert_eq!(run_in_compute(&kept), vec![c, b, a]);
-    let once = asked_once(&device, &mut kept, run_once(counts(main, fourth)));
-    assert_eq!(kept.listed(runs(&[b, c]), MAKER), Ok(()));
-    assert_eq!(run_in_compute(&kept), vec![once, b, c], "a left out, and the one run once first");
+    let once = dispatched(&device, &mut kept, &run_once(counts(main, fourth)), MAKER);
+    assert_eq!(run_in_compute(&kept), vec![c, b, a], "the one that runs once is listed nowhere");
+    assert_eq!(kept.listed(runs(&[b, once, c]), MAKER), Ok(()));
+    assert_eq!(run_in_compute(&kept), vec![b, once, c], "a left out, and the one that runs once between");
+    assert_eq!(kept.listed(runs(&[b, c, once]), MAKER), Ok(()));
+    assert_eq!(run_in_compute(&kept), vec![b, c, once], "the one that runs once after both");
 }
 
 #[test]

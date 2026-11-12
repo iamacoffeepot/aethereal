@@ -13,7 +13,7 @@ use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
-use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
+use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations, Runs};
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::builder::{FrameBuilder, Onto, depth};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
@@ -589,16 +589,19 @@ fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
         Dispatching::Tally { made, .. } => CreateDispatch {
             join: Dispatch::to::<Tally>(frame, made.culls.tally, bound(&[(0, made.items), (1, made.totals)])),
             size: Invocations::PerElement(made.items),
+            runs: Runs::UntilReleased,
         },
         Dispatching::Offsets { made, .. } => CreateDispatch {
             join: Dispatch::to::<Offsets>(frame, made.culls.offsets, bound(&[(1, made.totals), (3, made.arguments)])),
             size: Invocations::Workgroups([1, 1, 1]),
+            runs: Runs::UntilReleased,
         },
         Dispatching::Scatter { made, .. } => {
             let bindings = bound(&[(0, made.items), (2, made.visible), (4, made.totals)]);
             CreateDispatch {
                 join: Dispatch::to::<Scatter>(frame, made.culls.scatter, bindings),
                 size: Invocations::PerElement(made.items),
+                runs: Runs::UntilReleased,
             }
         }
     }

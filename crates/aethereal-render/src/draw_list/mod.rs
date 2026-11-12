@@ -49,8 +49,8 @@ pub enum Entry {
     /// A placement of the sender's, of a mesh or a text, drawn in each pass it joins, reached by the pointer where it
     /// draws as `pointer` says.
     Draw { placement: PlacementId, pointer: Pointer },
-    /// A dispatch of the sender's, run in the compute pass it joins. A dispatch asked to run once has no id, and runs
-    /// in its pass before those listed there.
+    /// A dispatch of the sender's, run here in the compute pass it joins: in each cycle that draws its frame, or in the
+    /// first alone, when it runs once.
     Run(DispatchId),
     /// What a direct child of the sender draws, drawn here.
     Call(Callee),
@@ -178,7 +178,7 @@ pub(crate) struct ListRefused {
 pub(crate) enum EntryRefused {
     /// No placement is kept under the id: never made, or released.
     Placement,
-    /// No dispatch that runs until released is kept under the id: never made, or released.
+    /// No dispatch is kept under the id: never made, released, or run once already.
     Dispatch,
     /// Another actor made the placement or the dispatch, and only its maker lists it.
     NotOwner,
@@ -194,7 +194,7 @@ pub(crate) enum EntryRefused {
 pub(crate) trait Listables {
     /// The maker of the placement `placement`, of a mesh or of a text.
     fn placement_maker(&self, placement: u64) -> Option<ActorId>;
-    /// The maker of the dispatch `dispatch` that runs until released.
+    /// The maker of the dispatch `dispatch`.
     fn dispatch_maker(&self, dispatch: u64) -> Option<ActorId>;
 }
 

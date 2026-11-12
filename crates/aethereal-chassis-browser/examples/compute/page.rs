@@ -11,7 +11,7 @@ use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
-use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
+use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations, Runs};
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -440,6 +440,7 @@ impl Handles<Answer<Placed, Placing>> for Simulator {
         let dispatch = CreateDispatch {
             join: Dispatch::to::<Compute>(Frame::Main(window), placing.simulate, bindings),
             size: Invocations::PerElement(storage),
+            runs: Runs::UntilReleased,
         };
         turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { storage, placement })?;
 

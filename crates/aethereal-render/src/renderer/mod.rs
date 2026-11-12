@@ -12,8 +12,8 @@ mod watching;
 use crate::Gpu;
 use crate::compute::{self, Array, ComputeId, Computed, CreateCompute};
 use crate::dispatch::{
-    self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, RunDispatch,
-    Runs, Unrun, Use,
+    self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, Grid, Runs,
+    Unrun, Use,
 };
 use crate::draw_list::{DrawList, ListRefused, Listables, Listed, Lists, Picks};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
@@ -55,7 +55,8 @@ use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
     Actor, Allows, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held,
-    Level, On, Path, Protocol, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn, path,
+    Level, On, Path, Protocol, ProtocolRef, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn,
+    path,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_math::Rect2;
@@ -91,7 +92,7 @@ pub struct Renderer {
 
 /// The reads, timings, and dispatches the renderer owes: those of the next frame, each read under the window it reads,
 /// those copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's bytes,
-/// and timings, and each dispatch asked to run once that has not, under its id.
+/// and timings, and the maker to tell of each dispatch that runs once and has not, under its id.
 #[derive(Bound)]
 struct Owed {
     frames: Vec<(WindowId, Held<Pixels>)>,
@@ -100,7 +101,7 @@ struct Owed {
     targets: Vec<(u64, Held<TargetPixels>)>,
     storing: Vec<(u64, Held<StorageContents>)>,
     timing: Vec<(u64, Held<Timed>)>,
-    dispatches: Vec<(u64, Held<DispatchRan>)>,
+    dispatches: Vec<(u64, ProtocolRef<(DispatchRan,)>)>,
 }
 
 /// The renderer is a root, made by the chassis that opened the GPU (ADR-0021, ADR-0022).
@@ -128,10 +129,6 @@ impl Carries<CreateCompute> for Renderer {
 
 impl Carries<CreateDispatch> for Renderer {
     type Answers = (Dispatched,);
-}
-
-impl Carries<RunDispatch> for Renderer {
-    type Answers = (DispatchRan,);
 }
 
 impl Carries<CreateInstances> for Renderer {
@@ -230,7 +227,6 @@ impl Protocol for Rendering {
         WriteStorage,
         Place,
         CreateDispatch,
-        RunDispatch,
         DrawList,
         ShapeOf,
         CreateEffect,
@@ -271,10 +267,6 @@ impl Carries<CreateCompute> for Rendering {
 
 impl Carries<CreateDispatch> for Rendering {
     type Answers = (Dispatched,);
-}
-
-impl Carries<RunDispatch> for Rendering {
-    type Answers = (DispatchRan,);
 }
 
 impl Carries<CreateInstances> for Rendering {
@@ -426,8 +418,6 @@ struct Kept {
     storage: Weighed<Storage>,
     placements: Made<Placement>,
     dispatches: Made<Dispatching>,
-    /// The dispatches asked to run once that have not: each runs in the first cycle that draws its frame and goes.
-    once: Made<Dispatching>,
     lists: Lists,
     reads: HashMap<u64, Reading>,
     samplers: HashMap<Sampling, wgpu::Sampler>,
@@ -644,14 +634,15 @@ struct Joined {
     storage: Vec<u64>,
 }
 
-/// One dispatch run in each cycle that draws its frame, or once, holding all it runs with, so a frame builds nothing
-/// and releasing what it was made of frees it only once the dispatch goes (ADR-0026): the compute pass it joins, its
-/// compute program's id, which a pass runs dispatches together by, and its pipeline, the bind groups made for it, the
-/// workgroups it runs, and the textures and storage it binds or reads its workgroups from, by their ids, the storage
-/// with how it is used.
+/// One dispatch run in each cycle that draws its frame with it listed, until released or once, holding all it runs
+/// with, so a frame builds nothing and releasing what it was made of frees it only once the dispatch goes (ADR-0026):
+/// the compute pass it joins, how long it runs, its compute program's id, which a pass runs dispatches together by,
+/// and its pipeline, the bind groups made for it, the workgroups it runs, and the textures and storage it binds or reads
+/// its workgroups from, by their ids, the storage with how it is used.
 struct Dispatching {
     frame: Frame,
     pass: PassName,
+    runs: Runs,
     compute: u64,
     pipeline: wgpu::ComputePipeline,
     groups: Groups,
@@ -717,7 +708,6 @@ impl Actor for Renderer {
         WriteStorage,
         Place,
         CreateDispatch,
-        RunDispatch,
         DrawList,
         ShapeOf,
         CreateEffect,
@@ -807,10 +797,11 @@ impl Actor for Renderer {
 /// it was last sent them (ADR-0055), and tells each subscriber of the frame's statistics, counted only while one
 /// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing tells
 /// the subscribers of its statistics so, and its passes have no time to tell. A frame not drawn runs none of its
-/// dispatches (ADR-0026), and each dispatch asked to run once that ran is answered once the cycle's commands are
+/// dispatches (ADR-0026), and the maker of each dispatch that runs once and ran is told so once the cycle's commands are
 /// submitted.
 impl Handles<On<Render>> for Renderer {
-    type Sends = (ToAny<(FrameStats,), FrameStats>, Tells<Path<Window>, KeysListed>);
+    type Sends =
+        (ToAny<(FrameStats,), FrameStats>, Tells<Path<Window>, KeysListed>, ToAny<(DispatchRan,), DispatchRan>);
 
     fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let front = turn.open(&mut self.front)?;
@@ -906,9 +897,7 @@ impl Handles<On<Render>> for Renderer {
         for (held, why) in refused {
             turn.answer(held, &Pixels::Refused(why))?;
         }
-        for held in once.into_iter().flat_map(|ran| owed_by(&mut self.owed.dispatches, ran)) {
-            turn.answer(held, &DispatchRan::Ran)?;
-        }
+        self.tell_ran(turn, once)?;
         self.relist(turn, frames.iter().map(|(window, _)| *window))?;
         // Pushed last, so a turn that fails before it asks the chassis for nothing (ADR-0019).
         let control = turn.open(&mut self.mapping)?;
@@ -1164,7 +1153,7 @@ impl Handles<Mapped> for Renderer {
 /// and a window closed has its main frame dropped, with the targets made for it, so what joined only that frame is
 /// drawn nowhere until its maker releases it (ADR-0027).
 impl Handles<Surfaced> for Renderer {
-    type Sends = (Tells<Path<Window>, SubscribeProbes>,);
+    type Sends = (Tells<Path<Window>, SubscribeProbes>, ToAny<(DispatchRan,), DispatchRan>);
 
     fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let brought = turn.sender().id() == turn.me().id();
@@ -1201,7 +1190,7 @@ impl Handles<Surfaced> for Renderer {
                 for read in owed_by(&mut self.owed.frames, window) {
                     turn.answer(read, &Pixels::Refused(ReadRefused::Window))?;
                 }
-                self.answer_unjoined(turn)?;
+                self.tell_unjoined(turn)?;
             }
         }
 
@@ -1209,9 +1198,9 @@ impl Handles<Surfaced> for Renderer {
     }
 }
 
-/// What `read`, a read or a window, owes of `owed`, taken from it.
-fn owed_by<K: Copy + PartialEq, A>(owed: &mut Vec<(K, Held<A>)>, read: K) -> Vec<Held<A>> {
-    owed.extract_if(.., |(owing, _)| *owing == read).map(|(_, held)| held).collect()
+/// What `read`, a read, a window, or a dispatch, owes of `owed`, taken from it.
+fn owed_by<K: Copy + PartialEq, T>(owed: &mut Vec<(K, T)>, read: K) -> Vec<T> {
+    owed.extract_if(.., |(owing, _)| *owing == read).map(|(_, owing)| owing).collect()
 }
 
 /// What `read` makes of the bytes of `buffer`, which the chassis has mapped, before it is unmapped: none when the GPU
@@ -1558,11 +1547,24 @@ impl Handles<Place> for Renderer {
     }
 }
 
+/// A dispatch, checked now and kept until released, or, when it runs once, until a cycle runs it or its frame goes, its
+/// maker kept to tell (ADR-0026).
 impl Handles<CreateDispatch> for Renderer {
     type Sends = (ToSender<Dispatched>,);
 
     fn handle(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let by = turn.sender().id();
+        let sender = turn.sender();
+        let by = sender.id();
+        let told = match create.runs {
+            Runs::UntilReleased => Told::Untold,
+            Runs::Once => {
+                let Some(maker) = turn.cast::<(DispatchRan,)>(sender) else {
+                    turn.reply(&Dispatched::Refused(DispatchRefused::Untold))?;
+                    return Ok(());
+                };
+                Told::Told(maker)
+            }
+        };
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
         let made = kept.checked_dispatch(&device, &create, by);
@@ -1577,39 +1579,19 @@ impl Handles<CreateDispatch> for Renderer {
             kept.dispatches.keep(id, maker, made);
             kept.reorder();
         })?;
+        if let Told::Told(maker) = told {
+            self.owed.dispatches.push((id, maker));
+        }
         turn.reply(&Dispatched::Made(DispatchId { id }))?;
 
         Ok(())
     }
 }
 
-/// A dispatch to run once, checked now as one that runs until released is, and kept, with its answer held, until the
-/// first cycle that draws its frame runs it, or its frame goes (ADR-0026).
-impl Handles<RunDispatch> for Renderer {
-    type Sends = (ToSender<DispatchRan>,);
-
-    fn handle(&mut self, run: RunDispatch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let by = turn.sender().id();
-        let device = turn.open(&mut self.gpu)?.device().clone();
-        let kept = turn.open(&mut self.kept)?;
-        let create = run.dispatch();
-        let made = kept.checked_dispatch(&device, &create, by);
-        let made = match made {
-            Ok(made) => made,
-            Err(why) => {
-                turn.reply(&DispatchRan::Refused(why))?;
-                return Ok(());
-            }
-        };
-        let id = self.made(turn, |kept, id, maker| {
-            kept.once.keep(id, maker, made);
-            kept.reorder();
-        })?;
-        let held = turn.hold()?;
-        self.owed.dispatches.push((id, held));
-
-        Ok(())
-    }
+/// Whom a dispatch's making leaves the renderer to tell when it has run: its maker, when it runs once, or no one.
+enum Told {
+    Untold,
+    Told(ProtocolRef<(DispatchRan,)>),
 }
 
 /// A list of the sender's own placements, the children it calls, each call found one segment beneath the sender, its
@@ -1721,10 +1703,12 @@ impl Handles<CreateFrame> for Renderer {
     }
 }
 
+/// Releases what the sender made, as it asks. A dispatch that runs once, released before it ran, never runs, and its
+/// maker, which released it, is not told.
 impl Handles<Release> for Renderer {
-    type Sends = ();
+    type Sends = (ToAny<(DispatchRan,), DispatchRan>,);
 
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let kept = turn.open(&mut self.kept)?;
         let released = kept.release(release, by);
@@ -1735,21 +1719,49 @@ impl Handles<Release> for Renderer {
             Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
             Owned::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
         }
+        self.untell_gone(turn)?;
 
-        self.answer_unjoined(turn)
+        self.tell_unjoined(turn)
     }
 }
 
 impl Renderer {
-    /// Answers each dispatch asked to run once whose frame is gone for good as never run, why beside it, and takes it
-    /// out of what is kept.
-    fn answer_unjoined<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
-        let unjoined = turn.open(&mut self.kept)?.unjoined();
-        for (dispatch, why) in unjoined {
-            for held in owed_by(&mut self.owed.dispatches, dispatch) {
-                turn.answer(held, &DispatchRan::Unrun(why))?;
+    /// Tells the maker of each dispatch of `once`, which ran once in a cycle whose commands are submitted, that it ran.
+    fn tell_ran<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, once: Vec<u64>) -> Result<(), Fault>
+    where
+        S: Allows<ToAny<(DispatchRan,), DispatchRan>, I>,
+    {
+        for ran in once {
+            for maker in owed_by(&mut self.owed.dispatches, ran) {
+                turn.to(maker).send(&DispatchRan::Ran(DispatchId { id: ran }))?;
             }
         }
+
+        Ok(())
+    }
+
+    /// Tells the maker of each dispatch that runs once whose frame is gone for good that it never ran, why beside it,
+    /// and takes it out of what is kept.
+    fn tell_unjoined<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    where
+        S: Allows<ToAny<(DispatchRan,), DispatchRan>, I>,
+    {
+        let unjoined = turn.open(&mut self.kept)?.unjoined();
+        for (dispatch, why) in unjoined {
+            let unrun = DispatchRan::Unrun { dispatch: DispatchId { id: dispatch }, why };
+            for maker in owed_by(&mut self.owed.dispatches, dispatch) {
+                turn.to(maker).send(&unrun)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Forgets the maker to tell of each dispatch that runs once and went untold: released by its maker, or with all
+    /// its maker made as it ended.
+    fn untell_gone<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        let kept = turn.open(&mut self.kept)?;
+        self.owed.dispatches.retain(|(dispatch, _)| kept.dispatches.get(*dispatch).is_some());
 
         Ok(())
     }
@@ -1767,9 +1779,9 @@ fn log_held<S>(turn: &mut Turn<'_, Renderer, S>, held: &[u64]) {
 }
 
 impl Handles<Ended> for Renderer {
-    type Sends = ();
+    type Sends = (ToAny<(DispatchRan,), DispatchRan>,);
 
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.watch.ended(&ended);
         self.timed.ended(&ended);
         let maker = ended.actor().id();
@@ -1780,12 +1792,10 @@ impl Handles<Ended> for Renderer {
         }
         let held = kept.ended(maker);
         log_held(turn, &held);
-        self.answer_unjoined(turn)?;
-        // What the ended actor asked to run once went with all it made, and no one is left to answer.
-        let kept = turn.open(&mut self.kept)?;
-        self.owed.dispatches.retain(|(dispatch, _)| kept.once.get(*dispatch).is_some());
+        // What the ended actor made to run once went with all it made, and no one is left to tell.
+        self.untell_gone(turn)?;
 
-        Ok(())
+        self.tell_unjoined(turn)
     }
 }
 
@@ -1816,7 +1826,6 @@ impl Kept {
             storage: Weighed::default(),
             placements: Made::default(),
             dispatches: Made::default(),
-            once: Made::default(),
             lists: Lists::new(roots),
             reads: HashMap::new(),
             samplers: HashMap::new(),
@@ -1900,7 +1909,6 @@ impl Kept {
         self.text.ended(maker, &mut self.lists);
         self.lists.ended(maker);
         self.dispatches.release_all(maker);
-        self.once.release_all(maker);
         let frames: Vec<(u64, Option<u64>)> =
             self.frames.release_all(maker).into_iter().map(|(id, walk)| (id, walk.texture())).collect();
         self.unframed(frames);
@@ -1992,16 +2000,16 @@ impl Kept {
         create: &CreateDispatch,
         by: ActorId,
     ) -> Result<Dispatching, DispatchRefused> {
-        dispatch::check(create, by, &*self).and_then(|runs| self.dispatch(device, create, runs))
+        dispatch::check(create, by, &*self).and_then(|grid| self.dispatch(device, create, grid))
     }
 
-    /// The dispatch `create` asks for, made of what its check found kept, running as `runs` says, with its bind groups
+    /// The dispatch `create` asks for, made of what its check found kept, running the grid `grid`, with its bind groups
     /// made now.
     fn dispatch(
         &mut self,
         device: &wgpu::Device,
         create: &CreateDispatch,
-        runs: Runs,
+        grid: Grid,
     ) -> Result<Dispatching, DispatchRefused> {
         let join = &create.join;
         self.sampled(device, &join.bindings);
@@ -2024,9 +2032,9 @@ impl Kept {
             })
             .chain(create.size.arguments().map(|storage| (storage.id, Access::Read)))
             .collect();
-        let running = match runs {
-            Runs::Workgroups(workgroups) => Running::Workgroups(workgroups),
-            Runs::Indirect { storage, at } => {
+        let running = match grid {
+            Grid::Workgroups(workgroups) => Running::Workgroups(workgroups),
+            Grid::Indirect { storage, at } => {
                 let made = self.storage.get(storage.id).ok_or(DispatchRefused::Storage)?;
                 Running::Indirect { buffer: made.buffer.clone(), at }
             }
@@ -2035,6 +2043,7 @@ impl Kept {
         Ok(Dispatching {
             frame: join.frame,
             pass: join.pass,
+            runs: create.runs,
             compute: join.compute.id,
             pipeline: compute.pipeline.clone(),
             groups,
@@ -2094,7 +2103,7 @@ impl Kept {
     /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
     /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`, and each call
     /// numbered into `picking`, keyed by its draw pass's place among the frame's. Answers the ids of the dispatches
-    /// asked to run once that it recorded.
+    /// that run once that it recorded.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2424,7 +2433,7 @@ impl Kept {
         for join in joins {
             join.groups.rebind(device, texture, view);
         }
-        for dispatch in self.dispatches.values_mut().chain(self.once.values_mut()) {
+        for dispatch in self.dispatches.values_mut() {
             dispatch.groups.rebind(device, texture, view);
         }
         self.frames.change_each(|walk| walk.rebind(device, texture, view));
@@ -2497,7 +2506,8 @@ impl Kept {
         let reads = self.reads();
         self.order = frame::ordered(&frames, &reads);
         let writers: Vec<(u64, Frame, u64)> = self
-            .dispatching()
+            .dispatches
+            .iter()
             .flat_map(|(id, dispatch)| {
                 let written = dispatch.storage.iter().filter(|(_, access)| *access == Access::Write);
                 written.map(move |(storage, _)| (id, dispatch.frame, *storage))
@@ -2590,8 +2600,8 @@ impl Kept {
     /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that
     /// window's frame among `windows`, each pass writing its timestamps to `stamps` in the order they run when the
     /// frames are timed, each draw counted into `tally`, and each call numbered into `picking` (ADR-0025, ADR-0053,
-    /// ADR-0055). Answers the ids of the dispatches asked to run once that it recorded, which run once these commands
-    /// are submitted.
+    /// ADR-0055). Answers the ids of the dispatches that run once that it recorded, which run once these commands are
+    /// submitted.
     fn run_all(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2657,7 +2667,8 @@ impl Kept {
     /// Each dispatch that joins a window's main frame and is not run: one whose compute pass it has not, each as the
     /// dispatch, the window, and the pass it joined.
     fn unrun(&self) -> Vec<(u64, WindowId, PassName)> {
-        self.dispatching()
+        self.dispatches
+            .iter()
             .filter_map(|(id, dispatch)| {
                 let Frame::Main(window) = dispatch.frame else {
                     return None;
@@ -2670,10 +2681,10 @@ impl Kept {
 
     /// Records into `recording` every dispatch run in the compute pass `pass` of `frame`, in the order
     /// [`computed`](Self::computed) answers, setting a pipeline only where the dispatch run before used another compute
-    /// program. Answers the ids of those asked to run once that it recorded.
+    /// program. Answers the ids of those that run once that it recorded.
     fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) -> Vec<u64> {
         let joined = self.computed(frame, pass);
-        let once = joined.iter().map(|(id, _)| *id).filter(|id| self.once.get(*id).is_some()).collect();
+        let once = joined.iter().filter(|(_, dispatch)| dispatch.runs == Runs::Once).map(|(id, _)| *id).collect();
         let mut pipeline = 0;
         for (_, dispatch) in joined {
             // Ids begin at one, so no compute program's is the zero it begins from.
@@ -2693,20 +2704,17 @@ impl Kept {
         once
     }
 
-    /// Each dispatch run in the compute pass `pass` of `frame`, under its id, in the order it runs: those asked to run
-    /// once, in the order they were asked, then those the lists walked from the frame's roots name, each in its list's
-    /// order, each child's where its parent calls it (ADR-0055). One no list walked names is not run, and neither is
-    /// one held, as it writes what another writes in a frame it is in no order with.
+    /// Each dispatch run in the compute pass `pass` of `frame`, under its id, in the order it runs: as the lists walked
+    /// from the frame's roots name them, each in its list's order, each child's where its parent calls it, whether it
+    /// runs until released or once (ADR-0055). One no list walked names is not run, and neither is one held, as it
+    /// writes what another writes in a frame it is in no order with.
     fn computed(&self, frame: Frame, pass: PassName) -> Vec<(u64, &Dispatching)> {
-        let mut once: Vec<(u64, &Dispatching)> = self.once.iter().collect();
-        once.sort_unstable_by_key(|(id, _)| *id);
-        let listed = self.lists.walk(self.roots(frame)).filter_map(|entry| match *entry {
-            Listed::Run(id) => self.dispatches.get(id).map(|dispatch| (id, dispatch)),
-            Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
-        });
-
-        once.into_iter()
-            .chain(listed)
+        self.lists
+            .walk(self.roots(frame))
+            .filter_map(|entry| match *entry {
+                Listed::Run(id) => self.dispatches.get(id).map(|dispatch| (id, dispatch)),
+                Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            })
             .filter(|(id, dispatch)| {
                 let joins = dispatch.runs_in(frame, pass);
                 let held = self.held.contains(id);
@@ -2715,27 +2723,32 @@ impl Kept {
             .collect()
     }
 
-    /// Every dispatch kept, each under its id, in no order: those that run until released and those asked to run once.
-    fn dispatching(&self) -> impl Iterator<Item = (u64, &Dispatching)> {
-        self.dispatches.iter().chain(self.once.iter())
-    }
-
-    /// Drops each dispatch of `once`, asked to run once, which ran in a cycle whose commands are submitted, and orders
-    /// the frames again without it.
+    /// Releases each dispatch of `once`, which runs once and ran in a cycle whose commands are submitted, taking it
+    /// out of its maker's list, and orders the frames again without it.
     fn ran_once(&mut self, once: &[u64]) {
         for dispatch in once {
-            self.once.forget(*dispatch);
+            self.dispatched_once(*dispatch);
         }
         self.reorder();
     }
 
-    /// Takes out each dispatch asked to run once whose frame is gone for good, and answers each beside why it never
-    /// ran: the window whose main frame it joined closed, or the frame that ends on a texture it joined was released.
-    /// A window's main frame replaced by one without its pass is not gone: the dispatch waits for a frame with it.
+    /// Releases the dispatch `dispatch`, which ran once or never will, taking it out of its maker's list as a release
+    /// by its maker does.
+    fn dispatched_once(&mut self, dispatch: u64) {
+        if let Some(maker) = self.dispatches.maker(dispatch) {
+            self.dispatches.forget(dispatch);
+            self.lists.released(dispatch, maker);
+        }
+    }
+
+    /// Releases each dispatch that runs once whose frame is gone for good, and answers each beside why it never ran:
+    /// the window whose main frame it joined closed, or the frame that ends on a texture it joined was released. A
+    /// window's main frame replaced by one without its pass is not gone: the dispatch waits for a frame with it.
     fn unjoined(&mut self) -> Vec<(u64, Unrun)> {
         let unjoined: Vec<(u64, Unrun)> = self
-            .once
+            .dispatches
             .iter()
+            .filter(|(_, dispatch)| dispatch.runs == Runs::Once)
             .filter_map(|(id, dispatch)| {
                 let why = match dispatch.frame {
                     Frame::Main(window) => self.windowed(window).is_none().then_some(Unrun::Closed),
@@ -2748,7 +2761,7 @@ impl Kept {
             return unjoined;
         }
         for (dispatch, _) in &unjoined {
-            self.once.forget(*dispatch);
+            self.dispatched_once(*dispatch);
         }
         self.reorder();
 
@@ -2905,8 +2918,8 @@ impl Joined {
     }
 }
 
-/// What a list's check finds: the placements of meshes and of texts, under one count of ids, and the dispatches that
-/// run until released. One asked to run once has no id its maker was given, and no list names it.
+/// What a list's check finds: the placements of meshes and of texts, under one count of ids, and the dispatches, those
+/// that run until released and those that run once alike.
 struct Listable<'a> {
     meshes: &'a Made<Placement>,
     texts: &'a Made<PlacedText>,
@@ -3140,7 +3153,7 @@ impl Finds for Kept {
             .values()
             .flat_map(|placement| &placement.joins)
             .map(|join| (join.frame, join.textures.as_slice()));
-        let dispatched = self.dispatching().map(|(_, dispatch)| (dispatch.frame, dispatch.textures.as_slice()));
+        let dispatched = self.dispatches.iter().map(|(_, dispatch)| (dispatch.frame, dispatch.textures.as_slice()));
         let bound = self
             .frames
             .iter()
@@ -3227,7 +3240,7 @@ impl Kept {
                 .iter()
                 .map(move |(pass, storage)| (*storage, Use { frame, pass: *pass, access: Access::Read }))
         });
-        let dispatched = self.dispatching().flat_map(|(_, dispatch)| {
+        let dispatched = self.dispatches.iter().flat_map(|(_, dispatch)| {
             dispatch.storage.iter().map(|(storage, access)| {
                 (*storage, Use { frame: dispatch.frame, pass: dispatch.pass, access: *access })
             })
