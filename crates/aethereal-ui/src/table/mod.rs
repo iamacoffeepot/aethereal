@@ -13,7 +13,7 @@ mod tests;
 
 use crate::tree::{Flat, KeyPath};
 use crate::widget::Widget;
-use aethereal_data::{Budget, KindId, Plain, from_bytes, to_bytes};
+use aethereal_data::{Budget, KindId, Plain, from_bytes};
 
 /// The most bytes a state read out of the table may decode into.
 const MOST_STATE_BYTES: usize = 64 * 1024;
@@ -89,13 +89,10 @@ impl Table {
         }
     }
 
-    /// Keeps `state`, the state of a widget `W`, under `path`, in place of what was kept there: as the screen's library
-    /// opens and shuts the stock widgets whose content it shows in its top layer.
-    pub(crate) fn put<W: Widget>(&mut self, path: &KeyPath, state: &W::State) {
-        // A state encodes as any plain value does: only a count past four billion fails, which no widget's state holds.
-        if let Ok(bytes) = to_bytes(state) {
-            self.write(path, KindId::of::<W::State>(), bytes);
-        }
+    /// The bytes of the state kept under `path`, if one of the kind `kind` is kept there: as the screen's library reads
+    /// the state of a widget whose content it shows in its top layer, to open and shut it.
+    pub(crate) fn held(&self, path: &KeyPath, kind: KindId) -> Option<&[u8]> {
+        self.found(path).filter(|kept| kept.kind.same(kind)).map(|kept| kept.state.as_slice())
     }
 
     /// Which widget has the screen's focus.

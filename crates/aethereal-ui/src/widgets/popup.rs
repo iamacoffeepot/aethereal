@@ -19,8 +19,7 @@
 use super::press::{PRESSES, Press, shade};
 use crate::input::{Hears, Input, Key, Pointing, Used};
 use crate::style::Style;
-use crate::tree::{KeyPath, Segment};
-use crate::widget::{Arrange, Draws, Laid, Widget};
+use crate::widget::{Arrange, Draws, Inside, Laid, Layer, Opens, Side, Widget};
 use aethereal_data::Plain;
 use aethereal_render::draw_list::Pointer;
 use aethereal_window::Cursor;
@@ -32,29 +31,6 @@ pub struct Popup {
     pub side: Side,
     pub modal: bool,
     pub inside: Inside,
-}
-
-/// Which side of what it is opened from a popup's content is placed on, before it flips to the other side for room
-/// and shifts to stay inside its screen. Content placed below or above starts at its anchor's left edge, and content
-/// placed right or left at its top edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Side {
-    #[default]
-    Below,
-    Above,
-    Right,
-    Left,
-}
-
-/// What a click within a popup's content does to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Inside {
-    /// Nothing: it stays open, as a popup of settings does while they are set.
-    #[default]
-    Stays,
-    /// It shuts once a click within its content raises an event, after the event is raised: as a menu does once a choice
-    /// is made, and not for a click on an anchor of a popup within it or on empty space.
-    Closes,
 }
 
 /// Whether a popup is open, and its anchor's press as a button's is: the pointer over it and a press held.
@@ -120,7 +96,17 @@ impl Widget for Popup {
     type State = Popped;
 
     fn arrange(&self) -> Arrange {
-        Arrange::Popup
+        let Self { side, modal, inside } = *self;
+
+        Arrange::Popup(Layer { side, opens: Opens::Pressed { modal, inside } })
+    }
+
+    fn open(&self, popped: &Popped) -> bool {
+        popped.open == Opened::Open
+    }
+
+    fn shut(&self, popped: &mut Popped) {
+        popped.open = Opened::Shut;
     }
 
     fn draw(&self, popped: &Popped, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
@@ -157,28 +143,4 @@ impl Widget for Popup {
 
         Used::Used
     }
-}
-
-/// The path of the anchor of the popup at `popup`: its first child in the markup.
-#[must_use]
-pub fn anchor(popup: &KeyPath) -> KeyPath {
-    popup.child(Segment::Place(0))
-}
-
-/// Whether the widget at `path` is the anchor of the popup at `popup`, or stands within it.
-#[must_use]
-pub fn anchors(popup: &KeyPath, path: &KeyPath) -> bool {
-    let anchor = anchor(popup);
-
-    anchor == *path || anchor.holds(path)
-}
-
-/// Whether the widget at `path` stands in the content of the popup at `popup`: within it, and not its anchor or within
-/// that.
-#[must_use]
-pub fn contains(popup: &KeyPath, path: &KeyPath) -> bool {
-    let within = popup.holds(path);
-    let anchored = anchors(popup, path);
-
-    within && !anchored
 }

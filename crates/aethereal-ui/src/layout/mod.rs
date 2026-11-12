@@ -19,8 +19,7 @@ mod tests;
 use crate::fonts::Measuring;
 use crate::style::{Parent, Space, Style, flow};
 use crate::tree::Flat;
-use crate::widget::{Arrange, Axis, Lines, Offer, Offered};
-use crate::widgets::anchor;
+use crate::widget::{Arrange, Axis, Lines, Offer, Offered, anchor};
 use aethereal_math::{Rect2, Vec2};
 use core::slice::Iter;
 use taffy::{
@@ -158,7 +157,7 @@ pub fn lay_out(flat: &[Flat<'_>], tops: &[usize], measuring: &mut Measuring<'_>,
 /// children.
 fn in_flow(node: &Flat<'_>, flat: &[Flat<'_>]) -> Vec<usize> {
     match node.node.widget().arrange() {
-        Arrange::Popup => {
+        Arrange::Popup(_) => {
             let anchor = anchor(&node.path);
             node.children.iter().copied().filter(|child| flat[*child].path == anchor).collect()
         }
@@ -326,7 +325,7 @@ impl LayoutPartialTree for Tree<'_, '_, '_> {
             let arrange = tree.node(node).arrange;
             let mut output = match arrange {
                 Arrange::Flex(_) | Arrange::Scroll(_) => compute_flexbox_layout(tree, node, inputs),
-                Arrange::Grid | Arrange::Stack | Arrange::Popup => compute_grid_layout(tree, node, inputs),
+                Arrange::Grid | Arrange::Stack | Arrange::Popup(_) => compute_grid_layout(tree, node, inputs),
                 Arrange::Leaf => {
                     let Tree { nodes, measuring } = tree;
                     let laying = &nodes[usize::from(node)];

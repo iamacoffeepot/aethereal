@@ -19,8 +19,9 @@
 //! - [`View`] and [`Controls`]: what a screen's markup compiles into, its event enum, its view, and the call of each
 //!   event's method; and what is written by hand beside those methods, its sends and its hotkeys.
 //! - [`Screen`]: what the library keeps in the screen's actor, and what it does in the screen's turns, as
-//!   [`screen!`] writes the screen's handlers: among them, each open [`Popup`](widgets::Popup)'s content drawn in the
-//!   screen's top layer, and each [`Tooltip`](widgets::Tooltip)'s wait, a `Sleep` job.
+//!   [`screen!`] writes the screen's handlers: among them, the content of each open widget that arranges its children
+//!   as a popup, a [`Popup`](widgets::Popup) or a program's own, drawn in the screen's top layer, and the wait of each
+//!   opened by the pointer resting, a [`Tooltip`](widgets::Tooltip), a `Sleep` job.
 //!
 //! A screen is written as its markup will compile it:
 //!
@@ -128,19 +129,20 @@ pub use table::{Focus, Table};
 pub use tree::{ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
 pub use view::{Controls, Took, View, take_in, unmatched};
 pub use widget::{
-    Arrange, Axis, Draws, Laid, Lines, Offer, Offered, Quad, Sample, Slices, Stateless, TextDraw, Widget,
+    Arrange, Axis, Draws, Inside, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side, Slices, Stateless,
+    TextDraw, Tip, Widget,
 };
 
 /// What a screen's code names: the tree, the stock widgets, the style, the screen, and what its markup and its
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Inside, Popup, Region, Row, Scroll, Side, Slider, Stack, Tab, Tabs,
-        Text, TextInput, Texture, Toggle, Tooltip,
+        Bar, Button, Column, Fill, Grid, Image, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text, TextInput,
+        Texture, Toggle, Tooltip,
     };
     pub use crate::{
-        Alignment, Border, Controls, Distribute, Edges, Gap, ItemKey, Key, KeyPath, Length, Node, Placed, Raised, Rows,
-        Screen, Segment, SelfAlign, Shaping, Space, Style, Target, Track, Tree, View, Viewport,
+        Alignment, Border, Controls, Distribute, Edges, Gap, Inside, ItemKey, Key, KeyPath, Length, Node, Placed,
+        Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space, Style, Target, Track, Tree, View, Viewport,
     };
 }
 

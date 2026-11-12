@@ -14,9 +14,10 @@ use crate::input::Raised;
 use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Segment, Tree};
-use crate::widget::Laid;
-use crate::widgets::{Button, Column, Opened, Popup, Scroll, Side, Stack, Tip, Tooltip};
+use crate::widget::{Arrange, Draws, Inside, Laid, Layer, Opens, Side, Tip, Widget};
+use crate::widgets::{Button, Column, Opened, Popup, Scroll, Stack, Tooltip};
 use aethereal_actor::{Answered, Slept};
+use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::draw_list::{Entry, Pointer};
 use aethereal_render::text::Colour;
@@ -335,6 +336,65 @@ fn open_state_survives_a_rebuild_by_key_and_a_popup_at_another_key_starts_shut()
     assert_eq!(rebuilt, Opened::Open);
     assert!((content - 80.0).abs() < f32::EPSILON, "the rebuilt content is laid out open: {content}");
     assert_eq!(elsewhere, Opened::Shut);
+}
+
+/// Whether a disclosure's content shows: open from the first, until its screen shuts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
+#[kind(name = "aether.ui.test.disclosed")]
+enum Disclosed {
+    #[default]
+    Open,
+    Shut,
+}
+
+/// A program's own primitive that claims a layer of its screen as a `Popup` does, through `Widget`'s methods alone: its
+/// first child its anchor, and its content open below it until its screen shuts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Disclosure;
+
+impl Widget for Disclosure {
+    type State = Disclosed;
+
+    fn arrange(&self) -> Arrange {
+        Arrange::Popup(Layer { side: Side::Below, opens: Opens::Pressed { modal: false, inside: Inside::Stays } })
+    }
+
+    fn draw(&self, _: &Disclosed, _: &Style, _: &Laid, _: &mut Draws<'_, '_>) {}
+
+    fn open(&self, disclosed: &Disclosed) -> bool {
+        *disclosed == Disclosed::Open
+    }
+
+    fn shut(&self, disclosed: &mut Disclosed) {
+        *disclosed = Disclosed::Shut;
+    }
+}
+
+#[test]
+fn a_program_s_own_primitive_opens_a_layer_and_is_shut_through_its_widget_methods() {
+    // Catches a top layer only the stock widgets reach, as when the library knew a popup by its type: a program's own
+    // primitive that arranges its children as a popup would have its content laid out in its box and listed in tree
+    // order, beneath what follows it, and a press outside it would leave it open.
+    let mut screen = screen();
+    let tree = || {
+        let content = vec![block(0, 40.0, 10.0), block(1, 60.0, 30.0)];
+        column(vec![Node::new(Segment::Place(0), Disclosure, Style::default(), content), button(1, 1)])
+    };
+    let (disclosure, content, outside) = (child(0), path(&[0, 1]), child(1));
+    laid(&mut screen, tree(), &[]);
+
+    let shown = placed(&screen, &content);
+    let over_outside = hit(&screen, &content) > hit(&screen, &outside);
+    let elsewhere = hit(&screen, &outside);
+    press(&mut screen, elsewhere, 2.0, 2.0);
+    let pressed_outside = screen.table().state::<Disclosure>(&disclosure);
+    laid(&mut screen, tree(), &[]);
+    let shut = draws(&screen, &content);
+
+    assert_eq!(shown.rect, Rect2 { min: Vec2::new(0.0, 10.0), max: Vec2::new(60.0, 40.0) }, "placed below its anchor");
+    assert!(over_outside, "its content is listed over what follows it: {:?}", screen.listing);
+    assert_eq!(pressed_outside, Some(Disclosed::Shut));
+    assert_eq!(shut, vec![], "its content draws no more once it is shut");
 }
 
 /// A tree of a tooltip over a button raising `Click(1)`, its content a column holding a button raising `Click(2)`.

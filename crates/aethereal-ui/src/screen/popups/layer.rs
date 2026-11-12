@@ -5,8 +5,7 @@ use super::super::Slot;
 use super::{Popper, Stands};
 use crate::layout::Boxed;
 use crate::tree::Flat;
-use crate::widget::Axis;
-use crate::widgets::{Side, anchor};
+use crate::widget::{Axis, Side, anchor};
 use aethereal_math::{Rect2, Vec2};
 
 /// What a screen lists of its widgets as a layout walks them: beneath its top layer, then the layer of each open popup,

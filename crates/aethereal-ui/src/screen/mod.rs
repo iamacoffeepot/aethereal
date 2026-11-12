@@ -51,8 +51,7 @@ use crate::style::Style;
 use crate::table::{Focus, Table};
 use crate::tree::{Flat, KeyPath, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Quad, Sample};
-use crate::widgets::anchor;
+use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Quad, Sample, anchor};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -509,7 +508,7 @@ fn stand(
     let widget = flat.node.widget();
     let (slide, cut) = match widget.arrange() {
         Arrange::Scroll(axis) => (fit(table, &flat.path, widget, &laid, axis), clip.intersection(laid.content)),
-        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup => (Vec2::ZERO, clip),
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => (Vec2::ZERO, clip),
     };
 
     (laid, slide, cut)
@@ -540,7 +539,7 @@ fn listed(
 ) -> Listing {
     let widget = node.node.widget();
     let style = node.node.style();
-    let over = matches!(popper(widget), Some(Popper::Popup(_)));
+    let over = popper(widget).is_some_and(Popper::over);
     let mut beneath = Vec::new();
     let backed = fills(style);
     if backed {

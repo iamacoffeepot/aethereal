@@ -17,10 +17,8 @@
 //! </Tooltip>
 //! ```
 
-use super::popup::Side;
 use crate::style::Style;
-use crate::widget::{Arrange, Draws, Laid, Widget};
-use aethereal_data::Plain;
+use crate::widget::{Arrange, Draws, Laid, Layer, Opens, Side, Tip, Widget};
 use aethereal_render::draw_list::Pointer;
 use aethereal_window::Cursor;
 use core::time::Duration;
@@ -34,21 +32,6 @@ pub const DELAY: Duration = Duration::from_millis(500);
 pub struct Tooltip {
     pub side: Side,
     pub delay: Duration,
-}
-
-/// Where a tooltip stands with the pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
-#[kind(name = "aether.ui.tip")]
-pub enum Tip {
-    /// The pointer is not on its anchor.
-    #[default]
-    Away,
-    /// The pointer came onto its anchor in the hover numbered `hover`, and it waits for that hover's sleep to end.
-    Waiting { hover: u64 },
-    /// Its content shows.
-    Open,
-    /// A press was made while the pointer was on its anchor: it stays shut until the pointer leaves.
-    Dismissed,
 }
 
 impl Tooltip {
@@ -81,7 +64,15 @@ impl Widget for Tooltip {
     type State = Tip;
 
     fn arrange(&self) -> Arrange {
-        Arrange::Popup
+        Arrange::Popup(Layer { side: self.side, opens: Opens::Rested { delay: self.delay } })
+    }
+
+    fn tip(&self, tip: &Tip) -> Tip {
+        *tip
+    }
+
+    fn tip_to(&self, tip: &mut Tip, to: Tip) {
+        *tip = to;
     }
 
     fn draw(&self, _: &Tip, _: &Style, _: &Laid, _: &mut Draws<'_, '_>) {}

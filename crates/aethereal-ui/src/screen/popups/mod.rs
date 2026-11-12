@@ -10,9 +10,11 @@
 //! Entered / Left ──> reached ──> Prepare: a tooltip newly hovered waits, a Sleep numbered by its hover ──> Slept ──> open
 //! ```
 //!
-//! A popup and a tooltip are the stock widgets whose content the library shows in the top layer, and it opens and shuts
-//! them as their screen's input says, as it slides a scroll for the wheel: they are known by their types, so a tree
-//! holds no widget of another type that claims a layer of its screen.
+//! A widget claims a layer by arranging its children as a popup, `Arrange::Popup` with its `Layer`, and the library opens
+//! and shuts it as its screen's input says through `Widget`'s methods alone, as it slides a scroll for the wheel: one
+//! opened by its own input, a `Popup`, is read with `open` and shut with `shut`, and one opened by the pointer resting,
+//! a `Tooltip`, keeps where it stands with the pointer through `tip` and `tip_to`. So a program's own primitive claims a
+//! layer as a stock one does.
 
 mod layer;
 #[cfg(test)]
@@ -28,8 +30,7 @@ use super::{Fresh, Last, Screen, Worked};
 use crate::input::Used;
 use crate::table::{Focus, Table};
 use crate::tree::{Flat, KeyPath};
-use crate::widget::Built;
-use crate::widgets::{Inside, Opened, Popup, Side, Tip, Tooltip, anchor, anchors, contains};
+use crate::widget::{Arrange, Built, Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
 use aethereal_actor::{Answered, Level, Slept};
 use aethereal_data::Plain;
 
@@ -87,53 +88,95 @@ pub(super) enum Open {
     Modal,
 }
 
-/// A stock widget whose content shows in its screen's top layer.
+/// A widget whose content shows in its screen's top layer, as it arranges its children: the widget, and its layer.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum Popper<'a> {
-    Popup(&'a Popup),
-    Tooltip(&'a Tooltip),
+pub(super) struct Popper<'a> {
+    widget: &'a dyn Built,
+    layer: Layer,
 }
 
-/// `widget` as a popup or a tooltip, if it is one.
+/// `widget` as one whose content shows in its screen's top layer, if it arranges its children as a popup.
 pub(super) fn popper(widget: &dyn Built) -> Option<Popper<'_>> {
-    let any = widget.as_any();
-    if let Some(popup) = any.downcast_ref::<Popup>() {
-        return Some(Popper::Popup(popup));
+    match widget.arrange() {
+        Arrange::Popup(layer) => Some(Popper { widget, layer }),
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => None,
     }
-
-    any.downcast_ref::<Tooltip>().map(Popper::Tooltip)
 }
 
 impl Popper<'_> {
     /// Whether the one at `path` is open, as `table` keeps its state.
     pub(super) fn open(self, table: &Table, path: &KeyPath) -> bool {
-        match self {
-            Self::Popup(_) => table.state::<Popup>(path).is_some_and(|state| state.open == Opened::Open),
-            Self::Tooltip(_) => table.state::<Tooltip>(path) == Some(Tip::Open),
+        let state = table.held(path, self.widget.state_kind()).unwrap_or_default();
+        match self.layer.opens {
+            Opens::Pressed { .. } => self.widget.open(state),
+            Opens::Rested { .. } => self.widget.tip(state) == Tip::Open,
+        }
+    }
+
+    /// Where the one at `path` stands with the pointer, as `table` keeps its state: for one opened by the pointer
+    /// resting.
+    fn tip(self, table: &Table, path: &KeyPath) -> Tip {
+        let state = table.held(path, self.widget.state_kind()).unwrap_or_default();
+
+        self.widget.tip(state)
+    }
+
+    /// Keeps `tip` as where the one at `path` stands with the pointer, in its state as `table` keeps it.
+    fn tip_to(self, table: &mut Table, path: &KeyPath, tip: Tip) {
+        self.change(table, path, |widget, state| widget.tip_to(state, tip));
+    }
+
+    /// Shuts the one at `path`, as `table` keeps its state, and answers whether it was open: one opened by the pointer
+    /// resting goes back to waiting for nothing.
+    fn shut(self, table: &mut Table, path: &KeyPath) -> bool {
+        let open = self.open(table, path);
+        match self.layer.opens {
+            Opens::Pressed { .. } => self.change(table, path, |widget, state| widget.shut(state)),
+            Opens::Rested { .. } => self.tip_to(table, path, Tip::Away),
+        }
+
+        open
+    }
+
+    /// Changes the state of the one at `path` with `change`, as `table` keeps it, or as it is first made when none of
+    /// its kind is kept there, and keeps it in `table` when it changed.
+    fn change(self, table: &mut Table, path: &KeyPath, change: impl FnOnce(&dyn Built, &mut Vec<u8>)) {
+        let kind = self.widget.state_kind();
+        let before = table.held(path, kind).map_or_else(|| self.widget.first_state(), <[u8]>::to_vec);
+        let mut state = before.clone();
+        change(self.widget, &mut state);
+        if state != before {
+            table.write(path, kind, state);
         }
     }
 
     /// Which side of its anchor its content is placed on.
     pub(super) const fn side(self) -> Side {
-        match self {
-            Self::Popup(popup) => popup.side,
-            Self::Tooltip(tooltip) => tooltip.side,
-        }
+        self.layer.side
     }
 
     /// Whether it blocks the pointer from the rest of its screen while it is open.
     pub(super) const fn modal(self) -> bool {
-        match self {
-            Self::Popup(popup) => popup.modal,
-            Self::Tooltip(_) => false,
+        match self.layer.opens {
+            Opens::Pressed { modal, .. } => modal,
+            Opens::Rested { .. } => false,
         }
     }
 
-    /// How its content is reached, standing within what is reached as `around` says: a tooltip's content is inert.
+    /// Whether its own drawing and hit are listed over its anchor's: one opened by its own input is its anchor's button.
+    pub(super) const fn over(self) -> bool {
+        match self.layer.opens {
+            Opens::Pressed { .. } => true,
+            Opens::Rested { .. } => false,
+        }
+    }
+
+    /// How its content is reached, standing within what is reached as `around` says: the content of one opened by the
+    /// pointer resting is inert, as the pointer leaving its anchor for it would shut it.
     const fn touch(self, around: Touch) -> Touch {
-        match self {
-            Self::Popup(_) => around,
-            Self::Tooltip(_) => Touch::Inert,
+        match self.layer.opens {
+            Opens::Pressed { .. } => around,
+            Opens::Rested { .. } => Touch::Inert,
         }
     }
 }
@@ -191,16 +234,19 @@ pub(super) fn tops(flat: &[Flat<'_>], surfaces: &[Surface]) -> Vec<usize> {
 pub(super) fn open(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -> Open {
     let mut open = Open::Nothing;
     for (node, surface) in flat.iter().zip(surfaces) {
-        let Some(Popper::Popup(popup)) = popper(node.node.widget()) else {
+        let Some(popper) = popper(node.node.widget()) else {
+            continue;
+        };
+        let Opens::Pressed { modal, .. } = popper.layer.opens else {
             continue;
         };
         let shown = surface.stands != Stands::Hidden;
-        let opened = Popper::Popup(popup).open(table, &node.path);
+        let opened = popper.open(table, &node.path);
         let counts = shown && opened;
         if !counts {
             continue;
         }
-        open = if popup.modal {
+        open = if modal {
             Open::Modal
         } else {
             open.with_popup()
@@ -220,20 +266,28 @@ impl Open {
     }
 }
 
-/// The place among `flat` of the topmost of the open popups `wanted` takes, shown as `surfaces` say: the last in tree
-/// order, whose layer draws over the others'.
-fn topmost(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table, wanted: impl Fn(&Popup) -> bool) -> Option<usize> {
+/// The place among `flat` of the topmost of the open popups opened by their own input that `wanted` takes by whether
+/// each is modal, shown as `surfaces` say, and it: the last in tree order, whose layer draws over the others'.
+fn topmost<'flat>(
+    flat: &'flat [Flat<'_>],
+    surfaces: &[Surface],
+    table: &Table,
+    wanted: impl Fn(bool) -> bool,
+) -> Option<(usize, Popper<'flat>)> {
     let mut topmost = None;
     for (at, (node, surface)) in flat.iter().zip(surfaces).enumerate() {
-        let Some(Popper::Popup(popup)) = popper(node.node.widget()) else {
+        let Some(popper) = popper(node.node.widget()) else {
+            continue;
+        };
+        let Opens::Pressed { modal, .. } = popper.layer.opens else {
             continue;
         };
         let shown = surface.stands != Stands::Hidden;
-        let opened = Popper::Popup(popup).open(table, &node.path);
-        let takes = wanted(popup);
+        let opened = popper.open(table, &node.path);
+        let takes = wanted(modal);
         let counts = shown && opened && takes;
         if counts {
-            topmost = Some(at);
+            topmost = Some((at, popper));
         }
     }
 
@@ -243,7 +297,7 @@ fn topmost(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table, wanted: impl 
 /// Which of `flat` Tab reaches, `surfaces` where each stands and `table` keeping the popups' states: each focusable
 /// widget shown and live, and, while a modal popup is open, only those within the topmost's content.
 pub(super) fn tabbable(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -> Vec<bool> {
-    let modal = topmost(flat, surfaces, table, |popup| popup.modal).map(|at| &flat[at].path);
+    let modal = topmost(flat, surfaces, table, |modal| modal).map(|(at, _)| &flat[at].path);
     flat.iter()
         .zip(surfaces)
         .map(|(node, surface)| {
@@ -293,25 +347,8 @@ fn unanchored(flat: &[Flat<'_>], table: &mut Table) {
         if held {
             continue;
         }
-        match popper {
-            Popper::Popup(_) => {
-                shut(table, &node.path);
-            }
-            Popper::Tooltip(_) => table.put::<Tooltip>(&node.path, &Tip::Away),
-        }
+        popper.shut(table, &node.path);
     }
-}
-
-/// Shuts the popup at `path`, as `table` keeps it, and answers whether it was open.
-fn shut(table: &mut Table, path: &KeyPath) -> bool {
-    let Some(mut state) = table.state::<Popup>(path) else {
-        return false;
-    };
-    let open = state.open == Opened::Open;
-    state.open = Opened::Shut;
-    table.put::<Popup>(path, &state);
-
-    open
 }
 
 /// Whether the pointer reaches, as `reached` says, the tooltip at `tooltip`, or its anchor or a widget within it.
@@ -368,15 +405,18 @@ impl Screen {
             return;
         };
         for node in &flattened.nodes {
-            let Some(Popper::Tooltip(tooltip)) = popper(node.node.widget()) else {
+            let Some(popper) = popper(node.node.widget()) else {
+                continue;
+            };
+            let Opens::Rested { delay } = popper.layer.opens else {
                 continue;
             };
             let on = hovered(&self.reached, &node.path);
-            let tip = self.table.state::<Tooltip>(&node.path).unwrap_or_default();
+            let tip = popper.tip(&self.table, &node.path);
             let next = match (tip, on) {
                 (Tip::Away, true) => {
                     self.hovers += 1;
-                    orders.sleep(tooltip.delay, Tipping { path: node.path.clone(), hover: self.hovers });
+                    orders.sleep(delay, Tipping { path: node.path.clone(), hover: self.hovers });
                     Tip::Waiting { hover: self.hovers }
                 }
                 (Tip::Waiting { .. } | Tip::Open | Tip::Dismissed, false) => Tip::Away,
@@ -385,12 +425,13 @@ impl Screen {
             if tip == Tip::Open {
                 self.fresh = Fresh::Stale;
             }
-            self.table.put::<Tooltip>(&node.path, &next);
+            popper.tip_to(&mut self.table, &node.path, next);
         }
     }
 
-    /// A tooltip's sleep ended: the tooltip it was run for opens if it is still waiting for that hover. One for a hover
-    /// that has ended, or that a later one followed, opens nothing; one that did not end in its time is logged.
+    /// A tooltip's sleep ended: the tooltip it was run for, in the last tree built, opens if it is still waiting for that
+    /// hover. One for a hover that has ended, or that a later one followed, opens nothing; one that did not end in its
+    /// time is logged.
     pub fn slept(&mut self, answered: Answered<Slept>, tipping: Tipping) -> Orders {
         let mut orders = Orders::default();
         let Slept = match answered {
@@ -401,9 +442,15 @@ impl Screen {
             }
         };
         let Tipping { path, hover } = tipping;
-        let waiting = self.table.state::<Tooltip>(&path) == Some(Tip::Waiting { hover });
+        let Last::Built(tree) = &self.unkept.last else {
+            return orders;
+        };
+        let Some(popper) = tree.find(&path).and_then(|node| popper(node.widget())) else {
+            return orders;
+        };
+        let waiting = popper.tip(&self.table, &path) == Tip::Waiting { hover };
         if waiting {
-            self.table.put::<Tooltip>(&path, &Tip::Open);
+            popper.tip_to(&mut self.table, &path, Tip::Open);
             self.fresh = Fresh::Stale;
         }
 
@@ -420,29 +467,31 @@ impl Screen {
             return;
         };
         for node in &flattened.nodes {
-            match popper(node.node.widget()) {
-                Some(Popper::Popup(_)) => {
+            let Some(popper) = popper(node.node.widget()) else {
+                continue;
+            };
+            match popper.layer.opens {
+                Opens::Pressed { .. } => {
                     let within = pressing.within(&node.path);
                     if within {
                         continue;
                     }
-                    let was_open = shut(&mut self.table, &node.path);
+                    let was_open = popper.shut(&mut self.table, &node.path);
                     if was_open {
                         self.fresh = Fresh::Stale;
                     }
                 }
-                Some(Popper::Tooltip(_)) => {
+                Opens::Rested { .. } => {
                     let on = hovered(&self.reached, &node.path);
                     if !on {
                         continue;
                     }
-                    let shown = self.table.state::<Tooltip>(&node.path) == Some(Tip::Open);
+                    let shown = popper.tip(&self.table, &node.path) == Tip::Open;
                     if shown {
                         self.fresh = Fresh::Stale;
                     }
-                    self.table.put::<Tooltip>(&node.path, &Tip::Dismissed);
+                    popper.tip_to(&mut self.table, &node.path, Tip::Dismissed);
                 }
-                None => {}
             }
         }
     }
@@ -455,16 +504,19 @@ impl Screen {
             return;
         };
         for around in path.ancestors() {
-            let Some(Popper::Popup(popup)) = tree.find(&around).and_then(|node| popper(node.widget())) else {
+            let Some(popper) = tree.find(&around).and_then(|node| popper(node.widget())) else {
                 continue;
             };
-            let closes = popup.inside == Inside::Closes;
+            let Opens::Pressed { inside, .. } = popper.layer.opens else {
+                continue;
+            };
+            let closes = inside == Inside::Closes;
             let within = contains(&around, path);
             let shuts = closes && within;
             if !shuts {
                 continue;
             }
-            let was_open = shut(&mut self.table, &around);
+            let was_open = popper.shut(&mut self.table, &around);
             if was_open {
                 self.fresh = Fresh::Stale;
             }
@@ -481,11 +533,11 @@ impl Screen {
             return Used::Passed;
         };
         let surfaces = surfaces(&flattened.nodes, &self.table);
-        let Some(at) = topmost(&flattened.nodes, &surfaces, &self.table, |_| true) else {
+        let Some((at, popper)) = topmost(&flattened.nodes, &surfaces, &self.table, |_| true) else {
             return Used::Passed;
         };
         let popup = flattened.nodes[at].path.clone();
-        shut(&mut self.table, &popup);
+        popper.shut(&mut self.table, &popup);
         self.fresh = Fresh::Stale;
         let within = match self.table.focus() {
             Focus::On(path) => contains(&popup, path),
