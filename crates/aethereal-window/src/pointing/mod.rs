@@ -13,6 +13,9 @@
 //!   [`PointerEvent::PointerLeft`], and those it now reaches [`PointerEvent::PointerEntered`].
 //! - **Capture:** the entries a press reached are sent every move and release until every button is up, wherever the
 //!   pointer goes, each in the coordinates its list was drawn in when the press reached it.
+//! - **A release says what it was over:** the topmost entry the pointer's stack reaches as the button comes up, as
+//!   though no button were held, with the place in that entry's coordinates, or that nothing reachable was there,
+//!   [`Over`]. So an actor that began a drag learns where it was dropped, whatever holds the capture.
 //! - **The wheel follows the pointer**, never a capture.
 //!
 //! The raw subscription stays: every subscriber of the window is sent every pointer event as its host heard it.
@@ -85,7 +88,7 @@ pub type Hearer = (Pointed,);
 
 /// A pointer event, sent to an actor through the entry numbered `entry` of its draw list, which the pointer reached in
 /// `window`'s stack: so the actor need not test its own widgets again.
-#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 #[kind(name = "aether.window.pointed")]
 pub struct Pointed {
     pub window: WindowId,
@@ -95,20 +98,35 @@ pub struct Pointed {
 
 /// What the pointer did at an entry, positions in the coordinates its list was drawn in: the window's surface pixels,
 /// as [`Event`]'s are, less the origin its list was drawn at.
-#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 pub enum PointerEvent {
     /// The pointer moved, to `x`, `y`.
     PointerMoved { x: f32, y: f32 },
     /// A button went down, at `x`, `y`: every move and release is sent here until every button is up.
     PointerDown { x: f32, y: f32, button: Button },
-    /// A button came up, at `x`, `y`.
-    PointerUp { x: f32, y: f32, button: Button },
+    /// A button came up, at `x`, `y`, over `over`: what the pointer reaches there, whoever the release is sent to.
+    PointerUp { x: f32, y: f32, button: Button, over: Over },
     /// The wheel turned, with the pointer at `x`, `y`, as [`Event::Wheel`] says.
     Wheel { x: f32, y: f32, delta_x: f32, delta_y: f32 },
     /// The pointer now reaches the entry.
     PointerEntered,
     /// The pointer no longer reaches the entry.
     PointerLeft,
+}
+
+/// What a release was over: the topmost entry of the pointer's stack as the button came up, whether it blocks the
+/// pointer or lets it through, as though no button were held, so it may be an entry the release is sent to; or nothing
+/// the pointer reaches. An entry the pointer ignores is never in a stack.
+///
+/// The stack is the pointer's newest when the release is delivered: that of the first frame drawn after it whose
+/// stacks came back, at where the pointer was as that frame was drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
+pub enum Over {
+    /// Nothing the pointer reaches was under it.
+    Nothing,
+    /// The entry numbered `entry` of the draw list `actor` sent, which the receiver may cast to a protocol it mails,
+    /// and the release's place, `x`, `y`, in the coordinates that list was drawn in, as `actor` would hear it.
+    Entry { actor: ProtocolRef<Hearer>, entry: u32, x: f32, y: f32 },
 }
 
 /// The most pointer events a window keeps waiting for their stacks. Far more than a frame or two brings, it bounds
@@ -216,8 +234,9 @@ impl Cascade {
                     send(&reached, PointerEvent::PointerDown { x, y, button });
                 }
                 Event::PointerUp { x, y, button } => {
+                    let over = Over::top_of(&self.pointer, x, y);
                     let reached = self.capture.release(&self.pointer, button);
-                    send(&reached, PointerEvent::PointerUp { x, y, button });
+                    send(&reached, PointerEvent::PointerUp { x, y, button, over });
                 }
                 Event::PointerMoved { x, y } => {
                     let reached = self.capture.held(&self.pointer);
@@ -243,7 +262,8 @@ impl Cascade {
 }
 
 impl PointerEvent {
-    /// The event as an entry drawn with its list's origin at `origin` hears it: each place less the origin.
+    /// The event as an entry drawn with its list's origin at `origin` hears it: each place less the origin, but for what
+    /// a release was over, which is in its own entry's coordinates whoever hears it.
     #[must_use]
     fn relative_to(self, origin: Vec2) -> Self {
         let local = |x: f32, y: f32| (x - origin.x, y - origin.y);
@@ -256,9 +276,9 @@ impl PointerEvent {
                 let (x, y) = local(x, y);
                 Self::PointerDown { x, y, button }
             }
-            Self::PointerUp { x, y, button } => {
+            Self::PointerUp { x, y, button, over } => {
                 let (x, y) = local(x, y);
-                Self::PointerUp { x, y, button }
+                Self::PointerUp { x, y, button, over }
             }
             Self::Wheel { x, y, delta_x, delta_y } => {
                 let (x, y) = local(x, y);
@@ -266,6 +286,19 @@ impl PointerEvent {
             }
             Self::PointerEntered | Self::PointerLeft => self,
         }
+    }
+}
+
+impl Over {
+    /// What a release at `x`, `y`, in the window's surface pixels, was over: the top of `stack`, the pointer's, at the
+    /// place less the origin its list was drawn at; or nothing, when the stack is empty.
+    fn top_of(stack: &[Reach], x: f32, y: f32) -> Self {
+        stack.first().map_or(Self::Nothing, |top| Self::Entry {
+            actor: top.actor,
+            entry: top.entry,
+            x: x - top.origin.x,
+            y: y - top.origin.y,
+        })
     }
 }
 

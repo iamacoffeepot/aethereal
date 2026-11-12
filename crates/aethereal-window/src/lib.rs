@@ -19,10 +19,11 @@
 //! A window's pointer events also cascade through what was drawn under the pointer (ADR-0055): the renderer subscribes
 //! to each window's probes, [`SubscribeProbes`], is sent each pointer event's place, [`Probed`], and answers what each
 //! frame drew there, [`Picked`]; the window then sends each event, as [`Pointed`], to the actors whose draw lists hold
-//! the entries it reaches, from the top, until one blocks. Its keys and typed text go only through the keys the draw
-//! lists declare: the renderer sends it the `Keys` entries a frame lists, [`KeysListed`], the last called first, and
-//! the window sends each key, as [`Keyed`], to the actor of each entry whose [`KeySet`] holds it, from the top, until
-//! one blocks, and typed text where the key that typed it went. A raw subscriber hears neither.
+//! the entries it reaches, from the top, until one blocks; a release also says what the pointer was over, [`Over`],
+//! whoever holds the capture. Its keys and typed text go only through the keys the draw lists declare: the renderer
+//! sends it the `Keys` entries a frame lists, [`KeysListed`], the last called first, and the window sends each key, as
+//! [`Keyed`], to the actor of each entry whose [`KeySet`] holds it, from the top, until one blocks, and typed text
+//! where the key that typed it went. A raw subscriber hears neither.
 
 mod event;
 mod host;
@@ -38,7 +39,7 @@ pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use keys::{KeyEvent, KeyHearer, KeySet, Keyed, KeysEntry, KeysListed};
 pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES, Perform, Performed, Unperformed};
-pub use pointing::{Hearer, Picked, Pointed, PointerEvent, Pressed, Probed, Reach, SubscribeProbes};
+pub use pointing::{Hearer, Over, Picked, Pointed, PointerEvent, Pressed, Probed, Reach, SubscribeProbes};
 #[cfg(feature = "tools")]
 pub use tool::{InputTool, InputToolConfig, SendInput, WindowTool, WindowToolConfig};
 pub use window::{Window, WindowConfig, WindowId};

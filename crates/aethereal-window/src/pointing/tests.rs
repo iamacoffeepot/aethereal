@@ -124,7 +124,8 @@ fn a_press_captures_every_move_and_its_release_wherever_the_pointer_goes() {
     let sent = cascade.picked(WINDOW, under(4, &[blocks(game, 0)]));
 
     let moved = PointerEvent::PointerMoved { x: 1.0, y: 2.0 };
-    let up = PointerEvent::PointerUp { x: 1.0, y: 2.0, button: Button::Main };
+    let over = Over::Entry { actor: game, entry: 0, x: 1.0, y: 2.0 };
+    let up = PointerEvent::PointerUp { x: 1.0, y: 2.0, button: Button::Main, over };
     let expected = vec![
         to(slider, 3, PointerEvent::PointerLeft),
         to(game, 0, PointerEvent::PointerEntered),
@@ -209,6 +210,77 @@ fn a_capture_hears_each_move_from_where_its_entry_was_drawn_when_the_press_reach
         to(slider, 3, PointerEvent::PointerMoved { x: 0.0, y: 1.0 }),
     ];
     assert_eq!(sent, expected);
+}
+
+/// What `sent` told `actor` of a release, through any of its entries: what it was over, each time.
+fn released_over(sent: &[(ProtocolRef<Hearer>, Pointed)], actor: ProtocolRef<Hearer>) -> Vec<Over> {
+    sent.iter()
+        .filter(|(to, _)| *to == actor)
+        .filter_map(|(_, pointed)| match pointed.event {
+            PointerEvent::PointerUp { over, .. } => Some(over),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_release_under_a_capture_is_over_the_top_of_the_pointer_s_stack_though_it_lets_the_pointer_through() {
+    // Catches a release that says it was over what holds the capture, so a drag never learns where it was dropped; and
+    // one over the first entry that blocks, or the stack's bottom, so a drop through a tooltip that lets the pointer
+    // through lands on the slot beneath it, which the top of the stack says it did not (ADR-0055). An entry the pointer
+    // ignores is never in a stack: the renderer leaves it out.
+    let (slider, tooltip, slot) = (actor(1), actor(2), actor(3));
+    let mut cascade = heard(&[PRESSED, RELEASED]);
+    cascade.picked(WINDOW, under(1, &[blocks(slider, 3)]));
+
+    let sent = cascade.picked(WINDOW, under(2, &[passes(tooltip, 1), blocks(slot, 2)]));
+
+    let over = Over::Entry { actor: tooltip, entry: 1, x: 1.0, y: 2.0 };
+    assert_eq!(released_over(&sent, slider), vec![over]);
+}
+
+#[test]
+fn a_release_tells_where_it_was_over_in_the_coordinates_of_the_entry_it_was_over() {
+    // Catches the place a release was over given in the window's pixels, or from the origin of the capture's entry, as
+    // the release itself is: a drop on a slot its parent placed at a panel would then be taken as one at another slot
+    // of that panel (ADR-0055).
+    let (slider, slot) = (actor(1), actor(2));
+    let mut cascade = heard(&[PRESSED, RELEASED]);
+    cascade.picked(WINDOW, under(1, &[drawn_at(blocks(slider, 3), 0.5, 0.5)]));
+
+    let sent = cascade.picked(WINDOW, under(2, &[drawn_at(blocks(slot, 0), -4.0, 1.5)]));
+
+    let over = Over::Entry { actor: slot, entry: 0, x: 5.0, y: 0.5 };
+    let up = PointerEvent::PointerUp { x: 0.5, y: 1.5, button: Button::Main, over };
+    assert_eq!(sent.last(), Some(&to(slider, 3, up)));
+}
+
+#[test]
+fn a_release_where_the_pointer_reaches_nothing_says_it_was_over_nothing() {
+    // Catches a release over empty space that says it was over what the press reached, or what the pointer last
+    // reached, so a drag dropped outside every screen is taken as dropped on the slot it began on.
+    let slider = actor(1);
+    let mut cascade = heard(&[PRESSED, RELEASED]);
+    cascade.picked(WINDOW, under(1, &[blocks(slider, 3)]));
+
+    let sent = cascade.picked(WINDOW, under(2, &[]));
+
+    assert_eq!(released_over(&sent, slider), vec![Over::Nothing]);
+}
+
+#[test]
+fn a_release_over_the_entry_that_holds_the_capture_says_so() {
+    // Catches a release that passes over the actor holding the capture to what lies beneath it, so a drag dropped
+    // back on its own screen is taken as dropped on the game; the source decides what a drop on itself means.
+    let (slider, game) = (actor(1), actor(2));
+    let mut cascade = heard(&[PRESSED, RELEASED]);
+    cascade.picked(WINDOW, under(1, &[passes(slider, 3), blocks(game, 0)]));
+
+    let sent = cascade.picked(WINDOW, under(2, &[passes(slider, 3), blocks(game, 0)]));
+
+    let over = Over::Entry { actor: slider, entry: 3, x: 1.0, y: 2.0 };
+    assert_eq!(released_over(&sent, slider), vec![over]);
+    assert_eq!(released_over(&sent, game), vec![over], "the capture is every entry the press reached");
 }
 
 /// What a test tells the prober to do.
