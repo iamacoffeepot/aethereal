@@ -261,13 +261,15 @@ const fn refused(pass: u32, why: PassRefused) -> Result<(), FrameRefused> {
 #[test]
 fn a_frame_on_no_window_without_passes_or_not_ending_on_its_end_is_refused() {
     // Catches a frame on a window nothing draws to, one that draws nothing, two passes a placement could not tell
-    // apart, two whose GPU times a person could not, and a frame whose end nothing writes, which shows what the window
+    // apart, two whose GPU times a person could not, a pass of a frame on a window that takes the name of the
+    // interface pass the renderer adds after it, and a frame whose end nothing writes, which shows what the window
     // last held.
     let kept = Kept::new();
     let elsewhere = changed(|frame| frame.ends = Ends::Window(window(1)));
     let empty = changed(|frame| frame.passes.clear());
     let repeated = changed(|frame| frame.passes[1].name = frame.passes[0].name);
     let relabelled = changed(|frame| frame.passes[1].label = frame.passes[0].label.clone());
+    let interface = changed(|frame| frame.passes[1].name = PassName::of::<Interface>());
     let unended = changed(|frame| {
         frame.passes.pop();
     });
@@ -276,6 +278,7 @@ fn a_frame_on_no_window_without_passes_or_not_ending_on_its_end_is_refused() {
     assert_eq!(check(&empty, &kept), Err(FrameRefused::Empty));
     assert_eq!(check(&repeated, &kept), Err(FrameRefused::Repeated { pass: 1 }));
     assert_eq!(check(&relabelled, &kept), Err(FrameRefused::Repeated { pass: 1 }));
+    assert_eq!(check(&interface, &kept), Err(FrameRefused::Repeated { pass: 1 }));
     assert_eq!(check(&unended, &kept), Err(FrameRefused::Unended));
 }
 

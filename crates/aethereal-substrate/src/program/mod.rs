@@ -10,6 +10,7 @@ mod error;
 mod host;
 mod listed;
 mod provided;
+mod root_list;
 mod settings;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ pub use error::{ProgramError, Reader, Unbuilt};
 pub use host::{Builds, Host, Serves};
 pub use listed::{Bootstraps, Composing, Stage};
 pub use provided::{Gathers, Provided, Provision};
+pub use root_list::{Drawn, RootList};
 pub use settings::{ENGINE, EngineSettings, RUNNING};
 
 use crate::{Engine, Setup};
@@ -43,7 +45,8 @@ type Section = Box<dyn Fn(Composing) -> Result<Composing, ProgramError>>;
 type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 
 /// A program for the host `H`: the engine's options, its defaults for each section, the layers of its configuration,
-/// and its roots `R`, a list, `()` for none and `(A, S)` for the root `A` listed after those of `S` (ADR-0029).
+/// its roots `R`, a list, `()` for none and `(A, S)` for the root `A` listed after those of `S` (ADR-0029), and its
+/// root list `D`, the roots its renderer draws in draw order, `()` until [`draws`](Self::draws) names them (ADR-0055).
 ///
 /// A root listed with [`root`](Self::root) starts from its settings kind's `Default`; one listed with
 /// [`root_with`](Self::root_with) starts from the value the program gives. Either is only the program's defaults:
@@ -297,7 +300,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// }
 /// ```
 #[must_use]
-pub struct Program<H: Host, R> {
+pub struct Program<H: Host, R, D = ()> {
     /// The engine's options, applied in the order they were set.
     options: Vec<EngineOption>,
     /// The program's defaults for the engine's section, beneath every layer: `EngineSettings`'s `Default` until the
@@ -313,6 +316,8 @@ pub struct Program<H: Host, R> {
     /// The program's changes to the flags its sections suggest, in the order it made them.
     flags: Vec<FlagChange>,
     listed: PhantomData<fn() -> (H, R)>,
+    /// The root list, which the program is checked against as it is built and read as it is settled (ADR-0055).
+    drawn: PhantomData<fn() -> D>,
 }
 
 impl<H: Host> Program<H, ()> {
@@ -326,6 +331,7 @@ impl<H: Host> Program<H, ()> {
             layers: Vec::new(),
             flags: Vec::new(),
             listed: PhantomData,
+            drawn: PhantomData,
         }
     }
 
@@ -382,7 +388,7 @@ impl<H: Host> Program<H, ()> {
     }
 }
 
-impl<H: Host, R> Program<H, R> {
+impl<H: Host, R, D> Program<H, R, D> {
     /// The program with the root `A` listed after its roots so far, its settings starting from their kind's
     /// `Default`: it builds only when `H` bootstraps `A`, and only when `A`'s settings have a `Default`. A root whose
     /// settings have none is listed with [`root_with`](Self::root_with).
@@ -449,7 +455,7 @@ impl<H: Host, R> Program<H, R> {
     /// // `Show` has no `Default`: the program must give it, `.root_with::<Scene>(Show { port: 7000 })`.
     /// let program = Bench::program().root::<Scene>();
     /// ```
-    pub fn root<A>(self) -> Program<H, (A, R)>
+    pub fn root<A>(self) -> Program<H, (A, R), D>
     where
         A: Bootstrap<H>,
         A::Settings: Default,
@@ -462,11 +468,22 @@ impl<H: Host, R> Program<H, R> {
     /// running it still sets any field (ADR-0028). It builds only when `H` bootstraps `A`.
     ///
     /// `.root_with::<Counter>(Counters { children, ..Default::default() })` gives the fields it has opinions on.
-    pub fn root_with<A: Bootstrap<H>>(self, settings: A::Settings) -> Program<H, (A, R)> {
-        let Self { options, engine, running, mut sections, layers, flags, listed: _ } = self;
+    pub fn root_with<A: Bootstrap<H>>(self, settings: A::Settings) -> Program<H, (A, R), D> {
+        let Self { options, engine, running, mut sections, layers, flags, listed: _, drawn } = self;
         sections.push(Box::new(move |composing| composing.add(A::SECTION, Reader::Root(A::NAME), &settings)));
 
-        Program { options, engine, running, sections, layers, flags, listed: PhantomData }
+        Program { options, engine, running, sections, layers, flags, listed: PhantomData, drawn }
+    }
+
+    /// The program with its root list `E` in place of its last: the roots its renderer draws, in draw order, at each
+    /// window's main frame, fixed for the program's life (ADR-0055). It is not the order the roots are listed in, which
+    /// is the order they are made in. It builds only when each root it names is a singleton root the program lists,
+    /// found as the roots' order is ([`RootList`]), and the renderer refuses, as it bootstraps, a root that never
+    /// sends it a draw list.
+    pub fn draws<E>(self) -> Program<H, R, E> {
+        let Self { options, engine, running, sections, layers, flags, listed, drawn: _ } = self;
+
+        Program { options, engine, running, sections, layers, flags, listed, drawn: PhantomData }
     }
 
     /// The program with the layer `overlay` beneath those given already: an earlier layer wins, and every layer wins
@@ -512,14 +529,16 @@ impl<H: Host, R> Program<H, R> {
     }
 
     /// Bootstraps the program, then runs it on its host: it builds only when each root reaches at a typed path only
-    /// roots listed before it (`Ordered`, ADR-0022), and each root's needs are provided by roots listed before it.
+    /// roots listed before it (`Ordered`, ADR-0022), each root's needs are provided by roots listed before it, and its
+    /// root list names only its roots (`RootList`, ADR-0055).
     ///
     /// # Errors
     ///
     /// Why the program did not start, as [`ProgramError`] says, or did not run to its end, as the host's error says.
-    pub fn run<I: 'static, O>(self) -> Result<H::Exit, H::Error>
+    pub fn run<I: 'static, O, L>(self) -> Result<H::Exit, H::Error>
     where
         R: Bootstraps<H, I> + Ordered<O> + 'static,
+        D: RootList<R, L>,
     {
         H::run(self.settle()?)
     }
@@ -530,18 +549,21 @@ impl<H: Host, R> Program<H, R> {
     /// # Errors
     ///
     /// Why the program did not start, as [`ProgramError`] says.
-    pub fn build<I: 'static, O>(self) -> Result<H, ProgramError>
+    pub fn build<I: 'static, O, L>(self) -> Result<H, ProgramError>
     where
         H: Builds,
         R: Bootstraps<H, I> + Ordered<O> + 'static,
+        D: RootList<R, L>,
     {
         H::build(self.settle()?)
     }
 
-    /// The first phase: every section composed, every layer decoded into them, and the host's sections taken.
-    fn settle<I: 'static>(self) -> Result<Settled<H>, ProgramError>
+    /// The first phase: every section composed, every layer decoded into them, the host's sections taken, and the
+    /// root list read.
+    fn settle<I: 'static, L>(self) -> Result<Settled<H>, ProgramError>
     where
         R: Bootstraps<H, I> + 'static,
+        D: RootList<R, L>,
     {
         let mut budget = Budget::new(CONFIGURATION_BYTES);
         let mut configuration = self.parts()?.configure(&self.layers, &mut budget)?;
@@ -550,7 +572,7 @@ impl<H: Host, R> Program<H, R> {
 
         let roots = bootstrap_roots::<H, R, I>;
 
-        Ok(Settled { engine, running, options: self.options, configuration, roots })
+        Ok(Settled { engine, running, options: self.options, configuration, roots, root_list: D::drawn() })
     }
 }
 
@@ -571,6 +593,8 @@ pub struct Settled<H: Host> {
     options: Vec<EngineOption>,
     configuration: Configuration,
     roots: for<'host> fn(Stage<'host, H>) -> Booting<'host, H>,
+    /// The roots the renderer draws, in draw order (ADR-0055).
+    root_list: Vec<Drawn>,
 }
 
 impl<H: Host> Settled<H> {
@@ -601,7 +625,7 @@ impl<H: Host> Settled<H> {
             setup = option(setup);
         }
 
-        let stage = Stage::new(setup.ready(), hosting, self.configuration);
+        let stage = Stage::new(setup.ready(), hosting, self.configuration, self.root_list);
 
         Ok((self.roots)(stage).await?.into_made())
     }

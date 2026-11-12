@@ -22,7 +22,7 @@ pub use name::ProgramName;
 
 use aethereal_actor::Ordered;
 use aethereal_data::Budget;
-use aethereal_substrate::{Bootstraps, Host, Program};
+use aethereal_substrate::{Bootstraps, Host, Program, RootList};
 use command_line::Asked;
 use std::env;
 use std::ffi::OsString;
@@ -102,7 +102,7 @@ pub enum Launched<E> {
 /// assert!(headless.engine().is_idle());
 /// # Ok::<(), Box<dyn core::error::Error>>(())
 /// ```
-pub trait NativeLayers<H: Host, R>: Sized {
+pub trait NativeLayers<H: Host, R, D>: Sized {
     /// What `invocation` asks of the program named `name`: to run, with the command line's, the environment's, and
     /// the file's layers beneath those it has, or its help or description.
     ///
@@ -118,12 +118,13 @@ pub trait NativeLayers<H: Host, R>: Sized {
     ///
     /// [`LaunchError::Read`] when the invocation was refused, as [`NativeError`] says, and [`LaunchError::Ran`] with
     /// the host's own error when the program did not run to its end.
-    fn launch<I: 'static, O>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
+    fn launch<I: 'static, O, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
     where
-        R: Bootstraps<H, I> + Ordered<O> + 'static;
+        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        D: RootList<R, L>;
 }
 
-impl<H: Host, R> NativeLayers<H, R> for Program<H, R> {
+impl<H: Host, R, D> NativeLayers<H, R, D> for Program<H, R, D> {
     fn read(self, name: &str, invocation: Invocation) -> Result<Invoked<Self>, NativeError> {
         let name = ProgramName::new(name)?;
         let parts = self.parts()?;
@@ -141,9 +142,10 @@ impl<H: Host, R> NativeLayers<H, R> for Program<H, R> {
     }
 
     #[allow(clippy::print_stdout)] // What a person asked of the command line is printed for them to read.
-    fn launch<I: 'static, O>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
+    fn launch<I: 'static, O, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
     where
         R: Bootstraps<H, I> + Ordered<O> + 'static,
+        D: RootList<R, L>,
     {
         let launched = match self.read(name, Invocation::of_process())? {
             Invoked::Run(program) => Launched::Ran(program.run().map_err(LaunchError::Ran)?),

@@ -6,12 +6,15 @@ use crate::gpu::{self, Opened};
 use crate::refresh::Refresh;
 use crate::serving::Drawing;
 use crate::{Browser, Performance};
+use aethereal_actor::{Path, Tells};
+use aethereal_render::draw_list::DrawList;
 use aethereal_render::{Renderer, RendererConfig};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use aethereal_window::InitialWindows;
 
 /// Opens WebGPU on the canvases the window root opened, reached through the page, which keeps them, awaiting the
-/// browser's answers, then begins the renderer with the GPU, each canvas's format, and its handles. Gives the browser
+/// browser's answers, then begins the renderer with the GPU, each canvas's format, its handles, and the program's root
+/// list, each root of which must send it a draw list (ADR-0055). Gives the browser
 /// its end: each canvas's surface, made on the canvas the page keeps, which hands the renderer the canvas's frame and
 /// presents what it drew, and the buffers it asks to have mapped. The source the
 /// renderer hears of windows opened and closed through is fed nothing, as a page opens and closes no window while the
@@ -35,7 +38,8 @@ impl Bootstrap<Browser<Performance>> for Renderer {
         let (mapping, requests) = cx.controller();
         let (mapped, feed) = cx.source();
         let (surfaced, _) = cx.source();
-        cx.begin(&(), RendererConfig { gpu, front, presenting, windows, mapping, mapped, surfaced })?;
+        let roots = cx.root_list::<Tells<Path<Self>, DrawList>>()?;
+        cx.begin(&(), RendererConfig { gpu, front, presenting, windows, mapping, mapped, surfaced, roots })?;
         cx.serve(Drawing { surfaces, presents, requests, feed, fronting, refresh: Refresh::new() });
 
         Ok(())

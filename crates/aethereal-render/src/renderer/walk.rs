@@ -125,7 +125,8 @@ pub(super) struct Making<'a> {
 
 impl Walk {
     /// The frame `create`, which ends on `end`, of `format` and `size`, its targets made at the sizes their scales make
-    /// of it and each effect pass made by `effect`: refused as `effect` refuses a pass, at its place.
+    /// of it and each effect pass made by `effect`: refused as `effect` refuses a pass, at its place. One that ends on
+    /// a window has the pass [`Interface`](crate::pass::Interface) after its last, which the renderer adds (ADR-0055).
     pub fn new(
         device: &wgpu::Device,
         create: CreateFrame,
@@ -133,6 +134,10 @@ impl Walk {
         size: Size,
         mut effect: impl FnMut(Making<'_>) -> Result<Effected, PassRefused>,
     ) -> Result<Self, (u32, PassRefused)> {
+        let create = match end {
+            End::Window(_) => create.interfaced(),
+            End::Texture { .. } => create,
+        };
         let targets = made(device, &create.targets, size);
         let mut written: Vec<Target> = Vec::new();
         let mut steps = Vec::with_capacity(create.passes.len());

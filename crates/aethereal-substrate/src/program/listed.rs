@@ -1,22 +1,28 @@
 //! A program's roots, a list, and what bootstrapping them in order asks: their sections composed, each one's needs
 //! found among what those before it provide, and each one begun (ADR-0029).
 
-use super::{Bootstrap, Bootstrapping, Gathers, Host, ProgramError, Provision, Reader};
+use super::{Bootstrap, Bootstrapping, Drawn, Gathers, Host, ProgramError, Provision, Reader};
 use crate::Engine;
 use aethereal_data::config::{Configuration, Parts, RootSettings};
 
-/// The engine, the host's hosting, and the configuration's sections not yet taken, as a program's roots bootstrap:
-/// handed from each root's bootstrap to the next, and to the host once the last has.
+/// The engine, the host's hosting, the configuration's sections not yet taken, and the program's root list, as a
+/// program's roots bootstrap: handed from each root's bootstrap to the next, and to the host once the last has.
 pub struct Stage<'host, H: Host> {
     pub(super) engine: Engine,
     pub(super) hosting: H::Hosting<'host>,
     pub(super) configuration: Configuration,
+    pub(super) root_list: Vec<Drawn>,
 }
 
 impl<'host, H: Host> Stage<'host, H> {
-    /// The stage of `engine`, `hosting`, and `configuration`.
-    pub(super) const fn new(engine: Engine, hosting: H::Hosting<'host>, configuration: Configuration) -> Self {
-        Self { engine, hosting, configuration }
+    /// The stage of `engine`, `hosting`, `configuration`, and the root list `root_list`.
+    pub(super) const fn new(
+        engine: Engine,
+        hosting: H::Hosting<'host>,
+        configuration: Configuration,
+        root_list: Vec<Drawn>,
+    ) -> Self {
+        Self { engine, hosting, configuration, root_list }
     }
 
     /// The engine and the hosting, the roots bootstrapped.

@@ -2155,6 +2155,14 @@ impl<Me, S> Turn<'_, Me, S> {
         ErasedActorRef::new(self.source)
     }
 
+    /// The id of the child `segment` names beneath the actor `parent` refers to, whether one stands there or not: what
+    /// a receiver keeps something of a child by when the child's parent names it in mail, as the renderer keeps the
+    /// list of a child a draw list calls (ADR-0055). Only the engine computes an id, so the table answers it.
+    #[must_use]
+    pub fn child_id(&self, parent: ErasedActorRef, segment: &PathSegment) -> ActorId {
+        self.seat.table.child(parent.id(), segment)
+    }
+
     /// Where in its chain the item being handled came (ADR-0012).
     #[must_use]
     pub const fn chain(&self) -> Chain {

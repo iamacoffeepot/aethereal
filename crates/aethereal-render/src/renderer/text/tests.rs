@@ -216,7 +216,7 @@ fn only_a_text_s_maker_writes_or_releases_it_and_releasing_it_takes_every_placem
     let text = made(&mut kept, MAKER, "hi", 16.0);
     let mine = placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), Vec2::ZERO);
     let theirs = placed_text(&mut kept, &device, (OTHER, text, placement::Order::Listed), Vec2::ZERO);
-    assert_eq!(kept.listed(&main_list(&[theirs]), OTHER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[theirs]), OTHER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![mine.id, theirs.id]);
 
     let write = WriteText { text, runs: vec![Run::new("no", Colour::WHITE)] };
@@ -245,9 +245,9 @@ fn placed_texts_draw_after_loose_meshes_and_in_their_list_s_order_among_the_make
     let listed_text = placed_text(&mut kept, &device, (MAKER, text, placement::Order::Listed), Vec2::ZERO);
     assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id]);
 
-    assert_eq!(kept.listed(&main_list(&[listed_text, listed_mesh]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[listed_text, listed_mesh]), MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id, listed_text.id, listed_mesh.id]);
-    assert_eq!(kept.listed(&main_list(&[listed_mesh, listed_text]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[listed_mesh, listed_text]), MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id, listed_mesh.id, listed_text.id]);
 
     generated(&mut kept, (&device, &queue));

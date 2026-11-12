@@ -8,7 +8,7 @@ mod told;
 use super::*;
 use crate::asked::blob;
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
-use crate::pass::{Compute, Main, Pass};
+use crate::pass::{Compute, Interface, Main, Pass};
 use crate::placement::Resource;
 use crate::program::Fixed;
 use crate::shape::Samples;
@@ -50,7 +50,7 @@ pub(super) fn window() -> WindowId {
 }
 
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into each of `windows`, each of
-/// `Bgra8`.
+/// `Bgra8`, its root list [`MAKER`] then [`OTHER`](lists::OTHER).
 fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
     let format = ColourFormat::Bgra8;
     let windowed = windows
@@ -64,7 +64,7 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
         })
         .collect();
 
-    let Ok(kept) = Kept::new(device, windowed) else {
+    let Ok(kept) = Kept::new(device, windowed, vec![MAKER, lists::OTHER]) else {
         panic!("the renderer's own fonts are read");
     };
 
@@ -192,6 +192,29 @@ fn a_frame_that_ends_on_the_window_follows_its_surface_to_each_new_size() {
 
     drawn_at(&device, &queue, &mut kept, (8, 6));
     drawn_at(&device, &queue, &mut kept, (5, 7));
+}
+
+#[test]
+fn every_window_s_main_frame_ends_with_the_interface_pass_the_renderer_s_own_and_one_an_actor_made() {
+    // Catches the interface pass added to the renderer's own main frame alone, so a program that writes its window's
+    // main frame drops it, and with it what draws over the program; and one made with a depth, which a frame that
+    // writes none could not test against.
+    let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut kept = kept(&device);
+    let interface = |kept: &Kept| kept.pass(Frame::Main(window()), PassName::of::<Interface>());
+    let flat = Ok(Fits { shape: Shape::flat(ColourFormat::Bgra8), reads: Vec::new() });
+    assert_eq!(interface(&kept), flat);
+
+    let onto = PassSpec::of::<Main>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Clear,
+        reads: Vec::new(),
+    });
+    let replacing = CreateFrame { ends: Ends::Window(window()), targets: Vec::new(), passes: vec![onto] };
+    assert_eq!(frame::check(&replacing, &kept), Ok(()));
+    assert!(matches!(kept.frame(&device, replacing, MAKER), Ok(Framed::Made(_))));
+    assert_eq!(interface(&kept), flat);
 }
 
 /// An effect that reads no target and shades the place across its target by uniforms, as a sky does.
@@ -575,7 +598,7 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
 
     let [(_, view)] = surface(&device);
     let handed = [(second, view)];
-    assert_eq!(kept.passes(&handed), 1, "only the second window's main frame runs");
+    assert_eq!(kept.passes(&handed), 2, "only the second window's main frame runs, its pass and the interface");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     kept.run_all(&mut encoder, &handed, None, &mut Tally::Off);
     queue.submit([encoder.finish()]);

@@ -53,3 +53,12 @@ impl Pass for Compute {}
 pub struct Main;
 
 impl Pass for Main {}
+
+/// The pass the renderer adds to every window's main frame, its own or one an actor made, after the frame's last:
+/// drawn onto what the frame drew there, with no depth, so what draws over the program, as an interface, draws there
+/// whatever frame the program writes (ADR-0055).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.interface")]
+pub struct Interface;
+
+impl Pass for Interface {}

@@ -113,9 +113,20 @@ impl<P: Listed, K: Kind> Reaches<K> for Parent<P> {
 
 /// The place beneath the sender that the types `D` name, from a child of its own down: what [`child`] names.
 pub struct Child<D> {
-    /// Its segments, from the child of the sender's own down: one or more.
-    segments: Vec<PathSegment>,
+    /// The segments above the last, from the child of the sender's own down: none for a child of its own.
+    above: Vec<PathSegment>,
+    /// The segment of the actor the place holds.
+    last: PathSegment,
     of: PhantomData<fn() -> D>,
+}
+
+impl<C: ChildOf> Child<C> {
+    /// The segment of the child of the sender's own this names: what a receiver finds it by, one segment beneath the
+    /// sender, as the renderer finds a child a draw list calls (ADR-0055).
+    #[must_use]
+    pub const fn segment(&self) -> &PathSegment {
+        &self.last
+    }
 }
 
 /// The types of a place beneath the sender, from a child of its own down to the last: one type, or a tuple of up to
@@ -130,8 +141,8 @@ pub trait Descent {
     /// for a typed path.
     type Keys;
 
-    /// Puts the place's segments, from the first, after those in `segments`.
-    fn segments(keys: Self::Keys, segments: &mut Vec<PathSegment>);
+    /// Puts the segments above the place's last, from the first, after those in `above`, and answers the last.
+    fn place(keys: Self::Keys, above: &mut Vec<PathSegment>) -> PathSegment;
 }
 
 impl<C: ChildOf> Descent for C
@@ -142,9 +153,10 @@ where
     type Last = C;
     type Keys = <() as Then<C::Key>>::Keys;
 
-    fn segments(keys: Self::Keys, segments: &mut Vec<PathSegment>) {
+    fn place(keys: Self::Keys, _: &mut Vec<PathSegment>) -> PathSegment {
         let ((), key) = <() as Then<C::Key>>::split(keys);
-        segments.push(PathSegment::new(C::NAME, &key));
+
+        PathSegment::new(C::NAME, &key)
     }
 }
 
@@ -163,10 +175,12 @@ macro_rules! descent {
             type Last = $last;
             type Keys = <<$above as Descent>::Keys as Then<$last::Key>>::Keys;
 
-            fn segments(keys: Self::Keys, segments: &mut Vec<PathSegment>) {
-                let (above, key) = <<$above as Descent>::Keys as Then<$last::Key>>::split(keys);
-                <$above as Descent>::segments(above, segments);
-                segments.push(PathSegment::new($last::NAME, &key));
+            fn place(keys: Self::Keys, above: &mut Vec<PathSegment>) -> PathSegment {
+                let (keys, key) = <<$above as Descent>::Keys as Then<$last::Key>>::split(keys);
+                let before = <$above as Descent>::place(keys, above);
+                above.push(before);
+
+                PathSegment::new($last::NAME, &key)
             }
         }
     };
@@ -338,10 +352,10 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// ```
 #[must_use]
 pub fn child<D: Descent>(keys: D::Keys) -> Child<D> {
-    let mut segments = Vec::new();
-    D::segments(keys, &mut segments);
+    let mut above = Vec::new();
+    let last = D::place(keys, &mut above);
 
-    Child { segments, of: PhantomData }
+    Child { above, last, of: PhantomData }
 }
 
 impl<Me, D: Descent> Reachable<Me> for Child<D>
@@ -354,9 +368,9 @@ where
     /// A child of the sender's own is found among those it made; a place beneath one, as a typed path is found.
     fn at(self, from: &Vantage<'_, '_>) -> Seated {
         let kind = KindId::of::<D::Last>();
-        match self.segments.as_slice() {
-            [segment] => from.child(segment, kind),
-            segments => from.beneath(segments, kind),
+        match self.above.as_slice() {
+            [] => from.child(&self.last, kind),
+            above => from.beneath(above, &self.last, kind),
         }
     }
 }

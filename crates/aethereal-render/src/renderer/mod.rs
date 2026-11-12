@@ -14,7 +14,7 @@ use crate::dispatch::{
     self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, RunDispatch,
     Runs, Unrun, Use,
 };
-use crate::draw_list::{DrawList, EntryRefused, ListRefused, Listing, Lists, Placements};
+use crate::draw_list::{self, DrawList, EntryRefused, ListRefused, Listed, Listing, Lists, Placements};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
 use crate::frame::{
@@ -187,9 +187,10 @@ impl Carries<DescribeGpu> for Renderer {
 /// through, with a slot for each window's surface it keeps ([`WindowSurface::new`](crate::surface::WindowSurface::new)),
 /// and the controller it asks the chassis to present each window's frame it drew through; each window it draws to,
 /// with the format of the window's surface, in the order the chassis opened them; the controller it asks the chassis
-/// to map what it reads back through, and the source the chassis brings word of each through; and the source the
+/// to map what it reads back through, and the source the chassis brings word of each through; the source the
 /// chassis brings word of each window it opens or closes while the program runs through (ADR-0019, ADR-0021,
-/// ADR-0027).
+/// ADR-0027); and the program's root list, the id of each root whose list each window's main frame is walked from, in
+/// draw order, as its setup reads it (ADR-0055).
 #[derive(Bound)]
 #[kind(name = "aether.render.config")]
 pub struct RendererConfig {
@@ -200,11 +201,12 @@ pub struct RendererConfig {
     pub mapping: Given<Controller<Mapping>>,
     pub mapped: Given<Source<Mapped>>,
     pub surfaced: Given<Source<Surfaced>>,
+    pub roots: Vec<ActorId>,
 }
 
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
-/// what is computed, until released or once, to list its placements in a pass in order, the shape of a pass it joins,
+/// what is computed, until released or once, to list what it draws in order, the shape of a pass it joins,
 /// to release what it made, to read back what it draws or storage, to time what it draws, to read a font or name the
 /// fonts that fall back, to make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the
 /// GPU's time over its passes, or told the adapter it draws on (ADR-0053).
@@ -741,7 +743,7 @@ impl Actor for Renderer {
             }
         }
         // Made before it is kept, as keeping it ends the borrow of the GPU opened.
-        let kept = match Kept::new(opened.device(), windows) {
+        let kept = match Kept::new(opened.device(), windows, config.roots) {
             Ok(kept) => kept,
             Err(why) => return Err(Fault::new(&why)?),
         };
@@ -1544,17 +1546,18 @@ impl Handles<RunDispatch> for Renderer {
     }
 }
 
-/// A list of the sender's own placements in a pass, checked whole and kept in place of its last for the pass, or
-/// refused and logged, the last standing (ADR-0031). The sender is watched from the first list it sends, as from the
-/// first thing it made, so its lists go when it ends.
+/// A list of the sender's own placements and the children it calls, each call found one segment beneath the sender,
+/// checked whole and kept in place of its last, or refused and logged, the last standing (ADR-0031, ADR-0055). The
+/// sender is watched from the first list it sends, as from the first thing it made, so its list goes when it ends.
 impl Handles<DrawList> for Renderer {
     type Sends = ();
 
     fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let listed = self.kept_for(turn, |kept, by| kept.listed(&list, by))?;
+        let sender = turn.sender();
+        let entries = list.entries.iter().map(|entry| entry.listed(|child| turn.child_id(sender, child))).collect();
+        let listed = self.kept_for(turn, |kept, by| kept.listed(entries, by))?;
         if let Err(why) = listed {
-            let DrawList { frame, pass, .. } = list;
-            turn.log(Level::Warn, format_args!("the list for {pass:?} of {frame:?} was refused: {why:?}"));
+            turn.log(Level::Warn, format_args!("a draw list was refused: {why:?}"));
         }
 
         Ok(())
@@ -1709,12 +1712,12 @@ impl Handles<Ended> for Renderer {
 
 impl Kept {
     /// Nothing made yet, on `device`, for the windows `windows`, each drawn by the renderer's own main frame of it,
-    /// with the renderer's own fonts read and an empty atlas.
+    /// walked from the program's root list `roots`, with the renderer's own fonts read and an empty atlas.
     ///
     /// # Errors
     ///
     /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
-    fn new(device: &wgpu::Device, windows: Vec<Windowed>) -> Result<Self, FontRefused> {
+    fn new(device: &wgpu::Device, windows: Vec<Windowed>, roots: Vec<ActorId>) -> Result<Self, FontRefused> {
         let longest = device.limits().max_texture_dimension_2d;
         let mut windows_memory = GpuMemory::default();
         for windowed in &windows {
@@ -1734,7 +1737,7 @@ impl Kept {
             placements: Made::default(),
             dispatches: Made::default(),
             once: Made::default(),
-            lists: Lists::default(),
+            lists: Lists::new(roots),
             reads: HashMap::new(),
             samplers: HashMap::new(),
             frames: Weighed::default(),
@@ -1783,8 +1786,8 @@ impl Kept {
     /// this turn (ADR-0031).
     fn release_placement(&mut self, placement: u64, by: ActorId) -> Owned<()> {
         let released = self.placements.release(placement, by);
-        if let Owned::Mine(made) = &released {
-            self.lists.released(placement, by, made.listed());
+        if let Owned::Mine(_) = &released {
+            self.lists.released(placement, by);
         }
         let unknown = matches!(released, Owned::Unknown);
         if unknown {
@@ -2091,8 +2094,8 @@ impl Kept {
     }
 
     /// Drops what the renderer draws to `window` with, which has closed: its own main frame of it, and the frame an
-    /// actor made in its place, with what each made for it, and the lists for it, as no window's id is given again.
-    /// Answers whether it drew to the window.
+    /// actor made in its place, with what each made for it, as no window's id is given again. Answers whether it drew
+    /// to the window.
     fn closed(&mut self, window: WindowId) -> bool {
         let Some(at) = self.windows.iter().position(|windowed| windowed.window == window) else {
             return false;
@@ -2102,7 +2105,6 @@ impl Kept {
         if let Main::Made(id) = closed.main {
             self.frames.forget(id);
         }
-        self.lists.unframed(Frame::Main(window));
 
         true
     }
@@ -2205,9 +2207,8 @@ impl Kept {
     }
 
     /// Notes that the frames `released` are gone, each with the texture it ends on, if any: a window's main frame is
-    /// the renderer's own again when it was one of them, with the lists for it, and the id of each texture is taken
-    /// back, as the frames and placements that read it keep it as it was last drawn, with the lists for the frame that
-    /// ended on it dropped (ADR-0025, ADR-0031).
+    /// the renderer's own again when it was one of them, and the id of each texture is taken back, as the frames and
+    /// placements that read it keep it as it was last drawn (ADR-0025).
     fn unframed(&mut self, released: impl IntoIterator<Item = (u64, Option<u64>)>) {
         for (id, texture) in released {
             for windowed in &mut self.windows {
@@ -2217,23 +2218,23 @@ impl Kept {
             }
             if let Some(texture) = texture {
                 self.textures.forget(texture);
-                self.lists.unframed(Frame::Texture(FrameId { id }));
             }
         }
     }
 
-    /// Checks `list`, sent by `by`, whole, and keeps it in place of `by`'s last list for its pass: refused when its
-    /// frame is not kept, or as [`Lists::check`] refuses it.
-    fn listed(&mut self, list: &DrawList, by: ActorId) -> Result<(), ListRefused> {
-        let framed = match list.frame {
-            Frame::Main(window) => self.windowed(window).is_some(),
-            Frame::Texture(frame) => self.frames.get(frame.id).is_some_and(|walk| walk.texture().is_some()),
-        };
-        if !framed {
-            return Err(ListRefused::Frame);
-        }
-
+    /// Checks `list`, sent by `by`, whole, and keeps it in place of `by`'s last list: refused as [`Lists::check`]
+    /// refuses it.
+    fn listed(&mut self, list: Vec<Listed>, by: ActorId) -> Result<(), ListRefused> {
         self.lists.check(list, by, &mut Listable { meshes: &mut self.placements, texts: &mut self.text.placed })
+    }
+
+    /// The roots the walk of the lists for `frame` begins from: the program's root list for a window's main frame, and
+    /// the frame's maker for one that ends on a texture, whose list is that frame's root list (ADR-0055).
+    fn roots(&self, frame: Frame) -> Vec<ActorId> {
+        match frame {
+            Frame::Main(_) => self.lists.roots().to_vec(),
+            Frame::Texture(texture) => self.frames.maker(texture.id).into_iter().collect(),
+        }
     }
 
     /// Who owns the main frame of `window`: the maker of the frame that is it, none while it is the renderer's own or
@@ -2641,9 +2642,9 @@ impl Kept {
 
     /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, under its id, with
     /// its join of the pass, in the order it is drawn: those of meshes joined loose, each program's together, then
-    /// those of texts joined loose, then each actor's list back to back, in its order, meshes and texts alike
-    /// (ADR-0031, ADR-0052). A join of another shape, or reading other targets, is not drawn, and neither is one
-    /// joined listed that no list holds.
+    /// those of texts joined loose, then the lists walked from the frame's roots, each in its order, each child drawn
+    /// where its parent calls it, meshes and texts alike (ADR-0031, ADR-0052, ADR-0055). A join of another shape, or
+    /// reading other targets, is not drawn, and neither is one joined listed that no list walked holds.
     fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, Drawable<'_>)> {
         let mut meshes: Vec<(u64, &Placement, &Joined)> = self
             .placements
@@ -2657,16 +2658,8 @@ impl Kept {
             .collect();
         meshes.sort_unstable_by_key(|(_, _, join)| join.program);
         let texts = self.text.loose((frame, pass), fits).into_iter();
-        let listed = self.lists.of(frame, pass).flatten().filter_map(|entry| {
-            // Neither misses: a release takes its placement out of its maker's lists in the release's turn.
-            if let Some(placement) = self.placements.get(entry.placement) {
-                let join = placement.joins.get(entry.join)?;
-                return join.draws_in(frame, pass, fits).then_some((entry.placement, Drawable::Mesh(placement, join)));
-            }
-            let placed = self.text.placed.get(entry.placement)?;
-            let join = placed.joins().get(entry.join)?;
-            join.draws_in(frame, pass, fits).then_some((entry.placement, Drawable::Text(placed, join)))
-        });
+        let listed =
+            self.lists.walk(self.roots(frame)).filter_map(|placement| self.listed_in(placement, (frame, pass), fits));
 
         meshes
             .into_iter()
@@ -2674,6 +2667,20 @@ impl Kept {
             .chain(texts.map(|(id, placed, join)| (id, Drawable::Text(placed, join))))
             .chain(listed)
             .collect()
+    }
+
+    /// The placement `placement`, of a mesh or of a text, under its id, with its join drawn listed in the pass `pass` of
+    /// `frame`, whose programs are made against `fits`: none when it joins the pass loose, or not at all, or is of
+    /// another shape. The placement is kept, as a release takes it out of its maker's list in the release's turn.
+    fn listed_in(&self, placement: u64, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<(u64, Drawable<'_>)> {
+        if let Some(made) = self.placements.get(placement) {
+            let join = made.joins.iter().find(|join| join.listed_in(frame, pass, fits))?;
+            return Some((placement, Drawable::Mesh(made, join)));
+        }
+        let placed = self.text.placed.get(placement)?;
+        let join = placed.joins().iter().find(|join| join.listed_in(frame, pass, fits))?;
+
+        Some((placement, Drawable::Text(placed, join)))
     }
 }
 
@@ -2697,35 +2704,30 @@ impl Joined {
         self.joins(frame, pass) && self.fits == *fits
     }
 
+    /// Whether it draws listed in the pass `pass` of `frame`, whose programs are made against `fits`: while its maker's
+    /// list holds it, as [`draws_in`](Self::draws_in) says.
+    fn listed_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
+        let listed = self.listing != Listing::Loose;
+
+        listed && self.draws_in(frame, pass, fits)
+    }
+
     /// Whether it is the join of the pass `pass` of `frame`, whatever that pass is made against now.
     fn joins(&self, frame: Frame, pass: PassName) -> bool {
         self.frame == frame && self.pass == pass
     }
 }
 
-impl Placement {
-    /// The passes it joins listed, each of its frame.
-    fn listed(&self) -> impl Iterator<Item = (Frame, PassName)> {
-        self.joins.iter().filter(|join| join.listing != Listing::Loose).map(|join| (join.frame, join.pass))
-    }
-}
-
 /// What a list's check finds of the placements kept.
 impl Placements for Made<Placement> {
-    fn listing(
-        &mut self,
-        placement: u64,
-        by: ActorId,
-        (frame, pass): (Frame, PassName),
-    ) -> Result<(usize, &mut Listing), EntryRefused> {
+    fn stamp(&mut self, placement: u64, by: ActorId, number: u64) -> Result<(), EntryRefused> {
         let joins = match self.owned(placement, by) {
             Owned::Mine(made) => &mut made.joins,
             Owned::NotOwner => return Err(EntryRefused::NotOwner),
             Owned::Unknown => return Err(EntryRefused::Placement),
         };
-        let at = joins.iter().position(|join| join.joins(frame, pass)).ok_or(EntryRefused::Unjoined)?;
 
-        Ok((at, &mut joins[at].listing))
+        draw_list::stamp(joins.iter_mut().map(|join| &mut join.listing), number)
     }
 }
 

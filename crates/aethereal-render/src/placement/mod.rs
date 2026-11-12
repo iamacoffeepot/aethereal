@@ -48,7 +48,7 @@ impl Join {
     }
 
     /// The pass `P` of `frame`, drawn with `program`, binding `bindings`, while its maker's last
-    /// [`DrawList`](crate::draw_list::DrawList) for the pass holds it, in that list's order.
+    /// [`DrawList`](crate::draw_list::DrawList) holds it, in the order the lists are walked (ADR-0055).
     #[must_use]
     pub const fn listed<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
         Self { frame, pass: PassName::of::<P>(), program, bindings, order: Order::Listed }
@@ -61,7 +61,8 @@ impl Join {
 pub enum Order {
     /// In every frame, among the pass's placements in no order an actor may rely on.
     Loose,
-    /// While its maker's last list for the pass holds it, in that list's order.
+    /// While its maker's last list holds it, in the order the lists are walked from the program's root list
+    /// (ADR-0055).
     Listed,
 }
 

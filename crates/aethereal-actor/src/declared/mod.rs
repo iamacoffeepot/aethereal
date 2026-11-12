@@ -218,6 +218,15 @@ impl Declared {
         })
     }
 
+    /// Whether its `begin` or one of its handlers may send `sending`: what a program checks of each root its root list
+    /// draws, that it sends the renderer a draw list (ADR-0055).
+    #[must_use]
+    pub fn may_send(&self, sending: &Sending) -> bool {
+        let handled = self.handlers.iter().flat_map(Handler::sends);
+
+        self.begins.iter().chain(handled).any(|declared| declared == sending)
+    }
+
     /// Whether one of the type's handlers is for `role`.
     fn handles(&self, role: Role) -> bool {
         self.handlers.iter().any(|handler| handler.role == role)
