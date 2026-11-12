@@ -258,10 +258,11 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - an actor can set the window's cursor to an image, and set it back.
 - **Text must be measurable in the actor, which amends ADR-0052.** ADR-0052 left measuring a text without placing it as later work, and layout needs it in the same turn.
   - A font is supplied by an actor and kept by the renderer, and other actors hold only its `FontId`.
-  - A screen asks the renderer once for each `FontId` it meets. The renderer answers with the font's metrics (its glyph map, advances, kerning, and line height), which is the same value the renderer lays out with.
+  - A screen asks the renderer once for each `FontId` it meets. The renderer answers with the font's metrics (its glyph map, advances, kerning, and line height), which is the same value the renderer lays out with. The metrics come as a blob the renderer keeps for the font's life (ADR-0042), since they are far larger than a piece of mail.
   - The screen then measures every string itself, in the same turn, with the same layout code, so a measured size is exactly the drawn size.
   - This is one round trip per font, never per string.
-  - A font names its fallbacks when it is made, in place of one renderer-wide list. So a `FontId`'s metrics never change: a screen keeps them for good, and nothing is ever sent to update them.
+  - A font is made from a source (a built-in, or a font file's bytes) and names its fallbacks when it is made, in place of one renderer-wide list. So a `FontId`'s metrics never change: a screen keeps them for good, and nothing is ever sent to update them.
+  - A text's outline draws outside its measured box, so `Text` pads its layout size by the outline's width.
 - **A child actor learns a new size a turn after its parent decides it.** The clip contains the mismatch for that turn, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
 - **The dev overlay moves onto the library,** as its first user.
 - **Follow-on work, each waiting for a need:**
