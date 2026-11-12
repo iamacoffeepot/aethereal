@@ -4,15 +4,18 @@ use super::*;
 use crate::program::parsed;
 
 #[test]
-fn the_glyph_program_is_valid_wgsl_with_its_two_stages() {
+fn the_glyph_program_is_valid_wgsl_with_its_two_stages_and_takes_the_picking_step() {
     // Catches WGSL that only a device that compiles it would refuse, as the device the renderer's tests draw on does
-    // not: the glyph program is made at the first placed text, and an invalid one fails every `Render` after.
+    // not: the glyph program is made at the first placed text, and an invalid one fails every `Render` after; and a
+    // glyph program the picking step cannot be added to, whose text the pointer would never reach (ADR-0055).
     let parsed = parsed(GLYPH);
     let Ok((module, _)) = parsed else {
         panic!("the glyph program is valid: {:?}", parsed.err());
     };
     let entries: Vec<&str> = module.entry_points.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(entries, [VERTEX, FRAGMENT]);
+    let picked = picking::picked(GLYPH, FRAGMENT, PICKING);
+    assert!(picked.is_ok(), "the glyph program takes the picking step: {picked:?}");
 }
 
 #[test]

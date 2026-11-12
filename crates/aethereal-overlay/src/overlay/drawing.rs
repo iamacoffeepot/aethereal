@@ -17,7 +17,7 @@ use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{DrawList, Entry};
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::ShapeOf;
 use aethereal_render::instances::WriteInstances;
 use aethereal_render::stats::{
@@ -169,7 +169,8 @@ impl Overlay {
             };
             placements.extend(roles.iter().filter_map(|role| self.texts.placement(*role)));
         }
-        let entries = placements.into_iter().map(|placement| Entry::Draw { placement }).collect();
+        let entries =
+            placements.into_iter().map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores }).collect();
         turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 
         Ok(())

@@ -30,7 +30,8 @@ png = { version = "=0.18.1", optional = true }
 crossbeam-queue = { workspace = true }
 # The types the shader package's generated code is written in (ADR-0030): two structs of static strings.
 wesl-core = "=0.1.0"
-naga = { version = "30.0.1", features = ["wgsl-in"] }
+# A program's WGSL is read, and written back out with the picking step added (ADR-0055).
+naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
 
 # `record_clip`'s H.264 encoder: Cisco's OpenH264 (BSD-2-Clause), with its Rust bindings (BSD-2-Clause), compiled from

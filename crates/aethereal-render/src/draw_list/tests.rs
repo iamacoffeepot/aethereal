@@ -45,14 +45,25 @@ impl Placements for Kept {
     }
 }
 
+/// An entry drawing the placement `id`, which the pointer does not reach.
+const fn draw(id: u64) -> Listed {
+    Listed::Draw { placement: id, picks: Picks::Ignores }
+}
+
 /// A list drawing the placements `ids`, in order.
 fn draws(ids: &[u64]) -> Vec<Listed> {
-    ids.iter().map(|id| Listed::Draw(*id)).collect()
+    ids.iter().map(|id| draw(*id)).collect()
 }
 
 /// What the lists draw from `roots`, in the order of the walk.
 fn walked(lists: &Lists, roots: &[ActorId]) -> Vec<u64> {
-    lists.walk(roots.to_vec()).collect()
+    lists
+        .walk(roots.to_vec())
+        .filter_map(|entry| match entry {
+            Listed::Draw { placement, .. } => Some(*placement),
+            Listed::Call(_) | Listed::Hit { .. } => None,
+        })
+        .collect()
 }
 
 /// Lists whose root list is [`MAKER`] then [`OTHER`].
@@ -70,7 +81,7 @@ fn a_list_refused_for_any_of_its_entries_leaves_the_last_list_standing_whole() {
     assert_eq!(lists.check(draws(&[3, 1]), MAKER, &mut kept), Ok(()));
 
     let refused = |at, why| Err(ListRefused { at, why });
-    let calls_twice = vec![Listed::Call(HUD), Listed::Draw(2), Listed::Call(HUD)];
+    let calls_twice = vec![Listed::Call(HUD), draw(2), Listed::Call(HUD)];
     let cases = [
         (draws(&[1, 9]), refused(1, EntryRefused::Placement)),
         (draws(&[2, 5]), refused(1, EntryRefused::NotOwner)),
@@ -135,9 +146,9 @@ fn the_walk_draws_each_child_where_its_parent_calls_it_and_no_actor_no_list_call
     // of the root list's order, and an actor drawn that no list calls.
     let mut kept = Kept::new();
     let mut lists = lists();
-    let parent = vec![Listed::Draw(1), Listed::Call(HUD), Listed::Draw(4)];
+    let parent = vec![draw(1), Listed::Call(HUD), draw(4)];
     assert_eq!(lists.check(parent, MAKER, &mut kept), Ok(()));
-    assert_eq!(lists.check(vec![Listed::Draw(2), Listed::Call(MAP)], HUD, &mut make(HUD, 2)), Ok(()));
+    assert_eq!(lists.check(vec![draw(2), Listed::Call(MAP)], HUD, &mut make(HUD, 2)), Ok(()));
     assert_eq!(lists.check(draws(&[3]), MAP, &mut make(MAP, 3)), Ok(()));
     assert_eq!(lists.check(draws(&[5]), OTHER, &mut kept), Ok(()));
     assert_eq!(lists.check(draws(&[7]), STRAY, &mut make(STRAY, 7)), Ok(()));
@@ -154,11 +165,11 @@ fn a_parent_reorders_its_children_by_sending_one_list() {
     let mut lists = lists();
     assert_eq!(lists.check(draws(&[2]), HUD, &mut make(HUD, 2)), Ok(()));
     assert_eq!(lists.check(draws(&[3]), MAP, &mut make(MAP, 3)), Ok(()));
-    let hud_on_top = vec![Listed::Draw(1), Listed::Call(MAP), Listed::Call(HUD)];
+    let hud_on_top = vec![draw(1), Listed::Call(MAP), Listed::Call(HUD)];
     assert_eq!(lists.check(hud_on_top, MAKER, &mut kept), Ok(()));
     assert_eq!(walked(&lists, &[MAKER]), vec![1, 3, 2]);
 
-    let map_on_top = vec![Listed::Call(HUD), Listed::Call(MAP), Listed::Draw(1)];
+    let map_on_top = vec![Listed::Call(HUD), Listed::Call(MAP), draw(1)];
     assert_eq!(lists.check(map_on_top, MAKER, &mut kept), Ok(()));
     assert_eq!(walked(&lists, &[MAKER]), vec![2, 3, 1]);
 }
@@ -169,7 +180,7 @@ fn a_walk_ends_where_lists_call_round_as_only_colliding_ids_could() {
     // an actor's above it would write, walked forever.
     let mut kept = Kept::new();
     let mut lists = lists();
-    assert_eq!(lists.check(vec![Listed::Draw(1), Listed::Call(MAKER)], MAKER, &mut kept), Ok(()));
+    assert_eq!(lists.check(vec![draw(1), Listed::Call(MAKER)], MAKER, &mut kept), Ok(()));
 
     let drawn = walked(&lists, &[MAKER]);
     assert_eq!(drawn.len(), ActorPath::MAX_DEPTH);
@@ -180,4 +191,21 @@ fn make(by: ActorId, id: u64) -> Kept {
     let placed = Placed { maker: by, joins: vec![Listing::Listed { stamp: 0 }] };
 
     Kept { placements: HashMap::from([(id, placed)]) }
+}
+
+#[test]
+fn an_entry_the_pointer_reaches_names_its_place_and_is_refused_from_a_sender_that_hears_no_pointer() {
+    // Catches an entry told to its sender by a number other than its place in the list, so a click on the second
+    // button presses the first; one the pointer reaches let through from an actor that handles no pointer event, whose
+    // events would be dropped as it blocks everything beneath it; and an entry the pointer ignores refused for it.
+    let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
+    let placement = PlacementId { id: 3 };
+    let blocks = Entry::Draw { placement, pointer: Pointer::Blocks };
+    let ignores = Entry::Draw { placement, pointer: Pointer::Ignores };
+    let child = |_: &PathSegment| HUD;
+
+    let reached = Picks::Reaches(Reach { actor: hearer, entry: 2, blocks: true });
+    assert_eq!(blocks.listed(2, Some(hearer), child), Ok(Listed::Draw { placement: 3, picks: reached }));
+    assert_eq!(blocks.listed(2, None, child), Err(EntryRefused::Unheard));
+    assert_eq!(ignores.listed(2, None, child), Ok(draw(3)));
 }

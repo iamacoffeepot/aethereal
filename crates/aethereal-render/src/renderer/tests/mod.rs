@@ -3,6 +3,7 @@
 
 pub(super) mod lists;
 mod once;
+mod picked;
 mod told;
 
 use super::*;
@@ -60,7 +61,8 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
             let Ok(own) = Walk::new(device, CreateFrame::own(*window), ends, Size::PIXEL, effectless) else {
                 panic!("the renderer's own frame is made");
             };
-            Windowed { window: *window, format, own, main: super::Main::Own, last: Last::Undrawn }
+            let probing = Probing::new(device);
+            Windowed { window: *window, format, own, main: super::Main::Own, last: Last::Undrawn, probing }
         })
         .collect();
 
@@ -74,6 +76,11 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into a window of `Bgra8`.
 pub(super) fn kept(device: &wgpu::Device) -> Kept {
     kept_for(device, &[window()])
+}
+
+/// The picking of a `Render` that probes no window, as `kept` makes it on `device`.
+pub(super) fn unpicked(kept: &Kept, device: &wgpu::Device) -> Picking {
+    kept.picker.picking(device, Vec::new(), 1)
 }
 
 /// The window's main frame in `kept`.
@@ -153,7 +160,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
     assert!(matches!(framed, Ok(Framed::Texture { .. })), "the frame is refused: {framed:?}");
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off, &mut unpicked(&kept, &device));
     queue.submit([encoder.finish()]);
 }
 
@@ -162,7 +169,7 @@ fn an_effect_binding_a_sampler_none_has_made_is_made_and_drawn() {
 fn drawn_at(device: &wgpu::Device, queue: &wgpu::Queue, kept: &mut Kept, (width, height): (u32, u32)) {
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface_of(device, width, height), None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &surface_of(device, width, height), None, &mut Tally::Off, &mut unpicked(kept, device));
     queue.submit([encoder.finish()]);
 }
 
@@ -292,7 +299,7 @@ fn a_frame_begun_by_an_effect_that_reads_nothing_is_made_and_drawn_from_black() 
     assert_eq!(loads, vec![Load::Clear]);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off, &mut unpicked(&kept, &device));
     queue.submit([encoder.finish()]);
 }
 
@@ -391,7 +398,7 @@ fn a_frame_ending_in_floats_is_sampled_by_another_frame_s_effect_and_read_back_i
     assert!(matches!(framed, Ok(Framed::Texture { .. })), "the frame is refused: {framed:?}");
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &surface(&device), None, &mut Tally::Off, &mut unpicked(&kept, &device));
     let Some(glowed) = kept.textures.get(texture.id) else {
         panic!("the texture the frame ends on is kept");
     };
@@ -600,7 +607,7 @@ fn a_frame_that_ends_on_one_window_is_that_windows_main_frame_alone_and_drawn_on
     let handed = [(second, view)];
     assert_eq!(kept.passes(&handed), 2, "only the second window's main frame runs, its pass and the interface");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &handed, None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &handed, None, &mut Tally::Off, &mut unpicked(&kept, &device));
     queue.submit([encoder.finish()]);
 }
 
@@ -691,9 +698,11 @@ fn rim_placed(gpu: &Gpu, kept: &mut Kept) -> u64 {
         state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::None, coverage: Coverage::Alpha },
         shape: Shape { colour: ColourFormat::Rgba16Float, samples: Samples::Four, depth: DepthFormat::Depth32Float },
     };
-    assert_eq!(program::check(&create, RIM, &gpu.device().limits()), Ok(()));
+    let Ok(wgsl) = program::check(&create, RIM, &gpu.device().limits()) else {
+        panic!("the program is let through");
+    };
     let program = kept.ids.next();
-    kept.programs.keep(program, MAKER, pipeline(gpu, &create, RIM));
+    kept.programs.keep(program, MAKER, pipeline(gpu, &create, &wgsl, kept.picker.layout()));
 
     let join = Join::to::<Rims>(Frame::Main(window()), ProgramId { id: program }, Vec::new());
     let place = Place { mesh: MeshId { id: mesh_id }, instances: Drawn::Count(1), joins: vec![join] };

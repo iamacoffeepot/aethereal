@@ -6,6 +6,7 @@ mod tests;
 
 use crate::effect::Read;
 use crate::mesh::{self, MeshRefused, VertexFormat, VertexLayout};
+use crate::picking;
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
@@ -27,6 +28,10 @@ use naga::{
 ///
 /// The WGSL travels as a blob, as a mesh's vertices do, so a shader longer than the engine reads of one piece of mail
 /// can still be asked for.
+///
+/// The renderer adds the picking step to its fragment stage, in a group of its own after the program's last, with a
+/// uniform block and a storage buffer, so a program binds one group, one uniform block, and one storage buffer fewer
+/// than the GPU has; names beginning `aethereal_pick` and `AetherealPick` are the step's (ADR-0055).
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.render.create_program")]
 pub struct CreateProgram {
@@ -219,7 +224,7 @@ pub enum ProgramRefused {
     Writes { group: u32, binding: u32 },
     /// `bindings` lists two at one place.
     Repeated { group: u32, binding: u32 },
-    /// A binding's group is past the last the GPU has.
+    /// A binding's group is past the last the GPU has: for a draw program, the last is the picking step's.
     Group { group: u32 },
     /// A uniform block or a storage buffer is empty, or larger than the GPU binds.
     Size { group: u32, binding: u32 },
@@ -245,12 +250,13 @@ pub fn source(bytes: &[u8]) -> Result<&str, ProgramRefused> {
 /// Checks a program before it is made, with `wgsl` the WGSL its blob holds: that the WGSL is a valid module, whose
 /// entry points are a vertex and a fragment stage, that read what its layouts give, pass between them what each reads,
 /// write the colour drawn, and bind only what `bindings` lists, storage only to read, and in its fragment stage the
-/// targets `reads` names in group 0, within `limits`: what WebGPU would refuse as the pipeline is made.
+/// targets `reads` names in group 0, within `limits` less what the picking step binds: what WebGPU would refuse as the
+/// pipeline is made. Answers the WGSL the pipeline is made from, with the picking step added (ADR-0055).
 ///
 /// # Errors
 ///
 /// Why it would not be made as asked.
-pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Result<(), ProgramRefused> {
+pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Result<String, ProgramRefused> {
     mesh::check_layout(&create.layout).map_err(|why| ProgramRefused::Layout { why })?;
     if let PerInstance::Records(instances) = &create.instances {
         mesh::check_layout(instances).map_err(|why| ProgramRefused::InstanceLayout { why })?;
@@ -266,7 +272,7 @@ pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Resul
     }
     // A program reads a handful of targets, far below what a `u32` counts.
     let textures = u32::try_from(create.reads.len()).unwrap_or(u32::MAX);
-    check_bindings(&create.bindings, textures, limits)?;
+    check_bindings(&create.bindings, textures, &picking::reserved(limits))?;
     check_reads_only(&create.bindings)?;
     check_fixed(create.state.blend, create.shape)?;
     let tests_depth = create.state.depth != Depth::Off;
@@ -288,7 +294,18 @@ pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Resul
     check_output(&module, fragment, create.shape.colour)?;
     // The targets it reads are loaded at the fragment's pixel, so only its fragment stage binds them.
     check_uses(&module, &info, vertex, |group, binding| listed(&create.bindings, group, binding))?;
-    check_uses(&module, &info, fragment, |group, binding| used(&create.bindings, &create.reads, group, binding))
+    check_uses(&module, &info, fragment, |group, binding| used(&create.bindings, &create.reads, group, binding))?;
+
+    picking::picked(wgsl, &create.fragment, picking_group(create))
+}
+
+/// The group a program binds the picking step in: the one after its last, which is its targets' when it reads any and
+/// lists nothing beyond them (ADR-0055).
+pub(crate) fn picking_group(create: &CreateProgram) -> u32 {
+    let listed = create.bindings.iter().map(|binding| binding.group + 1).max().unwrap_or(0);
+    let reads = u32::from(!create.reads.is_empty());
+
+    listed.max(reads)
 }
 
 /// What a program reading `reads` and listing `bindings` binds at `group`, `binding`: a target it reads in group 0, when

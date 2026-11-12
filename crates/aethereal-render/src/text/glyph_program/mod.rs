@@ -12,6 +12,7 @@ use super::layout::LaidGlyph;
 use super::{Clip, Colour, Layer, Outline};
 use crate::font::msdf::{BASE_PIXELS_PER_EM, DEFAULT_PADDING};
 use crate::frame::{DepthUse, Size};
+use crate::picking;
 use crate::shape::{DepthFormat, Shape};
 use aethereal_math::Vec2;
 
@@ -86,6 +87,9 @@ pub const VERTEX: &str = "corner";
 /// The entry point of [`GLYPH`]'s fragment stage.
 pub const FRAGMENT: &str = "coverage";
 
+/// The group [`GLYPH`] binds the picking step in, after the atlas's and a placement's (ADR-0055).
+pub const PICKING: u32 = 2;
+
 /// The bytes of one glyph's instance: two floats of where, two of its size, four of its field, four of its colour.
 pub const INSTANCE_BYTES: usize = 48;
 
@@ -100,8 +104,9 @@ const SPAN: f32 = (2 * DEFAULT_PADDING) as f32;
 /// A clip that cuts nothing: a box larger than any frame.
 const UNCLIPPED: [f32; 4] = [-1.0e30, -1.0e30, 1.0e30, 1.0e30];
 
-/// What every pipeline of the glyph program is made from: its module, the layouts of its two groups, the atlas's and
-/// a placement's, the layout of its pipelines, and the sampler it reads the atlas through.
+/// What every pipeline of the glyph program is made from: its module, with the picking step added, the layouts of its
+/// two groups, the atlas's and a placement's, the layout of its pipelines, which binds the step's group after them,
+/// and the sampler it reads the atlas through.
 pub struct Layouts {
     module: wgpu::ShaderModule,
     pub atlas: wgpu::BindGroupLayout,
@@ -111,12 +116,15 @@ pub struct Layouts {
 }
 
 impl Layouts {
-    /// The glyph program's module and layouts, on `device`.
+    /// The glyph program's module and layouts, on `device`, binding the picking step through `picking`.
     #[must_use]
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, picking: &wgpu::BindGroupLayout) -> Self {
+        // The step is added to the renderer's own program as to any, which its test proves; were it not, text would
+        // draw, and only go unpicked.
+        let wgsl = picking::picked(GLYPH, FRAGMENT, PICKING).unwrap_or_else(|_| String::from(GLYPH));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(GLYPH.into()),
+            source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
         let atlas = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -154,7 +162,7 @@ impl Layouts {
         });
         let pipeline = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&atlas), Some(&placed)],
+            bind_group_layouts: &[Some(&atlas), Some(&placed), Some(picking)],
             immediate_size: 0,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {

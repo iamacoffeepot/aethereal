@@ -286,6 +286,24 @@ impl Walk {
         self.size
     }
 
+    /// The size of what a pass drawing into `into` draws, to its end's, across and down: one for its end, and for a
+    /// target, the share its scale makes of its end's size (ADR-0055).
+    pub fn scale_of(&self, into: Target) -> [f32; 2] {
+        let scale = match into {
+            Target::End => None,
+            Target::Texture(at) => self.create.targets.get(at as usize).map(|target| target.scale),
+        };
+        let Some(scale) = scale else {
+            return [1.0, 1.0];
+        };
+        let drawn = self.size.scaled(scale);
+        // A frame's sides are far fewer pixels than an `f32` counts exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let share = |part: u32, whole: u32| part as f32 / whole.max(1) as f32;
+
+        [share(drawn.width, self.size.width), share(drawn.height, self.size.height)]
+    }
+
     /// The size it follows its window at, when it ends on a texture that follows `window`: none otherwise.
     pub fn follows(&self, window: WindowId) -> Option<(Scale, Scale)> {
         match self.create.ends {

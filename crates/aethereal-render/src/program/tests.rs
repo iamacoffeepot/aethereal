@@ -62,9 +62,10 @@ fn rewritten(from: &str, to: &str) -> Asked<CreateProgram> {
     program
 }
 
-/// What the check answers `program`, under the limits every WebGPU device has.
+/// What the check answers `program`, under the limits every WebGPU device has: whether it lets it through, without
+/// the WGSL it would make it from.
 fn checked(program: &Asked<CreateProgram>) -> Result<(), ProgramRefused> {
-    check(program, &program.wgsl, &wgpu::Limits::default())
+    check(program, &program.wgsl, &wgpu::Limits::default()).map(drop)
 }
 
 #[test]
@@ -211,12 +212,15 @@ fn a_binding_the_shader_uses_unlisted_or_as_another_kind_is_refused() {
 
 #[test]
 fn bindings_the_gpu_would_not_bind_are_refused() {
-    // Catches a layout WebGPU refuses: two bindings at one place, a group past the last, a uniform block of no
-    // bytes or past what the GPU binds, and more textures than a stage binds.
+    // Catches a layout WebGPU refuses: two bindings at one place, a group past the last, or the last, which the
+    // picking step binds, a uniform block of no bytes or past what the GPU binds, and more textures than a stage
+    // binds.
     let mut repeated = program();
     repeated.bindings.push(Binding { group: 1, binding: 1, kind: BindingKind::Sampler });
     let mut past = program();
     past.bindings.push(Binding { group: 4, binding: 0, kind: BindingKind::Sampler });
+    let mut picking = program();
+    picking.bindings.push(Binding { group: 3, binding: 0, kind: BindingKind::Sampler });
     let mut empty = program();
     empty.bindings[0].kind = BindingKind::Uniform { bytes: 0 };
     let mut large = program();
@@ -226,6 +230,11 @@ fn bindings_the_gpu_would_not_bind_are_refused() {
 
     assert_eq!(checked(&repeated), Err(ProgramRefused::Repeated { group: 1, binding: 1 }));
     assert_eq!(checked(&past), Err(ProgramRefused::Group { group: 4 }));
+    assert_eq!(
+        checked(&picking),
+        Err(ProgramRefused::Group { group: 3 }),
+        "the GPU's last group is the picking step's"
+    );
     assert_eq!(checked(&empty), Err(ProgramRefused::Size { group: 0, binding: 0 }));
     assert_eq!(checked(&large), Err(ProgramRefused::Size { group: 0, binding: 0 }));
     assert_eq!(checked(&many), Err(ProgramRefused::Many { kind: BindingKind::Texture }));

@@ -18,6 +18,7 @@ mod made;
 pub mod mapping;
 pub mod mesh;
 pub mod pass;
+mod picking;
 pub mod placement;
 pub mod program;
 pub mod readback;

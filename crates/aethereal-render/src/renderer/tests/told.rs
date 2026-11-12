@@ -67,7 +67,7 @@ fn a_frame_that_counts_counts_each_draw_and_its_triangles_and_one_that_does_not_
 
     for tally in [&mut counting, &mut not] {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        kept.run_all(&mut encoder, &windows, None, tally);
+        kept.run_all(&mut encoder, &windows, None, tally, &mut unpicked(&kept, &device));
         queue.submit([encoder.finish()]);
     }
 

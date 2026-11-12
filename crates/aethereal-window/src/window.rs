@@ -1,10 +1,12 @@
 //! A window's actor: beneath the window root, keyed by the window's id, it sends what its window heard to the actors
 //! that subscribed, its keys, typed text, and wheel turns only to the holder of its key focus while one holds it (ADR-0053), and
-//! keeps how the window stands for a new one.
+//! keeps how the window stands for a new one. Its pointer events also cascade through what was drawn under the pointer,
+//! as the subscriber of its probes finds it (ADR-0055).
 
 use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
 use crate::focus::{KeyFocus, KeyFocusGained, KeyFocusHolder, KeyFocusLost, ReleaseKeyFocus, Slot, TakeKeyFocus, Took};
 use crate::perform::{Perform, Performed, unperformable};
+use crate::pointing::{Cascade, Hearer, Picked, Pointed, Probed, SubscribeProbes};
 use crate::windows::Windows;
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny,
@@ -50,14 +52,17 @@ pub struct WindowConfig {
 
 /// A window's actor: it sends each event its window heard to the actors subscribed to it, its keys, typed text, and
 /// wheel turns only to the holder of its key focus while one holds it, and sends a new subscriber the window's surface, mode, and focus
-/// as they stand before anything else.
+/// as they stand before anything else. While an actor subscribes to its probes, each pointer event is probed, and
+/// cascades through the stacks it answers (ADR-0055).
 #[derive(Bound)]
 #[kind(name = "aether.window")]
 pub struct Window {
-    /// The window, as its key focus notices name it.
+    /// The window, as its key focus notices and its probes name it.
     id: WindowId,
     listeners: Subscribers<(Event,)>,
     focus: KeyFocus,
+    probers: Subscribers<(Probed,)>,
+    cascade: Cascade,
     surface: Surface,
     mode: Mode,
     focused: bool,
@@ -77,14 +82,24 @@ impl Carries<Perform> for Window {
 impl Actor for Window {
     type Config = WindowConfig;
     type Key = WindowId;
-    type Handles = (Subscribe, Unsubscribe, Event, Perform, TakeKeyFocus, ReleaseKeyFocus, Ended);
+    type Handles =
+        (Subscribe, Unsubscribe, Event, Perform, TakeKeyFocus, ReleaseKeyFocus, SubscribeProbes, Picked, Ended);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(config: WindowConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let WindowConfig { window, surface, mode, focused } = config;
 
-        Ok(Self { id: window, listeners: Subscribers::new(), focus: KeyFocus::default(), surface, mode, focused })
+        Ok(Self {
+            id: window,
+            listeners: Subscribers::new(),
+            focus: KeyFocus::default(),
+            probers: Subscribers::new(),
+            cascade: Cascade::default(),
+            surface,
+            mode,
+            focused,
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -130,6 +145,17 @@ impl Window {
         }
     }
 
+    /// What probes `event`, a pointer event the cascade numbers and keeps until its stacks come back: none for another
+    /// event, or while no actor subscribes to the window's probes, when nothing would answer them.
+    fn probed(&mut self, event: &Event) -> Option<Probed> {
+        let is_probed = !self.probers.references().is_empty();
+        if !is_probed {
+            return None;
+        }
+
+        self.cascade.heard(self.id, event)
+    }
+
     /// The event that says whether the window has the keyboard, as it stands.
     const fn focus(&self) -> Event {
         if self.focused {
@@ -171,10 +197,11 @@ impl Handles<Unsubscribe> for Window {
 }
 
 /// What the window root sent on from its host, sent to the subscribers the key focus routes it to when it says
-/// anything new. An event any other actor sends is not the host's, and is not sent on. Once the window has closed, the
-/// holder of its key focus is sent `KeyFocusLost`, `Closed` is the last its subscribers are sent, and the actor ends.
+/// anything new, and a pointer event probed. An event any other actor sends is not the host's, and is not sent on. Once
+/// the window has closed, the holder of its key focus is sent `KeyFocusLost`, `Closed` is the last its subscribers are
+/// sent, and the actor ends.
 impl Handles<Event> for Window {
-    type Sends = (ToAny<(Event,), Event>, ToAny<KeyFocusHolder, KeyFocusLost>);
+    type Sends = (ToAny<(Event,), Event>, ToAny<KeyFocusHolder, KeyFocusLost>, ToAny<(Probed,), Probed>);
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let root = turn.parent();
@@ -192,6 +219,9 @@ impl Handles<Event> for Window {
             let hearers = self.hearers(&event);
             turn.to(hearers).send(&event)?;
         }
+        if let Some(probed) = self.probed(&event) {
+            turn.to(&self.probers).send(&probed)?;
+        }
         if is_closed {
             turn.close();
         }
@@ -201,11 +231,12 @@ impl Handles<Event> for Window {
 }
 
 /// Sends each input asked, in order, as the event of the same name, to the subscribers the key focus routes it to, as
-/// it would one the host heard, then answers: they are sent in the turn that answers, so each subscriber handles them
-/// before anything arriving after the answer (ADR-0046). It is asked by any actor, as an input says nothing of how the
-/// window stands, which only its host may. Inputs that cannot be performed are refused, and none is sent.
+/// it would one the host heard, and probes each pointer input, then answers: they are sent in the turn that answers,
+/// so each subscriber handles them before anything arriving after the answer (ADR-0046), while the cascade delivers a
+/// pointer input once its stacks come back, as it does the host's. It is asked by any actor, as an input says nothing
+/// of how the window stands, which only its host may. Inputs that cannot be performed are refused, and none is sent.
 impl Handles<Perform> for Window {
-    type Sends = (ToAny<(Event,), Event>, ToSender<Performed>);
+    type Sends = (ToAny<(Event,), Event>, ToAny<(Probed,), Probed>, ToSender<Performed>);
 
     fn handle(&mut self, perform: Perform, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Some(why) = unperformable(&perform.inputs) {
@@ -216,6 +247,9 @@ impl Handles<Perform> for Window {
             let event = Event::from(input);
             let hearers = self.hearers(&event);
             turn.to(hearers).send(&event)?;
+            if let Some(probed) = self.probed(&event) {
+                turn.to(&self.probers).send(&probed)?;
+            }
         }
         turn.reply(&Performed::Performed)?;
 
@@ -268,12 +302,52 @@ impl Handles<ReleaseKeyFocus> for Window {
     }
 }
 
-/// A subscriber that ended leaves the list, and a key focus holder that ended empties the slot, told nothing.
+/// Adds the sender to the subscribers of the window's probes, which are sent each pointer event's place from the next
+/// the window hears: nothing more, when it is subscribed already. An actor that does not handle [`Probed`] is not.
+impl Handles<SubscribeProbes> for Window {
+    type Sends = ();
+
+    fn handle(&mut self, _: SubscribeProbes, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let Some(prober) = turn.cast::<(Probed,)>(sender) else {
+            turn.log(Level::Warn, "an actor that does not handle a window's probes asked to be sent them");
+            return Ok(());
+        };
+        self.probers.subscribe(turn, prober);
+
+        Ok(())
+    }
+}
+
+/// Delivers the pointer events the stacks answer, as the cascade says, each to the actor whose list holds the entry
+/// it reaches. Stacks from an actor that does not subscribe to the window's probes are not the renderer's, and are
+/// dropped.
+impl Handles<Picked> for Window {
+    type Sends = (ToAny<Hearer, Pointed>,);
+
+    fn handle(&mut self, picked: Picked, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let is_prober = self.probers.references().iter().any(|prober| prober.erase() == sender);
+        if !is_prober {
+            turn.log(Level::Warn, "stacks an actor that does not probe the window sent were dropped");
+            return Ok(());
+        }
+        for (hearer, pointed) in self.cascade.picked(self.id, picked) {
+            turn.to(hearer).send(&pointed)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// A subscriber that ended leaves the list, a subscriber of its probes too, and a key focus holder that ended empties
+/// the slot, told nothing.
 impl Handles<Ended> for Window {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.listeners.ended(&ended);
+        self.probers.ended(&ended);
         self.focus.release(ended.actor());
 
         Ok(())
