@@ -155,7 +155,7 @@ impl Widget for Button {
 
 - **Layout is flexbox and CSS grid, computed by the Taffy crate.** There is no document flow, float, or inline layout.
 - **Layout runs in the screen at each rebuild, never each frame.** The rects it gives place the draws, and the pointer follows the draws.
-- **A text tells layout its size** through Taffy's measure step, measured with the same layout code the renderer draws text with, so the measured size is the drawn size (see Consequences).
+- **A text tells layout its size** through Taffy's measure step. It is measured with the font's metrics, asked of the renderer once for each font, and with the same layout code the renderer draws text with, so the measured size is the drawn size (see Consequences).
 - **Sizes are logical pixels times a UI scale,** so one scale setting enlarges everything without touching markup.
 - **A root screen learns the window's size from the window, and a child screen learns its size from its parent** (see Child actors). A size change is mail, and costs one rebuild.
 - **Taffy is pinned to an exact version, without default features.** The library calls Taffy's algorithms over its own tree and does not use Taffy's tree type.
@@ -256,7 +256,12 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
 - **The window gains two things, each an amendment to ADR-0055 and ADR-0024:**
   - a release under a held button reports the topmost actor under the pointer, its entry, and the position in that entry's coordinates;
   - an actor can set the window's cursor to an image, and set it back.
-- **Text must be measurable in the actor.** ADR-0052 left measuring a text without placing it as later work, and layout needs it in the same turn. The text layout the renderer uses (its fonts' metrics, shaping, and line breaking, without rasterising or the GPU) moves to where both the renderer and `aethereal-ui` use it, so a measured size is exactly the drawn size. Asking the renderer by mail would size every new string a turn late, and a measure written separately would drift from what is drawn.
+- **Text must be measurable in the actor, which amends ADR-0052.** ADR-0052 left measuring a text without placing it as later work, and layout needs it in the same turn.
+  - A font is supplied by an actor and kept by the renderer, and other actors hold only its `FontId`.
+  - A screen asks the renderer once for each `FontId` it meets. The renderer answers with the font's metrics (its glyph map, advances, kerning, and line height), which is the same value the renderer lays out with.
+  - The screen then measures every string itself, in the same turn, with the same layout code, so a measured size is exactly the drawn size.
+  - This is one round trip per font, never per string.
+  - A font names its fallbacks when it is made, in place of one renderer-wide list. So a `FontId`'s metrics never change: a screen keeps them for good, and nothing is ever sent to update them.
 - **A child actor learns a new size a turn after its parent decides it.** The clip contains the mismatch for that turn, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
 - **The dev overlay moves onto the library,** as its first user.
 - **Follow-on work, each waiting for a need:**
