@@ -124,8 +124,8 @@ impl<C: ChildOf> Child<C> {
     /// The segment of the child of the sender's own this names: what a receiver finds it by, one segment beneath the
     /// sender, as the renderer finds a child a draw list calls (ADR-0055).
     #[must_use]
-    pub const fn segment(&self) -> &PathSegment {
-        &self.last
+    pub fn into_segment(self) -> PathSegment {
+        self.last
     }
 }
 

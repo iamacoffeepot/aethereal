@@ -8,7 +8,7 @@ mod tests;
 
 use crate::placement::PlacementId;
 use aethereal_actor::records::Naming;
-use aethereal_actor::{Child, ChildOf, ParentOf};
+use aethereal_actor::{Child, ChildOf};
 use aethereal_data::{ActorId, ActorPath, PathSegment, Plain};
 use std::collections::HashMap;
 use std::{slice, vec};
@@ -42,12 +42,12 @@ pub struct Callee {
 }
 
 impl Entry {
-    /// A call of `child`, a child of the list's sender, which `sender` refers to, as `turn.me()` answers: a place
-    /// deeper than a child, or one whose type does not stand beneath the sender's, does not build. The renderer finds
-    /// the child one segment beneath whoever sends the list, so a call reaches the sender's own child and nothing else.
+    /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it: a place deeper
+    /// than a child does not build. The call holds only the child's segment, and the renderer finds the child one
+    /// segment beneath whoever sends the list, so a call names only its sender's own direct child.
     #[must_use]
-    pub fn call<C: ChildOf>(_sender: impl ParentOf<C>, child: &Child<C>) -> Self {
-        Self::Call(Callee { child: Naming::of(child.segment()) })
+    pub fn call<C: ChildOf>(child: Child<C>) -> Self {
+        Self::Call(Callee { child: Naming::of(&child.into_segment()) })
     }
 
     /// What the renderer keeps of it: a placement by its id, or a call by its child's, which `child_id` answers for the
