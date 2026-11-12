@@ -323,9 +323,7 @@ pub(in crate::renderer) fn frame_pixels(gpu: &Gpu, kept: &mut Kept) -> Vec<[u8; 
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    let mut picking = kept.picking((device, queue), &windows);
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut picking);
-    kept.picked(picking, (device, queue), &mut encoder);
+    kept.run_all(&mut encoder, (device, queue), &windows, None, &mut Tally::Off);
     let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(device, &mut encoder, &frame) else {
         panic!("the frame is copied");
     };

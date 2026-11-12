@@ -150,3 +150,27 @@ fn a_hit_is_moved_by_its_list_s_origin_and_cut_to_its_clip() {
     assert_eq!(moved, vec![Reach { origin: Vec2::new(2.0, 0.0), ..reach(0, true) }]);
     assert_eq!(cut, vec![], "past the child's clip");
 }
+
+#[test]
+fn every_draw_a_call_moves_binds_a_record_its_render_fitted_the_buffer_to() {
+    // Catches the calls' buffer fitted short of the records the walk writes: not fitted at all, fitted before the walk
+    // to a count it outgrows, or fitted to the moved draws without the first record, which moves nothing. Four moved
+    // draws write five records, past each room of a power of two below eight, so a draw would bind an offset past the
+    // buffer, which WebGPU refuses, where it once fell back to drawing unmoved; and catches a draw refused its record
+    // while the buffer could hold it, which would not be drawn (ADR-0055).
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let gpu = Gpu::new(device.clone(), queue.clone());
+    let mut kept = kept(&device);
+    let program = tinted(&gpu, &mut kept);
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let quads = [(); 4].map(|()| drawn(placed(&gpu, &mut kept, (CHILD, program), (-1.0, 0.0), red), Picks::Ignores));
+    assert_eq!(kept.listed(quads.to_vec(), CHILD), Ok(()));
+    let moved = Area::Inherit { origin: Vec2::new(1.0, 1.0), clip: Clip::Whole };
+    assert_eq!(kept.listed(vec![called(CHILD, moved)], MAKER), Ok(()));
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+
+    let (_, _, past) = kept.run_all(&mut encoder, (&device, &queue), &surface(&device), None, &mut Tally::Off);
+    queue.submit([encoder.finish()]);
+
+    assert_eq!(past, 0, "no draw is refused its record");
+}

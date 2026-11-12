@@ -80,10 +80,8 @@ pub(super) fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, p
         windowed.probing.heard(&heard);
     }
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    let mut picking = kept.picking((device, queue), &windows);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut picking);
-    let mut stacks = kept.picked(picking, (device, queue), &mut encoder);
+    let (_, mut stacks, _) = kept.run_all(&mut encoder, (device, queue), &windows, None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 
     let Some(stacks) = stacks.pop() else {
