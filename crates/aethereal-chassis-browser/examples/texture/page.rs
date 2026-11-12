@@ -1,6 +1,6 @@
 //! The page's entry points, an actor that draws a map into a texture frame and shows it in the window's main frame it
-//! makes, an actor that asks to replace that main frame, and an actor that keeps a glow past one in a frame that ends
-//! in floats and darkens it into another.
+//! makes, listing both placements, the root list's one root, an actor that asks to replace that main frame, and an
+//! actor that keeps a glow past one in a frame that ends in floats and darkens it into another.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
@@ -9,12 +9,13 @@ use aethereal_actor::{
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected};
 use aethereal_render::frame::builder::{Effect, FrameBuilder, Onto, depth};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, FrameId, FrameRefused, Framed, ShapeOf, Shaped, Size};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
-use aethereal_render::placement::{Bind, Drawn, Filter, Join, Place, Placed, Resource, Sampling, Wrap};
+use aethereal_render::placement::{Bind, Drawn, Filter, Join, Place, Placed, PlacementId, Resource, Sampling, Wrap};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
@@ -28,7 +29,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the claimer, the mapper, and the glower.
+/// the renderer, which opens WebGPU on it, and the claimer, the mapper, the root list, and the glower.
 ///
 /// # Errors
 ///
@@ -44,6 +45,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Claimer>()
         .root::<Mapper>()
         .root::<Glower>()
+        .draws::<(Mapper,)>()
         .run()?
         .await?;
 
@@ -150,7 +152,8 @@ const MAP_SIZE: Size = Size { width: 64, height: 64 };
 const SETTLED: u32 = 3;
 
 /// The mapper: it makes what it draws one ask after another, each answer carrying what was made so far: the map's
-/// frame, a placement in it, the window's main frame, and the quad that shows the map in it. Once a few frames are
+/// frame, a placement in it, the window's main frame, and the quad that shows the map in it, and lists both
+/// placements, the map's frame's root list as the mapper is its maker. Once a few frames are
 /// drawn it reads back the window and the map, releases the map's frame, and reads the window back again.
 #[derive(Bound)]
 #[kind(name = "aether.example.mapper")]
@@ -192,8 +195,8 @@ enum Making {
 enum Framing {
     /// The map's, once both programs were made.
     Map { mesh: MeshId, map: ProgramId, show: ProgramId },
-    /// The window's, once the map was placed in its frame.
-    Main { mesh: MeshId, show: ProgramId, map: FrameId, texture: TextureId },
+    /// The window's, once the map was placed in its frame as `placed`.
+    Main { mesh: MeshId, show: ProgramId, map: FrameId, texture: TextureId, placed: PlacementId },
 }
 
 /// Which placement was asked for, with what was made before it.
@@ -202,8 +205,8 @@ enum Framing {
 enum Placing {
     /// The map's, in its frame.
     Map { mesh: MeshId, show: ProgramId, map: FrameId, texture: TextureId },
-    /// The quad that shows it, in the window's.
-    Show { map: FrameId, texture: TextureId },
+    /// The quad that shows it, in the window's, the map placed as `placed`.
+    Show { map: FrameId, texture: TextureId, placed: PlacementId },
 }
 
 /// What was asked to be read back.
@@ -410,7 +413,7 @@ impl Handles<Answer<Framed, Framing>> for Mapper {
                 let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
                 turn.to(path::<Renderer>(())).ask(&place, &Placing::Map { mesh, show, map: frame, texture })?;
             }
-            (Answered::Yes(Framed::Made(main)), Framing::Main { mesh, show, map, texture }) => {
+            (Answered::Yes(Framed::Made(main)), Framing::Main { mesh, show, map, texture, placed }) => {
                 say(format!("made main {main:?}"));
                 let sampling = Sampling { filter: Filter::Nearest, wrap: Wrap::Clamp };
                 let bindings = vec![
@@ -419,7 +422,7 @@ impl Handles<Answer<Framed, Framing>> for Mapper {
                 ];
                 let join = Join::to::<Main>(Frame::Main(window), show, bindings);
                 let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
-                turn.to(path::<Renderer>(())).ask(&place, &Placing::Show { map, texture })?;
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Show { map, texture, placed })?;
                 turn.to(path::<Claimer>(())).send(&Claim { window })?;
             }
             (answered, _) => say(format!("a frame was not made: {answered:?}")),
@@ -429,15 +432,16 @@ impl Handles<Answer<Framed, Framing>> for Mapper {
     }
 }
 
+/// The map placed, the window's main frame is asked for; the quad placed, both are listed.
 impl Handles<Answer<Placed, Placing>> for Mapper {
-    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>,);
+    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
             return Ok(());
         };
@@ -446,7 +450,9 @@ impl Handles<Answer<Placed, Placing>> for Mapper {
         };
         let (mesh, show, map, texture) = match placing {
             Placing::Map { mesh, show, map, texture } => (mesh, show, map, texture),
-            Placing::Show { map, texture } => {
+            Placing::Show { map, texture, placed } => {
+                let entries = [placed, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
                 say(String::from("placed map show"));
                 *self = Self::Drawing { window, map, texture, drawn: 0 };
                 return Ok(());
@@ -459,7 +465,7 @@ impl Handles<Answer<Placed, Placing>> for Mapper {
                 return Ok(());
             }
         };
-        turn.to(path::<Renderer>(())).ask(&create, &Framing::Main { mesh, show, map, texture })?;
+        turn.to(path::<Renderer>(())).ask(&create, &Framing::Main { mesh, show, map, texture, placed: placement })?;
 
         Ok(())
     }

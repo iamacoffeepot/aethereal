@@ -1,6 +1,7 @@
 //! Dispatches: one compute program, run in one compute pass of a frame, with what it binds, over a count of
 //! invocations, asked for by any actor and checked as it is made, as a placement is, so running it cannot fail
-//! (ADR-0026). One runs in each cycle that draws its frame until it is released, or once, answering when it has run.
+//! (ADR-0026). One runs where its maker's draw list names it, in each cycle that draws its frame, until it is
+//! released, or once, its maker told when it has run (ADR-0055).
 
 #[cfg(test)]
 mod tests;
@@ -14,46 +15,41 @@ use crate::storage::{self, DISPATCH_ARGUMENTS, StorageId};
 use aethereal_data::{ActorId, Plain};
 
 /// Asks the renderer to run the compute program `join` names in the compute pass it names, with what it binds, over
-/// `size`, in each cycle that draws its frame until it is released: a cycle that draws nothing runs no pass, and a
-/// window's main frame not drawn in a cycle runs none of its dispatches. Answered with [`Dispatched`].
+/// `size`, where its maker's last [`DrawList`](crate::draw_list::DrawList) names it, in the order the lists are walked,
+/// in each cycle that draws its frame, for as long as `runs` says: a cycle that draws nothing runs no pass, and a
+/// window's main frame not drawn in a cycle runs none of its dispatches (ADR-0055). Answered with [`Dispatched`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.create_dispatch")]
 pub struct CreateDispatch {
     pub join: Dispatch,
     pub size: Invocations,
+    pub runs: Runs,
 }
 
-/// Asks the renderer to run the compute program `join` names once, in the compute pass it names, with what it binds,
-/// over `size`, in the first cycle that draws its frame. It is checked when it is asked, as a [`CreateDispatch`] is,
-/// and refused at once as one is; while it waits it keeps what it binds and counts among its pass's dispatches. It has
-/// no id and nothing to release. Answered with [`DispatchRan`] once the commands of the cycle it ran in are submitted,
-/// so what is submitted after sees what it wrote.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.render.run_dispatch")]
-pub struct RunDispatch {
-    pub join: Dispatch,
-    pub size: Invocations,
+/// How long a dispatch runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.runs")]
+pub enum Runs {
+    /// In each cycle that draws its frame with it listed, until its maker releases it.
+    UntilReleased,
+    /// In the first cycle that draws its frame with it listed, and never again: it is then released, and its maker,
+    /// which must handle [`DispatchRan`], is told it ran once that cycle's commands are submitted, so what is submitted
+    /// after sees what it wrote. Until then it waits, listed or not, and its maker is told it never ran when its frame
+    /// goes for good.
+    Once,
 }
 
-impl RunDispatch {
-    /// The dispatch it asks for, checked and made as one that runs until released is.
-    pub(crate) fn dispatch(self) -> CreateDispatch {
-        CreateDispatch { join: self.join, size: self.size }
-    }
-}
-
-/// What the renderer answers [`RunDispatch`] with.
+/// What the renderer tells the maker of a dispatch that runs once (ADR-0026).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.dispatch_ran")]
 pub enum DispatchRan {
-    /// It ran, in a cycle whose commands are submitted.
-    Ran,
-    /// It never ran, and never will: what it joined went before a cycle drew it.
-    Unrun(Unrun),
-    Refused(DispatchRefused),
+    /// It ran, in a cycle whose commands are submitted, and is released.
+    Ran(DispatchId),
+    /// It never ran, and never will: what it joined went before a cycle ran it, and it is released.
+    Unrun { dispatch: DispatchId, why: Unrun },
 }
 
-/// Why a dispatch asked to run once never ran.
+/// Why a dispatch that runs once never ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.unrun")]
 pub enum Unrun {
@@ -106,10 +102,10 @@ impl Invocations {
     }
 }
 
-/// What a dispatch runs, as its check found it: a grid of workgroups, worked out or given, or as many as the three
-/// words of `storage` from the byte `at` hold.
+/// The grid of workgroups a dispatch runs, as its check found it: worked out or given, or as many as the three words of
+/// `storage` from the byte `at` hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Runs {
+pub(crate) enum Grid {
     Workgroups([u32; 3]),
     Indirect { storage: StorageId, at: u64 },
 }
@@ -156,12 +152,14 @@ pub enum DispatchRefused {
     /// Its workgroups, three words from the byte `at`, lie off a word or past the storage's `bytes`.
     Arguments { at: u64, bytes: u64 },
     /// It writes storage another dispatch of its pass reads or writes, or reads storage one of its pass writes, as the
-    /// dispatches of one pass run in no order; or it writes storage a dispatch of another frame writes, and no order of
-    /// frames runs one before the other.
+    /// order of one pass's dispatches is the lists', which can change at any `Render`; or it writes storage a dispatch
+    /// of another frame writes, and no order of frames runs one before the other.
     Written,
     /// It binds the texture of a frame, or storage a frame writes, that reads the frame it joins, through frames
     /// between or at once, or has that frame read storage it writes: frames would read each other round.
     Round,
+    /// It runs once, and its asker does not handle [`DispatchRan`], which it would be told when it has run.
+    Untold,
 }
 
 /// One use of storage by what the renderer keeps: read in a pass of a frame by a placement, an effect, or a dispatch,
@@ -221,8 +219,8 @@ pub(crate) trait Dispatches: Finds {
 /// Checks a dispatch `by` asks for before it is made: that its pass is a compute pass of its frame, that its compute
 /// program is kept and bound as it binds, only storage `by` made where it writes, and nothing it writes twice, that it
 /// runs no more workgroups than the GPU dispatches, or reads them from storage they fit in, and that no two
-/// dispatches write one storage in no order, and no frames read each other round. Answers what it runs.
-pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches) -> Result<Runs, DispatchRefused> {
+/// dispatches write one storage in no order, and no frames read each other round. Answers the grid it runs.
+pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches) -> Result<Grid, DispatchRefused> {
     let join = &create.join;
     kept.computes(join.frame, join.pass)?;
     let compute = kept.compute(join.compute).ok_or(DispatchRefused::Compute)?;
@@ -247,8 +245,8 @@ pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches
             return Err(DispatchRefused::Aliased { group, binding });
         }
     }
-    let runs = runs(create.size, &join.bindings, &compute, kept)?;
-    if let Runs::Workgroups(workgroups) = runs {
+    let grid = grid(create.size, &join.bindings, &compute, kept)?;
+    if let Grid::Workgroups(workgroups) = grid {
         let most = kept.most_workgroups();
         let past = workgroups.iter().any(|along| *along > most);
         if past {
@@ -257,7 +255,7 @@ pub(crate) fn check(create: &CreateDispatch, by: ActorId, kept: &impl Dispatches
     }
     check_order(join, &accessed, kept)?;
 
-    Ok(runs)
+    Ok(grid)
 }
 
 /// Each storage `bindings` binds, beside the bind and how the compute program, which binds what `listed` lists, uses
@@ -278,22 +276,22 @@ fn stored<'a>(bindings: &'a [Bind], listed: &[Binding]) -> Vec<(&'a Bind, Storag
         .collect()
 }
 
-/// What `size` runs of `compute`, binding `bindings`: workgroups as given, or those that cover one invocation for each
+/// The grid `size` runs of `compute`, binding `bindings`: workgroups as given, or those that cover one invocation for each
 /// element of the storage named, along the first dimension, or as many as storage they fit in holds.
-fn runs(
+fn grid(
     size: Invocations,
     bindings: &[Bind],
     compute: &Computes<'_>,
     kept: &impl Finds,
-) -> Result<Runs, DispatchRefused> {
+) -> Result<Grid, DispatchRefused> {
     let storage = match size {
-        Invocations::Workgroups(workgroups) => return Ok(Runs::Workgroups(workgroups)),
+        Invocations::Workgroups(workgroups) => return Ok(Grid::Workgroups(workgroups)),
         Invocations::Indirect { storage, at } => {
             let bytes = kept.storage(storage).ok_or(DispatchRefused::Storage)?;
             if !storage::fits(bytes, at, DISPATCH_ARGUMENTS) {
                 return Err(DispatchRefused::Arguments { at, bytes });
             }
-            return Ok(Runs::Indirect { storage, at });
+            return Ok(Grid::Indirect { storage, at });
         }
         Invocations::PerElement(storage) => storage,
     };
@@ -307,7 +305,7 @@ fn runs(
     let workgroups = array.elements(bytes).div_ceil(u64::from(compute.workgroup[0]));
     let counted = u32::try_from(workgroups).unwrap_or(u32::MAX);
 
-    Ok(Runs::Workgroups([counted, 1, 1]))
+    Ok(Grid::Workgroups([counted, 1, 1]))
 }
 
 /// Checks that `join`, using storage as `accessed` says, has no frames read each other round, with what is read already,

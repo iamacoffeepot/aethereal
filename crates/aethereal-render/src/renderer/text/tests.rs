@@ -91,19 +91,10 @@ fn keys_of(kept: &Kept, text: &str) -> Vec<GlyphKey> {
     keys
 }
 
-/// A placement by `maker` of `text`, its top left at `at`, over the window's main frame's pass [`Main`], joined as
-/// `order` says, made and kept in `kept`.
-fn placed_text(
-    kept: &mut Kept,
-    device: &wgpu::Device,
-    (maker, text, order): (ActorId, TextId, placement::Order),
-    at: Vec2,
-) -> PlacementId {
-    let frame = Frame::Main(window());
-    let join = match order {
-        placement::Order::Loose => TextJoin::to::<Main>(frame),
-        placement::Order::Listed => TextJoin::listed::<Main>(frame),
-    };
+/// A placement by `maker` of `text`, its top left at `at`, over the window's main frame's pass [`Main`], made and kept
+/// in `kept`.
+fn placed_text(kept: &mut Kept, device: &wgpu::Device, (maker, text): (ActorId, TextId), at: Vec2) -> PlacementId {
+    let join = TextJoin::to::<Main>(Frame::Main(window()));
     let place = PlaceText { text, at, layer: Layer::Over, opacity: 1.0, clip: Clip::None, joins: vec![join] };
     let made = kept.place_text(device, &place);
     let Ok(made) = made else {
@@ -215,8 +206,9 @@ fn only_a_text_s_maker_writes_or_releases_it_and_releasing_it_takes_every_placem
     let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut kept = kept(&device);
     let text = made(&mut kept, MAKER, "hi", 16.0);
-    let mine = placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), Vec2::ZERO);
-    let theirs = placed_text(&mut kept, &device, (OTHER, text, placement::Order::Listed), Vec2::ZERO);
+    let mine = placed_text(&mut kept, &device, (MAKER, text), Vec2::ZERO);
+    let theirs = placed_text(&mut kept, &device, (OTHER, text), Vec2::ZERO);
+    assert_eq!(kept.listed(main_list(&[mine]), MAKER), Ok(()));
     assert_eq!(kept.listed(main_list(&[theirs]), OTHER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![mine.id, theirs.id]);
 
@@ -232,24 +224,22 @@ fn only_a_text_s_maker_writes_or_releases_it_and_releasing_it_takes_every_placem
 }
 
 #[test]
-fn placed_texts_draw_after_loose_meshes_and_in_their_list_s_order_among_the_maker_s_meshes() {
-    // Catches a list that names a placed text refused as naming no placement, a listed text drawn loose or in another
-    // order than its list's, and a placed text the device refuses to draw.
+fn placed_texts_draw_only_where_listed_in_their_list_s_order_among_the_maker_s_meshes() {
+    // Catches a list that names a placed text refused as naming no placement, a placed text drawn before any list
+    // names it or in another order than its list's, and a placed text the device refuses to draw.
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let gpu = Gpu::new(device.clone(), queue.clone());
     let mut kept = kept(&device);
     let program = tinted(&gpu, &mut kept);
-    let loose_mesh = mesh(&gpu, &mut kept, (MAKER, program, placement::Order::Loose), (-1.0, 1.0), [0.5; 4]);
-    let listed_mesh = mesh(&gpu, &mut kept, (MAKER, program, placement::Order::Listed), (-1.0, 1.0), [0.5; 4]);
+    let quad = mesh(&gpu, &mut kept, (MAKER, program), (-1.0, 1.0), [0.5; 4]);
     let text = made(&mut kept, MAKER, "Ag", 24.0);
-    let loose_text = placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), Vec2::ZERO);
-    let listed_text = placed_text(&mut kept, &device, (MAKER, text, placement::Order::Listed), Vec2::ZERO);
-    assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id]);
+    let placed = placed_text(&mut kept, &device, (MAKER, text), Vec2::ZERO);
+    assert_eq!(drawn_in_main(&kept), Vec::<u64>::new());
 
-    assert_eq!(kept.listed(main_list(&[listed_text, listed_mesh]), MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id, listed_text.id, listed_mesh.id]);
-    assert_eq!(kept.listed(main_list(&[listed_mesh, listed_text]), MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose_mesh.id, loose_text.id, listed_mesh.id, listed_text.id]);
+    assert_eq!(kept.listed(main_list(&[placed, quad]), MAKER), Ok(()));
+    assert_eq!(drawn_in_main(&kept), vec![placed.id, quad.id]);
+    assert_eq!(kept.listed(main_list(&[quad, placed]), MAKER), Ok(()));
+    assert_eq!(drawn_in_main(&kept), vec![quad.id, placed.id]);
 
     generated(&mut kept, (&device, &queue));
     let encoder = drawn_into(&mut kept, (&device, &queue), &surface(&device, 8));
@@ -318,7 +308,8 @@ fn on_a_gpu_a_glyph_covers_the_pixels_inside_its_edge_where_it_is_placed_and_non
     let mut kept = kept(&device);
     let at = Vec2::new(16.0, 8.0);
     let text = made(&mut kept, MAKER, "I", 40.0);
-    placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), at);
+    let placed = placed_text(&mut kept, &device, (MAKER, text), at);
+    assert_eq!(kept.listed(main_list(&[placed]), MAKER), Ok(()));
     generated(&mut kept, gpu);
 
     let side = 64;
@@ -372,10 +363,11 @@ fn on_a_gpu_the_widest_outline_is_a_rim_around_the_glyph_and_its_quad_past_the_f
         let mut kept = kept(&device);
         let program = tinted(&opened, &mut kept);
         let sand = [1.0, 0.85, 0.55, 1.0];
-        mesh(&opened, &mut kept, (MAKER, program, placement::Order::Loose), (-1.0, 1.0), sand);
+        let ground = mesh(&opened, &mut kept, (MAKER, program), (-1.0, 1.0), sand);
         let outline = Outline::Of { width: widest_outline(size), colour: Colour::BLACK };
         let text = outlined(&mut kept, MAKER, ("o", size), outline);
-        placed_text(&mut kept, &device, (MAKER, text, placement::Order::Loose), at);
+        let placed = placed_text(&mut kept, &device, (MAKER, text), at);
+        assert_eq!(kept.listed(main_list(&[ground, placed]), MAKER), Ok(()));
         generated(&mut kept, gpu);
 
         let pixels = drawn_pixels(&mut kept, gpu, side);

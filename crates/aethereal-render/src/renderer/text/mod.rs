@@ -7,14 +7,14 @@
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-use super::{Kept, Placement, Renderer};
-use crate::draw_list::{self, EntryRefused, Listing, Lists, Placements};
+use super::{Kept, Renderer};
+use crate::draw_list::Lists;
 use crate::font;
 use crate::font::FontRefused;
 use crate::frame::{DepthUse, Frame, Size};
 use crate::made::{Made, Owned};
 use crate::pass::PassName;
-use crate::placement::{self, Finds, Fits, PlacementId};
+use crate::placement::{Finds, Fits, PlacementId};
 use crate::shape::Shape;
 use crate::stats::{self, AtlasFill, Tally};
 use crate::text::atlas::texture::AtlasTexture;
@@ -101,12 +101,11 @@ pub(super) struct PlacedText {
     joins: Vec<TextJoined>,
 }
 
-/// One pass a placed text draws in: whether loose or by its maker's list, what the pass is made against, its uniforms
+/// One pass a placed text draws in: what the pass is made against, its uniforms
 /// there and the group binding them, and the glyph program's pipelines for the pass's shape.
 pub(super) struct TextJoined {
     frame: Frame,
     pass: PassName,
-    pub listing: Listing,
     fits: Fits,
     uniforms: wgpu::Buffer,
     group: wgpu::BindGroup,
@@ -290,19 +289,12 @@ impl Texts {
         }
     }
 
-    /// Notes that each text with a placement joined loose, or held by a list in `lists`, is drawn at this `Render`.
+    /// Notes that each text with a placement held by a list in `lists` is drawn at this `Render`.
     fn mark_drawn(&mut self, lists: &Lists) {
         self.renders += 1;
         let listed: HashSet<u64> = lists.all().collect();
-        let drawn: Vec<u64> = self
-            .placed
-            .iter()
-            .filter(|(id, placed)| {
-                let loose = placed.joins.iter().any(|join| join.listing == Listing::Loose);
-                loose || listed.contains(id)
-            })
-            .map(|(_, placed)| placed.text)
-            .collect();
+        let drawn: Vec<u64> =
+            self.placed.iter().filter(|(id, _)| listed.contains(id)).map(|(_, placed)| placed.text).collect();
         for id in drawn {
             if let Some(text) = self.made.get_mut(id) {
                 text.drawn = self.renders;
@@ -391,12 +383,8 @@ impl Texts {
                     layout: &self.layouts.placed,
                     entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
                 });
-                let listing = match join.order {
-                    placement::Order::Loose => Listing::Loose,
-                    placement::Order::Listed => Listing::Listed { stamp: 0 },
-                };
                 let pipelines = self.pipelines(device, fits.shape);
-                TextJoined { frame: join.frame, pass: join.pass, listing, fits, uniforms, group, pipelines }
+                TextJoined { frame: join.frame, pass: join.pass, fits, uniforms, group, pipelines }
             })
             .collect();
         let placing = Placing { at: place.at, layer: place.layer, opacity: place.opacity, clip: place.clip };
@@ -442,24 +430,6 @@ impl Texts {
     /// How many joins every placed text has: the most draws of texts a `Render` records.
     pub fn joins(&self) -> usize {
         self.placed.iter().map(|(_, placed)| placed.joins.len()).sum()
-    }
-
-    /// Each text placement's join drawn loose in the pass `pass` of `frame`, whose programs are made against `fits`,
-    /// under its id, in the order of the ids.
-    pub fn loose(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, &PlacedText, &TextJoined)> {
-        let mut loose: Vec<(u64, &PlacedText, &TextJoined)> = self
-            .placed
-            .iter()
-            .flat_map(|(id, placed)| placed.joins.iter().map(move |join| (id, placed, join)))
-            .filter(|(_, _, join)| {
-                let draws = join.draws_in(frame, pass, fits);
-                let unlisted = join.listing == Listing::Loose;
-                draws && unlisted
-            })
-            .collect();
-        loose.sort_unstable_by_key(|(id, ..)| *id);
-
-        loose
     }
 }
 
@@ -566,38 +536,9 @@ impl TextJoined {
         self.joins(frame, pass) && self.fits == *fits
     }
 
-    /// Whether it draws listed in the pass `pass` of `frame`, whose programs are made against `fits`: while its maker's
-    /// list holds it, as [`draws_in`](Self::draws_in) says.
-    pub fn listed_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
-        let listed = self.listing != Listing::Loose;
-
-        listed && self.draws_in(frame, pass, fits)
-    }
-
     /// Whether it is the join of the pass `pass` of `frame`.
     fn joins(&self, frame: Frame, pass: PassName) -> bool {
         self.frame == frame && self.pass == pass
-    }
-}
-
-/// The placements a list's check finds: those of meshes, and those of texts, under one count of ids.
-pub(super) struct Listable<'a> {
-    pub meshes: &'a mut Made<Placement>,
-    pub texts: &'a mut Made<PlacedText>,
-}
-
-impl Placements for Listable<'_> {
-    fn stamp(&mut self, placement: u64, by: ActorId, number: u64) -> Result<(), EntryRefused> {
-        if self.meshes.get(placement).is_some() {
-            return self.meshes.stamp(placement, by, number);
-        }
-        let joins = match self.texts.owned(placement, by) {
-            Owned::Mine(made) => &mut made.joins,
-            Owned::NotOwner => return Err(EntryRefused::NotOwner),
-            Owned::Unknown => return Err(EntryRefused::Placement),
-        };
-
-        draw_list::stamp(joins.iter_mut().map(|join| &mut join.listing), number)
     }
 }
 

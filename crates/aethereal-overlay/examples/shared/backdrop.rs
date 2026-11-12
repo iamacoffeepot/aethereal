@@ -1,12 +1,15 @@
 //! The overlay example's scene: one triangle over the whole of the first window, shaded from a dark blue at its foot
 //! to a warm brown at its top, with faint upright stripes, so the overlay's panels show what is behind them. It is
-//! made one ask after another, as it starts, and placed loose in the window's main pass (ADR-0021, ADR-0023).
+//! made one ask after another, as it starts, placed in the window's main pass, and listed, first in the program's root
+//! list, beneath the overlay (ADR-0021, ADR-0023, ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Top,
+    Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::Main;
@@ -59,7 +62,7 @@ pub struct Backed {
     window: WindowId,
 }
 
-/// The backdrop: it asks for its triangle as the program starts, and places it once made.
+/// The backdrop: it asks for its triangle as the program starts, places it once made, and lists it.
 #[derive(Bound)]
 #[kind(name = "aether.example.backdrop")]
 pub struct Backdrop {
@@ -213,17 +216,19 @@ impl Handles<Answer<Programmed, BackdropMeshed>> for Backdrop {
 }
 
 impl Handles<Answer<Placed, BackdropPlacing>> for Backdrop {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
         (answered, _): (Answered<Placed>, BackdropPlacing),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let placed = matches!(answered, Answered::Yes(Placed::Made(_)));
-        if !placed {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             turn.log(Level::Error, format_args!("the backdrop was not placed: {answered:?}"));
-        }
+            return Ok(());
+        };
+        let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
 
         Ok(())
     }

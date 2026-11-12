@@ -1,7 +1,8 @@
 //! Draw lists: what an actor draws, in the order it lists it, kept until it sends another (ADR-0031). A list holds its
-//! sender's own placements and calls of its direct children, and the renderer walks the lists from the program's root
-//! list, entering each child where it is called, so the order of every draw is declared (ADR-0055). Each list is
-//! checked whole as it is handled, and what it found is kept, so drawing it looks nothing up and refuses nothing.
+//! sender's own placements and dispatches and calls of its direct children, and the renderer walks the lists from the
+//! program's root list, entering each child where it is called, so the order of every draw and dispatch is declared,
+//! and one no list walked names is not issued (ADR-0055). Each list is checked whole as it is handled, and what it
+//! found is kept, so drawing it looks nothing up and refuses nothing.
 //!
 //! What a list draws is also what the pointer reaches: each draw says whether it blocks the pointer, lets it through, or
 //! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
@@ -14,6 +15,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::dispatch::DispatchId;
 use crate::frame::Frame;
 use crate::pass::{Pass, PassName};
 use crate::placement::PlacementId;
@@ -22,13 +24,13 @@ use aethereal_actor::{Child, ChildOf, ProtocolRef};
 use aethereal_data::{ActorId, ActorPath, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_window::{Hearer, KeyHearer, KeySet, KeysEntry, Reach};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{slice, vec};
 
-/// What its sender draws, in order: its own placements, and the direct children it calls, each drawn where it is
-/// called, in place of the sender's last list from the next `Render`. A placement draws in each pass one of its listed
-/// joins names, so one list orders the sender's drawing in every pass of every frame (ADR-0055). It has no answer: a
-/// list refused is logged, and the last stands.
+/// What its sender draws, in order: its own placements and dispatches, and the direct children it calls, each drawn
+/// where it is called, in place of the sender's last list from the next `Render`. A placement draws in each pass one of
+/// its joins names, and a dispatch runs in the compute pass it names, so one list orders the sender's drawing in every
+/// pass of every frame (ADR-0055). It has no answer: a list refused is logged, and the last stands.
 ///
 /// A sender with an entry the pointer reaches handles [`Pointed`](aethereal_window::Pointed): it is sent each pointer
 /// event that reaches the entry, numbered as it is from 0 in the list. A sender with an entry that declares keys handles
@@ -44,9 +46,12 @@ pub struct DrawList {
 #[derive(Debug, Clone, PartialEq, Plain)]
 #[kind(name = "aether.render.entry")]
 pub enum Entry {
-    /// A placement of the sender's, of a mesh or a text, drawn in each pass it joins
-    /// [`Listed`](crate::placement::Order::Listed), reached by the pointer where it draws as `pointer` says.
+    /// A placement of the sender's, of a mesh or a text, drawn in each pass it joins, reached by the pointer where it
+    /// draws as `pointer` says.
     Draw { placement: PlacementId, pointer: Pointer },
+    /// A dispatch of the sender's, run here in the compute pass it joins: in each cycle that draws its frame, or in the
+    /// first alone, when it runs once.
+    Run(DispatchId),
     /// What a direct child of the sender draws, drawn here.
     Call(Callee),
     /// A place in the pass `pass` of `frame` that draws nothing, reached by the pointer within `rect`, in the window's
@@ -95,11 +100,11 @@ impl Entry {
         Self::Hit { frame, pass: PassName::of::<P>(), rect, pointer }
     }
 
-    /// What the renderer keeps of it, the entry numbered `at` of its list: a placement by its id, a call by its child's,
-    /// which `child_id` answers for the child's segment beneath the list's sender, and a hit as it is, each the pointer
-    /// reaches with the entry of `hearer`, the list's sender, when its sender handles the pointer's events; and a
-    /// declaration of keys as the entry of `key_hearer`, the list's sender, when it handles the keys. Refused when the
-    /// pointer reaches it or it declares keys, and its sender handles none.
+    /// What the renderer keeps of it, the entry numbered `at` of its list: a placement or a dispatch by its id, a call
+    /// by its child's, which `child_id` answers for the child's segment beneath the list's sender, and a hit as it is,
+    /// each the pointer reaches with the entry of `hearer`, the list's sender, when its sender handles the pointer's
+    /// events; and a declaration of keys as the entry of `key_hearer`, the list's sender, when it handles the keys.
+    /// Refused when the pointer reaches it or it declares keys, and its sender handles none.
     pub(crate) fn listed(
         &self,
         at: u32,
@@ -114,6 +119,7 @@ impl Entry {
         };
         let listed = match self {
             Self::Draw { placement, pointer } => Listed::Draw { placement: placement.id, picks: picks(*pointer)? },
+            Self::Run(dispatch) => Listed::Run(dispatch.id),
             Self::Call(callee) => Listed::Call(child_id(&callee.child.segment())),
             Self::Hit { frame, pass, rect, pointer } => {
                 Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(*pointer)? }
@@ -131,12 +137,13 @@ impl Entry {
     }
 }
 
-/// One entry of a list the renderer keeps: a placement of its sender's, by its id, a child its sender calls, by the
-/// child's id, or a hit, each drawn or hit as the pointer reaches it; or the keys its sender hears in a window's main
-/// frame, as the window is sent them.
+/// One entry of a list the renderer keeps: a placement of its sender's, by its id, drawn as the pointer reaches it, a
+/// dispatch of its sender's, by its id, a child its sender calls, by the child's id, or a hit, hit as the pointer
+/// reaches it; or the keys its sender hears in a window's main frame, as the window is sent them.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Listed {
     Draw { placement: u64, picks: Picks },
+    Run(u64),
     Call(ActorId),
     Hit { frame: Frame, pass: PassName, rect: Rect2, picks: Picks },
     Keys { frame: Frame, entry: KeysEntry },
@@ -159,17 +166,6 @@ pub(crate) fn holds(rect: Rect2, [x, y]: [u32; 2]) -> bool {
     rect.contains_point(middle)
 }
 
-/// How a placement's join of one pass is drawn: in every frame, or while its maker's list holds it, stamped with the
-/// number of the last list checked that named it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Listing {
-    Loose,
-    /// `stamp` is zero until a list names it, as lists are numbered from one.
-    Listed {
-        stamp: u64,
-    },
-}
-
 /// Why a list was refused whole: the entry at `at`, counted from zero, was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ListRefused {
@@ -182,11 +178,11 @@ pub(crate) struct ListRefused {
 pub(crate) enum EntryRefused {
     /// No placement is kept under the id: never made, or released.
     Placement,
-    /// Another actor made the placement, and only its maker lists it.
+    /// No dispatch is kept under the id: never made, released, or run once already.
+    Dispatch,
+    /// Another actor made the placement or the dispatch, and only its maker lists it.
     NotOwner,
-    /// The placement joins every pass it draws in loose: it is drawn in every frame, and no list orders it.
-    Loose,
-    /// An earlier entry of the list names the same placement, or calls the same child.
+    /// An earlier entry of the list names the same placement or dispatch, or calls the same child.
     Twice,
     /// The pointer reaches the entry, and the list's sender does not handle the pointer's events.
     Unheard,
@@ -194,50 +190,34 @@ pub(crate) enum EntryRefused {
     KeysUnheard,
 }
 
-/// What is kept, as a list's check looks it up.
-pub(crate) trait Placements {
-    /// Stamps the placement `placement`'s joins with `number`, the number of the list being checked, as [`stamp`]
-    /// does: refused when it is not kept, or `by` did not make it.
-    fn stamp(&mut self, placement: u64, by: ActorId, number: u64) -> Result<(), EntryRefused>;
+/// Who made what a list names, as its check looks it up: none when nothing of the sort is kept under the id.
+pub(crate) trait Listables {
+    /// The maker of the placement `placement`, of a mesh or of a text.
+    fn placement_maker(&self, placement: u64) -> Option<ActorId>;
+    /// The maker of the dispatch `dispatch`.
+    fn dispatch_maker(&self, dispatch: u64) -> Option<ActorId>;
 }
 
-/// Stamps each of a placement's `listings` that is listed with `number`, the number of the list being checked: refused
-/// when none is, as no list orders a placement joined only loose, or when one holds `number` already, as the list
-/// named the placement before.
-pub(crate) fn stamp<'a>(listings: impl IntoIterator<Item = &'a mut Listing>, number: u64) -> Result<(), EntryRefused> {
-    let mut listed = false;
-    for listing in listings {
-        match listing {
-            Listing::Loose => {}
-            Listing::Listed { stamp } if *stamp == number => return Err(EntryRefused::Twice),
-            Listing::Listed { stamp } => {
-                *stamp = number;
-                listed = true;
-            }
-        }
-    }
-
-    if listed {
-        Ok(())
-    } else {
-        Err(EntryRefused::Loose)
-    }
+/// What an entry names that a list names once at most: a placement, a dispatch, or a child called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Named {
+    Placement(u64),
+    Dispatch(u64),
+    Child(ActorId),
 }
 
 /// The lists the renderer keeps: one for each actor, its last that was let through, with the program's root list, the
-/// roots a window's main frame is walked from, and the number of the last list checked, which each list's check
-/// stamps the joins it names with.
+/// roots a window's main frame is walked from.
 #[derive(Debug)]
 pub(crate) struct Lists {
     roots: Vec<ActorId>,
     kept: HashMap<ActorId, Vec<Listed>>,
-    checked: u64,
 }
 
 impl Lists {
     /// No list kept, with the program's root list `roots`, fixed for the program's life (ADR-0055).
     pub fn new(roots: Vec<ActorId>) -> Self {
-        Self { roots, kept: HashMap::new(), checked: 0 }
+        Self { roots, kept: HashMap::new() }
     }
 
     /// The program's root list: the roots a window's main frame is walked from, in draw order.
@@ -245,28 +225,19 @@ impl Lists {
         &self.roots
     }
 
-    /// Checks `list` whole, sent by `by`, against the placements `placements` keeps, and keeps it in place of `by`'s
-    /// last list: each placement is one `by` made, kept, that joins a pass `Listed`, and no placement or child is named
-    /// twice. One that fails is refused, and `by`'s last list stands.
-    pub fn check(
-        &mut self,
-        list: Vec<Listed>,
-        by: ActorId,
-        placements: &mut impl Placements,
-    ) -> Result<(), ListRefused> {
-        self.checked += 1;
-        let number = self.checked;
+    /// Checks `list` whole, sent by `by`, against what `kept` keeps, and keeps it in place of `by`'s last list: each
+    /// placement and dispatch is one `by` made, kept, and no placement, dispatch, or child is named twice. One that
+    /// fails is refused, and `by`'s last list stands.
+    pub fn check(&mut self, list: Vec<Listed>, by: ActorId, kept: &impl Listables) -> Result<(), ListRefused> {
+        let mut seen = HashSet::new();
         for (entry, at) in list.iter().zip(0..) {
             let refused = |why| ListRefused { at, why };
-            match *entry {
-                Listed::Draw { placement, .. } => placements.stamp(placement, by, number).map_err(refused)?,
-                Listed::Call(_) => {
-                    let twice = list.iter().take(at as usize).any(|earlier| earlier == entry);
-                    if twice {
-                        return Err(refused(EntryRefused::Twice));
-                    }
-                }
-                Listed::Hit { .. } | Listed::Keys { .. } => {}
+            entry.made_by(by, kept).map_err(refused)?;
+            let Some(named) = entry.named() else {
+                continue;
+            };
+            if !seen.insert(named) {
+                return Err(refused(EntryRefused::Twice));
             }
         }
         self.kept.insert(by, list);
@@ -274,10 +245,11 @@ impl Lists {
         Ok(())
     }
 
-    /// Takes the placement `placement`, which its maker `by` released, out of `by`'s list, keeping the rest in order.
-    pub fn released(&mut self, placement: u64, by: ActorId) {
+    /// Takes the placement or dispatch `id`, which its maker `by` released, out of `by`'s list, keeping the rest in
+    /// order.
+    pub fn released(&mut self, id: u64, by: ActorId) {
         if let Some(list) = self.kept.get_mut(&by) {
-            list.retain(|entry| !entry.draws(placement));
+            list.retain(|entry| !entry.names(id));
         }
     }
 
@@ -291,13 +263,13 @@ impl Lists {
     pub fn all(&self) -> impl Iterator<Item = u64> {
         self.kept.values().flatten().filter_map(|entry| match entry {
             Listed::Draw { placement, .. } => Some(*placement),
-            Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Run(_) | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
     }
 
-    /// The draws, hits, and keys listed from `roots`, in the order of the walk: each root's list in turn, each entered where
-    /// it is called, so a list's calls draw between its own entries as it lists them (ADR-0055). An actor no list from
-    /// `roots` calls is not drawn.
+    /// The draws, dispatches, hits, and keys listed from `roots`, in the order of the walk: each root's list in turn,
+    /// each entered where it is called, so a list's calls draw between its own entries as it lists them (ADR-0055). An
+    /// actor no list from `roots` calls is not drawn.
     pub fn walk(&self, roots: Vec<ActorId>) -> Walked<'_> {
         Walked { kept: &self.kept, roots: roots.into_iter(), entered: Vec::new() }
     }
@@ -337,7 +309,9 @@ impl<'a> Iterator for Walked<'a> {
             };
             match list.next() {
                 Some(Listed::Call(child)) => self.enter(*child),
-                Some(entry @ (Listed::Draw { .. } | Listed::Hit { .. } | Listed::Keys { .. })) => return Some(entry),
+                Some(entry @ (Listed::Draw { .. } | Listed::Run(_) | Listed::Hit { .. } | Listed::Keys { .. })) => {
+                    return Some(entry);
+                }
                 None => {
                     self.entered.pop();
                 }
@@ -347,8 +321,37 @@ impl<'a> Iterator for Walked<'a> {
 }
 
 impl Listed {
-    /// Whether it draws the placement `placement`.
-    fn draws(&self, placement: u64) -> bool {
-        matches!(self, Self::Draw { placement: drawn, .. } if *drawn == placement)
+    /// Whether it draws or runs what is kept under `id`: a placement or a dispatch.
+    fn names(&self, id: u64) -> bool {
+        match *self {
+            Self::Draw { placement, .. } => placement == id,
+            Self::Run(dispatch) => dispatch == id,
+            Self::Call(_) | Self::Hit { .. } | Self::Keys { .. } => false,
+        }
+    }
+
+    /// What it names that a list names once at most: none for a hit or a declaration of keys.
+    const fn named(&self) -> Option<Named> {
+        match *self {
+            Self::Draw { placement, .. } => Some(Named::Placement(placement)),
+            Self::Run(dispatch) => Some(Named::Dispatch(dispatch)),
+            Self::Call(child) => Some(Named::Child(child)),
+            Self::Hit { .. } | Self::Keys { .. } => None,
+        }
+    }
+
+    /// Checks that `by` made the placement or dispatch it names, as `kept` finds it kept: refused when none is kept
+    /// under its id, or another made it.
+    fn made_by(&self, by: ActorId, kept: &impl Listables) -> Result<(), EntryRefused> {
+        let (maker, unknown) = match *self {
+            Self::Draw { placement, .. } => (kept.placement_maker(placement), EntryRefused::Placement),
+            Self::Run(dispatch) => (kept.dispatch_maker(dispatch), EntryRefused::Dispatch),
+            Self::Call(_) | Self::Hit { .. } | Self::Keys { .. } => return Ok(()),
+        };
+        match maker {
+            Some(maker) if maker == by => Ok(()),
+            Some(_) => Err(EntryRefused::NotOwner),
+            None => Err(unknown),
+        }
     }
 }

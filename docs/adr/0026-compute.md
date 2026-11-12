@@ -30,7 +30,7 @@ let create = frame.finish(Glaze, Effect::new(&glaze, (scene,)))?;
 
 - `Does` gains `Compute`: a pass that runs every dispatch that joins it, and draws into nothing. A frame's last pass still writes its end, so a compute pass is never last.
 - **Order is the frame's pass order.** A draw in a pass after a compute pass reads what it wrote this cycle; one in a pass before it reads what it wrote in the last cycle that drew the frame.
-- **A compute pass runs its dispatches in each cycle that draws its frame, and in no other.** A cycle that draws nothing runs no pass, as the desktop chassis runs cycles undrawn while every window waits on the compositor (ADR-0045), and a window's main frame not drawn in a cycle, its window handed no frame, runs none of its dispatches; a frame that ends on a texture is drawn in every cycle that draws a window. **This departs from running every dispatch at every `Render`**, which this record first said: a covered window is drawn by no cycle, and compute run for a frame no one draws is GPU work nobody sees. An actor that needs work done once, whatever the cycles draw, asks for it to run once and is answered when it has (**A dispatch run once**, below).
+- **A compute pass runs its dispatches in each cycle that draws its frame, and in no other.** A cycle that draws nothing runs no pass, as the desktop chassis runs cycles undrawn while every window waits on the compositor (ADR-0045), and a window's main frame not drawn in a cycle, its window handed no frame, runs none of its dispatches; a frame that ends on a texture is drawn in every cycle that draws a window. **This departs from running every dispatch at every `Render`**, which this record first said: a covered window is drawn by no cycle, and compute run for a frame no one draws is GPU work nobody sees. An actor that needs work done once, whatever the cycles draw, makes a dispatch that runs once and is told when it has (**A dispatch run once**, below).
 - **The render root's own main frame is two passes:** `Compute`, then `Main`, each a pass the render root names (ADR-0025: `Main`). An actor that simulates joins `Compute` and draws what it wrote in `Main`, without the main frame's owner doing anything for it. **This departs from ADR-0025, whose render root's own main frame was the one pass `Main`**, and ADR-0025 is edited to match.
 
 **A compute program is made by asking for its WGSL, its entry point, and what it binds,** as a program is (ADR-0021):
@@ -60,6 +60,7 @@ enum Access { Read, Write }   // var<storage, read>, var<storage, read_write>
 CreateDispatch {
     join: Dispatch,           // Dispatch::to::<Simulate>(frame, compute, bindings): the pass by its type's id
     size: Invocations,
+    runs: Runs,               // Runs::UntilReleased, or Runs::Once (A dispatch run once, below)
 }                                                                  -> Dispatched::Made(DispatchId) | Dispatched::Refused(DispatchRefused)
 enum Invocations {
     PerElement(StorageId),    // one invocation for each element of the array a bound storage ends in
@@ -81,28 +82,28 @@ enum Invocations {
 
 **Frames are ordered by the storage they write and read, as by the textures they end on** (ADR-0025: `JoinRefused::Round`). A frame that writes a storage, by a dispatch that joins it, runs before a frame that reads it, by a placement, an effect, or a dispatch that binds it to read. A dispatch or placement that would have frames read each other round is refused (`Round`), and the order is worked out again whenever a frame, a placement, or a dispatch comes or goes. **A frame that ends on a texture reads storage a window's main frame writes as it was written in the last cycle that drew that main frame**, as every such frame runs before the main frame (ADR-0025), so that read orders nothing and is never round; this record first left it unsaid.
 
-**A dispatch run once is asked for with what a dispatch is made of, and answered once it has run:**
+**A dispatch run once is made as any dispatch is, marked `Runs::Once`, and its maker is told when it has run:**
 
 ```rust
-RunDispatch {
-    join: Dispatch,
-    size: Invocations,
-}                                                                  -> DispatchRan::Ran | DispatchRan::Unrun(Unrun) | DispatchRan::Refused(DispatchRefused)
+enum DispatchRan {                                                 // told to the maker of a dispatch that runs once
+    Ran(DispatchId),
+    Unrun { dispatch: DispatchId, why: Unrun },
+}
 enum Unrun {
     Closed,                   // the window whose main frame it joined closed
     Released,                 // the frame that ends on a texture it joined was released
 }
 ```
 
-- It is checked when it is asked, by the same check as `CreateDispatch`, and refused at once as one is (`Refused`); nothing is checked when it runs.
-- It runs once, in the first cycle that draws its frame, with that pass's other dispatches, grouped by program as they are. It is answered `Ran` once that cycle's commands are submitted to the queue, so what is submitted after, a `ReadStorage` among them, sees what it wrote. It has no id and nothing to release.
+- It is checked when it is made, by the same check as any dispatch, and answered `Dispatched` as one is. Its maker must handle `DispatchRan`, which it is told by, and is refused `Untold` when it does not. Nothing is checked when it runs.
+- It runs where its maker's list names it, as any dispatch does (ADR-0055: `Entry::Run`), in the first cycle that draws its frame with it listed, and never again: it is then released, and leaves its maker's list as a released dispatch does. Its maker is told `Ran` once that cycle's commands are submitted to the queue, so what is submitted after, a `ReadStorage` among them, sees what it wrote. One no list names does not run, and waits.
 - While it waits it keeps what it binds, as a placement keeps what it draws (ADR-0023), and counts among its pass's dispatches for `Written`, `Round`, and the order of frames, so a dispatch made later that would conflict with it is refused against it, and is made once it has run.
-- It joins a window's main frame by the window and follows it when the frame is replaced, as a dispatch does: one whose pass the new frame has not waits for a frame that has it. One whose frame is gone for good is answered `Unrun`: `Closed` when its window closes, as no window's id is given again, and `Released` when the frame that ends on a texture it joined is released, by its maker or as its maker ends. Its asker ending releases it, unanswered, with all the asker made.
-- **It is a request of its own, beside `CreateDispatch`, rather than a dispatch released by its maker after a cycle,** because no actor learns which cycle drew a frame: an actor that releases a dispatch after its first `Render` releases it unrun when that cycle drew nothing, and one that waits for the next `Render` runs it twice.
+- It joins a window's main frame by the window and follows it when the frame is replaced, as a dispatch does: one whose pass the new frame has not waits for a frame that has it. One whose frame is gone for good, listed or not, is released and its maker told `Unrun`: `Closed` when its window closes, as no window's id is given again, and `Released` when the frame that ends on a texture it joined is released, by its maker or as its maker ends. Its maker releasing it, or ending, releases it untold.
+- **It is a mark on a dispatch, rather than a dispatch released by its maker after a cycle,** because no actor learns which cycle drew a frame: an actor that releases a dispatch after its first `Render` releases it unrun when that cycle drew nothing, and one that waits for the next `Render` runs it twice. *Amended by ADR-0055: it was a request of its own, `RunDispatch`, with no id, run in no list before the listed dispatches, in the order asked, and answered when it had run.*
 
 **A storage's maker writes it from the CPU as well.** A `WriteStorage` handled before a `Render` lands before that `Render`'s frames run, so an actor seeds a field from the CPU and moves it on the GPU, and what the GPU writes later overwrites it.
 
-**Dispatches of one pass run in no order an actor may rely on.** The render root runs them grouped by program, each program's pipeline set once, as it draws a pass's loose placements (ADR-0025, ADR-0031). A dispatch that needs another's output is in a later pass. **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
+**Dispatches of one pass run in the order their makers' lists name them** (ADR-0055: `Entry::Run`), walked from the frame's roots as placements are, and a dispatch no list names does not run. One that runs once is listed as any other, and runs where its list names it. The lists can change that order at any `Render`, so a dispatch that needs another's output is in a later pass, and the check refuses two of one pass of which one writes what the other uses. *Amended by ADR-0055: they ran grouped by program, in no order an actor could rely on.* **Order is declared where drawing is described, and nowhere else**: the frame's passes, which their author writes, and, within one dispatch, the order its own shader gives.
 
 **Storage can be read back,** as a texture is (ADR-0023: `ReadBack`), by an ask of its own:
 
@@ -145,8 +146,8 @@ enum Invocations {
 - A particle system is one storage, one compute program, one dispatch, one draw program, and one placement, each made once. Nothing is sent each frame but the uniforms that change.
 - A dispatch made by one actor runs in a frame another owns. The frame's owner decides where compute runs among its passes; an actor that dispatches decides what runs there.
 - A frame replaced by one that keeps its compute passes keeps its dispatches running, and nothing compiles again.
-- The render root handles two more kinds, `CreateCompute` and `CreateDispatch`, within an actor's 64 (ADR-0013: `HandledList`), and a third, `RunDispatch`, once dispatches ran only in cycles that draw their frames.
-- A dispatch made until released does no work while its frame is not drawn, so a simulation stepped by one stops while its window is covered or its program's cycles run undrawn, and resumes with the next cycle that draws it. Work that must be done, such as seeding or clearing storage before it is read, is asked to run once, and its answer is what says it is done.
+- The render root handles two more kinds, `CreateCompute` and `CreateDispatch`, within an actor's 64 (ADR-0013: `HandledList`). A dispatch run once is a `CreateDispatch` too, and its maker handles one kind more, `DispatchRan`.
+- A dispatch made until released does no work while its frame is not drawn, so a simulation stepped by one stops while its window is covered or its program's cycles run undrawn, and resumes with the next cycle that draws it. Work that must be done, such as seeding or clearing storage before it is read, is a dispatch that runs once, listed where it must run, and `DispatchRan` is what says it is done.
 - What is decided separately, each when it is needed:
   - **Compute that reads a frame's targets**, a compute pass with `reads`, as an effect reads: culling against the depth of an earlier pass, post-processing by compute.
   - **Compute that writes textures**, storage textures.

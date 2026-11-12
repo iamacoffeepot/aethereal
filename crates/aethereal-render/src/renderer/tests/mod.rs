@@ -5,10 +5,12 @@ mod keys;
 pub(super) mod lists;
 mod once;
 mod picked;
+mod runs;
 mod told;
 
 use super::*;
 use crate::asked::blob;
+use crate::draw_list::EntryRefused;
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
 use crate::pass::{Compute, Interface, Main, Pass};
 use crate::placement::Resource;
@@ -675,7 +677,8 @@ fn corners() -> VertexLayout {
 }
 
 /// A placement of a quad drawn once in the window's main frame's pass [`Rims`] with [`RIM`], reading the floor's
-/// depth into four samples, its alpha its coverage, each made and kept in `kept`, on `gpu`. Answers its id.
+/// depth into four samples, its alpha its coverage, each made and kept in `kept`, on `gpu`, and listed by [`MAKER`].
+/// Answers its id.
 fn rim_placed(gpu: &Gpu, kept: &mut Kept) -> u64 {
     let vertices: Vec<u8> =
         [-1.0_f32, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0].iter().flat_map(|value| value.to_ne_bytes()).collect();
@@ -715,6 +718,7 @@ fn rim_placed(gpu: &Gpu, kept: &mut Kept) -> u64 {
     };
     let id = kept.ids.next();
     kept.placements.keep(id, MAKER, placed);
+    assert_eq!(kept.listed(lists::main_list(&[PlacementId { id }]), MAKER), Ok(()));
 
     id
 }

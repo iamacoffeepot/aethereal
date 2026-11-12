@@ -95,7 +95,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
             (CaptureTool, RecordTool, TargetTool, LogsTool, InputTool, WindowTool, PaceTool, TuningTool<(Scene,)>),
             Tools,
         >>()
-        .draws::<(Scene,)>()
+        .draws::<(Scene, Captions)>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })

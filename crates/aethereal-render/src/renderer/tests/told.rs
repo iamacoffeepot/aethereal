@@ -2,7 +2,7 @@
 //! passes write their timestamps, the pass the renderer adds after a window's main frame's last among them, each draw counted only into a frame that counts, and the totals of what it made
 //! kept as a walk over all of it would count them.
 
-use super::lists::{placed, tinted};
+use super::lists::{main_list, placed, tinted};
 use super::*;
 
 /// A frame onto a texture 4 by 4 of `Rgba8`, of one pass, [`Main`], drawing with no depth.
@@ -58,9 +58,8 @@ fn a_frame_that_counts_counts_each_draw_and_its_triangles_and_one_that_does_not_
     let gpu = Gpu::new(device.clone(), queue.clone());
     let mut kept = kept(&device);
     let program = tinted(&gpu, &mut kept);
-    for _ in 0..2 {
-        placed(&gpu, &mut kept, (MAKER, program, placement::Order::Loose), (-1.0, 1.0), [0.5; 4]);
-    }
+    let quads = [(); 2].map(|()| placed(&gpu, &mut kept, (MAKER, program), (-1.0, 1.0), [0.5; 4]));
+    assert_eq!(kept.listed(main_list(&quads), MAKER), Ok(()));
     let windows = surface(&device);
     let mut counting = Tally::On(stats::FrameDrawn::default());
     let mut not = Tally::Off;
@@ -159,7 +158,7 @@ fn the_totals_kept_as_things_are_made_resized_and_released_are_what_a_walk_count
     let mut kept = kept(&device);
     let program = tinted(&gpu, &mut kept);
     for left in [-1.0, 0.0] {
-        placed(&gpu, &mut kept, (MAKER, program, placement::Order::Loose), (left, 1.0), [0.5; 4]);
+        placed(&gpu, &mut kept, (MAKER, program), (left, 1.0), [0.5; 4]);
     }
     let pixels = kept.ids.next();
     let (made, view) = end_texture(&device, Size { width: 3, height: 5 }, TextureFormat::Rgba8);
@@ -205,7 +204,7 @@ fn an_actor_s_end_takes_what_it_made_out_of_the_totals() {
     let mut kept = kept(&device);
     let before = totals(&kept);
     let program = tinted(&gpu, &mut kept);
-    placed(&gpu, &mut kept, (MAKER, program, placement::Order::Loose), (-1.0, 1.0), [0.5; 4]);
+    placed(&gpu, &mut kept, (MAKER, program), (-1.0, 1.0), [0.5; 4]);
     let lay = laid(&device, &mut kept);
     assert!(matches!(kept.frame(&device, rims_frame(lay, vec![Target::Texture(1)]), MAKER), Ok(Framed::Made(_))));
     assert!(matches!(kept.frame(&device, following(), MAKER), Ok(Framed::Texture { .. })));

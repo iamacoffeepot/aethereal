@@ -1,18 +1,19 @@
 //! The page's entry points, a job that sums, and an actor that runs it and three sleeps on the page's event loop, one
-//! of them given up on, and places a square as each is answered.
+//! of them given up on, and places a square as each is answered, listing each, the root list's one root.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, On, Path, Render, Runner,
-    Running, Sleep, Slept, Start, Tick, Time, Top, Turn, path,
+    Running, Sleep, Slept, Start, Tells, Tick, Time, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::Main;
-use aethereal_render::placement::{Drawn, Join, Place, Placed};
+use aethereal_render::placement::{Drawn, Join, Place, Placed, PlacementId};
 use aethereal_render::program::{
     Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
@@ -24,15 +25,19 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page, its jobs run on the page's event loop, with the window root, which opens the
-/// page's canvas as the one window, the renderer, which opens WebGPU on it, and the prober.
+/// page's canvas as the one window, the renderer, which opens WebGPU on it, and the prober, the root list.
 ///
 /// # Errors
 ///
 /// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program =
-        Browser::program().with_cycle::<(Tick, Render)>().root::<Windows>().root::<Renderer>().root::<Prober>();
+    let program = Browser::program()
+        .with_cycle::<(Tick, Render)>()
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Prober>()
+        .draws::<(Prober,)>();
 
     Ok(Program::from(program.run()?.await?))
 }
@@ -91,7 +96,7 @@ struct Shows {
 }
 
 /// The prober: it makes a square and a program for each of its jobs, one ask after another, then runs its jobs, and
-/// places a square as each is answered.
+/// places a square as each is answered, and lists it.
 #[derive(Bound)]
 #[kind(name = "aether.example.prober")]
 struct Prober {
@@ -107,8 +112,9 @@ struct Prober {
 enum Stage {
     /// Its asks are under way.
     Making,
-    /// Its jobs are running: it places `square` with one of `programs` as each is answered.
-    Running { square: MeshId, programs: Programs, given_up: GivenUp },
+    /// Its jobs are running: it places `square` with one of `programs` as each is answered, and lists each placed, in
+    /// the order placed.
+    Running { square: MeshId, programs: Programs, given_up: GivenUp, placed: Vec<PlacementId> },
 }
 
 /// Whether the sleep the prober gave up on was answered.
@@ -342,7 +348,7 @@ impl Handles<Answer<Programmed, Making>> for Prober {
             }
             Making::Checked { square, summed, slept } => {
                 let programs = Programs { summed, slept, checked: made };
-                self.stage = Stage::Running { square, programs, given_up: GivenUp::Unanswered };
+                self.stage = Stage::Running { square, programs, given_up: GivenUp::Unanswered, placed: Vec::new() };
                 return self.run_jobs(turn);
             }
         };
@@ -460,14 +466,25 @@ impl Handles<Answer<Slept, Sleeping>> for Prober {
     }
 }
 
+/// A square placed is listed after those placed before it.
 impl Handles<Answer<Placed, Nothing>> for Prober {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
-    fn handle(&mut self, (answered, _): (Answered<Placed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+    fn handle(
+        &mut self,
+        (answered, _): (Answered<Placed>, Nothing),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Placed::Made(square)) = answered else {
             say(format!("unplaced square={answered:?}"));
             return Ok(());
         };
+        let Stage::Running { placed, .. } = &mut self.stage else {
+            return Ok(());
+        };
+        placed.push(square);
+        let entries = placed.iter().map(|placement| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
 
         Ok(())
     }

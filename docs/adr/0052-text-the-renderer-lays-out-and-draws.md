@@ -68,13 +68,13 @@ PlaceText {
     layer: Layer,          // Layer::Over: drawn over what the pass drew; Layer::At { depth }: tested at depth, 0 near, 1 far
     opacity: f32,          // 0 to 1, multiplying every run's alpha
     clip: Clip,            // Clip::None, or Clip::To(Rect): nothing drawn outside the box, in the frame's pixels
-    joins: Vec<TextJoin>,  // TextJoin { frame: Frame, pass: PassName, order: Order }
+    joins: Vec<TextJoin>,  // TextJoin { frame: Frame, pass: PassName }: TextJoin::to::<P>(frame)
 } -> Made<PlacementId> | Refused
 
 MoveText { placement: PlacementId, at: Point, layer: Layer, opacity: f32, clip: Clip }   // no answer
 ```
 
-- **A placed text is a placement,** so it goes in its maker's draw list and is ordered with the maker's other placements (ADR-0031). A console lists its panel, its lines, and its cursor in that order. A placement joined `Listed` is drawn only while its maker lists it, and one joined `Loose` in every frame, as for any placement. Leaving a placement out of the list stops drawing it, and the text stays made.
+- **A placed text is a placement,** so it goes in its maker's draw list and is ordered with the maker's other placements (ADR-0031). A console lists its panel, its lines, and its cursor in that order. A placed text is drawn only while its maker lists it, as any placement is (*amended by ADR-0055*: a join was `Listed` or `Loose`, drawn in every frame). Leaving a placement out of the list stops drawing it, and the text stays made.
 - **`at` is in the frame's pixels:** a window's main frame's surface pixels, from its top left, or a texture frame's. Text is placed on the screen only. A program that wants text at a point in its world projects the point with its own camera and moves the placement, giving `Layer::At` the point's depth so that what is nearer hides it.
 - **A join names no program and no bindings.** The renderer draws a text with its own glyph program, made for each shape of pass it joins: its target's format, samples, and depth. A join into a pass that reads targets is refused, as the glyph program reads none (ADR-0025: `JoinRefused::Reads`).
 - **`clip` cuts what is drawn to a box,** so a console's scrollback, moved a line at a time, never draws past its panel. The glyph program discards what falls outside the box, so placements that clip differently still draw together.

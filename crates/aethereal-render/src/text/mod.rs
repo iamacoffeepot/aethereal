@@ -16,7 +16,7 @@ use crate::font::FontRefused;
 use crate::font::msdf::{BASE_PIXELS_PER_EM, DEFAULT_PADDING};
 use crate::frame::Frame;
 use crate::pass::{Pass, PassName};
-use crate::placement::{JoinRefused, Order, PlacementId};
+use crate::placement::{JoinRefused, PlacementId};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -202,7 +202,8 @@ pub struct WriteText {
     pub runs: Vec<Run>,
 }
 
-/// Asks the renderer to draw `text` in every pass `joins` names, its first line's top left at `at` in the pixels of
+/// Asks the renderer to draw `text` in every pass `joins` names, where its maker's list holds it (ADR-0055), its first
+/// line's top left at `at` in the pixels of
 /// the frame it is drawn in, as `layer` says, each run's alpha multiplied by `opacity`, nothing drawn outside the box
 /// `clip` names. Answered with [`TextPlaced`].
 #[derive(Debug, Clone, PartialEq, Plain)]
@@ -237,28 +238,21 @@ pub enum Clip {
     To(Rect2),
 }
 
-/// One pass a placed text draws in: the pass `pass` of `frame`, in every frame or only while its maker's list holds
-/// it, as `order` says (ADR-0031). It names no program and no bindings: the renderer draws a text with its own.
+/// One pass a placed text draws in: the pass `pass` of `frame`, where its maker's
+/// [`DrawList`](crate::draw_list::DrawList) holds it (ADR-0055). It names no program and no bindings: the renderer
+/// draws a text with its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.text_join")]
 pub struct TextJoin {
     pub frame: Frame,
     pub pass: PassName,
-    pub order: Order,
 }
 
 impl TextJoin {
-    /// The pass `P` of `frame`, in every frame.
+    /// The pass `P` of `frame`: the pass named by its type.
     #[must_use]
     pub const fn to<P: Pass>(frame: Frame) -> Self {
-        Self { frame, pass: PassName::of::<P>(), order: Order::Loose }
-    }
-
-    /// The pass `P` of `frame`, while its maker's last [`DrawList`](crate::draw_list::DrawList) holds it, in the order
-    /// the lists are walked (ADR-0055).
-    #[must_use]
-    pub const fn listed<P: Pass>(frame: Frame) -> Self {
-        Self { frame, pass: PassName::of::<P>(), order: Order::Listed }
+        Self { frame, pass: PassName::of::<P>() }
     }
 }
 
