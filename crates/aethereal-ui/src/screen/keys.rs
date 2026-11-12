@@ -10,8 +10,12 @@
 //!   Shift-Tab and a chord read their modifiers without taking Shift from the game.
 //!
 //! So a shown screen whose widgets have no focus takes only its hotkeys: a HUD does not take the game's Tab or Escape. A
-//! screen that wants Tab to bring focus to its first widget lists Tab among its hotkeys.
+//! screen that wants Tab to bring focus to its first widget lists Tab among its hotkeys. While a popup is open, the
+//! screen also takes Escape, which shuts the topmost; and while a modal one is, Tab, which stays within it (ADR-0056:
+//! Popups draw in one top layer per screen). The widgets around the focus that hear its keys end at the popup whose
+//! content it is in.
 
+use super::popups::{Open, boundary};
 use super::{Screen, Target};
 use crate::input::{Hears, Held};
 use crate::table::Focus;
@@ -100,13 +104,18 @@ fn heard(flat: &[Flat<'_>], focus: &Focus) -> Option<Hears> {
     flat.iter().find(|flat| flat.path == *path).map(|flat| flat.node.widget().hears())
 }
 
-/// The keys the widgets among `flat` that the one with `focus` is within hear.
+/// The keys the widgets among `flat` that the one with `focus` is within hear, up to the popup whose content it is in.
 fn around(flat: &[Flat<'_>], focus: &Focus) -> Vec<&'static str> {
     let Focus::On(path) = focus else {
         return Vec::new();
     };
+    let bound = boundary(flat, path);
     let mut codes = Vec::new();
     for within in flat.iter().filter(|flat| flat.path.holds(path)) {
+        let beyond = bound.is_some_and(|bound| !bound.holds(&within.path));
+        if beyond {
+            continue;
+        }
         if let Hears::Keys(keys) = within.node.widget().hears() {
             codes.extend(keys);
         }
@@ -120,10 +129,15 @@ pub(super) fn typing(flat: &[Flat<'_>], focus: &Focus) -> bool {
     heard(flat, focus) == Some(Hears::Typing)
 }
 
-/// The keys a screen whose widgets are `flat` declares, with `focus`, and `hotkeys` its own, in the order they are
-/// listed.
-pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str]) -> Vec<Declared> {
+/// The keys a screen whose widgets are `flat` declares, with `focus`, `hotkeys` its own, and its popups `open` as they
+/// are, in the order they are listed.
+pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str], open: Open) -> Vec<Declared> {
     let mut codes: Vec<&str> = hotkeys.to_vec();
+    match open {
+        Open::Nothing => {}
+        Open::Popup => codes.push(ESCAPE),
+        Open::Modal => codes.extend([TAB, ESCAPE]),
+    }
     match heard(flat, focus) {
         Some(Hears::Typing) => {
             return vec![Declared { keys: KeySet::All, blocks: true, role: Role::Screen }];
@@ -148,11 +162,12 @@ pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str]) -> Ve
     ]
 }
 
-/// The focus Tab moves to from `focus` among `flat`: the next focusable widget in tree order, or with `back` the one
-/// before, round from the last to the first; from none, the first, or the last; none when none is focusable.
-pub(super) fn tabbed(flat: &[Flat<'_>], focus: &Focus, back: bool) -> Focus {
+/// The focus Tab moves to from `focus` among `flat`, of which it reaches those `reaches` says: the next it reaches in
+/// tree order, or with `back` the one before, round from the last to the first; from none, or from one it does not
+/// reach, the first, or the last; none when it reaches none.
+pub(super) fn tabbed(flat: &[Flat<'_>], reaches: &[bool], focus: &Focus, back: bool) -> Focus {
     let focusable: Vec<&KeyPath> =
-        flat.iter().filter(|flat| flat.node.widget().focusable()).map(|flat| &flat.path).collect();
+        flat.iter().zip(reaches).filter(|(_, reached)| **reached).map(|(flat, _)| &flat.path).collect();
     let count = focusable.len();
     if count == 0 {
         return Focus::Nowhere;

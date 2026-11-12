@@ -182,9 +182,10 @@ impl Screen {
     }
 
     /// Turns the wheel by `delta` over the widget at `path`: the innermost scroll at or around it that can still move
-    /// that way along its axis moves, and one at its end lets it pass outward.
+    /// that way along its axis moves, and one at its end lets it pass outward, as far as the popup whose content it is
+    /// in: a popup's content does not slide the scroll its anchor stands in.
     pub(super) fn wheel(&mut self, path: &KeyPath, delta: Vec2) -> Used {
-        let around: Vec<KeyPath> = iter::once(path.clone()).chain(path.ancestors()).collect();
+        let around: Vec<KeyPath> = iter::once(path.clone()).chain(self.surfaced(path)).collect();
         for at in around {
             let Some(axis) = self.scrolls(&at) else {
                 continue;
@@ -199,14 +200,14 @@ impl Screen {
         Used::Passed
     }
 
-    /// Brings the widget at `path` into view: each scroll around it, innermost first, slides as little as it can to
-    /// show the widget's box within its content box, as far as it can scroll.
+    /// Brings the widget at `path` into view: each scroll around it, innermost first and up to the popup whose content
+    /// it is in, slides as little as it can to show the widget's box within its content box, as far as it can scroll.
     pub(super) fn reveal(&mut self, path: &KeyPath) {
         let found = self.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| laid.rect);
         let Some(mut rect) = found else {
             return;
         };
-        for at in path.ancestors() {
+        for at in self.surfaced(path) {
             let Some(axis) = self.scrolls(&at) else {
                 continue;
             };

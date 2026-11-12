@@ -1,11 +1,14 @@
 //! The mail a screen's library sends (ADR-0056): what each of its turns decided, in order, sent through the screen's
 //! turn by [`Orders::send`]. What a send carries as a blob is put there, so the library's decisions are plain values.
+//! A tooltip's wait is a `Sleep` job the turn runs (ADR-0018), timed from the turn's step: a job is mail to no actor, so
+//! no send lists it, and it builds only for a screen that handles its answer, as [`handles!`](crate::handles!) says.
 
 use super::input::ImeAsked;
 use super::layers::{Instancing, Placing, TextPlacing, Texting};
+use super::popups::Tipping;
 use super::program::{Meshing, MetricsAsked, Programming, Uniforming, Whitening};
 use crate::draw::{FRAME_BYTES, PLACE, PROGRAM, SHADE, corner_layout, corners, record_layout, triangles};
-use aethereal_actor::{Allows, Asks, Fault, Level, Path, Tells, Turn, path};
+use aethereal_actor::{Allows, Answer, Asks, Fault, Handles, Level, Path, Sleep, Slept, Tells, Turn, path};
 use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::instances::{CreateInstances, InstancesId, WriteInstances};
 use aethereal_render::mesh::{CreateMesh, VertexLayout};
@@ -19,6 +22,7 @@ use aethereal_render::texture::{CreateTexture, TextureFormat};
 use aethereal_render::uniforms::{CreateUniforms, UniformsId, WriteUniforms};
 use aethereal_render::{Release, Renderer};
 use aethereal_window::{AllowIme, Windows};
+use core::time::Duration;
 
 /// Every send a screen's library makes, as a handler of its declares them: the asks that make what it draws and that
 /// read a font's metrics, the tells that write, move, release, and list them, and the ask that stops the window's input
@@ -56,17 +60,34 @@ pub enum Order {
     Uniforms(Uniforming, Vec<u8>),
     White(Whitening),
     Metrics(MetricsAsked),
-    Instances { context: Instancing, layout: VertexLayout, capacity: u32, records: Vec<u8> },
+    Instances {
+        context: Instancing,
+        layout: VertexLayout,
+        capacity: u32,
+        records: Vec<u8>,
+    },
     Place(Place, Placing),
     Text(CreateText, Texting),
     PlaceText(PlaceText, TextPlacing),
-    WriteInstances { instances: InstancesId, first: u32, records: Vec<u8> },
-    WriteUniforms { uniforms: UniformsId, bytes: Vec<u8> },
+    WriteInstances {
+        instances: InstancesId,
+        first: u32,
+        records: Vec<u8>,
+    },
+    WriteUniforms {
+        uniforms: UniformsId,
+        bytes: Vec<u8>,
+    },
     WriteText(WriteText),
     MoveText(MoveText),
     Release(Release),
     List(Vec<Entry>),
     AllowIme(AllowIme),
+    /// A sleep of `delay` from the turn's step, for a tooltip's wait.
+    Sleep {
+        delay: Duration,
+        context: Tipping,
+    },
     Log(Level, String),
 }
 
@@ -147,21 +168,26 @@ impl Orders {
         self.orders.push(Order::AllowIme(allow));
     }
 
+    pub(super) fn sleep(&mut self, delay: Duration, context: Tipping) {
+        self.orders.push(Order::Sleep { delay, context });
+    }
+
     pub(super) fn log(&mut self, level: Level, line: String) {
         self.orders.push(Order::Log(level, line));
     }
 
     /// Sends each, in order, through `turn`, putting what a send carries as a blob: one whose blob was not put is not
-    /// sent, and is logged.
+    /// sent, and is logged. A sleep runs as a job of the turn's, until its delay past the turn's step.
     ///
     /// # Errors
     ///
-    /// A fault when a send was not written.
+    /// A fault when a send or a job was not written.
     pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15>(
         self,
         turn: &mut Turn<'_, A, S>,
     ) -> Result<(), Fault>
     where
+        A: Handles<Answer<Slept, Tipping>>,
         S: Allows<Asks<Path<Renderer>, CreateMesh, Meshing>, I0>
             + Allows<Asks<Path<Renderer>, CreateProgram, Programming>, I1>
             + Allows<Asks<Path<Renderer>, CreateUniforms, Uniforming>, I2>
@@ -259,6 +285,10 @@ impl Orders {
                 }
                 Order::AllowIme(allow) => {
                     turn.to(path::<Windows>(())).ask(&allow, &ImeAsked)?;
+                }
+                Order::Sleep { delay, context } => {
+                    let until = turn.now() + delay;
+                    turn.run(&Sleep { until }, &context)?;
                 }
                 Order::Log(level, line) => turn.log(level, line),
             }

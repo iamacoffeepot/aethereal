@@ -89,6 +89,12 @@ impl Table {
         }
     }
 
+    /// The bytes of the state kept under `path`, if one of the kind `kind` is kept there: as the screen's library reads
+    /// the state of a widget whose content it shows in its top layer, to open and shut it.
+    pub(crate) fn held(&self, path: &KeyPath, kind: KindId) -> Option<&[u8]> {
+        self.found(path).filter(|kept| kept.kind.same(kind)).map(|kept| kept.state.as_slice())
+    }
+
     /// Which widget has the screen's focus.
     #[must_use]
     pub const fn focus(&self) -> &Focus {

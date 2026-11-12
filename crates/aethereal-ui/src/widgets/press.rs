@@ -1,6 +1,6 @@
 //! What a widget pressed like a button keeps and shows: whether the pointer is over it and whether a press on it is
 //! held, a click as a press and a release of the main button both on it, and a tint over its box for each and a ring
-//! for focus. `Button` and `Toggle` are pressed so.
+//! for focus. `Button`, `Toggle`, and `Popup` are pressed so.
 
 use crate::input::Pointing;
 use crate::style::Style;
@@ -8,6 +8,9 @@ use crate::widget::{Draws, Laid, Quad, Sample};
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_window::Button;
+
+/// The keys that press a widget pressed like a button while it has focus.
+pub(super) const PRESSES: &[&str] = &["Enter", "NumpadEnter", "Space"];
 
 /// The tint over a widget the pointer is over: a little lighter.
 pub(super) const HOVERED: Colour = Colour { red: 1.0, green: 1.0, blue: 1.0, alpha: 0.12 };

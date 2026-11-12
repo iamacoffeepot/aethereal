@@ -12,9 +12,11 @@
 //! (ADR-0056: Events call the screen's methods). Each has a default, so a widget that takes no input says nothing of it.
 
 mod draws;
+mod layer;
 
 pub use draws::{Draws, Quad, Sample, Slices, TextDraw};
 pub use draws::{Focused, Piece};
+pub use layer::{Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
 
 use crate::fonts::Measuring;
 use crate::input::{Hears, Input, Key, Pointing, Used};
@@ -80,6 +82,34 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         let _ = (state, offset);
     }
 
+    /// Whether its content shows in its screen's top layer, as `state` stands: for a widget that arranges its children
+    /// as a popup opened by its own input, [`Opens::Pressed`].
+    fn open(&self, state: &Self::State) -> bool {
+        let _ = state;
+
+        false
+    }
+
+    /// Shuts its content, kept in `state`: the library calls it as its screen shuts a popup opened by its own input,
+    /// for a press outside it, Escape, its anchor going, or a choice made within it.
+    fn shut(&self, state: &mut Self::State) {
+        let _ = state;
+    }
+
+    /// Where it stands with the pointer, as `state` stands: for a widget that arranges its children as a popup opened
+    /// by the pointer resting on its anchor, [`Opens::Rested`].
+    fn tip(&self, state: &Self::State) -> Tip {
+        let _ = state;
+
+        Tip::Away
+    }
+
+    /// Keeps `tip` in `state` as where it stands with the pointer: the library calls it as the pointer comes onto its
+    /// anchor, rests there, leaves it, or presses, and as its anchor goes.
+    fn tip_to(&self, state: &mut Self::State, tip: Tip) {
+        let _ = (state, tip);
+    }
+
     /// Draws its content where layout put it, `laid`, over the background and border its style draws beneath it.
     fn draw(&self, state: &Self::State, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>);
 
@@ -136,6 +166,10 @@ pub enum Arrange {
     Scroll(Axis),
     /// It has no children, and measures its own content.
     Leaf,
+    /// Its first child, its anchor, in its box as a `Stack`'s child is; and the rest, its content, out of its box and of
+    /// every box around it, in its screen's top layer while it is open, placed and opened as its [`Layer`] says: a
+    /// popup's (ADR-0056: Popups draw in one top layer per screen).
+    Popup(Layer),
 }
 
 /// The axis a flex container runs along.
@@ -253,6 +287,14 @@ pub trait Built: Debug + Send {
     fn offset(&self, state: &[u8]) -> f32;
     /// Slides its children to `offset`, its state read from and written back to `state`.
     fn scroll_to(&self, state: &mut Vec<u8>, offset: f32);
+    /// Whether its content shows in its screen's top layer, its state read from `state`.
+    fn open(&self, state: &[u8]) -> bool;
+    /// Shuts its content, its state read from and written back to `state`.
+    fn shut(&self, state: &mut Vec<u8>);
+    /// Where it stands with the pointer, its state read from `state`.
+    fn tip(&self, state: &[u8]) -> Tip;
+    /// Keeps `tip` as where it stands with the pointer, its state read from and written back to `state`.
+    fn tip_to(&self, state: &mut Vec<u8>, tip: Tip);
     /// The kind of its state, which tells a state of its type from one of another's.
     fn state_kind(&self) -> KindId;
     /// Its state as it is first made, encoded.
@@ -323,6 +365,22 @@ impl<W: Widget> Built for W {
 
     fn scroll_to(&self, state: &mut Vec<u8>, offset: f32) {
         changed::<W, ()>(state, |state| Widget::scroll_to(self, state, offset));
+    }
+
+    fn open(&self, state: &[u8]) -> bool {
+        Widget::open(self, &read::<W>(state))
+    }
+
+    fn shut(&self, state: &mut Vec<u8>) {
+        changed::<W, ()>(state, |state| Widget::shut(self, state));
+    }
+
+    fn tip(&self, state: &[u8]) -> Tip {
+        Widget::tip(self, &read::<W>(state))
+    }
+
+    fn tip_to(&self, state: &mut Vec<u8>, tip: Tip) {
+        changed::<W, ()>(state, |state| Widget::tip_to(self, state, tip));
     }
 
     fn state_kind(&self) -> KindId {
