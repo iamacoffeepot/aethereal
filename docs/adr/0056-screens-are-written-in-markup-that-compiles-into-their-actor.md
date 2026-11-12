@@ -322,6 +322,25 @@ Everything else is widgets in one actor. An actor per widget would cost a mailbo
 - **The library mails each child its size when it changes.** A child that is a screen lays out to that size. Moving a child sends nothing; only resizing does.
 - **The pointer reaches the child directly,** since it drew what is under the pointer. The child talks to its parent by mail, handled by the parent's ordinary handlers, not by markup events.
 
+*Settled by the library's child stage:*
+
+```rust
+// minimap_hud.rs, by hand, in `begin`: the screen spawns its child and keeps what places it, a field `minimap: Called`
+let spawned = turn.spawn::<Minimap>(&(), config)?;
+let minimap = Called::new(child::<Minimap>(()), spawned);
+
+// minimap_hud_view.rs, generated from <child actor="{self.minimap}" area="inherit" class="minimap"/>
+Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_style())
+```
+
+- **A child a screen places is a `Called`:** where the renderer finds it beneath the screen, a call's `Callee`, and the reference its size is mailed through, a `ProtocolRef<(Resize,)>`. `Called::new(child::<C>(key), reference)` builds only for a type that may stand beneath the screen's and takes `Resize`, from the reference its spawn answered. It is a value compared by value, so the view copies it into its slot at each build, and a tree whose children stand as they stood is still skipped.
+- **The slot is a leaf that draws nothing of its own,** sized by its style alone. Its style's background and border draw beneath the child, and it is reached by the pointer only where its style fills its box, as a panel is. The library lists the call after the slot's own draws and hit, at the slot's place in the tree's order, placed at the slot's content box, so a slot's border and padding frame its child, and cut to that box within what the slot is cut to. So a child in a scroll slides with it and is cut to it, and one in a popup's content is called in that popup's layer of the top layer while the popup is open. A slot hidden, by `show` or a shut popup, is not called, and nothing is sent to its child.
+- **`area="inherit"` is `Area::Inherit` at the content box's corner,** in the screen's coordinates. **`area="absolute"` is `Area::Absolute`,** the slot's box taken to be in the window's pixels, which holds for a screen that is a root or is itself called in the window's pixels. An absolute child is told its size and never where its slot is, so it is for a child that draws where it is by the window's pixels, as a scene does; a child that is a screen lays out from its own corner, and is called `inherit`.
+- **The size is `Resize { viewport }`,** a plain kind, as it carries no reference: the slot's content box's size in pixels, in the screen's frame and at its UI scale. The `Prepare` that lays a slot out mails it when it is not what that child was told by the layout before, so a move sends nothing, and a resize, or a change of the screen's frame or scale, sends one, once. A child shown again after it was left out is told again, as it may have missed a change while it was hidden.
+- **A child that is a screen lays out to it, as a root screen lays out to its window's size:** `handles!` lists `Resize`, and `screen!` writes its handler, which hands the viewport to `Screen::resize`, so the screen lays out at its next `Prepare`. Every screen takes it, so a screen can be placed by another as it is; a root is never sent one. A child that is not a screen handles `Resize` itself.
+- **What it costs:** every screen handles one kind more, `Resize`, whose handler sends the library's sends. Those, which `Prepare` and the handlers of the library's answers declare, gain one send place, `ToAny<(Resize,), Resize>`, which reaches a child of any type through the reference its `Called` holds; so a screen's own sends, its `Controls::Sends`, gain nothing, and a child of a new type adds nothing to either.
+- **Each screen keeps its own focus, and Tab does not cross into a child or out of one.** Tab and Shift-Tab move through the screen's own tree, which holds the slot and not the child's widgets, and the slot cannot hold focus. A press on the child reaches the child and not its parent, so it neither takes the parent's focus nor clears it. Keys reach declarations top-down, and a screen lists its keys before its widgets, so a child, called after its parent declared its keys, hears a key first: while both hold focus, the child's focused widget takes the keys it hears, and the parent's, a focused text input among them, the keys the child passes.
+
 ### Drag and drop is one path
 
 ```xml
@@ -407,13 +426,15 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - A font is made from a source (a built-in, or a font file's bytes) and names its fallbacks when it is made, in place of one renderer-wide list. So a `FontId`'s metrics never change: a screen keeps them for good, and nothing is ever sent to update them.
   - A text's outline draws outside its measured box, so `Text` pads its layout size by the outline's width.
   - A text's measured width is its widest line, so `Text` makes the text wrap at that width and it fills exactly its box (ADR-0052). A word too long to break measures wider than the width offered. `Text` then draws at the offered width, and its box cuts the word.
-- **A child actor learns a new size a turn after its parent decides it.** The clip contains the mismatch for that turn, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
+- **A child actor learns a new size a turn after its parent decides it, and lays out to it at its own next `Prepare`, a frame later:** the `Prepare` that lays its slot out mails it (*settled by the library's child stage*). The clip contains the mismatch for that frame, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
 - **The dev overlay moves onto the library,** as its first user.
 - **A text input does not show what an input method is still composing.** The window does not send a composition until it is committed (ADR-0051: `Preedit` is follow-on work there); once it does, the text input shows it at its caret, as its own state.
 - **Follow-on work, each waiting for a need:**
   - drags between actors that light up targets in other actors;
   - popups above every screen, as a window-wide overlay actor;
   - focus moved by direction;
+  - focus that crosses between a screen and its child, so a press on a child takes its parent's focus, and Tab walks from one into the other;
+  - a child screen placed in the window's pixels that is told where its slot is, and so moves by mail;
   - themes switched while running, with sheet values as named tokens that a theme actor mails;
   - dropdowns, rich text, trees, and colour pickers;
   - animation and transitions.

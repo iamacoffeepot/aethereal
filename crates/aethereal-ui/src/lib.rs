@@ -22,6 +22,9 @@
 //!   [`screen!`] writes the screen's handlers: among them, the content of each open widget that arranges its children
 //!   as a popup, a [`Popup`](widgets::Popup) or a program's own, drawn in the screen's top layer, and the wait of each
 //!   opened by the pointer resting, a [`Tooltip`](widgets::Tooltip), a `Sleep` job.
+//! - [`Called`] and [`Node::call`]: a child actor the screen spawns and holds, placed in a slot of its tree, called
+//!   there in the area [`CallArea`] names, and mailed its size, a [`Resize`], whenever it changes; a child that is a
+//!   screen lays out to it.
 //!
 //! A screen is written as its markup will compile it:
 //!
@@ -105,6 +108,7 @@
 
 #![forbid(unsafe_code)]
 
+mod child;
 mod draw;
 mod fonts;
 mod input;
@@ -118,6 +122,7 @@ mod view;
 mod widget;
 pub mod widgets;
 
+pub use child::{CallArea, Called, Resize, Resizes};
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Used};
 pub use screen::{
@@ -141,8 +146,9 @@ pub mod prelude {
         Texture, Toggle, Tooltip,
     };
     pub use crate::{
-        Alignment, Border, Controls, Distribute, Edges, Gap, Inside, ItemKey, Key, KeyPath, Length, Node, Placed,
-        Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space, Style, Target, Track, Tree, View, Viewport,
+        Alignment, Border, CallArea, Called, Controls, Distribute, Edges, Gap, Inside, ItemKey, Key, KeyPath, Length,
+        Node, Placed, Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space, Style, Target, Track, Tree, View,
+        Viewport,
     };
 }
 
@@ -162,8 +168,8 @@ pub mod __private {
 }
 
 /// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, the answer to
-/// each of its asks with the ask's context, and the end of a tooltip's sleep with the tooltip and its hover; then each of
-/// `$own`, what the screen handles of its own.
+/// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, and the size a
+/// screen that places it as a child mails it; then each of `$own`, what the screen handles of its own.
 #[macro_export]
 macro_rules! handles {
     ($($own:ty),* $(,)?) => {
@@ -183,6 +189,7 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::TextPlaced, $crate::TextPlacing>,
             $crate::__private::Answer<$crate::__private::ImeAllowed, $crate::ImeAsked>,
             $crate::__private::Answer<$crate::__private::Slept, $crate::Tipping>,
+            $crate::Resize,
             $($own,)*
         )
     };
@@ -209,7 +216,8 @@ macro_rules! sends {
 /// its `Prepare`, which builds the tree with its [`View`] and hands it to the screen with its [`Controls::HOTKEYS`]; the
 /// pointer and the keys its list reaches, whose raised events call its methods through [`View::on`] and whose keys
 /// left over call [`Controls::key`], after which its view is built again for the next input to reach; each answer the
-/// library's asks bring; and the end of each tooltip's sleep. A screen's markup compiles into a call of it.
+/// library's asks bring; the end of each tooltip's sleep; and the size a screen that places it as a child mails it,
+/// which it lays out to as a root screen lays out to its window's. A screen's markup compiles into a call of it.
 #[macro_export]
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
@@ -279,6 +287,18 @@ macro_rules! screen {
         $crate::screen!(@answer $screen, $field, TextPlaced, TextPlacing, text_placed);
         $crate::screen!(@answer $screen, $field, ImeAllowed, ImeAsked, ime_answered);
         $crate::screen!(@answer $screen, $field, Slept, Tipping, slept);
+
+        impl $crate::__private::Handles<$crate::Resize> for $screen {
+            type Sends = $crate::Sends;
+
+            fn handle(
+                &mut self,
+                resize: $crate::Resize,
+                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+            ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                self.$field.resize(resize.viewport).send(turn)
+            }
+        }
     };
     (@take $field:ident, $this:ident, $heard:ident, $turn:ident) => {{
         let took = $crate::take_in($this, $heard, $turn)?;

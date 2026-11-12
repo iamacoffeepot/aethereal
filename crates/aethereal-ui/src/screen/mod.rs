@@ -20,12 +20,15 @@
 //! what is within it by the offset its state keeps, clamped to what it can scroll as it is laid out, and cuts it to its
 //! content box; a list in a scroll builds only the items its window shows, as [`Screen::rows`] says. The content of each
 //! open popup is listed after everything else, in its own layer of the screen's top layer, in tree order: placed against
-//! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal.
+//! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal. A child
+//! actor the screen places in a slot is called where the slot's content box is, at the slot's place in the list, and is
+//! mailed its size whenever it changed.
 //!
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
 //! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
 
+mod children;
 mod input;
 mod keys;
 mod layers;
@@ -43,6 +46,7 @@ pub use popups::Tipping;
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
 pub use scrolls::Rows;
 
+use crate::child::calling;
 use crate::draw::{Content, layered};
 use crate::fonts::Fonts;
 use crate::fonts::Measuring;
@@ -56,12 +60,13 @@ use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, 
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{Entry, Pointer};
+use aethereal_render::draw_list::{Area, Callee, Entry, Pointer};
 use aethereal_render::font::Metrics;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
 use aethereal_window::Cursor;
+use children::Told;
 use keys::{Declared, Ime, Modifiers, Role};
 use layers::Layer;
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
@@ -113,8 +118,8 @@ impl Viewport {
 /// What the library keeps of a screen: where it draws, how big it is, the program it draws quads with, its widget
 /// table, what it has drawn by key and what it lists in what order, the list it last sent and what each entry of it
 /// is, whether what it last laid out is current, the modifiers held, what it last asked of its window's input method,
-/// and what its tooltips wait on: the hits the pointer reaches, the number of the last hover, and whether the pointer
-/// moved since its tooltips were looked at.
+/// what its tooltips wait on: the hits the pointer reaches, the number of the last hover, and whether the pointer
+/// moved since its tooltips were looked at; and the size it last told each child it places.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -141,6 +146,8 @@ pub struct Screen {
     /// The number of the last hover of a tooltip's anchor: a tooltip's sleep for any other opens nothing.
     hovers: u64,
     hover: Hover,
+    /// The size the last layout told each child it places, or found it was told before.
+    told: Vec<Told>,
     unkept: Unkept<Worked>,
 }
 
@@ -153,6 +160,8 @@ enum Slot {
     Hit { path: KeyPath, rect: Rect2, pointer: Pointer },
     /// A hit over `rect`, the whole screen, behind the modal popup at `path`, blocking the pointer from the rest.
     Backdrop { path: KeyPath, rect: Rect2 },
+    /// A call of `callee`, the child placed in the slot at `path`, in `area`.
+    Call { path: KeyPath, callee: Callee, area: Area },
 }
 
 /// What an entry of the list a screen sent is.
@@ -166,6 +175,8 @@ enum Listed {
     Hit(KeyPath),
     /// The hit behind the modal popup at this path.
     Backdrop(KeyPath),
+    /// A call of the child placed in the slot at this path, which the pointer reaches through the child's own list.
+    Call(KeyPath),
 }
 
 /// Whether the last tree's layout holds until the tree changes.
@@ -259,6 +270,7 @@ impl Screen {
             reached: Vec::new(),
             hovers: 0,
             hover: Hover::Settled,
+            told: Vec::new(),
             unkept: Unkept::default(),
         }
     }
@@ -330,7 +342,8 @@ impl Screen {
     /// it. Each scroll's offset is clamped to what it can scroll, what is within it slid by it and cut to its content
     /// box; an item whose key a sibling before it has is left out, and logged. A popup whose anchor has gone shuts; the
     /// content of each open one is listed in its own layer over the rest, placed against its anchor and cut by nothing
-    /// around it, and a popup's own draws and hit are listed over its anchor's.
+    /// around it, and a popup's own draws and hit are listed over its anchor's. A child placed in a slot shown is called
+    /// there, and told its size when it changed.
     fn lay_out(&mut self, orders: &mut Orders, hotkeys: &[&str]) -> Outcome {
         let unmade = self.program.made().is_none();
         if unmade {
@@ -366,6 +379,7 @@ impl Screen {
         let mut shifts = vec![Vec2::ZERO; flat.len()];
         let mut clips = vec![viewport.rect(); flat.len()];
         let mut laid_out = Vec::with_capacity(flat.len());
+        let mut told = Vec::new();
         for (at, (node, boxed)) in flat.iter().zip(&boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
@@ -392,6 +406,9 @@ impl Screen {
             };
             let state = self.table.bytes(&node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
+            if let Some(slot) = calling(node.node.widget()) {
+                told.push(Told::of(slot, &laid, viewport));
+            }
             let listing = listed(node, &laid, state, focused, covered[at], live, &mut measuring);
             drawn.extend(listing.drawn);
             layers.list(surface.stands, listing.now);
@@ -427,6 +444,7 @@ impl Screen {
             return Outcome::Waiting;
         }
         self.draw(drawn, layers.order(), orders);
+        self.tell(told, orders);
 
         Outcome::Laid
     }
@@ -474,6 +492,10 @@ impl Screen {
                 Slot::Backdrop { path, rect } => {
                     entries.push(Entry::Hit { frame, pass, rect: *rect, pointer: Pointer::Blocks(Cursor::Default) });
                     listing.push(Listed::Backdrop(path.clone()));
+                }
+                Slot::Call { path, callee, area } => {
+                    entries.push(Entry::Call { child: callee.clone(), area: *area });
+                    listing.push(Listed::Call(path.clone()));
                 }
             }
         }
@@ -527,7 +549,9 @@ struct Listing {
 /// What the widget of `node`, laid at `laid`, its state `state`, lists, focused or not as `focused` says, within a
 /// widget that blocks the pointer or not, `covered`: the background and border its style fills beneath it, then its
 /// own drawing, measured with `measuring`; and a hit over its box when the pointer reaches it there and its surface
-/// is `live`. A popup's own drawing and hit are listed over its anchor, as it is the anchor's button.
+/// is `live`, then the call of the child it places, when it is a child's slot, so the child draws over the slot's
+/// background and is reached before it. A popup's own drawing and hit are listed over its anchor, as it is the anchor's
+/// button.
 fn listed(
     node: &Flat<'_>,
     laid: &Laid,
@@ -586,6 +610,9 @@ fn listed(
             &mut now
         };
         into.push(Slot::Hit { path: node.path.clone(), rect, pointer });
+    }
+    if let Some(slot) = calling(widget) {
+        now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area: slot.area(laid) });
     }
 
     Listing { drawn, now, later, blocks }

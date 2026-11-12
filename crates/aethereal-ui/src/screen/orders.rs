@@ -2,13 +2,18 @@
 //! turn by [`Orders::send`]. What a send carries as a blob is put there, so the library's decisions are plain values.
 //! A tooltip's wait is a `Sleep` job the turn runs (ADR-0018), timed from the turn's step: a job is mail to no actor, so
 //! no send lists it, and it builds only for a screen that handles its answer, as [`handles!`](crate::handles!) says.
+//! A child the screen places is told its size through the reference the screen made it with, as any actor that takes
+//! [`Resize`] is reached, so one send serves every child of every type.
 
 use super::input::ImeAsked;
 use super::layers::{Instancing, Placing, TextPlacing, Texting};
 use super::popups::Tipping;
 use super::program::{Meshing, MetricsAsked, Programming, Uniforming, Whitening};
+use crate::child::{Resize, Resizes};
 use crate::draw::{FRAME_BYTES, PLACE, PROGRAM, SHADE, corner_layout, corners, record_layout, triangles};
-use aethereal_actor::{Allows, Answer, Asks, Fault, Handles, Level, Path, Sleep, Slept, Tells, Turn, path};
+use aethereal_actor::{
+    Allows, Answer, Asks, Fault, Handles, Level, Path, ProtocolRef, Sleep, Slept, Tells, ToAny, Turn, path,
+};
 use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::instances::{CreateInstances, InstancesId, WriteInstances};
 use aethereal_render::mesh::{CreateMesh, VertexLayout};
@@ -25,8 +30,8 @@ use aethereal_window::{AllowIme, Windows};
 use core::time::Duration;
 
 /// Every send a screen's library makes, as a handler of its declares them: the asks that make what it draws and that
-/// read a font's metrics, the tells that write, move, release, and list them, and the ask that stops the window's input
-/// method when the text input that had focus goes.
+/// read a font's metrics, the tells that write, move, release, and list them, the ask that stops the window's input
+/// method when the text input that had focus goes, and the size each child it places is told.
 pub type Sends = (
     Asks<Path<Renderer>, CreateMesh, Meshing>,
     Asks<Path<Renderer>, CreateProgram, Programming>,
@@ -44,6 +49,7 @@ pub type Sends = (
     Tells<Path<Renderer>, Release>,
     Tells<Path<Renderer>, DrawList>,
     Asks<Path<Windows>, AllowIme, ImeAsked>,
+    ToAny<Resizes, Resize>,
 );
 
 /// What one of a screen's turns decided to send, in order.
@@ -83,6 +89,11 @@ pub enum Order {
     Release(Release),
     List(Vec<Entry>),
     AllowIme(AllowIme),
+    /// The size a child the screen places lays out to, mailed to it.
+    Resize {
+        child: ProtocolRef<Resizes>,
+        resize: Resize,
+    },
     /// A sleep of `delay` from the turn's step, for a tooltip's wait.
     Sleep {
         delay: Duration,
@@ -168,6 +179,10 @@ impl Orders {
         self.orders.push(Order::AllowIme(allow));
     }
 
+    pub(super) fn tell_size(&mut self, child: ProtocolRef<Resizes>, resize: Resize) {
+        self.orders.push(Order::Resize { child, resize });
+    }
+
     pub(super) fn sleep(&mut self, delay: Duration, context: Tipping) {
         self.orders.push(Order::Sleep { delay, context });
     }
@@ -182,7 +197,7 @@ impl Orders {
     /// # Errors
     ///
     /// A fault when a send or a job was not written.
-    pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15>(
+    pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15, I16>(
         self,
         turn: &mut Turn<'_, A, S>,
     ) -> Result<(), Fault>
@@ -203,7 +218,8 @@ impl Orders {
             + Allows<Tells<Path<Renderer>, MoveText>, I12>
             + Allows<Tells<Path<Renderer>, Release>, I13>
             + Allows<Tells<Path<Renderer>, DrawList>, I14>
-            + Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I15>,
+            + Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I15>
+            + Allows<ToAny<Resizes, Resize>, I16>,
     {
         for order in self.orders {
             let renderer = path::<Renderer>(());
@@ -285,6 +301,9 @@ impl Orders {
                 }
                 Order::AllowIme(allow) => {
                     turn.to(path::<Windows>(())).ask(&allow, &ImeAsked)?;
+                }
+                Order::Resize { child, resize } => {
+                    turn.to(child).send(&resize)?;
                 }
                 Order::Sleep { delay, context } => {
                     let until = turn.now() + delay;

@@ -217,6 +217,16 @@ pub struct Callee {
     child: Naming,
 }
 
+impl Callee {
+    /// `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it: a place deeper than a
+    /// child does not build. It holds only the child's segment, so one held by a list's sender, as a screen holds the
+    /// child it places, is called wherever the sender lists it.
+    #[must_use]
+    pub fn of<C: ChildOf>(child: Child<C>) -> Self {
+        Self { child: Naming::of(&child.into_segment()) }
+    }
+}
+
 impl Entry {
     /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it, placed as
     /// `area` says: a place deeper than a child does not build. The call holds only the child's
@@ -224,7 +234,7 @@ impl Entry {
     /// sender's own direct child.
     #[must_use]
     pub fn call<C: ChildOf>(child: Child<C>, area: Area) -> Self {
-        Self::Call { child: Callee { child: Naming::of(&child.into_segment()) }, area }
+        Self::Call { child: Callee::of(child), area }
     }
 
     /// A place in the pass `P` of `frame` that draws nothing, reached by the pointer within `rect` as `pointer` says,
