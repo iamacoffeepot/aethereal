@@ -183,7 +183,7 @@ fn nested_areas_compose_from_the_window_down_each_clip_cut_to_its_caller_s_whate
     let scrolled = Area::Inherit { origin: Vec2::new(10.0, -40.0), clip: Clip::To(rect([0.0, 0.0], [400.0, 150.0])) };
     let on_screen = Area::Absolute { clip: Clip::To(rect([0.0, 0.0], [150.0, 500.0])) };
     let nudged = Area::Inherit { origin: Vec2::new(7.0, 8.0), clip: Clip::Whole };
-    let parent = vec![draw(1), Listed::Call { child: HUD, area: Area::rect(panel) }, draw(4)];
+    let parent = vec![draw(1), Listed::Call { child: HUD, area: Area::inherit(panel) }, draw(4)];
     assert_eq!(lists.check(parent, MAKER, &kept), Ok(()));
     let hud =
         vec![draw(2), Listed::Call { child: MAP, area: scrolled }, Listed::Call { child: OTHER, area: on_screen }];
@@ -236,8 +236,8 @@ fn a_clip_cuts_a_target_s_pixels_at_their_middles_scaled_to_the_target_and_withi
     let outside = Clip::To(rect([70.0, 0.0], [90.0, 10.0]));
     assert_eq!(outside.pixels(full, size), Cut::Nothing);
     let beside = Within::WINDOW
-        .called(Area::rect(rect([20.0, 0.0], [30.0, 10.0])))
-        .called(Area::rect(rect([15.0, 0.0], [25.0, 10.0])));
+        .called(Area::inherit(rect([20.0, 0.0], [30.0, 10.0])))
+        .called(Area::inherit(rect([15.0, 0.0], [25.0, 10.0])));
     assert_eq!(beside.clip.pixels(full, size), Cut::Nothing, "a child placed past its caller's clip");
 }
 

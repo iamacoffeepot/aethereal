@@ -126,8 +126,14 @@ impl Area {
     /// The child in its caller's coordinates, placed at `rect` of them: its `0, 0` at the rect's least corner, and cut
     /// to the rect.
     #[must_use]
-    pub const fn rect(rect: Rect2) -> Self {
+    pub const fn inherit(rect: Rect2) -> Self {
         Self::Inherit { origin: rect.min, clip: Clip::To(rect) }
+    }
+
+    /// The child in the window's pixels, cut to `rect` of them.
+    #[must_use]
+    pub const fn absolute(rect: Rect2) -> Self {
+        Self::Absolute { clip: Clip::To(rect) }
     }
 }
 
