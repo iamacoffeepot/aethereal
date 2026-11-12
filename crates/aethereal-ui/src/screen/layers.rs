@@ -6,7 +6,7 @@
 
 use super::orders::Orders;
 use super::program::Made;
-use super::{Screen, Target};
+use super::{Screen, Slot, Target};
 use crate::draw::{Binding, Content, Placing as Placed, RECORD_BYTES, record_layout};
 use crate::tree::KeyPath;
 use aethereal_actor::{Answered, Level};
@@ -193,10 +193,10 @@ const fn moved(placement: PlacementId, placing: Placed) -> MoveText {
 }
 
 impl Screen {
-    /// Draws `drawn`, each layer of each widget's draws in tree order, beside its key, with what `made` drew quads by:
-    /// each kept layer no longer drawn is released, each new one made, each changed one written or made anew; and the
-    /// list is sent once nothing in it is still being made.
-    pub(super) fn draw(&mut self, drawn: Vec<(DrawKey, Content)>, orders: &mut Orders) {
+    /// Draws `drawn`, each layer of each widget's draws in tree order, beside its key, listed as `order` says: each
+    /// kept layer no longer drawn is released, each new one made, each changed one written or made anew; and the list
+    /// is sent once nothing in it is still being made.
+    pub(super) fn draw(&mut self, drawn: Vec<(DrawKey, Content)>, order: Vec<Slot>, orders: &mut Orders) {
         let mut wanted: Vec<&DrawKey> = drawn.iter().map(|(key, _)| key).collect();
         wanted.sort_unstable();
         self.layers.retain(|layer| {
@@ -206,7 +206,7 @@ impl Screen {
             }
             kept
         });
-        self.order = drawn.iter().map(|(key, _)| key.clone()).collect();
+        self.order = order;
         for (key, content) in drawn {
             match self.layers.binary_search_by(|layer| layer.key.cmp(&key)) {
                 Ok(at) if self.layers[at].holds(&content) => {

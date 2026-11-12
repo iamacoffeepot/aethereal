@@ -40,7 +40,7 @@ Inventory:  mail ──> turn (&mut self)
 - **Widgets are not actors.** They are code in the screen's actor, and nothing about them is mail.
 - **A screen rebuilds in `Prepare`.** `Prepare` is the shared stage between `Tick` and `Render` (ADR-0020): it begins once every turn of the frame's `Tick` has run, and finishes before `Render` draws, so a rebuild sees every turn of the frame and what it sends is handled before the frame is drawn. A program that has screens runs it, `with_cycle::<(Tick, Prepare, Render)>()`; the library subscribes its screen to it as the screen begins. Nothing is added to the actor framework.
   - **In every `Prepare` the screen builds its tree, which is cheap, and compares it with the last.** Identical, it does nothing more: no layout and no mail, and the renderer keeps the last list (ADR-0031). Different, it lays the tree out, compares its draws with the last by key, and sends only what changed. So nothing marks changes and nothing can be forgotten, and layout still runs only when something changed.
-  - **Some changes come from outside the tree,** and each makes the next `Prepare` lay out though the tree is identical: a font's metrics coming, the screen's size, frame, or UI scale changing, and, in later stages, a widget's state changing on input. Each goes through the library, so the library knows.
+  - **Some changes come from outside the tree,** and each makes the next `Prepare` lay out though the tree is identical: a font's metrics coming, the screen's size, frame, or UI scale changing, a widget's state changing on input, and the screen's focus moving. Each goes through the library, so the library knows.
 - **Draws are kept by widget key.** A rebuild compares the new tree with the last and sends only what changed: a moved text is a `MoveText`, a changed one is a `WriteText`, and an unchanged widget sends nothing.
 
 ### Markup
@@ -95,12 +95,60 @@ Every element is a widget; there is no `<each>` or `<if>`.
 ### Events call the screen's methods
 
 ```rust
-fn select(&mut self, turn: &mut Turn<'_, Self>, item: ItemId) { … }
+fn select(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
+fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, text: String) -> Result<(), Fault> { … }
 ```
 
 - **An event names the method and its arguments:** `click="{self.select(item.id)}"`. The turn is passed implicitly, as Rust passes `self`.
 - **An event's arguments are copied when the view is built, and must be `Copy`.** That steers them to ids, never to a snapshot of an item that may have changed between the draw and the click.
+- **A widget that hands a value with its event hands it after the arguments:** a text input's `change` and `submit` the text, a toggle's `change` whether it is on, a slider's `change` its value. `change="{self.rename(item.id)}"` calls `rename(turn, item, text)`.
 - **The build checks the call against the method's signature.**
+- **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send** (*settled by the library's input stage*). A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below).
+
+**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event attribute of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32)}`.
+
+```rust
+// inventory_view.rs, generated from inventory.xml
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InventoryEvent {
+    Select(ItemId),        // <ItemSlot click="{self.select(item.id)}"/>
+    Rename(ItemId),        // <TextInput change="{self.rename(item.id)}"/>
+}
+
+impl View for Inventory {
+    type Event = InventoryEvent;
+
+    fn view(&self) -> Tree { … }   // Button::new(InventoryEvent::Select(item.id)), built from the item now
+
+    fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
+        match raised {
+            Raised::Event(InventoryEvent::Select(item)) => self.select(turn, item),
+            Raised::Text(InventoryEvent::Rename(item), text) => self.rename(turn, item, text),
+            unmatched => aethereal_ui::unmatched(turn, &unmatched),
+        }
+    }
+}
+
+aethereal_ui::screen!(Inventory, ui);   // the handlers of `Prepare`, `Pointed`, `Keyed`, and the library's answers
+```
+
+```rust
+// inventory.rs, by hand
+type InventorySends = aethereal_ui::sends![Tells<Path<Game>, Equip>];   // the library's ask, then the screen's own
+
+impl Controls for Inventory {
+    type Sends = InventorySends;
+    const HOTKEYS: &'static [&'static str] = &["KeyI", "Escape"];
+
+    fn key(&mut self, turn: &mut Turn<'_, Self, InventorySends>, key: Key) -> Result<(), Fault> {
+        match key.code.as_str() { "KeyI" | "Escape" => self.close(turn), _ => Ok(()) }
+    }
+}
+```
+
+- **The whole of the generated code is the enum, one `impl View`, and the call of `screen!`,** so nothing generated shares an impl with what is written by hand.
+- **The input handlers take in a turn of input, then call the screen's methods,** in the order the events were raised, then its `key` with each key left for it. After any method runs, the view is built again for the input that follows, so a second click before the next frame carries the arguments the view copies now, not those of the last `Prepare`. The next `Prepare` lays it out.
+- **A widget's event type is the screen's,** `Button<InventoryEvent>`. A tree holds widgets of any type, so what a widget raises is held without its type and taken back as the screen's: only a tree built by hand can hold another screen's event, and that is logged.
 
 ### Styles are sheets, compiled in
 
@@ -134,13 +182,21 @@ A composite is built from other widgets, and is written in markup:
 - **A primitive draws or lays out something new, and is written in Rust.** It implements `Widget`, and the stock widgets are written the same way:
 
 ```rust
-#[derive(Default)]
-struct ButtonState { hovered: bool, pressed: bool }
+#[derive(Default, Plain)]
+#[kind(name = "aether.ui.press")]
+struct Press { hovered: bool, pressed: bool }
 
-impl Widget for Button {
-    type State = ButtonState;
-    fn input(&self, state: &mut ButtonState, event: &PointerEvent) -> Raised { … }
-    fn draw(&self, state: &ButtonState, draws: &mut Draws) { … }
+impl<E: Event> Widget for Button<E> {
+    type State = Press;
+    fn arrange(&self) -> Arrange { Arrange::Stack }
+    fn draw(&self, state: &Press, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) { … }
+    // Input, each with a default, so a widget that takes none says nothing of it:
+    fn pointer(&self, state: &Press) -> Pointer { Pointer::Blocks(Cursor::Hand) }
+    fn focusable(&self) -> bool { true }
+    fn hears(&self) -> Hears { Hears::Keys(&["Enter", "NumpadEnter", "Space"]) }
+    fn pointed(&self, state: &mut Press, pointing: Pointing, input: &mut Input<'_, '_>) { … input.raise(Raised::Event(self.click)) }
+    fn key(&self, state: &mut Press, key: &Key, input: &mut Input<'_, '_>) -> Used { … }
+    fn typed(&self, state: &mut Press, text: &str, input: &mut Input<'_, '_>) { … }
 }
 ```
 
@@ -153,7 +209,10 @@ impl Widget for Button {
 - **Interaction state belongs to primitives:** hover, pressed, scroll offset, caret and selection, an open popup, a tooltip's delay. A primitive declares it as `type State`.
 - **The screen keeps a table of widget state, keyed by each widget's place in the tree and the list keys on the way to it.** The library makes a state with `Default` the first time its key appears, keeps it across rebuilds, and drops it when the key is gone. No widget makes or frees its own state.
 - **The table is part of the screen's state,** so hover, scroll, and focus survive a move onto new code (ADR-0054).
-- **Input reaches a primitive by its entry.** The library maps each entry of the list it sent to the widget that drew it. `Pointed` goes to that widget's `input`, which updates its state and may raise an event, and the event calls the screen's method.
+- **Input reaches a primitive by its entry.** The library maps each entry of the list it sent to the widget that listed it. `Pointed` goes to that widget's `pointed`, in its own coordinates, from its border box's top left, which updates its state and may raise an event, and the event calls the screen's method.
+- **A widget the pointer reaches is listed with a hit over its box** (*settled by the library's input stage*): an `Entry::Hit` after its draws and before its children's, whose `Pointer` the widget declares, `Blocks(Hand)` for a button and `Blocks(Text)` for a text input, as its state stands, a slider's open hand turning closed as it drags. Its draws stay `Ignores`. A hit, not a draw, is reached, so a button with no background is still pressed, and one widget is one entry whatever it draws.
+- **A widget whose style fills its box blocks the pointer there,** with the default cursor, so a panel is solid to the game beneath and a click on its empty space walks no character. A widget within one the pointer reaches lists no hit of its own unless it says so, so a button's filled label does not take the press from the button.
+- **A click is a press and a release of the main button on the same widget:** the release's `over` (ADR-0055) names the hit it was over, so a press dragged off and released elsewhere clicks nothing. Moves and the release reach a widget wherever the pointer goes while its press is held, as the window's capture sends them, so a slider dragged past its end still sets its end.
 
 ### Layout is Taffy
 
@@ -166,11 +225,14 @@ impl Widget for Button {
 
 ### Focus and keys
 
-- **Each screen has at most one focused widget,** kept in its widget table.
-- **Clicking a focusable primitive focuses it.** Clicking elsewhere clears focus, and so does Esc.
-- **Tab and Shift-Tab move focus through focusable widgets in markup order.** There is no tab index; reorder the markup to change the order.
-- **A key goes first to the focused widget, and a key it does not use goes to the screen's `fn key(&mut self, turn, key: Key)`.** Hotkeys are an ordinary `match` there, and the screen declares the set they use beside the method.
-- **The library writes the screen's `Entry::Keys`.** While a `TextInput` is focused, it declares every key, blocking. Otherwise it declares the screen's hotkey set.
+- **Each screen has at most one focused widget,** kept in its widget table. A focused key that disappears, or whose widget can no longer hold focus, clears focus as the tree is laid out.
+- **Clicking a focusable primitive focuses it.** Clicking elsewhere in the screen, on anything it lists a hit for, clears focus, and so does Esc.
+- **Tab and Shift-Tab move focus through focusable widgets in markup order,** which is the tree's order, round from the last to the first. There is no tab index; reorder the markup to change the order.
+- **A key goes first to the focused widget, then to the focus keys, Tab and Esc, and a key neither uses goes to the screen's `fn key(&mut self, turn, key: Key)`.** Hotkeys are an ordinary `match` there, and the screen declares the set they use beside the method, as `Controls::HOTKEYS` in the same impl (*settled by the library's input stage*). A `Key` carries its `code`, its `key`, whether it repeats, and the modifiers held, so a chord is read there too.
+- **The library writes the screen's `Entry::Keys`.** While a `TextInput` is focused, it declares every key, blocking. Otherwise it declares the screen's hotkey set, and, while a widget has focus, Tab, Esc, and the keys that widget hears, blocking (*settled by the library's input stage*). So a shown screen whose widgets have no focus takes only its hotkeys, and a HUD with buttons never takes the game's Tab or Esc; a screen that wants Tab to bring focus to its first widget lists Tab among its hotkeys.
+- **The modifiers are watched, not taken** (*settled by the library's input stage*). A key event carries no modifiers (ADR-0024), so beside a set short of every key the library declares Shift, Control, and Meta in a second entry that does not block, and keeps which are down. Shift-Tab and a text input's Shift-arrow read them, and the game still hears Shift.
+- **A focused text input uses every key that types text,** a key whose meaning is one character with neither Control nor Meta held, as its text comes after it (ADR-0051); so a letter typed into it never reaches the screen's hotkeys, and a key it passes, F2 or Tab, still does.
+- **The library allows the window's input method while a widget that types has focus, and stops it after** (ADR-0051: `AllowIme`), each asked only as it changes, from the turn of input that moved focus, or from the `Prepare` that found the focused key gone. So the screen's input handlers send that ask besides the screen's own, which `sends![…]` adds.
 - **Moving focus by direction, for a gamepad or arrow keys, is left out** until something needs it.
 
 ### Popups draw in one top layer per screen
@@ -270,6 +332,7 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - A text's measured width is its widest line, so `Text` makes the text wrap at that width and it fills exactly its box (ADR-0052). A word too long to break measures wider than the width offered. `Text` then draws at the offered width, and its box cuts the word.
 - **A child actor learns a new size a turn after its parent decides it.** The clip contains the mismatch for that turn, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
 - **The dev overlay moves onto the library,** as its first user.
+- **A text input does not show what an input method is still composing.** The window does not send a composition until it is committed (ADR-0051: `Preedit` is follow-on work there); once it does, the text input shows it at its caret, as its own state.
 - **Follow-on work, each waiting for a need:**
   - drags between actors that light up targets in other actors;
   - popups above every screen, as a window-wide overlay actor;

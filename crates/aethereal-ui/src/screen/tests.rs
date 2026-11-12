@@ -18,10 +18,10 @@ use aethereal_render::placement::{Placed, PlacementId};
 use aethereal_render::text::{Colour, Run, TextMade, TextPlaced};
 
 /// The renderer's own monospace font, whose figures are all one width.
-const MONO: &[u8] = include_bytes!("../../../aethereal-render/fonts/IBMPlexMono-Regular.ttf");
+pub(super) const MONO: &[u8] = include_bytes!("../../../aethereal-render/fonts/IBMPlexMono-Regular.ttf");
 
 /// The id the renderer gives under `number`, of whatever it made: an id is its number.
-fn id<T: Plain>(number: u64) -> T {
+pub(super) fn id<T: Plain>(number: u64) -> T {
     let Ok(id) = from_bytes(&number.to_le_bytes(), &mut Budget::new(8)) else {
         panic!("an id is its number");
     };
@@ -30,7 +30,7 @@ fn id<T: Plain>(number: u64) -> T {
 }
 
 /// A screen 200 by 100 pixels at a UI scale of 1, whose program is made.
-fn screen() -> Screen {
+pub(super) fn screen() -> Screen {
     let mut screen = Screen::new(Target::of::<Interface>(Frame::Main(id(0))), Viewport::window(200, 100, 1.0));
     screen.program = Program::Made(Made { mesh: id(1), program: id(2), uniforms: id(3), white: id(4) });
 
@@ -56,13 +56,13 @@ fn label(text: &str) -> Tree {
 }
 
 /// The orders of `orders`.
-fn sent(orders: &Orders) -> Vec<Order> {
+pub(super) fn sent(orders: &Orders) -> Vec<Order> {
     orders.orders().to_vec()
 }
 
 /// Every order `orders` holds, and those the screen returns as the renderer answers each ask among them, made, until
 /// none is left to answer, the asks answered last first when `backwards`: each made thing numbered from 100 on.
-fn answered(screen: &mut Screen, orders: &Orders, backwards: bool) -> Vec<Order> {
+pub(super) fn answered(screen: &mut Screen, orders: &Orders, backwards: bool) -> Vec<Order> {
     let mut every = Vec::new();
     let mut waiting: Vec<Order> = sent(orders);
     let mut number = 100;
@@ -95,7 +95,7 @@ fn answered(screen: &mut Screen, orders: &Orders, backwards: bool) -> Vec<Order>
 }
 
 /// The last list among `orders`.
-fn last_list(orders: &[Order]) -> Option<Vec<Entry>> {
+pub(super) fn last_list(orders: &[Order]) -> Option<Vec<Entry>> {
     orders.iter().rev().find_map(|order| match order {
         Order::List(entries) => Some(entries.clone()),
         _ => None,
@@ -103,7 +103,7 @@ fn last_list(orders: &[Order]) -> Option<Vec<Entry>> {
 }
 
 /// The monospace font's metrics, as the renderer hands them.
-fn mono() -> Metrics {
+pub(super) fn mono() -> Metrics {
     let Ok(font) = FontFile::read(MONO) else {
         panic!("the renderer's monospace font reads");
     };
@@ -117,11 +117,11 @@ fn an_identical_tree_lays_nothing_out_and_sends_nothing() {
     // and one that compares by something other than value, so a tree rebuilt equal looks new.
     let mut screen = screen();
     let red = Node::new(Segment::Place(0), Stack, filled(Colour::opaque(1.0, 0.0, 0.0)), Vec::new());
-    let first = screen.prepare(stack(vec![red]));
+    let first = screen.prepare(stack(vec![red]), &[]);
     answered(&mut screen, &first.orders, false);
 
     let red = Node::new(Segment::Place(0), Stack, filled(Colour::opaque(1.0, 0.0, 0.0)), Vec::new());
-    let again = screen.prepare(stack(vec![red]));
+    let again = screen.prepare(stack(vec![red]), &[]);
 
     assert_eq!(first.outcome, Outcome::Laid);
     assert_eq!(again.outcome, Outcome::Unchanged);
@@ -135,10 +135,10 @@ fn a_font_s_metrics_coming_lays_the_same_tree_out_once_more() {
     // is the same, so the text never shows.
     let mut screen = screen();
 
-    let met = screen.prepare(label("Gold: 10"));
-    let waiting = screen.prepare(label("Gold: 10"));
+    let met = screen.prepare(label("Gold: 10"), &[]);
+    let waiting = screen.prepare(label("Gold: 10"), &[]);
     screen.metrics_read(Font::Mono, mono(), Vec::new());
-    let read = screen.prepare(label("Gold: 10"));
+    let read = screen.prepare(label("Gold: 10"), &[]);
 
     assert_eq!(met.outcome, Outcome::Waiting);
     assert_eq!(sent(&met.orders), vec![Order::Metrics(MetricsAsked { font: Font::Mono })]);
@@ -155,12 +155,12 @@ fn a_resize_lays_the_same_tree_out_once_more_and_writes_the_frame_s_size() {
     // and one whose program goes on turning pixels into clip space by the old frame's size.
     let mut screen = screen();
     let red = Node::new(Segment::Place(0), Stack, filled(Colour::opaque(1.0, 0.0, 0.0)), Vec::new());
-    let prepared = screen.prepare(stack(vec![red]));
+    let prepared = screen.prepare(stack(vec![red]), &[]);
     answered(&mut screen, &prepared.orders, false);
 
     let resized = screen.resize(Viewport::window(400, 300, 1.0));
     let red = Node::new(Segment::Place(0), Stack, filled(Colour::opaque(1.0, 0.0, 0.0)), Vec::new());
-    let again = screen.prepare(stack(vec![red]));
+    let again = screen.prepare(stack(vec![red]), &[]);
 
     let frame = Order::WriteUniforms { uniforms: id(3), bytes: frame_bytes(400, 300) };
     assert_eq!(sent(&resized), vec![frame]);
@@ -173,10 +173,10 @@ fn a_changed_text_is_written_and_not_made_anew() {
     // made anew is laid out and its glyphs found again, and is drawn a frame late.
     let mut screen = screen();
     screen.metrics_read(Font::Mono, mono(), Vec::new());
-    let prepared = screen.prepare(label("Gold: 10"));
+    let prepared = screen.prepare(label("Gold: 10"), &[]);
     answered(&mut screen, &prepared.orders, false);
 
-    let changed = screen.prepare(label("Gold: 12"));
+    let changed = screen.prepare(label("Gold: 12"), &[]);
 
     let orders = sent(&changed.orders);
     let made = orders.iter().any(|order| matches!(order, Order::Text(..) | Order::Release(_)));
@@ -196,7 +196,7 @@ fn the_list_draws_in_tree_order_whatever_order_the_renderer_answers_in() {
     let under = Node::new(Segment::Place(0), Stack, filled(Colour::opaque(1.0, 0.0, 0.0)), Vec::new());
     let over = Node::new(Segment::Place(1), Stack, filled(Colour::opaque(0.0, 0.0, 1.0)), Vec::new());
 
-    let prepared = screen.prepare(stack(vec![under, over]));
+    let prepared = screen.prepare(stack(vec![under, over]), &[]);
     let orders = answered(&mut screen, &prepared.orders, true);
 
     let placed: Vec<(DrawKey, PlacementId)> = screen
@@ -220,5 +220,10 @@ fn the_list_draws_in_tree_order_whatever_order_the_renderer_answers_in() {
     let lists = orders.iter().filter(|order| matches!(order, Order::List(_))).count();
     assert_eq!(lists, 1, "the list is sent once, when every draw is made");
     let draw = |placement| Entry::Draw { placement, pointer: Pointer::Ignores };
-    assert_eq!(last_list(&orders), Some(vec![draw(under), draw(over)]));
+    let drawn: Vec<Entry> = last_list(&orders)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| matches!(entry, Entry::Draw { .. }))
+        .collect();
+    assert_eq!(drawn, vec![draw(under), draw(over)]);
 }

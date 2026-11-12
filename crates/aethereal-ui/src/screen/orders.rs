@@ -1,6 +1,7 @@
 //! The mail a screen's library sends (ADR-0056): what each of its turns decided, in order, sent through the screen's
 //! turn by [`Orders::send`]. What a send carries as a blob is put there, so the library's decisions are plain values.
 
+use super::input::ImeAsked;
 use super::layers::{Instancing, Placing, TextPlacing, Texting};
 use super::program::{Meshing, MetricsAsked, Programming, Uniforming, Whitening};
 use crate::draw::{FRAME_BYTES, PLACE, PROGRAM, SHADE, corner_layout, corners, record_layout, triangles};
@@ -17,9 +18,11 @@ use aethereal_render::text::{CreateText, Font, MoveText, PlaceText, ReadMetrics,
 use aethereal_render::texture::{CreateTexture, TextureFormat};
 use aethereal_render::uniforms::{CreateUniforms, UniformsId, WriteUniforms};
 use aethereal_render::{Release, Renderer};
+use aethereal_window::{AllowIme, Windows};
 
 /// Every send a screen's library makes, as a handler of its declares them: the asks that make what it draws and that
-/// read a font's metrics, and the tells that write, move, release, and list them.
+/// read a font's metrics, the tells that write, move, release, and list them, and the ask that stops the window's input
+/// method when the text input that had focus goes.
 pub type Sends = (
     Asks<Path<Renderer>, CreateMesh, Meshing>,
     Asks<Path<Renderer>, CreateProgram, Programming>,
@@ -36,6 +39,7 @@ pub type Sends = (
     Tells<Path<Renderer>, MoveText>,
     Tells<Path<Renderer>, Release>,
     Tells<Path<Renderer>, DrawList>,
+    Asks<Path<Windows>, AllowIme, ImeAsked>,
 );
 
 /// What one of a screen's turns decided to send, in order.
@@ -62,6 +66,7 @@ pub enum Order {
     MoveText(MoveText),
     Release(Release),
     List(Vec<Entry>),
+    AllowIme(AllowIme),
     Log(Level, String),
 }
 
@@ -138,6 +143,10 @@ impl Orders {
         self.orders.push(Order::List(entries));
     }
 
+    pub(super) fn allow_ime(&mut self, allow: AllowIme) {
+        self.orders.push(Order::AllowIme(allow));
+    }
+
     pub(super) fn log(&mut self, level: Level, line: String) {
         self.orders.push(Order::Log(level, line));
     }
@@ -148,7 +157,7 @@ impl Orders {
     /// # Errors
     ///
     /// A fault when a send was not written.
-    pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14>(
+    pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15>(
         self,
         turn: &mut Turn<'_, A, S>,
     ) -> Result<(), Fault>
@@ -167,7 +176,8 @@ impl Orders {
             + Allows<Tells<Path<Renderer>, WriteText>, I11>
             + Allows<Tells<Path<Renderer>, MoveText>, I12>
             + Allows<Tells<Path<Renderer>, Release>, I13>
-            + Allows<Tells<Path<Renderer>, DrawList>, I14>,
+            + Allows<Tells<Path<Renderer>, DrawList>, I14>
+            + Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I15>,
     {
         for order in self.orders {
             let renderer = path::<Renderer>(());
@@ -246,6 +256,9 @@ impl Orders {
                 }
                 Order::List(entries) => {
                     turn.to(renderer).send(&DrawList { entries })?;
+                }
+                Order::AllowIme(allow) => {
+                    turn.to(path::<Windows>(())).ask(&allow, &ImeAsked)?;
                 }
                 Order::Log(level, line) => turn.log(level, line),
             }

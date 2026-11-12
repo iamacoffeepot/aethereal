@@ -10,18 +10,27 @@
 //!   is sent; the draw list is sent when it changed.
 //!
 //! Nothing marks what changed, so nothing can be forgotten. What changes outside the tree goes through the library, so
-//! the library knows to lay out at the next `Prepare` though the tree is the same: a font's metrics coming, and the
-//! screen's size, frame, or UI scale changing ([`Screen::resize`]).
+//! the library knows to lay out at the next `Prepare` though the tree is the same: a font's metrics coming, the
+//! screen's size, frame, or UI scale changing ([`Screen::resize`]), and input changing a widget's state or the screen's
+//! focus ([`Screen::pointed`], [`Screen::keyed`]).
+//!
+//! What a layout lists, in tree order, is each widget's draws, then a hit over its box when the pointer reaches it,
+//! after the keys the screen declares; and the library keeps what each entry of the list it sent is, so input through
+//! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys).
 //!
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
-//! ([`Orders::send`]). The handlers themselves are written by [`screen!`](crate::screen!).
+//! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
+//! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
 
+mod input;
+mod keys;
 mod layers;
 mod orders;
 mod program;
 #[cfg(test)]
 mod tests;
 
+pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
 pub use orders::{Orders, Sends};
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
@@ -29,19 +38,22 @@ pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, White
 use crate::draw::{Content, layered};
 use crate::fonts::Fonts;
 use crate::layout::lay_out;
-use crate::table::Table;
-use crate::tree::Tree;
+use crate::style::Style;
+use crate::table::{Focus, Table};
+use crate::tree::{KeyPath, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Draws, Laid, Quad, Sample};
+use crate::widget::{Built, Draws, Focused, Laid, Quad, Sample};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::Entry;
+use aethereal_render::draw_list::{Entry, Pointer};
 use aethereal_render::font::Metrics;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
+use aethereal_window::Cursor;
+use keys::{Declared, Ime, Modifiers, Role};
 use layers::Layer;
 use program::Program;
 
@@ -89,8 +101,9 @@ impl Viewport {
 }
 
 /// What the library keeps of a screen: where it draws, how big it is, the program it draws quads with, its widget
-/// table, what it has drawn by key and in what order, the list it last sent, and whether what it last laid out is
-/// current.
+/// table, what it has drawn by key and what it lists in what order, the list it last sent and what each entry of it
+/// is, whether what it last laid out is current, the modifiers held, and what it last asked of its window's input
+/// method.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -99,14 +112,40 @@ pub struct Screen {
     table: Table,
     /// What each draw is, and what the renderer made of it, by key.
     layers: Vec<Layer>,
-    /// The draws in tree order, as the last layout put them.
-    order: Vec<DrawKey>,
+    /// What the last layout lists of its widgets, in tree order.
+    order: Vec<Slot>,
+    /// The keys the last layout declares, listed before the widgets.
+    keys: Vec<Declared>,
     /// The entries of the list last sent.
     listed: Vec<Entry>,
+    /// What each entry of the list last sent is, which input through it reaches.
+    listing: Vec<Listed>,
     /// The number of the next draw made: an answer for an older one of the same key is let go.
     serial: u64,
     fresh: Fresh,
+    modifiers: Modifiers,
+    ime: Ime,
     unkept: Unkept<Worked>,
+}
+
+/// One place in what a screen lists of its widgets, in tree order.
+#[derive(Debug, Clone, PartialEq, Bound)]
+enum Slot {
+    /// A layer of a widget's draws.
+    Draw(DrawKey),
+    /// A hit over the box of the widget at `path`, `rect` in the screen's pixels, reached as `pointer` says.
+    Hit { path: KeyPath, rect: Rect2, pointer: Pointer },
+}
+
+/// What an entry of the list a screen sent is.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Listed {
+    /// Keys the screen declares, as `Role` says.
+    Keys(Role),
+    /// A layer of a widget's draws, which the pointer does not reach.
+    Draw(DrawKey),
+    /// A hit over the widget at this path.
+    Hit(KeyPath),
 }
 
 /// Whether the last tree's layout holds until the tree changes.
@@ -120,11 +159,13 @@ enum Fresh {
     Stale,
 }
 
-/// What a screen works out again rather than keep: the tree it last built, and the fonts it knows.
+/// What a screen works out again rather than keep: the tree it last built, the fonts it knows, and where its last
+/// layout put each widget, by key path, in tree order.
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
     fonts: Fonts,
+    placed: Vec<(KeyPath, Laid)>,
 }
 
 /// The tree a screen last built.
@@ -186,9 +227,13 @@ impl Screen {
             table: Table::default(),
             layers: Vec::new(),
             order: Vec::new(),
+            keys: Vec::new(),
             listed: Vec::new(),
+            listing: Vec::new(),
             serial: 0,
             fresh: Fresh::Stale,
+            modifiers: Modifiers::default(),
+            ime: Ime::Stopped,
             unkept: Unkept::default(),
         }
     }
@@ -224,8 +269,9 @@ impl Screen {
     }
 
     /// Prepares what the screen draws from `tree`, the tree its view built this `Prepare`: nothing when it is the
-    /// last tree and nothing outside it changed; otherwise it is laid out and what changed of its draws is sent.
-    pub fn prepare(&mut self, tree: Tree) -> Prepared {
+    /// last tree and nothing outside it changed; otherwise it is laid out and what changed of its draws is sent, with
+    /// the keys it declares: `hotkeys`, the screen's own, by their places on the keyboard, and the focus keys.
+    pub fn prepare(&mut self, tree: Tree, hotkeys: &[&str]) -> Prepared {
         let mut orders = Orders::default();
         let same = matches!(&self.unkept.last, Last::Built(last) if **last == tree);
         let stale = self.fresh == Fresh::Stale;
@@ -234,7 +280,7 @@ impl Screen {
             return Prepared { outcome: Outcome::Unchanged, orders };
         }
         self.unkept.last = Last::Built(Box::new(tree));
-        let outcome = self.lay_out(&mut orders);
+        let outcome = self.lay_out(&mut orders, hotkeys);
         self.fresh = match outcome {
             Outcome::Laid | Outcome::Refused | Outcome::Unchanged => Fresh::Current,
             Outcome::Waiting => Fresh::Waiting,
@@ -243,15 +289,16 @@ impl Screen {
         Prepared { outcome, orders }
     }
 
-    /// Lays out the last tree built, unless the program is still being made, and sends what changed of its draws;
-    /// the fonts it met and has not asked for are asked for, and a layout that met a font whose metrics have not come
-    /// draws nothing.
-    fn lay_out(&mut self, orders: &mut Orders) -> Outcome {
+    /// Lays out the last tree built, unless the program is still being made, and sends what changed of its draws,
+    /// with a hit over each widget the pointer reaches and the keys it declares, `hotkeys` its own; the fonts it met and
+    /// has not asked for are asked for, and a layout that met a font whose metrics have not come draws nothing. Focus
+    /// on a widget that has gone is cleared, and the window's input method stopped with it.
+    fn lay_out(&mut self, orders: &mut Orders, hotkeys: &[&str]) -> Outcome {
         let unmade = self.program.made().is_none();
         if unmade {
             return Outcome::Waiting;
         }
-        let Worked { last: Last::Built(tree), fonts } = &mut *self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, placed } = &mut *self.unkept else {
             return Outcome::Waiting;
         };
         let flat = match tree.flat() {
@@ -262,17 +309,25 @@ impl Screen {
             }
         };
         self.table.refresh(&flat);
+        let focus = self.table.focus().clone();
         let viewport = self.viewport;
         let mut measuring = fonts.measuring(viewport.scale);
         let boxes = lay_out(&flat, &mut measuring, viewport.size, viewport.scale);
 
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
-        for (flat, boxed) in flat.iter().zip(&boxes) {
+        let mut order: Vec<Slot> = Vec::new();
+        let mut covered = vec![false; flat.len()];
+        let mut laid_out = Vec::with_capacity(flat.len());
+        for (at, (flat, boxed)) in flat.iter().zip(&boxes).enumerate() {
             let laid = Laid { rect: boxed.rect, content: boxed.content, clip: viewport.rect(), scale: viewport.scale };
+            let focused = match &focus {
+                Focus::On(path) if *path == flat.path => Focused::Yes,
+                Focus::On(_) | Focus::Nowhere => Focused::No,
+            };
             let mut pieces = Vec::new();
-            let mut into = Draws::new(&mut pieces, &mut measuring);
+            let mut into = Draws::new(&mut pieces, &mut measuring, focused);
             let style = flat.node.style();
-            let backed = style.background.alpha > 0.0 || style.border.width > 0.0;
+            let backed = fills(style);
             if backed {
                 into.quad(Quad {
                     rect: laid.rect,
@@ -285,21 +340,41 @@ impl Screen {
                 });
             }
             let state = self.table.bytes(&flat.path).unwrap_or_default();
-            flat.node.widget().draw(state, style, &laid, &mut into);
+            let widget = flat.node.widget();
+            widget.draw(state, style, &laid, &mut into);
             for (layer, content) in (0..).zip(layered(pieces)) {
-                drawn.push((DrawKey { path: flat.path.clone(), layer }, content));
+                let key = DrawKey { path: flat.path.clone(), layer };
+                drawn.push((key.clone(), content));
+                order.push(Slot::Draw(key));
             }
+            let pointer = reach(widget, state, style, covered[at]);
+            let reached = pointer != Pointer::Ignores;
+            if reached {
+                let rect = laid.rect.intersection(laid.clip);
+                order.push(Slot::Hit { path: flat.path.clone(), rect, pointer });
+            }
+            let covers = covered[at] || reached;
+            for child in &flat.children {
+                covered[*child] = covers;
+            }
+            laid_out.push((flat.path.clone(), laid));
         }
+        *placed = laid_out;
+        self.keys = keys::declared(&flat, &focus, hotkeys);
+        let typing = keys::typing(&flat, &focus);
 
         let waited = measuring.waited();
         for font in measuring.into_unmet() {
             fonts.asked(font);
             orders.ask_metrics(font);
         }
+        for allow in self.typing(typing) {
+            orders.allow_ime(allow);
+        }
         if waited {
             return Outcome::Waiting;
         }
-        self.draw(drawn, orders);
+        self.draw(drawn, order, orders);
 
         Outcome::Laid
     }
@@ -318,24 +393,61 @@ impl Screen {
         self.fresh = Fresh::Stale;
     }
 
-    /// The list the screen draws by, once nothing it draws is still being made: each draw the renderer made, in tree
-    /// order, sent when it is not the list last sent.
+    /// The list the screen draws by, once nothing it draws is still being made: the keys it declares, then each draw
+    /// the renderer made and each hit, in tree order, sent when it is not the list last sent.
     fn settle(&mut self, orders: &mut Orders) {
         let making = self.layers.iter().any(Layer::is_making);
         if making {
             return;
         }
-        let entries: Vec<Entry> =
-            self.order.iter().filter_map(|key| self.layer(key)).filter_map(Layer::entry).collect();
+        let Target { frame, pass } = self.target;
+        let mut entries = Vec::new();
+        let mut listing = Vec::new();
+        for declared in &self.keys {
+            entries.push(Entry::Keys { frame, keys: declared.keys.clone(), blocks: declared.blocks });
+            listing.push(Listed::Keys(declared.role));
+        }
+        for slot in &self.order {
+            match slot {
+                Slot::Draw(key) => {
+                    if let Some(entry) = self.layer(key).and_then(Layer::entry) {
+                        entries.push(entry);
+                        listing.push(Listed::Draw(key.clone()));
+                    }
+                }
+                Slot::Hit { path, rect, pointer } => {
+                    entries.push(Entry::Hit { frame, pass, rect: *rect, pointer: pointer.clone() });
+                    listing.push(Listed::Hit(path.clone()));
+                }
+            }
+        }
         if entries == self.listed {
             return;
         }
         orders.list(entries.clone());
         self.listed = entries;
+        self.listing = listing;
     }
 
     /// The layer kept under `key`, if any.
     fn layer(&self, key: &DrawKey) -> Option<&Layer> {
         self.layers.binary_search_by(|layer| layer.key().cmp(key)).ok().map(|at| &self.layers[at])
+    }
+}
+
+/// Whether `style` fills its box: a background or a border, drawn beneath its widget.
+fn fills(style: &Style) -> bool {
+    style.background.alpha > 0.0 || style.border.width > 0.0
+}
+
+/// How the pointer reaches `widget`, its state `state`, styled `style`: as it says; or, when it says nothing, blocked
+/// with the default cursor where its style fills its box, so a panel is solid to what is beneath it, unless a widget
+/// it is within is reached already, `covered`, as a button's label is part of the button.
+fn reach(widget: &dyn Built, state: &[u8], style: &Style, covered: bool) -> Pointer {
+    let pointer = widget.pointer(state);
+    let solid = fills(style) && !covered;
+    match pointer {
+        Pointer::Ignores if solid => Pointer::Blocks(Cursor::Default),
+        pointer => pointer,
     }
 }
