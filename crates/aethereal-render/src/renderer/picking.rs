@@ -1,11 +1,12 @@
 //! The renderer's side of picking (ADR-0055): each window's probes as its actor sends them, written for the GPU as a
-//! frame is drawn; each draw's call, numbered in the order the frame issues them, and keyed by its pass; and what the
-//! GPU wrote at the probes, read back and answered to the window as the stacks of the entries drawn there.
+//! frame is drawn; each draw's call, numbered in the order the frame issues them, keyed by its pass, and holding the
+//! shift that moves it to its list's origin; and what the GPU wrote at the probes, read back and answered to the
+//! window as the stacks of the entries drawn there, each with the origin it was drawn at.
 
-use crate::draw_list::{self, Picks};
+use crate::draw_list::{self, Picks, Reaching};
 use crate::frame::Frame;
 use crate::picking::{self, CALL_BYTES, MOST_CALLS, MOST_PROBES, PROBES_BYTES, STACKS_BYTES};
-use aethereal_math::Rect2;
+use aethereal_math::{Rect2, Vec2};
 use aethereal_window::{Picked, Pressed, Probed, Reach, WindowId};
 use std::iter;
 
@@ -204,17 +205,28 @@ enum At {
     Probed(usize),
 }
 
-/// A draw pass of a frame as picking keys what it draws: its place among the frame's draw passes, from the first,
-/// whether it tests depth, so what it draws ranks nearest first, and the scale of its target to the window.
+/// A draw pass of a frame as picking keys what it draws and its calls place it: its place among the frame's draw
+/// passes, from the first, whether it tests depth, so what it draws ranks nearest first, the scale of its target to
+/// the window, the size of its target in its pixels, across and down, and how far one of the window's pixels moves a
+/// draw in clip space, across and down: `2 / width` and `-2 / height` of the frame's end.
 #[derive(Clone, Copy)]
 pub(super) struct InPass {
     pub at: u32,
     pub tests_depth: bool,
     pub scale: [f32; 2],
+    pub size: [u32; 2],
+    pub per_pixel: [f32; 2],
+}
+
+impl InPass {
+    /// The shift in clip space that moves a draw of the pass to `origin`, in the window's pixels.
+    fn shift(self, origin: Vec2) -> [f32; 2] {
+        [origin.x * self.per_pixel[0], origin.y * self.per_pixel[1]]
+    }
 }
 
 /// A window's main frame as a `Render` picks it: its probes and their buffer, the group binding them, the entry each
-/// call reaches, by its number less one, and each hit, by its key.
+/// call reaches, by its number less one, and each hit, by its key, over its rect in the window's pixels.
 pub(super) struct Framed {
     probes: Probes,
     buffer: wgpu::Buffer,
@@ -241,25 +253,24 @@ impl Picking {
         }
     }
 
-    /// The offset of the next draw's call, which reaches what `picks` says, drawn in `pass`: the first, no call, for a
-    /// draw the pointer does not reach, in a frame probed nowhere, past the room, or past the calls a frame numbers.
-    pub fn call(&mut self, picks: Picks, pass: InPass) -> u32 {
-        let (At::Probed(at), Picks::Reaches(reach)) = (self.at, picks) else {
-            return 0;
-        };
+    /// The offset of the next draw's call, which reaches what `picks` says, drawn in `pass` with its list's origin at
+    /// `origin`, in the window's pixels: the first, no call and no shift, for a draw at the window's origin the pointer
+    /// does not reach, or past the room. A draw the pointer does not reach, in a frame probed nowhere, or past the
+    /// calls a frame numbers, is keyed no call, and still moved to its origin.
+    pub fn call(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> u32 {
         let slot = self.records.len() / self.stride;
-        let framed = &mut self.frames[at];
         let has_room = slot < self.room;
-        let numbered = framed.calls.len() < MOST_CALLS;
-        let fits = has_room && numbered;
-        if !fits {
+        if !has_room {
             return 0;
         }
-        framed.calls.push(reach);
-        // At most `MOST_CALLS`.
-        let call = u32::try_from(framed.calls.len()).unwrap_or(0);
-        let key = picking::key(pass.at, call);
-        let mut record = picking::call_bytes(key, pass.tests_depth, pass.scale).to_vec();
+        let key = self.number(picks, origin, pass);
+        let shift = pass.shift(origin);
+        let unmoved = shift == [0.0, 0.0];
+        let plain = key == 0 && unmoved;
+        if plain {
+            return 0;
+        }
+        let mut record = picking::call_bytes(key, pass.tests_depth, pass.scale, shift).to_vec();
         record.resize(self.stride, 0);
         self.records.extend(record);
 
@@ -267,20 +278,27 @@ impl Picking {
         u32::try_from(slot * self.stride).unwrap_or(0)
     }
 
-    /// Takes in a hit, which reaches what `picks` says within `rect`, numbered as the next call, in `pass`: keyed at
-    /// the farthest, as it has no depth.
-    pub fn hit(&mut self, rect: Rect2, picks: Picks, pass: InPass) {
-        let (At::Probed(at), Picks::Reaches(reach)) = (self.at, picks) else {
+    /// The key of the next call, which reaches what `picks` says, drawn in `pass` with its list's origin at `origin`,
+    /// its entry numbered: 0 for one the pointer does not reach, in a frame probed nowhere, or past the calls a frame
+    /// numbers.
+    fn number(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> u32 {
+        let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
+            return 0;
+        };
+        let framed = &mut self.frames[at];
+        framed.numbered(reaching, origin).map_or(0, |call| picking::key(pass.at, call))
+    }
+
+    /// Takes in a hit, which reaches what `picks` says within `rect`, in the window's pixels, its list's origin at
+    /// `origin`, numbered as the next call, in `pass`: keyed at the farthest, as it has no depth.
+    pub fn hit(&mut self, rect: Rect2, (picks, origin): (Picks, Vec2), pass: InPass) {
+        let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
             return;
         };
         let framed = &mut self.frames[at];
-        if framed.calls.len() >= MOST_CALLS {
-            return;
+        if let Some(call) = framed.numbered(reaching, origin) {
+            framed.hits.push((picking::key(pass.at, call), rect));
         }
-        framed.calls.push(reach);
-        // At most `MOST_CALLS`.
-        let call = u32::try_from(framed.calls.len()).unwrap_or(0);
-        framed.hits.push((picking::key(pass.at, call), rect));
     }
 
     /// The records of every call, each at its offset, and each frame probed, with what it picked.
@@ -290,6 +308,18 @@ impl Picking {
 }
 
 impl Framed {
+    /// Numbers the next call, which reaches `reaching`, drawn with its list's origin at `origin`: none past the calls a
+    /// frame numbers.
+    fn numbered(&mut self, reaching: Reaching, origin: Vec2) -> Option<u32> {
+        if self.calls.len() >= MOST_CALLS {
+            return None;
+        }
+        self.calls.push(reaching.at(origin));
+
+        // At most `MOST_CALLS`.
+        u32::try_from(self.calls.len()).ok()
+    }
+
     /// Copies its stacks, as the GPU left them, on `encoder` into a buffer to read back once it is mapped.
     pub fn copied(self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) -> Stacks {
         let read = device.create_buffer(&wgpu::BufferDescriptor {

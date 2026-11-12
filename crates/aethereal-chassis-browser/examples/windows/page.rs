@@ -9,7 +9,7 @@ use aethereal_actor::{
 use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{DrawList, Entry, Pointer};
+use aethereal_render::draw_list::{Area, DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -155,7 +155,7 @@ impl Actor for Stage {
             if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
                 turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
             }
-            entries.push(Entry::call(child::<Scene>(window)));
+            entries.push(Entry::call(child::<Scene>(window), Area::WHOLE));
         }
         turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 

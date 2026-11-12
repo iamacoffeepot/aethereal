@@ -14,7 +14,7 @@ fn the_glyph_program_is_valid_wgsl_with_its_two_stages_and_takes_the_picking_ste
     };
     let entries: Vec<&str> = module.entry_points.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(entries, [VERTEX, FRAGMENT]);
-    let picked = picking::picked(GLYPH, FRAGMENT, PICKING);
+    let picked = picking::picked(GLYPH, (VERTEX, FRAGMENT), PICKING);
     assert!(picked.is_ok(), "the glyph program takes the picking step: {picked:?}");
 }
 

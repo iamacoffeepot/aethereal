@@ -1,6 +1,7 @@
 //! What the renderer makes, made and drawn on a device that draws nothing but checks all it is handed, as WebGPU
 //! does.
 
+mod areas;
 mod keys;
 pub(super) mod lists;
 mod once;

@@ -8,6 +8,11 @@
 //! elsewhere write nothing, and a draw whose key is `0` writes nowhere, so the cost does not grow with the window's
 //! size, and a frame that ends on a texture, which has no pointer, probes nothing.
 //!
+//! The same record places the draw (ADR-0055): it holds the shift, in clip space, that moves the draw by its list's
+//! origin, and before each return of the vertex stage the position the stage writes is moved by it, scaled by its `w`,
+//! so what the program places lands moved by so many pixels, a 3D drawing as a viewport moves it. The shift is made
+//! before the GPU clips, so a child drawn at a negative origin shows what lies past its own surface-sized rect.
+//!
 //! A key ranks by its pass first, so all a later pass draws stands above all an earlier one draws; then, in a pass
 //! that tests depth, by its fragment's nearness, so the stack's top is what the depth test lets show there, though a
 //! fragment's storage writes are made before that test; then by its call, so a later call stands above an earlier one
@@ -37,9 +42,9 @@ pub const STACKS_BYTES: usize = MOST_PROBES * STACK * 4;
 /// The bytes of the probes' buffer: the stacks, how many probes there are, and each probe's pixel, two words.
 pub const PROBES_BYTES: usize = STACKS_BYTES + 8 + MOST_PROBES * 8;
 
-/// The bytes a draw's call is bound as: its key, whether its pass tests depth, and the scale of the pass's target to
-/// the window, two floats.
-pub const CALL_BYTES: usize = 16;
+/// The bytes a draw's call is bound as: its key, whether its pass tests depth, the scale of the pass's target to the
+/// window, two floats, and the shift that moves it, two floats more, with room to the next sixteen.
+pub const CALL_BYTES: usize = 32;
 
 /// How many low bits of a key hold its call's number.
 const CALL_BITS: u32 = 16;
@@ -77,6 +82,9 @@ const PICK: &str = "aethereal_pick";
 /// writes.
 const PICK_AT: &str = "aethereal_pick_at";
 
+/// The name of the function each return of a vertex stage moves the position it writes through.
+const SHIFT: &str = "aethereal_pick_shift";
+
 /// The step, in WGSL, its group `group`: names beginning `aethereal_pick` and `AetherealPick` are the renderer's.
 fn step(group: u32) -> String {
     format!(
@@ -91,10 +99,15 @@ struct AetherealPickCall {{
     key: u32,
     depth: u32,
     scale: vec2<f32>,
+    shift: vec2<f32>,
 }}
 
 @group({group}) @binding(0) var<storage, read_write> aethereal_pick_probes: AetherealPickProbes;
 @group({group}) @binding(1) var<uniform> aethereal_pick_call: AetherealPickCall;
+
+fn {SHIFT}(position: vec4<f32>) -> vec4<f32> {{
+    return vec4(position.xy + aethereal_pick_call.shift * position.w, position.zw);
+}}
 
 fn {PICK}(position: vec4<f32>) {{
     {PICK_AT}(position, position.z);
@@ -130,28 +143,31 @@ fn {PICK_AT}(position: vec4<f32>, depth: f32) {{
     )
 }
 
-/// The WGSL `wgsl`, whose fragment stage is the entry point `fragment`, with the step added, its group `group`: each
-/// return of the fragment stage first records the fragment at the probes, at the depth it writes or, writing none, at
-/// its position's, so a fragment the stage discards records nothing. A fragment stage that reads no position reads it
-/// as the step's.
+/// The WGSL `wgsl`, whose vertex stage is the entry point `vertex` and fragment stage the entry point `fragment`, with
+/// the step added, its group `group`: each return of the vertex stage returns the position it writes moved by the
+/// call's shift, and each return of the fragment stage first records the fragment at the probes, at the depth it
+/// writes or, writing none, at its position's, so a fragment the stage discards records nothing. A fragment stage that
+/// reads no position reads it as the step's.
 ///
 /// # Errors
 ///
 /// Why the WGSL with the step is no valid module: [`ProgramRefused::Parse`] or [`ProgramRefused::Invalid`] when it
 /// names what the step does, as no WGSL [`program::check`] lets through otherwise is refused.
-pub fn picked(wgsl: &str, fragment: &str, group: u32) -> Result<String, ProgramRefused> {
+pub fn picked(wgsl: &str, (vertex, fragment): (&str, &str), group: u32) -> Result<String, ProgramRefused> {
     let source = format!("{wgsl}\n{}", step(group));
     let (mut module, _) = program::parsed(&source)?;
-    let (pick, pick_at) = (function(&module, PICK)?, function(&module, PICK_AT)?);
+    let (pick, pick_at, shift) = (function(&module, PICK)?, function(&module, PICK_AT)?, function(&module, SHIFT)?);
+    let placing = program::entry(&module, Stage::Vertex, vertex)?;
     let at = program::entry(&module, Stage::Fragment, fragment)?;
     let Module { types, entry_points, .. } = &mut module;
+    shifted(types, &mut entry_points[placing].function, shift)?;
     let function = &mut entry_points[at].function;
     let tested = tested(types, function);
     let (position, emitted) = position(types, function);
     let Function { expressions, body, .. } = function;
-    before_returns(body, |value| {
+    rewrite_returns(body, |value| {
         let at_depth = |depth| Statement::Call { function: pick_at, arguments: vec![position, depth], result: None };
-        match (tested, value) {
+        let calls = match (tested, value) {
             (Tested::Returned, Some(value)) => vec![at_depth(value)],
             (Tested::Member(index), Some(value)) => {
                 let depth = expressions.append(Expression::AccessIndex { base: value, index }, Span::UNDEFINED);
@@ -161,7 +177,8 @@ pub fn picked(wgsl: &str, fragment: &str, group: u32) -> Result<String, ProgramR
             (Tested::Returned | Tested::Member(_), None) | (Tested::AtPosition, _) => {
                 vec![Statement::Call { function: pick, arguments: vec![position], result: None }]
             }
-        }
+        };
+        (calls, value)
     });
     if let Some(emit) = emitted {
         body.splice(0..0, Block::from_vec(vec![emit]));
@@ -180,6 +197,77 @@ fn function(module: &Module, name: &str) -> Result<Handle<Function>, ProgramRefu
         .functions
         .fetch_if(|function| function.name.as_deref() == Some(name))
         .ok_or_else(|| ProgramRefused::Invalid { message: format!("`{name}` is the renderer's") })
+}
+
+/// Where a vertex stage writes its position.
+#[derive(Clone, Copy)]
+enum Placed {
+    /// All the stage returns.
+    Returned,
+    /// The member at `index` of the struct of type `ty` the stage returns, of `members` members.
+    Member { index: u32, members: u32, ty: Handle<Type> },
+}
+
+/// Rewrites `function`, a vertex stage whose types are in `types`, so each of its returns returns the position it
+/// writes moved through `shift`, the step's function: all it returns, or a struct whose members are the returned
+/// struct's, the position moved. Refused when it writes no position, which no stage [`program::check`] lets through
+/// does.
+fn shifted(types: &UniqueArena<Type>, function: &mut Function, shift: Handle<Function>) -> Result<(), ProgramRefused> {
+    let placed = placed(types, function)
+        .ok_or_else(|| ProgramRefused::Invalid { message: String::from("the vertex stage writes no position") })?;
+    let Function { expressions, body, .. } = function;
+    rewrite_returns(body, |value| {
+        let Some(value) = value else {
+            return (Vec::new(), value);
+        };
+        let moved = |expressions: &mut Arena<Expression>, position| {
+            let result = expressions.append(Expression::CallResult(shift), Span::UNDEFINED);
+            (Statement::Call { function: shift, arguments: vec![position], result: Some(result) }, result)
+        };
+        match placed {
+            Placed::Returned => {
+                let (call, moved) = moved(expressions, value);
+                (vec![call], Some(moved))
+            }
+            Placed::Member { index, members, ty } => {
+                let read: Vec<Handle<Expression>> = (0..members)
+                    .map(|member| {
+                        expressions.append(Expression::AccessIndex { base: value, index: member }, Span::UNDEFINED)
+                    })
+                    .collect();
+                let (Some(first), Some(last)) = (read.first(), read.last()) else {
+                    return (Vec::new(), Some(value));
+                };
+                let emit_read = Statement::Emit(Range::new_from_bounds(*first, *last));
+                let (call, position) = moved(expressions, read[index as usize]);
+                let mut components = read;
+                components[index as usize] = position;
+                let composed = expressions.append(Expression::Compose { ty, components }, Span::UNDEFINED);
+                let emit_composed = Statement::Emit(Range::new_from_bounds(composed, composed));
+                (vec![emit_read, call, emit_composed], Some(composed))
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Where `function`, a vertex stage whose types are in `types`, writes its position: none when it writes none.
+fn placed(types: &UniqueArena<Type>, function: &Function) -> Option<Placed> {
+    let is_position = |binding: Option<&Binding>| matches!(binding, Some(Binding::BuiltIn(BuiltIn::Position { .. })));
+    let result = function.result.as_ref()?;
+    if is_position(result.binding.as_ref()) {
+        return Some(Placed::Returned);
+    }
+    let TypeInner::Struct { members, .. } = &types[result.ty].inner else {
+        return None;
+    };
+    let index = members.iter().position(|member| is_position(member.binding.as_ref()))?;
+    // A stage returns a handful of members, far below what a `u32` counts.
+    let index = u32::try_from(index).ok()?;
+    let count = u32::try_from(members.len()).ok()?;
+
+    Some(Placed::Member { index, members: count, ty: result.ty })
 }
 
 /// Where the depth a fragment stage's fragment is tested at comes from.
@@ -263,17 +351,23 @@ fn argument_expression(expressions: &mut Arena<Expression>, at: u32) -> Handle<E
     found.unwrap_or_else(|| expressions.append(Expression::FunctionArgument(at), Span::UNDEFINED))
 }
 
-/// Puts what `called` makes of each return's value before each return in `body` and every block within it, walked
-/// with a stack of the blocks still to visit, so a deep nesting costs no frames.
-fn before_returns(body: &mut Block, mut called: impl FnMut(Option<Handle<Expression>>) -> Vec<Statement>) {
+/// Rewrites each return in `body` and every block within it as `called` makes of its value: the statements put before
+/// it, and the value it returns in its place. Walked with a stack of the blocks still to visit, so a deep nesting
+/// costs no frames.
+fn rewrite_returns(
+    body: &mut Block,
+    mut called: impl FnMut(Option<Handle<Expression>>) -> (Vec<Statement>, Option<Handle<Expression>>),
+) {
     let mut blocks = vec![body];
     while let Some(block) = blocks.pop() {
         let statements = mem::take(block);
-        for (statement, span) in statements.span_into_iter() {
-            if let Statement::Return { value } = &statement {
-                for call in called(*value) {
+        for (mut statement, span) in statements.span_into_iter() {
+            if let Statement::Return { value } = &mut statement {
+                let (calls, returned) = called(*value);
+                for call in calls {
                     block.push(call, span);
                 }
+                *value = returned;
             }
             block.push(statement, span);
         }
@@ -296,7 +390,8 @@ fn before_returns(body: &mut Block, mut called: impl FnMut(Option<Handle<Express
 }
 
 /// The layout of the step's group, which every draw program's pipeline and the glyph program's bind after their own:
-/// the probes' buffer, which the fragment stage writes, and the draw's call, at an offset given as each is drawn.
+/// the probes' buffer, which the fragment stage writes, and the draw's call, at an offset given as each is drawn,
+/// which the vertex stage reads its shift from and the fragment stage its key.
 pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -313,7 +408,7 @@ pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: true,
@@ -326,7 +421,8 @@ pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 /// What a draw program may use of `limits`, the step's group and its two buffers taken out: a group, a uniform block,
-/// and a storage buffer fewer.
+/// and a storage buffer fewer. A draw program's bindings are seen by both its stages, and the call's uniform block by
+/// both, the probes' storage by its fragment stage alone, so each stage keeps room for the step's.
 pub fn reserved(limits: &wgpu::Limits) -> wgpu::Limits {
     wgpu::Limits {
         max_bind_groups: limits.max_bind_groups.saturating_sub(1),
@@ -362,15 +458,17 @@ pub fn key(pass: u32, call: u32) -> u32 {
     (pass.min(LAST_PASS) << (CALL_BITS + NEAR_BITS)) | call
 }
 
-/// The bytes of a draw's call: its key, `key`, whether its pass tests depth, `depth`, and the scale of its pass's
-/// target to the window, `scale`.
+/// The bytes of a draw's call: its key, `key`, whether its pass tests depth, `depth`, the scale of its pass's target
+/// to the window, `scale`, and the shift in clip space that moves it, `shift`.
 #[must_use]
-pub fn call_bytes(key: u32, depth: bool, scale: [f32; 2]) -> [u8; CALL_BYTES] {
+pub fn call_bytes(key: u32, depth: bool, scale: [f32; 2], shift: [f32; 2]) -> [u8; CALL_BYTES] {
     let mut bytes = [0; CALL_BYTES];
     bytes[..4].copy_from_slice(&key.to_le_bytes());
     bytes[4..8].copy_from_slice(&u32::from(depth).to_le_bytes());
     bytes[8..12].copy_from_slice(&scale[0].to_le_bytes());
-    bytes[12..].copy_from_slice(&scale[1].to_le_bytes());
+    bytes[12..16].copy_from_slice(&scale[1].to_le_bytes());
+    bytes[16..20].copy_from_slice(&shift[0].to_le_bytes());
+    bytes[20..24].copy_from_slice(&shift[1].to_le_bytes());
 
     bytes
 }

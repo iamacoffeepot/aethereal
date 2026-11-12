@@ -117,6 +117,11 @@ pub(in crate::renderer) const fn drawn(placement: PlacementId, picks: Picks) -> 
     Listed::Draw { placement: placement.id, picks }
 }
 
+/// An entry calling `child`, placed in `area`.
+pub(in crate::renderer) const fn called(child: ActorId, area: Area) -> Listed {
+    Listed::Call { child, area }
+}
+
 /// The placements the window's main frame's pass [`Main`] draws, in order, each by its id.
 pub(in crate::renderer) fn drawn_in_main(kept: &Kept) -> Vec<u64> {
     let Ok(fits) = kept.pass(Frame::Main(window()), PassName::of::<Main>()) else {
@@ -209,11 +214,11 @@ fn a_pass_draws_the_lists_walked_from_the_root_list_each_child_where_its_parent_
     let (child, stray) = (listed(CHILD), listed(STRAY));
     assert_eq!(kept.listed(main_list(&[child]), CHILD), Ok(()));
     assert_eq!(kept.listed(main_list(&[stray]), STRAY), Ok(()));
-    let parent = vec![drawn(a, Picks::Ignores), Listed::Call(CHILD), drawn(b, Picks::Ignores)];
+    let parent = vec![drawn(a, Picks::Ignores), called(CHILD, Area::WHOLE), drawn(b, Picks::Ignores)];
     assert_eq!(kept.listed(parent, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![a.id, child.id, b.id]);
 
-    let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), Listed::Call(CHILD)];
+    let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), called(CHILD, Area::WHOLE)];
     assert_eq!(kept.listed(reordered, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![b.id, a.id, child.id]);
 }
@@ -290,8 +295,21 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
     let blue = placed(gpu, &mut kept, listed, (-0.5, 1.0), [0.0, 0.0, 1.0, 0.5]);
     let quads = [red, blue];
     assert_eq!(kept.listed(main_list(&order.map(|at| quads[at])), MAKER), Ok(()));
+    let pixels = frame_pixels(gpu, &mut kept);
 
-    let (width, height) = (4, 4);
+    // The second row's second pixel: inside both quads.
+    pixels[FRAME_SIDE as usize + 1]
+}
+
+/// The side of the window's square frame the GPU tests draw into, in pixels.
+pub(in crate::renderer) const FRAME_SIDE: u32 = 4;
+
+/// Each pixel of the window's frame, [`FRAME_SIDE`] square, row by row, red, green, blue, and alpha, once the
+/// renderer's kept state `kept` on `gpu` draws what its lists hold into it, each draw's call written as a `Render`
+/// writes it, so a call's child is moved as it would be.
+pub(in crate::renderer) fn frame_pixels(gpu: &Gpu, kept: &mut Kept) -> Vec<[u8; 4]> {
+    let (device, queue) = (gpu.device(), gpu.queue());
+    let (width, height) = (FRAME_SIDE, FRAME_SIDE);
     let frame = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -305,24 +323,28 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut unpicked(&kept, device));
+    let mut picking = kept.picking((device, queue), &windows);
+    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut picking);
+    kept.picked(picking, (device, queue), &mut encoder);
     let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(device, &mut encoder, &frame) else {
         panic!("the frame is copied");
     };
-    gpu.queue().submit([encoder.finish()]);
+    queue.submit([encoder.finish()]);
     buffer.map_async(wgpu::MapMode::Read, .., |mapped| mapped.expect("the copy maps"));
     device.poll(wgpu::PollType::wait_indefinitely()).expect("the GPU finishes");
     let Some(pixels) = mapped_bytes(&buffer, |bytes| copied.unpad(bytes, order)) else {
         panic!("the copy is read");
     };
 
-    // The second row's second pixel: inside both quads.
-    let at = (width as usize + 1) * 4;
-    let Ok(pixel) = <[u8; 4]>::try_from(&pixels[at..at + 4]) else {
-        panic!("a pixel is four bytes");
-    };
-
-    pixel
+    pixels
+        .chunks_exact(4)
+        .map(|pixel| {
+            let Ok(pixel) = <[u8; 4]>::try_from(pixel) else {
+                panic!("a pixel is four bytes");
+            };
+            pixel
+        })
+        .collect()
 }
 
 // The fault #294 found, now declared: two blended placements of one program in one pass, overlapping, give the same

@@ -286,6 +286,16 @@ impl Walk {
         self.size
     }
 
+    /// How far one pixel of its end moves a draw in clip space, across and down: a draw's list's origin, in its end's
+    /// pixels, is the same share of each of its passes' targets whatever their scale (ADR-0055).
+    pub fn per_pixel(&self) -> [f32; 2] {
+        // A frame's sides are far fewer pixels than an `f32` counts exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let across = |side: u32| 2.0 / side.max(1) as f32;
+
+        [across(self.size.width), -across(self.size.height)]
+    }
+
     /// The size of what a pass drawing into `into` draws, to its end's, across and down: one for its end, and for a
     /// target, the share its scale makes of its end's size (ADR-0055).
     pub fn scale_of(&self, into: Target) -> [f32; 2] {

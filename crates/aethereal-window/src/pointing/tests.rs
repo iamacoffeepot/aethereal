@@ -24,14 +24,20 @@ fn actor(number: u64) -> ProtocolRef<Hearer> {
     ProtocolRef::found(Seated { id: ActorId::new(number), seat: SeatNumber::new(number) })
 }
 
-/// The entry `entry` of `actor`'s list, blocking the pointer from what is beneath it.
+/// The entry `entry` of `actor`'s list, drawn at the window's origin, blocking the pointer from what is beneath it.
 fn blocks(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: true }
+    Reach { actor, entry, blocks: true, origin: Vec2::ZERO }
 }
 
-/// The entry `entry` of `actor`'s list, letting the pointer through to what is beneath it.
+/// The entry `entry` of `actor`'s list, drawn at the window's origin, letting the pointer through to what is beneath
+/// it.
 fn passes(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: false }
+    Reach { actor, entry, blocks: false, origin: Vec2::ZERO }
+}
+
+/// `reach`, its list drawn with its origin at `x`, `y` of the window.
+const fn drawn_at(reach: Reach, x: f32, y: f32) -> Reach {
+    Reach { origin: Vec2::new(x, y), ..reach }
 }
 
 /// What a frame drew under the pointer, `pointer`, of every event up to `through`, with no press probed.
@@ -154,8 +160,59 @@ fn a_press_goes_through_the_stack_at_its_own_place_and_the_wheel_through_the_poi
     assert_eq!(sent, expected);
 }
 
+#[test]
+fn each_entry_hears_the_pointer_in_its_own_coordinates_from_the_origin_its_list_was_drawn_at() {
+    // Catches a pointer event told in the window's pixels to an entry its parent placed elsewhere, so a child placed
+    // at a panel hears a click at its own `0, 0` as one at the panel's corner and presses the wrong widget; and the
+    // origin of one entry of the stack taken for every entry the event reaches (ADR-0055).
+    let (list, panel) = (actor(1), actor(2));
+    let mut cascade = heard(&[PRESSED]);
+    let stack = [drawn_at(passes(list, 2), 0.5, -3.0), blocks(panel, 0)];
+
+    let sent = cascade.picked(WINDOW, under(1, &stack));
+
+    let down = |x, y| PointerEvent::PointerDown { x, y, button: Button::Main };
+    let entered = PointerEvent::PointerEntered;
+    let expected =
+        vec![to(list, 2, entered), to(panel, 0, entered), to(list, 2, down(0.5, 5.0)), to(panel, 0, down(1.0, 2.0))];
+    assert_eq!(sent, expected);
+}
+
+#[test]
+fn an_entry_its_parent_moves_under_the_pointer_is_neither_left_nor_entered() {
+    // Catches hover told by where an entry was drawn as well as which it is, so a list that scrolls under a resting
+    // pointer tells its row it was left and entered again every frame it moves (ADR-0055).
+    let row = actor(1);
+    let mut cascade = Cascade::default();
+
+    let entered = cascade.picked(WINDOW, under(0, &[drawn_at(blocks(row, 0), 0.0, 10.0)]));
+    let scrolled = cascade.picked(WINDOW, under(0, &[drawn_at(blocks(row, 0), 0.0, -30.0)]));
+
+    assert_eq!(entered, vec![to(row, 0, PointerEvent::PointerEntered)]);
+    assert_eq!(scrolled, vec![]);
+}
+
+#[test]
+fn a_capture_hears_each_move_from_where_its_entry_was_drawn_when_the_press_reached_it() {
+    // Catches a capture told moves from the origin of whatever the pointer is over now, which once a drag leaves the
+    // slider is another entry's, or none; the limit ADR-0055 states: a child moved during a drag hears positions from
+    // where it was at the press.
+    let (slider, game) = (actor(1), actor(2));
+    let mut cascade = heard(&[PRESSED, MOVED]);
+    cascade.picked(WINDOW, under(1, &[drawn_at(blocks(slider, 3), 1.0, 1.0)]));
+
+    let sent = cascade.picked(WINDOW, under(2, &[drawn_at(blocks(game, 0), 8.0, 8.0)]));
+
+    let expected = vec![
+        to(slider, 3, PointerEvent::PointerLeft),
+        to(game, 0, PointerEvent::PointerEntered),
+        to(slider, 3, PointerEvent::PointerMoved { x: 0.0, y: 1.0 }),
+    ];
+    assert_eq!(sent, expected);
+}
+
 /// What a test tells the prober to do.
-#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.test.probe_order")]
 pub enum ProbeOrder {
     /// Subscribe to the window's probes.

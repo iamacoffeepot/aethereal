@@ -8,6 +8,11 @@
 //! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
 //! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055).
 //!
+//! A call places its child: the area it gives, in its own coordinates, says where the child's `0, 0` lands and what
+//! the child's drawing is cut to. Areas compose down the walk, origins adding and clips cut by the caller's, so each
+//! entry is drawn moved by its list's origin, after its program places it, and cut to its list's clip; and the pointer
+//! reaches it there, as it was drawn (ADR-0055).
+//!
 //! The keys follow the same sequence: an entry declares the keys its sender hears in a window, and the renderer sends
 //! each window the declarations its main frame's walk holds, the last called first, whenever they change. The window
 //! delivers each key, top-down, to the sender of each declaration whose keys hold it, until one blocks (ADR-0055).
@@ -52,10 +57,11 @@ pub enum Entry {
     /// A dispatch of the sender's, run here in the compute pass it joins: in each cycle that draws its frame, or in the
     /// first alone, when it runs once.
     Run(DispatchId),
-    /// What a direct child of the sender draws, drawn here.
-    Call(Callee),
-    /// A place in the pass `pass` of `frame` that draws nothing, reached by the pointer within `rect`, in the window's
-    /// surface pixels, as `pointer` says: a modal's backdrop, an invisible handle, or the world's catch-all. A frame
+    /// What a direct child of the sender draws, drawn here, placed in `area` of the sender's coordinates: moved so its
+    /// `0, 0` lands at the area's origin, and cut to the area's clip.
+    Call { child: Callee, area: Area },
+    /// A place in the pass `pass` of `frame` that draws nothing, reached by the pointer within `rect`, in the sender's
+    /// coordinates, and within the sender's clip, as `pointer` says: a modal's backdrop, an invisible handle, or the world's catch-all. A frame
     /// that ends on a texture has no pointer, and nothing there is reached.
     Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer },
     /// The keys the sender hears in the window whose main frame is `frame`, at this place in the sequence: each key
@@ -77,6 +83,91 @@ pub enum Pointer {
     Ignores,
 }
 
+/// Where a call places its child, in its caller's coordinates: where the child's `0, 0` lands, and the clip its drawing
+/// is cut to. A root list's actors are placed in [`Area::WHOLE`], whose coordinates are the surface's pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.render.area")]
+pub struct Area {
+    pub origin: Vec2,
+    pub clip: Clip,
+}
+
+/// What a call's child's drawing is cut to, in its caller's coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[kind(name = "aether.render.area_clip")]
+pub enum Clip {
+    /// Nothing more than the caller is cut to.
+    Whole,
+    /// What falls within this rect, and within what the caller is cut to.
+    To(Rect2),
+}
+
+/// The pixels of a target a draw is cut to, as a scissor holds them: none, or a rect from `x`, `y`, `width` by `height`
+/// pixels, never empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cut {
+    Nothing,
+    Pixels { x: u32, y: u32, width: u32, height: u32 },
+}
+
+impl Area {
+    /// The child's `0, 0` where its caller's is, cut to nothing more than its caller is: the area a root is drawn in,
+    /// the whole surface.
+    pub const WHOLE: Self = Self { origin: Vec2::ZERO, clip: Clip::Whole };
+
+    /// The child placed at `rect`: its `0, 0` at the rect's least corner, and cut to the rect.
+    #[must_use]
+    pub const fn rect(rect: Rect2) -> Self {
+        Self { origin: rect.min, clip: Clip::To(rect) }
+    }
+
+    /// This area, given in `caller`'s coordinates, in the coordinates `caller` is given in: its origin moved by the
+    /// caller's, and its clip moved by it and cut to the caller's clip.
+    #[must_use]
+    pub fn within(self, caller: Self) -> Self {
+        let clip = match self.clip {
+            Clip::Whole => caller.clip,
+            Clip::To(rect) => Clip::To(caller.cut(rect)),
+        };
+
+        Self { origin: caller.origin + self.origin, clip }
+    }
+
+    /// `rect`, in this area's coordinates, in the coordinates it is given in: moved by its origin, and cut to its clip.
+    pub fn cut(self, rect: Rect2) -> Rect2 {
+        let moved = rect.translate(self.origin);
+        match self.clip {
+            Clip::Whole => moved,
+            Clip::To(clip) => moved.intersection(clip),
+        }
+    }
+}
+
+impl Clip {
+    /// The pixels of a target `size` pixels across and down that a draw cut to this, in surface pixels, covers, the
+    /// target `scale` of the surface's size: each pixel whose middle is within it, so a clip at whole pixels cuts
+    /// along them, kept within the target.
+    pub(crate) fn pixels(self, scale: [f32; 2], [width, height]: [u32; 2]) -> Cut {
+        let Self::To(rect) = self else {
+            return Cut::Pixels { x: 0, y: 0, width, height };
+        };
+        // A target is far fewer pixels across than an `f32` counts exactly, and each bound is clamped within it, so
+        // `as` takes its whole part, and a bound that is not a number is none.
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let bound = |at: f32, scale: f32, side: u32| at.mul_add(scale, -0.5).ceil().clamp(0.0, side as f32) as u32;
+        let [left, right] = [rect.min.x, rect.max.x].map(|at| bound(at, scale[0], width));
+        let [top, bottom] = [rect.min.y, rect.max.y].map(|at| bound(at, scale[1], height));
+        let across = right.saturating_sub(left);
+        let down = bottom.saturating_sub(top);
+        let empty = across == 0 || down == 0;
+        if empty {
+            return Cut::Nothing;
+        }
+
+        Cut::Pixels { x: left, y: top, width: across, height: down }
+    }
+}
+
 /// A direct child of a list's sender, by its segment beneath the sender: what [`Entry::call`] names.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.callee")]
@@ -85,12 +176,13 @@ pub struct Callee {
 }
 
 impl Entry {
-    /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it: a place deeper
-    /// than a child does not build. The call holds only the child's segment, and the renderer finds the child one
-    /// segment beneath whoever sends the list, so a call names only its sender's own direct child.
+    /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it, placed in
+    /// `area` of the sender's coordinates: a place deeper than a child does not build. The call holds only the child's
+    /// segment, and the renderer finds the child one segment beneath whoever sends the list, so a call names only its
+    /// sender's own direct child.
     #[must_use]
-    pub fn call<C: ChildOf>(child: Child<C>) -> Self {
-        Self::Call(Callee { child: Naming::of(&child.into_segment()) })
+    pub fn call<C: ChildOf>(child: Child<C>, area: Area) -> Self {
+        Self::Call { child: Callee { child: Naming::of(&child.into_segment()) }, area }
     }
 
     /// A place in the pass `P` of `frame` that draws nothing, reached by the pointer within `rect` as `pointer` says:
@@ -113,14 +205,14 @@ impl Entry {
     ) -> Result<Listed, EntryRefused> {
         let picks = |pointer| match (pointer, hearer) {
             (Pointer::Ignores, _) => Ok(Picks::Ignores),
-            (Pointer::Blocks, Some(actor)) => Ok(Picks::Reaches(Reach { actor, entry: at, blocks: true })),
-            (Pointer::Passes, Some(actor)) => Ok(Picks::Reaches(Reach { actor, entry: at, blocks: false })),
+            (Pointer::Blocks, Some(actor)) => Ok(Picks::Reaches(Reaching { actor, entry: at, blocks: true })),
+            (Pointer::Passes, Some(actor)) => Ok(Picks::Reaches(Reaching { actor, entry: at, blocks: false })),
             (Pointer::Blocks | Pointer::Passes, None) => Err(EntryRefused::Unheard),
         };
         let listed = match self {
             Self::Draw { placement, pointer } => Listed::Draw { placement: placement.id, picks: picks(*pointer)? },
             Self::Run(dispatch) => Listed::Run(dispatch.id),
-            Self::Call(callee) => Listed::Call(child_id(&callee.child.segment())),
+            Self::Call { child, area } => Listed::Call { child: child_id(&child.child.segment()), area: *area },
             Self::Hit { frame, pass, rect, pointer } => {
                 Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(*pointer)? }
             }
@@ -138,13 +230,14 @@ impl Entry {
 }
 
 /// One entry of a list the renderer keeps: a placement of its sender's, by its id, drawn as the pointer reaches it, a
-/// dispatch of its sender's, by its id, a child its sender calls, by the child's id, or a hit, hit as the pointer
-/// reaches it; or the keys its sender hears in a window's main frame, as the window is sent them.
+/// dispatch of its sender's, by its id, a child its sender calls, by the child's id, in the area it places it, or a
+/// hit, hit as the pointer reaches it; or the keys its sender hears in a window's main frame, as the window is sent
+/// them.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Listed {
     Draw { placement: u64, picks: Picks },
     Run(u64),
-    Call(ActorId),
+    Call { child: ActorId, area: Area },
     Hit { frame: Frame, pass: PassName, rect: Rect2, picks: Picks },
     Keys { frame: Frame, entry: KeysEntry },
 }
@@ -153,7 +246,23 @@ pub(crate) enum Listed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Picks {
     Ignores,
-    Reaches(Reach),
+    Reaches(Reaching),
+}
+
+/// The entry `entry` of the list `actor` sent, which the pointer reaches, and whether it blocks the pointer from what
+/// is beneath it: a [`Reach`] once the walk places it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Reaching {
+    pub actor: ProtocolRef<Hearer>,
+    pub entry: u32,
+    pub blocks: bool,
+}
+
+impl Reaching {
+    /// The entry as the window is told of it, drawn with its list's origin at `origin`, in surface pixels.
+    pub const fn at(self, origin: Vec2) -> Reach {
+        Reach { actor: self.actor, entry: self.entry, blocks: self.blocks, origin }
+    }
 }
 
 /// Whether the pointer at the pixel `pixel` of the window reaches the hit `rect`: whether its middle is within it, as
@@ -263,13 +372,14 @@ impl Lists {
     pub fn all(&self) -> impl Iterator<Item = u64> {
         self.kept.values().flatten().filter_map(|entry| match entry {
             Listed::Draw { placement, .. } => Some(*placement),
-            Listed::Run(_) | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Run(_) | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
     }
 
-    /// The draws, dispatches, hits, and keys listed from `roots`, in the order of the walk: each root's list in turn,
-    /// each entered where it is called, so a list's calls draw between its own entries as it lists them (ADR-0055). An
-    /// actor no list from `roots` calls is not drawn.
+    /// The draws, dispatches, hits, and keys listed from `roots`, in the order of the walk, each in the area its list is
+    /// drawn in, in surface pixels: each root's list in turn, in [`Area::WHOLE`], each child entered where it is called,
+    /// in the area its call gives within its caller's, so a list's calls draw between its own entries as it lists them
+    /// (ADR-0055). An actor no list from `roots` calls is not drawn.
     pub fn walk(&self, roots: Vec<ActorId>) -> Walked<'_> {
         Walked { kept: &self.kept, roots: roots.into_iter(), entered: Vec::new() }
     }
@@ -279,38 +389,47 @@ impl Lists {
 pub(crate) struct Walked<'a> {
     kept: &'a HashMap<ActorId, Vec<Listed>>,
     roots: vec::IntoIter<ActorId>,
-    /// The lists being drawn, the one called last on top: a stack, so the walk's depth costs no frames.
-    entered: Vec<slice::Iter<'a, Listed>>,
+    /// The lists being drawn, each beside the area it is drawn in, the one called last on top: a stack, so the walk's
+    /// depth costs no frames.
+    entered: Vec<(slice::Iter<'a, Listed>, Area)>,
+}
+
+/// One entry the walk reaches, drawn in `area`, its list's, in surface pixels.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Walking<'a> {
+    pub entry: &'a Listed,
+    pub area: Area,
 }
 
 impl Walked<'_> {
-    /// Enters the list of `actor`, when it has one. No actor stands deeper than a path's most segments, so a call that
-    /// would go deeper, which only two ids that collide could write, is not entered.
-    fn enter(&mut self, actor: ActorId) {
+    /// Enters the list of `actor`, drawn in `area`, when it has one. No actor stands deeper than a path's most
+    /// segments, so a call that would go deeper, which only two ids that collide could write, is not entered.
+    fn enter(&mut self, actor: ActorId, area: Area) {
         let Some(list) = self.kept.get(&actor) else {
             return;
         };
         let within = self.entered.len() < ActorPath::MAX_DEPTH;
         if within {
-            self.entered.push(list.iter());
+            self.entered.push((list.iter(), area));
         }
     }
 }
 
 impl<'a> Iterator for Walked<'a> {
-    type Item = &'a Listed;
+    type Item = Walking<'a>;
 
-    fn next(&mut self) -> Option<&'a Listed> {
+    fn next(&mut self) -> Option<Walking<'a>> {
         loop {
-            let Some(list) = self.entered.last_mut() else {
+            let Some((list, caller)) = self.entered.last_mut() else {
                 let root = self.roots.next()?;
-                self.enter(root);
+                self.enter(root, Area::WHOLE);
                 continue;
             };
+            let caller = *caller;
             match list.next() {
-                Some(Listed::Call(child)) => self.enter(*child),
+                Some(Listed::Call { child, area }) => self.enter(*child, area.within(caller)),
                 Some(entry @ (Listed::Draw { .. } | Listed::Run(_) | Listed::Hit { .. } | Listed::Keys { .. })) => {
-                    return Some(entry);
+                    return Some(Walking { entry, area: caller });
                 }
                 None => {
                     self.entered.pop();
@@ -326,7 +445,7 @@ impl Listed {
         match *self {
             Self::Draw { placement, .. } => placement == id,
             Self::Run(dispatch) => dispatch == id,
-            Self::Call(_) | Self::Hit { .. } | Self::Keys { .. } => false,
+            Self::Call { .. } | Self::Hit { .. } | Self::Keys { .. } => false,
         }
     }
 
@@ -335,7 +454,7 @@ impl Listed {
         match *self {
             Self::Draw { placement, .. } => Some(Named::Placement(placement)),
             Self::Run(dispatch) => Some(Named::Dispatch(dispatch)),
-            Self::Call(child) => Some(Named::Child(child)),
+            Self::Call { child, .. } => Some(Named::Child(child)),
             Self::Hit { .. } | Self::Keys { .. } => None,
         }
     }
@@ -346,7 +465,7 @@ impl Listed {
         let (maker, unknown) = match *self {
             Self::Draw { placement, .. } => (kept.placement_maker(placement), EntryRefused::Placement),
             Self::Run(dispatch) => (kept.dispatch_maker(dispatch), EntryRefused::Dispatch),
-            Self::Call(_) | Self::Hit { .. } | Self::Keys { .. } => return Ok(()),
+            Self::Call { .. } | Self::Hit { .. } | Self::Keys { .. } => return Ok(()),
         };
         match maker {
             Some(maker) if maker == by => Ok(()),

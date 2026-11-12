@@ -251,7 +251,8 @@ pub fn source(bytes: &[u8]) -> Result<&str, ProgramRefused> {
 /// entry points are a vertex and a fragment stage, that read what its layouts give, pass between them what each reads,
 /// write the colour drawn, and bind only what `bindings` lists, storage only to read, and in its fragment stage the
 /// targets `reads` names in group 0, within `limits` less what the picking step binds: what WebGPU would refuse as the
-/// pipeline is made. Answers the WGSL the pipeline is made from, with the picking step added (ADR-0055).
+/// pipeline is made. Answers the WGSL the pipeline is made from, with the picking step added, which also moves what
+/// the vertex stage places by its call's shift (ADR-0055).
 ///
 /// # Errors
 ///
@@ -296,7 +297,7 @@ pub fn check(create: &CreateProgram, wgsl: &str, limits: &wgpu::Limits) -> Resul
     check_uses(&module, &info, vertex, |group, binding| listed(&create.bindings, group, binding))?;
     check_uses(&module, &info, fragment, |group, binding| used(&create.bindings, &create.reads, group, binding))?;
 
-    picking::picked(wgsl, &create.fragment, picking_group(create))
+    picking::picked(wgsl, (&create.vertex, &create.fragment), picking_group(create))
 }
 
 /// The group a program binds the picking step in: the one after its last, which is its targets' when it reads any and
