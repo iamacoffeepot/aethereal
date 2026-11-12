@@ -2,8 +2,9 @@
 //! backtick steps it through three stops, [`Stop`]: hidden; a band across the top of the window; and the band with the
 //! console beneath it.
 //!
-//! It draws with the renderer's meshes and texts (ADR-0021, ADR-0052), in a draw list of its own in the window's main
-//! pass, which is drawn after every placement joined loose, so over what the program drew there (ADR-0031). The band's
+//! It draws with the renderer's meshes and texts (ADR-0021, ADR-0052), in a draw list of its own in the window's
+//! interface pass, which follows every other pass of the window's main frame; the program's root list names it last,
+//! so it draws over everything the program drew (ADR-0031, ADR-0055). The band's
 //! left column holds the frame chart: sixty seconds of each cycle's time, newest at the right, each column three opaque
 //! bars to the slowest, the median, and the fastest of its cycles, sand, lichen, and slate-teal, back to front, on a
 //! scale logarithmic in a cycle's time from a quarter of the budget the renderer's frame statistics bring to thirty-two
