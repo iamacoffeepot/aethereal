@@ -43,14 +43,14 @@ window: pointer ── probe ── stack in call order ── top-down until on
 enum Span { Root(u32), Child { maker: ActorId, n: u32 } }   // a piece of the setup's split, or a parent's child
 
 #[kind(name = "aether.render.draw_list")]
-struct DrawList { frame: Frame, pass: PassName, span: Span, entries: Vec<Entry> }
+struct DrawList { span: Span, entries: Vec<Entry> }       // where in the order, and the calls in order
 
 enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
     Run(DispatchId),                                          // a dispatch of the sender's, in a compute pass
     Span(u32),                                                // the child span `Child { maker: sender, n }`, issued here
-    Hit { rect: Rect, pointer: Pointer },                     // drawn into the picking stack only (see Input)
-    Keys { keys: KeySet, blocks: bool },                      // the keys its sender hears, at this place (see Input)
+    Hit { frame: Frame, rect: Rect, pointer: Pointer },       // drawn into that frame's picking stack only (see Input)
+    Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
 }
 enum Pointer { Blocks, Passes, Ignores }
 ```
@@ -59,7 +59,7 @@ enum Pointer { Blocks, Passes, Ignores }
 - **The parent's list places its children.** A parent can draw a background, name a child, then draw a border over it: `[Draw(background), Span(0), Draw(border)]`. Reordering children is sending a new list (ADR-0031: a later list replaces an earlier one). A library offers `split`, `push`, `insert_before`, and `reorder` as helpers that build that list.
 - **One actor lists into a span.** The first list sent into a span claims it for its sender, until the sender ends. A list from another actor into it is refused and logged, naming the lister, as `may_replace` refuses a second frame owner. Two actors in one span would put two lists' order at the mercy of mail arrival, which is the fault this ADR removes. No other check is made: a span's name is not secret, and an actor that names another's span is a bug, refused loudly.
 - **A span named by no list is not drawn,** and a list into a span no parent names is kept and not drawn. Nothing reaches the sequence except through the tree.
-- **A span's list follows `(frame, pass)`.** A child's name is the same in every frame and pass its parent lists it in. A screen whose parent lists it in two windows sends one list for each window.
+- **A span is universal: it is an actor's place in the order, and nothing else.** It is the same in every frame and every pass. The frame and pass of each call are declared by the actor, through what it lists: a placement's join names its frame and pass (`Join::listed::<Interface>(frame, ..)`), a dispatch's names its compute pass, and `Hit` and `Keys` name their frame. For each pass of each frame, the renderer issues the entries of a list that land there, in list order. An actor has one span.
 - **The tree is walked iteratively, with a cap on depth.** Cycles cannot reach the sequence: a child is named only by its maker, and the walk keeps the spans it has entered and refuses one it meets again. The renderer flattens the tree when a list changes, never at `Render`, and keeps the flattened sequence per root span, so a list that changes every frame re-flattens only its own root span.
 
 ### The root is split once, at setup
@@ -103,9 +103,9 @@ enum Pointer { Blocks, Passes, Ignores }
 - **The wheel follows the pointer**, so a console that blocks stops the wheel from zooming the game beneath it, which ADR-0053 got by sending the wheel with key focus.
 - **Raw subscription stays** for every pointer event and for the window's own events (`Resized`, `Moded`, `FocusGained`, `FocusLost`, `CloseRequested`, `Closed`), as ADR-0024 delivers them.
 
-**Keys cascade the same way.** An actor declares the keys it hears with `Keys { keys, blocks }` in its list, at its place in the sequence. The renderer sends the window each frame's `Keys` entries in reverse call order whenever they change. The window delivers each `KeyDown` top-down through the entries whose set holds the key, until the first that blocks.
+**Keys cascade the same way.** An actor declares the keys it hears with `Keys { frame, keys, blocks }` in its list, at its place in the sequence. The renderer sends the window each frame's `Keys` entries in reverse call order whenever they change. The window delivers each `KeyDown` top-down through the entries whose set holds the key, until the first that blocks.
 
-- **Focus is a declaration.** A screen that takes the keys lists `Keys { keys: KeySet::ALL, blocks: true }` while it wants them, and drops the entry when it does not. The dev overlay lists `Keys { keys: KeySet::of([BACKTICK]), blocks: true }` in `Dev`, at the top, so the backtick reaches it whatever has focus beneath, and every other key falls through.
+- **Focus is a declaration.** A screen that takes the keys lists `Keys { frame, keys: KeySet::ALL, blocks: true }` while it wants them, and drops the entry when it does not. The dev overlay lists `Keys { frame, keys: KeySet::of([BACKTICK]), blocks: true }` in the last span of the split, so the backtick reaches it whatever has focus beneath, and every other key falls through.
 - **Typed text and repeats follow the `KeyDown`** that typed them (ADR-0051), and a key that is down keeps whom its press was sent to (ADR-0053).
 - **A focus change takes effect with the list that declares it**, the frame after the click that caused it.
 - **Keys are not sent to raw subscribers.** A raw subscriber would hear keys that a declaration above it blocked, and blocking would then mean nothing.
