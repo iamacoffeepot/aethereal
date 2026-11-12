@@ -16,13 +16,13 @@ fn sized(place: u32, width: f32, height: f32) -> Node {
 
 /// The boxes of `tree`, in tree order, laid out in a screen `size` across and down at `scale`.
 fn boxes(tree: &Tree, size: Vec2, scale: f32) -> Vec<Boxed> {
-    let Ok(flat) = tree.flat() else {
+    let Ok(flattened) = tree.flat() else {
         panic!("the tree lays out");
     };
     let fonts = Fonts::default();
     let mut measuring = fonts.measuring(scale);
 
-    lay_out(&flat, &mut measuring, size, scale)
+    lay_out(&flattened.nodes, &mut measuring, size, scale).boxes
 }
 
 /// The rect from `x`, `y`, `width` by `height`.

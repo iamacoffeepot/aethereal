@@ -16,7 +16,9 @@
 //!
 //! What a layout lists, in tree order, is each widget's draws, then a hit over its box when the pointer reaches it,
 //! after the keys the screen declares; and the library keeps what each entry of the list it sent is, so input through
-//! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys).
+//! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys). A scroll slides
+//! what is within it by the offset its state keeps, clamped to what it can scroll as it is laid out, and cuts it to its
+//! content box; a list in a scroll builds only the items its window shows, as [`Screen::rows`] says.
 //!
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
@@ -27,6 +29,7 @@ mod keys;
 mod layers;
 mod orders;
 mod program;
+mod scrolls;
 #[cfg(test)]
 mod tests;
 
@@ -34,15 +37,16 @@ pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
 pub use orders::{Orders, Sends};
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
+pub use scrolls::Rows;
 
 use crate::draw::{Content, layered};
 use crate::fonts::Fonts;
-use crate::layout::lay_out;
+use crate::layout::{Boxed, Laidout, Pitch, lay_out};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{KeyPath, Tree};
+use crate::tree::{Flat, KeyPath, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Built, Draws, Focused, Laid, Quad, Sample};
+use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Quad, Sample};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -159,13 +163,14 @@ enum Fresh {
     Stale,
 }
 
-/// What a screen works out again rather than keep: the tree it last built, the fonts it knows, and where its last
-/// layout put each widget, by key path, in tree order.
+/// What a screen works out again rather than keep: the tree it last built, the fonts it knows, where its last layout
+/// put each widget, by key path, in tree order, and the pitch of each scroll's lines, by key path.
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
     fonts: Fonts,
     placed: Vec<(KeyPath, Laid)>,
+    pitches: Vec<(KeyPath, Pitch)>,
 }
 
 /// The tree a screen last built.
@@ -292,34 +297,47 @@ impl Screen {
     /// Lays out the last tree built, unless the program is still being made, and sends what changed of its draws,
     /// with a hit over each widget the pointer reaches and the keys it declares, `hotkeys` its own; the fonts it met and
     /// has not asked for are asked for, and a layout that met a font whose metrics have not come draws nothing. Focus
-    /// on a widget that has gone is cleared, and the window's input method stopped with it.
+    /// on a widget that has gone is cleared, and the window's input method stopped with it. Each scroll's offset is
+    /// clamped to what it can scroll, what is within it slid by it and cut to its content box; an item whose key a
+    /// sibling before it has is left out, and logged.
     fn lay_out(&mut self, orders: &mut Orders, hotkeys: &[&str]) -> Outcome {
         let unmade = self.program.made().is_none();
         if unmade {
             return Outcome::Waiting;
         }
-        let Worked { last: Last::Built(tree), fonts, placed } = &mut *self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, placed, pitches } = &mut *self.unkept else {
             return Outcome::Waiting;
         };
-        let flat = match tree.flat() {
-            Ok(flat) => flat,
+        let flattened = match tree.flat() {
+            Ok(flattened) => flattened,
             Err(refused) => {
                 orders.log(Level::Error, format!("the screen's tree was refused: {refused:?}"));
                 return Outcome::Refused;
             }
         };
+        for twice in &flattened.twice {
+            orders.log(Level::Error, format!("an item's key is another's before it, so it is left out: {twice:?}"));
+        }
+        let flat = flattened.nodes;
         self.table.refresh(&flat);
         let focus = self.table.focus().clone();
         let viewport = self.viewport;
         let mut measuring = fonts.measuring(viewport.scale);
-        let boxes = lay_out(&flat, &mut measuring, viewport.size, viewport.scale);
+        let Laidout { boxes, pitches: pitched } = lay_out(&flat, &mut measuring, viewport.size, viewport.scale);
+        *pitches = pitched.into_iter().map(|(at, pitch)| (flat[at].path.clone(), pitch)).collect();
 
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
         let mut order: Vec<Slot> = Vec::new();
         let mut covered = vec![false; flat.len()];
+        let mut shifts = vec![Vec2::ZERO; flat.len()];
+        let mut clips = vec![viewport.rect(); flat.len()];
         let mut laid_out = Vec::with_capacity(flat.len());
         for (at, (flat, boxed)) in flat.iter().zip(&boxes).enumerate() {
-            let laid = Laid { rect: boxed.rect, content: boxed.content, clip: viewport.rect(), scale: viewport.scale };
+            let (laid, slide, cut) = stand(&mut self.table, flat, boxed, shifts[at], clips[at], viewport.scale);
+            for child in &flat.children {
+                shifts[*child] = shifts[at] + slide;
+                clips[*child] = cut;
+            }
             let focused = match &focus {
                 Focus::On(path) if *path == flat.path => Focused::Yes,
                 Focus::On(_) | Focus::Nowhere => Focused::No,
@@ -349,8 +367,9 @@ impl Screen {
             }
             let pointer = reach(widget, state, style, covered[at]);
             let reached = pointer != Pointer::Ignores;
-            if reached {
-                let rect = laid.rect.intersection(laid.clip);
+            let rect = laid.rect.intersection(laid.clip);
+            let shown = !rect.is_empty();
+            if reached && shown {
                 order.push(Slot::Hit { path: flat.path.clone(), rect, pointer });
             }
             let covers = covered[at] || reached;
@@ -433,6 +452,43 @@ impl Screen {
     fn layer(&self, key: &DrawKey) -> Option<&Layer> {
         self.layers.binary_search_by(|layer| layer.key().cmp(key)).ok().map(|at| &self.layers[at])
     }
+}
+
+/// Where `flat`, laid out as `boxed` at `scale`, stands once the scrolls around it have slid it by `shift` and cut it to
+/// `clip`; then how far it slides what is within it, and what it cuts it to: a scroll's offset, clamped in `table`, and
+/// its content box.
+fn stand(
+    table: &mut Table,
+    flat: &Flat<'_>,
+    boxed: &Boxed,
+    shift: Vec2,
+    clip: Rect2,
+    scale: f32,
+) -> (Laid, Vec2, Rect2) {
+    let moved = |rect: Rect2| Rect2 { min: rect.min - shift, max: rect.max - shift };
+    let laid = Laid { rect: moved(boxed.rect), content: moved(boxed.content), clip, extent: boxed.extent, scale };
+    let widget = flat.node.widget();
+    let (slide, cut) = match widget.arrange() {
+        Arrange::Scroll(axis) => (fit(table, &flat.path, widget, &laid, axis), clip.intersection(laid.content)),
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf => (Vec2::ZERO, clip),
+    };
+
+    (laid, slide, cut)
+}
+
+/// Clamps the offset of `widget`, a scroll along `axis` at `path` laid at `laid`, to what it can scroll, keeping the
+/// clamped offset in `table`, and answers how far it slides what is within it.
+fn fit(table: &mut Table, path: &KeyPath, widget: &dyn Built, laid: &Laid, axis: Axis) -> Vec2 {
+    let mut state = table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
+    let offset = widget.offset(&state);
+    let fitted = offset.clamp(0.0, laid.travel(axis));
+    let clamped = fitted.to_bits() != offset.to_bits();
+    if clamped {
+        widget.scroll_to(&mut state, fitted);
+        table.write(path, widget.state_kind(), state);
+    }
+
+    axis.vector(fitted)
 }
 
 /// Whether `style` fills its box: a background or a border, drawn beneath its widget.

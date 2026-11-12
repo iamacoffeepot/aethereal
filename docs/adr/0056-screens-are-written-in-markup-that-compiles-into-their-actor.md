@@ -91,6 +91,36 @@ Every element is a widget; there is no `<each>` or `<if>`.
 - **The widget that lays the items out owns them.** A `Scroll` with `items` builds only the rows that are on screen.
 - **`show` takes a `bool` or an `Option`.** With a `bool`, the widget shows while it is true. With an `Option`, the widget shows while it is `Some`, and `as` names the value inside.
 - **The key keeps each item's widget state with the item** when the list reorders, and drops that state when the item leaves.
+- **An item's node is told apart by its key, not its place** (*settled by the library's scroll stage*): the segment of its key path is `Segment::Item(ItemKey)` where every other node's is `Segment::Place(n)`. An `ItemKey` is a number: the key's type converts with `From`, which the library gives every integer and a program writes for its own ids, so a key that is not a number is a build error. Focus on an item, or within one, clears when the item leaves, as for any key that goes.
+- **Two items of one list with one key are refused, never merged** (*settled by the library's scroll stage*): the first keeps the key, each later one is left out of the tree, with its descendants, and logged at each layout. The rest of the screen still shows, since the fault is in the game's data, not the screen's markup. Two siblings at one place in the markup, which only a tree built by hand can hold, still refuse the whole tree.
+
+**What `items` compiles into** (*settled by the library's scroll stage*). The tree compares by value, so `items` is not a closure the tree holds: the view builds the items' nodes itself, each at its key.
+
+```rust
+// <Grid columns="6" items="{self.items}" as="item" key="{item.id}"><ItemSlot item="{item}"/></Grid>
+let slots = self.items.iter().map(|item| Node::new(Segment::Item(ItemKey::from(item.id)), ItemSlot { item: item.clone() }, slot_style(), vec![]));
+Node::new(Segment::Place(1), Grid, grid_style(), slots.collect())
+```
+
+`Column`, `Row`, `Grid`, and any other container take the same shape. A `Scroll` builds only the items it shows: the view asks the screen which, by the scroll's key path, and keeps beside each item built its place in the list.
+
+```rust
+// <Scroll items="{self.items}" as="item" key="{item.id}"><Text>{item.name}</Text></Scroll>
+let list = KeyPath::of(&[Segment::Place(0), Segment::Place(2)]);   // the scroll's own path, known to the build
+let mut rows = self.ui.rows(&list, self.items.len());              // the window, from the table and the last layout
+for (at, item) in self.items.iter().enumerate() {
+    let key = ItemKey::from(item.id);
+    if rows.builds(at, key) {
+        rows.push(at, Node::new(Segment::Item(key), Text::new(&item.name), name_style(), vec![]));
+    }
+}
+let (lines, built) = rows.finish();                                // Lines::Window { count, at }, and the rows
+Node::new(Segment::Place(2), Scroll::down().list(lines), list_style(), built)
+```
+
+- **A scroll's window is read from the table as it stands** (*settled by the library's scroll stage*). `Screen::rows` takes the scroll's offset from its state and the pitch of its lines, where they start and how far apart they are, from its last layout, and answers the lines its content box shows with a margin of two each way, and, wherever it stands, the item that has the focus or holds the widget that has. So a turn of the wheel builds what it shows in the very next view, Tab finds the next row built, and a focused row scrolled out of view keeps its focus and its state. The view stays plain code over the screen's fields, and an unchanged list at an unchanged offset is the same tree, so it is skipped.
+- **The lines of a list in a scroll are one length** (*settled by the library's scroll stage*): the distance from the first row built to the second, or with one row, its length and the gap. Each built row is placed at its item's line, and what the scroll holds runs to the list's last line, so the content's length, the thumb, and the end are known without building every row. A list whose rows differ in length still shows and scrolls, but its rows overlap or part, and its window may be measured anew each frame: a list of rows of differing lengths is a column in a scroll, built whole.
+- **What it costs.** The view names the screen's library field and the scroll's key path, which the build knows. A scroll never laid out builds its first row to measure, and shows the rest a frame later, as it does after a resize. Each item is visited once per view to ask whether it is built, and the tree holds only those built.
 
 ### Events call the screen's methods
 
@@ -105,7 +135,7 @@ fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, te
 - **The build checks the call against the method's signature.**
 - **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send** (*settled by the library's input stage*). A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below).
 
-**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event attribute of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32)}`.
+**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event attribute of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32)}`, the last a choice counted from zero, as tabs' (*added by the library's scroll stage*).
 
 ```rust
 // inventory_view.rs, generated from inventory.xml
@@ -212,6 +242,7 @@ impl<E: Event> Widget for Button<E> {
 - **Input reaches a primitive by its entry.** The library maps each entry of the list it sent to the widget that listed it. `Pointed` goes to that widget's `pointed`, in its own coordinates, from its border box's top left, which updates its state and may raise an event, and the event calls the screen's method.
 - **A widget the pointer reaches is listed with a hit over its box** (*settled by the library's input stage*): an `Entry::Hit` after its draws and before its children's, whose `Pointer` the widget declares, `Blocks(Hand)` for a button and `Blocks(Text)` for a text input, as its state stands, a slider's open hand turning closed as it drags. Its draws stay `Ignores`. A hit, not a draw, is reached, so a button with no background is still pressed, and one widget is one entry whatever it draws.
 - **A widget whose style fills its box blocks the pointer there,** with the default cursor, so a panel is solid to the game beneath and a click on its empty space walks no character. A widget within one the pointer reaches lists no hit of its own unless it says so, so a button's filled label does not take the press from the button.
+- **The wheel is not a widget's** (*settled by the library's scroll stage*): it slides the innermost scroll at or around the widget the pointer reaches that can still move that way along its axis, and one at its end lets it pass outward, so a list in a panel scrolls before the panel does.
 - **A click is a press and a release of the main button on the same widget:** the release's `over` (ADR-0055) names the hit it was over, so a press dragged off and released elsewhere clicks nothing. Moves and the release reach a widget wherever the pointer goes while its press is held, as the window's capture sends them, so a slider dragged past its end still sets its end.
 
 ### Layout is Taffy
@@ -227,8 +258,8 @@ impl<E: Event> Widget for Button<E> {
 
 - **Each screen has at most one focused widget,** kept in its widget table. A focused key that disappears, or whose widget can no longer hold focus, clears focus as the tree is laid out.
 - **Clicking a focusable primitive focuses it.** Clicking elsewhere in the screen, on anything it lists a hit for, clears focus, and so does Esc.
-- **Tab and Shift-Tab move focus through focusable widgets in markup order,** which is the tree's order, round from the last to the first. There is no tab index; reorder the markup to change the order.
-- **A key goes first to the focused widget, then to the focus keys, Tab and Esc, and a key neither uses goes to the screen's `fn key(&mut self, turn, key: Key)`.** Hotkeys are an ordinary `match` there, and the screen declares the set they use beside the method, as `Controls::HOTKEYS` in the same impl (*settled by the library's input stage*). A `Key` carries its `code`, its `key`, whether it repeats, and the modifiers held, so a chord is read there too.
+- **Tab and Shift-Tab move focus through focusable widgets in markup order,** which is the tree's order, round from the last to the first. There is no tab index; reorder the markup to change the order. Each scroll around the widget Tab reaches slides as little as it can to show it (*settled by the library's scroll stage*).
+- **A key goes first to the focused widget, then to each widget it is within that hears the key, innermost first, then to the focus keys, Tab and Esc, and a key none uses goes to the screen's `fn key(&mut self, turn, key: Key)`** (*the widgets around the focus settled by the library's scroll stage*, so a scroll hears Page Up and Page Down around a focused row; the screen declares their keys beside the focused widget's). Hotkeys are an ordinary `match` there, and the screen declares the set they use beside the method, as `Controls::HOTKEYS` in the same impl (*settled by the library's input stage*). A `Key` carries its `code`, its `key`, whether it repeats, and the modifiers held, so a chord is read there too.
 - **The library writes the screen's `Entry::Keys`.** While a `TextInput` is focused, it declares every key, blocking. Otherwise it declares the screen's hotkey set, and, while a widget has focus, Tab, Esc, and the keys that widget hears, blocking (*settled by the library's input stage*). So a shown screen whose widgets have no focus takes only its hotkeys, and a HUD with buttons never takes the game's Tab or Esc; a screen that wants Tab to bring focus to its first widget lists Tab among its hotkeys.
 - **The modifiers are watched, not taken** (*settled by the library's input stage*). A key event carries no modifiers (ADR-0024), so beside a set short of every key the library declares Shift, Control, and Meta in a second entry that does not block, and keeps which are down. Shift-Tab and a text input's Shift-arrow read them, and the game still hears Shift.
 - **A focused text input uses every key that types text,** a key whose meaning is one character with neither Control nor Meta held, as its text comes after it (ADR-0051); so a letter typed into it never reaches the screen's hotkeys, and a key it passes, F2 or Tab, still does.
@@ -291,6 +322,25 @@ fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) { �
 | Layout | `Row`, `Column`, `Grid`, `Stack` (children layered on one spot) |
 | Content | `Text`, `Image` (a texture or a region of one, with nine-slice), `Bar` (a filled fraction) |
 | Interaction | `Button`, `Scroll` (clips; builds only visible rows when given `items`), `TextInput` (`change`, `submit`), `Toggle`, `Slider`, `Tabs`, `Popup`, `Tooltip` |
+
+**`Scroll` and `Tabs`** (*settled by the library's scroll stage*):
+
+- **A primitive that scrolls arranges its children as `Arrange::Scroll(axis)`:** one after another along the axis, never shrunk to fit, cut to its content box, and slid by its offset. Its offset is its state; it says how far it has slid (`offset`) and is slid (`scroll_to`) by the library, which clamps it to what it can scroll as it lays out, so it never stays past the end when what it holds shrinks. A widget may keep `room` inside its border for what it draws of its own, and its `Laid` says how far its children reach, `extent`, the items it did not build counted.
+- **`Scroll`** keeps room along its far side for its bar. A press on the thumb drags it under capture, held where it was grabbed; a press elsewhere on the bar jumps the thumb's middle there. It can hold focus, and Page Up, Page Down, Home, and End slide it while it or a widget within it has focus.
+- **`Tabs` takes the open tab as a param and raises `change` with the tab chosen, counted from zero, as `Raised::Index`:** which tab is open is game state, so it never opens one itself. It is one stop of the focus, its ring on the open header, and the arrows choose the tab beside the open one, Home and End the first and the last. Its headers are its own drawing, in its room above its panel.
+
+```xml
+<Tabs selected="{self.tab}" change="{self.open}">
+    <Tab title="Items">…</Tab>
+    <Tab title="Skills">…</Tab>
+</Tabs>
+```
+
+```rust
+// Tabs { titles, selected, change } over the open tab's panel alone, at that tab's place, so each panel keeps its keys
+let panels = match self.tab { 0 => vec![items_panel], 1 => vec![skills_panel], _ => Vec::new() };
+Node::new(Segment::Place(3), Tabs::new(&["Items", "Skills"], self.tab, InventoryEvent::Open), tabs_style(), panels)
+```
 
 Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Button` and `Popup`.
 

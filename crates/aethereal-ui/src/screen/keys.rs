@@ -4,8 +4,9 @@
 //!
 //! - **A widget that types has focus,** a text input: every key, blocking, so a key typed into it never reaches the
 //!   game, and the window's input method is allowed while it has (ADR-0051).
-//! - **Otherwise,** the screen's hotkeys; and, while a widget has focus, Tab, Escape, and the keys that widget hears;
-//!   all blocking. Beside them, the modifiers, which the screen watches go down and come up and lets through, so
+//! - **Otherwise,** the screen's hotkeys; and, while a widget has focus, Tab, Escape, the keys that widget hears, and
+//!   the keys each widget it is within hears, as a scroll hears Page Up and Page Down around a focused row; all
+//!   blocking. Beside them, the modifiers, which the screen watches go down and come up and lets through, so
 //!   Shift-Tab and a chord read their modifiers without taking Shift from the game.
 //!
 //! So a shown screen whose widgets have no focus takes only its hotkeys: a HUD does not take the game's Tab or Escape. A
@@ -99,6 +100,21 @@ fn heard(flat: &[Flat<'_>], focus: &Focus) -> Option<Hears> {
     flat.iter().find(|flat| flat.path == *path).map(|flat| flat.node.widget().hears())
 }
 
+/// The keys the widgets among `flat` that the one with `focus` is within hear.
+fn around(flat: &[Flat<'_>], focus: &Focus) -> Vec<&'static str> {
+    let Focus::On(path) = focus else {
+        return Vec::new();
+    };
+    let mut codes = Vec::new();
+    for within in flat.iter().filter(|flat| flat.path.holds(path)) {
+        if let Hears::Keys(keys) = within.node.widget().hears() {
+            codes.extend(keys);
+        }
+    }
+
+    codes
+}
+
 /// Whether the widget with `focus` among `flat` types, so it hears every key and the input method.
 pub(super) fn typing(flat: &[Flat<'_>], focus: &Focus) -> bool {
     heard(flat, focus) == Some(Hears::Typing)
@@ -115,6 +131,7 @@ pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str]) -> Ve
         Some(Hears::Keys(hears)) => {
             codes.extend([TAB, ESCAPE]);
             codes.extend(hears);
+            codes.extend(around(flat, focus));
         }
         None => {}
     }

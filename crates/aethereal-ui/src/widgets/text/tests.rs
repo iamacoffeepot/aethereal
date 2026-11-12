@@ -29,20 +29,21 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     let text = Node::new(Segment::Place(0), Text::new(text), style.clone(), Vec::new());
     let column = Node::new(Segment::Place(0), Column, column, vec![text]);
     let tree = Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![column]));
-    let Ok(flat) = tree.flat() else {
+    let Ok(flattened) = tree.flat() else {
         panic!("the tree lays out");
     };
     let mut known = Fonts::default();
     known.read(Font::Sans, sans(), Vec::new());
     let mut measuring = known.measuring(1.0);
-    let boxes = lay_out(&flat, &mut measuring, Vec2::new(400.0, 300.0), 1.0);
+    let boxes = lay_out(&flattened.nodes, &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes;
 
     let laid_box = boxes[2];
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));
-    let laid = Laid { rect: laid_box.rect, content: laid_box.content, clip: screen, scale: 1.0 };
+    let laid =
+        Laid { rect: laid_box.rect, content: laid_box.content, clip: screen, extent: laid_box.extent, scale: 1.0 };
     let mut pieces = Vec::new();
     let mut into = Draws::new(&mut pieces, &mut measuring, Focused::No);
-    let Some(text) = flat[2].node.widget().as_any().downcast_ref::<Text>() else {
+    let Some(text) = flattened.nodes[2].node.widget().as_any().downcast_ref::<Text>() else {
         panic!("the third node is the text");
     };
     Widget::draw(text, &Stateless, style, &laid, &mut into);

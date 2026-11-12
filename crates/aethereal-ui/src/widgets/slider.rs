@@ -203,7 +203,7 @@ impl<E: Event> Widget for Slider<E> {
             }
             Pointing::Moved { at } if sliding.dragging => self.dragged(at, input),
             Pointing::Up { button: Button::Main, .. } => sliding.dragging = false,
-            Pointing::Moved { .. } | Pointing::Down { .. } | Pointing::Up { .. } | Pointing::Wheel { .. } => {}
+            Pointing::Moved { .. } | Pointing::Down { .. } | Pointing::Up { .. } => {}
         }
     }
 

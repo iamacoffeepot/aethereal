@@ -1,6 +1,7 @@
 //! What input a primitive takes in, and what it raises (ADR-0056: Events call the screen's methods; Focus and keys):
-//! the pointer at it, in its own coordinates; a key, and typed text, while it has its screen's focus; and the events it
-//! raises, each a value of its screen's event type, with the value a widget hands with it.
+//! the pointer at it, in its own coordinates; a key, and typed text, while it has its screen's focus or a widget within
+//! it has; and the events it raises, each a value of its screen's event type, with the value a widget hands with it.
+//! The wheel is not a widget's: it slides the innermost scroll under the pointer that can still move that way.
 //!
 //! An event is a value, never a closure, so a tree still compares by value: the markup compiles each event attribute
 //! into a variant of one enum of the screen's, holding the arguments the view copied as it was built, and the screen's
@@ -31,8 +32,6 @@ pub enum Pointing {
     /// A button came up, at `at`, after a press on it; `over` when what the pointer reaches at the release is this
     /// widget, as a click needs.
     Up { at: Vec2, button: Button, over: bool },
-    /// The wheel turned with the pointer over it, at `at`, by `delta` pixels across and down.
-    Wheel { at: Vec2, delta: Vec2 },
 }
 
 /// A key pressed, or repeated as it is held, as the window names it (ADR-0024): its place on the keyboard, `code`,
@@ -72,6 +71,18 @@ pub struct Held {
 pub enum Hears {
     Keys(&'static [&'static str]),
     Typing,
+}
+
+impl Hears {
+    /// Whether it names the key at `code` among the keys it hears: a widget that types names none, as it hears every
+    /// key only while it has focus itself.
+    #[must_use]
+    pub fn holds(self, code: &str) -> bool {
+        match self {
+            Self::Keys(keys) => keys.contains(&code),
+            Self::Typing => false,
+        }
+    }
 }
 
 /// Whether a widget used a key: a key it passes goes on to its screen's focus keys, then to the screen's own `key`.

@@ -263,8 +263,7 @@ impl<E: Event> Widget for TextInput<E> {
             | Pointing::Left
             | Pointing::Moved { .. }
             | Pointing::Down { .. }
-            | Pointing::Up { .. }
-            | Pointing::Wheel { .. } => {}
+            | Pointing::Up { .. } => {}
         }
         keep(&line, editing);
     }
