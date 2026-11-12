@@ -268,7 +268,7 @@ struct Made {
 
 /// Which pass's dispatch was asked for, with everything made, and the entries of the culler's list so far: the
 /// placement, then each dispatch made, in the order made.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.dispatching")]
 enum Dispatching {
     Tally { made: Made, entries: Vec<Entry> },
