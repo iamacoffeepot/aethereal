@@ -23,13 +23,17 @@
 //! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal. A child
 //! actor the screen places in a slot is called where the slot's content box is, at the slot's place in the list, and is
 //! mailed its size whenever it changed; a hit that hears presses alone is listed over it, so a press into the child
-//! clears the screen's focus and shuts its popups as a press elsewhere in the screen does.
+//! clears the screen's focus and shuts its popups as a press elsewhere in the screen does. A widget that drags, or that
+//! takes drops, is listed with a hit though it says nothing of the pointer, so a press reaches the one and a release is
+//! over the other; once its drag begins, a source's hit declares the drag's cursor, and the target a drag of the
+//! screen's own is over draws lit.
 //!
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
 //! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
 
 mod children;
+mod drags;
 mod input;
 mod keys;
 mod layers;
@@ -40,6 +44,7 @@ mod scrolls;
 #[cfg(test)]
 mod tests;
 
+pub use drags::Landing;
 pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
 pub use orders::{Orders, Sends};
@@ -48,15 +53,16 @@ pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, White
 pub use scrolls::Rows;
 
 use crate::child::{self, calling};
+use crate::drag::DragSource;
 use crate::draw::{Content, layered};
 use crate::fonts::Fonts;
 use crate::fonts::Measuring;
 use crate::layout::{Boxed, Laidout, Pitch, lay_out};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{Flat, KeyPath, Tree};
+use crate::tree::{Flat, KeyPath, Node, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Quad, Sample, anchor};
+use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Lit, Quad, Sample, anchor};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -68,6 +74,7 @@ use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
 use aethereal_window::Cursor;
 use children::Told;
+use drags::Grip;
 use keys::{Declared, Ime, Modifiers, Role};
 use layers::Layer;
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
@@ -120,7 +127,8 @@ impl Viewport {
 /// table, what it has drawn by key and what it lists in what order, the list it last sent and what each entry of it
 /// is, whether what it last laid out is current, the modifiers held, what it last asked of its window's input method,
 /// what its tooltips wait on: the hits the pointer reaches, the number of the last hover, and whether the pointer
-/// moved since its tooltips were looked at; and the size it last told each child it places.
+/// moved since its tooltips were looked at; the size it last told each child it places; and where it stands with a
+/// drag.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -149,6 +157,7 @@ pub struct Screen {
     hover: Hover,
     /// The size the last layout told each child it places, or found it was told before.
     told: Vec<Told>,
+    grip: Grip,
     unkept: Unkept<Worked>,
 }
 
@@ -277,6 +286,7 @@ impl Screen {
             hovers: 0,
             hover: Hover::Settled,
             told: Vec::new(),
+            grip: Grip::Loose,
             unkept: Unkept::default(),
         }
     }
@@ -349,12 +359,14 @@ impl Screen {
     /// box; an item whose key a sibling before it has is left out, and logged. A popup whose anchor has gone shuts; the
     /// content of each open one is listed in its own layer over the rest, placed against its anchor and cut by nothing
     /// around it, and a popup's own draws and hit are listed over its anchor's. A child placed in a slot shown is called
-    /// there, and told its size when it changed.
+    /// there, and told its size when it changed. The source of a drag under way lists its hit with the drag's cursor,
+    /// and the target the drag is over draws lit.
     fn lay_out(&mut self, orders: &mut Orders, hotkeys: &[&str]) -> Outcome {
         let unmade = self.program.made().is_none();
         if unmade {
             return Outcome::Waiting;
         }
+        let lit = self.lit();
         let Worked { last: Last::Built(tree), fonts, placed, pitches } = &mut *self.unkept else {
             return Outcome::Waiting;
         };
@@ -406,16 +418,13 @@ impl Screen {
                 }
             }
 
-            let focused = match &focus {
-                Focus::On(path) if *path == node.path => Focused::Yes,
-                Focus::On(_) | Focus::Nowhere => Focused::No,
-            };
+            let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, covered[at]);
             let state = self.table.bytes(&node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
             if let Some(slot) = calling(node.node.widget()) {
                 told.push(Told::of(slot, &laid, viewport));
             }
-            let listing = listed(node, &laid, state, focused, covered[at], live, &mut measuring);
+            let listing = listed(node, &laid, state, standing, live, &mut measuring);
             drawn.extend(listing.drawn);
             layers.list(surface.stands, listing.now);
             let deferred = !listing.later.is_empty();
@@ -556,28 +565,68 @@ struct Listing {
     blocks: bool,
 }
 
-/// What the widget of `node`, laid at `laid`, its state `state`, lists, focused or not as `focused` says, within a
-/// widget that blocks the pointer or not, `covered`: the background and border its style fills beneath it, then its
-/// own drawing, measured with `measuring`; and a hit over its box when the pointer reaches it there and its surface
-/// is `live`, then the call of the child it places, when it is a child's slot, so the child draws over the slot's
-/// background and is reached before it, and over the call, where the child shows, a hit that hears presses alone. A
-/// popup's own drawing and hit are listed over its anchor, as it is the anchor's button.
+/// How a widget being listed stands with its screen's input: whether it has focus; whether a drag of the screen's that
+/// it takes is over it; whether it is the source of the drag under way; and whether a widget it is within blocks the
+/// pointer.
+#[derive(Clone, Copy)]
+struct Standing<'tree> {
+    focused: Focused,
+    lit: Lit,
+    dragged: Dragged<'tree>,
+    covered: bool,
+}
+
+impl<'tree> Standing<'tree> {
+    /// How the widget of `node` stands, its screen's focus `focus`, the target a drag of its own is over `lit`, where
+    /// it stands with a drag `grip`, and within a widget that blocks the pointer or not, `covered`.
+    fn of(node: &Flat<'tree>, focus: &Focus, lit: Option<&KeyPath>, grip: &Grip, covered: bool) -> Self {
+        let focused = match focus {
+            Focus::On(path) if *path == node.path => Focused::Yes,
+            Focus::On(_) | Focus::Nowhere => Focused::No,
+        };
+        let lit = match lit {
+            Some(path) if *path == node.path => Lit::Yes,
+            Some(_) | None => Lit::No,
+        };
+        let dragged = match grip {
+            Grip::Dragging { path, .. } if *path == node.path => node.node.drag().map_or(Dragged::Not, Dragged::From),
+            Grip::Dragging { .. } | Grip::Pressed { .. } | Grip::Loose => Dragged::Not,
+        };
+
+        Self { focused, lit, dragged, covered }
+    }
+}
+
+/// Whether a widget being listed is the source of a drag under way.
+#[derive(Clone, Copy)]
+enum Dragged<'tree> {
+    Not,
+    /// It is, and drags as this source says: its hit declares the drag's cursor.
+    From(&'tree DragSource),
+}
+
+/// What the widget of `node`, laid at `laid`, its state `state`, lists, standing with its screen's input as `standing`
+/// says: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and a
+/// hit over its box when the pointer reaches it there and its surface is `live`, then the call of the child it places,
+/// when it is a child's slot, so the child draws over the slot's background and is reached before it, and over the
+/// call, where the child shows, a hit that hears presses alone. A popup's own drawing and hit are listed over its
+/// anchor, as it is the anchor's button.
 fn listed(
     node: &Flat<'_>,
     laid: &Laid,
     state: &[u8],
-    focused: Focused,
-    covered: bool,
+    standing: Standing<'_>,
     live: bool,
     measuring: &mut Measuring<'_>,
 ) -> Listing {
+    let Standing { focused, lit, .. } = standing;
     let widget = node.node.widget();
     let style = node.node.style();
     let over = popper(widget).is_some_and(Popper::over);
     let mut beneath = Vec::new();
     let backed = fills(style);
     if backed {
-        Draws::new(&mut beneath, measuring, focused).quad(Quad {
+        Draws::new(&mut beneath, measuring, focused, lit).quad(Quad {
             rect: laid.rect,
             clip: laid.clip,
             colour: style.background,
@@ -593,7 +642,7 @@ fn listed(
     } else {
         &mut beneath
     };
-    widget.draw(state, style, laid, &mut Draws::new(own, measuring, focused));
+    widget.draw(state, style, laid, &mut Draws::new(own, measuring, focused, lit));
 
     let mut drawn = Vec::new();
     let mut now = Vec::new();
@@ -607,7 +656,7 @@ fn listed(
             into.push(Slot::Draw(key));
         }
     }
-    let pointer = reach(widget, state, style, covered);
+    let pointer = reach(node.node, state, standing);
     let blocks = matches!(pointer, Pointer::Blocks(_));
     let reached = pointer != Pointer::Ignores;
     let rect = laid.rect.intersection(laid.clip);
@@ -653,14 +702,28 @@ fn fills(style: &Style) -> bool {
     style.background.alpha > 0.0 || style.border.width > 0.0
 }
 
-/// How the pointer reaches `widget`, its state `state`, styled `style`: as it says; or, when it says nothing, blocked
-/// with the default cursor where its style fills its box, so a panel is solid to what is beneath it, unless a widget
-/// it is within blocks the pointer already, `covered`, as a button's label is part of the button.
-fn reach(widget: &dyn Built, state: &[u8], style: &Style, covered: bool) -> Pointer {
-    let pointer = widget.pointer(state);
-    let solid = fills(style) && !covered;
-    match pointer {
+/// How the pointer reaches the widget of `node`, its state `state`, standing as `standing` says: as it says; or, when it
+/// says nothing, blocked with the open hand when it drags, so a press reaches it, blocked with the default cursor where
+/// its style fills its box, so a panel is solid to what is beneath it, unless a widget it is within blocks the pointer
+/// already, as a button's label is part of the button, and passed on with the default cursor when it takes drops, so a
+/// release is over it. The source of a drag under way declares the drag's cursor in place of its own.
+fn reach(node: &Node, state: &[u8], standing: Standing<'_>) -> Pointer {
+    let pointer = node.widget().pointer(state);
+    let drags = node.drag().is_some();
+    let solid = fills(node.style()) && !standing.covered;
+    let takes = node.drop_target().is_some();
+    let reached = match pointer {
+        Pointer::Ignores if drags => Pointer::Blocks(Cursor::Grab),
         Pointer::Ignores if solid => Pointer::Blocks(Cursor::Default),
+        Pointer::Ignores if takes => Pointer::Passes(Cursor::Default),
         pointer => pointer,
+    };
+    let Dragged::From(source) = standing.dragged else {
+        return reached;
+    };
+    match reached {
+        Pointer::Blocks(_) => Pointer::Blocks(source.cursor().clone()),
+        Pointer::Passes(_) => Pointer::Passes(source.cursor().clone()),
+        Pointer::Presses | Pointer::Ignores => reached,
     }
 }

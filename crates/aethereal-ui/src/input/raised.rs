@@ -5,6 +5,7 @@
 //! turned back into it as the screen takes it ([`Raised::typed`]). The markup builds every event of a screen's widgets
 //! from the screen's own event type, so none is of another.
 
+use crate::drag::Payload;
 use core::any::Any;
 use core::fmt::Debug;
 
@@ -16,8 +17,8 @@ pub trait Event: Debug + PartialEq + Copy + Send + 'static {}
 impl<E: Debug + PartialEq + Copy + Send + 'static> Event for E {}
 
 /// An event raised, and the value its widget hands with it: none, as a button's click; the text, as a text input's
-/// change and submit; whether it is on, as a toggle's change; a number, as a slider's; or which of its choices, counted
-/// from zero, as tabs' change.
+/// change and submit; whether it is on, as a toggle's change; a number, as a slider's; which of its choices, counted
+/// from zero, as tabs' change; or the payload a drag carried, as a drop's and a `drop_outside`'s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Raised<E> {
     Event(E),
@@ -25,6 +26,7 @@ pub enum Raised<E> {
     Flag(E, bool),
     Number(E, f32),
     Index(E, u32),
+    Dropped(E, Payload),
 }
 
 /// A screen's event, held without its type.
@@ -41,6 +43,7 @@ impl<E: Event> Raised<E> {
             Self::Flag(event, on) => Raised::Flag(erased(event), on),
             Self::Number(event, value) => Raised::Number(erased(event), value),
             Self::Index(event, index) => Raised::Index(erased(event), index),
+            Self::Dropped(event, payload) => Raised::Dropped(erased(event), payload),
         }
     }
 }
@@ -65,6 +68,10 @@ impl Raised<Erased> {
             Self::Index(event, index) => {
                 event.typed().map(|event| Raised::Index(event, index)).map_err(|e| Self::Index(e, index))
             }
+            Self::Dropped(event, payload) => match event.typed() {
+                Ok(event) => Ok(Raised::Dropped(event, payload)),
+                Err(event) => Err(Self::Dropped(event, payload)),
+            },
         }
     }
 }

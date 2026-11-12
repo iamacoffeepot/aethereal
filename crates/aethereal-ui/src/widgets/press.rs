@@ -1,6 +1,6 @@
 //! What a widget pressed like a button keeps and shows: whether the pointer is over it and whether a press on it is
 //! held, a click as a press and a release of the main button both on it, and a tint over its box for each and a ring
-//! for focus. `Button`, `Toggle`, and `Popup` are pressed so.
+//! for focus, and for a drag it takes over it. `Button`, `Toggle`, and `Popup` are pressed so.
 
 use crate::input::Pointing;
 use crate::style::Style;
@@ -63,7 +63,8 @@ impl Press {
     }
 }
 
-/// Draws over a widget `laid` and styled `style`, as `press` stands and its focus is: the tint, and the focus ring.
+/// Draws over a widget `laid` and styled `style`, as `press` stands and its focus is: the tint, and the focus ring, which
+/// a drag it takes over it shows as well.
 pub fn shade(press: Press, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
     let radius = style.radius * laid.scale;
     let tint = press.tint();
@@ -82,9 +83,13 @@ pub fn shade(press: Press, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>
     ring(style, laid, draws);
 }
 
-/// Draws the focus ring inside the edge of a widget `laid` and styled `style`, while it has focus.
+/// Draws the focus ring inside the edge of a widget `laid` and styled `style`, while it has focus, or while a drag of its
+/// screen's carrying a payload it takes is over it, so a target lights up where a drop would land.
 pub fn ring(style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
-    if !draws.focused() {
+    let focused = draws.focused();
+    let lit = draws.drop_over();
+    let shows = focused || lit;
+    if !shows {
         return;
     }
     draws.quad(Quad {

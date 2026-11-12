@@ -8,11 +8,13 @@ use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Colour, Font, Outline, Run, Wrap};
 use aethereal_render::texture::TextureId;
 
-/// Where a widget's draws go, in order, with the fonts it measures its text by, and whether it has its screen's focus.
+/// Where a widget's draws go, in order, with the fonts it measures its text by, whether it has its screen's focus, and
+/// whether a drag its screen can drop on it is over it.
 pub struct Draws<'draws, 'fonts> {
     pieces: &'draws mut Vec<Piece>,
     measuring: &'draws mut Measuring<'fonts>,
     focus: Focused,
+    lit: Lit,
 }
 
 /// Whether a widget being drawn has its screen's focus.
@@ -22,20 +24,36 @@ pub enum Focused {
     No,
 }
 
+/// Whether a drag of its own screen's, carrying a payload a widget being drawn takes, is over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lit {
+    Yes,
+    No,
+}
+
 impl<'draws, 'fonts> Draws<'draws, 'fonts> {
-    /// Draws into `pieces`, measuring with `measuring`, of a widget that has its screen's focus or not, as `focus` says.
+    /// Draws into `pieces`, measuring with `measuring`, of a widget that has its screen's focus or not, as `focus` says,
+    /// and that a drag it takes is over or not, as `lit` says.
     pub(crate) const fn new(
         pieces: &'draws mut Vec<Piece>,
         measuring: &'draws mut Measuring<'fonts>,
         focus: Focused,
+        lit: Lit,
     ) -> Self {
-        Self { pieces, measuring, focus }
+        Self { pieces, measuring, focus, lit }
     }
 
     /// Whether the widget has its screen's focus, as a text input shows its caret only while it has.
     #[must_use]
     pub fn focused(&self) -> bool {
         self.focus == Focused::Yes
+    }
+
+    /// Whether a drag of its own screen's is over it carrying a payload it takes, as a target lights up to say a drop
+    /// there lands. A drag from another actor is never told of: its target hears nothing until the drop.
+    #[must_use]
+    pub fn drop_over(&self) -> bool {
+        self.lit == Lit::Yes
     }
 
     /// Draws `quad` over what was drawn before it.

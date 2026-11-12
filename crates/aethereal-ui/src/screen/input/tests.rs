@@ -32,6 +32,8 @@ pub(in crate::screen) enum Ev {
     Flipped,
     Slid,
     Opened,
+    Placed(u32),
+    Discarded,
 }
 
 /// The screen's actor, as the window names it.

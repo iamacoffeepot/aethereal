@@ -134,9 +134,9 @@ fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, te
 - **An event's arguments are copied when the view is built, and must be `Copy`.** That steers them to ids, never to a snapshot of an item that may have changed between the draw and the click.
 - **A widget that hands a value with its event hands it after the arguments:** a text input's `change` and `submit` the text, a toggle's `change` whether it is on, a slider's `change` its value. `change="{self.rename(item.id)}"` calls `rename(turn, item, text)`.
 - **The build checks the call against the method's signature.**
-- **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send** (*settled by the library's input stage*). A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below).
+- **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send** (*settled by the library's input stage*). A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below), and the drop a release mails to another actor and its refusal of one (*added by the library's drag stage*: Drag and drop is one path).
 
-**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event attribute of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32)}`, the last a choice counted from zero, as tabs' (*added by the library's scroll stage*).
+**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event attribute of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32), Dropped(E, Payload)}`, `Index` a choice counted from zero, as tabs' (*added by the library's scroll stage*), and `Dropped` the payload a drag carried, as a drop's and a `drop_outside`'s (*added by the library's drag stage*).
 
 ```rust
 // inventory_view.rs, generated from inventory.xml
@@ -165,7 +165,7 @@ aethereal_ui::screen!(Inventory, ui);   // the handlers of `Prepare`, `Pointed`,
 
 ```rust
 // inventory.rs, by hand
-type InventorySends = aethereal_ui::sends![Tells<Path<Game>, Equip>];   // the library's ask, then the screen's own
+type InventorySends = aethereal_ui::sends![Tells<Path<Game>, Equip>];   // the library's sends, then the screen's own
 
 impl Controls for Inventory {
     type Sends = InventorySends;
@@ -344,11 +344,12 @@ Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_s
 ### Drag and drop is one path
 
 ```xml
-<ItemSlot item="{item}" drag="{item.id}" drop="{self.place(item.slot)}"/>
+<ItemSlot item="{item}" drag="{item.id}" drop="{self.place(item.slot)}" drop_outside="{self.discard()}"/>
 ```
 
 ```rust
-fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) { … }
+fn place(&mut self, turn: &mut Turn<'_, Self, InventorySends>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
+fn discard(&mut self, turn: &mut Turn<'_, Self, InventorySends>, dragged: ItemId) -> Result<(), Fault> { … }
 ```
 
 1. **A press on a widget with `drag`, then a move of a few pixels, starts a drag.** The payload is copied when the view is built, as an event's arguments are. The held button keeps every move at the source.
@@ -360,6 +361,33 @@ fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) { �
 
 - **The build checks that the payload's type is the `drop` method's last parameter.**
 - **A target in another actor does not light up while a drag passes over it,** because it hears nothing until the drop. Targets in the source's own screen can.
+
+*Settled by the library's drag stage:*
+
+**What the markup compiles into.** `drag` and `drop` are settings of the element's node, as `items` is, so any widget, a composite's root among them, can be dragged or dropped on; they compare by value with the rest of the tree.
+
+```rust
+// <ItemSlot item="{item}" drag="{item.id}" drop="{self.place(item.slot)}" drop_outside="{self.discard()}"/>
+Node::new(Segment::Item(ItemKey::from(item.id)), ItemSlot { item: item.clone() }, slot_style(), vec![])
+    .with_drag(DragSource::new(item.id).outside(InventoryEvent::Discard))
+    .with_drop(DropTarget::new(InventoryEvent::Place(item.slot), Self::place))
+
+// in `on`: the payload comes after the arguments the view copied, read as the kind the method takes
+Raised::Dropped(InventoryEvent::Place(slot), payload) => aethereal_ui::dropped(turn, &payload, |turn, item| self.place(turn, slot, item)),
+Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn, &payload, |turn, item| self.discard(turn, item)),
+```
+
+- **A payload is a kind, `Copy` and compared by value,** an id as an event's arguments are, and is held erased: its kind's id and its bytes (`Payload`). It crosses actors, so it is a kind, and it is erased so that one kind of mail carries every program's payloads, one handler takes them, and one send place mails them. A drop kind generic over its payload would be a kind for each payload, which every screen would have to list as a handler and a send place, and the library cannot know them.
+- **A target takes the kind its method takes last.** `DropTarget::new(event, Self::place)` names the method its drop calls, and the kind is that method's last parameter's, read by the compiler from its signature (`DropMethod`); nothing calls it there. So the build's check is rustc's: the markup's compiler writes the method's path, and a payload of any other kind is refused at runtime, by its kind's id.
+- **The payload is copied from the tree the press reached,** and kept with the drag: a view rebuilt during the drag, its list changed under it, still drops what was pressed.
+- **A drag begins past `DRAG_THRESHOLD`, 4 logical pixels** at the screen's UI scale, from where the main button went down on the source, measured on the moves its capture sends through the source's own hit. A press released within it is still a click; one dragged past it is no click, wherever it is released, its release taken as the drop.
+- **The drag's cursor is the source's image, or a closed hand.** `DragSource::image` gives a `CursorImage` the program made, fixed when the view builds the source; without one it is `Cursor::Grabbing`. From the first `Prepare` after the drag begins until its release, the hit the press reached declares that cursor in place of its own (ADR-0055), so the window shows it wherever the pointer goes while the button is held, and the source's own cursor before and after.
+- **A widget that drags or takes drops is reached by the pointer, though it says nothing of it:** a source that says nothing is listed with a hit that blocks with an open hand, so a press reaches it, and a target with a hit that passes the pointer on with the default cursor, so a release is over it and what is beneath still hears the pointer. A widget that says how the pointer reaches it keeps what it says.
+- **A drop on the source's own screen lands on the innermost target that takes its kind,** at or around the widget whose hit the release was over, on that widget's surface as the wheel's scroll is found, so a panel that takes items takes one dropped on a button inside it. The target raises its `drop` with the payload.
+- **A drop on another actor is mail, `Dropped`, to the protocol `Drops = (Dropped,)`.** The source casts the actor its release was over to `Drops`, and mails it the payload, as its kind's id and its bytes as a blob (ADR-0042, as bytes between actors are), the entry, the release's place in that entry's coordinates, and the source's key path. A cast reaches a tuple of kinds, never a named protocol, so the drop is a tell, not an ask. A screen's library takes it in as its own drop: the innermost target around the entry's widget that takes the kind raises its `drop`. An actor that is not a screen handles `Dropped` itself.
+- **The target replies only to refuse.** Where nothing at the entry takes the payload, it replies `DropRefused` with the payload and the source's path handed back, and the source raises its `drop_outside` with the payload, as the view then builds it. A drop taken is answered with nothing, so an actor that takes every drop it is handed writes no reply. A cast that fails, the actor taking no drops, raises `drop_outside` at once.
+- **A target in the source's screen lights up:** while a drag is under way, the target it would land on, found as the drop finds it from the topmost hit the pointer reaches, is drawn with `Draws::drop_over` true, as `Draws::focused` tells focus; the stock widgets show their focus ring then. The pointer coming onto or leaving a hit during a drag lays the screen out at the next `Prepare`.
+- **What it costs.** A screen handles two kinds more, `Dropped` and `DropRefused`, whose handlers call its methods and so send its `Controls::Sends`; those gain two places from `sends!`, `ToAny<Drops, Dropped>` for the drop a release mails and `ToSender<DropRefused>` for the refusal, so a screen's own sends are at most 21. The library's own sends, those of `Prepare` and its answers, gain nothing. A drop on another actor costs a blob for its payload, which a refusal hands back unchanged.
 
 ### Stock widgets
 
@@ -454,6 +482,9 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
 - **An actor for each widget:** a mailbox, a turn, and a copy of its data for every row, and a click spread across several turns.
 - **Child actors placed only in absolute window pixels:** every move would cascade down the subtree as mail, a turn per level, so children would trail their parents. Each call states its mode instead (ADR-0055).
 - **Drag payloads carried by the window:** the window would need to know every payload kind. Reporting what is under the pointer is enough, and the actors use mail.
+- **A drop kind generic over its payload,** `Dropped<ItemId>`: a kind, a handler, and a send place for every payload kind a program drags, which each screen would list, though the library cannot know them. One erased kind serves them all, and the target compares kind ids (*settled by the library's drag stage*).
+- **A drop asked of its target, and answered taken or refused:** a cast reaches a tuple of kinds, not a named protocol, and only a named protocol can be asked, so a drop to an actor the source knows only from `over` is a tell; the target replies only to refuse, with what the source needs handed back, and an actor that takes every drop writes no reply (*settled by the library's drag stage*).
+- **The source assuming every drop on another actor is taken:** an item dropped on a panel that takes only spells would vanish, never put back nor dropped on the ground (*settled by the library's drag stage*).
 - **Writing our own flex and grid layout:** Taffy already does it, and is used by Bevy, Zed, Dioxus, and Lapce's UI library.
 - **Marking changes by hand,** a call that tells the library a screen changed: one forgotten call leaves a screen silently stale.
 - **A hook in the actor framework after every batch of a screen's turns:** nothing may be added to the framework, and a shared stage between `Tick` and `Render` gives the same point in the frame to every actor that draws.

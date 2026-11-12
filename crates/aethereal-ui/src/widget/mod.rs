@@ -15,7 +15,7 @@ mod draws;
 mod layer;
 
 pub use draws::{Draws, Quad, Sample, Slices, TextDraw};
-pub use draws::{Focused, Piece};
+pub use draws::{Focused, Lit, Piece};
 pub use layer::{Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
 
 use crate::fonts::Measuring;

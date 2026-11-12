@@ -4,6 +4,9 @@
 //! `Keyed` through the keys the screen declared reaches its focus, then each widget its focus is within that hears the
 //! key, innermost first, then its focus keys, then the screen.
 //!
+//! A press of the main button on a widget that drags grips it, and a move past the threshold begins its drag, whose
+//! release lands it rather than clicking (ADR-0056: Drag and drop is one path).
+//!
 //! A press shuts each open popup it lands outside of, and dismisses the tooltip the pointer is on; a click within a
 //! popup's content that raises an event shuts it when it closes so; Escape shuts the topmost open popup; and a press behind a modal popup
 //! reaches only its backdrop, which shuts it. The pointer coming onto and leaving each hit is kept, for the tooltips the
@@ -16,6 +19,7 @@
 #[cfg(test)]
 pub(super) mod tests;
 
+use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
@@ -35,18 +39,19 @@ use aethereal_window::{AllowIme, Button, ImeAllowed, KeyEvent, Keyed, Over, Poin
 pub struct ImeAsked;
 
 /// What a turn of input leaves for the screen's handler: the events its widgets raised, for the screen's methods; the
-/// keys that neither its focus nor its focus keys used, for its `key`; what to ask of its window's input method; and
-/// the lines to log.
+/// keys that neither its focus nor its focus keys used, for its `key`; what to ask of its window's input method; the
+/// drags dropped on other actors, to mail; and the lines to log.
 #[derive(Debug, Default)]
 pub struct Heard {
     pub(crate) raised: Vec<Raised<Erased>>,
     pub(crate) keys: Vec<Key>,
     pub(crate) imes: Vec<AllowIme>,
+    pub(crate) away: Vec<Away>,
     pub(crate) lines: Vec<(Level, String)>,
 }
 
 /// The place in a list of the entry numbered `entry`.
-fn place(entry: u32) -> usize {
+pub(super) fn place(entry: u32) -> usize {
     usize::try_from(entry).unwrap_or(usize::MAX)
 }
 
@@ -58,6 +63,10 @@ impl Screen {
     /// content that raises an event, a choice made, shuts it when it closes so. The wheel slides the innermost scroll at or around the widget that can still
     /// move that way, on the popup content it is in. Through the backdrop behind a modal popup, a press shuts it.
     /// Through the hit over a child it places, a press into the child is taken in as one elsewhere in the screen.
+    ///
+    /// A press of the main button on a widget that drags grips it, a move through it past the threshold begins its
+    /// drag, and the release through it lands the drag where it was over, and is no click; while a drag is under way,
+    /// the pointer coming onto and leaving each hit lays the screen out, as the target it is over draws lit.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
         let path = match self.listing.get(place(pointed.entry)) {
@@ -78,11 +87,30 @@ impl Screen {
             }
             Some(Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_)) | None => return heard,
         };
-        match pointed.event {
-            PointerEvent::PointerEntered => self.reach(&path, true),
-            PointerEvent::PointerLeft => self.reach(&path, false),
-            PointerEvent::PointerDown { .. } => self.pressed_in(&Pressing::At(path.clone())),
-            PointerEvent::PointerMoved { .. } | PointerEvent::PointerUp { .. } | PointerEvent::Wheel { .. } => {}
+        let ended = match pointed.event {
+            PointerEvent::PointerEntered | PointerEvent::PointerLeft => {
+                let entered = pointed.event == PointerEvent::PointerEntered;
+                self.reach(&path, entered);
+                self.passed();
+                Ended::Press
+            }
+            PointerEvent::PointerDown { x, y, button } => {
+                self.pressed_in(&Pressing::At(path.clone()));
+                if button == Button::Main {
+                    self.grip(&path, Vec2::new(x, y));
+                }
+                Ended::Press
+            }
+            PointerEvent::PointerMoved { x, y } => {
+                self.drag_to(&path, Vec2::new(x, y));
+                Ended::Press
+            }
+            PointerEvent::PointerUp { button: Button::Main, .. } => self.let_go(&path),
+            PointerEvent::PointerUp { .. } | PointerEvent::Wheel { .. } => Ended::Press,
+        };
+        let dragged = matches!(ended, Ended::Drag(_));
+        if let (Ended::Drag(payload), PointerEvent::PointerUp { over, .. }) = (ended, pointed.event) {
+            self.land(&path, payload, over, me, &mut heard);
         }
         let Some(origin) = self.origin(&path) else {
             return heard;
@@ -94,7 +122,9 @@ impl Screen {
             PointerEvent::PointerMoved { x, y } => Pointing::Moved { at: at(x, y) },
             PointerEvent::PointerDown { x, y, button } => Pointing::Down { at: at(x, y), button },
             PointerEvent::PointerUp { x, y, button, over } => {
-                Pointing::Up { at: at(x, y), button, over: self.is_over(&path, over, me) }
+                let over_it = self.is_over(&path, over, me);
+                let clicks = over_it && !dragged;
+                Pointing::Up { at: at(x, y), button, over: clicks }
             }
             PointerEvent::Wheel { delta_x, delta_y, .. } => {
                 self.wheel(&path, Vec2::new(delta_x, delta_y));
