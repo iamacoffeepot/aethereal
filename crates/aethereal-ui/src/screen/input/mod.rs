@@ -4,6 +4,10 @@
 //! `Keyed` through the keys the screen declared reaches its focus, then each widget its focus is within that hears the
 //! key, innermost first, then its focus keys, then the screen.
 //!
+//! While a button is down, what the window's capture sends through an entry the press reached goes where the press
+//! reached, kept by the screen (`held`), though the list has changed since and the entry's number names something
+//! else; and to nothing when that widget has gone from the tree.
+//!
 //! A press of the main button on a widget that drags grips it, and a move past the threshold begins its drag, whose
 //! release lands it rather than clicking (ADR-0056: Drag and drop is one path).
 //!
@@ -16,8 +20,11 @@
 //! its tree is the same, as a change of focus does. What it raises, and the keys nothing used, are handed back in
 //! [`Heard`] for the screen's handler to take in with its `&mut self` and its turn.
 
+mod held;
 #[cfg(test)]
 pub(super) mod tests;
+
+pub(super) use held::Hold;
 
 use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
@@ -67,26 +74,40 @@ impl Screen {
     /// A press of the main button on a widget that drags grips it, a move through it past the threshold begins its
     /// drag, and the release through it lands the drag where it was over, and is no click; while a drag is under way,
     /// the pointer coming onto and leaving each hit lays the screen out, as the target it is over draws lit.
+    ///
+    /// While a button is down, a press, move, or release through an entry the first press reached goes where that
+    /// press reached, though the list has changed since and the entry's number names something else there. A move or
+    /// release to a widget that has gone from the tree goes nowhere, and a grip of that widget lets go, landing nothing.
+    /// A release's `over` is read in the list last sent, as it was probed at the release.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
-        let path = match self.listing.get(place(pointed.entry)) {
-            Some(Listed::Hit(path)) => path.clone(),
-            Some(Listed::Backdrop(popup)) => {
-                let behind = Pressing::Behind(popup.clone());
-                if let PointerEvent::PointerDown { .. } = pointed.event {
-                    self.pressed_in(&behind);
-                }
-                return heard;
-            }
-            Some(Listed::Child(slot)) => {
-                let into = slot.clone();
-                if let PointerEvent::PointerDown { button, .. } = pointed.event {
-                    self.pressed_into(into, button, &mut heard);
-                }
-                return heard;
-            }
-            Some(Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_)) | None => return heard,
+        let Some(listed) = self.reached_by(pointed.entry, pointed.event) else {
+            return heard;
         };
+        self.hold(pointed.entry, pointed.event, &listed);
+        let path = match listed {
+            Listed::Hit(path) => path,
+            Listed::Backdrop(popup) => {
+                if let PointerEvent::PointerDown { .. } = pointed.event {
+                    self.pressed_in(&Pressing::Behind(popup));
+                }
+                return heard;
+            }
+            Listed::Child(slot) => {
+                if let PointerEvent::PointerDown { button, .. } = pointed.event {
+                    self.pressed_into(slot, button, &mut heard);
+                }
+                return heard;
+            }
+            Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_) => return heard,
+        };
+        let follows = matches!(pointed.event, PointerEvent::PointerMoved { .. } | PointerEvent::PointerUp { .. });
+        let gone = self.widget(&path).is_none();
+        let lost = follows && gone;
+        if lost {
+            self.lost(&path);
+            return heard;
+        }
         let ended = match pointed.event {
             PointerEvent::PointerEntered | PointerEvent::PointerLeft => {
                 let entered = pointed.event == PointerEvent::PointerEntered;

@@ -75,6 +75,7 @@ use aethereal_render::text::Font;
 use aethereal_window::Cursor;
 use children::Told;
 use drags::Grip;
+use input::Hold;
 use keys::{Declared, Ime, Modifiers, Role};
 use layers::Layer;
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
@@ -125,10 +126,10 @@ impl Viewport {
 
 /// What the library keeps of a screen: where it draws, how big it is, the program it draws quads with, its widget
 /// table, what it has drawn by key and what it lists in what order, the list it last sent and what each entry of it
-/// is, whether what it last laid out is current, the modifiers held, what it last asked of its window's input method,
-/// what its tooltips wait on: the hits the pointer reaches, the number of the last hover, and whether the pointer
-/// moved since its tooltips were looked at; the size it last told each child it places; and where it stands with a
-/// drag.
+/// is, what each entry a press reached was when it reached it, while a button is down on it, whether what it last laid
+/// out is current, the modifiers held, what it last asked of its window's input method, what its tooltips wait on: the
+/// hits the pointer reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked
+/// at; the size it last told each child it places; and where it stands with a drag.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -145,6 +146,9 @@ pub struct Screen {
     listed: Vec<Entry>,
     /// What each entry of the list last sent is, which input through it reaches.
     listing: Vec<Listed>,
+    /// The entries of its list a press reached that the window's capture still sends input through, each as it was
+    /// when the press reached it: none while no button is down on any.
+    held: Vec<Hold>,
     /// The number of the next draw made: an answer for an older one of the same key is let go.
     serial: u64,
     fresh: Fresh,
@@ -278,6 +282,7 @@ impl Screen {
             keys: Vec::new(),
             listed: Vec::new(),
             listing: Vec::new(),
+            held: Vec::new(),
             serial: 0,
             fresh: Fresh::Stale,
             modifiers: Modifiers::default(),

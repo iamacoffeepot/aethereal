@@ -323,3 +323,33 @@ fn a_target_in_the_screen_draws_lit_while_a_drag_it_takes_is_over_it() {
     assert!(draws(&over_items), "the item's well lights: {over_items:?}");
     assert!(!draws(&over_spells), "the spell's well takes no items: {over_spells:?}");
 }
+
+#[test]
+fn a_drag_released_after_a_target_before_its_source_lit_up_still_drops() {
+    // Catches the capture's release read against the newest list, in which the target before the source, drawing as
+    // it lit, renumbered the source's hit, so the release reaches the target rather than the source and the drop is
+    // lost, the drag left under way.
+    let tree = || {
+        column(vec![
+            Node::new(Segment::Place(0), Well, sized(40.0, 20.0), vec![])
+                .with_drop(DropTarget::new(Ev::Placed(3), place_item)),
+            Node::new(Segment::Place(1), Stack, sized(40.0, 20.0), vec![]).with_drag(DragSource::new(Item { id: 7 })),
+        ])
+    };
+    let mut screen = screen();
+    laid(&mut screen, tree(), &[]);
+    let source = hit(&screen, &child(1));
+    let well = hit(&screen, &child(0));
+
+    press(&mut screen, source, 10.0, 30.0);
+    point(&mut screen, source, PointerEvent::PointerMoved { x: 10.0, y: 10.0 });
+    point(&mut screen, well, PointerEvent::PointerEntered);
+    laid(&mut screen, tree(), &[]);
+    let renumbered = hit(&screen, &child(1));
+    let lit = hit(&screen, &child(0));
+    let dropped = raised(release(&mut screen, source, 10.0, 10.0, over(lit, 10.0, 10.0)));
+
+    assert_ne!(renumbered, source, "the lit well's draw renumbers the source's hit");
+    assert_eq!(dropped, vec![Raised::Dropped(Ev::Placed(3), item(7))]);
+    assert_eq!(screen.grip, Grip::Loose);
+}

@@ -120,6 +120,12 @@ impl Screen {
         }
     }
 
+    /// Takes in a move or release the capture sent to the widget at `path`, which has gone from the tree since the
+    /// press reached it: a grip of it lets go, and a drag from it ends there, landing nothing.
+    pub(super) fn lost(&mut self, path: &KeyPath) {
+        self.let_go(path);
+    }
+
     /// Takes in the pointer coming onto or leaving a hit while a drag is under way: the target it is over may change,
     /// so the next `Prepare` lays the screen out.
     pub(super) fn passed(&mut self) {
