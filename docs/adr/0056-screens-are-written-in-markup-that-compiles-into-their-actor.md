@@ -263,6 +263,7 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - This is one round trip per font, never per string.
   - A font is made from a source (a built-in, or a font file's bytes) and names its fallbacks when it is made, in place of one renderer-wide list. So a `FontId`'s metrics never change: a screen keeps them for good, and nothing is ever sent to update them.
   - A text's outline draws outside its measured box, so `Text` pads its layout size by the outline's width.
+  - A text's measured width is its widest line, so `Text` makes the text wrap at that width and it fills exactly its box (ADR-0052). A word too long to break measures wider than the width offered. `Text` then draws at the offered width, and its box cuts the word.
 - **A child actor learns a new size a turn after its parent decides it.** The clip contains the mismatch for that turn, and moves cost nothing. Content whose size changes every frame, such as a window being resized by dragging, belongs in widgets in one actor.
 - **The dev overlay moves onto the library,** as its first user.
 - **Follow-on work, each waiting for a need:**
