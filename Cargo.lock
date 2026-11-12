@@ -306,6 +306,7 @@ dependencies = [
  "aethereal-data",
  "aethereal-math",
  "aethereal-render",
+ "aethereal-window",
  "pollster",
  "taffy",
  "wgpu",

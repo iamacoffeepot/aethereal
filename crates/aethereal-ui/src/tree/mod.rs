@@ -79,6 +79,11 @@ impl Node {
     pub(crate) const fn style(&self) -> &Style {
         &self.style
     }
+
+    /// Its child told apart by `segment`, if it has one.
+    fn child(&self, segment: Segment) -> Option<&Self> {
+        self.children.iter().find(|child| child.segment == segment)
+    }
 }
 
 impl PartialEq for Node {
@@ -115,6 +120,17 @@ impl Tree {
     #[must_use]
     pub const fn new(root: Node) -> Self {
         Self { root }
+    }
+
+    /// The node at `path`, if the tree has one there: found a segment at a time, without a frame for each.
+    pub(crate) fn find(&self, path: &KeyPath) -> Option<&Node> {
+        let (first, rest) = path.segments.split_first()?;
+        let rooted = *first == self.root.segment;
+        if !rooted {
+            return None;
+        }
+
+        rest.iter().try_fold(&self.root, |node, segment| node.child(*segment))
     }
 
     /// Its nodes in tree order, the order they lay out and draw in, each beside its path and the places of its

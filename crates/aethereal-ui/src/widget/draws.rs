@@ -8,16 +8,34 @@ use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Colour, Font, Outline, Run, Wrap};
 use aethereal_render::texture::TextureId;
 
-/// Where a widget's draws go, in order, with the fonts it measures its text by.
+/// Where a widget's draws go, in order, with the fonts it measures its text by, and whether it has its screen's focus.
 pub struct Draws<'draws, 'fonts> {
     pieces: &'draws mut Vec<Piece>,
     measuring: &'draws mut Measuring<'fonts>,
+    focus: Focused,
+}
+
+/// Whether a widget being drawn has its screen's focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focused {
+    Yes,
+    No,
 }
 
 impl<'draws, 'fonts> Draws<'draws, 'fonts> {
-    /// Draws into `pieces`, measuring with `measuring`.
-    pub(crate) const fn new(pieces: &'draws mut Vec<Piece>, measuring: &'draws mut Measuring<'fonts>) -> Self {
-        Self { pieces, measuring }
+    /// Draws into `pieces`, measuring with `measuring`, of a widget that has its screen's focus or not, as `focus` says.
+    pub(crate) const fn new(
+        pieces: &'draws mut Vec<Piece>,
+        measuring: &'draws mut Measuring<'fonts>,
+        focus: Focused,
+    ) -> Self {
+        Self { pieces, measuring, focus }
+    }
+
+    /// Whether the widget has its screen's focus, as a text input shows its caret only while it has.
+    #[must_use]
+    pub fn focused(&self) -> bool {
+        self.focus == Focused::Yes
     }
 
     /// Draws `quad` over what was drawn before it.

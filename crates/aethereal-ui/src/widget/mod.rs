@@ -6,16 +6,22 @@
 //! A widget keeps no state of its own. What it needs between rebuilds, hover or a scroll offset, is its
 //! [`Widget::State`], which the screen's widget table makes, keeps, and drops by the widget's key (ADR-0056: Widget
 //! state is kept by key).
+//!
+//! Input reaches a primitive by the entry of its screen's list it is reached through: the pointer in its own
+//! coordinates, and, while it has its screen's focus, keys and typed text. It changes its state, and raises its events
+//! (ADR-0056: Events call the screen's methods). Each has a default, so a widget that takes no input says nothing of it.
 
 mod draws;
 
-pub use draws::Piece;
 pub use draws::{Draws, Quad, Sample, Slices, TextDraw};
+pub use draws::{Focused, Piece};
 
 use crate::fonts::Measuring;
+use crate::input::{Hears, Input, Key, Pointing, Used};
 use crate::style::Style;
 use aethereal_data::{Budget, Kind, KindId, Plain, from_bytes, to_bytes};
 use aethereal_math::{Rect2, Vec2};
+use aethereal_render::draw_list::Pointer;
 use core::any::Any;
 use core::fmt::Debug;
 
@@ -29,8 +35,8 @@ const MOST_STATE_BYTES: usize = 64 * 1024;
 /// code, and dropped when its key goes: a kind, so a state whose type changed, at the same key or in new code, is made
 /// anew rather than misread.
 ///
-/// Input is not part of it yet. The library's input stage adds it as methods with defaults, so a widget written now
-/// keeps building.
+/// It takes in input as its methods with defaults say: a widget the pointer reaches says so in [`Self::pointer`], and
+/// one that can hold its screen's focus in [`Self::focusable`].
 pub trait Widget: Debug + PartialEq + Send + 'static {
     /// What the widget keeps between rebuilds: [`Stateless`] for a widget that keeps nothing.
     type State: Kind + Plain + Default;
@@ -48,6 +54,44 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
 
     /// Draws its content where layout put it, `laid`, over the background and border its style draws beneath it.
     fn draw(&self, state: &Self::State, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>);
+
+    /// How the pointer reaches it over its box, as `state` stands, and the cursor the window shows there: a widget the
+    /// pointer reaches is listed with a hit over its box, after its draws and before its children's. One it ignores is
+    /// reached only when its style fills its box, as a panel's background blocks the pointer from what is beneath it.
+    fn pointer(&self, state: &Self::State) -> Pointer {
+        let _ = state;
+
+        Pointer::Ignores
+    }
+
+    /// Whether it can hold its screen's focus: a press on it focuses it, Tab reaches it in tree order, and keys go to
+    /// it first while it has it.
+    fn focusable(&self) -> bool {
+        false
+    }
+
+    /// What it hears while it has its screen's focus.
+    fn hears(&self) -> Hears {
+        Hears::Keys(&[])
+    }
+
+    /// Takes in what the pointer did at it.
+    fn pointed(&self, state: &mut Self::State, pointing: Pointing, input: &mut Input<'_, '_>) {
+        let _ = (state, pointing, input);
+    }
+
+    /// Takes in a key pressed while it has its screen's focus, and says whether it used it.
+    fn key(&self, state: &mut Self::State, key: &Key, input: &mut Input<'_, '_>) -> Used {
+        let _ = (state, key, input);
+
+        Used::Passed
+    }
+
+    /// Takes in text typed while it has its screen's focus: the characters a key typed, or what an input method
+    /// committed (ADR-0051).
+    fn typed(&self, state: &mut Self::State, text: &str, input: &mut Input<'_, '_>) {
+        let _ = (state, text, input);
+    }
 }
 
 /// How a widget lays its children out.
@@ -104,6 +148,16 @@ pub struct Laid {
     pub scale: f32,
 }
 
+impl Laid {
+    /// It, in coordinates whose `0, 0` is at `origin` of these.
+    #[must_use]
+    pub fn relative_to(self, origin: Vec2) -> Self {
+        let moved = |rect: Rect2| Rect2 { min: rect.min - origin, max: rect.max - origin };
+
+        Self { rect: moved(self.rect), content: moved(self.content), clip: moved(self.clip), scale: self.scale }
+    }
+}
+
 /// The state of a widget that keeps nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
 #[kind(name = "aether.ui.stateless")]
@@ -126,6 +180,36 @@ pub trait Built: Debug + Send {
     /// Draws it with its state read from `state`, the bytes its table keeps: a state that does not read, which only a
     /// table not kept by these rules could hold, is drawn as it is first made.
     fn draw(&self, state: &[u8], style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>);
+    /// How the pointer reaches it, its state read from `state`.
+    fn pointer(&self, state: &[u8]) -> Pointer;
+    /// Whether it can hold its screen's focus.
+    fn focusable(&self) -> bool;
+    /// What it hears while it has its screen's focus.
+    fn hears(&self) -> Hears;
+    /// Takes in what the pointer did at it, its state read from and written back to `state`.
+    fn pointed(&self, state: &mut Vec<u8>, pointing: Pointing, input: &mut Input<'_, '_>);
+    /// Takes in a key, its state read from and written back to `state`, and says whether it used it.
+    fn key(&self, state: &mut Vec<u8>, key: &Key, input: &mut Input<'_, '_>) -> Used;
+    /// Takes in typed text, its state read from and written back to `state`.
+    fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>);
+}
+
+/// `W`'s state read from `state`, the bytes its table keeps: one that does not read, which only a table not kept by
+/// these rules could hold, is read as it is first made.
+fn read<W: Widget>(state: &[u8]) -> W::State {
+    from_bytes::<W::State>(state, &mut Budget::new(MOST_STATE_BYTES)).unwrap_or_default()
+}
+
+/// Reads `W`'s state from `state`, changes it with `change`, and writes it back, answering what `change` did.
+fn changed<W: Widget, T>(state: &mut Vec<u8>, change: impl FnOnce(&mut W::State) -> T) -> T {
+    let mut read = read::<W>(state);
+    let did = change(&mut read);
+    // A state encodes as any plain value does: only a count past four billion fails, which no widget's state holds.
+    if let Ok(bytes) = to_bytes(&read) {
+        *state = bytes;
+    }
+
+    did
 }
 
 impl<W: Widget> Built for W {
@@ -156,7 +240,30 @@ impl<W: Widget> Built for W {
     }
 
     fn draw(&self, state: &[u8], style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
-        let state = from_bytes::<W::State>(state, &mut Budget::new(MOST_STATE_BYTES)).unwrap_or_default();
-        Widget::draw(self, &state, style, laid, draws);
+        Widget::draw(self, &read::<W>(state), style, laid, draws);
+    }
+
+    fn pointer(&self, state: &[u8]) -> Pointer {
+        Widget::pointer(self, &read::<W>(state))
+    }
+
+    fn focusable(&self) -> bool {
+        Widget::focusable(self)
+    }
+
+    fn hears(&self) -> Hears {
+        Widget::hears(self)
+    }
+
+    fn pointed(&self, state: &mut Vec<u8>, pointing: Pointing, input: &mut Input<'_, '_>) {
+        changed::<W, ()>(state, |state| Widget::pointed(self, state, pointing, input));
+    }
+
+    fn key(&self, state: &mut Vec<u8>, key: &Key, input: &mut Input<'_, '_>) -> Used {
+        changed::<W, Used>(state, |state| Widget::key(self, state, key, input))
+    }
+
+    fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>) {
+        changed::<W, ()>(state, |state| Widget::typed(self, state, text, input));
     }
 }

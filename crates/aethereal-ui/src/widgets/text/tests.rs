@@ -5,7 +5,7 @@ use crate::fonts::Fonts;
 use crate::layout::lay_out;
 use crate::style::{Alignment, Length, Style};
 use crate::tree::{Node, Segment, Tree};
-use crate::widget::{Draws, Laid, Piece, Stateless, TextDraw, Widget};
+use crate::widget::{Draws, Focused, Laid, Piece, Stateless, TextDraw, Widget};
 use crate::widgets::Column;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::font::{Font as FontFile, Metrics};
@@ -41,7 +41,7 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));
     let laid = Laid { rect: laid_box.rect, content: laid_box.content, clip: screen, scale: 1.0 };
     let mut pieces = Vec::new();
-    let mut into = Draws::new(&mut pieces, &mut measuring);
+    let mut into = Draws::new(&mut pieces, &mut measuring, Focused::No);
     let Some(text) = flat[2].node.widget().as_any().downcast_ref::<Text>() else {
         panic!("the third node is the text");
     };

@@ -1,0 +1,386 @@
+//! A screen's input: where the pointer and the keys its list reaches go, what its widgets raise, how its focus moves
+//! and what keys it declares for it, read from what each turn of input hands back and the lists its `Prepare`s send.
+
+use super::super::keys::Role;
+use super::super::orders::Order;
+use super::super::tests::{answered, id, last_list, mono, screen};
+use super::super::{Listed, Outcome, Screen};
+use super::Heard;
+use crate::input::Raised;
+use crate::style::{Length, Style};
+use crate::table::Focus;
+use crate::tree::{KeyPath, Node, Segment, Tree};
+use crate::widgets::{Button, Column, Press, Slider, Text, TextInput, Toggle};
+use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
+use aethereal_data::ActorId;
+use aethereal_render::draw_list::{Entry, Pointer};
+use aethereal_render::text::{Colour, Font};
+use aethereal_window::WindowId;
+use aethereal_window::{AllowIme, Button as Pressed, Cursor, KeyEvent, KeySet, Keyed, Over, Pointed, PointerEvent};
+
+/// The window the screen draws in.
+fn window() -> WindowId {
+    id(0)
+}
+
+/// The events the tests' widgets raise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ev {
+    Click(u32),
+    Changed,
+    Submitted,
+    Flipped,
+    Slid,
+}
+
+/// The screen's actor, as the window names it.
+fn me() -> ActorId {
+    ActorId::new(1)
+}
+
+/// What a release over an entry of the screen's own list names it as.
+fn mine() -> ProtocolRef<aethereal_window::Hearer> {
+    ProtocolRef::found(Seated { id: me(), seat: SeatNumber::new(1) })
+}
+
+/// A box `width` by `height` logical pixels, its text in the renderer's monospace font.
+fn sized(width: f32, height: f32) -> Style {
+    Style { width: Length::Pixels(width), height: Length::Pixels(height), font: Font::Mono, ..Style::default() }
+}
+
+/// A tree of a column over `children`, at the screen's top left.
+fn column(children: Vec<Node>) -> Tree {
+    Tree::new(Node::new(Segment::Place(0), Column, Style::default(), children))
+}
+
+/// The path of the column's child at `place`.
+fn child(place: u32) -> KeyPath {
+    KeyPath::of(&[Segment::Place(0), Segment::Place(place)])
+}
+
+/// Lays `tree` out on `screen` with `hotkeys`, every draw answered made: what the `Prepare` did, and every order sent
+/// on the way.
+fn laid(screen: &mut Screen, tree: Tree, hotkeys: &[&str]) -> (Outcome, Vec<Order>) {
+    let prepared = screen.prepare(tree, hotkeys);
+
+    (prepared.outcome, answered(screen, &prepared.orders, false))
+}
+
+/// The number of the entry of the screen's list that is the hit over the widget at `path`.
+fn hit(screen: &Screen, path: &KeyPath) -> u32 {
+    let listed = Listed::Hit(path.clone());
+    let Some(at) = screen.listing.iter().position(|entry| *entry == listed) else {
+        panic!("the screen lists a hit over {path:?}: {:?}", screen.listing);
+    };
+
+    u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+/// The number of the entry of the screen's list that declares the keys of `role`.
+fn keys(screen: &Screen, role: Role) -> u32 {
+    let listed = Listed::Keys(role);
+    let Some(at) = screen.listing.iter().position(|entry| *entry == listed) else {
+        panic!("the screen declares keys of {role:?}: {:?}", screen.listing);
+    };
+
+    u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+/// `event` through the entry `entry` of the screen's list.
+fn point(screen: &mut Screen, entry: u32, event: PointerEvent) -> Heard {
+    screen.pointed(Pointed { window: window(), entry, event }, me())
+}
+
+/// A press of the main button at `x`, `y` through the entry `entry`.
+fn press(screen: &mut Screen, entry: u32, x: f32, y: f32) -> Heard {
+    point(screen, entry, PointerEvent::PointerDown { x, y, button: Pressed::Main })
+}
+
+/// A release of the main button at `x`, `y` through the entry `entry`, over `over`.
+fn release(screen: &mut Screen, entry: u32, x: f32, y: f32, over: Over) -> Heard {
+    point(screen, entry, PointerEvent::PointerUp { x, y, button: Pressed::Main, over })
+}
+
+/// The release's place over the entry `entry` of the screen's own list.
+fn over(entry: u32, x: f32, y: f32) -> Over {
+    Over::Entry { actor: mine(), entry, x, y }
+}
+
+/// The key at `code`, meaning `key`, pressed through the entry `entry`.
+fn key_down(screen: &mut Screen, entry: u32, code: &str, key: &str) -> Heard {
+    let event = KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
+
+    screen.keyed(Keyed { window: window(), entry, event })
+}
+
+/// `text` typed through the entry `entry`.
+fn typed(screen: &mut Screen, entry: u32, text: &str) -> Heard {
+    screen.keyed(Keyed { window: window(), entry, event: KeyEvent::Text { text: String::from(text) } })
+}
+
+/// What `heard` raised, as the tests' events.
+fn raised(heard: Heard) -> Vec<Raised<Ev>> {
+    heard
+        .raised
+        .into_iter()
+        .map(|raised| match raised.typed::<Ev>() {
+            Ok(raised) => raised,
+            Err(other) => panic!("the tests' widgets raise the tests' events: {other:?}"),
+        })
+        .collect()
+}
+
+/// The codes of the keys `heard` left for the screen.
+fn left_over(heard: &Heard) -> Vec<&str> {
+    heard.keys.iter().map(|key| key.code.as_str()).collect()
+}
+
+/// A text input of `text`, raising `Changed`, and `Submitted` with Enter, 100 by 20 logical pixels.
+fn text_input(text: &str) -> Node {
+    Node::new(Segment::Place(0), TextInput::new(text, Ev::Changed).submit(Ev::Submitted), sized(100.0, 20.0), vec![])
+}
+
+/// A screen whose monospace font's metrics have come, so its texts lay out.
+fn screen_with_fonts() -> Screen {
+    let mut screen = screen();
+    screen.metrics_read(Font::Mono, mono(), Vec::new());
+
+    screen
+}
+
+#[test]
+fn a_click_is_a_press_and_a_release_over_the_same_button_and_not_one_released_elsewhere() {
+    // Catches a click raised on the press, so a press dragged off to cancel still acts; one raised on any release, so a
+    // drag from the button dropped on another acts; and the arguments of the event lost or swapped on the way.
+    let mut screen = screen();
+    let button = Node::new(Segment::Place(0), Button::new(Ev::Click(7)), sized(40.0, 20.0), vec![]);
+    laid(&mut screen, column(vec![button]), &[]);
+    let entry = hit(&screen, &child(0));
+
+    let pressed = raised(press(&mut screen, entry, 10.0, 10.0));
+    let clicked = raised(release(&mut screen, entry, 12.0, 10.0, over(entry, 12.0, 10.0)));
+    press(&mut screen, entry, 10.0, 10.0);
+    let elsewhere = raised(release(&mut screen, entry, 90.0, 90.0, Over::Nothing));
+
+    assert_eq!(pressed, vec![]);
+    assert_eq!(clicked, vec![Raised::Event(Ev::Click(7))]);
+    assert_eq!(elsewhere, vec![]);
+}
+
+#[test]
+fn a_click_after_the_view_rebuilt_raises_the_arguments_the_new_view_copied() {
+    // Catches input routed through the tree built at the last `Prepare` after a method changed what the view copies,
+    // so a second click before the next frame raises the first's stale arguments: two quick clicks that each should
+    // take the next item both take the same one.
+    let mut screen = screen();
+    let tree =
+        |click| column(vec![Node::new(Segment::Place(0), Button::new(Ev::Click(click)), sized(40.0, 20.0), vec![])]);
+    laid(&mut screen, tree(1), &[]);
+    let entry = hit(&screen, &child(0));
+    let click = |screen: &mut Screen| {
+        press(screen, entry, 5.0, 5.0);
+        raised(release(screen, entry, 5.0, 5.0, over(entry, 5.0, 5.0)))
+    };
+
+    let first = click(&mut screen);
+    screen.rebuilt(tree(2));
+    let second = click(&mut screen);
+
+    assert_eq!(first, vec![Raised::Event(Ev::Click(1))]);
+    assert_eq!(second, vec![Raised::Event(Ev::Click(2))]);
+}
+
+#[test]
+fn a_screen_whose_interaction_state_changed_draws_again_though_its_tree_is_the_same() {
+    // Catches a hover that changes the button's state but leaves the screen skipping its identical tree, so the button
+    // never lights up until something else changes.
+    let mut screen = screen();
+    let tree = || column(vec![Node::new(Segment::Place(0), Button::new(Ev::Click(1)), sized(40.0, 20.0), vec![])]);
+    laid(&mut screen, tree(), &[]);
+    let entry = hit(&screen, &child(0));
+
+    point(&mut screen, entry, PointerEvent::PointerEntered);
+    let (hovered, orders) = laid(&mut screen, tree(), &[]);
+    let (again, _) = laid(&mut screen, tree(), &[]);
+
+    assert_eq!(hovered, Outcome::Laid);
+    let tinted = orders.iter().any(|order| matches!(order, Order::Instances { .. }));
+    assert!(tinted, "the hovered button draws its tint: {orders:?}");
+    assert_eq!(again, Outcome::Unchanged);
+}
+
+#[test]
+fn hover_and_press_survive_a_rebuild_of_a_different_tree() {
+    // Catches a button's state made anew whenever the view rebuilds a changed tree, so a press held while a label
+    // ticks over is forgotten, and its release clicks nothing.
+    let mut screen = screen();
+    let button = |click| Node::new(Segment::Place(0), Button::new(Ev::Click(click)), sized(40.0, 20.0), vec![]);
+    laid(&mut screen, column(vec![button(1)]), &[]);
+    let entry = hit(&screen, &child(0));
+    point(&mut screen, entry, PointerEvent::PointerEntered);
+    press(&mut screen, entry, 10.0, 10.0);
+
+    let label = Node::new(Segment::Place(1), Text::new("Gold: 12"), sized(40.0, 20.0), vec![]);
+    laid(&mut screen, column(vec![button(2), label]), &[]);
+
+    let kept = screen.table().state::<Button<Ev>>(&child(0));
+    assert_eq!(kept, Some(Press { hovered: true, pressed: true }));
+}
+
+#[test]
+fn tab_moves_focus_through_focusable_widgets_in_tree_order_and_shift_tab_back() {
+    // Catches Tab that follows the order widgets were last drawn or hit rather than the tree's; one that stops at the
+    // end rather than going round; a widget nested in another container passed over; and Shift-Tab that goes forward.
+    let mut screen = screen();
+    let nested = Node::new(Segment::Place(0), Toggle::new(false, Ev::Flipped), sized(20.0, 10.0), vec![]);
+    let tree = column(vec![
+        Node::new(Segment::Place(0), Button::new(Ev::Click(1)), sized(40.0, 20.0), vec![]),
+        Node::new(Segment::Place(1), Column, Style::default(), vec![nested]),
+        Node::new(Segment::Place(2), Slider::new(0.0, 0.0, 1.0, 0.0, Ev::Slid), sized(40.0, 10.0), vec![]),
+    ]);
+    laid(&mut screen, tree, &["Tab"]);
+    let tabs = keys(&screen, Role::Screen);
+    let modifiers = keys(&screen, Role::Modifiers);
+    let focus = |screen: &Screen| screen.table().focus().clone();
+
+    let mut forward = Vec::new();
+    for _ in 0..4 {
+        key_down(&mut screen, tabs, "Tab", "Tab");
+        forward.push(focus(&screen));
+    }
+    key_down(&mut screen, modifiers, "ShiftLeft", "Shift");
+    key_down(&mut screen, tabs, "Tab", "Tab");
+    let back = focus(&screen);
+
+    let toggle = KeyPath::of(&[Segment::Place(0), Segment::Place(1), Segment::Place(0)]);
+    let on = Focus::On;
+    assert_eq!(forward, vec![on(child(0)), on(toggle), on(child(2)), on(child(0))]);
+    assert_eq!(back, on(child(2)));
+}
+
+#[test]
+fn a_focused_widget_whose_key_goes_clears_focus_and_stops_the_input_method() {
+    // Catches focus left on a key no widget has, so the screen goes on declaring every key for a text input that is
+    // gone and the game hears no key again; and the window's input method left on, taking the game's keys into
+    // compositions.
+    let mut screen = screen_with_fonts();
+    laid(&mut screen, column(vec![text_input("gold")]), &[]);
+    let entry = hit(&screen, &child(0));
+
+    let focused = press(&mut screen, entry, 5.0, 5.0);
+    let (_, orders) = laid(&mut screen, column(vec![]), &[]);
+
+    assert_eq!(focused.imes, vec![AllowIme { window: window(), allowed: true }]);
+    assert_eq!(screen.table().focus(), &Focus::Nowhere);
+    let stopped = orders.contains(&Order::AllowIme(AllowIme { window: window(), allowed: false }));
+    assert!(stopped, "the input method is stopped: {orders:?}");
+}
+
+#[test]
+fn a_focused_text_input_declares_every_key_blocking_and_gives_them_up_on_blur() {
+    // Catches a text input that takes focus but leaves the keys declared as before, so a letter typed into it moves
+    // the game beneath; and one that keeps every key after Escape, so the game never hears a key again.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("gold")]);
+    laid(&mut screen, tree(), &[]);
+    let entry = hit(&screen, &child(0));
+    press(&mut screen, entry, 5.0, 5.0);
+    let (_, focused) = laid(&mut screen, tree(), &[]);
+    let declared = keys(&screen, Role::Screen);
+
+    let blurred = key_down(&mut screen, declared, "Escape", "Escape");
+    let (_, after) = laid(&mut screen, tree(), &[]);
+
+    let every = Entry::Keys { frame: screen.target.frame, keys: KeySet::All, blocks: true };
+    let first = last_list(&focused).and_then(|list| list.first().cloned());
+    assert_eq!(first, Some(every));
+    assert_eq!(blurred.imes, vec![AllowIme { window: window(), allowed: false }]);
+    let keyless = last_list(&after).is_some_and(|list| !list.iter().any(|entry| matches!(entry, Entry::Keys { .. })));
+    assert!(keyless, "no keys are declared without focus or hotkeys: {after:?}");
+}
+
+#[test]
+fn a_key_no_widget_uses_reaches_the_screen_and_a_typed_letter_does_not() {
+    // Catches a key the focused text input passed being dropped, so a screen's F2 does nothing while it is typed in; a
+    // letter typed into it reaching the screen's hotkeys too; and a hotkey that never reaches the screen without focus.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("gold")]);
+    laid(&mut screen, tree(), &["KeyI"]);
+    let declared = keys(&screen, Role::Screen);
+    let hotkey = key_down(&mut screen, declared, "KeyI", "i");
+
+    let entry = hit(&screen, &child(0));
+    press(&mut screen, entry, 5.0, 5.0);
+    laid(&mut screen, tree(), &["KeyI"]);
+    let declared = keys(&screen, Role::Screen);
+    let passed = key_down(&mut screen, declared, "F2", "F2");
+    let letter = key_down(&mut screen, declared, "KeyI", "i");
+
+    assert_eq!(left_over(&hotkey), vec!["KeyI"]);
+    assert_eq!(left_over(&passed), vec!["F2"]);
+    assert_eq!(left_over(&letter), Vec::<&str>::new());
+}
+
+#[test]
+fn typed_text_goes_to_the_focused_input_and_replaces_its_selection() {
+    // Catches typed text that goes nowhere, or to a widget without focus; and a select-all chord that is lost, so
+    // typing after it appends rather than replaces.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("gold")]);
+    laid(&mut screen, tree(), &[]);
+    let entry = hit(&screen, &child(0));
+    press(&mut screen, entry, 99.0, 5.0);
+    laid(&mut screen, tree(), &[]);
+    let declared = keys(&screen, Role::Screen);
+
+    let appended = raised(typed(&mut screen, declared, "en"));
+    key_down(&mut screen, declared, "ControlLeft", "Control");
+    key_down(&mut screen, declared, "KeyA", "a");
+    let replaced = raised(typed(&mut screen, declared, "x"));
+    let submitted = raised(key_down(&mut screen, declared, "Enter", "Enter"));
+
+    assert_eq!(appended, vec![Raised::Text(Ev::Changed, String::from("golden"))]);
+    assert_eq!(replaced, vec![Raised::Text(Ev::Changed, String::from("x"))]);
+    assert_eq!(submitted, vec![Raised::Text(Ev::Submitted, String::from("gold"))]);
+}
+
+#[test]
+fn a_slider_dragged_outside_its_box_still_sets_its_value() {
+    // Catches a slider that sets its value only while the pointer is over its box, so a drag that overshoots the end
+    // stops short of it; and one that goes on following the pointer after the release.
+    let mut screen = screen();
+    let slider = Node::new(Segment::Place(0), Slider::new(0.0, 0.0, 10.0, 1.0, Ev::Slid), sized(100.0, 10.0), vec![]);
+    laid(&mut screen, column(vec![slider]), &[]);
+    let entry = hit(&screen, &child(0));
+
+    let pressed = raised(press(&mut screen, entry, 50.0, 5.0));
+    let overshot = raised(point(&mut screen, entry, PointerEvent::PointerMoved { x: 400.0, y: 80.0 }));
+    release(&mut screen, entry, 400.0, 80.0, Over::Nothing);
+    let after = raised(point(&mut screen, entry, PointerEvent::PointerMoved { x: 70.0, y: 5.0 }));
+
+    assert_eq!(pressed, vec![Raised::Number(Ev::Slid, 5.0)]);
+    assert_eq!(overshot, vec![Raised::Number(Ev::Slid, 10.0)]);
+    assert_eq!(after, vec![]);
+}
+
+#[test]
+fn a_filled_widget_blocks_the_pointer_unless_it_is_within_one_the_pointer_reaches() {
+    // Catches a panel's background the pointer passes through, so a click on the inventory's empty space also walks
+    // the character there; and a button's filled label that takes the press from the button it labels.
+    let mut screen = screen();
+    let filled = Style { background: Colour::opaque(0.2, 0.2, 0.2), ..sized(40.0, 20.0) };
+    let label = Node::new(Segment::Place(0), Column, filled.clone(), vec![]);
+    let button = Node::new(Segment::Place(1), Button::new(Ev::Click(1)), sized(40.0, 20.0), vec![label]);
+    let panel = Node::new(Segment::Place(0), Column, filled, vec![]);
+    let (_, orders) = laid(&mut screen, column(vec![panel, button]), &[]);
+
+    let hits: Vec<Pointer> = last_list(&orders)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Hit { pointer, .. } => Some(pointer),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hits, vec![Pointer::Blocks(Cursor::Default), Pointer::Blocks(Cursor::Hand)]);
+}
