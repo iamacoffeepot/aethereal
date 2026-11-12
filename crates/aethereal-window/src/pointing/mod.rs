@@ -1,8 +1,8 @@
 //! The pointer's cascade (ADR-0055): a window's pointer events delivered top-down through what was drawn under the
 //! pointer, in the declared order of the draw calls, until one blocks.
 //!
-//! The renderer subscribes to a window's probes, [`SubscribeProbes`], and is sent each pointer event's place,
-//! numbered, [`Probed`]. It finds, at the pointer and at each press, which entries of which actors' draw lists drew
+//! The renderer subscribes to a window's probes, [`SubscribeProbes`], and is sent each pointer event's place, numbered,
+//! [`Probed`]. It finds, at the pointer and at each press and release, which entries of which actors' draw lists drew
 //! there, the last drawn on top, and answers the window a frame or two later, [`Picked`]. The window keeps each pointer
 //! event until the stacks of a frame drawn after it come back, and delivers it then, as [`Pointed`], to the actor whose
 //! list holds each entry of the stack, from the top, until the first that blocks: so what is seen under the pointer is
@@ -13,6 +13,10 @@
 //!   [`PointerEvent::PointerLeft`], and those it now reaches [`PointerEvent::PointerEntered`].
 //! - **Capture:** the entries a press reached are sent every move and release until every button is up, wherever the
 //!   pointer goes, each in the coordinates its list was drawn in when the press reached it.
+//! - **A release says what it was over:** the topmost entry of the stack at the release's own place, as though no
+//!   button were held, with the place in that entry's coordinates, or that nothing reachable was there, [`Over`]. So an
+//!   actor that began a drag learns where it was dropped, whatever holds the capture and wherever the pointer went
+//!   after.
 //! - **The wheel follows the pointer**, never a capture.
 //!
 //! The raw subscription stays: every subscriber of the window is sent every pointer event as its host heard it.
@@ -37,8 +41,8 @@ use std::collections::VecDeque;
 pub struct SubscribeProbes;
 
 /// A pointer event a window heard, numbered `at`, from 1, in the order the window heard them: where the pointer was,
-/// in the window's surface pixels, and whether it was a press, whose place is probed whatever the pointer does after
-/// it.
+/// in the window's surface pixels, and whether its place is pinned, as a press's and a release's are: probed whatever
+/// the pointer does after it.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.window.probed")]
 pub struct Probed {
@@ -46,24 +50,24 @@ pub struct Probed {
     pub at: u64,
     pub x: f32,
     pub y: f32,
-    pub press: bool,
+    pub pinned: bool,
 }
 
 /// What a frame drew at a window's probes, sent to the window's actor by the subscriber of its probes: the stack under
-/// the pointer's newest place, and under each press probed, each from the top, of every pointer event up to the one
+/// the pointer's newest place, and under each place pinned, each from the top, of every pointer event up to the one
 /// numbered `through`. The window delivers each of those events through them.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.window.picked")]
 pub struct Picked {
     pub through: u64,
     pub pointer: Vec<Reach>,
-    pub presses: Vec<Pressed>,
+    pub pinned: Vec<Pinned>,
 }
 
-/// The stack under the press numbered `at`, from the top.
+/// The stack under the place of the press or release numbered `at`, from the top.
 #[derive(Debug, Clone, PartialEq, Bound)]
-#[kind(name = "aether.window.pressed")]
-pub struct Pressed {
+#[kind(name = "aether.window.pinned")]
+pub struct Pinned {
     pub at: u64,
     pub stack: Vec<Reach>,
 }
@@ -85,7 +89,7 @@ pub type Hearer = (Pointed,);
 
 /// A pointer event, sent to an actor through the entry numbered `entry` of its draw list, which the pointer reached in
 /// `window`'s stack: so the actor need not test its own widgets again.
-#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 #[kind(name = "aether.window.pointed")]
 pub struct Pointed {
     pub window: WindowId,
@@ -95,20 +99,35 @@ pub struct Pointed {
 
 /// What the pointer did at an entry, positions in the coordinates its list was drawn in: the window's surface pixels,
 /// as [`Event`]'s are, less the origin its list was drawn at.
-#[derive(Debug, Clone, Copy, PartialEq, Plain)]
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 pub enum PointerEvent {
     /// The pointer moved, to `x`, `y`.
     PointerMoved { x: f32, y: f32 },
     /// A button went down, at `x`, `y`: every move and release is sent here until every button is up.
     PointerDown { x: f32, y: f32, button: Button },
-    /// A button came up, at `x`, `y`.
-    PointerUp { x: f32, y: f32, button: Button },
+    /// A button came up, at `x`, `y`, over `over`: what the pointer reaches there, whoever the release is sent to.
+    PointerUp { x: f32, y: f32, button: Button, over: Over },
     /// The wheel turned, with the pointer at `x`, `y`, as [`Event::Wheel`] says.
     Wheel { x: f32, y: f32, delta_x: f32, delta_y: f32 },
     /// The pointer now reaches the entry.
     PointerEntered,
     /// The pointer no longer reaches the entry.
     PointerLeft,
+}
+
+/// What a release was over: the topmost entry of the stack at the release's own place, whether it blocks the pointer
+/// or lets it through, as though no button were held, so it may be an entry the release is sent to; or nothing the
+/// pointer reaches. An entry the pointer ignores is never in a stack.
+///
+/// The stack is that of the first frame drawn after the release whose stacks came back, at the release's own place,
+/// wherever the pointer went after it.
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
+pub enum Over {
+    /// Nothing the pointer reaches was under it.
+    Nothing,
+    /// The entry numbered `entry` of the draw list `actor` sent, which the receiver may cast to a protocol it mails,
+    /// and the release's place, `x`, `y`, in the coordinates that list was drawn in, as `actor` would hear it.
+    Entry { actor: ProtocolRef<Hearer>, entry: u32, x: f32, y: f32 },
 }
 
 /// The most pointer events a window keeps waiting for their stacks. Far more than a frame or two brings, it bounds
@@ -156,9 +175,9 @@ impl Cascade {
     /// Takes in `event`, heard by `window`: a pointer event is numbered, kept until its stacks come back, and answered
     /// as the probe it is; any other is not the cascade's.
     pub fn heard(&mut self, window: WindowId, event: &Event) -> Option<Probed> {
-        let (x, y, press) = match event {
-            Event::PointerMoved { x, y } | Event::PointerUp { x, y, .. } | Event::Wheel { x, y, .. } => (*x, *y, false),
-            Event::PointerDown { x, y, .. } => (*x, *y, true),
+        let (x, y, pinned) = match event {
+            Event::PointerMoved { x, y } | Event::Wheel { x, y, .. } => (*x, *y, false),
+            Event::PointerDown { x, y, .. } | Event::PointerUp { x, y, .. } => (*x, *y, true),
             Event::KeyDown { .. }
             | Event::KeyUp { .. }
             | Event::Text { .. }
@@ -177,14 +196,14 @@ impl Cascade {
         }
         self.waiting.push_back((at, event.clone()));
 
-        Some(Probed { window, at, x, y, press })
+        Some(Probed { window, at, x, y, pinned })
     }
 
     /// Takes in what a frame drew at `window`'s probes, and answers each pointer event it delivers, in order: first
     /// what the pointer no longer and now reaches is told so, then each event waiting up to `picked.through`, through
-    /// its press's stack, the capture, or the pointer's stack.
+    /// the stack at its own place, the capture, or the pointer's stack.
     pub fn picked(&mut self, window: WindowId, picked: Picked) -> Vec<(ProtocolRef<Hearer>, Pointed)> {
-        let Picked { through, pointer, presses } = picked;
+        let Picked { through, pointer, pinned } = picked;
         let mut deliveries = Vec::new();
         let mut send = |reached: &[Reached], event: PointerEvent| {
             for to in reached {
@@ -210,14 +229,15 @@ impl Cascade {
             };
             match event {
                 Event::PointerDown { x, y, button } => {
-                    let pressed = presses.iter().find(|pressed| pressed.at == at);
-                    let stack = pressed.map_or(self.pointer.as_slice(), |pressed| pressed.stack.as_slice());
+                    let stack = own_stack(&pinned, &self.pointer, at);
                     let reached = self.capture.press(stack, button);
                     send(&reached, PointerEvent::PointerDown { x, y, button });
                 }
                 Event::PointerUp { x, y, button } => {
-                    let reached = self.capture.release(&self.pointer, button);
-                    send(&reached, PointerEvent::PointerUp { x, y, button });
+                    let stack = own_stack(&pinned, &self.pointer, at);
+                    let over = Over::top_of(stack, x, y);
+                    let reached = self.capture.release(stack, button);
+                    send(&reached, PointerEvent::PointerUp { x, y, button, over });
                 }
                 Event::PointerMoved { x, y } => {
                     let reached = self.capture.held(&self.pointer);
@@ -243,7 +263,8 @@ impl Cascade {
 }
 
 impl PointerEvent {
-    /// The event as an entry drawn with its list's origin at `origin` hears it: each place less the origin.
+    /// The event as an entry drawn with its list's origin at `origin` hears it: each place less the origin, but for what
+    /// a release was over, which is in its own entry's coordinates whoever hears it.
     #[must_use]
     fn relative_to(self, origin: Vec2) -> Self {
         let local = |x: f32, y: f32| (x - origin.x, y - origin.y);
@@ -256,9 +277,9 @@ impl PointerEvent {
                 let (x, y) = local(x, y);
                 Self::PointerDown { x, y, button }
             }
-            Self::PointerUp { x, y, button } => {
+            Self::PointerUp { x, y, button, over } => {
                 let (x, y) = local(x, y);
-                Self::PointerUp { x, y, button }
+                Self::PointerUp { x, y, button, over }
             }
             Self::Wheel { x, y, delta_x, delta_y } => {
                 let (x, y) = local(x, y);
@@ -266,6 +287,19 @@ impl PointerEvent {
             }
             Self::PointerEntered | Self::PointerLeft => self,
         }
+    }
+}
+
+impl Over {
+    /// What a release at `x`, `y`, in the window's surface pixels, was over: the top of `stack`, the one at its place,
+    /// at the place less the origin its list was drawn at; or nothing, when the stack is empty.
+    fn top_of(stack: &[Reach], x: f32, y: f32) -> Self {
+        stack.first().map_or(Self::Nothing, |top| Self::Entry {
+            actor: top.actor,
+            entry: top.entry,
+            x: x - top.origin.x,
+            y: y - top.origin.y,
+        })
     }
 }
 
@@ -277,6 +311,14 @@ impl Reached {
         let same_entry = self.entry == other.entry;
         same_actor && same_entry
     }
+}
+
+/// The stack under the press or release numbered `at`, of those `pinned`: its own, or, past the most places a frame
+/// probes, the pointer's, `pointer`.
+fn own_stack<'a>(pinned: &'a [Pinned], pointer: &'a [Reach], at: u64) -> &'a [Reach] {
+    let own = pinned.iter().find(|place| place.at == at);
+
+    own.map_or(pointer, |place| place.stack.as_slice())
 }
 
 /// Whether `reached` holds the entry `entry`, wherever it was drawn.
@@ -302,10 +344,10 @@ impl Capture {
     }
 
     /// The entries a release of `button` is sent to: those captured, freed as the last button comes up, or with no
-    /// capture, those it reaches through the pointer's stack, `pointer`.
-    fn release(&mut self, pointer: &[Reach], button: Button) -> Vec<Reached> {
+    /// capture, those it reaches through the stack at its place, `stack`.
+    fn release(&mut self, stack: &[Reach], button: Button) -> Vec<Reached> {
         let Self::Held { reached, buttons } = self else {
-            return cascade(pointer);
+            return cascade(stack);
         };
         let held = reached.clone();
         if let Some(at) = buttons.iter().position(|down| *down == button) {

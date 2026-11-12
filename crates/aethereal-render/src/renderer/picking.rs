@@ -7,7 +7,7 @@ use crate::draw_list::{self, Picks, Reaching};
 use crate::frame::Frame;
 use crate::picking::{self, CALL_BYTES, MOST_CALLS, MOST_PROBES, PROBES_BYTES, STACKS_BYTES};
 use aethereal_math::{Rect2, Vec2};
-use aethereal_window::{Picked, Pressed, Probed, Reach, WindowId};
+use aethereal_window::{Picked, Pinned, Probed, Reach, WindowId};
 use std::iter;
 
 /// What every frame's picking draws with: the layout of the step's group, the buffer each draw's call is bound from,
@@ -139,11 +139,12 @@ fn probes_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 }
 
 /// A window's probes, as the renderer keeps them: the buffer the step reads them from and writes their stacks into,
-/// where the pointer was last, the presses since the last frame drawn, and the number of the last pointer event heard.
+/// where the pointer was last, the places pinned since the last frame drawn, those of presses and releases, and the
+/// number of the last pointer event heard.
 pub(super) struct Probing {
     buffer: wgpu::Buffer,
     pointer: Pointer,
-    presses: Vec<Probe>,
+    pinned: Vec<Probe>,
     through: u64,
 }
 
@@ -162,8 +163,8 @@ pub(super) struct Probe {
     pub pixel: [u32; 2],
 }
 
-/// The probes of a window as one frame draws them: the pointer's first, then each press, and the number of the last
-/// pointer event heard before it.
+/// The probes of a window as one frame draws them: the pointer's first, then each place pinned, and the number of the
+/// last pointer event heard before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Probes {
     pub window: WindowId,
@@ -174,11 +175,11 @@ pub(super) struct Probes {
 impl Probing {
     /// No probe heard, on `device`.
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { buffer: probes_buffer(device), pointer: Pointer::Unheard, presses: Vec::new(), through: 0 }
+        Self { buffer: probes_buffer(device), pointer: Pointer::Unheard, pinned: Vec::new(), through: 0 }
     }
 
-    /// Takes in a pointer event the window heard: the pointer is there now, and a press is probed whatever it does
-    /// next, as many as fit beside the pointer.
+    /// Takes in a pointer event the window heard: the pointer is there now, and a place pinned, a press's or a
+    /// release's, is probed whatever it does next, as many as fit beside the pointer.
     pub fn heard(&mut self, probed: &Probed) {
         // A pixel's place is whole and not negative: `as` floors it, and saturates what is past the window.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -186,19 +187,19 @@ impl Probing {
         let probe = Probe { at: probed.at, pixel };
         self.pointer = Pointer::At(probe);
         self.through = self.through.max(probed.at);
-        let has_room = self.presses.len() < MOST_PROBES - 1;
-        if probed.press && has_room {
-            self.presses.push(probe);
+        let has_room = self.pinned.len() < MOST_PROBES - 1;
+        if probed.pinned && has_room {
+            self.pinned.push(probe);
         }
     }
 
     /// The probes of `window` the next frame draws, written for the GPU on `queue`, with the buffer they are written
-    /// in, and the presses taken: none while no pointer event has been heard.
+    /// in, and the places pinned taken: none while no pointer event has been heard.
     pub fn take(&mut self, queue: &wgpu::Queue, window: WindowId) -> Option<(Probes, &wgpu::Buffer)> {
         let Pointer::At(pointer) = self.pointer else {
             return None;
         };
-        let points: Vec<Probe> = iter::once(pointer).chain(self.presses.drain(..)).collect();
+        let points: Vec<Probe> = iter::once(pointer).chain(self.pinned.drain(..)).collect();
         let pixels: Vec<[u32; 2]> = points.iter().map(|probe| probe.pixel).collect();
         queue.write_buffer(&self.buffer, 0, &picking::probes_bytes(&pixels));
 
@@ -402,8 +403,8 @@ impl Stacks {
         };
         let mut stacks = picking::stacks(bytes, points.len(), hits).into_iter().map(reaches);
         let pointer = stacks.next().unwrap_or_default();
-        let presses = points.iter().skip(1).zip(stacks).map(|(press, stack)| Pressed { at: press.at, stack }).collect();
+        let pinned = points.iter().skip(1).zip(stacks).map(|(place, stack)| Pinned { at: place.at, stack }).collect();
 
-        (*window, Picked { through: *through, pointer, presses })
+        (*window, Picked { through: *through, pointer, pinned })
     }
 }
