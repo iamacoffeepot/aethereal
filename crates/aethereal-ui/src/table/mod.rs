@@ -13,7 +13,7 @@ mod tests;
 
 use crate::tree::{Flat, KeyPath};
 use crate::widget::Widget;
-use aethereal_data::{Budget, KindId, Plain, from_bytes};
+use aethereal_data::{Budget, KindId, Plain, from_bytes, to_bytes};
 
 /// The most bytes a state read out of the table may decode into.
 const MOST_STATE_BYTES: usize = 64 * 1024;
@@ -86,6 +86,15 @@ impl Table {
         match self.kept.binary_search_by(|kept| kept.path.cmp(path)) {
             Ok(at) => self.kept[at] = kept,
             Err(at) => self.kept.insert(at, kept),
+        }
+    }
+
+    /// Keeps `state`, the state of a widget `W`, under `path`, in place of what was kept there: as the screen's library
+    /// opens and shuts the stock widgets whose content it shows in its top layer.
+    pub(crate) fn put<W: Widget>(&mut self, path: &KeyPath, state: &W::State) {
+        // A state encodes as any plain value does: only a count past four billion fails, which no widget's state holds.
+        if let Ok(bytes) = to_bytes(state) {
+            self.write(path, KindId::of::<W::State>(), bytes);
         }
     }
 

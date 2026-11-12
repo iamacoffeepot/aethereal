@@ -24,7 +24,7 @@ impl Parent {
     #[must_use]
     pub const fn of(arrange: Arrange) -> Self {
         match arrange {
-            Arrange::Stack => Self::Stack,
+            Arrange::Stack | Arrange::Popup => Self::Stack,
             Arrange::Scroll(_) => Self::Scroll,
             Arrange::Flex(_) | Arrange::Grid | Arrange::Leaf => Self::Other,
         }
@@ -38,11 +38,11 @@ pub fn flow(style: &Style, arrange: Arrange, parent: Parent, room: Edges<f32>, s
     let (display, flex_direction) = match arrange {
         Arrange::Flex(Axis::Row) | Arrange::Scroll(Axis::Row) | Arrange::Leaf => (Display::Flex, FlexDirection::Row),
         Arrange::Flex(Axis::Column) | Arrange::Scroll(Axis::Column) => (Display::Flex, FlexDirection::Column),
-        Arrange::Grid | Arrange::Stack => (Display::Grid, FlexDirection::Row),
+        Arrange::Grid | Arrange::Stack | Arrange::Popup => (Display::Grid, FlexDirection::Row),
     };
     let overflow = match arrange {
         Arrange::Scroll(_) => Overflow::Hidden,
-        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf => Overflow::Visible,
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup => Overflow::Visible,
     };
     let flex_shrink = match parent {
         Parent::Scroll => 0.0,

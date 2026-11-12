@@ -3,15 +3,12 @@
 //! pointer over it and a press held as a tint over its background, and focus as a ring, and the pointer over it shows
 //! the hand.
 
-use super::press::{Press, shade};
+use super::press::{PRESSES, Press, shade};
 use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
 use crate::style::Style;
 use crate::widget::{Arrange, Draws, Laid, Widget};
 use aethereal_render::draw_list::Pointer;
 use aethereal_window::Cursor;
-
-/// The keys that press a button with focus.
-const PRESSES: &[&str] = &["Enter", "NumpadEnter", "Space"];
 
 /// A box that raises `click` when pressed, its children its label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,6 +4,11 @@
 //! `Keyed` through the keys the screen declared reaches its focus, then each widget its focus is within that hears the
 //! key, innermost first, then its focus keys, then the screen.
 //!
+//! A press shuts each open popup it lands outside of, and dismisses the tooltip the pointer is on; a click within a
+//! popup's content that raises an event shuts it when it closes so; Escape shuts the topmost open popup; and a press behind a modal popup
+//! reaches only its backdrop, which shuts it. The pointer coming onto and leaving each hit is kept, for the tooltips the
+//! next `Prepare` looks at (ADR-0056: Popups draw in one top layer per screen).
+//!
 //! A widget changes its own state, kept in the table, and a change lays the screen out at the next `Prepare` though
 //! its tree is the same, as a change of focus does. What it raises, and the keys nothing used, are handed back in
 //! [`Heard`] for the screen's handler to take in with its `&mut self` and its turn.
@@ -12,6 +17,7 @@
 pub(super) mod tests;
 
 use super::keys::{self, ESCAPE, Role, TAB};
+use super::popups::{self, Pressing};
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
 use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
@@ -20,6 +26,7 @@ use crate::widget::Built;
 use aethereal_actor::{Answered, Level};
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::Vec2;
+use aethereal_render::draw_list::{Entry, Pointer};
 use aethereal_window::{AllowIme, Button, ImeAllowed, KeyEvent, Keyed, Over, Pointed, PointerEvent};
 
 /// The window's input method was asked to compose, or to stop.
@@ -46,14 +53,29 @@ fn place(entry: u32) -> usize {
 impl Screen {
     /// Takes in a pointer event through an entry of the list it sent, `me` its actor: through a hit, it goes to the
     /// widget the hit is over, in the widget's own coordinates. A press of the main button there focuses the widget,
-    /// when it can hold focus, and clears focus when it cannot. The wheel slides the innermost scroll at or around the
-    /// widget that can still move that way.
+    /// when it can hold focus, and clears focus when it cannot, unless the hit passes the pointer on to what is beneath
+    /// it, as a tooltip's does; and any press shuts each open popup it lands outside of. A click within a popup's
+    /// content that raises an event, a choice made, shuts it when it closes so. The wheel slides the innermost scroll at or around the widget that can still
+    /// move that way, on the popup content it is in. Through the backdrop behind a modal popup, a press shuts it.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
-        let Some(Listed::Hit(path)) = self.listing.get(place(pointed.entry)) else {
-            return heard;
+        let path = match self.listing.get(place(pointed.entry)) {
+            Some(Listed::Hit(path)) => path.clone(),
+            Some(Listed::Backdrop(popup)) => {
+                let behind = Pressing::Behind(popup.clone());
+                if let PointerEvent::PointerDown { .. } = pointed.event {
+                    self.pressed_in(&behind);
+                }
+                return heard;
+            }
+            Some(Listed::Keys(_) | Listed::Draw(_)) | None => return heard,
         };
-        let path = path.clone();
+        match pointed.event {
+            PointerEvent::PointerEntered => self.reach(&path, true),
+            PointerEvent::PointerLeft => self.reach(&path, false),
+            PointerEvent::PointerDown { .. } => self.pressed_in(&Pressing::At(path.clone())),
+            PointerEvent::PointerMoved { .. } | PointerEvent::PointerUp { .. } | PointerEvent::Wheel { .. } => {}
+        }
         let Some(origin) = self.origin(&path) else {
             return heard;
         };
@@ -72,7 +94,10 @@ impl Screen {
             }
         };
         let pressed = matches!(pointing, Pointing::Down { button: Button::Main, .. });
-        if pressed {
+        let passes =
+            matches!(self.listed.get(place(pointed.entry)), Some(Entry::Hit { pointer: Pointer::Passes(_), .. }));
+        let focuses = pressed && !passes;
+        if focuses {
             let focusable = self.widget(&path).is_some_and(Built::focusable);
             let focus = if focusable {
                 Focus::On(path.clone())
@@ -81,7 +106,14 @@ impl Screen {
             };
             self.refocus(focus, &mut heard);
         }
+        let before = heard.raised.len();
         self.input(&path, &mut heard, |widget, state, input| widget.pointed(state, pointing, input));
+        let clicked = matches!(pointing, Pointing::Up { button: Button::Main, over: true, .. });
+        let chose = heard.raised.len() > before;
+        let chosen = clicked && chose;
+        if chosen {
+            self.chosen(&path);
+        }
 
         heard
     }
@@ -132,14 +164,14 @@ impl Screen {
         orders
     }
 
-    /// Takes in `key`, pressed: the focused widget, each widget it is within that hears the key, innermost first, the
-    /// focus keys, and the screen, in turn, until one uses it.
+    /// Takes in `key`, pressed: the focused widget, each widget it is within that hears the key, innermost first and up
+    /// to the popup whose content it is in, the focus keys, and the screen, in turn, until one uses it.
     fn pressed(&mut self, key: Key, heard: &mut Heard) {
         let focus = self.table.focus().clone();
         let (focused, around) = match &focus {
             Focus::On(path) => {
                 let used = self.input(path, heard, |widget, state, input| widget.key(state, &key, input));
-                (used, path.ancestors().collect())
+                (used, self.surfaced(path))
             }
             Focus::Nowhere => (None, Vec::new()),
         };
@@ -162,35 +194,54 @@ impl Screen {
         heard.keys.push(key);
     }
 
-    /// Takes in `key` as a focus key: Tab moves focus to the next focusable widget in tree order, and with Shift to the
-    /// one before, and slides each scroll around it to show it; Escape clears it while a widget has it.
+    /// Takes in `key` as a focus key: Tab moves focus to the next widget it reaches in tree order, and with Shift to
+    /// the one before, within the topmost modal popup while one is open, and slides each scroll around it to show it;
+    /// Escape shuts the topmost open popup, or with none open clears focus while a widget has it.
     fn focus_key(&mut self, key: &Key, heard: &mut Heard) -> Used {
-        let focus = self.table.focus().clone();
-        let to = match key.code.as_str() {
-            TAB => {
-                let Last::Built(tree) = &self.unkept.last else {
-                    return Used::Passed;
-                };
-                let Ok(flattened) = tree.flat() else {
-                    return Used::Passed;
-                };
-                keys::tabbed(&flattened.nodes, &focus, key.held.shift)
-            }
-            ESCAPE if focus != Focus::Nowhere => Focus::Nowhere,
-            _ => return Used::Passed,
+        match key.code.as_str() {
+            TAB => self.tab(key.held.shift, heard),
+            ESCAPE => self.escape(heard),
+            _ => Used::Passed,
+        }
+    }
+
+    /// Moves focus to the next widget Tab reaches, or with `back` the one before, and brings it into view.
+    fn tab(&mut self, back: bool, heard: &mut Heard) -> Used {
+        let Last::Built(tree) = &self.unkept.last else {
+            return Used::Passed;
         };
-        let tabbed = key.code == TAB;
+        let Ok(flattened) = tree.flat() else {
+            return Used::Passed;
+        };
+        let surfaces = popups::surfaces(&flattened.nodes, &self.table);
+        let reaches = popups::tabbable(&flattened.nodes, &surfaces, &self.table);
+        let to = keys::tabbed(&flattened.nodes, &reaches, self.table.focus(), back);
         self.refocus(to.clone(), heard);
-        if let (true, Focus::On(path)) = (tabbed, &to) {
+        if let Focus::On(path) = &to {
             self.reveal(path);
         }
 
         Used::Used
     }
 
+    /// Shuts the topmost open popup, or, with none open, clears focus while a widget has it.
+    fn escape(&mut self, heard: &mut Heard) -> Used {
+        let shut = self.shut_topmost(heard);
+        if shut == Used::Used {
+            return Used::Used;
+        }
+        let unfocused = *self.table.focus() == Focus::Nowhere;
+        if unfocused {
+            return Used::Passed;
+        }
+        self.refocus(Focus::Nowhere, heard);
+
+        Used::Used
+    }
+
     /// Gives the screen's focus to `focus`: a change lays the screen out at the next `Prepare`, and allows or stops the
     /// window's input method as a widget that types gains or loses it.
-    fn refocus(&mut self, focus: Focus, heard: &mut Heard) {
+    pub(super) fn refocus(&mut self, focus: Focus, heard: &mut Heard) {
         if *self.table.focus() == focus {
             return;
         }

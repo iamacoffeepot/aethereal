@@ -57,9 +57,10 @@ Inventory:  mail ──> turn (&mut self)
     <Text>Gold: {self.gold}</Text>
 
     <Grid columns="6" items="{self.items}" as="item" key="{item.id}">
-        <ItemSlot item="{item}" click="{self.select(item.id)}" drag="{item.id}" drop="{self.place(item.slot)}">
-            <Tooltip><Text>{item.name}</Text></Tooltip>
-        </ItemSlot>
+        <Tooltip>
+            <ItemSlot item="{item}" click="{self.select(item.id)}" drag="{item.id}" drop="{self.place(item.slot)}"/>
+            <Text>{item.name}</Text>
+        </Tooltip>
     </Grid>
 
     <Column class="detail" show="{self.selected_item()}" as="item">
@@ -159,7 +160,7 @@ impl View for Inventory {
     }
 }
 
-aethereal_ui::screen!(Inventory, ui);   // the handlers of `Prepare`, `Pointed`, `Keyed`, and the library's answers
+aethereal_ui::screen!(Inventory, ui);   // the handlers of `Prepare`, `Pointed`, `Keyed`, the library's answers, and its sleeps
 ```
 
 ```rust
@@ -241,7 +242,7 @@ impl<E: Event> Widget for Button<E> {
 - **The table is part of the screen's state,** so hover, scroll, and focus survive a move onto new code (ADR-0054).
 - **Input reaches a primitive by its entry.** The library maps each entry of the list it sent to the widget that listed it. `Pointed` goes to that widget's `pointed`, in its own coordinates, from its border box's top left, which updates its state and may raise an event, and the event calls the screen's method.
 - **A widget the pointer reaches is listed with a hit over its box** (*settled by the library's input stage*): an `Entry::Hit` after its draws and before its children's, whose `Pointer` the widget declares, `Blocks(Hand)` for a button and `Blocks(Text)` for a text input, as its state stands, a slider's open hand turning closed as it drags. Its draws stay `Ignores`. A hit, not a draw, is reached, so a button with no background is still pressed, and one widget is one entry whatever it draws.
-- **A widget whose style fills its box blocks the pointer there,** with the default cursor, so a panel is solid to the game beneath and a click on its empty space walks no character. A widget within one the pointer reaches lists no hit of its own unless it says so, so a button's filled label does not take the press from the button.
+- **A widget whose style fills its box blocks the pointer there,** with the default cursor, so a panel is solid to the game beneath and a click on its empty space walks no character. A widget within one that blocks the pointer lists no hit of its own unless it says so, so a button's filled label does not take the press from the button (*within one that blocks, not one the pointer reaches, settled by the library's popup stage*: a tooltip's hit passes the pointer on, and the panel it holds stays solid).
 - **The wheel is not a widget's** (*settled by the library's scroll stage*): it slides the innermost scroll at or around the widget the pointer reaches that can still move that way along its axis, and one at its end lets it pass outward, so a list in a panel scrolls before the panel does.
 - **A click is a press and a release of the main button on the same widget:** the release's `over` (ADR-0055) names the hit it was over, so a press dragged off and released elsewhere clicks nothing. Moves and the release reach a widget wherever the pointer goes while its press is held, as the window's capture sends them, so a slider dragged past its end still sets its end.
 
@@ -273,6 +274,32 @@ impl<E: Event> Widget for Button<E> {
 - **`modal="true"` puts an `Entry::Hit` that blocks the pointer behind the popup,** so the rest of the screen hears no clicks.
 - **A `Tooltip` is a popup that opens itself** when its anchor has been hovered for a delay. The delay is the tooltip's own state, and the library waits for it with a `Sleep` job.
 - **The top layer stays in its screen's place in the draw order.** A screen drawn later can still cover it. A popup that must be above every screen waits for a need.
+
+*Settled by the library's popup stage:*
+
+```xml
+<Popup side="below" inside="closes">
+    <Row class="field"><Text>{self.sort_name()}</Text></Row>   <!-- its anchor: what it opens from -->
+    <Column class="menu">…</Column>                              <!-- its content, in the top layer while it is open -->
+</Popup>
+
+<Tooltip>
+    <ItemSlot item="{item}"/>                                    <!-- its anchor -->
+    <Text class="tip">{item.name}</Text>                         <!-- its content, once the pointer has rested -->
+</Tooltip>
+```
+
+- **A popup's first child is its anchor, and the rest is its content.** The anchor, the child at the first place in the markup, is laid out in the popup's box as a `Stack`'s child is, and the popup is the widget that holds it: what its content is placed against. The content is laid out and drawn only while the popup is open, each piece as a root of its own, as wide and tall as it asks within the screen, out of the flow of every box around it. Content of more than one widget lies at one place, as a `Stack`'s children do, so content is one container.
+- **The content is placed on the popup's `side`: `below`, the default, `above`, `right`, or `left`.** Below or above, it starts at the anchor's left edge; right or left, at its top edge. Where it does not fit on its side and the other side has more room, it flips; then it shifts as little as it can to stay within the screen, and one longer than the screen starts at its start. It is placed where the anchor stands once every scroll around the anchor has slid it, so it moves with the scroll, and it is cut by nothing but the screen.
+- **Each open popup's content is a layer of its own,** listed after everything else of its screen in markup order, so a popup within another's content draws over it. A popup's content is a surface of its own: the wheel, the keys the widgets around the focus hear, and the scrolls Tab slides to show the focus stop at it, so a popup's content never slides the scroll its anchor stands in.
+- **Whether a popup is open is its own state, and it is the button of its anchor.** Its tint, focus ring, and hit are listed over its anchor's, so a click on its anchor opens it and a second shuts it, as Enter and Space do while it has focus, and an anchor that is itself pressed, a button, is its label. So no screen method opens one, and a dropdown is a composite.
+- **Its screen shuts it** when a press it hears lands outside it, on anything it lists a hit for, as a press clears focus; when Escape is pressed and it is the topmost open popup, focus within its content going back to it, which the screen declares Escape for while a popup is open; when its anchor goes from the tree, after which it stays shut; and, with `inside="closes"`, when a click within its content raises an event, after the event is raised. A click that raises nothing, on a nested popup's anchor or on empty space, leaves it open. A press on the game beneath, which the screen does not hear, leaves it open: a popup that must shut on any click is modal.
+- **A modal popup's backdrop is a hit over the whole screen, blocking the pointer with the default cursor,** listed in its layer before its content: a press on it shuts the popup and every popup within it. While a modal popup is open, the screen declares Tab and Escape, and Tab moves only through the focusable widgets of the topmost modal popup's content.
+- **A tooltip is placed as a popup is,** below by default, and opens once the pointer has rested on its anchor for its `delay`, half a second unless it says otherwise. It shuts as the pointer leaves its anchor, and a press while the pointer is on it shuts it until the pointer leaves and comes back.
+- **A tooltip never takes focus and never blocks the pointer.** Its own hit, under its anchor's, passes the pointer on with the default cursor, so an anchor that lists no hit of its own is still known to be under the pointer, and a press through it leaves focus where it was. Its content lists no hit, and Tab passes it.
+- **A tooltip's wait is a `Sleep` job, matched to its hover by number.** The library keeps the hits the pointer has come onto and not left. At each `Prepare` after one changed, a tooltip whose anchor, or a hit within it, the pointer has come onto takes the next number of its screen's hovers, which never repeats, keeps it in its state as the hover it waits for, and the library runs `Sleep` until the step's time plus its delay, with the tooltip's path and that number as its context. A tooltip the pointer has left goes back to waiting for nothing. When a sleep ends, the tooltip at its path opens only if it still waits for that number, so a hover that ended before its sleep, and a stale sleep ending during a later hover, open nothing. A stale sleep is not cancelled: its id cannot be kept in a widget's plain state, and a sleep costs its host one timer. The hovers are looked at in `Prepare` rather than on each pointer event, so the pointer passing from one hit to another within an anchor, which the window tells as a leave and a come, does not start the wait again.
+- **The sleep costs a screen's sends nothing.** A job is mail to no actor, so no send lists it (ADR-0018), and `Orders::send` runs it from the turn that decided it, a `Prepare`. It builds only for an actor that handles its answer, `Answer<Slept, Tipping>`, which `handles!` adds and `screen!` writes the handler of.
+- **A popup and a tooltip are known to the library by their types.** It opens and shuts them as their screen's input says, as it slides a scroll for the wheel, so a widget of a program's own cannot claim a layer of its screen; one that needs to waits for a need.
 
 ### Child actors
 
@@ -342,7 +369,7 @@ let panels = match self.tab { 0 => vec![items_panel], 1 => vec![skills_panel], _
 Node::new(Segment::Place(3), Tabs::new(&["Items", "Skills"], self.tab, InventoryEvent::Open), tabs_style(), panels)
 ```
 
-Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Button` and `Popup`.
+Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Popup` and `Button`: a `Popup` with `inside="closes"`, its anchor what shows the choice and its content a `Button` for each option, raising the composite's `change`. Opening and shutting it are the popup's own, so it needs no method of the screen's (*settled by the library's popup stage*).
 
 ### Built by a build script, never read at runtime
 

@@ -35,7 +35,7 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     let mut known = Fonts::default();
     known.read(Font::Sans, sans(), Vec::new());
     let mut measuring = known.measuring(1.0);
-    let boxes = lay_out(&flattened.nodes, &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes;
+    let boxes = lay_out(&flattened.nodes, &[], &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes;
 
     let laid_box = boxes[2];
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));

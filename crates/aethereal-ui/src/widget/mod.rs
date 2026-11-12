@@ -136,6 +136,10 @@ pub enum Arrange {
     Scroll(Axis),
     /// It has no children, and measures its own content.
     Leaf,
+    /// Its first child, its anchor, in its box as a `Stack`'s child is; and the rest, its content, out of its box and of
+    /// every box around it, in its screen's top layer while it is open: a popup's (ADR-0056: Popups draw in one top
+    /// layer per screen).
+    Popup,
 }
 
 /// The axis a flex container runs along.

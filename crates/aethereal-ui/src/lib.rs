@@ -19,7 +19,8 @@
 //! - [`View`] and [`Controls`]: what a screen's markup compiles into, its event enum, its view, and the call of each
 //!   event's method; and what is written by hand beside those methods, its sends and its hotkeys.
 //! - [`Screen`]: what the library keeps in the screen's actor, and what it does in the screen's turns, as
-//!   [`screen!`] writes the screen's handlers.
+//!   [`screen!`] writes the screen's handlers: among them, each open [`Popup`](widgets::Popup)'s content drawn in the
+//!   screen's top layer, and each [`Tooltip`](widgets::Tooltip)'s wait, a `Sleep` job.
 //!
 //! A screen is written as its markup will compile it:
 //!
@@ -120,7 +121,7 @@ pub use fonts::{Measuring, Unmeasured};
 pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Used};
 pub use screen::{
     DrawKey, Heard, ImeAsked, Instancing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared, Programming, Rows,
-    Screen, Sends, Shaping, Target, TextPlacing, Texting, Uniforming, Viewport, Whitening,
+    Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track};
 pub use table::{Focus, Table};
@@ -134,8 +135,8 @@ pub use widget::{
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text, TextInput,
-        Texture, Toggle,
+        Bar, Button, Column, Fill, Grid, Image, Inside, Popup, Region, Row, Scroll, Side, Slider, Stack, Tab, Tabs,
+        Text, TextInput, Texture, Toggle, Tooltip,
     };
     pub use crate::{
         Alignment, Border, Controls, Distribute, Edges, Gap, ItemKey, Key, KeyPath, Length, Node, Placed, Raised, Rows,
@@ -146,7 +147,7 @@ pub mod prelude {
 /// What [`screen!`], [`handles!`], and [`sends!`] name, so a screen's crate need not.
 #[doc(hidden)]
 pub mod __private {
-    pub use aethereal_actor::{Answer, Answered, Asks, Fault, Handles, On, Path, Prepare, Turn};
+    pub use aethereal_actor::{Answer, Answered, Asks, Fault, Handles, On, Path, Prepare, Slept, Turn};
     pub use aethereal_render::frame::Shaped;
     pub use aethereal_render::instances::Instanced;
     pub use aethereal_render::mesh::Meshed;
@@ -158,8 +159,9 @@ pub mod __private {
     pub use aethereal_window::{AllowIme, ImeAllowed, Keyed, Pointed, Windows};
 }
 
-/// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, and the
-/// answer to each of its asks with the ask's context, then each of `$own`, what the screen handles of its own.
+/// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, the answer to
+/// each of its asks with the ask's context, and the end of a tooltip's sleep with the tooltip and its hover; then each of
+/// `$own`, what the screen handles of its own.
 #[macro_export]
 macro_rules! handles {
     ($($own:ty),* $(,)?) => {
@@ -178,6 +180,7 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::TextMade, $crate::Texting>,
             $crate::__private::Answer<$crate::__private::TextPlaced, $crate::TextPlacing>,
             $crate::__private::Answer<$crate::__private::ImeAllowed, $crate::ImeAsked>,
+            $crate::__private::Answer<$crate::__private::Slept, $crate::Tipping>,
             $($own,)*
         )
     };
@@ -203,8 +206,8 @@ macro_rules! sends {
 /// Writes a screen's handlers of what is the library's, for the screen `$screen`, whose [`Screen`] is in its `$field`:
 /// its `Prepare`, which builds the tree with its [`View`] and hands it to the screen with its [`Controls::HOTKEYS`]; the
 /// pointer and the keys its list reaches, whose raised events call its methods through [`View::on`] and whose keys
-/// left over call [`Controls::key`], after which its view is built again for the next input to reach; and each answer
-/// the library's asks bring. A screen's markup compiles into a call of it.
+/// left over call [`Controls::key`], after which its view is built again for the next input to reach; each answer the
+/// library's asks bring; and the end of each tooltip's sleep. A screen's markup compiles into a call of it.
 #[macro_export]
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
@@ -273,6 +276,7 @@ macro_rules! screen {
         $crate::screen!(@answer $screen, $field, TextMade, Texting, text_made);
         $crate::screen!(@answer $screen, $field, TextPlaced, TextPlacing, text_placed);
         $crate::screen!(@answer $screen, $field, ImeAllowed, ImeAsked, ime_answered);
+        $crate::screen!(@answer $screen, $field, Slept, Tipping, slept);
     };
     (@take $field:ident, $this:ident, $heard:ident, $turn:ident) => {{
         let took = $crate::take_in($this, $heard, $turn)?;

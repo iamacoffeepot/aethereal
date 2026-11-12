@@ -22,7 +22,7 @@ fn boxes(tree: &Tree, size: Vec2, scale: f32) -> Vec<Boxed> {
     let fonts = Fonts::default();
     let mut measuring = fonts.measuring(scale);
 
-    lay_out(&flattened.nodes, &mut measuring, size, scale).boxes
+    lay_out(&flattened.nodes, &[], &mut measuring, size, scale).boxes
 }
 
 /// The rect from `x`, `y`, `width` by `height`.
