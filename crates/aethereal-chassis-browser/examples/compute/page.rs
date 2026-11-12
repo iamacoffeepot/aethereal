@@ -26,7 +26,7 @@ use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{InitialWindows, WindowId, Windows};
+use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -461,7 +461,8 @@ impl Handles<Answer<Dispatched, Dispatching>> for Simulator {
             say(format!("the field was not dispatched: {answered:?}"));
             return Ok(());
         };
-        let drawn = Entry::Draw { placement: dispatching.placement, pointer: Pointer::Ignores };
+        let drawn =
+            Entry::Draw { placement: dispatching.placement, pointer: Pointer::Ignores, cursor: Cursor::Default };
         turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![Entry::Run(dispatch), drawn] })?;
         say(format!("placed dispatched particles={PARTICLES}"));
         *self = Self::Running { storage: dispatching.storage, drawn: 0 };

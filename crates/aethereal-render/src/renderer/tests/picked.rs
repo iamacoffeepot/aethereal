@@ -12,7 +12,7 @@ use crate::draw_list::Reaching;
 use crate::picking::{MOST_PROBES, STACK};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_math::Vec2;
-use aethereal_window::{Pinned, Reach};
+use aethereal_window::{Cursor, Pinned, Reach};
 
 /// A program that draws a quad's corners at the depth its uniforms' last holds, opaque in the colour of the rest.
 const DEEP: &str = "
@@ -33,7 +33,7 @@ fn shade() -> @location(0) vec4<f32> {
 fn reaching(entry: u32, blocks: bool) -> Reaching {
     let actor = ProtocolRef::found(Seated { id: MAKER, seat: SeatNumber::new(1) });
 
-    Reaching { actor, entry, blocks }
+    Reaching { actor, entry, blocks, cursor: Cursor::Default }
 }
 
 /// The entry `entry` of [`MAKER`]'s list, drawn at the window's origin, which blocks the pointer as `blocks` says.

@@ -3,6 +3,9 @@
 //! roots.
 
 use super::*;
+use crate::asked::blob;
+use crate::pass::Interface;
+use aethereal_window::CursorImage;
 
 /// The actor whose lists these are, another root, and actors that stand as children of theirs.
 const MAKER: ActorId = ActorId::new(1);
@@ -275,21 +278,48 @@ fn make(by: ActorId, id: u64) -> Kept {
     Kept { placements: HashMap::from([(id, by)]), dispatches: HashMap::new() }
 }
 
+/// The length of every blob, as a list's check reads it: none, as a test's blob holds nothing.
+fn empty(_: &Bytes) -> usize {
+    0
+}
+
 #[test]
-fn an_entry_the_pointer_reaches_names_its_place_and_is_refused_from_a_sender_that_hears_no_pointer() {
+fn an_entry_the_pointer_reaches_names_its_place_and_cursor_and_is_refused_from_a_sender_that_hears_no_pointer() {
     // Catches an entry told to its sender by a number other than its place in the list, so a click on the second
-    // button presses the first; one the pointer reaches let through from an actor that handles no pointer event, whose
-    // events would be dropped as it blocks everything beneath it; and an entry the pointer ignores refused for it.
+    // button presses the first; its cursor left behind, so the window shows the arrow over it; one the pointer reaches
+    // let through from an actor that handles no pointer event, whose events would be dropped as it blocks everything
+    // beneath it; and an entry the pointer ignores refused for it, or carrying its cursor into the stack, so a shadow
+    // drawn over a text field shows its cursor in place of the field's.
     let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
     let placement = PlacementId { id: 3 };
-    let blocks = Entry::Draw { placement, pointer: Pointer::Blocks };
-    let ignores = Entry::Draw { placement, pointer: Pointer::Ignores };
+    let blocks = Entry::Draw { placement, pointer: Pointer::Blocks, cursor: Cursor::Hand };
+    let ignores = Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Text };
     let child = |_: &PathSegment| HUD;
 
-    let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, blocks: true });
-    assert_eq!(blocks.listed(2, (Some(hearer), None), child), Ok(Listed::Draw { placement: 3, picks: reached }));
-    assert_eq!(blocks.listed(2, (None, None), child), Err(EntryRefused::Unheard));
-    assert_eq!(ignores.listed(2, (None, None), child), Ok(draw(3)));
+    let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, blocks: true, cursor: Cursor::Hand });
+    let listed = blocks.listed(2, (Some(hearer), None), (child, empty));
+    assert_eq!(listed, Ok(Listed::Draw { placement: 3, picks: reached }));
+    assert_eq!(blocks.listed(2, (None, None), (child, empty)), Err(EntryRefused::Unheard));
+    assert_eq!(ignores.listed(2, (None, None), (child, empty)), Ok(draw(3)));
+}
+
+#[test]
+fn an_entry_whose_cursor_is_an_image_its_pixels_do_not_fill_is_refused() {
+    // Catches an image whose blob is not four bytes for each of its pixels let through to the window's host, which
+    // winit refuses and a page draws skewed, where the list's sender would have been told.
+    let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
+    let image = CursorImage { pixels: blob(), width: 2, height: 2, hotspot_x: 1, hotspot_y: 1 };
+    let Ok(window) = aethereal_data::from_bytes(&0_u64.to_le_bytes(), &mut aethereal_data::Budget::new(8)) else {
+        panic!("a window's id is its number");
+    };
+    let rect = Rect2 { min: Vec2::ZERO, max: Vec2::new(4.0, 4.0) };
+    let held = Entry::hit::<Interface>(Frame::Main(window), rect, Pointer::Blocks, Cursor::Image(image));
+    let child = |_: &PathSegment| HUD;
+
+    let filled = held.listed(0, (Some(hearer), None), (child, |_: &Bytes| 2 * 2 * 4));
+    assert!(filled.is_ok(), "four bytes for each pixel: {filled:?}");
+    let short = held.listed(0, (Some(hearer), None), (child, |_: &Bytes| 2 * 2 * 3));
+    assert_eq!(short, Err(EntryRefused::Cursor(CursorUnfit::Pixels)));
 }
 
 #[test]
@@ -305,6 +335,6 @@ fn an_entry_that_declares_keys_names_its_place_and_is_refused_from_a_sender_that
     let child = |_: &PathSegment| HUD;
 
     let declared = KeysEntry { actor: hearer, entry: 4, keys: KeySet::All, blocks: true };
-    assert_eq!(keys.listed(4, (None, Some(hearer)), child), Ok(Listed::Keys { frame, entry: declared }));
-    assert_eq!(keys.listed(4, (None, None), child), Err(EntryRefused::KeysUnheard));
+    assert_eq!(keys.listed(4, (None, Some(hearer)), (child, empty)), Ok(Listed::Keys { frame, entry: declared }));
+    assert_eq!(keys.listed(4, (None, None), (child, empty)), Err(EntryRefused::KeysUnheard));
 }

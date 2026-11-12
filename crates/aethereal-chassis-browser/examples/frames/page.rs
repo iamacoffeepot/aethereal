@@ -25,7 +25,7 @@ use aethereal_render::readback::{Pixels, ReadBack, Readable};
 use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{InitialWindows, WindowId, Windows};
+use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -563,8 +563,11 @@ impl Handles<Answer<Placed, Placing>> for Framer {
                 turn.to(path::<Renderer>(())).ask(&place, &Placing::Splat { surface: placement })?;
             }
             Placing::Splat { surface } => {
-                let entries =
-                    [surface, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                let entries = [surface, placement].map(|placement| Entry::Draw {
+                    placement,
+                    pointer: Pointer::Ignores,
+                    cursor: Cursor::Default,
+                });
                 turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
                 say(String::from("placed surface splat"));
                 *self = Self::Drawing { window, drawn: 0 };

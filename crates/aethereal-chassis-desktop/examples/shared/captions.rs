@@ -20,7 +20,7 @@ use aethereal_render::text::{
     widest_outline,
 };
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{InitialWindows, WindowId};
+use aethereal_window::{Cursor, InitialWindows, WindowId};
 
 /// A grey that reads on the ring's black.
 const PALE: Colour = Colour::opaque(0.8, 0.8, 0.8);
@@ -201,8 +201,11 @@ impl Handles<Answer<TextPlaced, Caption>> for Captions {
         };
         let at = self.placed.partition_point(|(line, _)| *line < caption.line);
         self.placed.insert(at, (caption.line, placement));
-        let entries =
-            self.placed.iter().map(|(_, placement)| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
+        let entries = self.placed.iter().map(|(_, placement)| Entry::Draw {
+            placement: *placement,
+            pointer: Pointer::Ignores,
+            cursor: Cursor::Default,
+        });
         turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
 
         Ok(())

@@ -151,7 +151,7 @@ let listening = controls::listen(&feed)?;
 - `Setup` gains `source`, as `Engine` has, so a chassis makes a source as it sets the program up.
 - **Left for later**, each its own record when a program needs it:
   - **opening and closing windows on request**, and a window opened while the program runs: decided by ADR-0027;
-  - **the cursor**: capturing the pointer, hiding or changing the cursor, and stopping a key's default, each a request;
+  - **the cursor**: capturing the pointer, and stopping a key's default, each a request; hiding or changing the cursor is decided by ADR-0055, declared on each draw-list entry the pointer reaches, never requested;
   - **pointers entering and leaving**;
   - **text input and IME** composition, which the `key` of a key press does not carry;
   - **more than one pointer**, a touch screen's contacts each its own;

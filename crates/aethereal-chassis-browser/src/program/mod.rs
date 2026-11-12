@@ -15,7 +15,7 @@ pub use windows::WindowsSettings;
 use crate::canvas::Shown;
 use crate::memory;
 use crate::serving::{Drawing, Serving};
-use crate::{Browser, EventLoop, Hosted, Listening, Performance};
+use crate::{Browser, Cursors, EventLoop, Hosted, Listening, Performance};
 use aethereal_actor::{Service, Services};
 use aethereal_data::Plain;
 use aethereal_pace::Clockwork;
@@ -140,9 +140,12 @@ impl Host for Browser<Performance> {
     }
 }
 
+/// The window root's end, with each canvas it opened, which the cursors it asks for are shown over: the canvases are
+/// kept before the root's bootstrap serves its end.
 impl Serves<Hosting> for Browser<Performance> {
     fn serve(paging: &mut Paging, hosting: Hosting) {
-        paging.hosted = Hosted::Windows(hosting);
+        let canvases = paging.canvases.iter().map(|opened| (opened.shown.window(), opened.canvas.clone())).collect();
+        paging.hosted = Hosted::Windows(hosting, Cursors::over(canvases));
     }
 }
 

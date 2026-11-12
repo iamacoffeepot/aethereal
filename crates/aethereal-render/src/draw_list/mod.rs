@@ -6,7 +6,9 @@
 //!
 //! What a list draws is also what the pointer reaches: each draw says whether it blocks the pointer, lets it through, or
 //! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
-//! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055).
+//! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055). Each
+//! also declares the cursor the window shows while it is the topmost entry the pointer reaches, or the one a press
+//! reached while its button is held.
 //!
 //! A call places its child, and says which coordinates the child draws in: its caller's, moved to an origin, or the
 //! window's pixels, wherever its caller sits; and what the child's drawing is cut to, never past its caller's clip.
@@ -25,11 +27,12 @@ use crate::dispatch::DispatchId;
 use crate::frame::Frame;
 use crate::pass::{Pass, PassName};
 use crate::placement::PlacementId;
+use aethereal_actor::Bytes;
 use aethereal_actor::records::Naming;
 use aethereal_actor::{Child, ChildOf, ProtocolRef};
-use aethereal_data::{ActorId, ActorPath, PathSegment, Plain};
+use aethereal_data::{ActorId, ActorPath, Bound, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
-use aethereal_window::{Hearer, KeyHearer, KeySet, KeysEntry, Reach};
+use aethereal_window::{Cursor, CursorUnfit, Hearer, KeyHearer, KeySet, KeysEntry, Reach};
 use std::collections::{HashMap, HashSet};
 use std::{slice, vec};
 
@@ -41,20 +44,21 @@ use std::{slice, vec};
 /// A sender with an entry the pointer reaches handles [`Pointed`](aethereal_window::Pointed): it is sent each pointer
 /// event that reaches the entry, numbered as it is from 0 in the list. A sender with an entry that declares keys handles
 /// [`Keyed`](aethereal_window::Keyed), which each key that reaches the entry is sent as. A list from one that does not
-/// handle what its entries would send it is refused.
-#[derive(Debug, Clone, PartialEq, Plain)]
+/// handle what its entries would send it is refused, and so is one with a cursor whose image cannot be shown.
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.render.draw_list")]
 pub struct DrawList {
     pub entries: Vec<Entry>,
 }
 
 /// One entry of a draw list.
-#[derive(Debug, Clone, PartialEq, Plain)]
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.render.entry")]
 pub enum Entry {
     /// A placement of the sender's, of a mesh or a text, drawn in each pass it joins, reached by the pointer where it
-    /// draws as `pointer` says.
-    Draw { placement: PlacementId, pointer: Pointer },
+    /// draws as `pointer` says, and showing `cursor` while it is the top of what the pointer reaches there. One the
+    /// pointer ignores shows none, as it is never reached: its cursor is [`Cursor::Default`] by custom.
+    Draw { placement: PlacementId, pointer: Pointer, cursor: Cursor },
     /// A dispatch of the sender's, run here in the compute pass it joins: in each cycle that draws its frame, or in the
     /// first alone, when it runs once.
     Run(DispatchId),
@@ -62,9 +66,10 @@ pub enum Entry {
     /// the sender's.
     Call { child: Callee, area: Area },
     /// A place in the pass `pass` of `frame` that draws nothing, reached by the pointer within `rect`, in the sender's
-    /// coordinates, and within the sender's clip, as `pointer` says: a modal's backdrop, an invisible handle, or the
-    /// world's catch-all. A frame that ends on a texture has no pointer, and nothing there is reached.
-    Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer },
+    /// coordinates, and within the sender's clip, as `pointer` says, and showing `cursor` as a draw does: a modal's
+    /// backdrop, an invisible handle, or the world's catch-all. A frame that ends on a texture has no pointer, and
+    /// nothing there is reached or shows a cursor.
+    Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer, cursor: Cursor },
     /// The keys the sender hears in the window whose main frame is `frame`, at this place in the sequence: each key
     /// `keys` holds reaches it, after the declarations called after this one, and, when it `blocks`, none called
     /// before it. Focus is a declaration: a screen that takes the keys lists every key, blocking, while it wants them.
@@ -221,36 +226,44 @@ impl Entry {
         Self::Call { child: Callee { child: Naming::of(&child.into_segment()) }, area }
     }
 
-    /// A place in the pass `P` of `frame` that draws nothing, reached by the pointer within `rect` as `pointer` says:
-    /// the pass named by its type, as a join names it.
+    /// A place in the pass `P` of `frame` that draws nothing, reached by the pointer within `rect` as `pointer` says,
+    /// showing `cursor`: the pass named by its type, as a join names it.
     #[must_use]
-    pub const fn hit<P: Pass>(frame: Frame, rect: Rect2, pointer: Pointer) -> Self {
-        Self::Hit { frame, pass: PassName::of::<P>(), rect, pointer }
+    pub const fn hit<P: Pass>(frame: Frame, rect: Rect2, pointer: Pointer, cursor: Cursor) -> Self {
+        Self::Hit { frame, pass: PassName::of::<P>(), rect, pointer, cursor }
     }
 
     /// What the renderer keeps of it, the entry numbered `at` of its list: a placement or a dispatch by its id, a call
     /// by its child's, which `child_id` answers for the child's segment beneath the list's sender, and a hit as it is,
     /// each the pointer reaches with the entry of `hearer`, the list's sender, when its sender handles the pointer's
-    /// events; and a declaration of keys as the entry of `key_hearer`, the list's sender, when it handles the keys.
-    /// Refused when the pointer reaches it or it declares keys, and its sender handles none.
+    /// events, showing its cursor, whose image's pixels are as long as `length` reads; and a declaration of keys as the
+    /// entry of `key_hearer`, the list's sender, when it handles the keys. Refused when the pointer reaches it or it
+    /// declares keys, and its sender handles none, and when its cursor's image cannot be shown.
     pub(crate) fn listed(
         &self,
         at: u32,
         (hearer, key_hearer): (Option<ProtocolRef<Hearer>>, Option<ProtocolRef<KeyHearer>>),
-        child_id: impl Fn(&PathSegment) -> ActorId,
+        (child_id, length): (impl Fn(&PathSegment) -> ActorId, impl Fn(&Bytes) -> usize),
     ) -> Result<Listed, EntryRefused> {
-        let picks = |pointer| match (pointer, hearer) {
-            (Pointer::Ignores, _) => Ok(Picks::Ignores),
-            (Pointer::Blocks, Some(actor)) => Ok(Picks::Reaches(Reaching { actor, entry: at, blocks: true })),
-            (Pointer::Passes, Some(actor)) => Ok(Picks::Reaches(Reaching { actor, entry: at, blocks: false })),
-            (Pointer::Blocks | Pointer::Passes, None) => Err(EntryRefused::Unheard),
+        let picks = |pointer: Pointer, cursor: &Cursor| -> Result<Picks, EntryRefused> {
+            if let Cursor::Image(image) = cursor {
+                image.check(length(&image.pixels)).map_err(EntryRefused::Cursor)?;
+            }
+            let reaching = |blocks| hearer.map(|actor| Reaching { actor, entry: at, blocks, cursor: cursor.clone() });
+            match pointer {
+                Pointer::Ignores => Ok(Picks::Ignores),
+                Pointer::Blocks => reaching(true).map(Picks::Reaches).ok_or(EntryRefused::Unheard),
+                Pointer::Passes => reaching(false).map(Picks::Reaches).ok_or(EntryRefused::Unheard),
+            }
         };
         let listed = match self {
-            Self::Draw { placement, pointer } => Listed::Draw { placement: placement.id, picks: picks(*pointer)? },
+            Self::Draw { placement, pointer, cursor } => {
+                Listed::Draw { placement: placement.id, picks: picks(*pointer, cursor)? }
+            }
             Self::Run(dispatch) => Listed::Run(dispatch.id),
             Self::Call { child, area } => Listed::Call { child: child_id(&child.child.segment()), area: *area },
-            Self::Hit { frame, pass, rect, pointer } => {
-                Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(*pointer)? }
+            Self::Hit { frame, pass, rect, pointer, cursor } => {
+                Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(*pointer, cursor)? }
             }
             Self::Keys { frame, keys, blocks } => {
                 let actor = key_hearer.ok_or(EntryRefused::KeysUnheard)?;
@@ -279,25 +292,26 @@ pub(crate) enum Listed {
 }
 
 /// What the pointer reaches where an entry draws: nothing, or the entry of its list's sender, which blocks it or not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Picks {
     Ignores,
     Reaches(Reaching),
 }
 
-/// The entry `entry` of the list `actor` sent, which the pointer reaches, and whether it blocks the pointer from what
-/// is beneath it: a [`Reach`] once the walk places it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The entry `entry` of the list `actor` sent, which the pointer reaches, whether it blocks the pointer from what is
+/// beneath it, and the cursor it shows: a [`Reach`] once the walk places it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reaching {
     pub actor: ProtocolRef<Hearer>,
     pub entry: u32,
     pub blocks: bool,
+    pub cursor: Cursor,
 }
 
 impl Reaching {
     /// The entry as the window is told of it, drawn with its list's origin at `origin`, in surface pixels.
-    pub const fn at(self, origin: Vec2) -> Reach {
-        Reach { actor: self.actor, entry: self.entry, blocks: self.blocks, origin }
+    pub fn at(&self, origin: Vec2) -> Reach {
+        Reach { actor: self.actor, entry: self.entry, blocks: self.blocks, origin, cursor: self.cursor.clone() }
     }
 }
 
@@ -333,6 +347,8 @@ pub(crate) enum EntryRefused {
     Unheard,
     /// The entry declares keys, and the list's sender does not handle the keys.
     KeysUnheard,
+    /// The entry's cursor is an image that cannot be shown, for this reason.
+    Cursor(CursorUnfit),
 }
 
 /// Who made what a list names, as its check looks it up: none when nothing of the sort is kept under the id.

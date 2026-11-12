@@ -1,8 +1,10 @@
 //! A window's actor: beneath the window root, keyed by the window's id, it sends what its window heard to the actors
 //! that subscribed, but its keys and typed text, and keeps how the window stands for a new one. Its pointer events also
 //! cascade through what was drawn under the pointer, as the subscriber of its probes finds it, and its keys and typed
-//! text go only through the keys the draw lists declared, as that subscriber lists them (ADR-0055).
+//! text go only through the keys the draw lists declared, as that subscriber lists them (ADR-0055). What the window
+//! shows at the pointer follows the same stacks, and the actor asks its root to show it as it changes.
 
+use crate::cursor::{Cursor, ShowCursor};
 use crate::event::{Event, Mode, Subscribe, Surface, Unsubscribe};
 use crate::keys::{KeyCascade, KeyHearer, Keyed, KeysListed};
 use crate::perform::{Perform, Performed, unperformable};
@@ -10,7 +12,7 @@ use crate::pointing::{Cascade, Hearer, Picked, Pointed, Probed, SubscribeProbes}
 use crate::windows::Windows;
 use aethereal_actor::{
     Actor, Allows, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level, Subscribers,
-    ToAny, ToSender, Turn,
+    ToAny, ToSender, ToType, Turn,
 };
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
 use core::mem;
@@ -53,7 +55,8 @@ pub struct WindowConfig {
 /// A window's actor: it sends each event its window heard to the actors subscribed to it, but its keys and typed
 /// text, and sends a new subscriber the window's surface, mode, and focus as they stand before anything else. While an
 /// actor subscribes to its probes, each pointer event is probed, and cascades through the stacks it answers, and the
-/// keys and typed text go through the `Keys` entries it lists (ADR-0055).
+/// keys and typed text go through the `Keys` entries it lists (ADR-0055). The cursor it shows follows the stacks, and
+/// it asks its root to show each it changes to.
 #[derive(Bound)]
 #[kind(name = "aether.window")]
 pub struct Window {
@@ -63,6 +66,8 @@ pub struct Window {
     probers: Subscribers<(Probed,)>,
     cascade: Cascade,
     keys: KeyCascade,
+    /// The cursor it last asked its root to show: the default, as a host shows, until it asks for another.
+    cursor: Cursor,
     surface: Surface,
     mode: Mode,
     focused: bool,
@@ -95,6 +100,7 @@ impl Actor for Window {
             probers: Subscribers::new(),
             cascade: Cascade::default(),
             keys: KeyCascade::default(),
+            cursor: Cursor::Default,
             surface,
             mode,
             focused,
@@ -281,10 +287,11 @@ impl Handles<SubscribeProbes> for Window {
 }
 
 /// Delivers the pointer events the stacks answer, as the cascade says, each to the actor whose list holds the entry
-/// it reaches. Stacks from an actor that does not subscribe to the window's probes are not the renderer's, and are
+/// it reaches, then asks the window root to show the cursor the cascade now answers, when it is not the one last
+/// asked for. Stacks from an actor that does not subscribe to the window's probes are not the renderer's, and are
 /// dropped.
 impl Handles<Picked> for Window {
-    type Sends = (ToAny<Hearer, Pointed>,);
+    type Sends = (ToAny<Hearer, Pointed>, ToType<Windows, ShowCursor>);
 
     fn handle(&mut self, picked: Picked, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_prober = self.is_prober(turn.sender());
@@ -294,6 +301,12 @@ impl Handles<Picked> for Window {
         }
         for (hearer, pointed) in self.cascade.picked(self.id, picked) {
             turn.to(hearer).send(&pointed)?;
+        }
+        let shown = self.cascade.cursor();
+        if *shown != self.cursor {
+            let show = ShowCursor { window: self.id, cursor: shown.clone() };
+            turn.to(turn.parent()).send(&show)?;
+            self.cursor = show.cursor;
         }
 
         Ok(())

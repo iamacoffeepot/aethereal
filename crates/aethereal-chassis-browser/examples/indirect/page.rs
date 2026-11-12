@@ -30,7 +30,7 @@ use aethereal_render::shape::Shape;
 use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{InitialWindows, WindowId, Windows};
+use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -622,8 +622,10 @@ impl Handles<Answer<Placed, Made>> for Culler {
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        let dispatching =
-            Dispatching::Tally { made, entries: vec![Entry::Draw { placement, pointer: Pointer::Ignores }] };
+        let dispatching = Dispatching::Tally {
+            made,
+            entries: vec![Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Default }],
+        };
         turn.to(path::<Renderer>(())).ask(&dispatch(window, &dispatching), &dispatching)?;
 
         Ok(())

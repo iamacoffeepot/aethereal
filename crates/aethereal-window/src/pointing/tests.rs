@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::event::{Mode, Surface};
-use crate::host::{Opening, WindowFeed};
+use crate::host::{Hosting, Opening, WindowFeed};
 use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
@@ -15,6 +15,7 @@ use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};
 use std::num::NonZeroUsize;
+use std::slice;
 
 /// The one window.
 const WINDOW: WindowId = WindowId::nth(0);
@@ -24,20 +25,28 @@ fn actor(number: u64) -> ProtocolRef<Hearer> {
     ProtocolRef::found(Seated { id: ActorId::new(number), seat: SeatNumber::new(number) })
 }
 
-/// The entry `entry` of `actor`'s list, drawn at the window's origin, blocking the pointer from what is beneath it.
+/// The entry `entry` of `actor`'s list, drawn at the window's origin, blocking the pointer from what is beneath it,
+/// declaring the default cursor.
 fn blocks(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: true, origin: Vec2::ZERO }
+    Reach { actor, entry, blocks: true, origin: Vec2::ZERO, cursor: Cursor::Default }
 }
 
 /// The entry `entry` of `actor`'s list, drawn at the window's origin, letting the pointer through to what is beneath
-/// it.
+/// it, declaring the default cursor.
 fn passes(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: false, origin: Vec2::ZERO }
+    Reach { actor, entry, blocks: false, origin: Vec2::ZERO, cursor: Cursor::Default }
 }
 
 /// `reach`, its list drawn with its origin at `x`, `y` of the window.
-const fn drawn_at(reach: Reach, x: f32, y: f32) -> Reach {
+fn drawn_at(reach: Reach, x: f32, y: f32) -> Reach {
     Reach { origin: Vec2::new(x, y), ..reach }
+}
+
+/// `reach`, declaring `cursor`.
+fn showing(mut reach: Reach, cursor: Cursor) -> Reach {
+    reach.cursor = cursor;
+
+    reach
 }
 
 /// What a frame drew under the pointer, `pointer`, of every event up to `through`, with no place pinned probed.
@@ -439,19 +448,19 @@ pub fn found<T: Kind>(harness: &mut Harness<Bench>, place: &ActorPath) -> Seated
 }
 
 /// A harness over an engine with the window root, one window opened as it was set up, the prober, and the widget,
-/// with the window's feed.
-fn probed_window() -> Result<(Harness<Bench>, WindowFeed), Unheard> {
+/// with the window's feed, and the host's end of the root's requests.
+fn probed_window() -> Result<(Harness<Bench>, WindowFeed, Hosting), Unheard> {
     let mut setup = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>();
     let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
     let surface = Surface { width: 640, height: 480, scale: 1.0 };
     let feed = opening.open("window", surface, Mode::Windowed, true);
-    let (config, _hosting) = opening.config();
+    let (config, hosting) = opening.config();
     let engine =
         setup.add_root::<Windows>(&(), config)?.add_root::<Prober>(&(), Prober)?.add_root::<Widget>(&(), Widget)?;
     let mut harness = Harness::bare(engine.ready())?;
     harness.host().engine().record_turns();
 
-    Ok((harness, feed))
+    Ok((harness, feed, hosting))
 }
 
 /// What the prober and the widget were sent, settled: each in the order it was sent.
@@ -470,7 +479,7 @@ fn a_window_probes_its_pointer_for_its_prober_and_delivers_the_stacks_only_it_se
     // Catches a window that probes before anyone asked, keeping events no stack will come back for; a probe that does
     // not say its place is pinned, so the press is tested where the pointer went after it; and stacks from any actor
     // delivered, so any actor could send the pointer where it chose.
-    let (mut harness, feed) = probed_window()?;
+    let (mut harness, feed, _hosting) = probed_window()?;
     assert_eq!(feed.push(MOVED), Ok(()), "the window root holds its source");
     assert_eq!(sent(&mut harness), (vec![], vec![]), "nobody probes yet");
 
@@ -491,6 +500,100 @@ fn a_window_probes_its_pointer_for_its_prober_and_delivers_the_stacks_only_it_se
     let down = PointerEvent::PointerDown { x: 1.0, y: 2.0, button: Button::Main };
     let reached = |event| Pointed { window: WINDOW, entry: 0, event };
     assert_eq!(sent(&mut harness), (vec![], vec![reached(PointerEvent::PointerEntered), reached(down)]));
+
+    Ok(())
+}
+
+#[test]
+fn the_cursor_is_the_topmost_entry_s_the_pointer_reaches_not_the_bottom_s_nor_the_first_that_blocks() {
+    // Catches a cursor taken from the bottom of the stack, so the game's crosshair shows over the console; and from the
+    // first entry that blocks, so a tooltip that lets the pointer through shows the hand of the button beneath it.
+    let (tooltip, button, game) = (actor(1), actor(2), actor(3));
+    let mut cascade = Cascade::default();
+    let button = showing(blocks(button, 4), Cursor::Hand);
+    let game = showing(blocks(game, 0), Cursor::Grab);
+
+    cascade.picked(WINDOW, under(0, &[showing(passes(tooltip, 0), Cursor::Text), button.clone(), game.clone()]));
+    assert_eq!(cascade.cursor(), &Cursor::Text);
+
+    cascade.picked(WINDOW, under(0, &[button, game]));
+    assert_eq!(cascade.cursor(), &Cursor::Hand);
+}
+
+#[test]
+fn over_nothing_the_pointer_reaches_the_default_cursor_shows() {
+    // Catches a window that keeps the last cursor it showed once the pointer leaves everything that declares one, so
+    // the text field's I-beam stays over the empty window.
+    let mut cascade = Cascade::default();
+    assert_eq!(cascade.cursor(), &Cursor::Default, "nothing has been drawn yet");
+
+    cascade.picked(WINDOW, under(0, &[showing(blocks(actor(1), 0), Cursor::Text)]));
+    cascade.picked(WINDOW, under(0, &[]));
+
+    assert_eq!(cascade.cursor(), &Cursor::Default);
+}
+
+#[test]
+fn while_a_button_is_held_the_pressed_entry_s_cursor_shows_over_another_actor_and_the_pointer_s_once_released() {
+    // Catches a cursor that follows the pointer during a drag, so the slider's grip turns into the I-beam of the text
+    // field it crosses; one taken from the top of the press's stack before the press is delivered, so a press that
+    // reaches nothing shows what was under the pointer; and a capture's cursor kept after the release.
+    let (slider, field) = (actor(1), actor(2));
+    let slider = showing(blocks(slider, 3), Cursor::Grabbing);
+    let field = showing(blocks(field, 0), Cursor::Text);
+    let mut cascade = heard(&[PRESSED, MOVED]);
+
+    cascade.picked(WINDOW, under(1, &[slider]));
+    assert_eq!(cascade.cursor(), &Cursor::Grabbing, "the press reached the slider");
+
+    cascade.picked(WINDOW, under(2, slice::from_ref(&field)));
+    assert_eq!(cascade.cursor(), &Cursor::Grabbing, "the pointer is over the field, the button still held");
+
+    cascade.heard(WINDOW, &RELEASED);
+    cascade.picked(WINDOW, under(3, &[field]));
+    assert_eq!(cascade.cursor(), &Cursor::Text, "released over the field");
+}
+
+#[test]
+fn a_pressed_entry_that_declares_another_cursor_once_its_drag_begins_shows_it_wherever_the_pointer_goes_after() {
+    // Catches a capture's cursor fixed at the press, so a source that declares the image it drags once the pointer has
+    // moved a few pixels, as a drag begins, never shows it; and one followed only while the pointer is over the
+    // source, so the image turns back into the grip as it is dragged away.
+    let (item, slot) = (actor(1), actor(2));
+    let mut cascade = heard(&[PRESSED, MOVED, MOVED]);
+    cascade.picked(WINDOW, under(1, &[showing(blocks(item, 0), Cursor::Grab)]));
+
+    cascade.picked(WINDOW, under(2, &[showing(blocks(item, 0), Cursor::Grabbing)]));
+    assert_eq!(cascade.cursor(), &Cursor::Grabbing, "the item's drag began with the pointer still over it");
+
+    cascade.picked(WINDOW, under(3, &[showing(blocks(slot, 5), Cursor::NotAllowed)]));
+    assert_eq!(cascade.cursor(), &Cursor::Grabbing, "dragged over a slot that declares another cursor");
+}
+
+#[test]
+fn a_window_asks_its_host_for_a_cursor_only_as_the_one_it_shows_changes() -> Result<(), Unheard> {
+    // Catches a cursor that never reaches the host, so the window shows the arrow whatever is declared; one asked for
+    // again with every frame's stacks, so the host is asked to set the same cursor sixty times a second; and the
+    // default never asked for back, so the I-beam stays once the pointer leaves the field.
+    let (mut harness, feed, hosting) = probed_window()?;
+    let prober = ActorRef::<Prober>::found(found::<Prober>(&mut harness, path::<Prober>(()).names()));
+    harness.tell(prober, &ProbeOrder::Subscribe)?;
+    harness.settle_turns();
+    let widget = ProtocolRef::found(found::<Widget>(&mut harness, path::<Widget>(()).names()));
+    let field = showing(blocks(widget, 0), Cursor::Text);
+    let shown = |harness: &mut Harness<Bench>, stack: Vec<Reach>, at: u64| -> Result<Vec<Windowing>, Unheard> {
+        assert_eq!(feed.push(MOVED), Ok(()), "the window root holds its source");
+        harness.settle_turns();
+        harness.tell(prober, &ProbeOrder::Pick(Picked { through: at, pointer: stack, pinned: Vec::new() }))?;
+        harness.settle_turns();
+
+        Ok(hosting.take())
+    };
+
+    let set = |cursor| vec![Windowing::SetCursor { window: WINDOW, cursor }];
+    assert_eq!(shown(&mut harness, vec![field.clone()], 1)?, set(Cursor::Text));
+    assert_eq!(shown(&mut harness, vec![field], 2)?, vec![], "the same cursor, shown already");
+    assert_eq!(shown(&mut harness, vec![], 3)?, set(Cursor::Default));
 
     Ok(())
 }

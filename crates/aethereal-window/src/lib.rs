@@ -24,7 +24,13 @@
 //! sends it the `Keys` entries a frame lists, [`KeysListed`], the last called first, and the window sends each key, as
 //! [`Keyed`], to the actor of each entry whose [`KeySet`] holds it, from the top, until one blocks, and typed text
 //! where the key that typed it went. A raw subscriber hears neither.
+//!
+//! What the window shows at the pointer is declared there too: each entry the pointer reaches carries a [`Cursor`],
+//! and the window shows that of the topmost entry the pointer reaches, or, while a button is held, of the topmost
+//! entry the press reached. As it changes, the window's actor asks its root, [`ShowCursor`], which asks its host; a
+//! host makes each distinct image into a cursor of its own once, [`MadeCursors`].
 
+mod cursor;
 mod event;
 mod host;
 mod keys;
@@ -35,6 +41,7 @@ mod tool;
 mod window;
 mod windows;
 
+pub use cursor::{Cursor, CursorImage, CursorUnfit, CursorUnmade, MOST_CURSOR_SIDE, MadeCursors, ShowCursor};
 pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use keys::{KeyEvent, KeyHearer, KeySet, Keyed, KeysEntry, KeysListed};
