@@ -20,34 +20,30 @@ What is already decided:
 
 ## Decision
 
-**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. Order between actors is a tree of spans, and nothing else orders actors. A span is a place in that order, managed by whoever split it, and handed forward to the actor that draws there. A draw list holds only its sender's own calls, in order, and never names a span or an actor. The root is split once, as the program is set up, and the split is the same in every pass and never changes; each piece is handed forward to the root actor that draws there. Every list is in a span, and `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
+**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. A span is a coordinate in the order between actors, and nothing else orders actors. Splitting a span hands out coordinates in order, and each is handed forward to the actor that draws there. An actor submits its span with its own calls, and the renderer issues the submitted lists in span order. The root is split once, as the program is set up, and the split is the same in every pass and never changes. Every list is in a span, and `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
 
 ```
-setup: root ── split once ──> [World, Game, Authoring, Dev], each handed to its root actor   (fixed for the program's life)
-Game ── splits its span ──> [background, hud, inventory], each handed forward (Game keeps background for its own calls)
-hud, inventory ── each sends its own calls, drawn in the span it took
-renderer: frames → passes → spans in split order, depth first → each span's list as sent
+setup: root.split() ──> world [0], game [1], authoring [2], dev [3], each handed to its root actor
+Game: game.split() ──> hud [1, 0], inventory [1, 1], each handed forward
+each actor: DrawList { span, entries } ── its own calls
+renderer: frames → passes → lists in span order ([1] < [1, 0] < [1, 1] < [2]) → each list as sent
 window: pointer ── probe ── stack in call order ── top-down until one blocks ──> actors
          key   ── Keys entries in call order ── top-down until one blocks ──> actors
 ```
 
 ### The sequence is declared
 
-- **The renderer issues a frame's calls in one order, and every step of it is declared.** Frames, then each frame's passes in the order their author wrote (ADR-0025), then the spans in the order they were split, depth first, then each span's list exactly as sent.
-- **The renderer never sorts or reshuffles.** A list is not grouped by program and not reordered for pipelines. The renderer skips setting a pipeline that is already set, so a list that keeps one program together pays for no switches.
+- **The renderer issues a frame's calls in one order, and every step of it is declared.** Frames, then each frame's passes in the order their author wrote (ADR-0025), then the submitted lists in span order, then each list exactly as sent.
+- **The renderer never reorders a list.** A list is not grouped by program and not reordered for pipelines. The renderer skips setting a pipeline that is already set, so a list that keeps one program together pays for no switches.
 - **What a call does is not the renderer's concern.** An opaque mesh, a blended one, a text, a dispatch: each is issued where it was listed. An actor that sorts by distance, by material, or by nothing sends its list in that order, and that is the order.
 
 ### Spans
 
 ```rust
-enum Span { Root(u32), Child { maker: ActorId, n: u32 } }   // a piece of the setup's split, or of a holder's
-
-// Order between actors: the only messages that carry it.
-struct Split { span: Span, children: Vec<Span> }   // a span's children, in draw order; sent again to change it
-struct Take { span: Span }                          // the sender draws in this span from now on
+struct Span(Vec<u16>);                    // a coordinate in the order between actors: [1, 0] is game → hud
 
 #[kind(name = "aether.render.draw_list")]
-struct DrawList { entries: Vec<Entry> }             // the sender's own calls, in order, in the span it took
+struct DrawList { span: Span, entries: Vec<Entry> }   // the sender's span, and its own calls in order
 
 enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
@@ -58,13 +54,10 @@ enum Entry {
 enum Pointer { Blocks, Passes, Ignores }
 ```
 
-- **Spans are the only source of order between actors.** A draw list holds its sender's own calls and nothing else: no span, no actor. Where those calls land among other actors' is decided by the span its sender took, and only there.
-- **A span is managed by whoever split it.** A holder splits its span into children, in draw order, and sends the renderer the split (`Split`). It hands each child forward, usually into the config of an actor it spawns. It keeps the children's names, so it can change their order or add to them later by sending the split again: a library offers `split`, `push`, `insert_before`, and `reorder` as helpers that send it. A span is a name, minted by its maker as `Child { maker, n }`, without asking anyone.
-- **The actor handed a span takes it** (`Take`), once, and from then on its draw lists are drawn there. One actor takes a span: a second `Take` of it is refused and logged, naming the taker, as `may_replace` refuses a second frame owner.
-- **An actor that splits its span and also draws keeps a child for its own calls,** and takes it: `let [background, hud, inventory] = split;` puts Game's own calls before Hud's and Inventory's.
-- **A span no split names is not drawn,** and an actor that has taken no span draws nothing. Nothing reaches the sequence except through the tree.
+- **A span is a coordinate in the order, and spans are the only order between actors.** Coordinates compare element by element, and a span comes before the spans split from it: `[1] < [1, 0] < [1, 1] < [2]`.
+- **Splitting hands out coordinates in order.** `let [hud, inventory] = self.span.split();` gives `[1, 0]` and `[1, 1]` under `[1]`. The holder hands each forward, usually into the config of an actor it spawns. Splitting is data: nothing is sent and nothing waits.
+- **An actor submits its span with its calls.** The renderer issues the submitted lists in span order, and each list as sent. A draw list never names another actor or another span: where an actor's calls land is its span, and only that.
 - **A span is the same in every frame and every pass.** The frame and pass of each call are declared by the actor, through what it lists: a placement's join names its frame and pass (`Join::listed::<Interface>(frame, ..)`), a dispatch's names its compute pass, and `Hit` and `Keys` name their frame. For each pass of each frame, the renderer issues the entries of a list that land there, in list order.
-- **The tree is walked iteratively, with a cap on depth.** A child is named only by its maker's split, and the walk keeps the spans it has entered and refuses one it meets again. The renderer flattens the tree when a split or a take changes, never at `Render`.
 
 ### The root is split once, at setup
 
@@ -80,7 +73,7 @@ enum Pointer { Blocks, Passes, Ignores }
       .root::<Overlay>(OverlayConfig { span: dev, .. });
   ```
 
-  A root's span is `Span::Root(n)`, its place in the split, and the root actor takes it as any actor takes its span. An actor draws in a pass by sending a list there, in the span it was handed, so which passes an actor uses is not declared anywhere. Roots and children get their spans the same way, so the top of the tree has no special case. Shorthand over this can come later; this is the canonical form.
+  A root's span is its place in the split, `[0]` to `[3]` here. An actor draws in a pass by sending a list there, in the span it was handed, so which passes an actor uses is not declared anywhere. Roots and children get their spans the same way, so the top of the tree has no special case. Shorthand over this can come later; this is the canonical form.
 - **The root is never handed to anyone, and its order never changes.** No actor holds the whole root, so none can reorder it or slip something above the dev overlay. Each actor gets only its own span.
 - **The same root order applies to every window's main frame,** including windows opened while the program runs (ADR-0027), which have no setup of their own. An actor that draws in a window it opened lists into its own span with that window's frame.
 - **A texture frame's maker declares that frame's root order** in `CreateFrame`, fixed for the frame's life, and lists into it as its own.
@@ -142,7 +135,8 @@ enum Pointer { Blocks, Passes, Ignores }
 - **A split for each pass.** It declares again which passes each actor draws in, which its lists already say, and an actor drawing in two passes would need two spans.
 - **The order the roots are listed in.** That order is the setup's dependency order: a root reaches only roots listed before it (ADR-0029: `Ordered<I>`). A game that reaches the authoring tool would have to be listed after it, and so draw over it.
 - **The root handed to one app actor, which splits it.** That actor could reorder the root at any time and put itself above the overlay. Splitting at setup gives the same order with no holder.
-- **Spans as resources made by the renderer, in a slab with generations, path keys packed in a `u128`, and a cap.** Each split would be a round trip before a child could be spawned with its span. A path key changes when a sibling is inserted, and the flattened walk already is the order.
+- **Spans as resources made by the renderer, in a slab with generations.** Each split would be a round trip before a child could be spawned with its span.
+- **Separate messages for the tree (a holder's split, an actor taking its span).** The coordinate already says where a list goes, so a list that carries its span needs nothing beside it.
 - **Keeping `Loose` for drawing whose order "does not show"** (opaque, depth-tested). Draw calls always run in some order, and a loose order is a hash map's. Keeping it would leave two ways to draw, and an undeclared sequence.
 - **A pass for each root span.** It needs no new concept, but a pass that writes depth clears it, so the world's root spans could not share one depth buffer, and each pass costs about 35 µs.
 - **Hit testing on rects the renderer derives from entries.** The renderer does not know where a placement lands, because its program places it.
