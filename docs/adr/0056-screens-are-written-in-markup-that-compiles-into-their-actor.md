@@ -15,7 +15,7 @@ An earlier widget library in another engine failed in two ways, and both are har
 What is already decided:
 
 - **Draw order is declared, and input follows it** (ADR-0055: `DrawList`, `Entry::{Draw, Run, Call, Hit, Keys}`). An actor's list orders its own draws and calls its direct children. A call places its child with an area: `Area::Inherit { origin, clip }` draws the child in the caller's coordinates, and `Area::Absolute { clip }` draws it in window pixels (`Area::inherit`, `Area::absolute`, `Area::WINDOW`, `Area::CALLER`, `Clip::{Whole, To}`). A child is always cut to its caller's clip.
-- **The pointer reaches what was drawn under it, top-down** (ADR-0055: `Pointed { window, entry, event }`, `Pointer::{Blocks, Passes, Ignores}`). `entry` is the index in the list the actor last sent, and positions arrive in the entry's own coordinates. A held button keeps sending to the entry it pressed.
+- **The pointer reaches what was drawn under it, top-down** (ADR-0055: `Pointed { window, entry, event }`, `Pointer::{Blocks(Cursor), Passes(Cursor), Ignores}`). `entry` is the index in the list the actor last sent, and positions arrive in the entry's own coordinates. A held button keeps sending to the entry it pressed.
 - **Keys reach declarations top-down** (ADR-0055: `Entry::Keys { frame, keys, blocks }`). Focus is a declaration: an actor that wants every key lists every key, blocking.
 - **Text is laid out and drawn by the renderer** (ADR-0052: `CreateText`, `WriteText`, `MoveText { at, layer, opacity, clip }`). Measuring a text without placing it was left as later work.
 - **A running guest moves onto new code, and its state moves with it by schema** (ADR-0054).
@@ -213,7 +213,7 @@ fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) { â€
 ```
 
 1. **A press on a widget with `drag`, then a move of a few pixels, starts a drag.** The payload is copied when the view is built, as an event's arguments are. The held button keeps every move at the source.
-2. **The dragged item is the pointer.** The source sets the window's cursor to the item's image, so it is always on top and never lags.
+2. **The dragged item is the pointer.** The source declares the item's image as the cursor of the entry the press reached, once its drag begins (ADR-0055), and the window shows the press's cursor wherever the pointer goes while the button is held, so it is always on top and never lags.
 3. **On release, the window reports what is under the pointer:** the topmost actor, the entry of its list, and the position in that entry's coordinates.
 4. **If that is the source's own actor,** the library finds the widget at the position and calls its `drop` method, with the payload appended as the last argument.
 5. **If it is another actor,** the source casts it to the protocol that accepts the payload's kind and mails it the drop: the payload, the entry, and the position. That actor's library finds the widget and calls its `drop` method the same way.
@@ -259,7 +259,7 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
 - **Taffy becomes a dependency of `aethereal-ui`,** pinned exactly, without default features, and checked in CI for supply-chain changes.
 - **The window gains two things, each an amendment to ADR-0055 and ADR-0024:**
   - a release under a held button reports the topmost actor under the pointer, its entry, and the position in that entry's coordinates;
-  - an actor can set the window's cursor to an image, and set it back.
+  - an actor can show an image as the window's cursor, and the default again. *Settled by ADR-0055 as a declaration, not a message that sets it:* each `Draw` and `Hit` entry the pointer reaches carries a `Cursor` in its `Pointer`, an icon or an image whose pixels are a blob, and the window shows the topmost reached entry's, or the press's while a button is held. A message would let whichever actor set it last win over the others sharing the window.
 - **Text must be measurable in the actor, which amends ADR-0052.** ADR-0052 left measuring a text without placing it as later work, and layout needs it in the same turn.
   - A font is supplied by an actor and kept by the renderer, and other actors hold only its `FontId`.
   - A screen asks the renderer once for each `FontId` it meets. The renderer answers with the font's metrics (its glyph map, advances, kerning, and line height), which is the same value the renderer lays out with. The metrics come as a blob the renderer keeps for the font's life (ADR-0042), since they are far larger than a piece of mail.

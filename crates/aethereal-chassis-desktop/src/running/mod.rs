@@ -14,7 +14,7 @@ use aethereal_actor::Time;
 use aethereal_chassis_headless::{Exit, Headless, Monotonic};
 use aethereal_pace::Clockwork;
 use aethereal_substrate::{Clock, Lifecycle, ProgramError, Settled};
-use aethereal_window::Hosting;
+use aethereal_window::{Hosting, MadeCursors};
 use core::error::Error;
 use core::fmt;
 use core::mem;
@@ -28,7 +28,7 @@ use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::WindowId;
+use winit::window::{CustomCursor, WindowId};
 
 /// What the engine sends the event loop when a source is pushed or a job finishes, to wake it (ADR-0010, ADR-0018):
 /// it carries nothing, and the loop steps what came in as it next settles.
@@ -136,6 +136,8 @@ struct Running {
     headless: Headless,
     drawing: Box<Drawing>,
     windowing: Hosting,
+    /// The cursors made of the images the windows showed, each made once (ADR-0055).
+    cursors: MadeCursors<CustomCursor>,
     clockwork: Clockwork,
     clock: Monotonic,
     stopping: Stopping,
@@ -248,6 +250,7 @@ impl App {
             headless,
             drawing,
             windowing,
+            cursors: MadeCursors::default(),
             clockwork,
             clock: self.clock,
             stopping: Stopping::Not,

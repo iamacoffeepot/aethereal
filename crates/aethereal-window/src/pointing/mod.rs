@@ -18,6 +18,11 @@
 //!   actor that began a drag learns where it was dropped, whatever holds the capture and wherever the pointer went
 //!   after.
 //! - **The wheel follows the pointer**, never a capture.
+//! - **The cursor follows the same stacks:** the window shows the [`Cursor`] of the topmost entry the pointer's stack
+//!   reaches, or the default over nothing; while a button is held, that of the topmost entry the press reached,
+//!   wherever the pointer goes, as the press's stack showed it, and as each later stack under the pointer that holds
+//!   it shows it, so an entry that declares another cursor once its drag begins shows it; once every button is up, the
+//!   pointer's again.
 //!
 //! The raw subscription stays: every subscriber of the window is sent every pointer event as its host heard it.
 //!
@@ -26,6 +31,7 @@
 #[cfg(test)]
 pub mod tests;
 
+use crate::cursor::Cursor;
 use crate::event::{Button, Event};
 use crate::window::WindowId;
 use aethereal_actor::ProtocolRef;
@@ -73,15 +79,16 @@ pub struct Pinned {
 }
 
 /// One entry of a stack: the entry numbered `entry`, from 0, of the draw list `actor` sent, whether it blocks the
-/// pointer from what is beneath it, and the origin its list was drawn at, in the window's surface pixels, which the
-/// places it is told of are given from.
-#[derive(Debug, Clone, Copy, PartialEq, Bound)]
+/// pointer from what is beneath it, the origin its list was drawn at, in the window's surface pixels, which the places
+/// it is told of are given from, and the cursor it declares, which the window shows while it is the top.
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.window.reach")]
 pub struct Reach {
     pub actor: ProtocolRef<Hearer>,
     pub entry: u32,
     pub blocks: bool,
     pub origin: Vec2,
+    pub cursor: Cursor,
 }
 
 /// What an actor whose draw list holds an entry the pointer reaches handles.
@@ -143,14 +150,15 @@ struct Reached {
     origin: Vec2,
 }
 
-/// Who a window's pointer events go to while a button is down.
+/// Who a window's pointer events go to while a button is down, and what the window shows.
 #[derive(Debug, Clone, PartialEq, Bound)]
 enum Capture {
-    /// No button is down: each goes as the stacks say.
+    /// No button is down: each goes as the stacks say, and the cursor is the top of the pointer's stack's.
     Free,
     /// `buttons` are down, and every move and release goes to what the first of them reached, `reached`, at the
-    /// origins they were drawn at when it reached them.
-    Held { reached: Vec<Reached>, buttons: Vec<Button> },
+    /// origins they were drawn at when it reached them; the cursor is `cursor`, that of the topmost entry it reached,
+    /// as a stack last showed it, or the default when it reached nothing.
+    Held { reached: Vec<Reached>, buttons: Vec<Button>, cursor: Cursor },
 }
 
 /// A window's cascade, as its actor keeps it: how many pointer events it has numbered, those waiting for their stacks,
@@ -201,7 +209,8 @@ impl Cascade {
 
     /// Takes in what a frame drew at `window`'s probes, and answers each pointer event it delivers, in order: first
     /// what the pointer no longer and now reaches is told so, then each event waiting up to `picked.through`, through
-    /// the stack at its own place, the capture, or the pointer's stack.
+    /// the stack at its own place, the capture, or the pointer's stack. What the window shows at the pointer follows,
+    /// as [`cursor`](Self::cursor) answers.
     pub fn picked(&mut self, window: WindowId, picked: Picked) -> Vec<(ProtocolRef<Hearer>, Pointed)> {
         let Picked { through, pointer, pinned } = picked;
         let mut deliveries = Vec::new();
@@ -257,8 +266,20 @@ impl Cascade {
                 | Event::Closed => {}
             }
         }
+        self.capture.seen(&self.pointer);
 
         deliveries
+    }
+
+    /// The cursor the window shows: while a button is held, that of the topmost entry the press reached, as a stack
+    /// last showed it; otherwise that of the top of the newest stack under the pointer; and the default over nothing
+    /// the pointer reaches.
+    #[must_use]
+    pub fn cursor(&self) -> &Cursor {
+        match &self.capture {
+            Capture::Held { cursor, .. } => cursor,
+            Capture::Free => self.pointer.first().map_or(&Cursor::Default, |top| &top.cursor),
+        }
     }
 }
 
@@ -311,6 +332,13 @@ impl Reached {
         let same_entry = self.entry == other.entry;
         same_actor && same_entry
     }
+
+    /// Whether `reach` is this entry of this actor's list, wherever it was drawn.
+    fn is(&self, reach: &Reach) -> bool {
+        let same_actor = self.actor == reach.actor;
+        let same_entry = self.entry == reach.entry;
+        same_actor && same_entry
+    }
 }
 
 /// The stack under the press or release numbered `at`, of those `pinned`: its own, or, past the most places a frame
@@ -333,10 +361,11 @@ impl Capture {
         match self {
             Self::Free => {
                 let reached = cascade(stack);
-                *self = Self::Held { reached: reached.clone(), buttons: vec![button] };
+                let cursor = stack.first().map_or(Cursor::Default, |top| top.cursor.clone());
+                *self = Self::Held { reached: reached.clone(), buttons: vec![button], cursor };
                 reached
             }
-            Self::Held { reached, buttons } => {
+            Self::Held { reached, buttons, .. } => {
                 buttons.push(button);
                 reached.clone()
             }
@@ -346,7 +375,7 @@ impl Capture {
     /// The entries a release of `button` is sent to: those captured, freed as the last button comes up, or with no
     /// capture, those it reaches through the stack at its place, `stack`.
     fn release(&mut self, stack: &[Reach], button: Button) -> Vec<Reached> {
-        let Self::Held { reached, buttons } = self else {
+        let Self::Held { reached, buttons, .. } = self else {
             return cascade(stack);
         };
         let held = reached.clone();
@@ -358,6 +387,22 @@ impl Capture {
         }
 
         held
+    }
+
+    /// Takes in the newest stack under the pointer, `pointer`: while a button is held, the cursor the topmost entry
+    /// the press reached declares there, when the stack holds it, as one that begins a drag declares the image it
+    /// drags. Where the stack does not hold it, the cursor it last showed stands.
+    fn seen(&mut self, pointer: &[Reach]) {
+        let Self::Held { reached, cursor, .. } = self else {
+            return;
+        };
+        let Some(pressed) = reached.first() else {
+            return;
+        };
+        let shown = pointer.iter().find(|reach| pressed.is(reach));
+        if let Some(shown) = shown {
+            cursor.clone_from(&shown.cursor);
+        }
     }
 
     /// The entries a move is sent to: those captured, or with no capture, those it reaches through the pointer's

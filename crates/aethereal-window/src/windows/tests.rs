@@ -269,6 +269,7 @@ enum Took {
     Resize(WindowId),
     Move(WindowId),
     AllowIme(WindowId, bool),
+    SetCursor(WindowId),
 }
 
 /// What each request taken asks of its window.
@@ -282,6 +283,7 @@ fn windows_of(requests: &[Windowing]) -> Vec<Took> {
             Windowing::Resize { window, .. } => Took::Resize(*window),
             Windowing::Move { window, .. } => Took::Move(*window),
             Windowing::AllowIme { window, allowed } => Took::AllowIme(*window, *allowed),
+            Windowing::SetCursor { window, .. } => Took::SetCursor(*window),
         })
         .collect()
 }
@@ -611,6 +613,22 @@ fn an_input_method_is_allowed_or_stopped_once_its_host_has_and_refused_for_a_win
     settled(&mut harness)?;
     assert!(hosting.closed(window(0)).is_ok());
     assert_eq!(settled(&mut harness)?, [refused(Unset::NotOpen)]);
+
+    Ok(())
+}
+
+#[test]
+fn a_cursor_another_actor_than_the_window_s_own_asks_for_is_not_shown() -> Result<(), Unheard> {
+    // Catches a root that has its host show whatever cursor any actor asks for, so the last to ask wins over what the
+    // draw lists declare under the pointer, which the window's actor alone follows.
+    let surface = Surface { width: 640, height: 480, scale: 1.0 };
+    let (mut harness, hosting, _feeds) = windowed(1, surface, Closing::ByButton)?;
+    let windows = harness.root::<Windows>();
+
+    harness.tell(windows, &ShowCursor { window: WindowId::nth(0), cursor: Cursor::Hidden })?;
+    harness.settle();
+
+    assert_eq!(windows_of(&hosting.take()), vec![]);
 
     Ok(())
 }

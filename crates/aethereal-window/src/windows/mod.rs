@@ -1,7 +1,8 @@
 //! The window root: the capability that holds the one source its host brings in what every window hears through, and
 //! the controller it asks the host for windows through; it makes each window's actor, sends each event on to the
 //! actor of the window it was heard in, and answers each actor that asked it to open or close a window, to set the
-//! mode one is shown in, or to let its input method compose, once its host has (ADR-0024, ADR-0027, ADR-0051).
+//! mode one is shown in, or to let its input method compose, once its host has (ADR-0024, ADR-0027, ADR-0051). It
+//! also asks its host to show the cursor each window's actor asks for, which nothing answers (ADR-0055).
 
 mod asked;
 #[cfg(test)]
@@ -12,6 +13,7 @@ pub use asked::{
     Opened, Place, ResizeWindow, Resized, SetMode, Unclosed, Unopened, Unplaced, Unset, WindowList,
 };
 
+use crate::cursor::{Cursor, ShowCursor};
 use crate::event::{Event, Mode, Surface};
 use crate::window::{Window, WindowConfig, WindowId};
 use aethereal_actor::{
@@ -60,8 +62,9 @@ pub enum Heard {
 
 /// What the window root asks its host through its controller, in the order its turns asked: to open a window under
 /// the id the root gave it, `title`d, at `size` in the host's logical pixels, shown windowed; to close a window; to
-/// show a window in a mode (ADR-0027); to resize or move a window shown windowed (ADR-0047); or to let a window's input
-/// method compose, or stop it (ADR-0051).
+/// show a window in a mode (ADR-0027); to resize or move a window shown windowed (ADR-0047); to let a window's input
+/// method compose, or stop it (ADR-0051); or to show a cursor at the pointer over a window, as its actor found it in
+/// the draw lists, which the host does without answering, and which the next replaces (ADR-0055).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Windowing {
     Open { window: WindowId, title: String, size: Logical },
@@ -70,6 +73,7 @@ pub enum Windowing {
     Resize { window: WindowId, size: Logical },
     Move { window: WindowId, at: Place },
     AllowIme { window: WindowId, allowed: bool },
+    SetCursor { window: WindowId, cursor: Cursor },
 }
 
 /// What the close button of a window does.
@@ -236,7 +240,8 @@ impl Carries<AllowIme> for Windows {
 impl Actor for Windows {
     type Config = WindowsConfig;
     type Key = ();
-    type Handles = (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow, AllowIme);
+    type Handles =
+        (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow, AllowIme, ShowCursor);
     type BeginSends = ();
     type EndSends = ();
 
@@ -404,6 +409,29 @@ impl Handles<AllowIme> for Windows {
         };
         shown.allowing.push_back(turn.hold()?);
         turn.open(&mut self.control)?.push(Windowing::AllowIme { window, allowed });
+
+        Ok(())
+    }
+}
+
+/// Asks the host to show the cursor at the pointer over the window, as the window's own actor asked: it alone follows
+/// what the pointer is over. Nothing answers it. What another actor asks is not acted on, as the cursor is declared in
+/// the draw lists, never set by whoever asks last; and a window that is not open shows none.
+impl Handles<ShowCursor> for Windows {
+    type Sends = ();
+
+    fn handle(&mut self, show: ShowCursor, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let ShowCursor { window, cursor } = show;
+        let from_window = turn.child::<Window>(turn.me(), &window).is_some_and(|actor| turn.sender() == actor.into());
+        if !from_window {
+            turn.log(Level::Warn, "a cursor another actor than its window's asked for was not shown");
+            return Ok(());
+        }
+        let is_open = matches!(self.standing.get(&window), Some(Standing::Open(_)));
+        if !is_open {
+            return Ok(());
+        }
+        turn.open(&mut self.control)?.push(Windowing::SetCursor { window, cursor });
 
         Ok(())
     }

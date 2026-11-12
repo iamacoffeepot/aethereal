@@ -23,7 +23,8 @@
 //! it asks to show in another mode, is answered `NoHost`, between steps
 //! ([`Hosted`], ADR-0027): a page enters fullscreen only while it handles a
 //! person's click or key. A page that wants another window names another
-//! canvas in the window root's settings.
+//! canvas in the window root's settings. The cursor the window root asks a
+//! canvas to show is set as the canvas's CSS `cursor` (ADR-0055).
 //!
 //! The jobs its turns run, it runs on the page's own event loop, each a task of
 //! its own, with `EventLoop` handed to the program (ADR-0018): their answers are
@@ -70,6 +71,7 @@ mod serving;
 #[cfg(test)]
 mod tests;
 
+pub use canvas::Cursors;
 #[cfg(target_arch = "wasm32")]
 pub use canvas::Density;
 #[cfg(target_arch = "wasm32")]
@@ -181,7 +183,7 @@ impl<C: Clock> Browser<C> {
 
     /// Between steps: answers what the window root asked, takes what the pacer asked, and brings in what was pushed.
     fn between(&mut self) {
-        self.hosted.refuse();
+        self.hosted.answer(&mut self.engine);
         let now = Time::from_nanos(self.clock.nanos());
         let _ = self.clockwork.take(&mut self.engine, now);
         self.engine.bring();

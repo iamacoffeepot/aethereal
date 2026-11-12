@@ -8,7 +8,7 @@ use aethereal_render::draw_list::{Entry, Pointer};
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::placement::PlacementId;
-use aethereal_window::{KeySet, Surface, WindowId};
+use aethereal_window::{Cursor, KeySet, Surface, WindowId};
 
 /// The window the overlay draws on.
 fn window() -> WindowId {
@@ -47,6 +47,6 @@ fn the_overlay_hears_the_backtick_alone_until_the_console_opens_and_then_every_k
     assert_eq!(hidden, vec![backtick.clone()]);
     assert_eq!(band, vec![backtick, drawn(7), drawn(9)]);
     let every = Entry::Keys { frame: main, keys: KeySet::All, blocks: true };
-    let panel = Entry::hit::<Interface>(main, Layout::of(surface).console(), Pointer::Blocks);
+    let panel = Entry::hit::<Interface>(main, Layout::of(surface).console(), Pointer::Blocks(Cursor::Default));
     assert_eq!(console, vec![every, panel, drawn(7), drawn(9)]);
 }

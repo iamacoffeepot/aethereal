@@ -54,11 +54,11 @@ use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Allows, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held,
-    Level, On, Path, Protocol, ProtocolRef, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn,
-    path,
+    Actor, Allows, Answer, Beginning, Bytes, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle,
+    Handles, Held, Level, On, Path, Protocol, ProtocolRef, Render, Resource, Source, Subscribers, Tells, ToAny,
+    ToSender, Top, Turn, path,
 };
-use aethereal_data::{ActorId, Bound, Plain};
+use aethereal_data::{ActorId, Bound, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_window::{Hearer, KeyHearer, KeysEntry, KeysListed, Picked, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
@@ -1612,7 +1612,9 @@ impl Handles<DrawList> for Renderer {
             .iter()
             .zip(0..)
             .map(|(entry, at)| {
-                let listed = entry.listed(at, hearers, |child| turn.child_id(sender, child));
+                let reads =
+                    (|child: &PathSegment| turn.child_id(sender, child), |pixels: &Bytes| turn.read(pixels).len());
+                let listed = entry.listed(at, hearers, reads);
                 listed.map_err(|why| ListRefused { at, why })
             })
             .collect();
@@ -2897,16 +2899,16 @@ impl Kept {
     /// What the entry `walking` reaches issues in the pass `pass` of `frame`, whose programs are made against `fits`:
     /// its placement's join drawn there, where its list is, or itself, a hit listed there, its rect moved to its
     /// list's origin and cut to its list's clip; none when it neither draws nor is hit there.
-    fn issued(&self, walking: Walking<'_>, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'_>> {
+    fn issued<'a>(&'a self, walking: Walking<'a>, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'a>> {
         let Walking { entry, within } = walking;
-        match *entry {
+        match entry {
             Listed::Draw { placement, picks } => {
-                let drawable = self.listed_in(placement, (frame, pass), fits)?;
+                let drawable = self.listed_in(*placement, (frame, pass), fits)?;
                 Some(Issued::Draw { drawable, picks, within })
             }
             Listed::Hit { frame: hit, pass: hit_pass, rect, picks } => {
-                let is_here = hit == frame && hit_pass == pass;
-                is_here.then_some(Issued::Hit { rect: within.cut(rect), picks, origin: within.origin })
+                let is_here = *hit == frame && *hit_pass == pass;
+                is_here.then_some(Issued::Hit { rect: within.cut(*rect), picks, origin: within.origin })
             }
             Listed::Run(_) | Listed::Call { .. } | Listed::Keys { .. } => None,
         }
@@ -2930,8 +2932,8 @@ impl Kept {
 /// What a pass issues in its order, each as the pointer reaches it: a placement's join drawn where its list is, or a
 /// hit, which draws nothing, over its rect in the window's pixels, its list's origin at `origin` (ADR-0055).
 enum Issued<'a> {
-    Draw { drawable: Drawable<'a>, picks: Picks, within: Within },
-    Hit { rect: Rect2, picks: Picks, origin: Vec2 },
+    Draw { drawable: Drawable<'a>, picks: &'a Picks, within: Within },
+    Hit { rect: Rect2, picks: &'a Picks, origin: Vec2 },
 }
 
 /// One draw of a pass as the walk issued it, before it is recorded: what it draws, the pixels of its pass's target it is

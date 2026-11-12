@@ -1,17 +1,18 @@
-//! The windows the window root asks for while the program runs, opened, closed, shown in a mode, resized, moved, and
-//! their input methods allowed or stopped, between steps, inside one of winit's callbacks, where a native window is
-//! made (ADR-0027, ADR-0047, ADR-0051).
+//! The windows the window root asks for while the program runs, opened, closed, shown in a mode, resized, moved, their
+//! input methods allowed or stopped, and the cursor each shows set, between steps, inside one of winit's callbacks,
+//! where a native window is made, and a custom cursor (ADR-0027, ADR-0047, ADR-0051, ADR-0055).
 
 use super::Running;
 use crate::input::Composition;
 use crate::{gpu, moding, sizing};
-use aethereal_window::{Logical, Mode, Place, Unplaced, Unset, WindowId, Windowing};
+use aethereal_window::{Cursor, Logical, Mode, Place, Unplaced, Unset, WindowId, Windowing};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::ActiveEventLoop;
+use winit::window::{BadImage, Cursor as WinitCursor, CursorIcon, CustomCursor};
 
 impl Running {
-    /// Takes what the window root asked since the last take, and opens, closes, sets the mode of, resizes, moves, or
-    /// allows or stops the input method of each window, in the order asked, on `event_loop`.
+    /// Takes what the window root asked since the last take, and opens, closes, sets the mode of, resizes, moves,
+    /// allows or stops the input method of, or sets the cursor of each window, in the order asked, on `event_loop`.
     pub(super) fn windowing(&mut self, event_loop: &ActiveEventLoop) {
         for request in self.windowing.take() {
             match request {
@@ -23,6 +24,7 @@ impl Running {
                 Windowing::Resize { window, size } => self.resize(window, size),
                 Windowing::Move { window, at } => self.move_to(window, at),
                 Windowing::AllowIme { window, allowed } => self.allow_ime(window, allowed),
+                Windowing::SetCursor { window, cursor } => self.show_cursor(event_loop, window, &cursor),
             }
         }
     }
@@ -101,6 +103,37 @@ impl Running {
             opened.composition = Composition::Closed;
         }
         let _ = self.windowing.ime_allowed(window);
+    }
+
+    /// Shows `cursor` at the pointer over `window`, as the window root asked: none, an icon of the platform's, or an
+    /// image, made into a custom cursor on `event_loop` the first time it is shown, and the one made then each time
+    /// after. An image winit would not make shows the default. Nothing answers it, and a window not open shows nothing.
+    fn show_cursor(&mut self, event_loop: &ActiveEventLoop, window: WindowId, cursor: &Cursor) {
+        let Some(opened) = self.drawing.window_mut(window) else {
+            return;
+        };
+        let shown: WinitCursor = match cursor {
+            Cursor::Hidden => {
+                opened.native.set_cursor_visible(false);
+                return;
+            }
+            Cursor::Default => CursorIcon::Default.into(),
+            Cursor::Text => CursorIcon::Text.into(),
+            Cursor::Hand => CursorIcon::Pointer.into(),
+            Cursor::Grab => CursorIcon::Grab.into(),
+            Cursor::Grabbing => CursorIcon::Grabbing.into(),
+            Cursor::NotAllowed => CursorIcon::NotAllowed.into(),
+            Cursor::Image(image) => {
+                let made = self.cursors.of(self.headless.engine_mut(), image, |image, pixels| {
+                    let (width, height) = (image.width, image.height);
+                    let source = CustomCursor::from_rgba(pixels, width, height, image.hotspot_x, image.hotspot_y)?;
+                    Ok::<_, BadImage>(event_loop.create_custom_cursor(source))
+                });
+                made.map_or_else(|_| CursorIcon::Default.into(), |made| made.clone().into())
+            }
+        };
+        opened.native.set_cursor_visible(true);
+        opened.native.set_cursor(shown);
     }
 
     /// Closes `window`, and asks the program to stop once its last window has closed, as `quit` does.

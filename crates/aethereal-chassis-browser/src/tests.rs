@@ -248,7 +248,7 @@ fn a_window_asked_to_open_close_or_show_in_a_mode_is_answered_no_host_within_the
     };
     let windows = Seated { id, seat };
     let (outside, _arrivals) = engine.seat_outside()?;
-    let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Windows(hosting));
+    let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Windows(hosting, Cursors::none()));
 
     let open = OpenWindow { title: String::from("another"), size: Logical { width: 640.0, height: 480.0 } };
     ask::<_, Opened>(&mut browser, outside, windows, &open);

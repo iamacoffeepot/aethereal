@@ -186,25 +186,36 @@ impl Hosting {
     }
 
     /// Answers each request the window root asked since the last take as a host that opens, closes, sets the mode of,
-    /// resizes, and moves no window, and has no input method, does, as a page does: [`Unopened::NoHost`],
-    /// [`Unclosed::NoHost`], [`Unset::NoHost`], and [`Unplaced::NoHost`].
+    /// resizes, and moves no window, has no input method, and shows no cursor, does: [`Unopened::NoHost`],
+    /// [`Unclosed::NoHost`], [`Unset::NoHost`], and [`Unplaced::NoHost`]; a cursor asked for is not answered.
     ///
     /// # Errors
     ///
     /// [`Closed`] when the window root's source has been dropped.
     pub fn refuse(&self) -> Result<(), Closed> {
         for request in self.take() {
-            match request {
-                Windowing::Open { window, .. } => self.unopened(window, Unopened::NoHost)?,
-                Windowing::Close { window } => self.unclosed(window, Unclosed::NoHost)?,
-                Windowing::SetMode { window, .. } => self.unset(window, Unset::NoHost)?,
-                Windowing::Resize { window, .. } => self.unresized(window, Unplaced::NoHost)?,
-                Windowing::Move { window, .. } => self.unmoved(window, Unplaced::NoHost)?,
-                Windowing::AllowIme { window, .. } => self.ime_unallowed(window, Unset::NoHost)?,
-            }
+            self.refuse_one(&request)?;
         }
 
         Ok(())
+    }
+
+    /// Answers `request`, one the window root asked, as [`refuse`](Self::refuse) does, for a host that does some of what
+    /// the root asks and refuses the rest, as a page shows a cursor and opens no window.
+    ///
+    /// # Errors
+    ///
+    /// [`Closed`] when the window root's source has been dropped.
+    pub fn refuse_one(&self, request: &Windowing) -> Result<(), Closed> {
+        match *request {
+            Windowing::Open { window, .. } => self.unopened(window, Unopened::NoHost),
+            Windowing::Close { window } => self.unclosed(window, Unclosed::NoHost),
+            Windowing::SetMode { window, .. } => self.unset(window, Unset::NoHost),
+            Windowing::Resize { window, .. } => self.unresized(window, Unplaced::NoHost),
+            Windowing::Move { window, .. } => self.unmoved(window, Unplaced::NoHost),
+            Windowing::AllowIme { window, .. } => self.ime_unallowed(window, Unset::NoHost),
+            Windowing::SetCursor { .. } => Ok(()),
+        }
     }
 }
 

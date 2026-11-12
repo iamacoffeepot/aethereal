@@ -306,7 +306,7 @@ impl Picking {
     /// `origin`, in the window's pixels: the first, no call and no shift, for a draw at the window's origin the pointer
     /// does not reach. A draw the pointer does not reach, in a frame probed nowhere, or past the calls a frame numbers,
     /// is keyed no call, and still moved to its origin. Refused past the most calls a buffer holds, counted.
-    pub fn call(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> Result<u32, PastRoom> {
+    pub fn call(&mut self, picks: &Picks, origin: Vec2, pass: InPass) -> Result<u32, PastRoom> {
         let key = self.number(picks, origin, pass);
         let shift = pass.shift(origin);
         let unmoved = shift == [0.0, 0.0];
@@ -332,7 +332,7 @@ impl Picking {
     /// The key of the next call, which reaches what `picks` says, drawn in `pass` with its list's origin at `origin`,
     /// its entry numbered: 0 for one the pointer does not reach, in a frame probed nowhere, or past the calls a frame
     /// numbers.
-    fn number(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> u32 {
+    fn number(&mut self, picks: &Picks, origin: Vec2, pass: InPass) -> u32 {
         let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
             return 0;
         };
@@ -342,7 +342,7 @@ impl Picking {
 
     /// Takes in a hit, which reaches what `picks` says within `rect`, in the window's pixels, its list's origin at
     /// `origin`, numbered as the next call, in `pass`: keyed at the farthest, as it has no depth.
-    pub fn hit(&mut self, rect: Rect2, (picks, origin): (Picks, Vec2), pass: InPass) {
+    pub fn hit(&mut self, rect: Rect2, (picks, origin): (&Picks, Vec2), pass: InPass) {
         let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
             return;
         };
@@ -356,7 +356,7 @@ impl Picking {
 impl Framed {
     /// Numbers the next call, which reaches `reaching`, drawn with its list's origin at `origin`: none past the calls a
     /// frame numbers.
-    fn numbered(&mut self, reaching: Reaching, origin: Vec2) -> Option<u32> {
+    fn numbered(&mut self, reaching: &Reaching, origin: Vec2) -> Option<u32> {
         if self.calls.len() >= MOST_CALLS {
             return None;
         }
@@ -399,7 +399,7 @@ impl Stacks {
             self.hits.iter().filter(|(_, rect)| draw_list::holds(*rect, pixel)).map(|(key, _)| *key).collect()
         };
         let reaches = |calls: Vec<u32>| -> Vec<Reach> {
-            calls.into_iter().filter_map(|call| self.calls.get(call.checked_sub(1)? as usize).copied()).collect()
+            calls.into_iter().filter_map(|call| self.calls.get(call.checked_sub(1)? as usize).cloned()).collect()
         };
         let mut stacks = picking::stacks(bytes, points.len(), hits).into_iter().map(reaches);
         let pointer = stacks.next().unwrap_or_default();

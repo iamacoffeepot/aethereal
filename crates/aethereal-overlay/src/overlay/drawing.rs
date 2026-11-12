@@ -29,7 +29,7 @@ use aethereal_render::stats::{
 use aethereal_render::text::{CreateText, MoveText, WriteText};
 use aethereal_render::uniforms::WriteUniforms;
 use aethereal_tools::{CallTool, Tools};
-use aethereal_window::{Event, KeyEvent, KeySet, Keyed, Pointed, PointerEvent, Surface, WindowId};
+use aethereal_window::{Cursor, Event, KeyEvent, KeySet, Keyed, Pointed, PointerEvent, Surface, WindowId};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
@@ -306,7 +306,7 @@ pub(super) fn listing(window: WindowId, stop: Stop, surface: Surface, placements
     };
     let mut entries = vec![Entry::Keys { frame, keys, blocks: true }];
     if console {
-        entries.push(Entry::hit::<Interface>(frame, Layout::of(surface).console(), Pointer::Blocks));
+        entries.push(Entry::hit::<Interface>(frame, Layout::of(surface).console(), Pointer::Blocks(Cursor::Default)));
     }
     entries.extend(placements.into_iter().map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores }));
 
