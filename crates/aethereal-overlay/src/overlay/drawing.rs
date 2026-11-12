@@ -148,10 +148,10 @@ impl Overlay {
         self.send_list(turn)
     }
 
-    /// Sends the overlay's list: what it has placed, each joined listed to the window's main pass, the panels and
-    /// chart first and the texts over them, the console's only at its stop, while it is shown; nothing while it is
-    /// hidden. The overlay is a root the program's root list names, and a list is drawn after the pass's loose
-    /// placements, so over what the program drew loose there (ADR-0031, ADR-0055).
+    /// Sends the overlay's list: what it has placed, each joined listed to the window's interface pass, the panels
+    /// and chart first and the texts over them, the console's only at its stop, while it is shown; nothing while it is
+    /// hidden. The overlay is the last root the program's root list names, so its list is drawn over the program's
+    /// (ADR-0031, ADR-0055).
     pub(super) fn send_list<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, DrawList>, I>,
