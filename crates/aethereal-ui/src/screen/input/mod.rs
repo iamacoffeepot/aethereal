@@ -68,7 +68,7 @@ impl Screen {
                 }
                 return heard;
             }
-            Some(Listed::Keys(_) | Listed::Draw(_)) | None => return heard,
+            Some(Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_)) | None => return heard,
         };
         match pointed.event {
             PointerEvent::PointerEntered => self.reach(&path, true),
