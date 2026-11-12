@@ -13,8 +13,8 @@ use crate::font::{GlyphId, Metrics};
 use aethereal_math::Vec2;
 use core::ops::Range;
 
-/// A text laid out: each glyph it draws, where, and in what colour, the characters no font had, and the box its lines
-/// fill. The default lays out nothing.
+/// A text laid out: each glyph it draws, where, and in what colour, the characters no font had, and how many lines it
+/// has and how wide the widest is. The default lays out nothing.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Laid {
     pub glyphs: Vec<LaidGlyph>,
@@ -22,7 +22,8 @@ pub struct Laid {
     pub missing: Vec<char>,
     /// How many lines it has, of which there is always at least one.
     pub lines: u32,
-    /// How wide its lines are set within: the wrap width, or the widest line's.
+    /// How wide its widest line is, trailing spaces left out, wrapped or not: its lines are set within the wrap width
+    /// when it wraps, which may be wider.
     pub width: f32,
 }
 
@@ -103,7 +104,7 @@ pub fn lay_out<M: AsRef<Metrics>>(
         shaped.lines.iter().flat_map(|line| broken(&starts, &sets, line.glyphs.clone(), wrap)).collect();
 
     let widest = broken.iter().map(|line| line.width).fold(0.0, f32::max);
-    let width = match wrap {
+    let within = match wrap {
         Wrap::None => widest,
         Wrap::At { width } => width,
     };
@@ -118,8 +119,8 @@ pub fn lay_out<M: AsRef<Metrics>>(
     for (line, at) in broken.iter().zip(0_u16..) {
         let shift = match align {
             Align::Left => 0.0,
-            Align::Centre => (width - line.width) / 2.0,
-            Align::Right => width - line.width,
+            Align::Centre => (within - line.width) / 2.0,
+            Align::Right => within - line.width,
         };
         let baseline = f32::from(at).mul_add(line_height, ascender);
         for index in line.glyphs.clone() {
@@ -134,7 +135,7 @@ pub fn lay_out<M: AsRef<Metrics>>(
     }
     let lines = u32::try_from(broken.len()).unwrap_or(u32::MAX);
 
-    Laid { glyphs, missing, lines, width }
+    Laid { glyphs, missing, lines, width: widest }
 }
 
 /// How `character`, which `own` shaped as `shaped`, is set: in `own` when it has the character; else in the first of

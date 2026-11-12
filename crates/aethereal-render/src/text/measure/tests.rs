@@ -76,7 +76,7 @@ fn a_line_measures_its_glyphs_advances_kerned_and_not_its_trailing_space() {
     let kerned = a.zip(v).map_or(0, |(a, v)| sans.kerning(a, v));
     assert!(kerned < 0, "the fixture's premise: A and V are kerned together");
 
-    let measured = measure(&sans, NO_FALLBACKS, size, &white("AV "), Wrap::None, Align::Left);
+    let measured = measure(&sans, NO_FALLBACKS, size, &white("AV "), Wrap::None);
 
     // A kerning is some tens of font units, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss)]
@@ -97,7 +97,7 @@ fn a_character_a_fallback_has_measures_as_it_is_there_and_one_no_font_has_as_the
     assert!((line_height(&sans, size) - line_height(&noto, size)).abs() > 1.0, "Noto's lines are spaced apart");
     let text = format!("a{ONLY_MONO}b{ONLY_NOTO}{IN_NONE}");
 
-    let measured = measure(&sans, &[mono.clone(), noto.clone()], size, &white(&text), Wrap::None, Align::Left);
+    let measured = measure(&sans, &[mono.clone(), noto.clone()], size, &white(&text), Wrap::None);
 
     let width = advance(&sans, 'a', size)
         + advance(&mono, ONLY_MONO, size)
@@ -117,8 +117,8 @@ fn fallbacks_are_tried_in_the_order_they_are_listed() {
     assert!(premise, "the fixture's premise: both of the renderer's own fonts draw the arrow, and Noto not");
     let arrows = white(&NOT_NOTO.to_string().repeat(3));
 
-    let sans_first = measure(&noto, &[sans.clone(), mono.clone()], size, &arrows, Wrap::None, Align::Left);
-    let mono_first = measure(&noto, &[mono.clone(), sans.clone()], size, &arrows, Wrap::None, Align::Left);
+    let sans_first = measure(&noto, &[sans.clone(), mono.clone()], size, &arrows, Wrap::None);
+    let mono_first = measure(&noto, &[mono.clone(), sans.clone()], size, &arrows, Wrap::None);
 
     let (by_sans, by_mono) = (advance(&sans, NOT_NOTO, size) * 3.0, advance(&mono, NOT_NOTO, size) * 3.0);
     assert!((by_sans - by_mono).abs() > 1.0, "the fixture's premise: the arrows are of different widths");
@@ -127,20 +127,25 @@ fn fallbacks_are_tried_in_the_order_they_are_listed() {
 }
 
 #[test]
-fn a_wrapped_text_is_the_wrap_width_wide_and_an_unwrapped_one_its_widest_line_whatever_its_alignment() {
-    // Catches lines counted before they are wrapped, so a wrapped text measures one line tall; a wrapped text measured
-    // by its widest line where the renderer sets its lines within the wrap width; and a box that moves with alignment.
+fn a_text_measures_its_widest_line_wrapped_or_not_and_wrapped_at_that_breaks_where_it_was_measured() {
+    // Catches the wrap width given back for a wrapped text whose lines are all narrower, so a box sized by it never
+    // shrinks to its text; lines counted before they are wrapped; and a measured width at which the text, made to be
+    // drawn in it, breaks elsewhere than it was measured.
     let sans = metrics(SANS);
     let size = 20.0;
-    let word = advance(&sans, 'w', size) * 4.0;
-    let width = word.mul_add(2.0, advance(&sans, ' ', size)) + 1.0;
+    let (w, space) = (advance(&sans, 'w', size), advance(&sans, ' ', size));
+    let word = w * 4.0;
+    let widest = word.mul_add(2.0, space);
+    // Room for "wwww wwww" and one more `w`, so "wwww w wwww" breaks after its second word.
+    let offered = widest + w;
+    let runs = white("wwww w wwww wwww");
     let line = line_height(&sans, size);
 
-    for align in [Align::Left, Align::Centre, Align::Right] {
-        let wrapped = measure(&sans, NO_FALLBACKS, size, &white("wwww wwww wwww"), Wrap::At { width }, align);
-        let unwrapped = measure(&sans, NO_FALLBACKS, size, &white("ww\nwwww\nw"), Wrap::None, align);
+    let wrapped = measure(&sans, NO_FALLBACKS, size, &runs, Wrap::At { width: offered });
+    let unwrapped = measure(&sans, NO_FALLBACKS, size, &white("ww\nwwww\nw"), Wrap::None);
 
-        assert!(measures(wrapped, width, (2, line)), "{align:?}: {wrapped:?}");
-        assert!(measures(unwrapped, word, (3, line)), "{align:?}: {unwrapped:?}");
-    }
+    assert!(measures(wrapped, widest, (2, line)), "{wrapped:?} is not {widest} by two lines");
+    assert!(measures(unwrapped, word, (3, line)), "{unwrapped:?} is not {word} by three lines");
+    let drawn = |width| lay_out(&sans, NO_FALLBACKS, size, &runs, (Wrap::At { width }, Align::Left)).glyphs;
+    assert_eq!(drawn(wrapped.width), drawn(offered), "wrapped at its measured width, it breaks where it was measured");
 }

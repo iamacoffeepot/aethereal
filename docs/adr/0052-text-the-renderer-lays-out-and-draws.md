@@ -36,7 +36,7 @@ What is already decided:
 ```
 program ── CreateFont { source, fallbacks } ──────────────────────> render root ── Made<FontId>
 program ── ReadMetrics { font } ───────────────────────────────────> render root ── FontMetrics { own, fallbacks }: blobs
-program: text::measure(own, fallbacks, size, runs, wrap, align) ─> Measured { width, height, lines }, in its own turn
+program: text::measure(own, fallbacks, size, runs, wrap) ────────> Measured { width, height, lines }, in its own turn
 program ── CreateText { font, size, runs, wrap, align, outline } ──> render root ── Made<TextId>
 program ── PlaceText { text, at, layer, opacity, joins } ─────────> render root ── Made<PlacementId>
 program ── DrawList { frame, pass, [panel, line_1, line_2, cursor] } ─> drawn in that order
@@ -116,14 +116,15 @@ enum FontNotMade { Read(FontRefused), Fallback { fallback: u32 }, Unstored }
 ReadMetrics { font: Font } -> FontMetrics::Read { own: Bytes, fallbacks: Vec<Bytes> } | FontMetrics::Refused(MetricsRefused::Font)
 
 font::Metrics::decode(bytes: &[u8]) -> Result<Metrics, MetricsMalformed>
-text::measure(own: &Metrics, fallbacks: &[Metrics], size: f32, runs: &[Run], wrap: Wrap, align: Align) -> Measured
+text::measure(own: &Metrics, fallbacks: &[Metrics], size: f32, runs: &[Run], wrap: Wrap) -> Measured
 struct Measured { width: f32, height: f32, lines: u32 }
 ```
 
 - **A font's metrics are a value, and layout runs on it.** `font::Metrics` holds the units per em, the line metrics, each glyph's advance, the character map, and the pairs kerned: all that shaping, the missing glyph, and laying a text out read. A read font is its metrics and its outlines; the outlines, and the fields generated from them, stay with the renderer, which needs them only to draw. `lay_out` takes the metrics of a text's font and of its fallbacks, so the render root lays a text out to draw it, and an actor lays it out to measure it, with one function.
 - **A font's metrics are answered as a blob the render root keeps.** Mail is decoded within the engine's `read_limit`, 1024 bytes by default, and a font's metrics are tens of kilobytes (IBM Plex Sans) to well over a hundred (a Japanese, Chinese, or Korean font), so they cannot be a piece of mail. When a face is read, the renderer's own two as the render root begins and each other as its font is made, its metrics are encoded once (`Metrics::encode`) and put as a blob (ADR-0042: `turn.put`), kept for as long as any font holds the face. `ReadMetrics` is answered with the font's own blob and each fallback's, in the order they are tried, and every answer for a font hands over the same blobs: nothing is read or encoded again. A font not made, or released, is refused.
 - **`Metrics::decode` is pure and bounded, and refuses what is malformed.** It reads exactly what `encode` wrote, every count checked against the bytes left before anything is taken for it, so it holds no more than its bytes describe. Bytes cut short or left over, a character map whose groups are out of order or name a glyph past the font's, and kerning whose pairs or classes are out of order or listed twice are refused, as each would break a lookup. Kerning is held as sorted lists searched by halves, the shape it is written in, so a decoded font kerns exactly as the renderer's does.
-- **Measuring a text is a pure function,** `text::measure`, which lays the text out with the same `lay_out` and answers its box, in the pixels of the frames it would be drawn in. Its width is the wrap width when it wraps, and its widest line's, trailing spaces left out, when it does not. Its height is its lines times its own font's line height, ascender to descender and the gap after, which its fallbacks do not change. Its alignment sets each line within the box and does not change it. Its outline does not change the box either, so `measure` does not take one: a rim draws up to the outline's width outside the measured box.
+- **Measuring a text is a pure function,** `text::measure`, which lays the text out with the same `lay_out` and answers its box, in the pixels of the frames it would be drawn in. Its width is its widest line's, trailing spaces left out, wrapped or not, so a box laid out around it shrinks to its text: a tooltip that wraps at 300 pixels and holds a phrase 120 pixels wide is 120 pixels wide. Its height is its lines times its own font's line height, ascender to descender and the gap after, which its fallbacks do not change. Alignment sets each line within the box and does not change it, and an outline does not change the box either, so `measure` takes neither: a rim draws up to the outline's width outside the measured box.
+- **A text is drawn in exactly its measured box** by measuring it with the wrap width it is offered, making it with `Wrap::At { width: measured.width }`, and aligning it within that width. Every line fits the measured width, so its lines break at the same places they were measured at. A word wider than the offered width is left whole and measured wider than the offer, and wrapping at that may set together lines the offer broke apart: such a text does not fit what it was offered.
 - **An actor measures in its own turn, with no mail:** it asks a font's metrics once, decodes them, and measures every text it lays out from them.
 
 ### The atlas
