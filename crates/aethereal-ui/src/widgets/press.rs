@@ -10,16 +10,16 @@ use aethereal_render::text::Colour;
 use aethereal_window::Button;
 
 /// The tint over a widget the pointer is over: a little lighter.
-const HOVERED: Colour = Colour { red: 1.0, green: 1.0, blue: 1.0, alpha: 0.12 };
+pub(super) const HOVERED: Colour = Colour { red: 1.0, green: 1.0, blue: 1.0, alpha: 0.12 };
 
 /// The tint over a widget pressed: a little darker.
 const PRESSED: Colour = Colour { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.2 };
 
 /// The ring inside the edge of a widget with focus.
-const RING: Colour = Colour { red: 1.0, green: 1.0, blue: 1.0, alpha: 0.7 };
+pub(super) const RING: Colour = Colour { red: 1.0, green: 1.0, blue: 1.0, alpha: 0.7 };
 
 /// How wide the focus ring is, in logical pixels.
-const RING_WIDTH: f32 = 2.0;
+pub(super) const RING_WIDTH: f32 = 2.0;
 
 /// Whether the pointer is over a widget pressed like a button, and whether a press of the main button on it is held,
 /// wherever the pointer has gone since.
@@ -43,7 +43,7 @@ impl Press {
                 self.pressed = false;
                 return clicked;
             }
-            Pointing::Moved { .. } | Pointing::Down { .. } | Pointing::Up { .. } | Pointing::Wheel { .. } => {}
+            Pointing::Moved { .. } | Pointing::Down { .. } | Pointing::Up { .. } => {}
         }
 
         false

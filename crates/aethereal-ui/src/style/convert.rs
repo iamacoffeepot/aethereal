@@ -1,39 +1,64 @@
 //! A widget's style as Taffy lays it out: its lengths multiplied by the screen's UI scale, its container's mode set by
-//! how the widget arranges its children, and, under a `Stack`, its cell the stack's one.
+//! how the widget arranges its children, the room it keeps for its own drawing inside its border; under a `Stack`, its
+//! cell the stack's one, and under a scroll, never shrunk to fit.
 
 use super::{Alignment, Distribute, Edges, Length, Placed, SelfAlign, Space, Style, Track};
 use crate::widget::{Arrange, Axis};
 use taffy::{
     AlignContent, AlignItems, Dimension, Display, FlexDirection, FlexWrap, GridPlacement, GridTemplateComponent,
-    LengthPercentage, LengthPercentageAuto, Line, MaxTrackSizingFunction, MinMax, MinTrackSizingFunction, Rect, Size,
-    TrackSizingFunction,
+    LengthPercentage, LengthPercentageAuto, Line, MaxTrackSizingFunction, MinMax, MinTrackSizingFunction, Overflow,
+    Point, Rect, Size, TrackSizingFunction,
 };
 
-/// What a node's parent is, as its style is laid out: a `Stack` sets every child in its one cell.
+/// What a node's parent is, as its style is laid out: a `Stack` sets every child in its one cell, and a scroll never
+/// shrinks its children to fit its box, which they overflow and it slides through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Parent {
     Stack,
+    Scroll,
     Other,
 }
 
-/// `style`, of a widget that arranges its children as `arrange`, under a parent of `parent`, as Taffy lays it out at
-/// `scale` pixels to the logical pixel.
-pub fn flow(style: &Style, arrange: Arrange, parent: Parent, scale: f32) -> taffy::Style {
+impl Parent {
+    /// What a widget that arranges its children as `arrange` is to them.
+    #[must_use]
+    pub const fn of(arrange: Arrange) -> Self {
+        match arrange {
+            Arrange::Stack => Self::Stack,
+            Arrange::Scroll(_) => Self::Scroll,
+            Arrange::Flex(_) | Arrange::Grid | Arrange::Leaf => Self::Other,
+        }
+    }
+}
+
+/// `style`, of a widget that arranges its children as `arrange` and keeps `room` pixels on each side for its own
+/// drawing, under a parent of `parent`, as Taffy lays it out at `scale` pixels to the logical pixel. The room is laid
+/// out as border, inside the style's own, so it is a length whatever the padding is.
+pub fn flow(style: &Style, arrange: Arrange, parent: Parent, room: Edges<f32>, scale: f32) -> taffy::Style {
     let (display, flex_direction) = match arrange {
-        Arrange::Flex(Axis::Row) | Arrange::Leaf => (Display::Flex, FlexDirection::Row),
-        Arrange::Flex(Axis::Column) => (Display::Flex, FlexDirection::Column),
+        Arrange::Flex(Axis::Row) | Arrange::Scroll(Axis::Row) | Arrange::Leaf => (Display::Flex, FlexDirection::Row),
+        Arrange::Flex(Axis::Column) | Arrange::Scroll(Axis::Column) => (Display::Flex, FlexDirection::Column),
         Arrange::Grid | Arrange::Stack => (Display::Grid, FlexDirection::Row),
+    };
+    let overflow = match arrange {
+        Arrange::Scroll(_) => Overflow::Hidden,
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf => Overflow::Visible,
+    };
+    let flex_shrink = match parent {
+        Parent::Scroll => 0.0,
+        Parent::Stack | Parent::Other => style.shrink,
     };
     let (grid_row, grid_column) = match parent {
         Parent::Stack => (first_cell(), first_cell()),
-        Parent::Other => (placed(style.row), placed(style.column)),
+        Parent::Scroll | Parent::Other => (placed(style.row), placed(style.column)),
     };
     let wrap = if style.wrap {
         FlexWrap::Wrap
     } else {
         FlexWrap::NoWrap
     };
-    let border = LengthPercentage::length(style.border.width * scale);
+    let border = style.border.width * scale;
+    let bordered = |room: f32| LengthPercentage::length(border + room);
 
     taffy::Style {
         display,
@@ -44,10 +69,11 @@ pub fn flow(style: &Style, arrange: Arrange, parent: Parent, scale: f32) -> taff
         max_size: Size { width: length(style.max_width, scale), height: length(style.max_height, scale) },
         margin: edges(style.margin, |side| length(side, scale)),
         padding: edges(style.padding, |side| space(side, scale)),
-        border: Rect { left: border, right: border, top: border, bottom: border },
+        border: edges(room, bordered),
+        overflow: Point { x: overflow, y: overflow },
         gap: Size { width: space(style.gap.columns, scale), height: space(style.gap.rows, scale) },
         flex_grow: style.grow,
-        flex_shrink: style.shrink,
+        flex_shrink,
         flex_basis: dimension(style.basis, scale),
         justify_content: distribute(style.justify_content),
         align_content: distribute(style.align_content),

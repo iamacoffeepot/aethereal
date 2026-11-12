@@ -10,7 +10,9 @@
 //!                                                              └─> keys left over ──> Controls::key
 //! ```
 //!
-//! - [`Tree`] and [`Node`]: what a view builds, each node a widget, its style, and its children, compared by value.
+//! - [`Tree`] and [`Node`]: what a view builds, each node a widget, its style, and its children, compared by value; a
+//!   child a widget's `items` repeats is told apart by its [`ItemKey`], and a list in a
+//!   [`Scroll`](widgets::Scroll) builds only the items its [`Rows`] say it shows.
 //! - [`Widget`]: a primitive. It arranges its children, measures itself as a leaf, draws itself, and takes in input;
 //!   its state is kept by key in the screen's [`Table`], with the screen's focus.
 //! - [`Style`]: every property a sheet compiles into, resolved.
@@ -117,24 +119,27 @@ pub mod widgets;
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Used};
 pub use screen::{
-    DrawKey, Heard, ImeAsked, Instancing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared, Programming,
+    DrawKey, Heard, ImeAsked, Instancing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared, Programming, Rows,
     Screen, Sends, Shaping, Target, TextPlacing, Texting, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track};
 pub use table::{Focus, Table};
-pub use tree::{KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
+pub use tree::{ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
 pub use view::{Controls, Took, View, take_in, unmatched};
-pub use widget::{Arrange, Axis, Draws, Laid, Offer, Offered, Quad, Sample, Slices, Stateless, TextDraw, Widget};
+pub use widget::{
+    Arrange, Axis, Draws, Laid, Lines, Offer, Offered, Quad, Sample, Slices, Stateless, TextDraw, Widget,
+};
 
 /// What a screen's code names: the tree, the stock widgets, the style, the screen, and what its markup and its
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Region, Row, Slider, Stack, Text, TextInput, Texture, Toggle,
+        Bar, Button, Column, Fill, Grid, Image, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text, TextInput,
+        Texture, Toggle,
     };
     pub use crate::{
-        Alignment, Border, Controls, Distribute, Edges, Gap, Key, Length, Node, Placed, Raised, Screen, Segment,
-        SelfAlign, Shaping, Space, Style, Target, Track, Tree, View, Viewport,
+        Alignment, Border, Controls, Distribute, Edges, Gap, ItemKey, Key, KeyPath, Length, Node, Placed, Raised, Rows,
+        Screen, Segment, SelfAlign, Shaping, Space, Style, Target, Track, Tree, View, Viewport,
     };
 }
 

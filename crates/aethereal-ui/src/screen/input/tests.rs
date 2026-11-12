@@ -9,8 +9,8 @@ use super::Heard;
 use crate::input::Raised;
 use crate::style::{Length, Style};
 use crate::table::Focus;
-use crate::tree::{KeyPath, Node, Segment, Tree};
-use crate::widgets::{Button, Column, Press, Slider, Text, TextInput, Toggle};
+use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
+use crate::widgets::{Button, Column, Press, Slider, Tab, Tabs, Text, TextInput, Toggle};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_data::ActorId;
 use aethereal_render::draw_list::{Entry, Pointer};
@@ -19,55 +19,56 @@ use aethereal_window::WindowId;
 use aethereal_window::{AllowIme, Button as Pressed, Cursor, KeyEvent, KeySet, Keyed, Over, Pointed, PointerEvent};
 
 /// The window the screen draws in.
-fn window() -> WindowId {
+pub(in crate::screen) fn window() -> WindowId {
     id(0)
 }
 
 /// The events the tests' widgets raise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ev {
+pub(in crate::screen) enum Ev {
     Click(u32),
     Changed,
     Submitted,
     Flipped,
     Slid,
+    Opened,
 }
 
 /// The screen's actor, as the window names it.
-fn me() -> ActorId {
+pub(in crate::screen) fn me() -> ActorId {
     ActorId::new(1)
 }
 
 /// What a release over an entry of the screen's own list names it as.
-fn mine() -> ProtocolRef<aethereal_window::Hearer> {
+pub(in crate::screen) fn mine() -> ProtocolRef<aethereal_window::Hearer> {
     ProtocolRef::found(Seated { id: me(), seat: SeatNumber::new(1) })
 }
 
 /// A box `width` by `height` logical pixels, its text in the renderer's monospace font.
-fn sized(width: f32, height: f32) -> Style {
+pub(in crate::screen) fn sized(width: f32, height: f32) -> Style {
     Style { width: Length::Pixels(width), height: Length::Pixels(height), font: Font::Mono, ..Style::default() }
 }
 
 /// A tree of a column over `children`, at the screen's top left.
-fn column(children: Vec<Node>) -> Tree {
+pub(in crate::screen) fn column(children: Vec<Node>) -> Tree {
     Tree::new(Node::new(Segment::Place(0), Column, Style::default(), children))
 }
 
 /// The path of the column's child at `place`.
-fn child(place: u32) -> KeyPath {
+pub(in crate::screen) fn child(place: u32) -> KeyPath {
     KeyPath::of(&[Segment::Place(0), Segment::Place(place)])
 }
 
 /// Lays `tree` out on `screen` with `hotkeys`, every draw answered made: what the `Prepare` did, and every order sent
 /// on the way.
-fn laid(screen: &mut Screen, tree: Tree, hotkeys: &[&str]) -> (Outcome, Vec<Order>) {
+pub(in crate::screen) fn laid(screen: &mut Screen, tree: Tree, hotkeys: &[&str]) -> (Outcome, Vec<Order>) {
     let prepared = screen.prepare(tree, hotkeys);
 
     (prepared.outcome, answered(screen, &prepared.orders, false))
 }
 
 /// The number of the entry of the screen's list that is the hit over the widget at `path`.
-fn hit(screen: &Screen, path: &KeyPath) -> u32 {
+pub(in crate::screen) fn hit(screen: &Screen, path: &KeyPath) -> u32 {
     let listed = Listed::Hit(path.clone());
     let Some(at) = screen.listing.iter().position(|entry| *entry == listed) else {
         panic!("the screen lists a hit over {path:?}: {:?}", screen.listing);
@@ -77,7 +78,7 @@ fn hit(screen: &Screen, path: &KeyPath) -> u32 {
 }
 
 /// The number of the entry of the screen's list that declares the keys of `role`.
-fn keys(screen: &Screen, role: Role) -> u32 {
+pub(in crate::screen) fn keys(screen: &Screen, role: Role) -> u32 {
     let listed = Listed::Keys(role);
     let Some(at) = screen.listing.iter().position(|entry| *entry == listed) else {
         panic!("the screen declares keys of {role:?}: {:?}", screen.listing);
@@ -87,39 +88,39 @@ fn keys(screen: &Screen, role: Role) -> u32 {
 }
 
 /// `event` through the entry `entry` of the screen's list.
-fn point(screen: &mut Screen, entry: u32, event: PointerEvent) -> Heard {
+pub(in crate::screen) fn point(screen: &mut Screen, entry: u32, event: PointerEvent) -> Heard {
     screen.pointed(Pointed { window: window(), entry, event }, me())
 }
 
 /// A press of the main button at `x`, `y` through the entry `entry`.
-fn press(screen: &mut Screen, entry: u32, x: f32, y: f32) -> Heard {
+pub(in crate::screen) fn press(screen: &mut Screen, entry: u32, x: f32, y: f32) -> Heard {
     point(screen, entry, PointerEvent::PointerDown { x, y, button: Pressed::Main })
 }
 
 /// A release of the main button at `x`, `y` through the entry `entry`, over `over`.
-fn release(screen: &mut Screen, entry: u32, x: f32, y: f32, over: Over) -> Heard {
+pub(in crate::screen) fn release(screen: &mut Screen, entry: u32, x: f32, y: f32, over: Over) -> Heard {
     point(screen, entry, PointerEvent::PointerUp { x, y, button: Pressed::Main, over })
 }
 
 /// The release's place over the entry `entry` of the screen's own list.
-fn over(entry: u32, x: f32, y: f32) -> Over {
+pub(in crate::screen) fn over(entry: u32, x: f32, y: f32) -> Over {
     Over::Entry { actor: mine(), entry, x, y }
 }
 
 /// The key at `code`, meaning `key`, pressed through the entry `entry`.
-fn key_down(screen: &mut Screen, entry: u32, code: &str, key: &str) -> Heard {
+pub(in crate::screen) fn key_down(screen: &mut Screen, entry: u32, code: &str, key: &str) -> Heard {
     let event = KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
 
     screen.keyed(Keyed { window: window(), entry, event })
 }
 
 /// `text` typed through the entry `entry`.
-fn typed(screen: &mut Screen, entry: u32, text: &str) -> Heard {
+pub(in crate::screen) fn typed(screen: &mut Screen, entry: u32, text: &str) -> Heard {
     screen.keyed(Keyed { window: window(), entry, event: KeyEvent::Text { text: String::from(text) } })
 }
 
 /// What `heard` raised, as the tests' events.
-fn raised(heard: Heard) -> Vec<Raised<Ev>> {
+pub(in crate::screen) fn raised(heard: Heard) -> Vec<Raised<Ev>> {
     heard
         .raised
         .into_iter()
@@ -131,17 +132,17 @@ fn raised(heard: Heard) -> Vec<Raised<Ev>> {
 }
 
 /// The codes of the keys `heard` left for the screen.
-fn left_over(heard: &Heard) -> Vec<&str> {
+pub(in crate::screen) fn left_over(heard: &Heard) -> Vec<&str> {
     heard.keys.iter().map(|key| key.code.as_str()).collect()
 }
 
 /// A text input of `text`, raising `Changed`, and `Submitted` with Enter, 100 by 20 logical pixels.
-fn text_input(text: &str) -> Node {
+pub(in crate::screen) fn text_input(text: &str) -> Node {
     Node::new(Segment::Place(0), TextInput::new(text, Ev::Changed).submit(Ev::Submitted), sized(100.0, 20.0), vec![])
 }
 
 /// A screen whose monospace font's metrics have come, so its texts lay out.
-fn screen_with_fonts() -> Screen {
+pub(in crate::screen) fn screen_with_fonts() -> Screen {
     let mut screen = screen();
     screen.metrics_read(Font::Mono, mono(), Vec::new());
 
@@ -383,4 +384,92 @@ fn a_filled_widget_blocks_the_pointer_unless_it_is_within_one_the_pointer_reache
         })
         .collect();
     assert_eq!(hits, vec![Pointer::Blocks(Cursor::Default), Pointer::Blocks(Cursor::Hand)]);
+}
+
+/// A column of a button for each of `keys`, each keyed by its item, as `items` builds it.
+fn keyed(keys: &[u64]) -> Tree {
+    let rows = keys
+        .iter()
+        .map(|key| Node::new(Segment::Item(ItemKey::new(*key)), Button::new(Ev::Click(1)), sized(40.0, 10.0), vec![]))
+        .collect();
+
+    column(rows)
+}
+
+/// The path of the column's item keyed `key`.
+fn item(key: u64) -> KeyPath {
+    KeyPath::of(&[Segment::Place(0), Segment::Item(ItemKey::new(key))])
+}
+
+#[test]
+fn an_item_s_state_and_focus_follow_its_key_as_the_list_reorders_and_go_when_it_leaves() {
+    // Catches widget state kept by an item's place in its list, so when the list reorders the hover and the focus of
+    // one item light up another; and an item's state or the focus kept after the item leaves the list, so an item
+    // added later with its place comes up hovered and focused.
+    let mut screen = screen();
+    laid(&mut screen, keyed(&[1, 2, 3]), &[]);
+    let entry = hit(&screen, &item(2));
+    point(&mut screen, entry, PointerEvent::PointerEntered);
+    press(&mut screen, entry, 5.0, 5.0);
+    release(&mut screen, entry, 5.0, 5.0, over(entry, 5.0, 5.0));
+
+    laid(&mut screen, keyed(&[3, 2, 1]), &[]);
+    let followed = screen.table().state::<Button<Ev>>(&item(2));
+    let other = screen.table().state::<Button<Ev>>(&item(3));
+    let focus = screen.table().focus().clone();
+    laid(&mut screen, keyed(&[3, 1]), &[]);
+
+    assert_eq!(followed, Some(Press { hovered: true, pressed: false }));
+    assert_eq!(other, Some(Press::default()));
+    assert_eq!(focus, Focus::On(item(2)));
+    assert_eq!(screen.table().state::<Button<Ev>>(&item(2)), None);
+    assert_eq!(screen.table().focus(), &Focus::Nowhere);
+}
+
+/// Tabs titled "Items", "Skills", and "Quests", the one at `selected` open, over its panel, a column 30 pixels tall.
+fn tabs(selected: u32) -> Tree {
+    let panel = Node::new(Segment::Place(0), Column, sized(40.0, 30.0), vec![]);
+    let tab = Node::new(Segment::Place(selected), Tab { title: String::from("Skills") }, Style::default(), vec![panel]);
+    let style = Style { font: Font::Mono, ..Style::default() };
+    let strip =
+        Node::new(Segment::Place(0), Tabs::new(&["Items", "Skills", "Quests"], selected, Ev::Opened), style, vec![tab]);
+
+    column(vec![strip])
+}
+
+#[test]
+fn tabs_raise_change_with_the_tab_chosen_and_never_open_one_themselves() {
+    // Catches tabs that open the tab chosen themselves, so the screen's open tab and the one shown part ways; a click
+    // on a header that raises the wrong tab, or none; arrows that step from the last tab they raised rather than from
+    // the open one the screen gave them; and a panel laid out under the headers rather than below them.
+    let mut screen = screen_with_fonts();
+    laid(&mut screen, tabs(0), &[]);
+    let entry = hit(&screen, &child(0));
+    let placed = |screen: &Screen, path: &KeyPath| {
+        let found = screen.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| *laid);
+        let Some(laid) = found else {
+            panic!("{path:?} is laid out");
+        };
+        laid
+    };
+    let strip = placed(&screen, &child(0));
+    let shown = placed(&screen, &KeyPath::of(&[Segment::Place(0), Segment::Place(0), Segment::Place(0)])).rect;
+    let below = strip.content.min.y;
+
+    // In the monospace font at 16 pixels, "Items" and its insets take 60 pixels, so 80 is over "Skills".
+    point(&mut screen, entry, PointerEvent::PointerMoved { x: 80.0, y: 5.0 });
+    press(&mut screen, entry, 80.0, 5.0);
+    let clicked = raised(release(&mut screen, entry, 80.0, 5.0, over(entry, 80.0, 5.0)));
+    laid(&mut screen, tabs(0), &[]);
+    let declared = keys(&screen, Role::Screen);
+    let first = raised(key_down(&mut screen, declared, "ArrowRight", "ArrowRight"));
+    let again = raised(key_down(&mut screen, declared, "ArrowRight", "ArrowRight"));
+    let back = raised(key_down(&mut screen, declared, "ArrowLeft", "ArrowLeft"));
+
+    assert!(below > strip.rect.min.y, "the headers keep room above the panel: {strip:?}");
+    assert_eq!(shown.min.y, below, "the panel stands below the headers");
+    assert_eq!(clicked, vec![Raised::Index(Ev::Opened, 1)]);
+    assert_eq!(first, vec![Raised::Index(Ev::Opened, 1)]);
+    assert_eq!(again, vec![Raised::Index(Ev::Opened, 1)], "the open tab is still the screen's first");
+    assert_eq!(back, vec![Raised::Index(Ev::Opened, 2)], "left from the first goes round to the last");
 }

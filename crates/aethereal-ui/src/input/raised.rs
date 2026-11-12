@@ -16,13 +16,15 @@ pub trait Event: Debug + PartialEq + Copy + Send + 'static {}
 impl<E: Debug + PartialEq + Copy + Send + 'static> Event for E {}
 
 /// An event raised, and the value its widget hands with it: none, as a button's click; the text, as a text input's
-/// change and submit; whether it is on, as a toggle's change; or a number, as a slider's.
+/// change and submit; whether it is on, as a toggle's change; a number, as a slider's; or which of its choices, counted
+/// from zero, as tabs' change.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Raised<E> {
     Event(E),
     Text(E, String),
     Flag(E, bool),
     Number(E, f32),
+    Index(E, u32),
 }
 
 /// A screen's event, held without its type.
@@ -38,6 +40,7 @@ impl<E: Event> Raised<E> {
             Self::Text(event, text) => Raised::Text(erased(event), text),
             Self::Flag(event, on) => Raised::Flag(erased(event), on),
             Self::Number(event, value) => Raised::Number(erased(event), value),
+            Self::Index(event, index) => Raised::Index(erased(event), index),
         }
     }
 }
@@ -58,6 +61,9 @@ impl Raised<Erased> {
             Self::Flag(event, on) => event.typed().map(|event| Raised::Flag(event, on)).map_err(|e| Self::Flag(e, on)),
             Self::Number(event, value) => {
                 event.typed().map(|event| Raised::Number(event, value)).map_err(|e| Self::Number(e, value))
+            }
+            Self::Index(event, index) => {
+                event.typed().map(|event| Raised::Index(event, index)).map_err(|e| Self::Index(e, index))
             }
         }
     }

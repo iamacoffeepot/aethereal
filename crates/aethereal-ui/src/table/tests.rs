@@ -56,10 +56,10 @@ fn counters(places: &[u32], label: u32) -> Tree {
 
 /// Refreshes `table` from `tree`.
 fn refresh(table: &mut Table, tree: &Tree) {
-    let Ok(flat) = tree.flat() else {
+    let Ok(flattened) = tree.flat() else {
         panic!("the tree lays out");
     };
-    table.refresh(&flat);
+    table.refresh(&flattened.nodes);
 }
 
 #[test]

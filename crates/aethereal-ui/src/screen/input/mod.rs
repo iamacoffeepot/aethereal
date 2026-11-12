@@ -1,14 +1,15 @@
 //! Input through a screen's list (ADR-0056: Widget state is kept by key; Events call the screen's methods; Focus and
 //! keys). The library keeps what each entry of the list it sent is, so a `Pointed` through a hit reaches the widget it
-//! was listed over, in its own coordinates, and a `Keyed` through the keys the screen declared reaches its focus, then
-//! its focus keys, then the screen.
+//! was listed over, in its own coordinates, or, for the wheel, the innermost scroll around it that can move; and a
+//! `Keyed` through the keys the screen declared reaches its focus, then each widget its focus is within that hears the
+//! key, innermost first, then its focus keys, then the screen.
 //!
 //! A widget changes its own state, kept in the table, and a change lays the screen out at the next `Prepare` though
 //! its tree is the same, as a change of focus does. What it raises, and the keys nothing used, are handed back in
 //! [`Heard`] for the screen's handler to take in with its `&mut self` and its turn.
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
@@ -45,7 +46,8 @@ fn place(entry: u32) -> usize {
 impl Screen {
     /// Takes in a pointer event through an entry of the list it sent, `me` its actor: through a hit, it goes to the
     /// widget the hit is over, in the widget's own coordinates. A press of the main button there focuses the widget,
-    /// when it can hold focus, and clears focus when it cannot.
+    /// when it can hold focus, and clears focus when it cannot. The wheel slides the innermost scroll at or around the
+    /// widget that can still move that way.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
         let Some(Listed::Hit(path)) = self.listing.get(place(pointed.entry)) else {
@@ -64,8 +66,9 @@ impl Screen {
             PointerEvent::PointerUp { x, y, button, over } => {
                 Pointing::Up { at: at(x, y), button, over: self.is_over(&path, over, me) }
             }
-            PointerEvent::Wheel { x, y, delta_x, delta_y } => {
-                Pointing::Wheel { at: at(x, y), delta: Vec2::new(delta_x, delta_y) }
+            PointerEvent::Wheel { delta_x, delta_y, .. } => {
+                self.wheel(&path, Vec2::new(delta_x, delta_y));
+                return heard;
             }
         };
         let pressed = matches!(pointing, Pointing::Down { button: Button::Main, .. });
@@ -129,14 +132,29 @@ impl Screen {
         orders
     }
 
-    /// Takes in `key`, pressed: the focused widget, the focus keys, and the screen, in turn, until one uses it.
+    /// Takes in `key`, pressed: the focused widget, each widget it is within that hears the key, innermost first, the
+    /// focus keys, and the screen, in turn, until one uses it.
     fn pressed(&mut self, key: Key, heard: &mut Heard) {
-        let focused = match self.table.focus().clone() {
-            Focus::On(path) => self.input(&path, heard, |widget, state, input| widget.key(state, &key, input)),
-            Focus::Nowhere => None,
+        let focus = self.table.focus().clone();
+        let (focused, around) = match &focus {
+            Focus::On(path) => {
+                let used = self.input(path, heard, |widget, state, input| widget.key(state, &key, input));
+                (used, path.ancestors().collect())
+            }
+            Focus::Nowhere => (None, Vec::new()),
         };
         if focused == Some(Used::Used) {
             return;
+        }
+        for within in around {
+            let listens = self.widget(&within).is_some_and(|widget| widget.hears().holds(&key.code));
+            if !listens {
+                continue;
+            }
+            let used = self.input(&within, heard, |widget, state, input| widget.key(state, &key, input));
+            if used == Some(Used::Used) {
+                return;
+            }
         }
         if self.focus_key(&key, heard) == Used::Used {
             return;
@@ -145,7 +163,7 @@ impl Screen {
     }
 
     /// Takes in `key` as a focus key: Tab moves focus to the next focusable widget in tree order, and with Shift to the
-    /// one before; Escape clears it while a widget has it.
+    /// one before, and slides each scroll around it to show it; Escape clears it while a widget has it.
     fn focus_key(&mut self, key: &Key, heard: &mut Heard) -> Used {
         let focus = self.table.focus().clone();
         let to = match key.code.as_str() {
@@ -153,15 +171,19 @@ impl Screen {
                 let Last::Built(tree) = &self.unkept.last else {
                     return Used::Passed;
                 };
-                let Ok(flat) = tree.flat() else {
+                let Ok(flattened) = tree.flat() else {
                     return Used::Passed;
                 };
-                keys::tabbed(&flat, &focus, key.held.shift)
+                keys::tabbed(&flattened.nodes, &focus, key.held.shift)
             }
             ESCAPE if focus != Focus::Nowhere => Focus::Nowhere,
             _ => return Used::Passed,
         };
-        self.refocus(to, heard);
+        let tabbed = key.code == TAB;
+        self.refocus(to.clone(), heard);
+        if let (true, Focus::On(path)) = (tabbed, &to) {
+            self.reveal(path);
+        }
 
         Used::Used
     }
@@ -216,7 +238,7 @@ impl Screen {
         heard: &mut Heard,
         take: impl FnOnce(&dyn Built, &mut Vec<u8>, &mut Input<'_, '_>) -> T,
     ) -> Option<T> {
-        let Worked { last: Last::Built(tree), fonts, placed } = &*self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, placed, .. } = &*self.unkept else {
             return None;
         };
         let node = tree.find(path)?;
