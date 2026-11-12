@@ -23,12 +23,14 @@ What is already decided:
 
 ## Decision
 
-**A screen is an actor. Its view is written in XML, in its own file: each element is a widget, each attribute a typed setting, children give layout and draw order, and braces name what the view reads from the screen in a small subset of Rust. A build script compiles the markup, and the sheets that style it, into the actor's Rust. Nothing reads XML at runtime. After a turn, the screen rebuilds its widget tree once, lays it out with Taffy, and sends one draw list. Widgets are library code with no actors of their own. A panel with a life of its own is a child actor, placed by a call's area.**
+**A screen is an actor. Its view is written in XML, in its own file: each element is a widget, each attribute a typed setting, children give layout and draw order, and braces name what the view reads from the screen in a small subset of Rust. A build script compiles the markup, and the sheets that style it, into the actor's Rust. Nothing reads XML at runtime. In every `Prepare`, the screen builds its widget tree and compares it with the last; only when it changed, or something outside it did, does the screen lay it out with Taffy and send what changed of its one draw list. Widgets are library code with no actors of their own. A panel with a life of its own is a child actor, placed by a call's area.**
 
 ```
 inventory.xml + sheets ── build script ──> inventory_view.rs ── include! ──> Inventory (an actor)
 
-Inventory:  mail ──> turn (&mut self) ──> rebuild once ──> widget tree ──> Taffy ──> draws, kept by key ──> DrawList
+Inventory:  mail ──> turn (&mut self)
+            Prepare ──> widget tree ──> same as the last, nothing outside changed? ──> nothing sent
+                                          └─> otherwise: Taffy ──> draws, kept by key ──> what changed, DrawList
             Pointed / Keyed ──> widget by entry ──> primitive's state ──> event ──> the screen's &mut self method
 ```
 
@@ -36,7 +38,9 @@ Inventory:  mail ──> turn (&mut self) ──> rebuild once ──> widget tr
 
 - **The screen's struct is its model, its methods are its controller, and its markup is its view.** It talks to game actors by mail and keeps its own copy of what it shows.
 - **Widgets are not actors.** They are code in the screen's actor, and nothing about them is mail.
-- **A screen rebuilds after its turns.** If any turn ran since the last build, the screen rebuilds once before the next frame and sends its list. If none ran, it sends nothing, and the renderer keeps the last list (ADR-0031). Nothing tracks which fields changed: a game screen's tree is small, and rebuilding it whole is simple and cheap.
+- **A screen rebuilds in `Prepare`.** `Prepare` is the shared stage between `Tick` and `Render` (ADR-0020): it begins once every turn of the frame's `Tick` has run, and finishes before `Render` draws, so a rebuild sees every turn of the frame and what it sends is handled before the frame is drawn. A program that has screens runs it, `with_cycle::<(Tick, Prepare, Render)>()`; the library subscribes its screen to it as the screen begins. Nothing is added to the actor framework.
+  - **In every `Prepare` the screen builds its tree, which is cheap, and compares it with the last.** Identical, it does nothing more: no layout and no mail, and the renderer keeps the last list (ADR-0031). Different, it lays the tree out, compares its draws with the last by key, and sends only what changed. So nothing marks changes and nothing can be forgotten, and layout still runs only when something changed.
+  - **Some changes come from outside the tree,** and each makes the next `Prepare` lay out though the tree is identical: a font's metrics coming, the screen's size, frame, or UI scale changing, and, in later stages, a widget's state changing on input. Each goes through the library, so the library knows.
 - **Draws are kept by widget key.** A rebuild compares the new tree with the last and sends only what changed: a moved text is a `MoveText`, a changed one is a `WriteText`, and an unchanged widget sends nothing.
 
 ### Markup
@@ -154,7 +158,7 @@ impl Widget for Button {
 ### Layout is Taffy
 
 - **Layout is flexbox and CSS grid, computed by the Taffy crate.** There is no document flow, float, or inline layout.
-- **Layout runs in the screen at each rebuild, never each frame.** The rects it gives place the draws, and the pointer follows the draws.
+- **Layout runs in the screen when the tree or something outside it changed, never every frame.** The rects it gives place the draws, and the pointer follows the draws.
 - **A text tells layout its size** through Taffy's measure step. It is measured with the font's metrics, asked of the renderer once for each font, and with the same layout code the renderer draws text with, so the measured size is the drawn size (see Consequences).
 - **Sizes are logical pixels times a UI scale,** so one scale setting enlarges everything without touching markup.
 - **A root screen learns the window's size from the window, and a child screen learns its size from its parent** (see Child actors). A size change is mail, and costs one rebuild.
@@ -290,3 +294,5 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
 - **Child actors placed only in absolute window pixels:** every move would cascade down the subtree as mail, a turn per level, so children would trail their parents. Each call states its mode instead (ADR-0055).
 - **Drag payloads carried by the window:** the window would need to know every payload kind. Reporting what is under the pointer is enough, and the actors use mail.
 - **Writing our own flex and grid layout:** Taffy already does it, and is used by Bevy, Zed, Dioxus, and Lapce's UI library.
+- **Marking changes by hand,** a call that tells the library a screen changed: one forgotten call leaves a screen silently stale.
+- **A hook in the actor framework after every batch of a screen's turns:** nothing may be added to the framework, and a shared stage between `Tick` and `Render` gives the same point in the frame to every actor that draws.
