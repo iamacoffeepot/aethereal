@@ -11,6 +11,7 @@ use crate::pass::{Main, Pass};
 use crate::placement::JoinRefused;
 use crate::readback::Region;
 use crate::renderer::tests::lists::{OTHER, adapter_device, drawn_in_main, main_list, placed as mesh, tinted};
+use crate::renderer::tests::unpicked;
 use crate::renderer::tests::{MAKER, kept, window};
 use crate::renderer::{Reading, copy_frame, mapped_bytes};
 use crate::shape::{ColourFormat, Samples};
@@ -121,7 +122,7 @@ fn drawn_into(kept: &mut Kept, gpu: Opened<'_>, frame: &wgpu::Texture) -> wgpu::
     assert!(kept.ready_texts(gpu).is_none(), "every glyph is in the atlas");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut unpicked(kept, device));
 
     encoder
 }

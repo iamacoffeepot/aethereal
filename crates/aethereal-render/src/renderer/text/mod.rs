@@ -21,7 +21,7 @@ use crate::text::atlas::texture::AtlasTexture;
 use crate::text::atlas::{Atlas, Field, GlyphKey};
 use crate::text::faces::{Face, Faces, FontKey};
 use crate::text::generate::{GenerateGlyphs, Generating, GlyphOutline, GlyphsGenerated};
-use crate::text::glyph_program::{self, INSTANCE_BYTES, Layouts, PLACED_BYTES, Pipelines, Placing};
+use crate::text::glyph_program::{self, INSTANCE_BYTES, Layouts, PICKING, PLACED_BYTES, Pipelines, Placing};
 use crate::text::layout::{self, Laid};
 use crate::text::{
     self, Align, CreateFont, CreateText, FallbackFonts, FontId, FontMade, MoveText, Outline, PlaceText, Run, TextId,
@@ -114,13 +114,14 @@ pub(super) struct TextJoined {
 }
 
 impl Texts {
-    /// The renderer's own fonts, read, no text, and an empty atlas that grows to `longest`, on `device`.
+    /// The renderer's own fonts, read, no text, and an empty atlas that grows to `longest`, on `device`, the glyph
+    /// program binding the picking step through `picking` (ADR-0055).
     ///
     /// # Errors
     ///
     /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
-    pub fn new(device: &wgpu::Device, longest: u32) -> Result<Self, FontRefused> {
-        let layouts = Layouts::new(device);
+    pub fn new(device: &wgpu::Device, longest: u32, picking: &wgpu::BindGroupLayout) -> Result<Self, FontRefused> {
+        let layouts = Layouts::new(device, picking);
         let atlas = Atlas::new(longest);
         let texture = AtlasTexture::new(device, atlas.side(), layouts.atlas.clone(), layouts.sampler.clone());
 
@@ -412,13 +413,15 @@ impl Texts {
     }
 
     /// Records the placed text `placed`'s draw in its join `join` into `recording`, a pass that uses depth as `depth`
-    /// says, counted into `tally`: nothing while its text shows nothing.
+    /// says, counted into `tally`, binding the picking step through `stepped` at its call's offset, `offset`: nothing
+    /// while its text shows nothing.
     pub fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
         (placed, join): (&PlacedText, &TextJoined),
         depth: DepthUse,
         tally: &mut Tally,
+        (stepped, offset): (&wgpu::BindGroup, u32),
     ) {
         let built = match self.made.get(placed.text).map(|text| &text.shown) {
             Some(Shown::Ready { shown } | Shown::Rewriting { shown, .. }) => shown,
@@ -430,9 +433,15 @@ impl Texts {
         recording.set_pipeline(join.pipelines.drawing(placed.placing.layer, depth));
         recording.set_bind_group(0, self.texture.group(), &[]);
         recording.set_bind_group(1, &join.group, &[]);
+        recording.set_bind_group(PICKING, stepped, &[offset]);
         recording.set_vertex_buffer(0, built.instances.slice(..));
         recording.draw(0..6, 0..built.count);
         tally.draw(stats::triangles(6, built.count));
+    }
+
+    /// How many joins every placed text has: the most draws of texts a `Render` records.
+    pub fn joins(&self) -> usize {
+        self.placed.iter().map(|(_, placed)| placed.joins.len()).sum()
     }
 
     /// Each text placement's join drawn loose in the pass `pass` of `frame`, whose programs are made against `fits`,

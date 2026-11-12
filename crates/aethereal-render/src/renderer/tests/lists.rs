@@ -6,6 +6,7 @@
 #![allow(clippy::print_stderr)]
 
 use super::*;
+use core::ptr;
 
 /// An actor other than [`MAKER`], a root as it is.
 pub(in crate::renderer) const OTHER: ActorId = ActorId::new(2);
@@ -43,9 +44,11 @@ pub(in crate::renderer) fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
         state: Fixed { blend: Blend::Alpha, depth: Depth::Test, cull: Cull::None, coverage: Coverage::Off },
         shape: Shape::with_depth(ColourFormat::Bgra8),
     };
-    assert_eq!(program::check(&create, TINTED, &gpu.device().limits()), Ok(()));
+    let Ok(wgsl) = program::check(&create, TINTED, &gpu.device().limits()) else {
+        panic!("the program is let through");
+    };
     let program = kept.ids.next();
-    kept.programs.keep(program, MAKER, pipeline(gpu, &create, TINTED));
+    kept.programs.keep(program, MAKER, pipeline(gpu, &create, &wgsl, kept.picker.layout()));
 
     ProgramId { id: program }
 }
@@ -105,16 +108,31 @@ fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId, order: placement::Order
 
 /// A list drawing `placements`, in order.
 pub(in crate::renderer) fn main_list(placements: &[PlacementId]) -> Vec<Listed> {
-    placements.iter().map(|placement| Listed::Draw(placement.id)).collect()
+    placements.iter().map(|placement| drawn(*placement, Picks::Ignores)).collect()
 }
 
-/// The placements the window's main frame's pass [`Main`] draws, in order.
+/// An entry drawing `placement`, which the pointer reaches as `picks` says.
+pub(in crate::renderer) const fn drawn(placement: PlacementId, picks: Picks) -> Listed {
+    Listed::Draw { placement: placement.id, picks }
+}
+
+/// The placements the window's main frame's pass [`Main`] draws, in order, each by its id.
 pub(in crate::renderer) fn drawn_in_main(kept: &Kept) -> Vec<u64> {
     let Ok(fits) = kept.pass(Frame::Main(window()), PassName::of::<Main>()) else {
         panic!("the window's main frame has the pass");
     };
+    let id = |drawable: &Drawable<'_>| match drawable {
+        Drawable::Mesh(drawn, _) => kept.placements.iter().find(|(_, made)| ptr::eq(*made, *drawn)).map(|(id, _)| id),
+        Drawable::Text(drawn, _) => kept.text.placed.iter().find(|(_, made)| ptr::eq(*made, *drawn)).map(|(id, _)| id),
+    };
 
-    kept.drawn((Frame::Main(window()), PassName::of::<Main>()), &fits).into_iter().map(|(id, ..)| id).collect()
+    kept.drawn((Frame::Main(window()), PassName::of::<Main>()), &fits)
+        .iter()
+        .filter_map(|issued| match issued {
+            Issued::Draw { drawable, .. } => id(drawable),
+            Issued::Hit { .. } => None,
+        })
+        .collect()
 }
 
 /// A device that draws nothing, the renderer's kept state on it, a program for [`Main`], and the GPU it is opened as.
@@ -192,11 +210,11 @@ fn a_pass_draws_the_lists_walked_from_the_root_list_each_child_where_its_parent_
     let (child, stray) = (listed(CHILD), listed(STRAY));
     assert_eq!(kept.listed(main_list(&[child]), CHILD), Ok(()));
     assert_eq!(kept.listed(main_list(&[stray]), STRAY), Ok(()));
-    let parent = vec![Listed::Draw(a.id), Listed::Call(CHILD), Listed::Draw(b.id)];
+    let parent = vec![drawn(a, Picks::Ignores), Listed::Call(CHILD), drawn(b, Picks::Ignores)];
     assert_eq!(kept.listed(parent, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose.id, a.id, child.id, b.id]);
 
-    let reordered = vec![Listed::Draw(b.id), Listed::Draw(a.id), Listed::Call(CHILD)];
+    let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), Listed::Call(CHILD)];
     assert_eq!(kept.listed(reordered, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose.id, b.id, a.id, child.id]);
 }
@@ -288,7 +306,7 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
     kept.fit(device, window(), Size { width, height });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off);
+    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut unpicked(&kept, device));
     let Ok(Reading::Pixels { buffer, copied, order, .. }) = copy_frame(device, &mut encoder, &frame) else {
         panic!("the frame is copied");
     };

@@ -20,11 +20,17 @@
 //! while it holds it, the window's keys, typed text, and wheel turns are sent to it alone, and it is told as it gains and loses it,
 //! [`KeyFocusGained`] and [`KeyFocusLost`] (ADR-0053). Both chassis push what they hear through the window root, so
 //! both are routed by it.
+//!
+//! A window's pointer events also cascade through what was drawn under the pointer (ADR-0055): the renderer subscribes
+//! to each window's probes, [`SubscribeProbes`], is sent each pointer event's place, [`Probed`], and answers what each
+//! frame drew there, [`Picked`]; the window then sends each event, as [`Pointed`], to the actors whose draw lists hold
+//! the entries it reaches, from the top, until one blocks.
 
 mod event;
 mod focus;
 mod host;
 mod perform;
+mod pointing;
 #[cfg(feature = "tools")]
 mod tool;
 mod window;
@@ -34,6 +40,7 @@ pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use focus::{KeyFocusGained, KeyFocusHolder, KeyFocusLost, ReleaseKeyFocus, TakeKeyFocus};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES, Perform, Performed, Unperformed};
+pub use pointing::{Hearer, Picked, Pointed, PointerEvent, Pressed, Probed, Reach, SubscribeProbes};
 #[cfg(feature = "tools")]
 pub use tool::{InputTool, InputToolConfig, SendInput, WindowTool, WindowToolConfig};
 pub use window::{Window, WindowConfig, WindowId};

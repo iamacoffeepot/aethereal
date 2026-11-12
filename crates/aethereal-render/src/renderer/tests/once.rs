@@ -73,7 +73,7 @@ fn cycle(
     windows: &[(WindowId, wgpu::TextureView)],
 ) -> Vec<u64> {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let once = kept.run_all(&mut encoder, windows, None, &mut Tally::Off);
+    let once = kept.run_all(&mut encoder, windows, None, &mut Tally::Off, &mut unpicked(kept, device));
     queue.submit([encoder.finish()]);
     kept.ran_once(&once);
 

@@ -47,7 +47,7 @@ enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
     Run(DispatchId),                                          // a dispatch of the sender's, in a compute pass
     Call(Child),                                              // draw what this direct child of the sender draws, here
-    Hit { frame: Frame, rect: Rect, pointer: Pointer },       // drawn into that frame's picking stack only (see Input)
+    Hit { frame: Frame, pass: PassName, rect: Rect, pointer: Pointer }, // drawn into that pass's picking stack only (see Input)
     Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
 }
 enum Pointer { Blocks, Passes, Ignores }
@@ -91,7 +91,8 @@ enum Pointer { Blocks, Passes, Ignores }
 
 - **Only at the probes.** Each frame the renderer is given the window's probe points: the pointer's position, and the positions of presses since the last frame. A fragment that lands on a probe appends `(call, actor, entry, pointer)` to that probe's stack of four slots. Fragments elsewhere write nothing. The cost does not grow with the window's size.
 - **The stack is in call order, whatever the GPU's order.** Fragments of one draw land in no fixed order, so each probe's slots are sorted by call number after readback. The top of the stack is the last call that drew there, which is what is seen there. A pixel under more than four layers keeps the top four.
-- **`Hit` draws only into the stack:** a quad with no colour, for a modal's backdrop, an invisible handle, or the world's catch-all, a full-window `Hit` in the first root's list. A `Draw` with `Pointer::Ignores` draws colour and nothing into the stack.
+- **A fragment records before the depth test.** A fragment stage's storage writes are made before the depth test that may then reject it, so within a pass that tests depth, a call drawn later and hidden behind an earlier one still stands above it in the stack. The interface pass has no depth, and is exact.
+- **`Hit` draws only into the stack:** a quad with no colour, for a modal's backdrop, an invisible handle, or the world's catch-all, a full-window `Hit` in the first root's list. A `Draw` with `Pointer::Ignores` draws colour and nothing into the stack. A hit names its pass as a join does, `Entry::hit::<Interface>(frame, rect, pointer)`, as the sequence is walked pass by pass and a hit needs a place in it. It draws nothing, so the renderer tests each probe's pixel against its rect itself, numbered in its place among the calls.
 - **The readback is a few hundred bytes a frame.** It arrives a frame or two later, so the pointer is tested against what was on screen.
 
 **Pointer events cascade.** The window keeps each probe's newest stack and delivers every pointer event (`PointerMoved`, `PointerDown`, `PointerUp`, `Wheel`) top-down through it: to the actor whose list holds each entry, until the first entry whose pointer is `Blocks`, all in one step, with no answer asked. Each actor is told which of its entries was hit, so it does not test its own widgets again.

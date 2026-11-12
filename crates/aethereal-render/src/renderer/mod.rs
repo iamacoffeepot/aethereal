@@ -1,6 +1,7 @@
 //! The renderer: the root that owns the GPU, makes what actors ask it for, and draws each frame (ADR-0021).
 
 mod groups;
+mod picking;
 // The tests draw on a device that draws nothing, which only a native build has.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -14,7 +15,7 @@ use crate::dispatch::{
     self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, RunDispatch,
     Runs, Unrun, Use,
 };
-use crate::draw_list::{self, DrawList, EntryRefused, ListRefused, Listed, Listing, Lists, Placements};
+use crate::draw_list::{self, DrawList, EntryRefused, ListRefused, Listed, Listing, Lists, Picks, Placements};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
 use crate::frame::{
@@ -54,11 +55,13 @@ use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
     Actor, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level,
-    On, Protocol, Render, Resource, Source, Subscribers, ToAny, ToSender, Top, Turn,
+    On, Path, Protocol, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn, path,
 };
 use aethereal_data::{ActorId, Bound, Plain};
-use aethereal_window::WindowId;
+use aethereal_math::Rect2;
+use aethereal_window::{Hearer, Picked, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
+use picking::{Picker, Picking, Probing, Stacks};
 use std::collections::HashMap;
 use std::mem;
 use text::{Listable, PlacedText, TextJoined, Texts};
@@ -439,16 +442,18 @@ struct Kept {
     /// is opened, fitted, drawn, and closed.
     windows_memory: GpuMemory,
     text: Texts,
+    picker: Picker,
 }
 
 /// A window the renderer draws to: the window, the format of its surface, the renderer's own main frame of it, `own`,
-/// which frame is its main frame, `main`, and the last frame drawn onto it, kept.
+/// which frame is its main frame, `main`, the last frame drawn onto it, kept, and its probes (ADR-0055).
 struct Windowed {
     window: WindowId,
     format: ColourFormat,
     own: Walk,
     main: Main,
     last: Last,
+    probing: Probing,
 }
 
 /// The last frame drawn onto a window, kept so it is read while no frame is drawn, as under a held clock (ADR-0045).
@@ -504,7 +509,7 @@ impl Windowed {
         let own = Walk::new(device, CreateFrame::own(window), (End::Window(window), format), Size::PIXEL, effectless)
             .map_err(|(pass, why)| FrameRefused::Pass { pass, why })?;
 
-        Ok(Self { window, format, own, main: Main::Own, last: Last::Undrawn })
+        Ok(Self { window, format, own, main: Main::Own, last: Last::Undrawn, probing: Probing::new(device) })
     }
 }
 
@@ -552,6 +557,8 @@ enum Reading {
     Bytes { buffer: wgpu::Buffer },
     /// A pass's timestamps, each tick `period` nanoseconds, and whether they are named for subscribers.
     Stamps { buffer: wgpu::Buffer, period: f32, named: Named },
+    /// A window's stacks at its probes, as a frame drew them (ADR-0055).
+    Picks(Stacks),
 }
 
 /// Whose a frame's timestamps are: only those who asked [`TimeFrame`], or also the subscribers of [`GpuTimes`], told
@@ -585,8 +592,9 @@ struct Compute {
 /// What a program's stages read.
 enum Stages {
     /// It draws placements: vertices laid out as `layout`, what `instances` says once per instance, and the targets of
-    /// the pass it joins as `reads` says, bound in its first group when it reads any.
-    Draws { layout: VertexLayout, instances: PerInstance, reads: Vec<Read> },
+    /// the pass it joins as `reads` says, bound in its first group when it reads any, binding the picking step in the
+    /// group `picking`, after its own (ADR-0055).
+    Draws { layout: VertexLayout, instances: PerInstance, reads: Vec<Read>, picking: u32 },
     /// It is an effect, drawn over a whole target, reading targets as `reads` says, bound in its first group, which is
     /// empty when it reads none.
     Effect { reads: Vec<Read> },
@@ -612,7 +620,8 @@ struct Placement {
 /// One pass a placement draws in, with what it draws there with: whether it is drawn loose or by its maker's list, the
 /// program's id, which a pass draws loose placements together by, its pipeline and what it was made against, the bind
 /// groups made for it, from group 1 when the program reads targets of the pass and from group 0 when it reads none,
-/// and the textures and storage they bind, by their ids, with the storage the placement reads its counts from.
+/// the group its program binds the picking step in, and the textures and storage they bind, by their ids, with the
+/// storage the placement reads its counts from.
 struct Joined {
     frame: Frame,
     pass: PassName,
@@ -621,6 +630,7 @@ struct Joined {
     program: u64,
     pipeline: wgpu::RenderPipeline,
     groups: Groups,
+    picking: u32,
     textures: Vec<u64>,
     storage: Vec<u64>,
 }
@@ -723,8 +733,9 @@ impl Actor for Renderer {
         SubscribeGpuTimes,
         UnsubscribeGpuTimes,
         DescribeGpu,
+        Probed,
     );
-    type BeginSends = ();
+    type BeginSends = (Tells<Path<Window>, SubscribeProbes>,);
     type EndSends = ();
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -742,6 +753,7 @@ impl Actor for Renderer {
                 Err(why) => return Err(Fault::new(&why)?),
             }
         }
+        let probed: Vec<WindowId> = windows.iter().map(|windowed| windowed.window).collect();
         // Made before it is kept, as keeping it ends the borrow of the GPU opened.
         let kept = match Kept::new(opened.device(), windows, config.roots) {
             Ok(kept) => kept,
@@ -749,6 +761,9 @@ impl Actor for Renderer {
         };
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
+        for window in probed {
+            turn.to(path::<Window>(window)).send(&SubscribeProbes)?;
+        }
 
         let owed = Owed {
             frames: Vec::new(),
@@ -831,7 +846,9 @@ impl Handles<On<Render>> for Renderer {
             Named::Unnamed
         };
         let mut tally = self.watch.tally();
-        let once = kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally);
+        let mut picking = kept.picking((&device, &queue), &views);
+        let once = kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally, &mut picking);
+        let stacks = kept.picked(picking, (&device, &queue), &mut encoder);
         kept.keep_last(&device, &mut encoder, &frames);
         let copied: Vec<_> = frames
             .iter()
@@ -860,6 +877,10 @@ impl Handles<On<Render>> for Renderer {
                 }
                 Err(why) => refused.extend(owed.into_iter().map(|held| (held, why))),
             }
+        }
+        for stacks in stacks {
+            let (_, mapping) = kept.reading(Reading::Picks(stacks));
+            mappings.push(mapping);
         }
         if let Some(reading) = timed {
             let (read, mapping) = kept.reading(reading);
@@ -1025,8 +1046,30 @@ impl Handles<TimeFrame> for Renderer {
     }
 }
 
+/// Takes in a pointer event's place that a window's actor sent, to probe at the next frame drawn onto the window
+/// (ADR-0055). One from any other actor, or of a window the renderer does not draw to, is dropped.
+impl Handles<Probed> for Renderer {
+    type Sends = ();
+
+    fn handle(&mut self, probed: Probed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let window = turn.found(&path::<Window>(probed.window));
+        let sender = turn.sender();
+        let is_window = window.is_some_and(|window| window.erase() == sender);
+        if !is_window {
+            turn.log(Level::Warn, format_args!("{probed:?} was dropped: only its window's actor probes it"));
+            return Ok(());
+        }
+        let kept = turn.open(&mut self.kept)?;
+        if let Some(windowed) = kept.windows.iter_mut().find(|windowed| windowed.window == probed.window) {
+            windowed.probing.heard(&probed);
+        }
+
+        Ok(())
+    }
+}
+
 impl Handles<Mapped> for Renderer {
-    type Sends = (ToAny<(GpuTimes,), GpuTimes>,);
+    type Sends = (ToAny<(GpuTimes,), GpuTimes>, Tells<Path<Window>, Picked>);
 
     fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         // What the source brings comes from this actor to itself; a buffer is read only once the chassis says it is
@@ -1091,6 +1134,13 @@ impl Handles<Mapped> for Renderer {
                     turn.answer(held, &answer)?;
                 }
             }
+            // A frame's stacks that fail to map are not sent: the next frame's carry the events they would have.
+            Reading::Picks(stacks) => {
+                let picked = ready.then(|| mapped_bytes(&stacks.buffer, |bytes| stacks.picked(bytes))).flatten();
+                if let Some((window, picked)) = picked {
+                    turn.to(path::<Window>(window)).send(&picked)?;
+                }
+            }
         }
 
         Ok(())
@@ -1099,12 +1149,13 @@ impl Handles<Mapped> for Renderer {
 
 /// What the chassis said of a window it opened or closed while the program runs, brought from the source to itself: a
 /// window opened is drawn to from the next `Render` it is handed a frame for, by the renderer's own main frame of it,
+/// and its probes are asked for,
 /// and a window closed has its main frame dropped, with the targets made for it, so what joined only that frame is
 /// drawn nowhere until its maker releases it (ADR-0027).
 impl Handles<Surfaced> for Renderer {
-    type Sends = ();
+    type Sends = (Tells<Path<Window>, SubscribeProbes>,);
 
-    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let brought = turn.sender().id() == turn.me().id();
         if !brought {
             turn.log(
@@ -1122,7 +1173,10 @@ impl Handles<Surfaced> for Renderer {
                     return Ok(());
                 }
                 match Windowed::new(&device, window, format) {
-                    Ok(windowed) => kept.opened(windowed),
+                    Ok(windowed) => {
+                        kept.opened(windowed);
+                        turn.to(path::<Window>(window)).send(&SubscribeProbes)?;
+                    }
                     Err(why) => turn.log(Level::Error, format_args!("window {window:?} is not drawn to: {why:?}")),
                 }
             }
@@ -1235,7 +1289,7 @@ impl Handles<CreateProgram> for Renderer {
         // Copied out of the store, as a mesh's bytes are: the GPU is opened through the turn.
         let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
-        let checked = program::source(&bytes).and_then(|wgsl| program::check(&create, wgsl, &limits).map(|()| wgsl));
+        let checked = program::source(&bytes).and_then(|wgsl| program::check(&create, wgsl, &limits));
         let wgsl = match checked {
             Ok(wgsl) => wgsl,
             Err(why) => {
@@ -1244,8 +1298,9 @@ impl Handles<CreateProgram> for Renderer {
             }
         };
 
+        let picking = turn.open(&mut self.kept)?.picker.layout().clone();
         let gpu = turn.open(&mut self.gpu)?;
-        let made = pipeline(gpu, &create, wgsl);
+        let made = pipeline(gpu, &create, &wgsl, &picking);
         let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
         turn.reply(&Programmed::Made(ProgramId { id }))?;
 
@@ -1554,8 +1609,20 @@ impl Handles<DrawList> for Renderer {
 
     fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
-        let entries = list.entries.iter().map(|entry| entry.listed(|child| turn.child_id(sender, child))).collect();
-        let listed = self.kept_for(turn, |kept, by| kept.listed(entries, by))?;
+        let hearer = turn.cast::<Hearer>(sender);
+        let entries: Result<Vec<Listed>, ListRefused> = list
+            .entries
+            .iter()
+            .zip(0..)
+            .map(|(entry, at)| {
+                let listed = entry.listed(at, hearer, |child| turn.child_id(sender, child));
+                listed.map_err(|why| ListRefused { at, why })
+            })
+            .collect();
+        let listed = match entries {
+            Ok(entries) => self.kept_for(turn, |kept, by| kept.listed(entries, by))?,
+            Err(why) => Err(why),
+        };
         if let Err(why) = listed {
             turn.log(Level::Warn, format_args!("a draw list was refused: {why:?}"));
         }
@@ -1719,6 +1786,7 @@ impl Kept {
     /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
     fn new(device: &wgpu::Device, windows: Vec<Windowed>, roots: Vec<ActorId>) -> Result<Self, FontRefused> {
         let longest = device.limits().max_texture_dimension_2d;
+        let picker = Picker::new(device);
         let mut windows_memory = GpuMemory::default();
         for windowed in &windows {
             windows_memory.add(windowed.memory());
@@ -1747,7 +1815,8 @@ impl Kept {
             most_workgroups: device.limits().max_compute_workgroups_per_dimension,
             windows,
             windows_memory,
-            text: Texts::new(device, longest)?,
+            text: Texts::new(device, longest, picker.layout())?,
+            picker,
         })
     }
 
@@ -1868,7 +1937,7 @@ impl Kept {
     /// placement drawn as `drawn` says, whose storage it reads its counts from, if any, is read in the pass.
     fn joined(&self, device: &wgpu::Device, join: &Join, drawn: Drawn) -> Result<Joined, JoinRefused> {
         let program = self.programs.get(join.program.id).ok_or(JoinRefused::Program)?;
-        let Stages::Draws { reads, .. } = &program.stages else {
+        let Stages::Draws { reads, picking, .. } = &program.stages else {
             return Err(JoinRefused::Program);
         };
         // A program that reads targets binds them in its first group, which the pass binds.
@@ -1887,6 +1956,7 @@ impl Kept {
             program: join.program.id,
             pipeline: program.pipeline.clone(),
             groups: self.bind_groups(device, &program.groups[first as usize..], &join.bindings, first)?,
+            picking: *picking,
             textures: textures(&join.bindings),
             storage: join
                 .bindings
@@ -2010,20 +2080,23 @@ impl Kept {
     /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into that
     /// window's frame among `windows`: each of its passes begun in order, and what it does recorded in it, each pass
     /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
-    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`. Answers the ids
-    /// of the dispatches asked to run once that it recorded.
+    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`, and each call
+    /// numbered into `picking`. Answers the ids of the dispatches asked to run once that it recorded.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         (frame, walk): (Frame, &Walk),
         windows: &[(WindowId, wgpu::TextureView)],
         (stamps, first): (Option<&Stamps>, u32),
-        tally: &mut Tally,
+        (tally, picking): (&mut Tally, &mut Picking),
     ) -> Vec<u64> {
         let mut once = Vec::new();
         let Some(end) = walk.end(windows) else {
             return once;
         };
+        picking.enter(frame);
+        // Held apart from the picking, which numbers the calls bound through it.
+        let stepped = picking.group().clone();
         for (at, (pass, step)) in (first..).zip(walk.steps()) {
             let (into, load, depth) = match step {
                 Step::Draw { into, depth, load, .. } => (*into, *load, *depth),
@@ -2074,8 +2147,9 @@ impl Kept {
                 ..Default::default()
             });
             match step {
-                Step::Draw { fits, read, depth, .. } => {
-                    self.draw(&mut recording, (frame, pass), (fits, *depth), read, tally);
+                Step::Draw { fits, read, depth, into, .. } => {
+                    let picked = (&mut *picking, &stepped, walk.scale_of(*into));
+                    self.draw(&mut recording, (frame, pass), (fits, *depth), read, tally, picked);
                 }
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
@@ -2406,6 +2480,41 @@ impl Kept {
         textures.chain(mains)
     }
 
+    /// The picking of a `Render` that draws into `windows`, on `gpu`: each window among them probed where its actor
+    /// last said the pointer was and pressed, its presses taken, with room for a call for each join kept, the most
+    /// draws the `Render` records (ADR-0055).
+    fn picking(
+        &mut self,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        windows: &[(WindowId, wgpu::TextureView)],
+    ) -> Picking {
+        let meshes: usize = self.placements.iter().map(|(_, placement)| placement.joins.len()).sum();
+        let calls = self.text.joins() + meshes + 1;
+        self.picker.fit(device, calls);
+        let probed = self
+            .windows
+            .iter_mut()
+            .filter(|windowed| windows.iter().any(|(window, _)| *window == windowed.window))
+            .filter_map(|windowed| windowed.probing.take(queue, windowed.window))
+            .collect();
+
+        self.picker.picking(device, probed, calls)
+    }
+
+    /// What `picking`, of a `Render` whose frames are recorded on `encoder`, picked: each call's record written on
+    /// `gpu` for the commands to read, and each probed window's stacks copied on `encoder` to read back.
+    fn picked(
+        &self,
+        picking: Picking,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Vec<Stacks> {
+        let (records, probed) = picking.finish();
+        self.picker.write(queue, &records);
+
+        probed.into_iter().map(|framed| framed.copied(device, encoder)).collect()
+    }
+
     /// How many passes a `Render` runs that draws into `windows`: every pass of each frame it runs.
     fn passes(&self, windows: &[(WindowId, wgpu::TextureView)]) -> u32 {
         self.ran(windows).map(|(_, walk)| walk.passes()).sum()
@@ -2423,19 +2532,21 @@ impl Kept {
 
     /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that
     /// window's frame among `windows`, each pass writing its timestamps to `stamps` in the order they run when the
-    /// frames are timed, and each draw counted into `tally` (ADR-0025, ADR-0053). Answers the ids of the dispatches
-    /// asked to run once that it recorded, which run once these commands are submitted.
+    /// frames are timed, each draw counted into `tally`, and each call numbered into `picking` (ADR-0025, ADR-0053,
+    /// ADR-0055). Answers the ids of the dispatches asked to run once that it recorded, which run once these commands
+    /// are submitted.
     fn run_all(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         windows: &[(WindowId, wgpu::TextureView)],
         stamps: Option<&Stamps>,
         tally: &mut Tally,
+        picking: &mut Picking,
     ) -> Vec<u64> {
         let mut first = 0;
         let mut once = Vec::new();
         for (frame, walk) in self.ran(windows) {
-            once.extend(self.run(encoder, (frame, walk), windows, (stamps, first), tally));
+            once.extend(self.run(encoder, (frame, walk), windows, (stamps, first), (tally, picking)));
             first += walk.passes();
         }
 
@@ -2578,7 +2689,8 @@ impl Kept {
     /// `fits`, which uses depth as `depth` says, in the order [`drawn`](Self::drawn) answers, setting a pipeline only
     /// where the placement drawn before used another program, with the targets the pass reads bound at group 0 through
     /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass. Each draw is
-    /// counted into `tally`.
+    /// counted into `tally`, and each call and hit numbered into `picking`, each draw binding the picking step through
+    /// `stepped` at its call's offset, drawn into a target `scale` of the window (ADR-0055).
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
@@ -2586,6 +2698,7 @@ impl Kept {
         (fits, depth): (&Fits, DepthUse),
         read: &ReadGroup,
         tally: &mut Tally,
+        (picking, stepped, scale): (&mut Picking, &wgpu::BindGroup, [f32; 2]),
     ) {
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
         let reads = !fits.reads.is_empty();
@@ -2593,11 +2706,19 @@ impl Kept {
             recording.set_bind_group(0, &read.group, &[]);
         }
         let mut pipeline = 0;
-        for (_, drawable) in self.drawn((frame, pass), fits) {
+        for issued in self.drawn((frame, pass), fits) {
+            let (drawable, picks) = match issued {
+                Issued::Draw { drawable, picks } => (drawable, picks),
+                Issued::Hit { rect, picks } => {
+                    picking.hit(rect, picks);
+                    continue;
+                }
+            };
+            let offset = picking.call(picks, scale);
             let (placement, join) = match drawable {
                 Drawable::Mesh(placement, join) => (placement, join),
                 Drawable::Text(placed, join) => {
-                    self.text.draw(recording, (placed, join), depth, tally);
+                    self.text.draw(recording, (placed, join), depth, tally, (stepped, offset));
                     // The next mesh drawn sets its own pipeline, as no program's id is zero.
                     pipeline = 0;
                     continue;
@@ -2622,6 +2743,7 @@ impl Kept {
             for (group, bound) in join.groups.each() {
                 recording.set_bind_group(group, bound, &[]);
             }
+            recording.set_bind_group(join.picking, stepped, &[offset]);
             recording.set_vertex_buffer(0, placement.vertices.slice(..));
             if let Drawing::Records { buffer, .. } = &placement.drawing {
                 recording.set_vertex_buffer(1, buffer.slice(..));
@@ -2643,9 +2765,10 @@ impl Kept {
     /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, under its id, with
     /// its join of the pass, in the order it is drawn: those of meshes joined loose, each program's together, then
     /// those of texts joined loose, then the lists walked from the frame's roots, each in its order, each child drawn
-    /// where its parent calls it, meshes and texts alike (ADR-0031, ADR-0052, ADR-0055). A join of another shape, or
-    /// reading other targets, is not drawn, and neither is one joined listed that no list walked holds.
-    fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<(u64, Drawable<'_>)> {
+    /// where its parent calls it, meshes and texts alike, with each hit listed in the pass in its place (ADR-0031,
+    /// ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not drawn, and neither is one joined
+    /// listed that no list walked holds. The pointer reaches a loose join nowhere.
+    fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<Issued<'_>> {
         let mut meshes: Vec<(u64, &Placement, &Joined)> = self
             .placements
             .iter()
@@ -2658,30 +2781,53 @@ impl Kept {
             .collect();
         meshes.sort_unstable_by_key(|(_, _, join)| join.program);
         let texts = self.text.loose((frame, pass), fits).into_iter();
-        let listed =
-            self.lists.walk(self.roots(frame)).filter_map(|placement| self.listed_in(placement, (frame, pass), fits));
+        let listed = self.lists.walk(self.roots(frame)).filter_map(|entry| self.issued(entry, (frame, pass), fits));
+        let loose = |drawable| Issued::Draw { drawable, picks: Picks::Ignores };
 
         meshes
             .into_iter()
-            .map(|(id, placement, join)| (id, Drawable::Mesh(placement, join)))
-            .chain(texts.map(|(id, placed, join)| (id, Drawable::Text(placed, join))))
+            .map(|(_, placement, join)| loose(Drawable::Mesh(placement, join)))
+            .chain(texts.map(|(_, placed, join)| loose(Drawable::Text(placed, join))))
             .chain(listed)
             .collect()
     }
 
-    /// The placement `placement`, of a mesh or of a text, under its id, with its join drawn listed in the pass `pass` of
-    /// `frame`, whose programs are made against `fits`: none when it joins the pass loose, or not at all, or is of
-    /// another shape. The placement is kept, as a release takes it out of its maker's list in the release's turn.
-    fn listed_in(&self, placement: u64, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<(u64, Drawable<'_>)> {
+    /// What the listed `entry` issues in the pass `pass` of `frame`, whose programs are made against `fits`: its
+    /// placement's join drawn there, or itself, a hit listed there; none when it neither draws nor is hit there.
+    fn issued(&self, entry: &Listed, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'_>> {
+        match *entry {
+            Listed::Draw { placement, picks } => {
+                let drawable = self.listed_in(placement, (frame, pass), fits)?;
+                Some(Issued::Draw { drawable, picks })
+            }
+            Listed::Hit { frame: hit, pass: hit_pass, rect, picks } => {
+                let is_here = hit == frame && hit_pass == pass;
+                is_here.then_some(Issued::Hit { rect, picks })
+            }
+            Listed::Call(_) => None,
+        }
+    }
+
+    /// The placement `placement`, of a mesh or of a text, with its join drawn listed in the pass `pass` of `frame`,
+    /// whose programs are made against `fits`: none when it joins the pass loose, or not at all, or is of another shape.
+    /// The placement is kept, as a release takes it out of its maker's list in the release's turn.
+    fn listed_in(&self, placement: u64, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Drawable<'_>> {
         if let Some(made) = self.placements.get(placement) {
             let join = made.joins.iter().find(|join| join.listed_in(frame, pass, fits))?;
-            return Some((placement, Drawable::Mesh(made, join)));
+            return Some(Drawable::Mesh(made, join));
         }
         let placed = self.text.placed.get(placement)?;
         let join = placed.joins().iter().find(|join| join.listed_in(frame, pass, fits))?;
 
-        Some((placement, Drawable::Text(placed, join)))
+        Some(Drawable::Text(placed, join))
     }
+}
+
+/// What a pass issues in its order: a placement's join drawn, or a hit, which draws nothing, each as the pointer
+/// reaches it (ADR-0055).
+enum Issued<'a> {
+    Draw { drawable: Drawable<'a>, picks: Picks },
+    Hit { rect: Rect2, picks: Picks },
 }
 
 /// One placement's join drawn in a pass: a mesh's, or a text's.
@@ -2757,7 +2903,8 @@ impl Reading {
             Self::Pixels { buffer, .. }
             | Self::Target { buffer, .. }
             | Self::Bytes { buffer }
-            | Self::Stamps { buffer, .. } => buffer,
+            | Self::Stamps { buffer, .. }
+            | Self::Picks(Stacks { buffer, .. }) => buffer,
         }
     }
 }
@@ -2992,7 +3139,7 @@ impl Finds for Kept {
 
     fn program(&self, id: ProgramId) -> Option<Reads<'_>> {
         let program = self.programs.get(id.id)?;
-        let Stages::Draws { layout, instances, reads } = &program.stages else {
+        let Stages::Draws { layout, instances, reads, .. } = &program.stages else {
             return None;
         };
 
@@ -3230,9 +3377,9 @@ fn upload(gpu: &Gpu, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
     buffer
 }
 
-/// The pipeline `create` asks for, of the WGSL `wgsl` its blob holds, drawing into passes of its shape, made from what
-/// its check let through.
-fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
+/// The pipeline `create` asks for, of `wgsl`, the WGSL its blob holds with the picking step added, drawing into passes
+/// of its shape, binding the step's group through `picking` after its own, made from what its check let through.
+fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str, picking: &wgpu::BindGroupLayout) -> Program {
     let device = gpu.device();
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
@@ -3243,7 +3390,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
     if !create.reads.is_empty() {
         first_reads(&mut groups, read_layout(device, &create.reads));
     }
-    let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Some).collect();
+    let bound: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().chain([picking]).map(Some).collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &bound,
@@ -3328,6 +3475,7 @@ fn pipeline(gpu: &Gpu, create: &CreateProgram, wgsl: &str) -> Program {
             layout: create.layout.clone(),
             instances: create.instances.clone(),
             reads: create.reads.clone(),
+            picking: program::picking_group(create),
         },
         bindings: create.bindings.clone(),
         groups,
