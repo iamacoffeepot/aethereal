@@ -2534,7 +2534,7 @@ impl Kept {
     }
 
     /// The picking of a `Render` that draws into `windows`: each window among them probed where its actor last said
-    /// the pointer was and pressed, its probes written on `queue`, and its presses taken (ADR-0055).
+    /// the pointer was, pressed, and released, its probes written on `queue`, and its places pinned taken (ADR-0055).
     fn picking(&mut self, queue: &wgpu::Queue, windows: &[(WindowId, wgpu::TextureView)]) -> Picking {
         let probed = self
             .windows
