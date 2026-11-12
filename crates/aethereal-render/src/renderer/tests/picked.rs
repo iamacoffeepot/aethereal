@@ -12,7 +12,7 @@ use crate::draw_list::Reaching;
 use crate::picking::{MOST_PROBES, STACK};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_math::Vec2;
-use aethereal_window::{Pressed, Reach};
+use aethereal_window::{Pinned, Reach};
 
 /// A program that draws a quad's corners at the depth its uniforms' last holds, opaque in the colour of the rest.
 const DEEP: &str = "
@@ -71,11 +71,12 @@ pub(super) fn window_frame(device: &wgpu::Device) -> wgpu::Texture {
 }
 
 /// The window's stacks once `kept` on `gpu` draws a `Render` into `frame` with the pointer heard at `x`, `y`, and a
-/// press there too when `pressed`: the commands recorded and submitted, and the stacks copied, not yet read.
-pub(super) fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pressed): (f32, f32, bool)) -> Stacks {
+/// place pinned there too when `pinned`, as a press or release pins it: the commands recorded and submitted, and the
+/// stacks copied, not yet read.
+pub(super) fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pinned): (f32, f32, bool)) -> Stacks {
     let (device, queue) = (gpu.device(), gpu.queue());
     kept.fit(device, window(), Size { width: frame.width(), height: frame.height() });
-    let heard = Probed { window: window(), at: 1, x, y, press: pressed };
+    let heard = Probed { window: window(), at: 1, x, y, pinned };
     for windowed in &mut kept.windows {
         windowed.probing.heard(&heard);
     }
@@ -92,11 +93,11 @@ pub(super) fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, p
 }
 
 /// What a GPU would have left at the probes: at the first, the calls `pointer`, the highest first, and at the second,
-/// `press`.
-pub(super) fn written(pointer: &[u32], press: &[u32]) -> Vec<u8> {
+/// `pinned`.
+pub(super) fn written(pointer: &[u32], pinned: &[u32]) -> Vec<u8> {
     let mut words = vec![0_u32; MOST_PROBES * STACK];
     words[..pointer.len()].copy_from_slice(pointer);
-    words[STACK..STACK + press.len()].copy_from_slice(press);
+    words[STACK..STACK + pinned.len()].copy_from_slice(pinned);
 
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
@@ -138,9 +139,9 @@ fn calls_are_numbered_in_the_walk_s_order_so_a_list_reordered_reorders_the_stack
 }
 
 #[test]
-fn a_press_is_answered_by_its_own_number_and_its_presses_go_once() {
-    // Catches a press answered without the number of the event it is, so the window cannot find whose press the stack
-    // is; and a press probed again in the next frame, as though it were pressed twice.
+fn a_place_pinned_is_answered_by_its_own_number_and_goes_once() {
+    // Catches a press or release answered without the number of the event it is, so the window cannot find whose
+    // stack it is; and a place pinned probed again in the next frame, as though it were pressed or released twice.
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let gpu = Gpu::new(device.clone(), queue);
     let mut kept = kept(&device);
@@ -149,11 +150,11 @@ fn a_press_is_answered_by_its_own_number_and_its_presses_go_once() {
     assert_eq!(kept.listed(vec![drawn(a, reaches(0, true))], MAKER), Ok(()));
     let frame = window_frame(&device);
 
-    let pressed = probed(&gpu, &mut kept, &frame, (1.5, 1.5, true)).picked(&written(&[1], &[1])).1;
+    let pinned = probed(&gpu, &mut kept, &frame, (1.5, 1.5, true)).picked(&written(&[1], &[1])).1;
     let then = probed(&gpu, &mut kept, &frame, (1.5, 1.5, false)).picked(&written(&[1], &[])).1;
 
-    assert_eq!(pressed.presses, vec![Pressed { at: 1, stack: vec![reach(0, true)] }]);
-    assert_eq!(then.presses, vec![]);
+    assert_eq!(pinned.pinned, vec![Pinned { at: 1, stack: vec![reach(0, true)] }]);
+    assert_eq!(then.pinned, vec![]);
 }
 
 /// The stack the GPU writes at the pointer, at the middle of the window's second row's second pixel, as `kept` on

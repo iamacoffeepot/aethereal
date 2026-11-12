@@ -30,7 +30,8 @@ use naga::{
 };
 use std::mem;
 
-/// The most probes one frame of a window holds: the pointer, and as many presses since the last frame as fit beside it.
+/// The most probes one frame of a window holds: the pointer, and as many places pinned since the last frame, those of
+/// presses and releases, as fit beside it.
 pub const MOST_PROBES: usize = 16;
 
 /// The slots of a probe's stack: the most calls one probe keeps, the highest.
