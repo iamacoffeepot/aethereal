@@ -74,6 +74,7 @@ enum Pointer { Blocks, Passes, Ignores }
   ```
 
   The renderer's config carries it. It is not the order the roots are listed in, which is the setup's dependency order (ADR-0029: `Ordered<I>`).
+- **Every actor in the root list is checked as the program is built.** It must be a root of this program, found as `Ordered<I>` finds a root (ADR-0029). And it must be drawable: its begin or one of its handlers declares that it sends a draw list, `Tells<Path<Renderer>, DrawList>` in its `BeginSends` or `Sends`. The check reads the sends the actor already declares, and nothing is added to mark an actor drawable. A root list that names an actor that is not a root here, or one that never draws, does not build.
 - **Nobody holds the root list, and it never changes.** No actor can reorder it or put itself above the dev overlay.
 - **The same root list applies to every window's main frame,** including windows opened while the program runs (ADR-0027). An actor that draws in a window it opened draws there through its joins.
 - **A texture frame's maker is its root:** the maker's list is the frame's root list, and it calls whatever else draws there.
