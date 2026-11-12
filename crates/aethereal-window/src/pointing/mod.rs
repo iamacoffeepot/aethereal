@@ -6,12 +6,13 @@
 //! there, the last drawn on top, and answers the window a frame or two later, [`Picked`]. The window keeps each pointer
 //! event until the stacks of a frame drawn after it come back, and delivers it then, as [`Pointed`], to the actor whose
 //! list holds each entry of the stack, from the top, until the first that blocks: so what is seen under the pointer is
-//! what hears it.
+//! what hears it. Each entry hears the pointer in its own coordinates: the place it is told of is the window's, less
+//! the origin its list was drawn at, so a child its parent places hears clicks as it draws, from its own `0, 0`.
 //!
 //! - **Hover:** when the entries the pointer's stack reaches change, those it no longer reaches are sent
 //!   [`PointerEvent::PointerLeft`], and those it now reaches [`PointerEvent::PointerEntered`].
 //! - **Capture:** the entries a press reached are sent every move and release until every button is up, wherever the
-//!   pointer goes.
+//!   pointer goes, each in the coordinates its list was drawn in when the press reached it.
 //! - **The wheel follows the pointer**, never a capture.
 //!
 //! The raw subscription stays: every subscriber of the window is sent every pointer event as its host heard it.
@@ -25,6 +26,7 @@ use crate::event::{Button, Event};
 use crate::window::WindowId;
 use aethereal_actor::ProtocolRef;
 use aethereal_data::{Bound, Plain};
+use aethereal_math::Vec2;
 use std::collections::VecDeque;
 
 /// Asks a window's actor, at `path::<Window>(window)`, for its probes: from the next pointer event it hears, the sender
@@ -50,7 +52,7 @@ pub struct Probed {
 /// What a frame drew at a window's probes, sent to the window's actor by the subscriber of its probes: the stack under
 /// the pointer's newest place, and under each press probed, each from the top, of every pointer event up to the one
 /// numbered `through`. The window delivers each of those events through them.
-#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.window.picked")]
 pub struct Picked {
     pub through: u64,
@@ -59,21 +61,23 @@ pub struct Picked {
 }
 
 /// The stack under the press numbered `at`, from the top.
-#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.window.pressed")]
 pub struct Pressed {
     pub at: u64,
     pub stack: Vec<Reach>,
 }
 
-/// One entry of a stack: the entry numbered `entry`, from 0, of the draw list `actor` sent, and whether it blocks the
-/// pointer from what is beneath it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+/// One entry of a stack: the entry numbered `entry`, from 0, of the draw list `actor` sent, whether it blocks the
+/// pointer from what is beneath it, and the origin its list was drawn at, in the window's surface pixels, which the
+/// places it is told of are given from.
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 #[kind(name = "aether.window.reach")]
 pub struct Reach {
     pub actor: ProtocolRef<Hearer>,
     pub entry: u32,
     pub blocks: bool,
+    pub origin: Vec2,
 }
 
 /// What an actor whose draw list holds an entry the pointer reaches handles.
@@ -89,7 +93,8 @@ pub struct Pointed {
     pub event: PointerEvent,
 }
 
-/// What the pointer did at an entry, positions in the window's surface pixels, as [`Event`]'s are.
+/// What the pointer did at an entry, positions in the coordinates its list was drawn in: the window's surface pixels,
+/// as [`Event`]'s are, less the origin its list was drawn at.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 pub enum PointerEvent {
     /// The pointer moved, to `x`, `y`.
@@ -110,19 +115,22 @@ pub enum PointerEvent {
 /// what a window no frame draws keeps: past it, the oldest is dropped, as nothing was shown there to point at.
 const MOST_WAITING: usize = 1024;
 
-/// An entry a pointer event is delivered to: an entry of an actor's draw list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+/// An entry a pointer event is delivered to: an entry of an actor's draw list, with the origin its list was drawn at,
+/// in the window's surface pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Bound)]
 struct Reached {
     actor: ProtocolRef<Hearer>,
     entry: u32,
+    origin: Vec2,
 }
 
 /// Who a window's pointer events go to while a button is down.
-#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[derive(Debug, Clone, PartialEq, Bound)]
 enum Capture {
     /// No button is down: each goes as the stacks say.
     Free,
-    /// `buttons` are down, and every move and release goes to what the first of them reached, `reached`.
+    /// `buttons` are down, and every move and release goes to what the first of them reached, `reached`, at the
+    /// origins they were drawn at when it reached them.
     Held { reached: Vec<Reached>, buttons: Vec<Button> },
 }
 
@@ -180,13 +188,13 @@ impl Cascade {
         let mut deliveries = Vec::new();
         let mut send = |reached: &[Reached], event: PointerEvent| {
             for to in reached {
-                deliveries.push((to.actor, Pointed { window, entry: to.entry, event }));
+                deliveries.push((to.actor, Pointed { window, entry: to.entry, event: event.relative_to(to.origin) }));
             }
         };
 
         let reached = cascade(&pointer);
-        let left: Vec<Reached> = self.hovered.iter().filter(|was| !reached.contains(was)).copied().collect();
-        let entered: Vec<Reached> = reached.iter().filter(|now| !self.hovered.contains(now)).copied().collect();
+        let left: Vec<Reached> = self.hovered.iter().filter(|was| !holds(&reached, was)).copied().collect();
+        let entered: Vec<Reached> = reached.iter().filter(|now| !holds(&self.hovered, now)).copied().collect();
         send(&left, PointerEvent::PointerLeft);
         send(&entered, PointerEvent::PointerEntered);
         self.hovered = reached;
@@ -232,6 +240,48 @@ impl Cascade {
 
         deliveries
     }
+}
+
+impl PointerEvent {
+    /// The event as an entry drawn with its list's origin at `origin` hears it: each place less the origin.
+    #[must_use]
+    fn relative_to(self, origin: Vec2) -> Self {
+        let local = |x: f32, y: f32| (x - origin.x, y - origin.y);
+        match self {
+            Self::PointerMoved { x, y } => {
+                let (x, y) = local(x, y);
+                Self::PointerMoved { x, y }
+            }
+            Self::PointerDown { x, y, button } => {
+                let (x, y) = local(x, y);
+                Self::PointerDown { x, y, button }
+            }
+            Self::PointerUp { x, y, button } => {
+                let (x, y) = local(x, y);
+                Self::PointerUp { x, y, button }
+            }
+            Self::Wheel { x, y, delta_x, delta_y } => {
+                let (x, y) = local(x, y);
+                Self::Wheel { x, y, delta_x, delta_y }
+            }
+            Self::PointerEntered | Self::PointerLeft => self,
+        }
+    }
+}
+
+impl Reached {
+    /// Whether it is the same entry of the same actor's list as `other`, wherever either was drawn: an entry its parent
+    /// moves is still the one the pointer is over.
+    fn same_entry(&self, other: &Self) -> bool {
+        let same_actor = self.actor == other.actor;
+        let same_entry = self.entry == other.entry;
+        same_actor && same_entry
+    }
+}
+
+/// Whether `reached` holds the entry `entry`, wherever it was drawn.
+fn holds(reached: &[Reached], entry: &Reached) -> bool {
+    reached.iter().any(|held| held.same_entry(entry))
 }
 
 impl Capture {
@@ -282,7 +332,7 @@ impl Capture {
 fn cascade(stack: &[Reach]) -> Vec<Reached> {
     let mut reached = Vec::new();
     for reach in stack {
-        reached.push(Reached { actor: reach.actor, entry: reach.entry });
+        reached.push(Reached { actor: reach.actor, entry: reach.entry, origin: reach.origin });
         if reach.blocks {
             break;
         }

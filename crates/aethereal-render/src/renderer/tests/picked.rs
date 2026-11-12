@@ -8,6 +8,7 @@
 
 use super::lists::{adapter_device, drawn, placed, quads, tinted};
 use super::*;
+use crate::draw_list::Reaching;
 use crate::picking::{MOST_PROBES, STACK};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_math::Vec2;
@@ -28,20 +29,25 @@ fn shade() -> @location(0) vec4<f32> {
 }
 ";
 
-/// The entry `entry` of [`MAKER`]'s list, which blocks the pointer as `blocks` says.
-fn reach(entry: u32, blocks: bool) -> Reach {
+/// What reaches the entry `entry` of [`MAKER`]'s list, blocking the pointer as `blocks` says.
+fn reaching(entry: u32, blocks: bool) -> Reaching {
     let actor = ProtocolRef::found(Seated { id: MAKER, seat: SeatNumber::new(1) });
 
-    Reach { actor, entry, blocks }
+    Reaching { actor, entry, blocks }
+}
+
+/// The entry `entry` of [`MAKER`]'s list, drawn at the window's origin, which blocks the pointer as `blocks` says.
+pub(super) fn reach(entry: u32, blocks: bool) -> Reach {
+    reaching(entry, blocks).at(Vec2::ZERO)
 }
 
 /// What reaches the entry `entry` of [`MAKER`]'s list, blocking the pointer as `blocks` says.
-fn reaches(entry: u32, blocks: bool) -> Picks {
-    Picks::Reaches(reach(entry, blocks))
+pub(super) fn reaches(entry: u32, blocks: bool) -> Picks {
+    Picks::Reaches(reaching(entry, blocks))
 }
 
 /// A hit in the window's main frame's pass [`Main`], over `rect`, reaching what `picks` says.
-fn hit(rect: Rect2, picks: Picks) -> Listed {
+pub(super) fn hit(rect: Rect2, picks: Picks) -> Listed {
     Listed::Hit { frame: Frame::Main(window()), pass: PassName::of::<Main>(), rect, picks }
 }
 
@@ -51,7 +57,7 @@ fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId) -> PlacementId {
 }
 
 /// A window 4 by 4 of the window's format, to draw into and copy from.
-fn window_frame(device: &wgpu::Device) -> wgpu::Texture {
+pub(super) fn window_frame(device: &wgpu::Device) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
@@ -66,7 +72,7 @@ fn window_frame(device: &wgpu::Device) -> wgpu::Texture {
 
 /// The window's stacks once `kept` on `gpu` draws a `Render` into `frame` with the pointer heard at `x`, `y`, and a
 /// press there too when `pressed`: the commands recorded and submitted, and the stacks copied, not yet read.
-fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pressed): (f32, f32, bool)) -> Stacks {
+pub(super) fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pressed): (f32, f32, bool)) -> Stacks {
     let (device, queue) = (gpu.device(), gpu.queue());
     kept.fit(device, window(), Size { width: frame.width(), height: frame.height() });
     let heard = Probed { window: window(), at: 1, x, y, press: pressed };
@@ -74,10 +80,8 @@ fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pressed): (f
         windowed.probing.heard(&heard);
     }
     let windows = [(window(), frame.create_view(&wgpu::TextureViewDescriptor::default()))];
-    let mut picking = kept.picking((device, queue), &windows);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    kept.run_all(&mut encoder, &windows, None, &mut Tally::Off, &mut picking);
-    let mut stacks = kept.picked(picking, (device, queue), &mut encoder);
+    let (_, mut stacks, _) = kept.run_all(&mut encoder, (device, queue), &windows, None, &mut Tally::Off);
     queue.submit([encoder.finish()]);
 
     let Some(stacks) = stacks.pop() else {
@@ -89,7 +93,7 @@ fn probed(gpu: &Gpu, kept: &mut Kept, frame: &wgpu::Texture, (x, y, pressed): (f
 
 /// What a GPU would have left at the probes: at the first, the calls `pointer`, the highest first, and at the second,
 /// `press`.
-fn written(pointer: &[u32], press: &[u32]) -> Vec<u8> {
+pub(super) fn written(pointer: &[u32], press: &[u32]) -> Vec<u8> {
     let mut words = vec![0_u32; MOST_PROBES * STACK];
     words[..pointer.len()].copy_from_slice(pointer);
     words[STACK..STACK + press.len()].copy_from_slice(press);
@@ -155,8 +159,13 @@ fn a_press_is_answered_by_its_own_number_and_its_presses_go_once() {
 /// The stack the GPU writes at the pointer, at the middle of the window's second row's second pixel, as `kept` on
 /// `gpu` draws what it lists.
 fn read_back(gpu: &Gpu, kept: &mut Kept) -> Vec<Reach> {
+    read_back_at(gpu, kept, (1.5, 1.5))
+}
+
+/// The stack the GPU writes at the pointer, at `x`, `y` of the window, as `kept` on `gpu` draws what it lists.
+pub(super) fn read_back_at(gpu: &Gpu, kept: &mut Kept, (x, y): (f32, f32)) -> Vec<Reach> {
     let frame = window_frame(gpu.device());
-    let stacks = probed(gpu, kept, &frame, (1.5, 1.5, false));
+    let stacks = probed(gpu, kept, &frame, (x, y, false));
     stacks.buffer.map_async(wgpu::MapMode::Read, .., |mapped| mapped.expect("the stacks map"));
     gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("the GPU finishes");
     let Some((_, picked)) = mapped_bytes(&stacks.buffer, |bytes| stacks.picked(bytes)) else {

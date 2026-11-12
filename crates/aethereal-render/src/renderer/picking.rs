@@ -1,34 +1,46 @@
 //! The renderer's side of picking (ADR-0055): each window's probes as its actor sends them, written for the GPU as a
-//! frame is drawn; each draw's call, numbered in the order the frame issues them, and keyed by its pass; and what the
-//! GPU wrote at the probes, read back and answered to the window as the stacks of the entries drawn there.
+//! frame is drawn; each draw's call, numbered in the order the frame issues them, keyed by its pass, and holding the
+//! shift that moves it to its list's origin; and what the GPU wrote at the probes, read back and answered to the
+//! window as the stacks of the entries drawn there, each with the origin it was drawn at.
 
-use crate::draw_list::{self, Picks};
+use crate::draw_list::{self, Picks, Reaching};
 use crate::frame::Frame;
 use crate::picking::{self, CALL_BYTES, MOST_CALLS, MOST_PROBES, PROBES_BYTES, STACKS_BYTES};
-use aethereal_math::Rect2;
+use aethereal_math::{Rect2, Vec2};
 use aethereal_window::{Picked, Pressed, Probed, Reach, WindowId};
 use std::iter;
 
 /// What every frame's picking draws with: the layout of the step's group, the buffer each draw's call is bound from,
-/// at its own offset, `stride` bytes after the last's, room for `room` calls, and a buffer of no probes, which the
-/// step is bound to in a frame that ends on a texture or a window probed nowhere.
+/// at its own offset, `stride` bytes after the last, with its room, at most `most` calls, and a buffer of no probes,
+/// which the step is bound to in a frame that ends on a texture or a window probed nowhere.
 pub(super) struct Picker {
     layout: wgpu::BindGroupLayout,
     stride: usize,
-    calls: wgpu::Buffer,
-    room: usize,
+    most: usize,
+    calls: Calls,
     unprobed: wgpu::Buffer,
 }
 
+/// The buffer of the calls, with room for `room` of them.
+pub(super) struct Calls {
+    buffer: wgpu::Buffer,
+    room: usize,
+}
+
 impl Picker {
-    /// What picking draws with on `device`, room for one call.
+    /// What picking draws with on `device`, room for one call, and at most as many as the device's largest buffer
+    /// holds, each at an offset a `u32` counts, as a draw binds it.
     pub fn new(device: &wgpu::Device) -> Self {
         // The alignment is a few hundred bytes.
         let stride =
             usize::try_from(device.limits().min_uniform_buffer_offset_alignment).unwrap_or(256).max(CALL_BYTES);
+        let largest = device.limits().max_buffer_size.min(u64::from(u32::MAX));
+        // At most a `u32`'s count of bytes, which a `usize` holds on every target.
+        let most = usize::try_from(largest).unwrap_or(usize::MAX) / stride;
+        let calls = Calls { buffer: calls_buffer(device, stride, 1), room: 1 };
         let unprobed = probes_buffer(device);
 
-        Self { layout: picking::layout(device), stride, calls: calls_buffer(device, stride, 1), room: 1, unprobed }
+        Self { layout: picking::layout(device), stride, most, calls, unprobed }
     }
 
     /// The layout of the step's group, which a pipeline binds after its own groups.
@@ -36,18 +48,58 @@ impl Picker {
         &self.layout
     }
 
-    /// Makes room for `calls` calls, the buffer made again, larger, when it has less.
-    pub fn fit(&mut self, device: &wgpu::Device, calls: usize) {
-        if calls <= self.room {
-            return;
+    /// The picking of a `Render` that probes `probed`, each window's probes beside its buffer: no call recorded yet
+    /// but the first, which is none.
+    pub fn picking(&self, probed: Vec<(Probes, &wgpu::Buffer)>) -> Picking {
+        let frames = probed
+            .into_iter()
+            .map(|(probes, buffer)| Framed { probes, buffer: buffer.clone(), calls: Vec::new(), hits: Vec::new() })
+            .collect();
+
+        Picking {
+            stride: self.stride,
+            most: self.most,
+            records: vec![0; self.stride],
+            frames,
+            at: At::Unprobed,
+            past: 0,
         }
-        let room = calls.next_power_of_two();
-        self.calls = calls_buffer(device, self.stride, room);
-        self.room = room;
     }
 
-    /// The step's group binding the probes of `probes`, a window's buffer, or none, and the calls.
-    fn group(&self, device: &wgpu::Device, probes: &wgpu::Buffer) -> wgpu::BindGroup {
+    /// Binds what `picking` recorded, on `gpu`, once the walk has recorded every call of its `Render`, before any draw
+    /// is recorded: the calls' buffer fitted to every record, made again, larger, when it has less, the records
+    /// written into it, and the step's group of each frame probed, and of one probed nowhere, made binding it. So no
+    /// draw binds an offset past the buffer.
+    pub fn bound(&self, (device, queue): (&wgpu::Device, &wgpu::Queue), picking: Picking) -> Recorded {
+        let Picking { records, frames, past, .. } = picking;
+        let needed = records.len() / self.stride;
+        let calls = if needed <= self.calls.room {
+            Calls { buffer: self.calls.buffer.clone(), room: self.calls.room }
+        } else {
+            let room = needed.next_power_of_two().min(self.most);
+            Calls { buffer: calls_buffer(device, self.stride, room), room }
+        };
+        queue.write_buffer(&calls.buffer, 0, &records);
+        let unprobed = self.group(device, &self.unprobed, &calls.buffer);
+        let frames = frames
+            .into_iter()
+            .map(|framed| {
+                let group = self.group(device, &framed.buffer, &calls.buffer);
+                (framed, group)
+            })
+            .collect();
+
+        Recorded { calls, unprobed, frames, past }
+    }
+
+    /// Keeps `calls`, fitted to a `Render`'s records, for the next `Render` to fit from, once the draws that bind it
+    /// are recorded.
+    pub fn keep(&mut self, calls: Calls) {
+        self.calls = calls;
+    }
+
+    /// The step's group binding the probes of `probes`, a window's buffer, or none, and the calls of `calls`.
+    fn group(&self, device: &wgpu::Device, probes: &wgpu::Buffer, calls: &wgpu::Buffer) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
@@ -56,44 +108,13 @@ impl Picker {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.calls,
+                        buffer: calls,
                         offset: 0,
                         size: wgpu::BufferSize::new(CALL_BYTES as u64),
                     }),
                 },
             ],
         })
-    }
-
-    /// The picking of a `Render` that probes `probed`, each window's probes beside its buffer, with room for `calls`
-    /// calls, on `device`.
-    pub fn picking(&self, device: &wgpu::Device, probed: Vec<(Probes, &wgpu::Buffer)>, calls: usize) -> Picking {
-        let frames = probed
-            .into_iter()
-            .map(|(probes, buffer)| Framed {
-                probes,
-                group: self.group(device, buffer),
-                buffer: buffer.clone(),
-                calls: Vec::new(),
-                hits: Vec::new(),
-            })
-            .collect();
-        let room = calls.min(self.room);
-
-        Picking {
-            stride: self.stride,
-            room,
-            records: vec![0; self.stride],
-            unprobed: self.group(device, &self.unprobed),
-            frames,
-            at: At::Unprobed,
-        }
-    }
-
-    /// Writes `records`, each call's at its offset, into the calls' buffer, before the commands that read them are
-    /// submitted.
-    pub fn write(&self, queue: &wgpu::Queue, records: &[u8]) {
-        queue.write_buffer(&self.calls, 0, records);
     }
 }
 
@@ -185,17 +206,22 @@ impl Probing {
     }
 }
 
-/// What a `Render` records for picking: each call's record, `stride` bytes after the last, room for `room` of them,
-/// the first no call; the group a frame probed nowhere binds; each frame of a window it probes; and which of them the
-/// draws now recorded are in.
+/// What a `Render`'s walk records for picking, before any draw is recorded: each call's record, `stride` bytes after
+/// the last, the first no call, at most `most` of them; each frame of a window it probes; which of them the calls now
+/// recorded are in; and how many draws were refused, past the most.
 pub(super) struct Picking {
     stride: usize,
-    room: usize,
+    most: usize,
     records: Vec<u8>,
-    unprobed: wgpu::BindGroup,
     frames: Vec<Framed>,
     at: At,
+    past: usize,
 }
+
+/// A draw refused its call, past the most calls a `Render`'s buffer holds: not drawn, rather than drawn where its list
+/// is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PastRoom;
 
 /// The frame the draws now recorded are in: one probed nowhere, or the frame at its place among those probed.
 #[derive(Clone, Copy)]
@@ -204,27 +230,69 @@ enum At {
     Probed(usize),
 }
 
-/// A draw pass of a frame as picking keys what it draws: its place among the frame's draw passes, from the first,
-/// whether it tests depth, so what it draws ranks nearest first, and the scale of its target to the window.
+/// A draw pass of a frame as picking keys what it draws and its calls place it: its place among the frame's draw
+/// passes, from the first, whether it tests depth, so what it draws ranks nearest first, the scale of its target to
+/// the window, the size of its target in its pixels, across and down, and how far one of the window's pixels moves a
+/// draw in clip space, across and down: `2 / width` and `-2 / height` of the frame's end.
 #[derive(Clone, Copy)]
 pub(super) struct InPass {
     pub at: u32,
     pub tests_depth: bool,
     pub scale: [f32; 2],
+    pub size: [u32; 2],
+    pub per_pixel: [f32; 2],
 }
 
-/// A window's main frame as a `Render` picks it: its probes and their buffer, the group binding them, the entry each
-/// call reaches, by its number less one, and each hit, by its key.
+impl InPass {
+    /// The shift in clip space that moves a draw of the pass to `origin`, in the window's pixels.
+    fn shift(self, origin: Vec2) -> [f32; 2] {
+        [origin.x * self.per_pixel[0], origin.y * self.per_pixel[1]]
+    }
+}
+
+/// A window's main frame as a `Render` picks it: its probes and their buffer, the entry each call reaches, by its
+/// number less one, and each hit, by its key, over its rect in the window's pixels.
 pub(super) struct Framed {
     probes: Probes,
     buffer: wgpu::Buffer,
-    group: wgpu::BindGroup,
     calls: Vec<Reach>,
     hits: Vec<(u32, Rect2)>,
 }
 
+/// What a `Render`'s walk recorded for picking, bound for its draws: the calls' buffer, fitted to every record and
+/// written, the step's group of a frame probed nowhere, each frame probed beside its group, and how many draws were
+/// refused, past the most calls a buffer holds.
+pub(super) struct Recorded {
+    calls: Calls,
+    unprobed: wgpu::BindGroup,
+    frames: Vec<(Framed, wgpu::BindGroup)>,
+    past: usize,
+}
+
+impl Recorded {
+    /// The step's group the draws of `frame` bind: a window's main frame's it probes, or that of one probed nowhere.
+    pub fn group(&self, frame: Frame) -> &wgpu::BindGroup {
+        let probed = match frame {
+            Frame::Main(window) => self.frames.iter().find(|(framed, _)| framed.probes.window == window),
+            Frame::Texture(_) => None,
+        };
+
+        probed.map_or(&self.unprobed, |(_, group)| group)
+    }
+
+    /// How many draws were refused, past the most calls a buffer holds, and not drawn.
+    pub const fn past(&self) -> usize {
+        self.past
+    }
+
+    /// The calls' buffer, for the picker to keep, and each frame probed, with what it picked.
+    pub fn finish(self) -> (Calls, Vec<Framed>) {
+        (self.calls, self.frames.into_iter().map(|(framed, _)| framed).collect())
+    }
+}
+
 impl Picking {
-    /// Records the draws from now as `frame`'s: a window's main frame it probes, or one probed nowhere.
+    /// Records the calls from now as `frame`'s: a window's main frame it probes, or one probed nowhere.
     pub fn enter(&mut self, frame: Frame) {
         let probed = match frame {
             Frame::Main(window) => self.frames.iter().position(|framed| framed.probes.window == window),
@@ -233,63 +301,70 @@ impl Picking {
         self.at = probed.map_or(At::Unprobed, At::Probed);
     }
 
-    /// The step's group the draws now recorded bind.
-    pub fn group(&self) -> &wgpu::BindGroup {
-        match self.at {
-            At::Unprobed => &self.unprobed,
-            At::Probed(at) => &self.frames[at].group,
+    /// The offset of the next draw's call, which reaches what `picks` says, drawn in `pass` with its list's origin at
+    /// `origin`, in the window's pixels: the first, no call and no shift, for a draw at the window's origin the pointer
+    /// does not reach. A draw the pointer does not reach, in a frame probed nowhere, or past the calls a frame numbers,
+    /// is keyed no call, and still moved to its origin. Refused past the most calls a buffer holds, counted.
+    pub fn call(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> Result<u32, PastRoom> {
+        let key = self.number(picks, origin, pass);
+        let shift = pass.shift(origin);
+        let unmoved = shift == [0.0, 0.0];
+        let plain = key == 0 && unmoved;
+        if plain {
+            return Ok(0);
         }
-    }
-
-    /// The offset of the next draw's call, which reaches what `picks` says, drawn in `pass`: the first, no call, for a
-    /// draw the pointer does not reach, in a frame probed nowhere, past the room, or past the calls a frame numbers.
-    pub fn call(&mut self, picks: Picks, pass: InPass) -> u32 {
-        let (At::Probed(at), Picks::Reaches(reach)) = (self.at, picks) else {
-            return 0;
-        };
         let slot = self.records.len() / self.stride;
-        let framed = &mut self.frames[at];
-        let has_room = slot < self.room;
-        let numbered = framed.calls.len() < MOST_CALLS;
-        let fits = has_room && numbered;
-        if !fits {
-            return 0;
-        }
-        framed.calls.push(reach);
-        // At most `MOST_CALLS`.
-        let call = u32::try_from(framed.calls.len()).unwrap_or(0);
-        let key = picking::key(pass.at, call);
-        let mut record = picking::call_bytes(key, pass.tests_depth, pass.scale).to_vec();
+        let has_room = slot < self.most;
+        // Below the most, every record starts at an offset a `u32` counts.
+        let offset = u32::try_from(slot * self.stride);
+        let (true, Ok(offset)) = (has_room, offset) else {
+            self.past += 1;
+            return Err(PastRoom);
+        };
+        let mut record = picking::call_bytes(key, pass.tests_depth, pass.scale, shift).to_vec();
         record.resize(self.stride, 0);
         self.records.extend(record);
 
-        // The calls' buffer is far smaller than a `u32` counts.
-        u32::try_from(slot * self.stride).unwrap_or(0)
+        Ok(offset)
     }
 
-    /// Takes in a hit, which reaches what `picks` says within `rect`, numbered as the next call, in `pass`: keyed at
-    /// the farthest, as it has no depth.
-    pub fn hit(&mut self, rect: Rect2, picks: Picks, pass: InPass) {
-        let (At::Probed(at), Picks::Reaches(reach)) = (self.at, picks) else {
+    /// The key of the next call, which reaches what `picks` says, drawn in `pass` with its list's origin at `origin`,
+    /// its entry numbered: 0 for one the pointer does not reach, in a frame probed nowhere, or past the calls a frame
+    /// numbers.
+    fn number(&mut self, picks: Picks, origin: Vec2, pass: InPass) -> u32 {
+        let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
+            return 0;
+        };
+        let framed = &mut self.frames[at];
+        framed.numbered(reaching, origin).map_or(0, |call| picking::key(pass.at, call))
+    }
+
+    /// Takes in a hit, which reaches what `picks` says within `rect`, in the window's pixels, its list's origin at
+    /// `origin`, numbered as the next call, in `pass`: keyed at the farthest, as it has no depth.
+    pub fn hit(&mut self, rect: Rect2, (picks, origin): (Picks, Vec2), pass: InPass) {
+        let (At::Probed(at), Picks::Reaches(reaching)) = (self.at, picks) else {
             return;
         };
         let framed = &mut self.frames[at];
-        if framed.calls.len() >= MOST_CALLS {
-            return;
+        if let Some(call) = framed.numbered(reaching, origin) {
+            framed.hits.push((picking::key(pass.at, call), rect));
         }
-        framed.calls.push(reach);
-        // At most `MOST_CALLS`.
-        let call = u32::try_from(framed.calls.len()).unwrap_or(0);
-        framed.hits.push((picking::key(pass.at, call), rect));
-    }
-
-    /// The records of every call, each at its offset, and each frame probed, with what it picked.
-    pub fn finish(self) -> (Vec<u8>, Vec<Framed>) {
-        (self.records, self.frames)
     }
 }
 
 impl Framed {
+    /// Numbers the next call, which reaches `reaching`, drawn with its list's origin at `origin`: none past the calls a
+    /// frame numbers.
+    fn numbered(&mut self, reaching: Reaching, origin: Vec2) -> Option<u32> {
+        if self.calls.len() >= MOST_CALLS {
+            return None;
+        }
+        self.calls.push(reaching.at(origin));
+
+        // At most `MOST_CALLS`.
+        u32::try_from(self.calls.len()).ok()
+    }
+
     /// Copies its stacks, as the GPU left them, on `encoder` into a buffer to read back once it is mapped.
     pub fn copied(self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) -> Stacks {
         let read = device.create_buffer(&wgpu::BufferDescriptor {

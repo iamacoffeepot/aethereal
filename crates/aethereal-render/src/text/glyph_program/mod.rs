@@ -121,7 +121,7 @@ impl Layouts {
     pub fn new(device: &wgpu::Device, picking: &wgpu::BindGroupLayout) -> Self {
         // The step is added to the renderer's own program as to any, which its test proves; were it not, text would
         // draw, and only go unpicked.
-        let wgsl = picking::picked(GLYPH, FRAGMENT, PICKING).unwrap_or_else(|_| String::from(GLYPH));
+        let wgsl = picking::picked(GLYPH, (VERTEX, FRAGMENT), PICKING).unwrap_or_else(|_| String::from(GLYPH));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(wgsl.into()),

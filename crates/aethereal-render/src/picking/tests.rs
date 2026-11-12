@@ -1,5 +1,5 @@
-//! The picking step's tests: the step added to fragment stages of every shape a program writes, and the stacks read
-//! back.
+//! The picking step's tests: the step added to vertex and fragment stages of every shape a program writes, the call's
+//! bytes, and the stacks read back.
 
 use super::*;
 
@@ -92,7 +92,7 @@ fn the_step_is_called_before_every_return_of_the_fragment_stage_however_it_reads
     // reads its position in a struct, or not at all, refused or given a second position the GPU refuses; and the
     // step called from the vertex stage, which has no fragment's pixel.
     for (wgsl, returns) in [(IN_A_STRUCT, 2), (AN_ARGUMENT, 1), (NO_POSITION, 2)] {
-        let Ok(picked) = picked(wgsl, "shade", 0) else {
+        let Ok(picked) = picked(wgsl, ("lift", "shade"), 0) else {
             panic!("the step is added to {wgsl}");
         };
 
@@ -102,10 +102,88 @@ fn the_step_is_called_before_every_return_of_the_fragment_stage_however_it_reads
 }
 
 #[test]
+fn every_return_of_the_vertex_stage_moves_the_position_it_writes_whether_alone_or_in_a_struct() {
+    // Catches a vertex stage left unmoved, so a call's child draws where its own program places it and not at the
+    // origin its caller gives; a stage that returns its position in a struct refused, or moved in another member; and
+    // an early return left unmoved, so what is drawn on that branch stays put (ADR-0055).
+    const BRANCHED: &str = "
+@vertex
+fn lift(@location(0) corner: vec2<f32>) -> @builtin(position) vec4<f32> {
+    if corner.x < 0.0 {
+        return vec4(corner, 0.25, 1.0);
+    }
+    return vec4(corner, 0.5, 1.0);
+}
+
+@fragment
+fn shade() -> @location(0) vec4<f32> {
+    return vec4(1.0);
+}
+";
+    for (wgsl, returns) in [(IN_A_STRUCT, 1), (AN_ARGUMENT, 1), (BRANCHED, 2)] {
+        let Ok(picked) = picked(wgsl, ("lift", "shade"), 0) else {
+            panic!("the step is added to {wgsl}");
+        };
+        let Ok((module, _)) = program::parsed(&picked) else {
+            panic!("what the step makes is valid WGSL: {picked}");
+        };
+        let Some(lift) = module.entry_points.iter().find(|entry| entry.name == "lift") else {
+            panic!("the vertex stage stays: {picked}");
+        };
+        let shift = module.functions.fetch_if(|function| function.name.as_deref() == Some(SHIFT));
+        let moved = lift
+            .function
+            .expressions
+            .iter()
+            .filter(|(_, expression)| matches!(expression, Expression::CallResult(called) if Some(*called) == shift))
+            .count();
+
+        assert_eq!(moved, returns, "{picked}");
+    }
+}
+
+#[test]
+fn a_call_s_bytes_lie_where_the_step_reads_them() {
+    // Tripwire: the layout of `AetherealPickCall` in the step's WGSL, as naga lays a struct out, against the bytes
+    // `call_bytes` writes: a field moved in one and not the other keys a draw as another call, or moves it by its
+    // scale rather than its shift, and fits the binding the layout declares.
+    let Ok((module, _)) = program::parsed(&format!("{AN_ARGUMENT}\n{}", step(0))) else {
+        panic!("the step is valid WGSL");
+    };
+    let members = module.types.iter().find_map(|(_, ty)| match &ty.inner {
+        TypeInner::Struct { members, span } if ty.name.as_deref() == Some("AetherealPickCall") => {
+            Some((members, *span))
+        }
+        _ => None,
+    });
+    let Some((members, span)) = members else {
+        panic!("the step reads an `AetherealPickCall`");
+    };
+    assert!(span as usize <= CALL_BYTES, "the call's {span} bytes fit its binding");
+
+    let bytes = call_bytes(7, true, [0.5, 0.25], [-1.5, 2.0]);
+    let word = |at: u32| {
+        let at = at as usize;
+        [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]
+    };
+    let offset = |name: &str| {
+        let Some(member) = members.iter().find(|member| member.name.as_deref() == Some(name)) else {
+            panic!("`AetherealPickCall` has `{name}`");
+        };
+        member.offset
+    };
+    let float = |at: u32| f32::from_le_bytes(word(at));
+    assert_eq!(u32::from_le_bytes(word(offset("key"))), 7);
+    assert_eq!(u32::from_le_bytes(word(offset("depth"))), 1);
+    assert_eq!([float(offset("scale")), float(offset("scale") + 4)], [0.5, 0.25]);
+    assert_eq!([float(offset("shift")), float(offset("shift") + 4)], [-1.5, 2.0]);
+}
+
+#[test]
 fn a_stage_that_writes_its_depth_is_picked_at_the_depth_it_writes() {
     // Catches a stage that writes its depth ranked at its position's, which is not the depth it is tested at, so the
     // stack's top is not what is seen there.
-    let Ok(picked) = picked(WRITES_DEPTH, "shade", 0) else {
+    let Ok(picked) = picked(WRITES_DEPTH, ("lift", "shade"), 0) else {
         panic!("the step is added to {WRITES_DEPTH}");
     };
 
@@ -120,7 +198,7 @@ fn a_program_that_names_what_the_step_does_is_refused() {
     // pipeline is made.
     let clashing = format!("{AN_ARGUMENT}\nfn {PICK}() {{}}");
 
-    assert!(matches!(picked(&clashing, "shade", 0), Err(ProgramRefused::Parse { .. })));
+    assert!(matches!(picked(&clashing, ("lift", "shade"), 0), Err(ProgramRefused::Parse { .. })));
 }
 
 #[test]

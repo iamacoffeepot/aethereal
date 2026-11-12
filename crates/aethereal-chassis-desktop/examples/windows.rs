@@ -28,7 +28,7 @@ use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{DrawList, Entry, Pointer};
+use aethereal_render::draw_list::{Area, DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -217,7 +217,7 @@ impl Director {
             .iter()
             .flat_map(|window| {
                 let keys = Entry::Keys { frame: Frame::Main(*window), keys: directing(), blocks: false };
-                [keys, Entry::call(child::<Scene>(*window))]
+                [keys, Entry::call(child::<Scene>(*window), Area::WINDOW)]
             })
             .collect();
 

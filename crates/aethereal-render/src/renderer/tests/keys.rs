@@ -1,7 +1,7 @@
 //! The keys a window's main frame declares (ADR-0055): the `Keys` entries its walk holds, the last called first, as
 //! the renderer sends them to the window's actor, and only when they have changed.
 
-use super::lists::{CHILD, OTHER};
+use super::lists::{CHILD, OTHER, called};
 use super::*;
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_window::KeySet;
@@ -32,12 +32,12 @@ fn a_window_is_sent_the_keys_its_walk_declares_the_last_called_first_and_again_o
     let elsewhere = heeds(OTHER, 0, KeySet::All, true);
 
     assert_eq!(kept.listed(vec![declares(main, &hud)], CHILD), Ok(()));
-    assert_eq!(kept.listed(vec![declares(main, &game), Listed::Call(CHILD)], MAKER), Ok(()));
+    assert_eq!(kept.listed(vec![declares(main, &game), called(CHILD, Area::CALLER)], MAKER), Ok(()));
     let other = vec![declares(Frame::Main(nth_window(1)), &elsewhere), declares(main, &console)];
     assert_eq!(kept.listed(other, OTHER), Ok(()));
     let first = kept.relisted([window()]);
     let again = kept.relisted([window()]);
-    assert_eq!(kept.listed(vec![Listed::Call(CHILD), declares(main, &game)], MAKER), Ok(()));
+    assert_eq!(kept.listed(vec![called(CHILD, Area::CALLER), declares(main, &game)], MAKER), Ok(()));
     let reordered = kept.relisted([window()]);
 
     let listed =

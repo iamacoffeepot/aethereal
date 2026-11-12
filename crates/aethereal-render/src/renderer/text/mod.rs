@@ -426,11 +426,6 @@ impl Texts {
         recording.draw(0..6, 0..built.count);
         tally.draw(stats::triangles(6, built.count));
     }
-
-    /// How many joins every placed text has: the most draws of texts a `Render` records.
-    pub fn joins(&self) -> usize {
-        self.placed.iter().map(|(_, placed)| placed.joins.len()).sum()
-    }
 }
 
 impl Text {

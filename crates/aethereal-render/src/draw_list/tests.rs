@@ -44,6 +44,11 @@ const fn draw(id: u64) -> Listed {
     Listed::Draw { placement: id, picks: Picks::Ignores }
 }
 
+/// A call of `child`, placed where its caller is.
+const fn call(child: ActorId) -> Listed {
+    Listed::Call { child, area: Area::CALLER }
+}
+
 /// A list drawing the placements `ids`, in order.
 fn draws(ids: &[u64]) -> Vec<Listed> {
     ids.iter().map(|id| draw(*id)).collect()
@@ -53,10 +58,10 @@ fn draws(ids: &[u64]) -> Vec<Listed> {
 fn walked(lists: &Lists, roots: &[ActorId]) -> Vec<u64> {
     lists
         .walk(roots.to_vec())
-        .filter_map(|entry| match entry {
+        .filter_map(|walking| match walking.entry {
             Listed::Draw { placement, .. } => Some(*placement),
             Listed::Run(dispatch) => Some(*dispatch),
-            Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
         .collect()
 }
@@ -77,7 +82,7 @@ fn a_list_refused_for_any_of_its_entries_leaves_the_last_list_standing_whole() {
     assert_eq!(lists.check(draws(&[3, 1]), MAKER, &kept), Ok(()));
 
     let refused = |at, why| Err(ListRefused { at, why });
-    let calls_twice = vec![Listed::Call(HUD), draw(2), Listed::Call(HUD)];
+    let calls_twice = vec![call(HUD), draw(2), call(HUD)];
     let cases = [
         (draws(&[1, 9]), refused(1, EntryRefused::Placement)),
         (draws(&[2, 5]), refused(1, EntryRefused::NotOwner)),
@@ -148,15 +153,92 @@ fn the_walk_draws_each_child_where_its_parent_calls_it_and_no_actor_no_list_call
     // of the root list's order, and an actor drawn that no list calls.
     let kept = Kept::new();
     let mut lists = lists();
-    let parent = vec![draw(1), Listed::Call(HUD), draw(4)];
+    let parent = vec![draw(1), call(HUD), draw(4)];
     assert_eq!(lists.check(parent, MAKER, &kept), Ok(()));
-    assert_eq!(lists.check(vec![draw(2), Listed::Call(MAP)], HUD, &make(HUD, 2)), Ok(()));
+    assert_eq!(lists.check(vec![draw(2), call(MAP)], HUD, &make(HUD, 2)), Ok(()));
     assert_eq!(lists.check(draws(&[3]), MAP, &make(MAP, 3)), Ok(()));
     assert_eq!(lists.check(draws(&[5]), OTHER, &kept), Ok(()));
     assert_eq!(lists.check(draws(&[7]), STRAY, &make(STRAY, 7)), Ok(()));
 
     assert_eq!(walked(&lists, lists.roots()), vec![1, 2, 3, 4, 5]);
     assert_eq!(walked(&lists, &[OTHER, MAKER]), vec![5, 1, 2, 3, 4]);
+}
+
+/// The rect from `min` to `max`.
+const fn rect(min: [f32; 2], max: [f32; 2]) -> Rect2 {
+    Rect2 { min: Vec2::new(min[0], min[1]), max: Vec2::new(max[0], max[1]) }
+}
+
+#[test]
+fn nested_areas_compose_from_the_window_down_each_clip_cut_to_its_caller_s_whatever_its_mode() {
+    // Catches an inheriting child's area taken as given, as if its caller's coordinates were the window's, so a list
+    // inside a panel draws at the list's offset from the window's corner; a clip left where it was given, not moved
+    // by its caller's origin; an absolute child moved by its ancestors' origins, so a scene placed in the window's
+    // pixels lands off by its parent's offset, and its own inheriting children not added from the window's corner; a
+    // clip, of either mode, that widens what the caller was cut to, so a child draws out of its parent's box; and a
+    // list's entries drawn where its parent's are, or a sibling's after the child's (ADR-0055).
+    let kept = Kept::new();
+    let mut lists = lists();
+    let panel = rect([100.0, 50.0], [300.0, 250.0]);
+    let scrolled = Area::Inherit { origin: Vec2::new(10.0, -40.0), clip: Clip::To(rect([0.0, 0.0], [400.0, 150.0])) };
+    let on_screen = Area::Absolute { clip: Clip::To(rect([0.0, 0.0], [150.0, 500.0])) };
+    let nudged = Area::Inherit { origin: Vec2::new(7.0, 8.0), clip: Clip::Whole };
+    let parent = vec![draw(1), Listed::Call { child: HUD, area: Area::inherit(panel) }, draw(4)];
+    assert_eq!(lists.check(parent, MAKER, &kept), Ok(()));
+    let hud =
+        vec![draw(2), Listed::Call { child: MAP, area: scrolled }, Listed::Call { child: OTHER, area: on_screen }];
+    assert_eq!(lists.check(hud, HUD, &make(HUD, 2)), Ok(()));
+    assert_eq!(lists.check(draws(&[3]), MAP, &make(MAP, 3)), Ok(()));
+    assert_eq!(lists.check(vec![draw(5), Listed::Call { child: STRAY, area: nudged }], OTHER, &kept), Ok(()));
+    assert_eq!(lists.check(draws(&[7]), STRAY, &make(STRAY, 7)), Ok(()));
+
+    let placed: Vec<(u64, Within)> = lists
+        .walk(vec![MAKER])
+        .filter_map(|walking| match walking.entry {
+            Listed::Draw { placement, .. } => Some((*placement, walking.within)),
+            Listed::Run(_) | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
+        })
+        .collect();
+
+    let at = |x, y, clip| Within { origin: Vec2::new(x, y), clip: Clip::To(clip) };
+    let in_panel = at(100.0, 50.0, panel);
+    let in_scroll = at(110.0, 10.0, rect([100.0, 50.0], [300.0, 200.0]));
+    let on_screen_in_panel = at(0.0, 0.0, rect([100.0, 50.0], [150.0, 250.0]));
+    let nudged_on_screen = at(7.0, 8.0, rect([100.0, 50.0], [150.0, 250.0]));
+    let expected = vec![
+        (1, Within::WINDOW),
+        (2, in_panel),
+        (3, in_scroll),
+        (5, on_screen_in_panel),
+        (7, nudged_on_screen),
+        (4, Within::WINDOW),
+    ];
+    assert_eq!(placed, expected);
+}
+
+#[test]
+fn a_clip_cuts_a_target_s_pixels_at_their_middles_scaled_to_the_target_and_within_it() {
+    // Catches a scissor taken from a clip in the surface's pixels on a target drawn at a share of its size, which cuts
+    // a half-size bloom at twice the place; one that reaches past the target, which WebGPU refuses, failing the whole
+    // frame, or that wraps below zero; one that rounds a clip's edge to take a pixel whose middle is outside; and a
+    // clip cut to nothing given a scissor of no pixels, which WebGPU refuses, rather than its draw skipped (ADR-0055).
+    let full = [1.0, 1.0];
+    let size = [64, 32];
+
+    assert_eq!(Clip::Whole.pixels(full, size), Cut::Pixels { x: 0, y: 0, width: 64, height: 32 });
+    let inside = Clip::To(rect([10.0, 4.0], [20.0, 12.0]));
+    assert_eq!(inside.pixels(full, size), Cut::Pixels { x: 10, y: 4, width: 10, height: 8 });
+    assert_eq!(inside.pixels([0.5, 0.5], size), Cut::Pixels { x: 5, y: 2, width: 5, height: 4 });
+    let middles = Clip::To(rect([10.4, 4.6], [20.4, 12.6]));
+    assert_eq!(middles.pixels(full, size), Cut::Pixels { x: 10, y: 5, width: 10, height: 8 });
+    let past = Clip::To(rect([-30.0, -5.0], [100.0, 50.0]));
+    assert_eq!(past.pixels(full, size), Cut::Pixels { x: 0, y: 0, width: 64, height: 32 });
+    let outside = Clip::To(rect([70.0, 0.0], [90.0, 10.0]));
+    assert_eq!(outside.pixels(full, size), Cut::Nothing);
+    let beside = Within::WINDOW
+        .called(Area::inherit(rect([20.0, 0.0], [30.0, 10.0])))
+        .called(Area::inherit(rect([15.0, 0.0], [25.0, 10.0])));
+    assert_eq!(beside.clip.pixels(full, size), Cut::Nothing, "a child placed past its caller's clip");
 }
 
 #[test]
@@ -167,11 +249,11 @@ fn a_parent_reorders_its_children_by_sending_one_list() {
     let mut lists = lists();
     assert_eq!(lists.check(draws(&[2]), HUD, &make(HUD, 2)), Ok(()));
     assert_eq!(lists.check(draws(&[3]), MAP, &make(MAP, 3)), Ok(()));
-    let hud_on_top = vec![draw(1), Listed::Call(MAP), Listed::Call(HUD)];
+    let hud_on_top = vec![draw(1), call(MAP), call(HUD)];
     assert_eq!(lists.check(hud_on_top, MAKER, &kept), Ok(()));
     assert_eq!(walked(&lists, &[MAKER]), vec![1, 3, 2]);
 
-    let map_on_top = vec![Listed::Call(HUD), Listed::Call(MAP), draw(1)];
+    let map_on_top = vec![call(HUD), call(MAP), draw(1)];
     assert_eq!(lists.check(map_on_top, MAKER, &kept), Ok(()));
     assert_eq!(walked(&lists, &[MAKER]), vec![2, 3, 1]);
 }
@@ -182,7 +264,7 @@ fn a_walk_ends_where_lists_call_round_as_only_colliding_ids_could() {
     // an actor's above it would write, walked forever.
     let kept = Kept::new();
     let mut lists = lists();
-    assert_eq!(lists.check(vec![draw(1), Listed::Call(MAKER)], MAKER, &kept), Ok(()));
+    assert_eq!(lists.check(vec![draw(1), call(MAKER)], MAKER, &kept), Ok(()));
 
     let drawn = walked(&lists, &[MAKER]);
     assert_eq!(drawn.len(), ActorPath::MAX_DEPTH);
@@ -204,7 +286,7 @@ fn an_entry_the_pointer_reaches_names_its_place_and_is_refused_from_a_sender_tha
     let ignores = Entry::Draw { placement, pointer: Pointer::Ignores };
     let child = |_: &PathSegment| HUD;
 
-    let reached = Picks::Reaches(Reach { actor: hearer, entry: 2, blocks: true });
+    let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, blocks: true });
     assert_eq!(blocks.listed(2, (Some(hearer), None), child), Ok(Listed::Draw { placement: 3, picks: reached }));
     assert_eq!(blocks.listed(2, (None, None), child), Err(EntryRefused::Unheard));
     assert_eq!(ignores.listed(2, (None, None), child), Ok(draw(3)));

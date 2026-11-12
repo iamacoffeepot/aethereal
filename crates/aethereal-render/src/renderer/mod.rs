@@ -15,7 +15,7 @@ use crate::dispatch::{
     self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, Grid, Runs,
     Unrun, Use,
 };
-use crate::draw_list::{DrawList, ListRefused, Listables, Listed, Lists, Picks};
+use crate::draw_list::{Cut, DrawList, ListRefused, Listables, Listed, Lists, Picks, Walking, Within};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
 use crate::frame::{
@@ -59,7 +59,7 @@ use aethereal_actor::{
     path,
 };
 use aethereal_data::{ActorId, Bound, Plain};
-use aethereal_math::Rect2;
+use aethereal_math::{Rect2, Vec2};
 use aethereal_window::{Hearer, KeyHearer, KeysEntry, KeysListed, Picked, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
 use picking::{InPass, Picker, Picking, Probing, Stacks};
@@ -847,9 +847,7 @@ impl Handles<On<Render>> for Renderer {
             Named::Unnamed
         };
         let mut tally = self.watch.tally();
-        let mut picking = kept.picking((&device, &queue), &views);
-        let once = kept.run_all(&mut encoder, &views, stamps.as_ref(), &mut tally, &mut picking);
-        let stacks = kept.picked(picking, (&device, &queue), &mut encoder);
+        let (once, stacks, past) = kept.run_all(&mut encoder, (&device, &queue), &views, stamps.as_ref(), &mut tally);
         kept.keep_last(&device, &mut encoder, &frames);
         let copied: Vec<_> = frames
             .iter()
@@ -896,6 +894,9 @@ impl Handles<On<Render>> for Renderer {
         }
         for (held, why) in refused {
             turn.answer(held, &Pixels::Refused(why))?;
+        }
+        if past > 0 {
+            turn.log(Level::Error, format_args!("{past} draws were not drawn: past the most calls a `Render` binds"));
         }
         self.tell_ran(turn, once)?;
         self.relist(turn, frames.iter().map(|(window, _)| *window))?;
@@ -2098,29 +2099,20 @@ impl Kept {
         Ok(Groups::new(device, layouts.to_vec(), first, entries))
     }
 
-    /// Records the frame `walk`, joined as `frame`, on `encoder`, a frame that ends on a window drawing into that
-    /// window's frame among `windows`: each of its passes begun in order, and what it does recorded in it, each pass
-    /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
-    /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`, and each call
-    /// numbered into `picking`, keyed by its draw pass's place among the frame's. Answers the ids of the dispatches
-    /// that run once that it recorded.
+    /// Records the frame `issued` on `encoder`: each of its passes begun in order, and what it does recorded in it, each
+    /// pass writing its timestamps to `stamps` when the frames are timed, each draw as the walk issued it, binding the
+    /// picking step through `stepped`. Each draw is counted into `tally`. Answers the ids of the dispatches that run
+    /// once that it recorded.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        (frame, walk): (Frame, &Walk),
-        windows: &[(WindowId, wgpu::TextureView)],
-        (stamps, first): (Option<&Stamps>, u32),
-        (tally, picking): (&mut Tally, &mut Picking),
+        issued: FrameIssued<'_>,
+        stamps: Option<&Stamps>,
+        (tally, stepped): (&mut Tally, &wgpu::BindGroup),
     ) -> Vec<u64> {
+        let FrameIssued { frame, walk, end, first, steps } = issued;
         let mut once = Vec::new();
-        let Some(end) = walk.end(windows) else {
-            return once;
-        };
-        picking.enter(frame);
-        // Held apart from the picking, which numbers the calls bound through it.
-        let stepped = picking.group().clone();
-        let mut drawn = 0;
-        for (at, (pass, step)) in (first..).zip(walk.steps()) {
+        for ((at, (pass, step)), draws) in (first..).zip(walk.steps()).zip(steps) {
             let (into, load, depth) = match step {
                 Step::Draw { into, depth, load, .. } => (*into, *load, *depth),
                 Step::Effect { effect, .. } => (effect.into, effect.load, DepthUse::Off),
@@ -2170,13 +2162,7 @@ impl Kept {
                 ..Default::default()
             });
             match step {
-                Step::Draw { fits, read, depth, into, .. } => {
-                    let in_pass =
-                        InPass { at: drawn, tests_depth: *depth != DepthUse::Off, scale: walk.scale_of(*into) };
-                    drawn += 1;
-                    let picked = (&mut *picking, &stepped, in_pass);
-                    self.draw(&mut recording, (frame, pass), (fits, *depth), read, tally, picked);
-                }
+                Step::Draw { read, depth, .. } => self.draw(&mut recording, draws, (*depth, read), (tally, stepped)),
                 Step::Effect { effect, .. } => {
                     recording.set_pipeline(&effect.pipeline);
                     recording.set_bind_group(0, &effect.read.group, &[]);
@@ -2346,11 +2332,13 @@ impl Kept {
         let mut keys: Vec<KeysEntry> = self
             .lists
             .walk(self.roots(frame))
-            .filter_map(|listed| match listed {
+            .filter_map(|walking| match walking.entry {
                 Listed::Keys { frame: declared, entry } if *declared == frame => Some(entry.clone()),
-                Listed::Keys { .. } | Listed::Draw { .. } | Listed::Run(_) | Listed::Call(_) | Listed::Hit { .. } => {
-                    None
-                }
+                Listed::Keys { .. }
+                | Listed::Draw { .. }
+                | Listed::Run(_)
+                | Listed::Call { .. }
+                | Listed::Hit { .. } => None,
             })
             .collect();
         keys.reverse();
@@ -2547,17 +2535,9 @@ impl Kept {
         textures.chain(mains)
     }
 
-    /// The picking of a `Render` that draws into `windows`, on `gpu`: each window among them probed where its actor
-    /// last said the pointer was and pressed, its presses taken, with room for a call for each join kept, the most
-    /// draws the `Render` records (ADR-0055).
-    fn picking(
-        &mut self,
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
-        windows: &[(WindowId, wgpu::TextureView)],
-    ) -> Picking {
-        let meshes: usize = self.placements.iter().map(|(_, placement)| placement.joins.len()).sum();
-        let calls = self.text.joins() + meshes + 1;
-        self.picker.fit(device, calls);
+    /// The picking of a `Render` that draws into `windows`: each window among them probed where its actor last said
+    /// the pointer was and pressed, its probes written on `queue`, and its presses taken (ADR-0055).
+    fn picking(&mut self, queue: &wgpu::Queue, windows: &[(WindowId, wgpu::TextureView)]) -> Picking {
         let probed = self
             .windows
             .iter_mut()
@@ -2565,21 +2545,7 @@ impl Kept {
             .filter_map(|windowed| windowed.probing.take(queue, windowed.window))
             .collect();
 
-        self.picker.picking(device, probed, calls)
-    }
-
-    /// What `picking`, of a `Render` whose frames are recorded on `encoder`, picked: each call's record written on
-    /// `gpu` for the commands to read, and each probed window's stacks copied on `encoder` to read back.
-    fn picked(
-        &self,
-        picking: Picking,
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> Vec<Stacks> {
-        let (records, probed) = picking.finish();
-        self.picker.write(queue, &records);
-
-        probed.into_iter().map(|framed| framed.copied(device, encoder)).collect()
+        self.picker.picking(probed)
     }
 
     /// How many passes a `Render` runs that draws into `windows`: every pass of each frame it runs.
@@ -2599,25 +2565,79 @@ impl Kept {
 
     /// Records every frame on `encoder` in the order it runs them, a frame that ends on a window drawing into that
     /// window's frame among `windows`, each pass writing its timestamps to `stamps` in the order they run when the
-    /// frames are timed, each draw counted into `tally`, and each call numbered into `picking` (ADR-0025, ADR-0053,
-    /// ADR-0055). Answers the ids of the dispatches that run once that it recorded, which run once these commands are
-    /// submitted.
+    /// frames are timed, and each draw counted into `tally` (ADR-0025, ADR-0053, ADR-0055). Every frame is walked
+    /// first, each call recorded for picking, and the calls' buffer fitted on `gpu` to every record and written, before
+    /// any draw is recorded, so each draw binds a record the buffer holds. Answers the ids of the dispatches that run
+    /// once that it recorded, which run once these commands are submitted, each probed window's stacks copied on
+    /// `encoder` to read back, and how many draws were refused, past the most calls a buffer holds.
     fn run_all(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
+        gpu: (&wgpu::Device, &wgpu::Queue),
         windows: &[(WindowId, wgpu::TextureView)],
         stamps: Option<&Stamps>,
         tally: &mut Tally,
-        picking: &mut Picking,
-    ) -> Vec<u64> {
-        let mut first = 0;
+    ) -> (Vec<u64>, Vec<Stacks>, usize) {
+        let (device, queue) = gpu;
+        let mut picking = self.picking(queue, windows);
+        let issued = self.issue_all(windows, &mut picking);
+        let recorded = self.picker.bound(gpu, picking);
         let mut once = Vec::new();
-        for (frame, walk) in self.ran(windows) {
-            once.extend(self.run(encoder, (frame, walk), windows, (stamps, first), (tally, picking)));
-            first += walk.passes();
+        for frame in issued {
+            let stepped = recorded.group(frame.frame);
+            once.extend(self.run(encoder, frame, stamps, (tally, stepped)));
         }
 
-        once
+        let past = recorded.past();
+        let (calls, probed) = recorded.finish();
+        self.picker.keep(calls);
+        let stacks = probed.into_iter().map(|framed| framed.copied(device, encoder)).collect();
+
+        (once, stacks, past)
+    }
+
+    /// Every frame a `Render` that draws into `windows` runs, in the order it runs them, walked and issued before any
+    /// of it is recorded, each call recorded into `picking`: a frame that ends on a window with none among them is not
+    /// issued, though its passes keep their places among the `Render`'s.
+    fn issue_all<'a>(
+        &'a self,
+        windows: &'a [(WindowId, wgpu::TextureView)],
+        picking: &mut Picking,
+    ) -> Vec<FrameIssued<'a>> {
+        let mut first = 0;
+        let mut issued = Vec::new();
+        for (frame, walk) in self.ran(windows) {
+            let at = first;
+            first += walk.passes();
+            let Some(end) = walk.end(windows) else {
+                continue;
+            };
+            picking.enter(frame);
+            let mut drawn = 0;
+            let mut steps = Vec::new();
+            for (pass, step) in walk.steps() {
+                let Step::Draw { into, depth, fits, .. } = step else {
+                    steps.push(Vec::new());
+                    continue;
+                };
+                let attachment = match into {
+                    Target::End => end.texture(),
+                    Target::Texture(target) => walk.target(*target).drawn().texture(),
+                };
+                let in_pass = InPass {
+                    at: drawn,
+                    tests_depth: *depth != DepthUse::Off,
+                    scale: walk.scale_of(*into),
+                    size: [attachment.width(), attachment.height()],
+                    per_pixel: walk.per_pixel(),
+                };
+                drawn += 1;
+                steps.push(self.issue((frame, pass), fits, (picking, in_pass)));
+            }
+            issued.push(FrameIssued { frame, walk, end, first: at, steps });
+        }
+
+        issued
     }
 
     /// The effect pass the frame `create` does at `making`, made: the effect's pipeline and bind groups, made of what
@@ -2711,9 +2731,9 @@ impl Kept {
     fn computed(&self, frame: Frame, pass: PassName) -> Vec<(u64, &Dispatching)> {
         self.lists
             .walk(self.roots(frame))
-            .filter_map(|entry| match *entry {
+            .filter_map(|walking| match *walking.entry {
                 Listed::Run(id) => self.dispatches.get(id).map(|dispatch| (id, dispatch)),
-                Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+                Listed::Draw { .. } | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
             })
             .filter(|(id, dispatch)| {
                 let joins = dispatch.runs_in(frame, pass);
@@ -2768,36 +2788,58 @@ impl Kept {
         unjoined
     }
 
-    /// Records into `recording` every placement drawn in the pass `pass` of `frame`, whose programs are made against
-    /// `fits`, which uses depth as `depth` says, in the order [`drawn`](Self::drawn) answers, setting a pipeline only
-    /// where the placement drawn before used another program, with the targets the pass reads bound at group 0 through
-    /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass. Each draw is
-    /// counted into `tally`, and each call and hit numbered into `picking` and keyed by the pass as `in_pass` says,
-    /// each draw binding the picking step through `stepped` at its call's offset (ADR-0055).
+    /// Each draw of the pass `pass` of `frame`, whose programs are made against `fits`, as the walk issues it, before
+    /// any is recorded, in the order [`drawn`](Self::drawn) answers: each draw cut to its list's clip, scaled to the
+    /// pass's target as `in_pass` says, a draw cut to nothing not issued, and given its call's offset, which moves it
+    /// to its list's origin, its call and each hit numbered into `picking` and keyed by the pass (ADR-0055). A draw
+    /// past the most calls a buffer holds is refused, counted by `picking`, and not issued.
+    fn issue(
+        &self,
+        (frame, pass): (Frame, PassName),
+        fits: &Fits,
+        (picking, in_pass): (&mut Picking, InPass),
+    ) -> Vec<IssuedDraw<'_>> {
+        let mut draws = Vec::new();
+        for issued in self.drawn((frame, pass), fits) {
+            let (drawable, picks, within) = match issued {
+                Issued::Draw { drawable, picks, within } => (drawable, picks, within),
+                Issued::Hit { rect, picks, origin } => {
+                    picking.hit(rect, (picks, origin), in_pass);
+                    continue;
+                }
+            };
+            let Cut::Pixels { x, y, width, height } = within.clip.pixels(in_pass.scale, in_pass.size) else {
+                continue;
+            };
+            let Ok(offset) = picking.call(picks, within.origin, in_pass) else {
+                continue;
+            };
+            draws.push(IssuedDraw { drawable, scissor: [x, y, width, height], offset });
+        }
+
+        draws
+    }
+
+    /// Records into `recording` each draw of a pass as the walk issued it, `draws`, in a pass that uses depth as `depth`
+    /// says, setting a pipeline only where the placement drawn before used another program, with the targets the pass
+    /// reads bound at group 0 through `read` when it reads any. A placed text is drawn with the glyph program's
+    /// pipeline for the pass. Each draw is cut to its scissor, counted into `tally`, and binds the picking step through
+    /// `stepped` at its call's offset, which moves it to its list's origin (ADR-0055).
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
-        (frame, pass): (Frame, PassName),
-        (fits, depth): (&Fits, DepthUse),
-        read: &ReadGroup,
-        tally: &mut Tally,
-        (picking, stepped, in_pass): (&mut Picking, &wgpu::BindGroup, InPass),
+        draws: Vec<IssuedDraw<'_>>,
+        (depth, read): (DepthUse, &ReadGroup),
+        (tally, stepped): (&mut Tally, &wgpu::BindGroup),
     ) {
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
-        let reads = !fits.reads.is_empty();
+        let reads = !read.reads.is_empty();
         if reads {
             recording.set_bind_group(0, &read.group, &[]);
         }
         let mut pipeline = 0;
-        for issued in self.drawn((frame, pass), fits) {
-            let (drawable, picks) = match issued {
-                Issued::Draw { drawable, picks } => (drawable, picks),
-                Issued::Hit { rect, picks } => {
-                    picking.hit(rect, picks, in_pass);
-                    continue;
-                }
-            };
-            let offset = picking.call(picks, in_pass);
+        for IssuedDraw { drawable, scissor: [x, y, width, height], offset } in draws {
+            recording.set_scissor_rect(x, y, width, height);
             let (placement, join) = match drawable {
                 Drawable::Mesh(placement, join) => (placement, join),
                 Drawable::Text(placed, join) => {
@@ -2847,26 +2889,28 @@ impl Kept {
 
     /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, with its join of the
     /// pass, in the order it is drawn: the lists walked from the frame's roots, each in its order, each child drawn
-    /// where its parent calls it, meshes and texts alike, with each hit listed in the pass in its place (ADR-0031,
-    /// ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not drawn, and neither is a placement
-    /// no list walked holds.
+    /// where its parent calls it, where its parent's call places it, meshes and texts alike, with each hit listed in
+    /// the pass in its place (ADR-0031, ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not
+    /// drawn, and neither is a placement no list walked holds.
     fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<Issued<'_>> {
-        self.lists.walk(self.roots(frame)).filter_map(|entry| self.issued(entry, (frame, pass), fits)).collect()
+        self.lists.walk(self.roots(frame)).filter_map(|walking| self.issued(walking, (frame, pass), fits)).collect()
     }
 
-    /// What the listed `entry` issues in the pass `pass` of `frame`, whose programs are made against `fits`: its
-    /// placement's join drawn there, or itself, a hit listed there; none when it neither draws nor is hit there.
-    fn issued(&self, entry: &Listed, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'_>> {
+    /// What the entry `walking` reaches issues in the pass `pass` of `frame`, whose programs are made against `fits`:
+    /// its placement's join drawn there, where its list is, or itself, a hit listed there, its rect moved to its
+    /// list's origin and cut to its list's clip; none when it neither draws nor is hit there.
+    fn issued(&self, walking: Walking<'_>, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'_>> {
+        let Walking { entry, within } = walking;
         match *entry {
             Listed::Draw { placement, picks } => {
                 let drawable = self.listed_in(placement, (frame, pass), fits)?;
-                Some(Issued::Draw { drawable, picks })
+                Some(Issued::Draw { drawable, picks, within })
             }
             Listed::Hit { frame: hit, pass: hit_pass, rect, picks } => {
                 let is_here = hit == frame && hit_pass == pass;
-                is_here.then_some(Issued::Hit { rect, picks })
+                is_here.then_some(Issued::Hit { rect: within.cut(rect), picks, origin: within.origin })
             }
-            Listed::Run(_) | Listed::Call(_) | Listed::Keys { .. } => None,
+            Listed::Run(_) | Listed::Call { .. } | Listed::Keys { .. } => None,
         }
     }
 
@@ -2885,11 +2929,30 @@ impl Kept {
     }
 }
 
-/// What a pass issues in its order: a placement's join drawn, or a hit, which draws nothing, each as the pointer
-/// reaches it (ADR-0055).
+/// What a pass issues in its order, each as the pointer reaches it: a placement's join drawn where its list is, or a
+/// hit, which draws nothing, over its rect in the window's pixels, its list's origin at `origin` (ADR-0055).
 enum Issued<'a> {
-    Draw { drawable: Drawable<'a>, picks: Picks },
-    Hit { rect: Rect2, picks: Picks },
+    Draw { drawable: Drawable<'a>, picks: Picks, within: Within },
+    Hit { rect: Rect2, picks: Picks, origin: Vec2 },
+}
+
+/// One draw of a pass as the walk issued it, before it is recorded: what it draws, the pixels of its pass's target it is
+/// cut to, `[x, y, width, height]`, and the offset of its call, whose record moves it to its list's origin.
+struct IssuedDraw<'a> {
+    drawable: Drawable<'a>,
+    scissor: [u32; 4],
+    offset: u32,
+}
+
+/// A frame of a `Render` as the walk issued it, before any of it is recorded: the frame, its walk, the view it ends
+/// on, the place of its first pass among the `Render`'s, and the draws of each of its passes, in order, none for a
+/// pass that draws nothing.
+struct FrameIssued<'a> {
+    frame: Frame,
+    walk: &'a Walk,
+    end: &'a wgpu::TextureView,
+    first: u32,
+    steps: Vec<Vec<IssuedDraw<'a>>>,
 }
 
 /// One placement's join drawn in a pass: a mesh's, or a text's.

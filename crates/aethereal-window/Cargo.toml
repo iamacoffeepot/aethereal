@@ -13,6 +13,7 @@ tools = ["dep:aethereal-tools"]
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
+aethereal-math = { path = "../aethereal-math" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tools = { path = "../aethereal-tools", optional = true }
 
