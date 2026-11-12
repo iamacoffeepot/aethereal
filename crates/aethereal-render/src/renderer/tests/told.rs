@@ -1,5 +1,5 @@
 //! What the renderer tells of a frame (ADR-0053), on the device that draws nothing: each pass named in the order the
-//! passes write their timestamps, each draw counted only into a frame that counts, and the totals of what it made
+//! passes write their timestamps, the pass the renderer adds after a window's main frame's last among them, each draw counted only into a frame that counts, and the totals of what it made
 //! kept as a walk over all of it would count them.
 
 use super::lists::{placed, tinted};
@@ -44,6 +44,7 @@ fn passes_are_named_in_the_order_they_write_their_timestamps() {
         ran(main, PassName::of::<Main>(), "aether.render.main"),
         ran(main, PassName::of::<Rims>(), "aether.test.rims"),
         ran(main, PassName::of::<Composite>(), "aether.test.composite"),
+        ran(main, PassName::of::<Interface>(), "aether.render.interface"),
     ];
     assert_eq!(names, expected);
     assert_eq!(names.len(), kept.passes(&windows) as usize);

@@ -16,6 +16,12 @@ pub enum Unbuilt {
     Code(CodeRefused),
     /// It asked for the program's one publisher, which a root bootstrapped before it was handed (ADR-0054).
     SecondPublisher,
+    /// A root the program's root list names never sends what draws it: neither its `begin` nor any of its handlers
+    /// declares the renderer's draw list (ADR-0055).
+    Undrawn {
+        /// The root.
+        root: KindName,
+    },
     /// Something the host opens did not open: a window, a GPU, a canvas.
     Unopened(Box<dyn Error + Send + Sync>),
     /// The bootstrap's own failure, such as a module file that could not be read.
@@ -46,6 +52,7 @@ impl fmt::Display for Unbuilt {
             Self::Refused(refused) => write!(f, "refused as it began: {refused}"),
             Self::Code(refused) => write!(f, "its code was refused: {refused:?}"),
             Self::SecondPublisher => write!(f, "the program's one publisher was handed to a root before it"),
+            Self::Undrawn { root } => write!(f, "the root list names {root}, which never sends a draw list"),
             Self::Unopened(error) => write!(f, "what the host opens did not open: {error}"),
             Self::Failed(error) => write!(f, "{error}"),
         }

@@ -458,8 +458,8 @@ impl SendRecord {
     }
 }
 
-/// The segment of an actor's path, as it crosses between a guest and its host: its type's name, and its key's when it
-/// is keyed.
+/// The segment of an actor's path, as it crosses between a guest and its host, or in mail that names a child of its
+/// sender's, as a draw list's call does (ADR-0055): its type's name, and its key's when it is keyed.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub enum Naming {
     Singleton { kind: KindName },

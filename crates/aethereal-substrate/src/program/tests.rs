@@ -1,10 +1,12 @@
 //! A program bootstrapped on a host of the tests' own: its settings, each root's needs, its ends, and its refusals.
 
 use super::*;
-use crate::Bootstrap;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Publisher, Root, Seated, Top};
+use crate::{Bootstrap, root_id};
+use aethereal_actor::{
+    Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Path, Publisher, Root, Seated, Tells, Top, Turn,
+};
 use aethereal_data::config::{ConfigError, ConfigFault};
-use aethereal_data::{ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
+use aethereal_data::{ActorId, ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
 use core::error::Error;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -15,6 +17,7 @@ use core::task::{Context, Poll, Waker};
 struct Served {
     lights: Vec<Lit>,
     began: Vec<Began>,
+    drawing: Vec<Drawing>,
 }
 
 /// A bench's hosting: what it was served, lent for the bootstrap.
@@ -90,6 +93,12 @@ impl Serves<Lit> for Bench {
 impl Serves<Began> for Bench {
     fn serve(hosting: &mut Hosted<'_>, end: Began) {
         hosting.began.push(end);
+    }
+}
+
+impl Serves<Drawing> for Bench {
+    fn serve(hosting: &mut Hosted<'_>, end: Drawing) {
+        hosting.drawing.push(end);
     }
 }
 
@@ -347,6 +356,121 @@ macro_rules! publishing {
 publishing!(Shelf, "test.program.shelf");
 publishing!(Press, "test.program.press");
 
+/// What the canvas draws: the mail a root sends it to be drawn, as a draw list is the renderer's.
+#[derive(Plain)]
+#[kind(name = "test.program.stroke")]
+struct Stroke;
+
+/// The root list the canvas was handed as it bootstrapped, as the renderer's config carries it (ADR-0055).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Drawing(Vec<ActorId>);
+
+/// A root that draws what it is sent, and reads the program's root list as it bootstraps, as the renderer does: each
+/// root of it must send it a stroke.
+#[derive(Plain)]
+#[kind(name = "test.program.canvas")]
+struct Canvas;
+
+/// A root that sends the canvas a stroke from a handler.
+#[derive(Plain)]
+#[kind(name = "test.program.painter")]
+struct Painter;
+
+/// A root that sends the canvas a stroke as it begins.
+#[derive(Plain)]
+#[kind(name = "test.program.sketcher")]
+struct Sketcher;
+
+/// A root that strokes the canvas as `$begins` and its handler of a stroke `$sends` say.
+macro_rules! drawing {
+    ($name:ident, $begins:ty, $sends:ty) => {
+        impl ChildOf for $name {
+            type Parent = Top;
+        }
+
+        impl Actor for $name {
+            type Config = Line;
+            type Key = ();
+            type Handles = (Stroke,);
+            type BeginSends = $begins;
+            type EndSends = ();
+
+            fn begin(_: Line, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
+                Ok(Self)
+            }
+
+            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl Handles<Stroke> for $name {
+            type Sends = $sends;
+
+            fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, $sends>) -> Result<(), Fault> {
+                Ok(())
+            }
+        }
+
+        impl<H: Host + Serves<Began>> Bootstrap<H> for $name {
+            const SECTION: &'static str = stringify!($name);
+            type Settings = ();
+            type Needs = ();
+            type Provides = ();
+
+            async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+                begin(cx, Line { values: Vec::new(), faults: false })
+            }
+        }
+    };
+}
+
+drawing!(Painter, (), (Tells<Path<Canvas>, Stroke>,));
+drawing!(Sketcher, (Tells<Path<Canvas>, Stroke>,), ());
+
+impl ChildOf for Canvas {
+    type Parent = Top;
+}
+
+impl Actor for Canvas {
+    type Config = Line;
+    type Key = ();
+    type Handles = (Stroke,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Line, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Stroke> for Canvas {
+    type Sends = ();
+
+    fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// The canvas reads the program's root list, each root of which must stroke it, and gives the host what it read.
+impl<H: Host + Serves<Began> + Serves<Drawing>> Bootstrap<H> for Canvas {
+    const SECTION: &'static str = "canvas";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+        let roots = cx.root_list::<Tells<Path<Self>, Stroke>>()?;
+        cx.serve(Drawing(roots));
+
+        begin(cx, Line { values: Vec::new(), faults: false })
+    }
+}
+
 /// The roots of the program the tests run, the last listed first.
 type Roots = (Scene, (Keeper, (Counter, (Lamp, ()))));
 
@@ -517,5 +641,25 @@ fn a_second_root_that_asks_for_the_publisher_fails_the_bootstrap() -> Outcome {
     };
     assert_eq!(root, Press::NAME);
     assert_eq!(hosted.began, [began::<Shelf>(&[])]);
+    Ok(())
+}
+
+#[test]
+fn the_renderer_is_handed_the_root_list_in_draw_order_and_a_root_that_never_draws_is_refused() -> Outcome {
+    // Catches the root list read in the order the roots are listed, the order they are made in, rather than the order
+    // it names them; a root that sends a draw list only as it begins, or only from a handler, taken for one that never
+    // draws; and a root that never sends one let into the root list.
+    let roots = || Bench::program().root::<Canvas>().root::<Painter>().root::<Sketcher>().root::<Lamp>();
+    let id = |name| root_id(&PathSegment::new(name, &()));
+
+    let bench = roots().draws::<(Sketcher, Painter)>().build()?;
+    assert_eq!(bench.served.drawing, [Drawing(vec![id(Sketcher::NAME), id(Painter::NAME)])]);
+
+    let mut hosted = Served::default();
+    let refused = pollster::block_on(roots().draws::<(Painter, Lamp)>().settle()?.bootstrap(&mut hosted));
+    let Err(ProgramError::Root { root, why: Unbuilt::Undrawn { root: undrawn } }) = refused else {
+        return Err("the lamp, which never strokes the canvas, is refused a place in the root list".into());
+    };
+    assert_eq!((root, undrawn), (Canvas::NAME, Lamp::NAME));
     Ok(())
 }

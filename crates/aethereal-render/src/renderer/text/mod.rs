@@ -8,7 +8,7 @@
 mod tests;
 
 use super::{Kept, Placement, Renderer};
-use crate::draw_list::{EntryRefused, Listing, Lists, Placements};
+use crate::draw_list::{self, EntryRefused, Listing, Lists, Placements};
 use crate::font;
 use crate::font::FontRefused;
 use crate::frame::{DepthUse, Frame, Size};
@@ -292,7 +292,7 @@ impl Texts {
     /// Notes that each text with a placement joined loose, or held by a list in `lists`, is drawn at this `Render`.
     fn mark_drawn(&mut self, lists: &Lists) {
         self.renders += 1;
-        let listed: HashSet<u64> = lists.all().map(|entry| entry.placement).collect();
+        let listed: HashSet<u64> = lists.all().collect();
         let drawn: Vec<u64> = self
             .placed
             .iter()
@@ -337,8 +337,8 @@ impl Texts {
     /// Releases the text placement `placement`, when `by` made it, taking it out of `by`'s lists in `lists`.
     pub fn release_placement(&mut self, placement: u64, by: ActorId, lists: &mut Lists) -> Owned<()> {
         let released = self.placed.release(placement, by);
-        if let Owned::Mine(made) = &released {
-            lists.released(placement, by, made.listed());
+        if let Owned::Mine(_) = &released {
+            lists.released(placement, by);
         }
 
         released.map(drop)
@@ -548,11 +548,6 @@ impl PlacedText {
     pub fn joins(&self) -> &[TextJoined] {
         &self.joins
     }
-
-    /// The passes it joins listed, each of its frame.
-    pub fn listed(&self) -> impl Iterator<Item = (Frame, PassName)> {
-        self.joins.iter().filter(|join| join.listing != Listing::Loose).map(|join| (join.frame, join.pass))
-    }
 }
 
 impl TextJoined {
@@ -560,6 +555,14 @@ impl TextJoined {
     /// the shape it was made against.
     pub fn draws_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
         self.joins(frame, pass) && self.fits == *fits
+    }
+
+    /// Whether it draws listed in the pass `pass` of `frame`, whose programs are made against `fits`: while its maker's
+    /// list holds it, as [`draws_in`](Self::draws_in) says.
+    pub fn listed_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
+        let listed = self.listing != Listing::Loose;
+
+        listed && self.draws_in(frame, pass, fits)
     }
 
     /// Whether it is the join of the pass `pass` of `frame`.
@@ -575,23 +578,17 @@ pub(super) struct Listable<'a> {
 }
 
 impl Placements for Listable<'_> {
-    fn listing(
-        &mut self,
-        placement: u64,
-        by: ActorId,
-        (frame, pass): (Frame, PassName),
-    ) -> Result<(usize, &mut Listing), EntryRefused> {
+    fn stamp(&mut self, placement: u64, by: ActorId, number: u64) -> Result<(), EntryRefused> {
         if self.meshes.get(placement).is_some() {
-            return self.meshes.listing(placement, by, (frame, pass));
+            return self.meshes.stamp(placement, by, number);
         }
         let joins = match self.texts.owned(placement, by) {
             Owned::Mine(made) => &mut made.joins,
             Owned::NotOwner => return Err(EntryRefused::NotOwner),
             Owned::Unknown => return Err(EntryRefused::Placement),
         };
-        let at = joins.iter().position(|join| join.joins(frame, pass)).ok_or(EntryRefused::Unjoined)?;
 
-        Ok((at, &mut joins[at].listing))
+        draw_list::stamp(joins.iter_mut().map(|join| &mut join.listing), number)
     }
 }
 

@@ -6,7 +6,9 @@ use crate::budgeting;
 use crate::gpu::{self, OnScreen, Unopened};
 use crate::running::Desktop;
 use crate::serving::{Drawing, Kept};
+use aethereal_actor::{Path, Tells};
 use aethereal_data::Plain;
+use aethereal_render::draw_list::DrawList;
 use aethereal_render::surface::{Front, WindowSurface};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
@@ -30,7 +32,8 @@ pub struct RendererSettings {
 /// for on the event loop's thread, which is the host's to do (ADR-0001 rule 4). Then configures each surface for it,
 /// presented as the settings say, refused when the surface lacks the mode they ask for, and copied from where the
 /// adapter allows it, so the renderer can read back its frames (ADR-0023), and begins the renderer with the GPU, each
-/// window's format, and its handles. Gives the desktop its end: each window, sharing the screen's, with its surface,
+/// window's format, its handles, and the program's root list, each root of which must send it a draw list
+/// (ADR-0055). Gives the desktop its end: each window, sharing the screen's, with its surface,
 /// which hands the renderer the window's frame and presents what it drew, the buffers it asks to have mapped, and what
 /// the desktop opens the windows the window root asks for with while the program runs, on the same GPU and presented
 /// the same (ADR-0027).
@@ -72,7 +75,8 @@ impl Bootstrap<Desktop> for Renderer {
         let (mapping, requests) = cx.controller();
         let (mapped, mappings) = cx.source();
         let (surfaced, surfacing) = cx.source();
-        cx.begin(&(), RendererConfig { gpu, front, presenting, windows: formats, mapping, mapped, surfaced })?;
+        let roots = cx.root_list::<Tells<Path<Self>, DrawList>>()?;
+        cx.begin(&(), RendererConfig { gpu, front, presenting, windows: formats, mapping, mapped, surfaced, roots })?;
 
         cx.serve(Drawing {
             windows,

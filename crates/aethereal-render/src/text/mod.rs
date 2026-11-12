@@ -254,7 +254,8 @@ impl TextJoin {
         Self { frame, pass: PassName::of::<P>(), order: Order::Loose }
     }
 
-    /// The pass `P` of `frame`, while its maker's last [`DrawList`](crate::draw_list::DrawList) for the pass holds it, in that list's order.
+    /// The pass `P` of `frame`, while its maker's last [`DrawList`](crate::draw_list::DrawList) holds it, in the order
+    /// the lists are walked (ADR-0055).
     #[must_use]
     pub const fn listed<P: Pass>(frame: Frame) -> Self {
         Self { frame, pass: PassName::of::<P>(), order: Order::Listed }

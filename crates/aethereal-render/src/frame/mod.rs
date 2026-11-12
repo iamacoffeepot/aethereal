@@ -1,6 +1,8 @@
 //! Frames: an ordered list of passes over the textures they draw into, made once, checked whole, and run at every
 //! `Render` (ADR-0025). Until an actor makes one, each window's main frame is the renderer's own: a compute pass,
-//! [`Compute`](crate::pass::Compute), then one pass, [`Main`](crate::pass::Main), onto the window with depth.
+//! [`Compute`](crate::pass::Compute), then one pass, [`Main`](crate::pass::Main), onto the window with depth. The
+//! renderer adds a pass of its own, [`Interface`](crate::pass::Interface), after the last of every frame that ends on a
+//! window (ADR-0055).
 
 pub mod builder;
 mod order;
@@ -12,7 +14,7 @@ pub(crate) use order::{ordered, reaches};
 pub use builder::FrameBuilder;
 
 use crate::effect::Read;
-use crate::pass::{Compute, Main, Pass, PassName};
+use crate::pass::{Compute, Interface, Main, Pass, PassName};
 use crate::placement::{self, Bind, Finds, JoinRefused};
 use crate::program::{Binding, ProgramId};
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
@@ -249,7 +251,8 @@ pub enum FrameRefused {
     Size { width: u32, height: u32, most: u32 },
     /// It has no passes.
     Empty,
-    /// The pass at `pass`, counted from zero, has the name or the label of an earlier pass.
+    /// The pass at `pass`, counted from zero, has the name or the label of an earlier pass, or, in a frame that ends on
+    /// a window, of [`Interface`], which the renderer adds after its last (ADR-0055).
     Repeated { pass: u32 },
     /// Its last pass does not write its end.
     Unended,
@@ -310,6 +313,13 @@ impl CreateFrame {
         Self { ends: Ends::Window(window), targets: vec![depth], passes: vec![compute, main] }
     }
 
+    /// It with the pass [`Interface`] after its last, as the renderer draws a frame that ends on a window (ADR-0055).
+    pub(crate) fn interfaced(mut self) -> Self {
+        self.passes.push(interface());
+
+        self
+    }
+
     /// The shape of a pass that draws into `into`, using depth as `depth` says, in a frame whose end is of `end`, as
     /// its check let through: of the samples its colour holds, as its depth holds the same. An effect uses no depth.
     pub(crate) fn shape(&self, into: Target, depth: DepthUse, end: ColourFormat) -> Shape {
@@ -336,6 +346,17 @@ impl CreateFrame {
             Target::Texture(at) => self.targets.get(at as usize)?.colour(),
         }
     }
+}
+
+/// The pass the renderer adds after the last of every frame that ends on a window: [`Interface`], onto the window
+/// with no depth, beginning from what the frame drew there (ADR-0055).
+fn interface() -> PassSpec {
+    PassSpec::of::<Interface>(Does::Draw {
+        into: Target::End,
+        depth: DepthUse::Off,
+        load: Load::Keep,
+        reads: Vec::new(),
+    })
 }
 
 /// What an effect pass is checked against of the effect it draws: what it reads, what it binds besides, and the shape
@@ -366,7 +387,8 @@ pub(crate) fn may_replace(owner: Option<ActorId>, by: ActorId) -> Result<(), Fra
 }
 
 /// Checks a frame before it is made, whole, as the builder would have built it and more: that it ends on a window
-/// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own, each reading and
+/// drawn to or on a texture of a size the GPU makes, that it has passes, each of a name of its own and, on a window,
+/// none of the pass the renderer adds there, each reading and
 /// testing only what an earlier pass wrote, never what it writes or tests, and never a depth of four samples, each
 /// writing colour into colour and depth into depth, of one count of samples, each effect drawing one sample a pixel,
 /// reading and binding what it was made to and made for the shape it writes, no target of whole numbers holding four
@@ -391,9 +413,14 @@ pub(crate) fn check(create: &CreateFrame, kept: &impl Holds) -> Result<(), Frame
         return Err(FrameRefused::Empty);
     }
 
+    // The pass the renderer adds after the last of a frame on a window, which no pass of the frame may repeat.
+    let added = match create.ends {
+        Ends::Window(_) => vec![interface()],
+        Ends::Texture { .. } | Ends::Follows { .. } => Vec::new(),
+    };
     let mut written = Written { end: false, targets: vec![false; create.targets.len()] };
     for (pass, at) in create.passes.iter().zip(0..) {
-        let repeated = create.passes[..at as usize].iter().any(|before| before.repeats(pass));
+        let repeated = create.passes[..at as usize].iter().chain(&added).any(|before| before.repeats(pass));
         if repeated {
             return Err(FrameRefused::Repeated { pass: at });
         }

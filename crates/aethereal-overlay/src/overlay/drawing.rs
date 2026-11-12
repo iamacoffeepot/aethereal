@@ -17,10 +17,9 @@ use crate::scrollbar;
 use crate::stop::Stop;
 use aethereal_actor::{Allows, Asks, Fault, Handles, Level, On, Path, Tells, Tick, Turn, path};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::DrawList;
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::draw_list::{DrawList, Entry};
+use aethereal_render::frame::ShapeOf;
 use aethereal_render::instances::WriteInstances;
-use aethereal_render::pass::Main;
 use aethereal_render::stats::{
     FrameDrawing, FrameStats, GpuTimes, SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats,
     UnsubscribeGpuTimes,
@@ -149,9 +148,10 @@ impl Overlay {
         self.send_list(turn)
     }
 
-    /// Sends the overlay's list for the window's main pass: what it has placed, the panels and chart first and the
-    /// texts over them, the console's only at its stop, while it is shown; nothing while it is hidden. A list is drawn
-    /// after the pass's loose placements, so over what the program drew loose there (ADR-0031).
+    /// Sends the overlay's list: what it has placed, each joined listed to the window's main pass, the panels and
+    /// chart first and the texts over them, the console's only at its stop, while it is shown; nothing while it is
+    /// hidden. The overlay is a root the program's root list names, and a list is drawn after the pass's loose
+    /// placements, so over what the program drew loose there (ADR-0031, ADR-0055).
     pub(super) fn send_list<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
         S: Allows<Tells<Path<Renderer>, DrawList>, I>,
@@ -169,7 +169,8 @@ impl Overlay {
             };
             placements.extend(roles.iter().filter_map(|role| self.texts.placement(*role)));
         }
-        turn.to(path::<Renderer>(())).send(&DrawList::of::<Main>(Frame::Main(self.window), placements))?;
+        let entries = placements.into_iter().map(|placement| Entry::Draw { placement }).collect();
+        turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 
         Ok(())
     }

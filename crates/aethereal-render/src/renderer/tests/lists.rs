@@ -1,15 +1,18 @@
-//! Draw lists as the renderer keeps and draws them (ADR-0031): on the device that draws nothing, which placements a
-//! pass draws and in what order; and, where the machine has a GPU adapter, the pixels two overlapping blended
-//! placements draw in the order listed.
+//! Draw lists as the renderer keeps and draws them (ADR-0031, ADR-0055): on the device that draws nothing, which
+//! placements a pass draws and in what order, walked from the root list; and, where the machine has a GPU adapter, the
+//! pixels two overlapping blended placements draw in the order listed.
 
 // The GPU test says which adapter drew, or that there was none and the run was skipped.
 #![allow(clippy::print_stderr)]
 
 use super::*;
-use crate::draw_list::DrawList;
 
-/// An actor other than [`MAKER`].
+/// An actor other than [`MAKER`], a root as it is.
 pub(in crate::renderer) const OTHER: ActorId = ActorId::new(2);
+
+/// An actor that stands as a child of [`MAKER`]'s, by the id the engine computes for it, and one no list calls.
+const CHILD: ActorId = ActorId::new(3);
+const STRAY: ActorId = ActorId::new(4);
 
 /// A program that draws a quad's corners in the colour its uniforms hold, laid over what is drawn by its alpha.
 const TINTED: &str = "
@@ -100,9 +103,9 @@ fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId, order: placement::Order
     placed(gpu, kept, (MAKER, program, order), (-1.0, 1.0), [0.5, 0.5, 0.5, 0.5])
 }
 
-/// A list of `placements` in the window's main frame's pass [`Main`].
-pub(in crate::renderer) fn main_list(placements: &[PlacementId]) -> DrawList {
-    DrawList::of::<Main>(Frame::Main(window()), placements.to_vec())
+/// A list drawing `placements`, in order.
+pub(in crate::renderer) fn main_list(placements: &[PlacementId]) -> Vec<Listed> {
+    placements.iter().map(|placement| Listed::Draw(placement.id)).collect()
 }
 
 /// The placements the window's main frame's pass [`Main`] draws, in order.
@@ -134,11 +137,11 @@ fn a_listed_placement_draws_only_while_a_list_holds_it_after_the_loose_in_the_li
     let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
     assert_eq!(drawn_in_main(&kept), vec![loose.id], "no list names the listed ones");
 
-    assert_eq!(kept.listed(&main_list(&[c, a, b]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[c, a, b]), MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose.id, c.id, a.id, b.id]);
-    assert_eq!(kept.listed(&main_list(&[b, c]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[b, c]), MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose.id, b.id, c.id], "a culled by being left out");
-    assert_eq!(kept.listed(&main_list(&[]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[]), MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![loose.id], "an empty list draws none");
 }
 
@@ -150,20 +153,18 @@ fn a_list_refused_leaves_the_last_drawing_and_a_listed_placement_released_leaves
     let (gpu, mut kept, program) = nothing_drawn();
     let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
     let theirs = placed(&gpu, &mut kept, (OTHER, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
-    assert_eq!(kept.listed(&main_list(&[a, b, c]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[a, b, c]), MAKER), Ok(()));
 
-    let not_owned = Err(ListRefused::Entry { at: 1, why: EntryRefused::NotOwner });
-    assert_eq!(kept.listed(&main_list(&[c, theirs]), MAKER), not_owned);
-    let gone = DrawList::of::<Main>(Frame::Texture(FrameId { id: 999 }), vec![a]);
-    assert_eq!(kept.listed(&gone, MAKER), Err(ListRefused::Frame));
+    let not_owned = Err(ListRefused { at: 1, why: EntryRefused::NotOwner });
+    assert_eq!(kept.listed(main_list(&[c, theirs]), MAKER), not_owned);
     assert_eq!(drawn_in_main(&kept), vec![a.id, b.id, c.id]);
 
     assert_eq!(kept.release_placement(b.id, OTHER), Owned::NotOwner);
     assert_eq!(drawn_in_main(&kept), vec![a.id, b.id, c.id]);
     assert_eq!(kept.release_placement(b.id, MAKER), Owned::Mine(()));
     assert_eq!(drawn_in_main(&kept), vec![a.id, c.id]);
-    let named_released = Err(ListRefused::Entry { at: 0, why: EntryRefused::Placement });
-    assert_eq!(kept.listed(&main_list(&[b]), MAKER), named_released);
+    let named_released = Err(ListRefused { at: 0, why: EntryRefused::Placement });
+    assert_eq!(kept.listed(main_list(&[b]), MAKER), named_released);
 }
 
 #[test]
@@ -172,12 +173,32 @@ fn an_actor_that_ends_takes_its_lists_and_another_actors_list_draws_on() {
     let (gpu, mut kept, program) = nothing_drawn();
     let mine = whole(&gpu, &mut kept, program, placement::Order::Listed);
     let theirs = placed(&gpu, &mut kept, (OTHER, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
-    assert_eq!(kept.listed(&main_list(&[mine]), MAKER), Ok(()));
-    assert_eq!(kept.listed(&main_list(&[theirs]), OTHER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[mine]), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&[theirs]), OTHER), Ok(()));
 
     kept.ended(MAKER);
     assert_eq!(drawn_in_main(&kept), vec![theirs.id]);
-    assert_eq!(kept.lists.of(Frame::Main(window()), PassName::of::<Main>()).count(), 1);
+}
+
+#[test]
+fn a_pass_draws_the_lists_walked_from_the_root_list_each_child_where_its_parent_calls_it() {
+    // Catches a pass that draws every list kept, back to back in the order of the map that keeps them, rather than
+    // the walk: a child drawn after its parent's list rather than where it is called, and an actor no list calls
+    // drawn; and a parent's new list that reorders its own placements but leaves its child where it was.
+    let (gpu, mut kept, program) = nothing_drawn();
+    let loose = whole(&gpu, &mut kept, program, placement::Order::Loose);
+    let [a, b] = [(); 2].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
+    let mut listed = |maker| placed(&gpu, &mut kept, (maker, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
+    let (child, stray) = (listed(CHILD), listed(STRAY));
+    assert_eq!(kept.listed(main_list(&[child]), CHILD), Ok(()));
+    assert_eq!(kept.listed(main_list(&[stray]), STRAY), Ok(()));
+    let parent = vec![Listed::Draw(a.id), Listed::Call(CHILD), Listed::Draw(b.id)];
+    assert_eq!(kept.listed(parent, MAKER), Ok(()));
+    assert_eq!(drawn_in_main(&kept), vec![loose.id, a.id, child.id, b.id]);
+
+    let reordered = vec![Listed::Draw(b.id), Listed::Draw(a.id), Listed::Call(CHILD)];
+    assert_eq!(kept.listed(reordered, MAKER), Ok(()));
+    assert_eq!(drawn_in_main(&kept), vec![loose.id, b.id, a.id, child.id]);
 }
 
 /// A frame onto a texture 4 by 4 of `Rgba8`, of one pass, [`Main`], drawing with depth.
@@ -197,25 +218,19 @@ fn onto_texture() -> CreateFrame {
 }
 
 #[test]
-fn a_texture_frame_released_takes_its_lists_and_a_main_frame_replaced_keeps_them() {
-    // Catches lists for a frame that ended on a texture kept once it is released, though no list names it again; and
-    // a window's lists dropped, or left with the frame replaced, when an actor makes the window's main frame.
+fn a_texture_frame_is_walked_from_its_maker_and_a_main_frame_replaced_from_the_root_list() {
+    // Catches a frame that ends on a texture walked from the program's root list, so another root's lists draw into a
+    // texture they were never called into, or a window's main frame walked from its maker once an actor replaces it,
+    // so the other roots' lists stop drawing there.
     let (gpu, mut kept, program) = nothing_drawn();
-    let Ok(Framed::Texture { frame, .. }) = kept.frame(gpu.device(), onto_texture(), MAKER) else {
+    let Ok(Framed::Texture { frame, .. }) = kept.frame(gpu.device(), onto_texture(), OTHER) else {
         panic!("the frame is made");
     };
-    let listed = whole(&gpu, &mut kept, program, placement::Order::Listed);
-    let texture_list = DrawList::of::<Main>(Frame::Texture(frame), Vec::new());
-    assert_eq!(kept.listed(&texture_list, MAKER), Ok(()));
-    assert_eq!(kept.listed(&main_list(&[listed]), MAKER), Ok(()));
+    assert_eq!(kept.roots(Frame::Texture(frame)), vec![OTHER]);
+    assert_eq!(kept.roots(Frame::Main(window())), vec![MAKER, OTHER]);
 
-    let released = kept.frames.release(frame.id, MAKER);
-    let Owned::Mine(walk) = released else {
-        panic!("the frame is released");
-    };
-    kept.unframed([(frame.id, walk.texture())]);
-    assert_eq!(kept.lists.of(Frame::Texture(frame), PassName::of::<Main>()).count(), 0);
-    assert_eq!(kept.listed(&texture_list, MAKER), Err(ListRefused::Frame));
+    let listed = whole(&gpu, &mut kept, program, placement::Order::Listed);
+    assert_eq!(kept.listed(main_list(&[listed]), MAKER), Ok(()));
 
     let main = PassSpec::of::<Main>(Does::Draw {
         into: Target::End,
@@ -225,8 +240,8 @@ fn a_texture_frame_released_takes_its_lists_and_a_main_frame_replaced_keeps_them
     });
     let depth = TargetSpec { kind: TargetKind::Depth, scale: Scale::Full, samples: Samples::One };
     let replacing = CreateFrame { ends: Ends::Window(window()), targets: vec![depth], passes: vec![main] };
-    assert!(matches!(kept.frame(gpu.device(), replacing, MAKER), Ok(Framed::Made(_))));
-    assert_eq!(drawn_in_main(&kept), vec![listed.id], "the list follows the main frame");
+    assert!(matches!(kept.frame(gpu.device(), replacing, OTHER), Ok(Framed::Made(_))));
+    assert_eq!(drawn_in_main(&kept), vec![listed.id], "the root list's lists draw in the frame another root made");
 }
 
 /// A device on the machine's adapter, if it has one, with the adapter's name.
@@ -257,7 +272,7 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
     let red = placed(gpu, &mut kept, listed, (-1.0, 0.5), [1.0, 0.0, 0.0, 0.5]);
     let blue = placed(gpu, &mut kept, listed, (-0.5, 1.0), [0.0, 0.0, 1.0, 0.5]);
     let quads = [red, blue];
-    assert_eq!(kept.listed(&main_list(&order.map(|at| quads[at])), MAKER), Ok(()));
+    assert_eq!(kept.listed(main_list(&order.map(|at| quads[at])), MAKER), Ok(()));
 
     let (width, height) = (4, 4);
     let frame = device.create_texture(&wgpu::TextureDescriptor {
