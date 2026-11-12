@@ -1,7 +1,7 @@
 //! The overlay's actor (ADR-0053): a root on the program's first window, subscribed to it for its size and its keys,
 //! and to the engine's tools root for the tools the console calls. It makes what it draws once the window has said
-//! its size, and draws it in its own draw list in the window's main pass while it is shown (ADR-0031). As it begins it
-//! spawns the worker of its own tools and offers them.
+//! its size, and draws it in its own draw list in the window's interface pass while it is shown (ADR-0031,
+//! ADR-0055). As it begins it spawns the worker of its own tools and offers them.
 
 mod console;
 mod drawing;

@@ -1,7 +1,7 @@
 //! How the overlay makes what it draws, once its window has said its size (ADR-0021, ADR-0023, ADR-0052): its one
-//! placement, one ask after another, each answer carrying what was made so far — the shape of the window's main pass,
-//! the unit square, the program, room for the records, the uniform of the surface's size, and the placement, joined
-//! to the pass listed — and beside it each of its texts, made and placed listed.
+//! placement, one ask after another, each answer carrying what was made so far — the shape of the window's interface
+//! pass, the unit square, the program, room for the records, the uniform of the surface's size, and the placement,
+//! joined to the pass listed — and beside it each of its texts, made and placed listed (ADR-0055).
 
 use super::texts::{Text, TextRole};
 use super::{Chart, Overlay};
@@ -14,7 +14,7 @@ use aethereal_render::draw_list::DrawList;
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{CreateMesh, MeshId, Meshed};
-use aethereal_render::pass::Main;
+use aethereal_render::pass::Interface;
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
@@ -27,7 +27,7 @@ use aethereal_render::text::{
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use core::fmt::Debug;
 
-/// The shape of the window's main pass was asked for, to make the program against.
+/// The shape of the window's interface pass was asked for, to make the program against.
 #[derive(Plain)]
 #[kind(name = "aether.overlay.chart_asked")]
 pub struct ChartAsked;
@@ -95,7 +95,7 @@ impl Overlay {
             + Allows<Asks<Path<Renderer>, CreateText, TextAsked>, J>,
     {
         if matches!(self.chart, Chart::Unasked) {
-            let shape = ShapeOf::pass::<Main>(Frame::Main(self.window));
+            let shape = ShapeOf::pass::<Interface>(Frame::Main(self.window));
             turn.to(path::<Renderer>(())).ask(&shape, &ChartAsked)?;
             self.chart = Chart::Making;
         }
@@ -134,7 +134,7 @@ impl Handles<Answer<Shaped, ChartAsked>> for Overlay {
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            Self::unmade(turn, "chart: the window's main pass has no shape", &answered);
+            Self::unmade(turn, "chart: the window's interface pass has no shape", &answered);
             return Ok(());
         };
         let (Ok(vertices), Ok(indices)) = (turn.put(chart::corners()), turn.put(chart::triangles())) else {
@@ -164,7 +164,7 @@ impl Handles<Answer<Meshed, ChartShaped>> for Overlay {
             Self::unmade(turn, "chart", &"its program's text was not put");
             return Ok(());
         };
-        // Laid over what is drawn by its alpha, testing no depth, as the band is over everything in the pass.
+        // Laid over what is drawn by its alpha, testing no depth, as the interface pass holds none.
         let program = CreateProgram {
             wgsl,
             vertex: String::from("place"),
@@ -241,7 +241,7 @@ impl Handles<Answer<Uniformed, ChartInstanced>> for Overlay {
             return Ok(());
         };
         let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let join = Join::listed::<Main>(Frame::Main(self.window), instanced.program, bindings);
+        let join = Join::listed::<Interface>(Frame::Main(self.window), instanced.program, bindings);
         let place = Place { mesh: instanced.mesh, instances: Drawn::Records(instanced.instances), joins: vec![join] };
         turn.to(path::<Renderer>(())).ask(&place, &ChartMade { instances: instanced.instances, uniforms })?;
 
@@ -294,7 +294,7 @@ impl Handles<Answer<TextMade, TextAsked>> for Overlay {
             layer: Layer::Over,
             opacity: 1.0,
             clip,
-            joins: vec![TextJoin::listed::<Main>(Frame::Main(self.window))],
+            joins: vec![TextJoin::listed::<Interface>(Frame::Main(self.window))],
         };
         turn.to(path::<Renderer>(())).ask(&place, &TextReady { role, text })?;
 
