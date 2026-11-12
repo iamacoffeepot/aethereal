@@ -12,7 +12,7 @@ use core::ptr;
 pub(in crate::renderer) const OTHER: ActorId = ActorId::new(2);
 
 /// An actor that stands as a child of [`MAKER`]'s, by the id the engine computes for it, and one no list calls.
-const CHILD: ActorId = ActorId::new(3);
+pub(in crate::renderer) const CHILD: ActorId = ActorId::new(3);
 const STRAY: ActorId = ActorId::new(4);
 
 /// A program that draws a quad's corners in the colour its uniforms hold, laid over what is drawn by its alpha.

@@ -1,6 +1,7 @@
 //! What the renderer makes, made and drawn on a device that draws nothing but checks all it is handed, as WebGPU
 //! does.
 
+mod keys;
 pub(super) mod lists;
 mod once;
 mod picked;
@@ -62,7 +63,8 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
                 panic!("the renderer's own frame is made");
             };
             let probing = Probing::new(device);
-            Windowed { window: *window, format, own, main: super::Main::Own, last: Last::Undrawn, probing }
+            let main = super::Main::Own;
+            Windowed { window: *window, format, own, main, last: Last::Undrawn, probing, keys: Vec::new() }
         })
         .collect();
 

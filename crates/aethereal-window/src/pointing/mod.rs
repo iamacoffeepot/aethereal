@@ -15,9 +15,11 @@
 //! - **The wheel follows the pointer**, never a capture.
 //!
 //! The raw subscription stays: every subscriber of the window is sent every pointer event as its host heard it.
+//!
+//! The window's keys cascade the same way, through the keys the draw lists declare (`keys`).
 
 #[cfg(test)]
-mod tests;
+pub mod tests;
 
 use crate::event::{Button, Event};
 use crate::window::WindowId;

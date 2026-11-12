@@ -96,11 +96,12 @@ impl Tool for InputTool {
              (`KeyW`, `ShiftLeft`) and `key` what it means (`w`, `Shift`). The program cannot tell them from a \
              person's. A click is PointerMoved, then PointerDown and PointerUp there. A performed KeyDown sends no \
              Text with it: a key that types, as a person's does, is KeyDown, then Text of what it typed (`w`), then \
-             KeyUp, and a text field reads the Text. They are sent whether or not the window has the keyboard. Every \
-             actor subscribed to the window has them before anything after the answer, so a key pressed, then the \
-             clock advanced, is down for the advance's first Tick; release it with KeyUp in a later call. At most \
-             1024 inputs a call; a key's names at most 64 bytes each; a Text at most 256 bytes, not empty, and with \
-             no control character, as Enter, Backspace and Tab are keys. None is sent when any is refused.",
+             KeyUp, and a text field reads the Text. They are sent whether or not the window has the keyboard, the \
+             keys and Text to the actors that declare them, as a person's are. Every actor sent them has them before \
+             anything after the answer, so a key pressed, then the clock advanced, is down for the advance's first \
+             Tick; release it with KeyUp in a later call. At most 1024 inputs a call; a key's names at most 64 \
+             bytes each; a Text at most 256 bytes, not empty, and with no control character, as Enter, Backspace \
+             and Tab are keys. None is sent when any is refused.",
             Output::Value(SchemaNodes::of(&Performed::SHAPE)),
         )]
     }

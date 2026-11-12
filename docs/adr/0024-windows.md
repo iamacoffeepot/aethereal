@@ -54,7 +54,7 @@ pub enum Event {
 - **A resize carries the surface as the window is now drawn**: its size in its pixels, and its scale, the surface's pixels to each of the host's logical ones (a page's `devicePixelRatio`, or less where the page draws fewer, winit's `scale_factor`).
 - **Each window's surface follows its window's size.** The chassis owns each window's surface (ADR-0021: `WindowSurface`), and configures it to the size of each resize it pushes as `Resized` for that window, before it acquires the window's next frame, never during a frame: resizes heard between two frames are configured once, at the last size, and the frames that end on the window follow (ADR-0025). Nothing else configures a surface, so the size the GPU gives its textures is the size they are. The renderer hears nothing of the windows, and draws into the texture of each window's frame it is handed, through the one front it holds for every window, keyed by the window's id (ADR-0021). **This departs from the surface being configured once**, as the chassis opened it, when a window resized was drawn stretched.
 - **`CloseRequested` asks; it closes nothing.** What to do is the program's, and closing a window on request is left for later (below).
-- Every event of a window is one kind, `Event`, so what a window heard reaches a subscriber in the order its host heard it, across the pointer, the keys, and the rest.
+- Every event of a window is one kind, `Event`, so what a window heard reaches a subscriber in the order its host heard it, across the pointer, the keys, and the rest. Under ADR-0055 the keys and typed text are not sent to subscribers: they go, in the order the host heard them, to the actors whose draw lists declare them.
 
 ### A window's actor keeps how its window stands
 

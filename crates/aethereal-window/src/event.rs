@@ -2,7 +2,8 @@
 
 use aethereal_data::Plain;
 
-/// What a window heard, or how it stands, sent to the actors subscribed to it in the order its host heard it.
+/// What a window heard, or how it stands, sent to the actors subscribed to it in the order its host heard it: every
+/// event but the keys and typed text, which go only to the actors whose draw lists declare them (ADR-0055).
 ///
 /// A position is in the window's surface pixels: those of the surface the renderer draws in, from its top left.
 #[derive(Debug, Clone, PartialEq, Plain)]
@@ -48,6 +49,26 @@ pub enum Event {
     Closed,
 }
 
+impl Event {
+    /// Whether it is a key or typed text, which goes through the keys' cascade and never to a raw subscriber
+    /// (ADR-0055).
+    pub(crate) const fn is_keys(&self) -> bool {
+        match self {
+            Self::KeyDown { .. } | Self::KeyUp { .. } | Self::Text { .. } => true,
+            Self::PointerMoved { .. }
+            | Self::PointerDown { .. }
+            | Self::PointerUp { .. }
+            | Self::Wheel { .. }
+            | Self::Resized(_)
+            | Self::Moded(_)
+            | Self::FocusGained
+            | Self::FocusLost
+            | Self::CloseRequested
+            | Self::Closed => false,
+        }
+    }
+}
+
 /// A window's surface: what the renderer draws in, `width` by `height` of its pixels, on a screen of `scale` of them
 /// to each of the host's logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
@@ -85,8 +106,8 @@ pub enum Button {
     Other(u16),
 }
 
-/// Asks a window to send this actor how it stands now, and every event from the next it hears: the sender must handle
-/// [`Event`].
+/// Asks a window to send this actor how it stands now, and every event from the next it hears but its keys and typed
+/// text: the sender must handle [`Event`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.window.subscribe")]
 pub struct Subscribe;

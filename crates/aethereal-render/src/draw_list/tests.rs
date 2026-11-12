@@ -61,7 +61,7 @@ fn walked(lists: &Lists, roots: &[ActorId]) -> Vec<u64> {
         .walk(roots.to_vec())
         .filter_map(|entry| match entry {
             Listed::Draw { placement, .. } => Some(*placement),
-            Listed::Call(_) | Listed::Hit { .. } => None,
+            Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
         .collect()
 }
@@ -205,7 +205,24 @@ fn an_entry_the_pointer_reaches_names_its_place_and_is_refused_from_a_sender_tha
     let child = |_: &PathSegment| HUD;
 
     let reached = Picks::Reaches(Reach { actor: hearer, entry: 2, blocks: true });
-    assert_eq!(blocks.listed(2, Some(hearer), child), Ok(Listed::Draw { placement: 3, picks: reached }));
-    assert_eq!(blocks.listed(2, None, child), Err(EntryRefused::Unheard));
-    assert_eq!(ignores.listed(2, None, child), Ok(draw(3)));
+    assert_eq!(blocks.listed(2, (Some(hearer), None), child), Ok(Listed::Draw { placement: 3, picks: reached }));
+    assert_eq!(blocks.listed(2, (None, None), child), Err(EntryRefused::Unheard));
+    assert_eq!(ignores.listed(2, (None, None), child), Ok(draw(3)));
+}
+
+#[test]
+fn an_entry_that_declares_keys_names_its_place_and_is_refused_from_a_sender_that_hears_no_keys() {
+    // Catches keys told to their sender by a number other than the entry's place in the list; and a declaration let
+    // through from an actor that handles no key, whose keys would be dropped as it blocks every key beneath it.
+    let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
+    let Ok(window) = aethereal_data::from_bytes(&0_u64.to_le_bytes(), &mut aethereal_data::Budget::new(8)) else {
+        panic!("a window's id is its number");
+    };
+    let frame = Frame::Main(window);
+    let keys = Entry::Keys { frame, keys: KeySet::All, blocks: true };
+    let child = |_: &PathSegment| HUD;
+
+    let declared = KeysEntry { actor: hearer, entry: 4, keys: KeySet::All, blocks: true };
+    assert_eq!(keys.listed(4, (None, Some(hearer)), child), Ok(Listed::Keys { frame, entry: declared }));
+    assert_eq!(keys.listed(4, (None, None), child), Err(EntryRefused::KeysUnheard));
 }

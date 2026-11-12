@@ -11,7 +11,9 @@
 //! milliseconds: their mean, median, 99th percentile, and longest. Each answer to a window asked for is printed as it
 //! comes. A window's close button closes that window alone, and its scene prints its frames as it closes; the program
 //! ends once the last window has closed, or Escape is pressed in any. Each key, button, and turn of the wheel a window
-//! hears is printed as it comes, beside the window, and each resize and mode, and each answer to a mode asked for.
+//! hears is printed as it comes, beside the window, and each resize and mode, and each answer to a mode asked for. The
+//! director is the program's root list, and its draw list calls each scene and declares the keys it hears in each
+//! window, as each scene's declares every key of its own, so both hear them (ADR-0055).
 //! `--size 1280x720` sizes the first window, and `--mode fullscreen` or `--mode maximized` shows it so as it opens.
 //! `--help` lists every flag the program reads, each also read from its `WINDOWS_` variable.
 
@@ -19,13 +21,14 @@
 
 use aethereal_actor::{
     Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -38,8 +41,8 @@ use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, InitialWindows, Logical, Mode, ModeSet, OpenWindow, Opened, SetMode, Surface, Window,
-    WindowId, Windows,
+    self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Logical, Mode, ModeSet, OpenWindow, Opened,
+    SetMode, Surface, Window, WindowId, Windows,
 };
 use core::error::Error;
 use core::f32::consts::TAU;
@@ -92,8 +95,8 @@ fn main() -> ExitCode {
 }
 
 /// Launches the program of the window root, which opens one window, the renderer, which draws on it, and the director,
-/// on as many workers as the machine has cores, at most four, the engine's views in a part for each, with what its
-/// command line and environment set over that.
+/// the root list, on as many workers as the machine has cores, at most four, the engine's views in a part for each,
+/// with what its command line and environment set over that.
 fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let workers = NonZeroU32::try_from(
         thread::available_parallelism().map_or(NonZeroUsize::MIN, |cores| cores.min(MOST_WORKERS)),
@@ -106,6 +109,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root_with::<Windows>(WindowsSettings(vec![first]))
         .root::<Renderer>()
         .root::<Director>()
+        .draws::<(Director,)>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE)
         })
@@ -169,35 +173,55 @@ impl<H: Host> Bootstrap<H> for Director {
 
 /// The director: it makes a scene for the window opened as the program was set up, asks the window root for another
 /// window on `N` in any window, and for one as the program starts when it runs for a time, and makes a scene for
-/// each window it is answered with, each of its own count and colours.
+/// each window it is answered with, each of its own count and colours. Its draw list calls each scene, and hears `N`
+/// and Escape in each window, letting them through to the scene.
 #[derive(Bound)]
 #[kind(name = "aether.example.director")]
 struct Director {
     runs: Runs,
-    /// How many scenes it has made.
-    scenes: u8,
+    /// The window of each scene it has made, in the order it made them.
+    windows: Vec<WindowId>,
 }
 
 impl ChildOf for Director {
     type Parent = Top;
 }
 
+/// The keys the director hears in a window: `N` and Escape.
+fn directing() -> KeySet {
+    KeySet::of(["KeyN", "Escape"])
+}
+
 impl Director {
-    /// Makes a scene for `window`, and subscribes to the window, to hear `N` in it.
+    /// Makes a scene for `window`, and sends the list that calls it and hears `N` and Escape in its window.
     fn direct(
         &mut self,
         window: WindowId,
-        turn: &mut Turn<'_, Self, (Tells<Path<Window>, window::Subscribe>,)>,
+        turn: &mut Turn<'_, Self, (Tells<Path<Renderer>, DrawList>,)>,
     ) -> Result<(), Fault> {
-        let shows =
-            Shows { window, runs: self.runs, count: RING >> (self.scenes % 3), warm: self.scenes.is_multiple_of(2) };
-        self.scenes += 1;
+        let made = u8::try_from(self.windows.len()).unwrap_or(u8::MAX);
+        let shows = Shows { window, runs: self.runs, count: RING >> (made % 3), warm: made.is_multiple_of(2) };
         if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
             turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
         }
-        turn.to(path::<Window>(window)).send(&window::Subscribe)?;
+        self.windows.push(window);
+        turn.to(path::<Renderer>(())).send(&self.list())?;
 
         Ok(())
+    }
+
+    /// Its draw list: for each window, the keys it hears there, then the scene there called.
+    fn list(&self) -> DrawList {
+        let entries = self
+            .windows
+            .iter()
+            .flat_map(|window| {
+                let keys = Entry::Keys { frame: Frame::Main(*window), keys: directing(), blocks: false };
+                [keys, Entry::call(child::<Scene>(*window))]
+            })
+            .collect();
+
+        DrawList { entries }
     }
 }
 
@@ -209,8 +233,8 @@ fn another() -> OpenWindow {
 impl Actor for Director {
     type Config = Directs;
     type Key = ();
-    type Handles = (On<Start>, Event, Answer<Opened, Nothing>);
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
+    type Handles = (On<Start>, Keyed, Answer<Opened, Nothing>);
+    type BeginSends = (Tells<Path<Renderer>, DrawList>,);
     type EndSends = ();
 
     fn begin(directs: Directs, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -219,9 +243,10 @@ impl Actor for Director {
         if let Err(refused) = turn.spawn::<Scene>(&directs.first, shows) {
             turn.log(Level::Error, format_args!("the first scene was refused: {refused}"));
         }
-        turn.to(path::<Window>(directs.first)).send(&window::Subscribe)?;
+        let director = Self { runs: directs.runs, windows: vec![directs.first] };
+        turn.to(path::<Renderer>(())).send(&director.list())?;
 
-        Ok(Self { runs: directs.runs, scenes: 1 })
+        Ok(director)
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
@@ -244,11 +269,11 @@ impl Handles<On<Start>> for Director {
 }
 
 /// `N` in any window asks for another; Escape in any quits.
-impl Handles<Event> for Director {
+impl Handles<Keyed> for Director {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Event::KeyDown { code, repeat: false, .. } = event else {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let KeyEvent::KeyDown { code, repeat: false, .. } = keyed.event else {
             return Ok(());
         };
         match code.as_str() {
@@ -265,7 +290,7 @@ impl Handles<Event> for Director {
 
 /// The window asked for, printed as it is answered, and a scene made for it once it is open.
 impl Handles<Answer<Opened, Nothing>> for Director {
-    type Sends = (Tells<Path<Window>, window::Subscribe>,);
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
@@ -304,8 +329,8 @@ struct Shows {
 
 /// A scene, keyed by the window it draws in: it asks the shape of its window's main pass as it begins, makes what it
 /// draws one ask after another, each answer carrying what was made so far, places it, and from then writes the ring at
-/// each `Tick`, about the pointer. It subscribes to its window, prints what it hears, toggles the window's mode on
-/// F11, and keeps the time between each `Tick` and the last, which it prints as its window closes, and ends.
+/// each `Tick`, about the pointer. It subscribes to its window, declares every key of it in its draw list, letting
+/// them through, prints what it hears, toggles the window's mode on F11, and keeps the time between each `Tick` and the last, which it prints as its window closes, and ends.
 #[derive(Bound)]
 #[kind(name = "aether.example.scene")]
 struct Scene {
@@ -389,6 +414,7 @@ impl Actor for Scene {
     type Handles = (
         On<Tick>,
         Event,
+        Keyed,
         Answer<Shaped, Nothing>,
         Answer<Meshed, Learned>,
         Answer<Programmed, MadeMesh>,
@@ -397,12 +423,18 @@ impl Actor for Scene {
         Answer<Placed, MadeAll>,
         Answer<ModeSet, Nothing>,
     );
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Nothing>);
+    type BeginSends = (
+        Tells<Path<Window>, window::Subscribe>,
+        Tells<Path<Renderer>, DrawList>,
+        Asks<Path<Renderer>, ShapeOf, Nothing>,
+    );
     type EndSends = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
+        let hears = Entry::Keys { frame: Frame::Main(shows.window), keys: KeySet::All, blocks: false };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(shows.window)), &Nothing)?;
 
         Ok(Self {
@@ -494,10 +526,38 @@ impl Scene {
     }
 }
 
-impl Handles<Event> for Scene {
+impl Handles<Keyed> for Scene {
     type Sends = (Asks<Path<Windows>, SetMode, Nothing>,);
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let window = self.window.to_name();
+        match keyed.event {
+            KeyEvent::KeyDown { code, key, repeat } => {
+                println!("key_down window={window} code={code} key={key:?} repeat={repeat}");
+                if !repeat {
+                    self.held += 1;
+                }
+                let toggles = code == "F11" && !repeat;
+                if toggles {
+                    let set = SetMode { window: self.window, mode: self.toggled() };
+                    turn.to(path::<Windows>(())).ask(&set, &Nothing)?;
+                }
+            }
+            KeyEvent::KeyUp { code, key } => {
+                println!("key_up window={window} code={code} key={key:?}");
+                self.held = self.held.saturating_sub(1);
+            }
+            KeyEvent::Text { text } => println!("text window={window} text={text:?}"),
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Event> for Scene {
+    type Sends = ();
+
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let window = self.window.to_name();
         match event {
             Event::PointerMoved { x, y } => {
@@ -514,22 +574,6 @@ impl Handles<Event> for Scene {
             Event::Wheel { x, y, delta_x, delta_y } => {
                 println!("wheel window={window} x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
             }
-            Event::KeyDown { code, key, repeat } => {
-                println!("key_down window={window} code={code} key={key:?} repeat={repeat}");
-                if !repeat {
-                    self.held += 1;
-                }
-                let toggles = code == "F11" && !repeat;
-                if toggles {
-                    let set = SetMode { window: self.window, mode: self.toggled() };
-                    turn.to(path::<Windows>(())).ask(&set, &Nothing)?;
-                }
-            }
-            Event::KeyUp { code, key } => {
-                println!("key_up window={window} code={code} key={key:?}");
-                self.held = self.held.saturating_sub(1);
-            }
-            Event::Text { text } => println!("text window={window} text={text:?}"),
             Event::Resized(surface) => {
                 let Surface { width, height, scale } = surface;
                 println!("resized window={window} width={width} height={height} scale={scale}");
@@ -550,6 +594,8 @@ impl Handles<Event> for Scene {
                 self.print_intervals();
                 turn.close();
             }
+            // Keys and text come through the scene's list, never raw (ADR-0055).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } => {}
         }
 
         Ok(())

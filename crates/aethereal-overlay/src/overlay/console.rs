@@ -1,4 +1,4 @@
-//! How the overlay's actor runs the console (ADR-0053: Commands are tools, Key focus): each key at the console's stop
+//! How the overlay's actor runs the console (ADR-0053: Commands are tools; ADR-0055): each key at the console's stop
 //! edits or enters the line, a command that names a tool is asked of the engine's tools root and its answer printed,
 //! the tools root's sheets are kept for the next, and marks pinned through the overlay's own tool are drawn and
 //! printed.
@@ -7,16 +7,12 @@ use super::Overlay;
 use super::drawing::Heard;
 use super::texts::TextRole;
 use crate::console::{Command, Key};
-use crate::stop::Stop;
 use crate::tools::Marked;
 use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Path, Tells, Turn, path};
 use aethereal_data::Plain;
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::DrawList;
-use aethereal_render::instances::WriteInstances;
 use aethereal_render::text::{MoveText, WriteText};
 use aethereal_tools::{CallTool, Called, Offered, Output, Sheets, Tools};
-use aethereal_window::{KeyFocusGained, KeyFocusLost};
 
 /// The key that closes the console back to the band, by what it means.
 const CLOSE_KEY: &str = "Escape";
@@ -124,31 +120,5 @@ impl Handles<Marked> for Overlay {
         self.marks.wait(marked.text);
 
         Ok(())
-    }
-}
-
-/// The console holds the window's keys from here; nothing more is done.
-impl Handles<KeyFocusGained> for Overlay {
-    type Sends = ();
-
-    fn handle(&mut self, _: KeyFocusGained, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Another actor took the window's keys while the console was open: the console closes back to the band, as it hears
-/// no keys. After the console gave them up itself, nothing is done.
-impl Handles<KeyFocusLost> for Overlay {
-    type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, DrawList>);
-
-    fn handle(&mut self, _: KeyFocusLost, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let open = self.stop.console();
-        if !open {
-            return Ok(());
-        }
-        self.stop = Stop::Band;
-        self.write_chart(turn)?;
-
-        self.send_list(turn)
     }
 }

@@ -1,11 +1,14 @@
-//! The overlay's actor (ADR-0053): a root on the program's first window, subscribed to it for its size and its keys,
-//! and to the engine's tools root for the tools the console calls. It makes what it draws once the window has said
-//! its size, and draws it in its own draw list in the window's interface pass while it is shown (ADR-0031,
+//! The overlay's actor (ADR-0053): a root on the program's first window, subscribed to it for its size, and to the
+//! engine's tools root for the tools the console calls. Its draw list declares the keys it hears there, the backtick
+//! alone, or every key while the console is open, from the moment it begins. It makes what it draws once the window
+//! has said its size, and draws it in its own draw list in the window's interface pass while it is shown (ADR-0031,
 //! ADR-0055). As it begins it spawns the worker of its own tools and offers them.
 
 mod console;
 mod drawing;
 mod making;
+#[cfg(test)]
+mod tests;
 mod texts;
 
 pub use console::{Calling, Offering};
@@ -25,6 +28,8 @@ use aethereal_actor::{
     Actor, Answer, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Tells, Tick, Top, path,
 };
 use aethereal_data::{Bound, Plain};
+use aethereal_render::Renderer;
+use aethereal_render::draw_list::DrawList;
 use aethereal_render::frame::Shaped;
 use aethereal_render::instances::{Instanced, InstancesId};
 use aethereal_render::mesh::Meshed;
@@ -35,9 +40,7 @@ use aethereal_render::text::{TextMade, TextPlaced};
 use aethereal_render::uniforms::{Uniformed, UniformsId};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
-use aethereal_window::{
-    self as window, Event, InitialWindows, KeyFocusGained, KeyFocusLost, Surface, Window, WindowId,
-};
+use aethereal_window::{self as window, Event, InitialWindows, Keyed, Pointed, Surface, Window, WindowId};
 use texts::Texts;
 
 /// How often the figures beneath the chart are worked out again while it is shown: four times a second. Their text
@@ -72,8 +75,9 @@ pub struct OverlayConfig {
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
 /// cycle's time, each frame's statistics, and the GPU's time over each frame's passes, and draws the band over what
-/// the program drew, against the frame budget the renderer's statistics bring. At the console's stop it holds the window's key focus, and its line calls the engine's tools. While it is
-/// hidden it draws nothing and hears no `Tick` and no statistics, only its window, its tools, and its marks, so the
+/// the program drew, against the frame budget the renderer's statistics bring. At the console's stop it takes every key
+/// of the window, and the wheel over the console's panel, and its line calls the engine's tools. While it is hidden it
+/// draws nothing and hears no `Tick` and no statistics, only its window, the backtick, its tools, and its marks, so the
 /// renderer counts nothing for it.
 #[derive(Bound)]
 #[kind(name = "aether.overlay")]
@@ -139,6 +143,8 @@ impl Actor for Overlay {
     type Key = ();
     type Handles = (
         Event,
+        Keyed,
+        Pointed,
         On<Tick>,
         FrameStats,
         GpuTimes,
@@ -150,8 +156,6 @@ impl Actor for Overlay {
         Answer<Placed, ChartMade>,
         Answer<TextMade, TextAsked>,
         Answer<TextPlaced, TextReady>,
-        KeyFocusGained,
-        KeyFocusLost,
         Sheets,
         Answer<Called, Calling>,
         Answer<Offered, Offering>,
@@ -159,14 +163,19 @@ impl Actor for Overlay {
     );
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,
+        Tells<Path<Renderer>, DrawList>,
         Tells<Path<Tools>, aethereal_tools::Subscribe>,
         Asks<Path<Tools>, Offer, Offering>,
     );
     type EndSends = ();
 
-    /// Subscribes to its window and to the engine's tools, and spawns the worker of its own tools and offers them.
+    /// Subscribes to its window and to the engine's tools, sends its list, hidden, which hears the backtick, and spawns
+    /// the worker of its own tools and offers them.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let surface = Surface { width: 1, height: 1, scale: 1.0 };
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
+        let entries = drawing::listing(config.window, Stop::Hidden, surface, Vec::new());
+        turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
         turn.to(path::<Tools>(())).send(&aethereal_tools::Subscribe)?;
         match turn.spawn::<OverlayTools>(&(), OverlayToolsConfig) {
             Ok(worker) => {
@@ -181,7 +190,7 @@ impl Actor for Overlay {
         Ok(Self {
             window: config.window,
             stop: Stop::Hidden,
-            surface: Surface { width: 1, height: 1, scale: 1.0 },
+            surface,
             frames: FrameTimes::default(),
             budget: FrameBudget::UNTOLD,
             gpu: GpuTiming::default(),

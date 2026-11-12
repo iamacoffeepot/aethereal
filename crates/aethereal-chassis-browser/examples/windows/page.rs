@@ -1,13 +1,15 @@
-//! The page's entry points, and a scene for each of two canvases, each its own window, drawing its own main frame.
+//! The page's entry points, and a scene for each of two canvases, each its own window, drawing its own main frame,
+//! beneath a stage whose draw list calls each, the program's root list (ADR-0055).
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Tells, Tick,
+    Top, Turn, child, path,
 };
 use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -20,14 +22,15 @@ use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, InitialWindows, Logical, OpenWindow, Opened, Surface, Window, WindowId, Windows,
+    self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Logical, OpenWindow, Opened, Surface, Window,
+    WindowId, Windows,
 };
 use core::f32::consts::TAU;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the canvases `first` and `second` as windows
-/// `0` and `1`, the renderer, which opens WebGPU on them, and a scene for each window.
+/// `0` and `1`, the renderer, which opens WebGPU on them, and the stage, the root list, with a scene for each window.
 ///
 /// # Errors
 ///
@@ -41,7 +44,8 @@ pub async fn start() -> Result<Program, JsError> {
             ..Default::default()
         })
         .root::<Renderer>()
-        .root::<Scene>()
+        .root::<Stage>()
+        .draws::<(Stage,)>()
         .run()?
         .await?;
 
@@ -90,10 +94,17 @@ struct Shows {
     warm: bool,
 }
 
+/// The stage's config: what each scene shows.
+#[derive(Plain)]
+#[kind(name = "aether.example.staged")]
+struct Staged {
+    scenes: Vec<Shows>,
+}
+
 /// A scene for each window the window root opened: the first's ring full and warm, each other's a quarter as full and
 /// cool.
-impl<H: Host> Bootstrap<H> for Scene {
-    const SECTION: &'static str = "scene";
+impl<H: Host> Bootstrap<H> for Stage {
+    const SECTION: &'static str = "stage";
     type Settings = ();
     type Needs = (InitialWindows,);
     type Provides = ();
@@ -103,23 +114,63 @@ impl<H: Host> Bootstrap<H> for Scene {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        for window in windows.all() {
-            let first = window == windows.first();
-            let count = if first {
-                RING
-            } else {
-                RING / 4
-            };
-            cx.begin(&window, Shows { window, count, warm: first })?;
-        }
+        let scenes = windows
+            .all()
+            .map(|window| {
+                let first = window == windows.first();
+                let count = if first {
+                    RING
+                } else {
+                    RING / 4
+                };
+                Shows { window, count, warm: first }
+            })
+            .collect();
 
+        cx.begin(&(), Staged { scenes })
+    }
+}
+
+/// The stage: it makes a scene for each window, and its draw list calls each, so what each declares is in the
+/// sequence (ADR-0055).
+#[derive(Bound)]
+#[kind(name = "aether.example.stage")]
+struct Stage;
+
+impl ChildOf for Stage {
+    type Parent = Top;
+}
+
+impl Actor for Stage {
+    type Config = Staged;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = (Tells<Path<Renderer>, DrawList>,);
+    type EndSends = ();
+
+    fn begin(staged: Staged, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let mut entries = Vec::with_capacity(staged.scenes.len());
+        for shows in staged.scenes {
+            let window = shows.window;
+            if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
+                turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
+            }
+            entries.push(Entry::call(child::<Scene>(window)));
+        }
+        turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// A scene, keyed by the window it draws in: it asks the shape of its window's main pass, makes what it draws one ask
 /// after another, each answer carrying what was made so far, places it, and from then writes the ring at each `Tick`,
-/// about the pointer. It subscribes to its window, and says each resize it hears.
+/// about the pointer. It subscribes to its window, declares every key of it in its draw list, and says each resize it
+/// hears.
 #[derive(Bound)]
 #[kind(name = "aether.example.scene")]
 struct Scene {
@@ -149,7 +200,7 @@ enum Ring {
 }
 
 impl ChildOf for Scene {
-    type Parent = Top;
+    type Parent = Stage;
 }
 
 /// What was learned before the mesh was asked for: the shape the program draws into.
@@ -196,9 +247,9 @@ impl Actor for Scene {
     type Config = Shows;
     type Key = WindowId;
     type Handles = (
-        On<Start>,
         On<Tick>,
         Event,
+        Keyed,
         Answer<Shaped, Nothing>,
         Answer<Meshed, Learned>,
         Answer<Programmed, MadeMesh>,
@@ -207,13 +258,20 @@ impl Actor for Scene {
         Answer<Placed, MadeAll>,
         Answer<Opened, Nothing>,
     );
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>,);
+    type BeginSends = (
+        Tells<Path<Window>, window::Subscribe>,
+        Tells<Path<Renderer>, DrawList>,
+        Asks<Path<Renderer>, ShapeOf, Nothing>,
+    );
     type EndSends = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
+        let main = Frame::Main(shows.window);
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
+        let hears = Entry::Keys { frame: main, keys: KeySet::All, blocks: false };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(main), &Nothing)?;
 
         Ok(Self {
             window: shows.window,
@@ -265,32 +323,14 @@ impl Scene {
     }
 }
 
-impl Handles<On<Start>> for Scene {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
-/// The window's events: the pointer moves the ring's middle, a key held turns it the other way, `N` asks the window
-/// root for another window, which a page answers `NoHost`, and each resize is said beside the window, so a canvas
-/// resized is seen to be its window alone.
-impl Handles<Event> for Scene {
+/// The keys its list hears: a key held turns the ring the other way, and `N` asks the window root for another window,
+/// which a page answers `NoHost`.
+impl Handles<Keyed> for Scene {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        match event {
-            Event::PointerMoved { x, y } => {
-                // A surface is some thousands of pixels across, which an f32 holds exactly.
-                #[allow(clippy::cast_precision_loss)]
-                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
-                self.middle_x = (x / width).mul_add(2.0, -1.0);
-                self.middle_y = (y / height).mul_add(-2.0, 1.0);
-            }
-            Event::KeyDown { code, repeat, .. } => {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        match keyed.event {
+            KeyEvent::KeyDown { code, repeat, .. } => {
                 if !repeat {
                     self.held += 1;
                 }
@@ -301,7 +341,28 @@ impl Handles<Event> for Scene {
                     turn.to(path::<Windows>(())).ask(&open, &Nothing)?;
                 }
             }
-            Event::KeyUp { .. } => self.held = self.held.saturating_sub(1),
+            KeyEvent::KeyUp { .. } => self.held = self.held.saturating_sub(1),
+            KeyEvent::Text { .. } => {}
+        }
+
+        Ok(())
+    }
+}
+
+/// The window's events: the pointer moves the ring's middle, and each resize is said beside the window, so a canvas
+/// resized is seen to be its window alone.
+impl Handles<Event> for Scene {
+    type Sends = ();
+
+    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        match event {
+            Event::PointerMoved { x, y } => {
+                // A surface is some thousands of pixels across, which an f32 holds exactly.
+                #[allow(clippy::cast_precision_loss)]
+                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+                self.middle_x = (x / width).mul_add(2.0, -1.0);
+                self.middle_y = (y / height).mul_add(-2.0, 1.0);
+            }
             Event::Resized(Surface { width, height, scale }) => {
                 say(format!("resized window={} width={width} height={height} scale={scale}", self.window.to_name()));
                 (self.width, self.height) = (width, height);
@@ -310,6 +371,8 @@ impl Handles<Event> for Scene {
             Event::PointerDown { .. }
             | Event::PointerUp { .. }
             | Event::Wheel { .. }
+            | Event::KeyDown { .. }
+            | Event::KeyUp { .. }
             | Event::Text { .. }
             | Event::Moded(_)
             | Event::FocusGained

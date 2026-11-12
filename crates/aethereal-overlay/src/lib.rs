@@ -16,8 +16,9 @@
 //! triangles, bytes uploaded, and GPU memory, each row's label and newest value in a gutter at its right. The band's
 //! right end counts the warnings and errors logged since the console was last opened.
 //!
-//! The console holds the window's key focus while it is open, and with it the wheel, which scrolls its scrollback; a
-//! scroll bar at its right edge shows where the view stands. Its line calls the engine's tools, held by the tools
+//! The console takes every key of the window while it is open, as its draw list declares, and blocks the pointer over
+//! its panel, so the wheel there scrolls its scrollback alone (ADR-0055); a scroll bar at its right edge shows where
+//! the view stands. Its line calls the engine's tools, held by the tools
 //! root every engine lists (ADR-0053: Commands are tools), and prints their answers as they would be typed, with the
 //! engine's recent log beneath them as it comes; what it has called and not yet heard from shows at the prompt's right
 //! end. The band, the scrollback, and the prompt's strip are each a tint of slate of their own, parted by faint lines.

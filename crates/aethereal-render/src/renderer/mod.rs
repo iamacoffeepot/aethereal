@@ -54,12 +54,12 @@ use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held, Level,
-    On, Path, Protocol, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn, path,
+    Actor, Allows, Answer, Beginning, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle, Handles, Held,
+    Level, On, Path, Protocol, Render, Resource, Source, Subscribers, Tells, ToAny, ToSender, Top, Turn, path,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_math::Rect2;
-use aethereal_window::{Hearer, Picked, Probed, SubscribeProbes, Window, WindowId};
+use aethereal_window::{Hearer, KeyHearer, KeysEntry, KeysListed, Picked, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
 use picking::{InPass, Picker, Picking, Probing, Stacks};
 use std::collections::HashMap;
@@ -446,7 +446,8 @@ struct Kept {
 }
 
 /// A window the renderer draws to: the window, the format of its surface, the renderer's own main frame of it, `own`,
-/// which frame is its main frame, `main`, the last frame drawn onto it, kept, and its probes (ADR-0055).
+/// which frame is its main frame, `main`, the last frame drawn onto it, kept, its probes, and the `Keys` entries its
+/// actor was last sent, the last called first (ADR-0055).
 struct Windowed {
     window: WindowId,
     format: ColourFormat,
@@ -454,6 +455,7 @@ struct Windowed {
     main: Main,
     last: Last,
     probing: Probing,
+    keys: Vec<KeysEntry>,
 }
 
 /// The last frame drawn onto a window, kept so it is read while no frame is drawn, as under a held clock (ADR-0045).
@@ -509,7 +511,15 @@ impl Windowed {
         let own = Walk::new(device, CreateFrame::own(window), (End::Window(window), format), Size::PIXEL, effectless)
             .map_err(|(pass, why)| FrameRefused::Pass { pass, why })?;
 
-        Ok(Self { window, format, own, main: Main::Own, last: Last::Undrawn, probing: Probing::new(device) })
+        Ok(Self {
+            window,
+            format,
+            own,
+            main: Main::Own,
+            last: Last::Undrawn,
+            probing: Probing::new(device),
+            keys: Vec::new(),
+        })
     }
 }
 
@@ -794,13 +804,14 @@ impl Actor for Renderer {
     }
 }
 
-/// Draws each window handed a frame, and tells each subscriber of the frame's statistics, counted only while one
+/// Draws each window handed a frame, sends each of them the `Keys` entries its walk holds when they have changed since
+/// it was last sent them (ADR-0055), and tells each subscriber of the frame's statistics, counted only while one
 /// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing tells
 /// the subscribers of its statistics so, and its passes have no time to tell. A frame not drawn runs none of its
 /// dispatches (ADR-0026), and each dispatch asked to run once that ran is answered once the cycle's commands are
 /// submitted.
 impl Handles<On<Render>> for Renderer {
-    type Sends = (ToAny<(FrameStats,), FrameStats>,);
+    type Sends = (ToAny<(FrameStats,), FrameStats>, Tells<Path<Window>, KeysListed>);
 
     fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let front = turn.open(&mut self.front)?;
@@ -899,6 +910,7 @@ impl Handles<On<Render>> for Renderer {
         for held in once.into_iter().flat_map(|ran| owed_by(&mut self.owed.dispatches, ran)) {
             turn.answer(held, &DispatchRan::Ran)?;
         }
+        self.relist(turn, frames.iter().map(|(window, _)| *window))?;
         // Pushed last, so a turn that fails before it asks the chassis for nothing (ADR-0019).
         let control = turn.open(&mut self.mapping)?;
         for mapping in mappings {
@@ -1601,21 +1613,22 @@ impl Handles<RunDispatch> for Renderer {
     }
 }
 
-/// A list of the sender's own placements and the children it calls, each call found one segment beneath the sender,
-/// checked whole and kept in place of its last, or refused and logged, the last standing (ADR-0031, ADR-0055). The
+/// A list of the sender's own placements, the children it calls, each call found one segment beneath the sender, its
+/// hits, and the keys it hears, checked whole and kept in place of its last, or refused and logged, the last standing
+/// (ADR-0031, ADR-0055). The
 /// sender is watched from the first list it sends, as from the first thing it made, so its list goes when it ends.
 impl Handles<DrawList> for Renderer {
     type Sends = ();
 
     fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
-        let hearer = turn.cast::<Hearer>(sender);
+        let hearers = (turn.cast::<Hearer>(sender), turn.cast::<KeyHearer>(sender));
         let entries: Result<Vec<Listed>, ListRefused> = list
             .entries
             .iter()
             .zip(0..)
             .map(|(entry, at)| {
-                let listed = entry.listed(at, hearer, |child| turn.child_id(sender, child));
+                let listed = entry.listed(at, hearers, |child| turn.child_id(sender, child));
                 listed.map_err(|why| ListRefused { at, why })
             })
             .collect();
@@ -2316,6 +2329,42 @@ impl Kept {
         }
     }
 
+    /// The `Keys` entries the walk of `window`'s main frame holds, the last called first, as its actor sends each key
+    /// through them (ADR-0055).
+    fn keys_of(&self, window: WindowId) -> Vec<KeysEntry> {
+        let frame = Frame::Main(window);
+        let mut keys: Vec<KeysEntry> = self
+            .lists
+            .walk(self.roots(frame))
+            .filter_map(|listed| match listed {
+                Listed::Keys { frame: declared, entry } if *declared == frame => Some(entry.clone()),
+                Listed::Keys { .. } | Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } => None,
+            })
+            .collect();
+        keys.reverse();
+
+        keys
+    }
+
+    /// The `Keys` entries of each of `windows`, those a `Render` draws, whose walk holds others than its actor was last
+    /// sent: kept as sent, each beside its window, to be sent to its actor.
+    fn relisted(&mut self, windows: impl IntoIterator<Item = WindowId>) -> Vec<(WindowId, KeysListed)> {
+        let mut relisted = Vec::new();
+        for window in windows {
+            let keys = self.keys_of(window);
+            let Some(windowed) = self.windows.iter_mut().find(|windowed| windowed.window == window) else {
+                continue;
+            };
+            let changed = windowed.keys != keys;
+            if changed {
+                windowed.keys.clone_from(&keys);
+                relisted.push((window, KeysListed { entries: keys }));
+            }
+        }
+
+        relisted
+    }
+
     /// Who owns the main frame of `window`: the maker of the frame that is it, none while it is the renderer's own or
     /// the renderer does not draw to the window.
     fn owner(&self, window: WindowId) -> Option<ActorId> {
@@ -2809,7 +2858,7 @@ impl Kept {
                 let is_here = hit == frame && hit_pass == pass;
                 is_here.then_some(Issued::Hit { rect, picks })
             }
-            Listed::Call(_) => None,
+            Listed::Call(_) | Listed::Keys { .. } => None,
         }
     }
 
@@ -3343,6 +3392,24 @@ impl Renderer {
             keep(kept, id, maker);
             id
         })
+    }
+
+    /// Sends each of `windows`, those a `Render` drew, the `Keys` entries its walk holds, when they have changed since
+    /// it was last sent them (ADR-0055).
+    fn relist<S, I>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        windows: impl IntoIterator<Item = WindowId>,
+    ) -> Result<(), Fault>
+    where
+        S: Allows<Tells<Path<Window>, KeysListed>, I>,
+    {
+        let relisted = turn.open(&mut self.kept)?.relisted(windows);
+        for (window, listed) in relisted {
+            turn.to(path::<Window>(window)).send(&listed)?;
+        }
+
+        Ok(())
     }
 
     /// What `keep` makes of what is kept for the sender of the mail being handled, watching the sender when it is
