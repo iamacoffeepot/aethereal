@@ -114,8 +114,8 @@ pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;
 pub use spares::Spares;
 pub use stage::{
-    Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Present, Render, Stage, StandsAfter, Start,
-    Stop, Tick, Unshared,
+    Cycle, Cycled, Cycling, Drained, End, Follows, InCycle, On, Own, Place, Prepare, Present, Render, Stage,
+    StandsAfter, Start, Stop, Tick, Unshared,
 };
 pub use stats::{Against, Backlog, EngineStats, Figures, GuestMemory, LARGEST, Process};
 pub use stream::{

@@ -1,0 +1,27 @@
+[package]
+name = "aethereal-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The widget library: a screen's tree of widgets, laid out with Taffy and drawn through its actor's own draw list (ADR-0056)"
+
+# Plain code inside the actor that uses it, so it compiles into a guest as into a native actor: it names the actor
+# framework's turn and the renderer's mail, and adds nothing to either (ADR-0056: A screen is an actor).
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-math = { path = "../aethereal-math" }
+aethereal-render = { path = "../aethereal-render" }
+# Flexbox and CSS grid over the library's own tree, through Taffy's low-level traits, never its tree type (MIT):
+# pinned exactly, with only what flex and grid need (ADR-0056: Layout is Taffy).
+taffy = { version = "=0.15.1", default-features = false, features = ["std", "flexbox", "grid"] }
+
+# The program's tests make its pipeline on the device that draws nothing, which checks it on every machine, and draw its
+# records on whatever adapter the machine has, by the desktop chassis's backends, skipping without one.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "noop", "dx12", "metal", "vulkan"] }
+pollster = { workspace = true }
+
+[lints]
+workspace = true

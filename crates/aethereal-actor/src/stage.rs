@@ -98,8 +98,25 @@ impl Stage for Tick {
     }
 }
 
-/// The stage in which actors draw what they hold, after `Tick`: the time elapsed, as the cycle's `Tick` has it, so what
-/// is told of a frame drawn lines up with the cycle that drew it (ADR-0020, ADR-0053).
+/// The stage in which actors prepare and send what they will draw from what they now hold, after every turn `Tick` set
+/// off has run, so what they send is handled before `Render` draws: the time elapsed, as the cycle's `Tick` has it, as
+/// `Render` carries it (ADR-0020). A screen lays itself out here and sends its draw list (ADR-0056).
+#[derive(Plain, Default)]
+#[kind(name = "aether.lifecycle.prepare")]
+pub struct Prepare {
+    pub elapsed_nanos: u64,
+}
+
+impl Stage for Prepare {
+    type Place = Self;
+
+    fn made(time: Cycled) -> Self {
+        Self { elapsed_nanos: time.elapsed_nanos }
+    }
+}
+
+/// The stage in which actors draw what they hold, after `Tick` and `Prepare`: the time elapsed, as the cycle's `Tick`
+/// has it, so what is told of a frame drawn lines up with the cycle that drew it (ADR-0020, ADR-0053).
 #[derive(Plain, Default)]
 #[kind(name = "aether.lifecycle.render")]
 pub struct Render {
@@ -157,6 +174,8 @@ impl Place for Own {}
 
 impl Place for Tick {}
 
+impl Place for Prepare {}
+
 impl Place for Render {}
 
 impl Place for Present {}
@@ -173,6 +192,8 @@ impl<S> InCycle<S> for Own {}
 
 impl<S> InCycle<S> for Tick {}
 
+impl<S> InCycle<S> for Prepare {}
+
 impl<S> InCycle<S> for Render {}
 
 impl<S> InCycle<S> for Present {}
@@ -183,7 +204,7 @@ impl<S> InCycle<S> for Present {}
 #[diagnostic::on_unimplemented(
     message = "the cycle holds `{S}` after `{L}`, out of the shared stages' order",
     label = "a cycle that holds `{S}` after `{L}`",
-    note = "a cycle holds the shared stages `Tick`, `Render`, and `Present` in that order, and each at most once"
+    note = "a cycle holds the shared stages `Tick`, `Prepare`, `Render`, and `Present` in that order, and each at most once"
 )]
 pub trait Follows<S, L> {
     /// The last shared stage the cycle has held, once it holds `S`.
@@ -203,6 +224,14 @@ impl<S> Follows<S, Unshared> for Tick {
     type Last = Self;
 }
 
+impl<S> Follows<S, Unshared> for Prepare {
+    type Last = Self;
+}
+
+impl<S> Follows<S, Tick> for Prepare {
+    type Last = Self;
+}
+
 impl<S> Follows<S, Unshared> for Render {
     type Last = Self;
 }
@@ -211,11 +240,19 @@ impl<S> Follows<S, Tick> for Render {
     type Last = Self;
 }
 
+impl<S> Follows<S, Prepare> for Render {
+    type Last = Self;
+}
+
 impl<S> Follows<S, Unshared> for Present {
     type Last = Self;
 }
 
 impl<S> Follows<S, Tick> for Present {
+    type Last = Self;
+}
+
+impl<S> Follows<S, Prepare> for Present {
     type Last = Self;
 }
 
@@ -240,10 +277,11 @@ where
 ///
 /// A tuple is a cycle only when its order is one the engine runs, which the compiler checks as the program is built:
 /// it holds neither `Start` nor `Stop`, which stand at the lifecycle's ends; it holds the shared stages, `Tick`,
-/// `Render`, and `Present`, in that order; and it holds no stage twice. A chassis's own stage may stand anywhere.
+/// `Prepare`, `Render`, and `Present`, in that order; and it holds no stage twice. A chassis's own stage may stand
+/// anywhere.
 ///
 /// ```
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
@@ -259,6 +297,7 @@ where
 /// #     drop(C::stages());
 /// # }
 /// with_cycle::<(Tick, Render, Present)>();
+/// with_cycle::<(Tick, Prepare, Render, Present)>();
 /// with_cycle::<(Receive, Tick, Render)>();
 /// with_cycle::<(Tick, Receive, Present)>();
 /// with_cycle::<()>();
@@ -267,7 +306,7 @@ where
 /// A cycle that holds `Start` or `Stop` does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
@@ -288,7 +327,7 @@ where
 /// Nor does one that turns the shared stages round, with or without a stage of the chassis's own between them:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
@@ -307,7 +346,17 @@ where
 /// ```
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
+/// #
+/// # // What an engine asks of the cycle it is made with.
+/// # fn with_cycle<C: Cycle>() {
+/// #     drop(C::stages());
+/// # }
+/// with_cycle::<(Tick, Render, Prepare)>();
+/// ```
+///
+/// ```compile_fail
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
@@ -330,7 +379,7 @@ where
 /// as the program is compiled, `cargo build` or `cargo test`, though not `cargo check`:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
@@ -349,7 +398,7 @@ where
 /// ```
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Cycle, Own, Present, Render, Stage, Start, Tick};
+/// # use aethereal_actor::{Cycle, Own, Prepare, Present, Render, Stage, Start, Tick};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain, Default)]
