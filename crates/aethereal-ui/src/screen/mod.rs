@@ -22,7 +22,8 @@
 //! open popup is listed after everything else, in its own layer of the screen's top layer, in tree order: placed against
 //! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal. A child
 //! actor the screen places in a slot is called where the slot's content box is, at the slot's place in the list, and is
-//! mailed its size whenever it changed.
+//! mailed its size whenever it changed; a hit that hears presses alone is listed over it, so a press into the child
+//! clears the screen's focus and shuts its popups as a press elsewhere in the screen does.
 //!
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
@@ -46,7 +47,7 @@ pub use popups::Tipping;
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
 pub use scrolls::Rows;
 
-use crate::child::calling;
+use crate::child::{self, calling};
 use crate::draw::{Content, layered};
 use crate::fonts::Fonts;
 use crate::fonts::Measuring;
@@ -162,6 +163,9 @@ enum Slot {
     Backdrop { path: KeyPath, rect: Rect2 },
     /// A call of `callee`, the child placed in the slot at `path`, in `area`.
     Call { path: KeyPath, callee: Callee, area: Area },
+    /// A hit over `rect`, what the child placed in the slot at `path` is cut to, which hears presses into the child
+    /// alone.
+    Child { path: KeyPath, rect: Rect2 },
 }
 
 /// What an entry of the list a screen sent is.
@@ -177,6 +181,8 @@ enum Listed {
     Backdrop(KeyPath),
     /// A call of the child placed in the slot at this path, which the pointer reaches through the child's own list.
     Call(KeyPath),
+    /// The hit over the child placed in the slot at this path, which a press into the child reaches, and nothing else.
+    Child(KeyPath),
 }
 
 /// Whether the last tree's layout holds until the tree changes.
@@ -497,6 +503,10 @@ impl Screen {
                     entries.push(Entry::Call { child: callee.clone(), area: *area });
                     listing.push(Listed::Call(path.clone()));
                 }
+                Slot::Child { path, rect } => {
+                    entries.push(Entry::Hit { frame, pass, rect: *rect, pointer: Pointer::Presses });
+                    listing.push(Listed::Child(path.clone()));
+                }
             }
         }
         if entries == self.listed {
@@ -550,8 +560,8 @@ struct Listing {
 /// widget that blocks the pointer or not, `covered`: the background and border its style fills beneath it, then its
 /// own drawing, measured with `measuring`; and a hit over its box when the pointer reaches it there and its surface
 /// is `live`, then the call of the child it places, when it is a child's slot, so the child draws over the slot's
-/// background and is reached before it. A popup's own drawing and hit are listed over its anchor, as it is the anchor's
-/// button.
+/// background and is reached before it, and over the call, where the child shows, a hit that hears presses alone. A
+/// popup's own drawing and hit are listed over its anchor, as it is the anchor's button.
 fn listed(
     node: &Flat<'_>,
     laid: &Laid,
@@ -613,6 +623,11 @@ fn listed(
     }
     if let Some(slot) = calling(widget) {
         now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area: slot.area(laid) });
+        let cut = child::cut(laid);
+        let visible = !cut.is_empty();
+        if visible {
+            now.push(Slot::Child { path: node.path.clone(), rect: cut });
+        }
     }
 
     Listing { drawn, now, later, blocks }

@@ -57,6 +57,7 @@ impl Screen {
     /// it, as a tooltip's does; and any press shuts each open popup it lands outside of. A click within a popup's
     /// content that raises an event, a choice made, shuts it when it closes so. The wheel slides the innermost scroll at or around the widget that can still
     /// move that way, on the popup content it is in. Through the backdrop behind a modal popup, a press shuts it.
+    /// Through the hit over a child it places, a press into the child is taken in as one elsewhere in the screen.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
         let path = match self.listing.get(place(pointed.entry)) {
@@ -65,6 +66,13 @@ impl Screen {
                 let behind = Pressing::Behind(popup.clone());
                 if let PointerEvent::PointerDown { .. } = pointed.event {
                     self.pressed_in(&behind);
+                }
+                return heard;
+            }
+            Some(Listed::Child(slot)) => {
+                let into = slot.clone();
+                if let PointerEvent::PointerDown { button, .. } = pointed.event {
+                    self.pressed_into(into, button, &mut heard);
                 }
                 return heard;
             }
@@ -116,6 +124,16 @@ impl Screen {
         }
 
         heard
+    }
+
+    /// Takes in a press of `button` into the child placed in the slot at `slot`, as a press on the screen that reaches
+    /// no widget that holds focus: the main button clears focus, stopping the window's input method, and any button
+    /// shuts each open popup it lands outside of. The child hears the press itself, so the screen raises nothing.
+    fn pressed_into(&mut self, slot: KeyPath, button: Button, heard: &mut Heard) {
+        self.pressed_in(&Pressing::At(slot));
+        if button == Button::Main {
+            self.refocus(Focus::Nowhere, heard);
+        }
     }
 
     /// Takes in a key or typed text through the keys the screen declared. A key goes to the focused widget, then, when

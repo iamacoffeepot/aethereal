@@ -46,7 +46,7 @@ pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
 pub use keys::{KeyEvent, KeyHearer, KeySet, Keyed, KeysEntry, KeysListed};
 pub use perform::{Input, MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES, Perform, Performed, Unperformed};
-pub use pointing::{Hearer, Over, Picked, Pinned, Pointed, PointerEvent, Probed, Reach, SubscribeProbes};
+pub use pointing::{Hearer, Hearing, Over, Picked, Pinned, Pointed, PointerEvent, Probed, Reach, SubscribeProbes};
 #[cfg(feature = "tools")]
 pub use tool::{InputTool, InputToolConfig, SendInput, WindowTool, WindowToolConfig};
 pub use window::{Window, WindowConfig, WindowId};

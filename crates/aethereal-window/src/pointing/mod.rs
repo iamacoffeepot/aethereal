@@ -9,6 +9,10 @@
 //! what hears it. Each entry hears the pointer in its own coordinates: the place it is told of is the window's, less
 //! the origin its list was drawn at, so a child its parent places hears clicks as it draws, from its own `0, 0`.
 //!
+//! - **Presses alone:** an entry that hears only presses, [`Hearing::Presses`], is sent a press that reaches it, and
+//!   passes it on to what is beneath it; nothing else reaches it. The pointer's stack is read as though it were not
+//!   there, for hover, moves, the wheel, and the cursor; a release does not reach it, nor is it over it; and no capture
+//!   holds it.
 //! - **Hover:** when the entries the pointer's stack reaches change, those it no longer reaches are sent
 //!   [`PointerEvent::PointerLeft`], and those it now reaches [`PointerEvent::PointerEntered`].
 //! - **Capture:** the entries a press reached are sent every move and release until every button is up, wherever the
@@ -78,17 +82,29 @@ pub struct Pinned {
     pub stack: Vec<Reach>,
 }
 
-/// One entry of a stack: the entry numbered `entry`, from 0, of the draw list `actor` sent, whether it blocks the
-/// pointer from what is beneath it, the origin its list was drawn at, in the window's surface pixels, which the places
-/// it is told of are given from, and the cursor it declares, which the window shows while it is the top.
+/// One entry of a stack: the entry numbered `entry`, from 0, of the draw list `actor` sent, the origin its list was
+/// drawn at, in the window's surface pixels, which the places it is told of are given from, and what of the pointer it
+/// hears.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.window.reach")]
 pub struct Reach {
     pub actor: ProtocolRef<Hearer>,
     pub entry: u32,
-    pub blocks: bool,
     pub origin: Vec2,
-    pub cursor: Cursor,
+    pub hearing: Hearing,
+}
+
+/// What of the pointer an entry of a stack hears.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[kind(name = "aether.window.hearing")]
+pub enum Hearing {
+    /// Every pointer event that reaches it: whether it blocks the pointer from what is beneath it, and the cursor it
+    /// declares, which the window shows while it is the top.
+    Everything { blocks: bool, cursor: Cursor },
+    /// A press alone, which it passes on to what is beneath it: no move, release, wheel, or hover reaches it, no capture
+    /// holds it, and it declares no cursor, so the pointer's stack is read as though it were not there. A parent lists
+    /// it over a child it calls, so a press into the child reaches the parent as well.
+    Presses,
 }
 
 /// What an actor whose draw list holds an entry the pointer reaches handles.
@@ -124,7 +140,7 @@ pub enum PointerEvent {
 
 /// What a release was over: the topmost entry of the stack at the release's own place, whether it blocks the pointer
 /// or lets it through, as though no button were held, so it may be an entry the release is sent to; or nothing the
-/// pointer reaches. An entry the pointer ignores is never in a stack.
+/// pointer reaches. An entry the pointer ignores is never in a stack, and one that hears presses alone is passed over.
 ///
 /// The stack is that of the first frame drawn after the release whose stacks came back, at the release's own place,
 /// wherever the pointer went after it.
@@ -272,13 +288,13 @@ impl Cascade {
     }
 
     /// The cursor the window shows: while a button is held, that of the topmost entry the press reached, as a stack
-    /// last showed it; otherwise that of the top of the newest stack under the pointer; and the default over nothing
-    /// the pointer reaches.
+    /// last showed it; otherwise that of the top of the newest stack under the pointer, an entry that hears presses
+    /// alone left out; and the default over nothing the pointer reaches.
     #[must_use]
     pub fn cursor(&self) -> &Cursor {
         match &self.capture {
             Capture::Held { cursor, .. } => cursor,
-            Capture::Free => self.pointer.first().map_or(&Cursor::Default, |top| &top.cursor),
+            Capture::Free => everything(&self.pointer).next().map_or(&Cursor::Default, |(_, _, cursor)| cursor),
         }
     }
 }
@@ -313,9 +329,10 @@ impl PointerEvent {
 
 impl Over {
     /// What a release at `x`, `y`, in the window's surface pixels, was over: the top of `stack`, the one at its place,
-    /// at the place less the origin its list was drawn at; or nothing, when the stack is empty.
+    /// an entry that hears presses alone left out, at the place less the origin its list was drawn at; or nothing,
+    /// when the stack holds no other.
     fn top_of(stack: &[Reach], x: f32, y: f32) -> Self {
-        stack.first().map_or(Self::Nothing, |top| Self::Entry {
+        everything(stack).next().map_or(Self::Nothing, |(top, _, _)| Self::Entry {
             actor: top.actor,
             entry: top.entry,
             x: x - top.origin.x,
@@ -325,6 +342,11 @@ impl Over {
 }
 
 impl Reached {
+    /// The entry `reach` is, drawn where it was.
+    const fn of(reach: &Reach) -> Self {
+        Self { actor: reach.actor, entry: reach.entry, origin: reach.origin }
+    }
+
     /// Whether it is the same entry of the same actor's list as `other`, wherever either was drawn: an entry its parent
     /// moves is still the one the pointer is over.
     fn same_entry(&self, other: &Self) -> bool {
@@ -355,15 +377,15 @@ fn holds(reached: &[Reached], entry: &Reached) -> bool {
 }
 
 impl Capture {
-    /// The entries a press of `button` is sent to: those it reaches through `stack`, which it captures, or with a
-    /// button down already, those captured.
+    /// The entries a press of `button` is sent to: those it reaches through `stack`, which it captures but for those
+    /// that hear presses alone, or with a button down already, those captured.
     fn press(&mut self, stack: &[Reach], button: Button) -> Vec<Reached> {
         match self {
             Self::Free => {
-                let reached = cascade(stack);
-                let cursor = stack.first().map_or(Cursor::Default, |top| top.cursor.clone());
-                *self = Self::Held { reached: reached.clone(), buttons: vec![button], cursor };
-                reached
+                let (sent, captured) = pressed(stack);
+                let cursor = everything(stack).next().map_or(Cursor::Default, |(_, _, cursor)| cursor.clone());
+                *self = Self::Held { reached: captured, buttons: vec![button], cursor };
+                sent
             }
             Self::Held { reached, buttons, .. } => {
                 buttons.push(button);
@@ -399,9 +421,9 @@ impl Capture {
         let Some(pressed) = reached.first() else {
             return;
         };
-        let shown = pointer.iter().find(|reach| pressed.is(reach));
-        if let Some(shown) = shown {
-            cursor.clone_from(&shown.cursor);
+        let shown = everything(pointer).find(|(reach, _, _)| pressed.is(reach));
+        if let Some((_, _, shown)) = shown {
+            cursor.clone_from(shown);
         }
     }
 
@@ -415,15 +437,45 @@ impl Capture {
     }
 }
 
-/// The entries an event reaches through `stack`, from its top: each, until the first that blocks, which is reached too.
+/// The entries of `stack` that hear every pointer event, from its top, each with whether it blocks the pointer and the
+/// cursor it declares: the stack as all but a press reads it, those that hear presses alone left out.
+fn everything(stack: &[Reach]) -> impl Iterator<Item = (&Reach, bool, &Cursor)> {
+    stack.iter().filter_map(|reach| match &reach.hearing {
+        Hearing::Everything { blocks, cursor } => Some((reach, *blocks, cursor)),
+        Hearing::Presses => None,
+    })
+}
+
+/// The entries an event other than a press reaches through `stack`, from its top: each that hears every pointer event,
+/// until the first that blocks, which is reached too.
 fn cascade(stack: &[Reach]) -> Vec<Reached> {
     let mut reached = Vec::new();
-    for reach in stack {
-        reached.push(Reached { actor: reach.actor, entry: reach.entry, origin: reach.origin });
-        if reach.blocks {
+    for (reach, blocks, _) in everything(stack) {
+        reached.push(Reached::of(reach));
+        if blocks {
             break;
         }
     }
 
     reached
+}
+
+/// The entries a press reaches through `stack`, from its top, until the first that blocks, which is reached too, and
+/// of those, the ones it captures: each but those that hear presses alone, which pass it on.
+fn pressed(stack: &[Reach]) -> (Vec<Reached>, Vec<Reached>) {
+    let mut sent = Vec::new();
+    let mut captured = Vec::new();
+    for reach in stack {
+        let reached = Reached::of(reach);
+        sent.push(reached);
+        let Hearing::Everything { blocks, .. } = reach.hearing else {
+            continue;
+        };
+        captured.push(reached);
+        if blocks {
+            break;
+        }
+    }
+
+    (sent, captured)
 }

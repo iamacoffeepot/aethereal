@@ -18,6 +18,7 @@ use crate::tree::{Node, Segment};
 use crate::widget::{Arrange, Built, Draws, Laid, Stateless, Widget};
 use aethereal_actor::{ActorRef, Child, ChildOf, Conforms, ProtocolRef};
 use aethereal_data::{Bound, Plain};
+use aethereal_math::Rect2;
 use aethereal_render::draw_list::{Area, Callee, Clip};
 
 /// What a screen mails each child it places when the child's size changes: the child's viewport, its own size the
@@ -229,12 +230,18 @@ impl Calling {
     /// Where its child is placed, the slot laid at `laid` in the screen's pixels: at its content box, cut to the box
     /// within what the slot is cut to, so the child is cut by every scroll around the slot.
     pub fn area(&self, laid: &Laid) -> Area {
-        let clip = Clip::To(laid.content.intersection(laid.clip));
+        let clip = Clip::To(cut(laid));
         match self.area {
             CallArea::Inherit => Area::Inherit { origin: laid.content.min, clip },
             CallArea::Absolute => Area::Absolute { clip },
         }
     }
+}
+
+/// What the child placed in a slot laid at `laid` is cut to, in the screen's pixels: the slot's content box, within
+/// what the slot is cut to.
+pub fn cut(laid: &Laid) -> Rect2 {
+    laid.content.intersection(laid.clip)
 }
 
 /// `widget` as a child's slot, if it is one.
