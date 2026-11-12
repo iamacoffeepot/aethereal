@@ -99,7 +99,7 @@ fn line(at: f32, count: u32) -> u32 {
 
 impl Screen {
     /// What the list of `count` items in the scroll at `list` builds in this view: the lines its content box shows at
-    /// its offset, by the pitch its last layout measured, with [`MARGIN`] lines each way; its first line before it was
+    /// its offset, by the pitch its last layout measured, with two lines more each way; its first line before it was
     /// ever laid out; and, wherever it stands, the item that has the screen's focus or holds the widget that has.
     #[must_use]
     pub fn rows(&self, list: &KeyPath, count: usize) -> Rows {
