@@ -61,7 +61,7 @@ use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_math::Rect2;
 use aethereal_window::{Hearer, Picked, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
-use picking::{Picker, Picking, Probing, Stacks};
+use picking::{InPass, Picker, Picking, Probing, Stacks};
 use std::collections::HashMap;
 use std::mem;
 use text::{Listable, PlacedText, TextJoined, Texts};
@@ -2081,7 +2081,8 @@ impl Kept {
     /// window's frame among `windows`: each of its passes begun in order, and what it does recorded in it, each pass
     /// writing its timestamps to `stamps` from the pass `first` of the `Render`, when the frames are timed. A frame
     /// that ends on a window with none among them is not recorded. Each draw is counted into `tally`, and each call
-    /// numbered into `picking`. Answers the ids of the dispatches asked to run once that it recorded.
+    /// numbered into `picking`, keyed by its draw pass's place among the frame's. Answers the ids of the dispatches
+    /// asked to run once that it recorded.
     fn run(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2097,6 +2098,7 @@ impl Kept {
         picking.enter(frame);
         // Held apart from the picking, which numbers the calls bound through it.
         let stepped = picking.group().clone();
+        let mut drawn = 0;
         for (at, (pass, step)) in (first..).zip(walk.steps()) {
             let (into, load, depth) = match step {
                 Step::Draw { into, depth, load, .. } => (*into, *load, *depth),
@@ -2148,7 +2150,10 @@ impl Kept {
             });
             match step {
                 Step::Draw { fits, read, depth, into, .. } => {
-                    let picked = (&mut *picking, &stepped, walk.scale_of(*into));
+                    let in_pass =
+                        InPass { at: drawn, tests_depth: *depth != DepthUse::Off, scale: walk.scale_of(*into) };
+                    drawn += 1;
+                    let picked = (&mut *picking, &stepped, in_pass);
                     self.draw(&mut recording, (frame, pass), (fits, *depth), read, tally, picked);
                 }
                 Step::Effect { effect, .. } => {
@@ -2689,8 +2694,8 @@ impl Kept {
     /// `fits`, which uses depth as `depth` says, in the order [`drawn`](Self::drawn) answers, setting a pipeline only
     /// where the placement drawn before used another program, with the targets the pass reads bound at group 0 through
     /// `read` when it reads any. A placed text is drawn with the glyph program's pipeline for the pass. Each draw is
-    /// counted into `tally`, and each call and hit numbered into `picking`, each draw binding the picking step through
-    /// `stepped` at its call's offset, drawn into a target `scale` of the window (ADR-0055).
+    /// counted into `tally`, and each call and hit numbered into `picking` and keyed by the pass as `in_pass` says,
+    /// each draw binding the picking step through `stepped` at its call's offset (ADR-0055).
     fn draw(
         &self,
         recording: &mut wgpu::RenderPass<'_>,
@@ -2698,7 +2703,7 @@ impl Kept {
         (fits, depth): (&Fits, DepthUse),
         read: &ReadGroup,
         tally: &mut Tally,
-        (picking, stepped, scale): (&mut Picking, &wgpu::BindGroup, [f32; 2]),
+        (picking, stepped, in_pass): (&mut Picking, &wgpu::BindGroup, InPass),
     ) {
         // The targets it reads are bound once, for every program that joins it, which lists nothing in group 0.
         let reads = !fits.reads.is_empty();
@@ -2710,11 +2715,11 @@ impl Kept {
             let (drawable, picks) = match issued {
                 Issued::Draw { drawable, picks } => (drawable, picks),
                 Issued::Hit { rect, picks } => {
-                    picking.hit(rect, picks);
+                    picking.hit(rect, picks, in_pass);
                     continue;
                 }
             };
-            let offset = picking.call(picks, scale);
+            let offset = picking.call(picks, in_pass);
             let (placement, join) = match drawable {
                 Drawable::Mesh(placement, join) => (placement, join),
                 Drawable::Text(placed, join) => {

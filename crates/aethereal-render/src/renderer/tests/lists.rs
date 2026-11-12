@@ -33,6 +33,12 @@ fn shade() -> @location(0) vec4<f32> {
 /// The program [`TINTED`], blending by alpha, testing depth and writing none, for the renderer's own main frame's
 /// pass [`Main`], kept in `kept`.
 pub(in crate::renderer) fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
+    quads(gpu, kept, TINTED, Depth::Test)
+}
+
+/// The program `wgsl`, drawing a quad's corners with the uniforms of one vector, blending by alpha, using depth as
+/// `depth` says, for the renderer's own main frame's pass [`Main`], kept in `kept`.
+pub(in crate::renderer) fn quads(gpu: &Gpu, kept: &mut Kept, wgsl: &str, depth: Depth) -> ProgramId {
     let create = CreateProgram {
         wgsl: blob(),
         vertex: String::from("place"),
@@ -41,10 +47,10 @@ pub(in crate::renderer) fn tinted(gpu: &Gpu, kept: &mut Kept) -> ProgramId {
         instances: PerInstance::None,
         bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
         reads: Vec::new(),
-        state: Fixed { blend: Blend::Alpha, depth: Depth::Test, cull: Cull::None, coverage: Coverage::Off },
+        state: Fixed { blend: Blend::Alpha, depth, cull: Cull::None, coverage: Coverage::Off },
         shape: Shape::with_depth(ColourFormat::Bgra8),
     };
-    let Ok(wgsl) = program::check(&create, TINTED, &gpu.device().limits()) else {
+    let Ok(wgsl) = program::check(&create, wgsl, &gpu.device().limits()) else {
         panic!("the program is let through");
     };
     let program = kept.ids.next();
