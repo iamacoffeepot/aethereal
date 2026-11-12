@@ -80,7 +80,7 @@ enum Pointer { Blocks, Passes, Ignores }
       .root::<Overlay>(OverlayConfig { span: dev, .. });
   ```
 
-  A root's span is `Span::Root(n)`, its place in the split. An actor draws in a pass by sending a list there, in the span it was handed, so which passes an actor uses is not declared anywhere. Roots and children get their spans the same way, so the top of the tree has no special case. Shorthand over this can come later; this is the canonical form.
+  A root's span is `Span::Root(n)`, its place in the split, and the root actor takes it as any actor takes its span. An actor draws in a pass by sending a list there, in the span it was handed, so which passes an actor uses is not declared anywhere. Roots and children get their spans the same way, so the top of the tree has no special case. Shorthand over this can come later; this is the canonical form.
 - **The root is never handed to anyone, and its order never changes.** No actor holds the whole root, so none can reorder it or slip something above the dev overlay. Each actor gets only its own span.
 - **The same root order applies to every window's main frame,** including windows opened while the program runs (ADR-0027), which have no setup of their own. An actor that draws in a window it opened lists into its own span with that window's frame.
 - **A texture frame's maker declares that frame's root order** in `CreateFrame`, fixed for the frame's life, and lists into it as its own.
@@ -137,6 +137,7 @@ enum Pointer { Blocks, Passes, Ignores }
 
 - **A z-index on each actor or placement.** Numbers that unrelated actors must agree on, which ADR-0023 refused.
 - **An app-wide list of actors in draw order**, sent by the window's owner. It orders actors only at one level, and an overlay over any app would need the app to put it in its list.
+- **A parent placing its children inside its own draw list** (`[Draw(background), Span(hud), Draw(border)]`). The draw list would become a second source of order between actors, beside the split, and the two could disagree.
 - **Root spans named by layer types** (`.layers::<Interface, (Game, Authoring, Dev)>()`), each found by a root through its needs. A trait and a lookup that a span passed straight into the config does not need.
 - **A split for each pass.** It declares again which passes each actor draws in, which its lists already say, and an actor drawing in two passes would need two spans.
 - **The order the roots are listed in.** That order is the setup's dependency order: a root reaches only roots listed before it (ADR-0029: `Ordered<I>`). A game that reaches the authoring tool would have to be listed after it, and so draw over it.
