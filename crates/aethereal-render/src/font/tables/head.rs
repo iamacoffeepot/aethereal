@@ -1,6 +1,7 @@
 //! `head`: the font's units per em, and whether `loca` holds short or long offsets.
 
 use super::{Data, FontRefused};
+use crate::font::UNITS_PER_EM;
 
 /// What is read of `head`.
 pub struct Head {
@@ -26,7 +27,7 @@ const MAGIC: u32 = 0x5F0F_3CF5;
 pub fn read(data: Data<'_>) -> Result<Head, FontRefused> {
     let magic = data.u32(12)?;
     let units_per_em = data.u16(18)?;
-    let sized = (16..=16384).contains(&units_per_em);
+    let sized = UNITS_PER_EM.contains(&units_per_em);
     if magic != MAGIC || !sized {
         return Err(data.malformed());
     }

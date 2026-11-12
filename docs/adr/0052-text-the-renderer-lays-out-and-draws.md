@@ -3,6 +3,12 @@
 - **Status:** Accepted
 - **Date:** 2026-11-09
 
+> **Amended (2026-11-12): metrics and measuring.** A program that lays out around its text, as a widget library lays
+> out a screen in one turn, needs each text's size without placing it. A font's metrics become a value that layout runs
+> on, handed to any actor as blobs kept for the font's life, and measuring a text is a pure function over them (see
+> *Metrics and measuring*). A font is made from a source and fallbacks fixed for its life, one level deep, and the one
+> list of fallbacks for the render root, `FallbackFonts`, is removed (see *Fonts*).
+
 ## Context
 
 No program can draw text. ichor's console uses an 8×8 bitmap font and a pass written by hand. The dev overlay, labels, nameplates, damage numbers, menus, and chat will all need text, so text is used by nearly every program, and it belongs where everything drawn is made.
@@ -28,6 +34,9 @@ What is already decided:
 **The render root makes text, as it makes a mesh: an actor asks for a text, laid out from runs in a font, and places it in the passes of a frame at a point in that frame's pixels. The text is drawn with the renderer's own glyph program, from an atlas of multi-channel signed distance fields (MSDFs) that the renderer fills from TrueType fonts as glyphs are needed. The renderer carries a default proportional font and a default monospace font.**
 
 ```
+program ── CreateFont { source, fallbacks } ──────────────────────> render root ── Made<FontId>
+program ── ReadMetrics { font } ───────────────────────────────────> render root ── FontMetrics { own, fallbacks }: blobs
+program: text::measure(own, fallbacks, size, runs, wrap) ────────> Measured { width, height, lines }, in its own turn
 program ── CreateText { font, size, runs, wrap, align, outline } ──> render root ── Made<TextId>
 program ── PlaceText { text, at, layer, opacity, joins } ─────────> render root ── Made<PlacementId>
 program ── DrawList { frame, pass, [panel, line_1, line_2, cursor] } ─> drawn in that order
@@ -83,15 +92,40 @@ MoveText { placement: PlacementId, at: Point, layer: Layer, opacity: f32, clip: 
 ### Fonts
 
 ```rust
-CreateFont { bytes: Bytes } -> Made<FontId> | Refused
-FallbackFonts { fonts: Vec<FontId> }   // no answer: the fonts tried, in order, for a character a text's own font has not
+CreateFont {
+    source: FontSource,      // FontSource::Sans or FontSource::Mono, the renderer's own, or FontSource::Bytes(Bytes)
+    fallbacks: Vec<FontId>,  // fonts made before it, tried in order for a character it lacks
+} -> Made<FontId> | Refused(FontNotMade)
+
+enum FontNotMade { Read(FontRefused), Fallback { fallback: u32 }, Unstored }
 ```
 
-- **A font is made from the bytes of a TrueType file** (`.ttf`, outlines of quadratic curves), which the program reads with the file capability. The render root reads the font's tables as it is made, in its turn, and refuses a font it cannot read, saying which table. CFF outlines (most `.otf` files), WOFF2, and variable fonts are refused for now.
+- **A font is made from a source: one of the renderer's own, or the bytes of a TrueType file** (`.ttf`, outlines of quadratic curves), which the program reads with the file capability. The render root reads the font's tables as it is made, in its turn, and refuses a font it cannot read, saying which table (`FontNotMade::Read`). CFF outlines (most `.otf` files), WOFF2, and variable fonts are refused for now.
+- **A font made from `Sans` or `Mono` shares the renderer's own:** its parsed font, its metrics' blob, and its glyphs in the atlas, which are keyed by the face they were read from, not by the font's id. Nothing is read, encoded, or generated a second time, so a program makes `Sans` with fallbacks of its own for the cost of the fallbacks.
 - **The renderer carries two fonts, `Font::Sans` and `Font::Mono`,** open-licensed (SIL OFL), compiled in, so every program, browser or desktop, draws text with nothing to load. Which faces is chosen by the owner from samples drawn by the engine before this lands. *Amended once chosen: the owner picked IBM Plex Sans and IBM Plex Mono, one family for both, from sheets of five candidates each.*
-- **Fallbacks are one list for the render root,** set by any actor, the last list sent replacing the one before. A character a text's font lacks is looked for in each fallback in turn, then drawn as the missing glyph. Japanese, Chinese, and Korean fonts are many megabytes, so none is carried: a program that needs one makes it and lists it.
+- **A font's fallbacks are fixed as it is made, and are one level deep.** A character a text's font lacks is looked for in each of its fallbacks in turn, then drawn as the font's missing glyph. Each fallback's own face is what the font keeps: a fallback's own fallbacks are never tried, so what a font draws depends only on the fonts its maker named, and no chain of fallbacks can loop. The renderer's own two have no fallbacks. Japanese, Chinese, and Korean fonts are many megabytes, so none is carried: a program that needs one makes it and names it as a fallback.
+- **A fallback that is not made, or is released, refuses the font,** naming its place in the list (`FontNotMade::Fallback { fallback }`). A fallback released later changes nothing about a font that named it, or about the texts laid out in that font: the font keeps what it needs of each fallback, its parsed face and its metrics' blob, as a text keeps its font after the font is released.
+- **A font whose metrics would take the render root past its share of the budget for blobs is refused** (`FontNotMade::Unstored`, ADR-0042).
+- *Amended (2026-11-12): a font was made from bytes alone, `CreateFont { bytes }`, and fallbacks were one list for the render root, `FallbackFonts { fonts }`, set by any actor, the last list sent replacing the one before, a font in it not made or released passed over. One actor's list changed every other actor's text, a text's fallbacks changed under it as the list did, and an actor that measured could not know which list a text would be laid out with. `FallbackFonts` is removed; nothing sent it.*
 - **Shaping is simple:** each character is mapped to a glyph by the font's character map, advanced by its advance, with the pairs the font kerns kerned (`kern`, and pair adjustment in `GPOS`). That serves Latin, Greek, Cyrillic, and Han, kana, and Hangul text, which needs no joining. Scripts that join or reorder, such as Arabic and the Indic scripts, are drawn in their characters' plain forms until shaping is extended.
 - **Weights and italics are fonts of their own,** each its own file.
+
+### Metrics and measuring
+
+```rust
+ReadMetrics { font: Font } -> FontMetrics::Read { own: Bytes, fallbacks: Vec<Bytes> } | FontMetrics::Refused(MetricsRefused::Font)
+
+font::Metrics::decode(bytes: &[u8]) -> Result<Metrics, MetricsMalformed>
+text::measure(own: &Metrics, fallbacks: &[Metrics], size: f32, runs: &[Run], wrap: Wrap) -> Measured
+struct Measured { width: f32, height: f32, lines: u32 }
+```
+
+- **A font's metrics are a value, and layout runs on it.** `font::Metrics` holds the units per em, the line metrics, each glyph's advance, the character map, and the pairs kerned: all that shaping, the missing glyph, and laying a text out read. A read font is its metrics and its outlines; the outlines, and the fields generated from them, stay with the renderer, which needs them only to draw. `lay_out` takes the metrics of a text's font and of its fallbacks, so the render root lays a text out to draw it, and an actor lays it out to measure it, with one function.
+- **A font's metrics are answered as a blob the render root keeps.** Mail is decoded within the engine's `read_limit`, 1024 bytes by default, and a font's metrics are tens of kilobytes (IBM Plex Sans) to well over a hundred (a Japanese, Chinese, or Korean font), so they cannot be a piece of mail. When a face is read, the renderer's own two as the render root begins and each other as its font is made, its metrics are encoded once (`Metrics::encode`) and put as a blob (ADR-0042: `turn.put`), kept for as long as any font holds the face. `ReadMetrics` is answered with the font's own blob and each fallback's, in the order they are tried, and every answer for a font hands over the same blobs: nothing is read or encoded again. A font not made, or released, is refused.
+- **`Metrics::decode` is pure and bounded, and refuses what is malformed.** It reads exactly what `encode` wrote, every count checked against the bytes left before anything is taken for it, so it holds no more than its bytes describe. Bytes cut short or left over, a character map whose groups are out of order or name a glyph past the font's, and kerning whose pairs or classes are out of order or listed twice are refused, as each would break a lookup. Kerning is held as sorted lists searched by halves, the shape it is written in, so a decoded font kerns exactly as the renderer's does.
+- **Measuring a text is a pure function,** `text::measure`, which lays the text out with the same `lay_out` and answers its box, in the pixels of the frames it would be drawn in. Its width is its widest line's, trailing spaces left out, wrapped or not, so a box laid out around it shrinks to its text: a tooltip that wraps at 300 pixels and holds a phrase 120 pixels wide is 120 pixels wide. Its height is its lines times its own font's line height, ascender to descender and the gap after, which its fallbacks do not change. Alignment sets each line within the box and does not change it, and an outline does not change the box either, so `measure` takes neither: a rim draws up to the outline's width outside the measured box.
+- **A text is drawn in exactly its measured box** by measuring it with the wrap width it is offered, making it with `Wrap::At { width: measured.width }`, and aligning it within that width. Every line fits the measured width, so its lines break at the same places they were measured at. A word wider than the offered width is left whole and measured wider than the offer, and wrapping at that may set together lines the offer broke apart: such a text does not fit what it was offered.
+- **An actor measures in its own turn, with no mail:** it asks a font's metrics once, decodes them, and measures every text it lays out from them.
 
 ### The atlas
 
@@ -102,7 +136,7 @@ FallbackFonts { fonts: Vec<FontId> }   // no answer: the fonts tried, in order, 
 
 ### Where it lives
 
-- **In `aethereal-render`, in two modules:** `font`, which reads TrueType, maps and kerns characters, and generates a glyph's MSDF, as pure functions; and `text`, which keeps texts, placements, fonts, and the atlas. Nothing here is behind a feature: every program with a renderer draws text.
+- **In `aethereal-render`, in two modules:** `font`, which reads TrueType into metrics and outlines, maps and kerns characters, encodes and decodes metrics, and generates a glyph's MSDF, as pure functions; and `text`, which lays out and measures texts as pure functions, and keeps texts, placements, fonts, and the atlas. Nothing here is behind a feature: every program with a renderer draws text. An actor that measures depends on `aethereal-render` for `Metrics` and `measure`, as it does for the kinds it mails the renderer.
 
 ## Consequences
 
@@ -112,18 +146,25 @@ FallbackFonts { fonts: Vec<FontId> }   // no answer: the fonts tried, in order, 
 - **MSDF is slightly softer than a glyph rasterised at its exact size at the smallest sizes,** around 12 to 14 pixels. Whether a console line reads well enough is judged on samples before this lands.
 - **A text whose glyphs are new appears a frame or so after it is made.** Text already on the screen never waits.
 - **World text is a program's work for now:** it projects, and moves, each label.
+- **A program lays out around its text in its own turn,** measuring each text as the renderer will lay it out, from metrics it asked for once per font.
+- **A font's fallbacks are its maker's,** fixed and one level deep, so no actor changes another's text, and a measure is of the text the renderer draws.
 - **Follow-on work this leaves open:**
   - placing a text at a point in the world, through a matrix the program hands the renderer (a change to ADR-0048's rule);
   - fonts and sizes mixed in one text;
   - shaping for scripts that join and reorder;
-  - CFF outlines, WOFF2, and variable fonts;
-  - measuring a text without placing it, for a program that lays out around it.
+  - CFF outlines, WOFF2, and variable fonts.
 
 ## Alternatives considered
 
 - **A separate text actor.** Its placements would not be ordered with the program's own, as order between actors is not promised, and every text field would be two actors exchanging mail.
 - **A library a program uses to make glyph meshes itself.** Every program would keep an atlas of its own, and text would not be shared.
-- **Fonts and shaping in a crate of their own.** No second user needs them. A module moves to a crate when one does.
+- **Fonts and shaping in a crate of their own.** No second user needs them. A module moves to a crate when one does. Measuring adds none: an actor that measures already depends on `aethereal-render` for the kinds it mails the renderer.
+- **A font's metrics as mail.** Past the engine's `read_limit` for any font, and many times past it for a Japanese, Chinese, or Korean one.
+- **The renderer measuring a text when asked.** A round of mail for each text, so an actor laying out a screen waits a turn for each size, where it needs them all in the turn it lays the screen out in.
+- **Metrics encoded at each ask.** Tens of kilobytes encoded and put again for every actor that asks, where one blob serves them all.
+- **Fallbacks one list for the render root,** as first decided. One actor's list changes every other actor's text, and a measure could not know which list a text will be laid out with.
+- **Fallbacks followed to their own fallbacks.** What a font draws would depend on fonts its maker never named, and a chain could loop.
+- **Kerning held in hash maps, rebuilt as metrics are decoded.** Their order is not their written order, so a decode would rebuild every map; sorted lists are the shape written, and are searched by halves in a few comparisons for a pair.
 - **Coverage rasterised at each size.** Crisper at the smallest sizes, but each size is another set of glyphs, scaling and rotating re-rasterise, and an outline is another raster.
 - **Fonts baked into atlases ahead of time.** Simple, but only for glyphs known when baking; chat, names, and Han text are open sets.
 - **A text that holds its own position.** Moving it would lay it out again, and one text could not be drawn in two places.

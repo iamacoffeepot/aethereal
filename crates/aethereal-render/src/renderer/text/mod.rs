@@ -10,7 +10,6 @@ mod tests;
 use super::{Kept, Renderer};
 use crate::draw_list::Lists;
 use crate::font;
-use crate::font::FontRefused;
 use crate::frame::{DepthUse, Frame, Size};
 use crate::made::{Made, Owned};
 use crate::pass::PassName;
@@ -19,15 +18,15 @@ use crate::shape::Shape;
 use crate::stats::{self, AtlasFill, Tally};
 use crate::text::atlas::texture::AtlasTexture;
 use crate::text::atlas::{Atlas, Field, GlyphKey};
-use crate::text::faces::{Face, Faces, FontKey};
+use crate::text::faces::{Faces, Own, Typeface};
 use crate::text::generate::{GenerateGlyphs, Generating, GlyphOutline, GlyphsGenerated};
 use crate::text::glyph_program::{self, INSTANCE_BYTES, Layouts, PICKING, PLACED_BYTES, Pipelines, Placing};
-use crate::text::layout::{self, Laid};
+use crate::text::layout::Laid;
 use crate::text::{
-    self, Align, CreateFont, CreateText, FallbackFonts, FontId, FontMade, MoveText, Outline, PlaceText, Run, TextId,
-    TextMade, TextPlaced, Wrap, WriteText,
+    self, Align, CreateFont, CreateText, FontId, FontMade, FontMetrics, FontNotMade, FontSource, MetricsRefused,
+    MoveText, Outline, PlaceText, ReadMetrics, TextId, TextMade, TextPlaced, Wrap, WriteText,
 };
-use aethereal_actor::{Answer, Answered, Fault, Handles, Level, ToSender, Turn};
+use aethereal_actor::{Answer, Answered, Bytes, Fault, Handles, Level, ToSender, Turn};
 use aethereal_data::ActorId;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
@@ -63,11 +62,10 @@ struct Batch {
     keys: Vec<GlyphKey>,
 }
 
-/// A text: the font it is laid out in and the fallbacks it was last laid out with, its size, wrap, alignment, and
-/// outline, what it shows, and the last `Render` that drew it, 0 before any.
+/// A text: the font it is laid out in, with that font's fallbacks, its size, wrap, alignment, and outline, what it
+/// shows, and the last `Render` that drew it, 0 before any.
 pub(super) struct Text {
-    own: Face,
-    fallbacks: Vec<Face>,
+    typeface: Typeface,
     size: f32,
     wrap: Wrap,
     align: Align,
@@ -113,19 +111,15 @@ pub(super) struct TextJoined {
 }
 
 impl Texts {
-    /// The renderer's own fonts, read, no text, and an empty atlas that grows to `longest`, on `device`, the glyph
-    /// program binding the picking step through `picking` (ADR-0055).
-    ///
-    /// # Errors
-    ///
-    /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
-    pub fn new(device: &wgpu::Device, longest: u32, picking: &wgpu::BindGroupLayout) -> Result<Self, FontRefused> {
+    /// The fonts `faces`, no text, and an empty atlas that grows to `longest`, on `device`, the glyph program binding
+    /// the picking step through `picking` (ADR-0055).
+    pub fn new(device: &wgpu::Device, longest: u32, picking: &wgpu::BindGroupLayout, faces: Faces) -> Self {
         let layouts = Layouts::new(device, picking);
         let atlas = Atlas::new(longest);
         let texture = AtlasTexture::new(device, atlas.side(), layouts.atlas.clone(), layouts.sampler.clone());
 
-        Ok(Self {
-            faces: Faces::new()?,
+        Self {
+            faces,
             made: Made::default(),
             placed: Made::default(),
             atlas,
@@ -137,7 +131,7 @@ impl Texts {
             unfit: HashSet::new(),
             logged: HashSet::new(),
             renders: 0,
-        })
+        }
     }
 
     /// The text `create` asks for, laid out, with each character no font had that is not logged yet, to log.
@@ -146,43 +140,51 @@ impl Texts {
     ///
     /// Why it would not be made as asked.
     pub fn text(&mut self, create: CreateText) -> Result<(Text, Vec<char>), text::TextRefused> {
-        let own = self.faces.face(create.font);
-        text::check(&create, own.is_some())?;
-        let own = own.ok_or(text::TextRefused::Font)?;
+        let typeface = self.faces.typeface(create.font).cloned();
+        text::check(&create, typeface.is_some())?;
+        let typeface = typeface.ok_or(text::TextRefused::Font)?;
         let CreateText { size, runs, wrap, align, outline, .. } = create;
-        let (laid, fallbacks, unlogged) = self.lay_out(&own, size, &runs, (wrap, align));
-        let made = Text { own, fallbacks, size, wrap, align, outline, shown: Shown::Waiting { next: laid }, drawn: 0 };
+        let laid = typeface.lay_out(size, &runs, (wrap, align));
+        let unlogged = self.unlogged(&laid);
+        let made = Text { typeface, size, wrap, align, outline, shown: Shown::Waiting { next: laid }, drawn: 0 };
 
         Ok((made, unlogged))
     }
 
-    /// Lays the text `write` names out again, when `by` made it, in the fallbacks kept now: it shows what it showed
-    /// until every glyph of its new layout is in the atlas. Answers each character no font had that is not logged
-    /// yet, to log, or why the write was refused, the text left as it was.
+    /// Lays the text `write` names out again, when `by` made it, in its font and that font's fallbacks: it shows what
+    /// it showed until every glyph of its new layout is in the atlas. Answers each character no font had that is not
+    /// logged yet, to log, or why the write was refused, the text left as it was.
     pub fn write(&mut self, write: &WriteText, by: ActorId) -> Owned<Result<Vec<char>, text::TextRefused>> {
         let checked = text::check_runs(&write.runs);
-        let fallbacks = self.faces.fallbacks();
         let logged = &mut self.logged;
 
         self.made.owned(write.text.id, by).map(|text| {
             checked?;
-            let laid = layout::lay_out(&text.own, &fallbacks, text.size, &write.runs, (text.wrap, text.align));
+            let laid = text.typeface.lay_out(text.size, &write.runs, (text.wrap, text.align));
             let unlogged = laid.missing.iter().copied().filter(|character| logged.insert(*character)).collect();
             let shown = mem::replace(&mut text.shown, Shown::Waiting { next: Laid::default() });
             text.shown = shown.rewritten(laid);
-            text.fallbacks = fallbacks;
             Ok(unlogged)
         })
     }
 
-    /// `runs` laid out in `own` at `size`, wrapped and aligned as `shaping` says, in the fallbacks kept now, and the
-    /// fallbacks, with each character no font had that is not logged yet, to log.
-    fn lay_out(&mut self, own: &Face, size: f32, runs: &[Run], shaping: (Wrap, Align)) -> (Laid, Vec<Face>, Vec<char>) {
-        let fallbacks = self.faces.fallbacks();
-        let laid = layout::lay_out(own, &fallbacks, size, runs, shaping);
-        let unlogged = laid.missing.iter().copied().filter(|character| self.logged.insert(*character)).collect();
+    /// Each character `laid` lacked in every font that is not logged yet, to log, noted as logged.
+    fn unlogged(&mut self, laid: &Laid) -> Vec<char> {
+        laid.missing.iter().copied().filter(|character| self.logged.insert(*character)).collect()
+    }
 
-        (laid, fallbacks, unlogged)
+    /// The font made of `own` with the fallbacks `fallbacks` name, to keep.
+    ///
+    /// # Errors
+    ///
+    /// [`FontNotMade::Fallback`] when a fallback is not kept.
+    pub fn font(&mut self, own: Own, fallbacks: &[FontId]) -> Result<Typeface, FontNotMade> {
+        self.faces.make(own, fallbacks)
+    }
+
+    /// The metrics of `font` and its fallbacks, as the blobs kept for them.
+    pub fn metrics(&self, font: text::Font) -> FontMetrics {
+        self.faces.typeface(font).map_or(FontMetrics::Refused(MetricsRefused::Font), Typeface::metrics)
     }
 
     /// The glyphs texts wait on that are not in the atlas, not being generated, and fitted somewhere, as the job that
@@ -196,7 +198,11 @@ impl Texts {
                 Shown::Waiting { next } | Shown::Rewriting { next, .. } => next,
                 Shown::Ready { .. } => continue,
             };
-            for key in next.keys() {
+            for glyph in &next.glyphs {
+                let Some(face) = text.typeface.face(glyph.font) else {
+                    continue;
+                };
+                let key = GlyphKey { font: face.key, glyph: glyph.glyph };
                 let held = self.atlas.slot(key).is_some();
                 let coming = generating.contains(&key);
                 let unfit = self.unfit.contains(&key);
@@ -205,14 +211,11 @@ impl Texts {
                 if known {
                     continue;
                 }
-                let Some(face) = text.face(key.font) else {
-                    continue;
-                };
-                let Some(outline) = face.font.outline(key.glyph) else {
+                let Some(outline) = face.font.outline(glyph.glyph) else {
                     continue;
                 };
                 keys.push(key);
-                glyphs.push(GlyphOutline::of(outline, face.font.units_per_em()));
+                glyphs.push(GlyphOutline::of(outline, face.font.metrics().units_per_em()));
             }
         }
         if keys.is_empty() {
@@ -270,7 +273,7 @@ impl Texts {
                 Shown::Ready { shown } | Shown::Rewriting { shown, .. } => shown,
                 Shown::Waiting { .. } => continue,
             };
-            for key in built.laid.keys() {
+            for key in text.typeface.keys(&built.laid) {
                 let last = drawn.entry(key).or_default();
                 *last = (*last).max(text.drawn);
             }
@@ -285,7 +288,7 @@ impl Texts {
     fn refresh(&mut self, gpu: Opened<'_>) {
         for text in self.made.values_mut() {
             let shown = mem::replace(&mut text.shown, Shown::Waiting { next: Laid::default() });
-            text.shown = shown.refreshed(&self.atlas, gpu, text.size);
+            text.shown = shown.refreshed(&text.typeface, &self.atlas, gpu, text.size);
         }
     }
 
@@ -348,7 +351,8 @@ impl Texts {
         released.map(drop)
     }
 
-    /// Releases everything `maker`, which ended, made: its fonts, its texts with their placements, and its placements.
+    /// Releases everything `maker`, which ended, made: its fonts, its texts with their placements, and its placements. A
+    /// font released leaves the fonts that fall back on it, and the texts laid out in it, as they were.
     pub fn ended(&mut self, maker: ActorId, lists: &mut Lists) {
         self.faces.made.release_all(maker);
         for (text, _) in self.made.release_all(maker) {
@@ -428,35 +432,24 @@ impl Texts {
     }
 }
 
-impl Text {
-    /// The face of `font` it was laid out in: its own, or a fallback. None when it was laid out in no such font.
-    fn face(&self, font: FontKey) -> Option<&Face> {
-        let own = self.own.key == font;
-        if own {
-            return Some(&self.own);
-        }
-
-        self.fallbacks.iter().find(|face| face.key == font)
-    }
-}
-
 impl Shown {
-    /// What a text that showed this shows now, laid into `atlas` on `gpu` at `size`, as [`Texts::refresh`] says.
-    fn refreshed(self, atlas: &Atlas, gpu: Opened<'_>, size: f32) -> Self {
+    /// What a text that showed this shows now, laid out in `typeface` and laid into `atlas` on `gpu` at `size`, as
+    /// [`Texts::refresh`] says.
+    fn refreshed(self, typeface: &Typeface, atlas: &Atlas, gpu: Opened<'_>, size: f32) -> Self {
         let ready = match &self {
-            Self::Waiting { next } | Self::Rewriting { next, .. } => atlas.holds(next.keys()),
+            Self::Waiting { next } | Self::Rewriting { next, .. } => atlas.holds(typeface.keys(next)),
             Self::Ready { .. } => false,
         };
         match self {
             Self::Waiting { next } | Self::Rewriting { next, .. } if ready => {
-                Self::Ready { shown: Built::new(next, atlas, gpu, size) }
+                Self::Ready { shown: Built::new(next, typeface, atlas, gpu, size) }
             }
             Self::Waiting { next } => Self::Waiting { next },
-            Self::Rewriting { shown, next } => match shown.current(atlas, gpu, size) {
+            Self::Rewriting { shown, next } => match shown.current(typeface, atlas, gpu, size) {
                 Current::Shown(shown) => Self::Rewriting { shown, next },
                 Current::Lost(_) => Self::Waiting { next },
             },
-            Self::Ready { shown } => match shown.current(atlas, gpu, size) {
+            Self::Ready { shown } => match shown.current(typeface, atlas, gpu, size) {
                 Current::Shown(shown) => Self::Ready { shown },
                 Current::Lost(next) => Self::Waiting { next },
             },
@@ -482,12 +475,12 @@ enum Current {
 }
 
 impl Built {
-    /// `laid` laid into `atlas`, its instances on `gpu`, at `size`.
-    fn new(laid: Laid, atlas: &Atlas, (device, queue): Opened<'_>, size: f32) -> Self {
+    /// `laid`, laid out in `typeface`, laid into `atlas`, its instances on `gpu`, at `size`.
+    fn new(laid: Laid, typeface: &Typeface, atlas: &Atlas, (device, queue): Opened<'_>, size: f32) -> Self {
         let bytes: Vec<u8> = laid
             .glyphs
             .iter()
-            .filter_map(|glyph| glyph_program::instance(glyph, atlas.slot(glyph.key)?, size))
+            .filter_map(|glyph| glyph_program::instance(glyph, atlas.slot(typeface.key(glyph)?)?, size))
             .flatten()
             .collect();
         let count = u32::try_from(bytes.len() / INSTANCE_BYTES).unwrap_or(u32::MAX);
@@ -502,18 +495,18 @@ impl Built {
         Self { laid, instances, count, packing: atlas.packings() }
     }
 
-    /// It, as the atlas is now: as it was when the atlas was not packed again since, laid in again when it holds every
-    /// glyph, and lost when it does not.
-    fn current(self, atlas: &Atlas, gpu: Opened<'_>, size: f32) -> Current {
+    /// It, laid out in `typeface`, as the atlas is now: as it was when the atlas was not packed again since, laid in
+    /// again when it holds every glyph, and lost when it does not.
+    fn current(self, typeface: &Typeface, atlas: &Atlas, gpu: Opened<'_>, size: f32) -> Current {
         let packed = self.packing != atlas.packings();
         if !packed {
             return Current::Shown(self);
         }
-        if !atlas.holds(self.laid.keys()) {
+        if !atlas.holds(typeface.keys(&self.laid)) {
             return Current::Lost(self.laid);
         }
 
-        Current::Shown(Self::new(self.laid, atlas, gpu, size))
+        Current::Shown(Self::new(self.laid, typeface, atlas, gpu, size))
     }
 }
 
@@ -579,32 +572,58 @@ impl aethereal_actor::Carries<PlaceText> for Renderer {
     type Answers = (TextPlaced,);
 }
 
-/// Reads the font in this turn, and answers it, or why its bytes were refused, naming the table.
+impl aethereal_actor::Carries<ReadMetrics> for Renderer {
+    type Answers = (FontMetrics,);
+}
+
+/// Makes the font: one of the renderer's own shared, or its bytes read in this turn and its metrics put once as a blob,
+/// with its fallbacks' faces as they are now. Answers it, or why it was refused.
 impl Handles<CreateFont> for Renderer {
     type Sends = (ToSender<FontMade>,);
 
     fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let read = font::Font::read(turn.read(&create.bytes));
-        let font = match read {
-            Ok(font) => Arc::new(font),
+        let CreateFont { source, fallbacks } = create;
+        let own = match source {
+            FontSource::Sans => Own::Sans,
+            FontSource::Mono => Own::Mono,
+            FontSource::Bytes(bytes) => match read(turn, &bytes) {
+                Ok(own) => own,
+                Err(why) => {
+                    turn.reply(&FontMade::Refused(why))?;
+                    return Ok(());
+                }
+            },
+        };
+        let made = turn.open(&mut self.kept)?.text.font(own, &fallbacks);
+        let typeface = match made {
+            Ok(typeface) => typeface,
             Err(why) => {
                 turn.reply(&FontMade::Refused(why))?;
                 return Ok(());
             }
         };
-        let id = self.made(turn, |kept, id, maker| kept.text.faces.made.keep(id, maker, font))?;
+        let id = self.made(turn, |kept, id, maker| kept.text.faces.made.keep(id, maker, typeface))?;
         turn.reply(&FontMade::Made(FontId { id }))?;
 
         Ok(())
     }
 }
 
-/// Keeps the list in place of the last, for every text laid out from now.
-impl Handles<FallbackFonts> for Renderer {
-    type Sends = ();
+/// The font `bytes` hold, read in this turn, with its metrics put as a blob, to keep for its life.
+fn read<S>(turn: &mut Turn<'_, Renderer, S>, bytes: &Bytes) -> Result<Own, FontNotMade> {
+    let font = font::Font::read(turn.read(bytes)).map_err(FontNotMade::Read)?;
+    let metrics = turn.put(font.metrics().encode()).map_err(|_| FontNotMade::Unstored)?;
 
-    fn handle(&mut self, fallbacks: FallbackFonts, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        turn.open(&mut self.kept)?.text.faces.fall_back(&fallbacks);
+    Ok(Own::Read { font: Arc::new(font), metrics })
+}
+
+/// Answers the font's metrics and its fallbacks', as the blobs kept since each face was read.
+impl Handles<ReadMetrics> for Renderer {
+    type Sends = (ToSender<FontMetrics>,);
+
+    fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let metrics = turn.open(&mut self.kept)?.text.metrics(read.font);
+        turn.reply(&metrics)?;
 
         Ok(())
     }
@@ -636,7 +655,7 @@ impl Handles<CreateText> for Renderer {
     }
 }
 
-/// Lays the sender's text out again, in the fallbacks kept now; its placements draw what it was until every glyph of
+/// Lays the sender's text out again, in its font and that font's fallbacks; its placements draw what it was until every glyph of
 /// what it is now is in the atlas. A write refused is logged, and the text keeps what it had.
 impl Handles<WriteText> for Renderer {
     type Sends = ();

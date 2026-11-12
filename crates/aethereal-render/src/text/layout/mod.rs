@@ -1,21 +1,20 @@
 //! Laying a text out (ADR-0052): its runs shaped in its font, each character the font lacks looked for in the
 //! fallbacks in turn and drawn as the font's missing glyph when none has it, its lines broken at `\n` and, when it
 //! wraps, at spaces, and each line set as it is aligned. Positions are in the pixels of the frame it is drawn in, from
-//! the first line's top left, `y` down.
+//! the first line's top left, `y` down. It reads only the fonts' metrics, so the render root lays a text out to draw
+//! it and an actor lays it out to measure it with the one function.
 
 #[cfg(test)]
 mod tests;
 
-use super::atlas::GlyphKey;
-use super::faces::Face;
 use super::{Align, Colour, Run, Wrap};
-use crate::font::GlyphId;
 use crate::font::shape::Shaped;
+use crate::font::{GlyphId, Metrics};
 use aethereal_math::Vec2;
 use core::ops::Range;
 
-/// A text laid out: each glyph it draws, where, and in what colour, the characters no font had, and the box its lines
-/// fill. The default lays out nothing.
+/// A text laid out: each glyph it draws, where, and in what colour, the characters no font had, and how many lines it
+/// has and how wide the widest is. The default lays out nothing.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Laid {
     pub glyphs: Vec<LaidGlyph>,
@@ -23,37 +22,44 @@ pub struct Laid {
     pub missing: Vec<char>,
     /// How many lines it has, of which there is always at least one.
     pub lines: u32,
-    /// How wide its lines are set within: the wrap width, or the widest line's.
+    /// How wide its widest line is, trailing spaces left out, wrapped or not: its lines are set within the wrap width
+    /// when it wraps, which may be wider.
     pub width: f32,
 }
 
-/// One glyph of a laid text: which glyph of which font, its origin on its baseline, and its run's colour.
+/// One glyph of a laid text: which of its fonts draws it, which glyph of that font, its origin on its baseline, and
+/// its run's colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LaidGlyph {
-    pub key: GlyphKey,
+    pub font: Which,
+    pub glyph: GlyphId,
     pub origin: Vec2,
     pub colour: Colour,
 }
 
-impl Laid {
-    /// Each glyph it draws, by key, each once.
-    pub fn keys(&self) -> impl Iterator<Item = GlyphKey> + '_ {
-        let mut keys: Vec<GlyphKey> = self.glyphs.iter().map(|glyph| glyph.key).collect();
-        keys.sort_unstable();
-        keys.dedup();
-
-        keys.into_iter()
-    }
+/// Which of the fonts a text was laid out in draws a glyph: its own, or the fallback at an index of the list it was
+/// laid out with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Which {
+    Own,
+    Fallback(usize),
 }
 
-/// One shaped glyph as it is set: the font and glyph that draw it, how far it moves the pen in pixels, whether it is
-/// of the text's own font, and the character it draws.
+/// One shaped glyph as it is set: the font and glyph that draw it, how far it moves the pen in pixels, and the
+/// character it draws.
 #[derive(Debug, Clone, Copy)]
 struct Set {
-    key: GlyphKey,
+    font: Which,
+    glyph: GlyphId,
     advance: f32,
-    own: bool,
     character: char,
+}
+
+impl Set {
+    /// Whether it is set in the text's own font.
+    fn own(self) -> bool {
+        self.font == Which::Own
+    }
 }
 
 /// Where a wrapped line may break: after the last space met on it, or nowhere yet.
@@ -72,12 +78,18 @@ struct Broken {
     width: f32,
 }
 
-/// Lays `runs` out in `own` at `size` pixels to the em, a character it lacks looked for in `fallbacks` in order, its
-/// lines broken as `wrap` says and set as `align` says.
-pub fn lay_out(own: &Face, fallbacks: &[Face], size: f32, runs: &[Run], (wrap, align): (Wrap, Align)) -> Laid {
+/// Lays `runs` out in the font of the metrics `own` at `size` pixels to the em, a character it lacks looked for in the
+/// fonts of `fallbacks` in order, and not in theirs, its lines broken as `wrap` says and set as `align` says.
+pub fn lay_out<M: AsRef<Metrics>>(
+    own: &Metrics,
+    fallbacks: &[M],
+    size: f32,
+    runs: &[Run],
+    (wrap, align): (Wrap, Align),
+) -> Laid {
     let text: String = runs.iter().map(|run| run.text.as_str()).collect();
-    let shaped = own.font.shape(&text);
-    let scale = own.font.pixels_per_unit(size);
+    let shaped = own.shape(&text);
+    let scale = own.pixels_per_unit(size);
     let mut missing = Vec::new();
     let sets: Vec<Set> = shaped
         .glyphs
@@ -92,11 +104,11 @@ pub fn lay_out(own: &Face, fallbacks: &[Face], size: f32, runs: &[Run], (wrap, a
         shaped.lines.iter().flat_map(|line| broken(&starts, &sets, line.glyphs.clone(), wrap)).collect();
 
     let widest = broken.iter().map(|line| line.width).fold(0.0, f32::max);
-    let width = match wrap {
+    let within = match wrap {
         Wrap::None => widest,
         Wrap::At { width } => width,
     };
-    let metrics = own.font.line_metrics();
+    let metrics = own.line_metrics();
     let ascender = f32::from(metrics.ascender) * scale;
     // A line's height is some thousands of font units, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss)]
@@ -107,8 +119,8 @@ pub fn lay_out(own: &Face, fallbacks: &[Face], size: f32, runs: &[Run], (wrap, a
     for (line, at) in broken.iter().zip(0_u16..) {
         let shift = match align {
             Align::Left => 0.0,
-            Align::Centre => (width - line.width) / 2.0,
-            Align::Right => width - line.width,
+            Align::Centre => (within - line.width) / 2.0,
+            Align::Right => within - line.width,
         };
         let baseline = f32::from(at).mul_add(line_height, ascender);
         for index in line.glyphs.clone() {
@@ -118,44 +130,43 @@ pub fn lay_out(own: &Face, fallbacks: &[Face], size: f32, runs: &[Run], (wrap, a
             }
             let origin = Vec2::new(shift + starts[index] - line.offset, baseline);
             let colour = colour_at(&colours, shaped.glyphs[index].source);
-            glyphs.push(LaidGlyph { key: drawn.key, origin, colour });
+            glyphs.push(LaidGlyph { font: drawn.font, glyph: drawn.glyph, origin, colour });
         }
     }
     let lines = u32::try_from(broken.len()).unwrap_or(u32::MAX);
 
-    Laid { glyphs, missing, lines, width }
+    Laid { glyphs, missing, lines, width: widest }
 }
 
 /// How `character`, which `own` shaped as `shaped`, is set: in `own` when it has the character; else in the first of
 /// `fallbacks` that has it; else as `own`'s missing glyph, noted in `missing` the first time.
-fn set(
-    own: &Face,
-    fallbacks: &[Face],
+fn set<M: AsRef<Metrics>>(
+    own: &Metrics,
+    fallbacks: &[M],
     (character, shaped): (char, GlyphId),
     size: f32,
     missing: &mut Vec<char>,
 ) -> Set {
-    let advance = |face: &Face, glyph: GlyphId| {
-        f32::from(face.font.advance(glyph).unwrap_or(0)) * face.font.pixels_per_unit(size)
-    };
+    let advance =
+        |font: &Metrics, glyph: GlyphId| f32::from(font.advance(glyph).unwrap_or(0)) * font.pixels_per_unit(size);
     let shaped_missing = shaped == GlyphId::MISSING;
-    let unmapped = own.font.glyph(character).is_none();
+    let unmapped = own.glyph(character).is_none();
     let lacks = shaped_missing && unmapped;
     if !lacks {
-        let key = GlyphKey { font: own.key, glyph: shaped };
-        return Set { key, advance: advance(own, shaped), own: true, character };
+        return Set { font: Which::Own, glyph: shaped, advance: advance(own, shaped), character };
     }
-    let fallen = fallbacks.iter().find_map(|face| Some((face, face.font.glyph(character)?)));
-    if let Some((face, glyph)) = fallen {
-        let key = GlyphKey { font: face.key, glyph };
-        return Set { key, advance: advance(face, glyph), own: false, character };
+    let fallen = fallbacks.iter().map(AsRef::as_ref).enumerate().find_map(|(at, font)| {
+        let glyph = font.glyph(character)?;
+        Some(Set { font: Which::Fallback(at), glyph, advance: advance(font, glyph), character })
+    });
+    if let Some(fallen) = fallen {
+        return fallen;
     }
     if !missing.contains(&character) {
         missing.push(character);
     }
-    let key = GlyphKey { font: own.key, glyph: GlyphId::MISSING };
 
-    Set { key, advance: advance(own, GlyphId::MISSING), own: true, character }
+    Set { font: Which::Own, glyph: GlyphId::MISSING, advance: advance(own, GlyphId::MISSING), character }
 }
 
 /// Where each glyph's pen is along its hard line, in pixels: two neighbours both of the text's own font as it shaped
@@ -167,7 +178,7 @@ fn pens(shaped: &Shaped, sets: &[Set], scale: f32) -> Vec<f32> {
         for index in line.glyphs.clone() {
             starts[index] = pen;
             let next = index + 1;
-            let kerned = next < line.glyphs.end && sets[index].own && sets[next].own;
+            let kerned = next < line.glyphs.end && sets[index].own() && sets[next].own();
             // A pen is exact to the font unit for lines up to 2^24 units, far longer than any drawn.
             #[allow(clippy::cast_precision_loss)]
             let moved = if kerned {

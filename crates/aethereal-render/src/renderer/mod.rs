@@ -17,7 +17,6 @@ use crate::dispatch::{
 };
 use crate::draw_list::{Cut, DrawList, ListRefused, Listables, Listed, Lists, Picks, Walking, Within};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
-use crate::font::FontRefused;
 use crate::frame::{
     self, CreateFrame, DepthUse, Does, EffectReads, Ends, Frame, FrameId, FrameRefused, Framed, Holds, Load,
     PassRefused, ShapeOf, Shaped, Size, Target, TargetKind,
@@ -45,10 +44,11 @@ use crate::stats::{
 };
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
+use crate::text::faces::Faces;
 use crate::text::generate::{Generating, GlyphsGenerated};
 use crate::text::{
-    CreateFont, CreateText, FallbackFonts, FontId, FontMade, MoveText, PlaceText, TextId, TextMade, TextPlaced,
-    WriteText,
+    CreateFont, CreateText, FontId, FontMade, FontMetrics, MoveText, PlaceText, ReadMetrics, TextId, TextMade,
+    TextPlaced, WriteText,
 };
 use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
@@ -207,8 +207,8 @@ pub struct RendererConfig {
 /// What an actor asks the renderer: to make a mesh, a texture, a program, a compute program, an effect, instances,
 /// uniforms, storage, or a frame, to write instances, uniforms, or storage it made, to place what is drawn or dispatch
 /// what is computed, until released or once, to list what it draws in order, the shape of a pass it joins,
-/// to release what it made, to read back what it draws or storage, to time what it draws, to read a font or name the
-/// fonts that fall back, to make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the
+/// to release what it made, to read back what it draws or storage, to time what it draws, to make a font or read its
+/// metrics, to make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the
 /// GPU's time over its passes, or told the adapter it draws on (ADR-0053).
 pub struct Rendering;
 
@@ -236,7 +236,7 @@ impl Protocol for Rendering {
         ReadStorage,
         TimeFrame,
         CreateFont,
-        FallbackFonts,
+        ReadMetrics,
         CreateText,
         WriteText,
         PlaceText,
@@ -341,8 +341,8 @@ impl Carries<CreateFont> for Rendering {
     type Answers = (FontMade,);
 }
 
-impl Carries<FallbackFonts> for Rendering {
-    type Answers = ();
+impl Carries<ReadMetrics> for Rendering {
+    type Answers = (FontMetrics,);
 }
 
 impl Carries<CreateText> for Rendering {
@@ -721,7 +721,7 @@ impl Actor for Renderer {
         Surfaced,
         Ended,
         CreateFont,
-        FallbackFonts,
+        ReadMetrics,
         CreateText,
         WriteText,
         PlaceText,
@@ -738,6 +738,11 @@ impl Actor for Renderer {
     type EndSends = ();
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        // The renderer's own fonts, their metrics put once, as blobs kept for the renderer's life (ADR-0052).
+        let faces = match Faces::new(|bytes| turn.put(bytes)) {
+            Ok(faces) => faces,
+            Err(why) => return Err(Fault::new(&why)?),
+        };
         let mut gpu = turn.take(config.gpu)?;
         let front = turn.take(config.front)?;
         let presenting = turn.take(config.presenting)?;
@@ -754,10 +759,7 @@ impl Actor for Renderer {
         }
         let probed: Vec<WindowId> = windows.iter().map(|windowed| windowed.window).collect();
         // Made before it is kept, as keeping it ends the borrow of the GPU opened.
-        let kept = match Kept::new(opened.device(), windows, config.roots) {
-            Ok(kept) => kept,
-            Err(why) => return Err(Fault::new(&why)?),
-        };
+        let kept = Kept::new(opened.device(), windows, config.roots, faces);
         let kept = turn.keep(kept)?;
         turn.subscribe::<Render>();
         for window in probed {
@@ -1802,12 +1804,8 @@ impl Handles<Ended> for Renderer {
 
 impl Kept {
     /// Nothing made yet, on `device`, for the windows `windows`, each drawn by the renderer's own main frame of it,
-    /// walked from the program's root list `roots`, with the renderer's own fonts read and an empty atlas.
-    ///
-    /// # Errors
-    ///
-    /// Why one of the renderer's own fonts was not read, which a font compiled in never is.
-    fn new(device: &wgpu::Device, windows: Vec<Windowed>, roots: Vec<ActorId>) -> Result<Self, FontRefused> {
+    /// walked from the program's root list `roots`, with the renderer's own fonts, `faces`, and an empty atlas.
+    fn new(device: &wgpu::Device, windows: Vec<Windowed>, roots: Vec<ActorId>, faces: Faces) -> Self {
         let longest = device.limits().max_texture_dimension_2d;
         let picker = Picker::new(device);
         let mut windows_memory = GpuMemory::default();
@@ -1815,7 +1813,7 @@ impl Kept {
             windows_memory.add(windowed.memory());
         }
 
-        Ok(Self {
+        Self {
             ids: Ids::default(),
             makers: Makers::default(),
             meshes: Weighed::default(),
@@ -1837,9 +1835,9 @@ impl Kept {
             most_workgroups: device.limits().max_compute_workgroups_per_dimension,
             windows,
             windows_memory,
-            text: Texts::new(device, longest, picker.layout())?,
+            text: Texts::new(device, longest, picker.layout(), faces),
             picker,
-        })
+        }
     }
 
     /// Releases what `release` names, when `by` made it, with what goes with it: a frame's texture and its lists, and

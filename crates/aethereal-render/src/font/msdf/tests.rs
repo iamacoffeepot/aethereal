@@ -19,7 +19,7 @@ fn square(side: f32) -> Outline {
 
 /// The glyph of `character` in `font`, and its outline.
 fn outline(font: &Font, character: char) -> &Outline {
-    font.glyph(character).and_then(|glyph| font.outline(glyph)).expect("the fixture draws the character")
+    font.metrics().glyph(character).and_then(|glyph| font.outline(glyph)).expect("the fixture draws the character")
 }
 
 /// Where `at`, in pixels from the glyph's origin, is in `field`'s texels from its top left.
@@ -35,7 +35,7 @@ fn an_o_reads_inside_on_its_ring_and_outside_in_its_hole_and_around_it() {
     // checked before it, and the field after.
     let font = noto();
     let ring = outline(&font, 'O');
-    let scale = font.pixels_per_unit(BASE_PIXELS_PER_EM);
+    let scale = font.metrics().pixels_per_unit(BASE_PIXELS_PER_EM);
     let edges = colour(contours(ring, scale)).into_iter().flatten().collect::<Vec<_>>();
     let bounds = ring.bounds().expect("O has an outline");
     let centre = Point::new(f64::from(bounds.center().x * scale), f64::from(bounds.center().y * scale));
@@ -65,7 +65,8 @@ fn the_two_edges_at_every_corner_differ_in_colour() {
     // Catches colours switched wrongly at a corner, or a contour's last stretch left the colour of its first, which it
     // meets: that corner would be rounded, as a one-channel field rounds every corner.
     let font = noto();
-    let printable = (' '..='~').filter_map(|character| font.glyph(character)).filter_map(|glyph| font.outline(glyph));
+    let printable =
+        (' '..='~').filter_map(|character| font.metrics().glyph(character)).filter_map(|glyph| font.outline(glyph));
 
     let mut corners = 0;
     for outline in printable {
@@ -106,7 +107,7 @@ fn a_field_drawn_at_its_own_size_matches_the_outline() {
     // edges coloured so that a channel clashes, or clashes left uncorrected. Each glyph is sampled sixteen times a
     // texel, between texels' centres as the glyph program samples it, and compared with the outline's own inside.
     let font = noto();
-    let scale = font.pixels_per_unit(BASE_PIXELS_PER_EM);
+    let scale = font.metrics().pixels_per_unit(BASE_PIXELS_PER_EM);
 
     for character in ['g', 'W', '@', '\u{e9}', 'O', '&', 'A'] {
         let glyph = outline(&font, character);
@@ -146,7 +147,7 @@ fn of_two_clashing_texels_the_one_further_from_the_edge_is_evened_out() {
 fn a_glyph_that_draws_nothing_has_an_empty_field() {
     // Catches a space measured as a field of padding alone, or the bounds of no edges taken as infinite.
     let font = noto();
-    let space = font.glyph(' ').map(|glyph| font.msdf(glyph, BASE_PIXELS_PER_EM, DEFAULT_PADDING));
+    let space = font.metrics().glyph(' ').map(|glyph| font.msdf(glyph, BASE_PIXELS_PER_EM, DEFAULT_PADDING));
 
     assert_eq!(space.flatten().map(|field| (field.width, field.height, field.pixels.len())), Some((0, 0, 0)));
     assert!(font.msdf(GlyphId(u16::MAX), BASE_PIXELS_PER_EM, DEFAULT_PADDING).is_none());

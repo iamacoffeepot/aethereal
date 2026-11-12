@@ -1,47 +1,50 @@
-//! Fonts (ADR-0052): a TrueType font read from its bytes, its characters mapped to glyphs and kerned into lines, and
-//! each glyph's outline made into a multi-channel signed distance field the glyph program draws every size from. Pure
-//! functions: the render root keeps what they make.
+//! Fonts (ADR-0052): a TrueType font read from its bytes into its metrics, which map its characters to glyphs and kern
+//! them into lines, and its outlines, each made into a multi-channel signed distance field the glyph program draws
+//! every size from. Pure functions: the render root keeps what they make, and an actor that measures text keeps the
+//! metrics the render root hands it.
 
 #[cfg(test)]
 mod tests;
 
 mod data;
 mod kerning;
+mod metrics;
 pub mod msdf;
 pub mod outline;
 pub mod shape;
 mod tables;
 
 use aethereal_data::Plain;
+use core::ops::RangeInclusive;
 use kerning::Kerning;
+pub use metrics::{Metrics, MetricsMalformed};
 use msdf::Msdf;
 use outline::Outline;
-use tables::{CharacterMap, Directory};
+use tables::Directory;
 
 /// A glyph of a font: its number in the font's tables. Glyph 0 is the font's missing glyph, drawn for a character the
 /// font lacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GlyphId(pub u16);
 
+/// How many font units an em may be: from 16 to 16384, as `head` allows.
+const UNITS_PER_EM: RangeInclusive<u16> = 16..=16384;
+
 impl GlyphId {
     /// The font's missing glyph, drawn for a character the font has no glyph for: usually a box.
     pub const MISSING: Self = Self(0);
 }
 
-/// A TrueType font, read whole as it is made: every glyph's outline, every glyph's advance, its character map, and the
-/// pairs it kerns. Nothing of the bytes it was read from is kept.
+/// A TrueType font, read whole as it is made: its metrics, which are all a text is laid out by, and every glyph's
+/// outline, which only drawing it needs. Nothing of the bytes it was read from is kept.
 #[derive(Debug, Clone)]
 pub struct Font {
-    units_per_em: u16,
-    lines: LineMetrics,
-    advances: Vec<u16>,
+    metrics: Metrics,
     outlines: Vec<Outline>,
-    characters: CharacterMap,
-    kerning: Kerning,
 }
 
 /// How a font spaces its lines, in font units, the baseline at zero and `y` up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LineMetrics {
     /// How far the font's tallest glyphs rise above the baseline.
     pub ascender: i16,
@@ -143,50 +146,21 @@ impl Font {
         let kerned = directory.optional(*b"kern", Table::Kern)?.map(tables::kern::read).transpose()?;
         let kerning = Kerning::from_tables(positioned, kerned);
 
-        Ok(Self { units_per_em: head.units_per_em, lines: horizontal.lines, advances, outlines, characters, kerning })
+        let metrics = Metrics::new(head.units_per_em, horizontal.lines, advances, characters, kerning);
+
+        Ok(Self { metrics, outlines })
     }
 
-    /// How many font units make one em: the size a text is asked for at.
+    /// Its metrics: what a text is laid out in it by.
     #[must_use]
-    pub const fn units_per_em(&self) -> u16 {
-        self.units_per_em
-    }
-
-    /// How the font spaces its lines.
-    #[must_use]
-    pub const fn line_metrics(&self) -> LineMetrics {
-        self.lines
+    pub const fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 
     /// How many glyphs the font has.
     #[must_use]
     pub fn glyph_count(&self) -> usize {
         self.outlines.len()
-    }
-
-    /// How many pixels one font unit is at a size of `pixels_per_em`.
-    #[must_use]
-    pub fn pixels_per_unit(&self, pixels_per_em: f32) -> f32 {
-        pixels_per_em / f32::from(self.units_per_em)
-    }
-
-    /// The glyph that draws `character`, if the font has one.
-    #[must_use]
-    pub fn glyph(&self, character: char) -> Option<GlyphId> {
-        self.characters.glyph(u32::from(character)).map(GlyphId)
-    }
-
-    /// How far the pen moves past `glyph`, in font units, if the font has that glyph.
-    #[must_use]
-    pub fn advance(&self, glyph: GlyphId) -> Option<u16> {
-        self.advances.get(usize::from(glyph.0)).copied()
-    }
-
-    /// How much closer, or further apart, the font sets `right` after `left`, in font units: negative draws them
-    /// together. Zero for a pair the font does not kern.
-    #[must_use]
-    pub fn kerning(&self, left: GlyphId, right: GlyphId) -> i32 {
-        self.kerning.between(left.0, right.0)
     }
 
     /// The outline of `glyph`, in font units, if the font has that glyph. A glyph that draws nothing, as a space,
@@ -201,7 +175,7 @@ impl Font {
     /// has that glyph.
     #[must_use]
     pub fn msdf(&self, glyph: GlyphId, pixels_per_em: f32, padding: u32) -> Option<Msdf> {
-        let scale = self.pixels_per_unit(pixels_per_em);
+        let scale = self.metrics.pixels_per_unit(pixels_per_em);
         self.outline(glyph).map(|outline| msdf::generate(outline, scale, padding))
     }
 }

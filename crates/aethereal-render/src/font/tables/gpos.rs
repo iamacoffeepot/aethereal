@@ -4,7 +4,7 @@
 
 use super::{Data, FontRefused};
 use crate::font::kerning::{Classes, Pairs};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A lookup's type: pair adjustment.
 const PAIR_ADJUSTMENT: u16 = 2;
@@ -68,7 +68,7 @@ fn pair_adjustment(data: Data<'_>) -> Result<Pairs, FontRefused> {
     match data.u16(0)? {
         1 => {
             let sets = data.offset16(8)?;
-            let mut pairs = HashMap::new();
+            let mut pairs = BTreeMap::new();
             for (left, index) in covered {
                 if index >= sets {
                     return Err(data.malformed());
@@ -80,7 +80,7 @@ fn pair_adjustment(data: Data<'_>) -> Result<Pairs, FontRefused> {
                     pairs.entry((left, set.u16(at)?)).or_insert(adjustment);
                 }
             }
-            Ok(Pairs::Listed(pairs))
+            Ok(Pairs::listed(pairs))
         }
         2 => {
             let left = classes(data.from(data.offset16(8)?)?)?;
@@ -100,8 +100,8 @@ fn pair_adjustment(data: Data<'_>) -> Result<Pairs, FontRefused> {
             } else {
                 Vec::new()
             };
-            let covered = covered.into_iter().map(|(glyph, _)| glyph).collect::<HashSet<_>>();
-            Ok(Pairs::Classes(Classes { covered, left, right, row, adjustments }))
+            let covered = covered.into_iter().map(|(glyph, _)| glyph).collect::<BTreeSet<_>>();
+            Ok(Pairs::Classes(Classes::new(covered, left, right, row, adjustments)))
         }
         _ => Err(data.malformed()),
     }
@@ -157,7 +157,7 @@ fn coverage(data: Data<'_>) -> Result<Vec<(u16, usize)>, FontRefused> {
 }
 
 /// Reads a class definition table: each glyph's class, those not listed in class 0.
-fn classes(data: Data<'_>) -> Result<HashMap<u16, u16>, FontRefused> {
+fn classes(data: Data<'_>) -> Result<BTreeMap<u16, u16>, FontRefused> {
     match data.u16(0)? {
         1 => {
             let refused = data.malformed();
@@ -170,7 +170,7 @@ fn classes(data: Data<'_>) -> Result<HashMap<u16, u16>, FontRefused> {
                 .collect()
         }
         2 => {
-            let mut classes = HashMap::new();
+            let mut classes = BTreeMap::new();
             let mut listed = 0;
             for range in 0..data.offset16(2)? {
                 let at = data.at(4, range, 6)?;

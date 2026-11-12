@@ -3,7 +3,7 @@
 
 use super::{Data, FontRefused};
 use crate::font::kerning::Pairs;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Reads the pairs of every format 0 subtable that kerns horizontally, the first adjustment of a pair kept.
 pub fn read(data: Data<'_>) -> Result<Pairs, FontRefused> {
@@ -14,7 +14,7 @@ pub fn read(data: Data<'_>) -> Result<Pairs, FontRefused> {
         (data.offset16(2)?, 4)
     };
 
-    let mut pairs = HashMap::new();
+    let mut pairs = BTreeMap::new();
     for _ in 0..count {
         let coverage = data.u16(at + 4)?;
         let (length, format, header, kerns) = if apple {
@@ -46,5 +46,5 @@ pub fn read(data: Data<'_>) -> Result<Pairs, FontRefused> {
         }
     }
 
-    Ok(Pairs::Listed(pairs))
+    Ok(Pairs::listed(pairs))
 }

@@ -8,6 +8,7 @@ fn each_glyph_is_set_after_the_one_before_by_its_advance_and_their_kerning() {
     // Catches kerning left out, applied after the glyph rather than before it, or applied across a line break: "AV"
     // would sit apart, and a line's first glyph would be pushed by the last glyph of the line before.
     let font = noto();
+    let font = font.metrics();
     let shaped = font.shape("AV\nVA");
     let a = font.glyph('A').expect("the fixture draws A");
     let v = font.glyph('V').expect("the fixture draws V");
@@ -26,6 +27,7 @@ fn a_character_the_font_lacks_is_drawn_missing_and_listed() {
     // Catches a lacking character dropped, so the text silently loses it, or not listed, so no fallback font is ever
     // tried for it; and a control character drawn as a box.
     let font = noto();
+    let font = font.metrics();
     let shaped = font.shape("a\u{4e2d}\tb");
 
     let glyphs = shaped.glyphs.iter().map(|glyph| (glyph.glyph, glyph.source)).collect::<Vec<_>>();

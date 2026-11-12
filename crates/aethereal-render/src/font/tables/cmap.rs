@@ -2,6 +2,8 @@
 //! which reaches every plane, before a format 4 one, which reaches only the basic multilingual plane.
 
 use super::{Data, FontRefused, Table};
+use crate::font::MetricsMalformed;
+use crate::font::metrics::codec::{Reader, Writer};
 
 /// A font's characters and the glyphs that draw them, as runs of characters drawn by runs of glyphs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,39 @@ impl CharacterMap {
             return None;
         }
         u16::try_from(group.glyph + (character - group.start)).ok().filter(|&glyph| glyph != 0)
+    }
+
+    /// Writes the map's groups, each its first and last character and its first glyph.
+    pub(in crate::font) fn write(&self, writer: &mut Writer) {
+        writer.count(self.groups.len());
+        for group in &self.groups {
+            writer.u32(group.start);
+            writer.u32(group.end);
+            writer.u32(group.glyph);
+        }
+    }
+
+    /// Reads the groups [`Self::write`] wrote, of a font of `glyph_count` glyphs, refusing groups out of order, that
+    /// overlap, that reach past Unicode, or whose glyphs run past the font's: the map a font's reading makes.
+    pub(in crate::font) fn read_from(reader: &mut Reader<'_>, glyph_count: usize) -> Result<Self, MetricsMalformed> {
+        let refused = MetricsMalformed::Characters;
+        let count = reader.count(12)?;
+        let mut groups = Vec::with_capacity(count);
+        let mut after = 0;
+        for _ in 0..count {
+            let group = Group { start: reader.u32()?, end: reader.u32()?, glyph: reader.u32()? };
+            let last = group.end.checked_sub(group.start).and_then(|length| group.glyph.checked_add(length));
+            let drawn = last.and_then(|last| usize::try_from(last).ok()).is_some_and(|last| last < glyph_count);
+            let ordered = group.start >= after && group.end <= LAST_CHARACTER;
+            let kept = drawn && ordered;
+            if !kept {
+                return Err(refused);
+            }
+            after = group.end + 1;
+            groups.push(group);
+        }
+
+        Ok(Self { groups })
     }
 
     /// The map of `pairs` of a character and its glyph, sorted by character, the first pair for a character kept.
