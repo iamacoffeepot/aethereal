@@ -53,7 +53,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
     - a meter with a limit writes the bytes it holds alone, as its bar shows their share of the limit, so every value fits the gutter and nothing is cut as a value changes; the backlog's actor is not in the band, which has no room for it in a fixed gutter: the `memory` tool names it;
     - the engine's figures are read at the figures' pace, four times a second, each reading of process and guests kept in its meter's history, and the GPU meter from each frame's statistics, every kind of its memory summed, each frame kept in its history and the newest shown as the figures are read; a text is written again only when what it shows changes;
     - the column ends after the meters: the GPU adapter, its backend, and its driver do not change while the program runs, so the band does not keep them in view; `render_stats` answers them, called from the console or by an agent (see Frame statistics).
-- **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes.
+- **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes. Under ADR-0055 it declares this in its list instead: `Keys { frame, keys: KeySet::ALL, blocks: true }` while the console is open, and only the backtick while it is not.
 
 ### Commands are tools
 
@@ -99,6 +99,8 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **A line shows its time, its level, its actor, and its text.** Errors and warnings are shown in the band as well, as a count since the console was last opened, in the gutter beside the frame chart.
 
 ### Key focus
+
+**Replaced by ADR-0055.** Keys cascade through the declared draw order: an actor declares the keys it hears with a `Keys` entry in its list, and each key goes top-down through those entries until one blocks. `TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocusGained`, `KeyFocusLost`, and the slot below are removed, and the overlay is last in the setup's root list, in the `Interface` pass, so its backtick reaches it whatever holds the keys beneath. The section below records the slot as it was decided.
 
 **Each window's actor gains key focus, as aether's ADR-0248 §9 has it, without its scope:**
 
@@ -179,14 +181,14 @@ The GPU's passes are told apart by slate blue, muted violet, and mauve, cycling 
 - **Any program lists `Overlay` and has the band and the console,** on desktop and in the browser, without writing any of it. ichor's own console pass goes.
 - **A tool is a console command once its input marks its flags,** and a person at the window and an agent reach the same tools.
 - **An engine with no hub holds tools,** so tools can be tested and called in a program that never links.
-- **Key focus serves any text field,** not only the console: a chat box takes it the same way.
+- **Key focus serves any text field,** not only the console: a chat box takes it the same way. Under ADR-0055 a text field declares `Keys` in its list while it wants them.
 - **The renderer counts what it makes and draws each frame,** and spends nothing on it while no one subscribes.
 - **Changes to decided work:** ADR-0028 gains positional flags and comma lists; ADR-0037's `ToolSheet` gains `flags`; ADR-0038's `Link` stops holding tools and forwards `Tools`'s; ADR-0044's `Log` view gains a ring in each part, and its logs tool `read_recent`; ADR-0024's key events are routed by key focus.
 - **Follow-on work this leaves open:**
   - a binary that calls a tool from a shell, with the same flags;
   - pipeline statistics (vertex and fragment invocations), on GPUs that have them;
   - a mouse on the overlay's panels;
-  - key focus for a UI built of several actors (aether's `Subtree` scope).
+  - key focus for a UI built of several actors (aether's `Subtree` scope). Settled by ADR-0055: each actor's `Keys` entry sits at its place in the declared order.
 
 ## Alternatives considered
 

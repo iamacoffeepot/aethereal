@@ -24,6 +24,8 @@ The fault seen was of the same kind. Placements of one program in one pass were 
 
 **An actor may declare the order of its own placements within a pass, by sending the list of them to draw, in order. The list is kept until the actor sends another.**
 
+**Amended by ADR-0055.** Every join is listed: `Order`, `Loose`, and `Join::to` are removed, and a placement no list names is not drawn. An actor sends one list, `DrawList { entries }`, not one for each frame and pass: each placement's join names its frame and pass, and the list's entries are drawn in each pass they land in, in list order. A list may call the sender's direct children (`Entry::Call(Child)`), whose lists are drawn at that place, and the program's setup writes the root list. Order between actors is declared by those calls. The rest of this record holds for the list as ADR-0055 shapes it.
+
 ```rust
 Place { mesh: MeshId, instances: Drawn, joins: Vec<Join> }                    -> Made<PlacementId> | Refused
 struct Join { frame: Frame, pass: PassName, program: ProgramId, bindings: Vec<Bind>, order: Order }
@@ -63,7 +65,7 @@ Render: draws c, a          — reordered, b culled
 
 **A later list replaces an earlier one, whenever it comes.** Two lists in the same step or the same frame are two lists: the last handled before a `Render` is what that `Render` draws. An actor whose camera's view comes in a later turn of the `Tick` than its first list sends a newer one, and keeps no track of whether it sent one already. Only the same actor's list is replaced: each actor has its own list in each pass.
 
-**Order between actors is still not promised.** The lists of different actors, and the loose placements of a pass, are drawn in no order an actor may rely on; across actors, order is the order of passes (ADR-0025). One actor's list is drawn back to back, with nothing of another between its entries. The render root still sets each program's pipeline as seldom as it can: within a list, it switches only where neighbouring entries use different programs, and it still draws a pass's loose placements grouped by program.
+**Order between actors is declared by the lists that call them** (ADR-0055: `Call`). A list is drawn in its order, with each child it calls drawn at the place it is called, from the setup's root list down. The render root sets each program's pipeline as seldom as it can without reordering: within the sequence, it switches only where neighbouring calls use different programs.
 
 **This reconciles with ADR-0023's refusal of an order key, and ADR-0025's rule that order is declared where drawing is described, and nowhere else.** The order is declared by the one actor that made the placements, in the mail that describes its drawing, and kept as what is drawn is kept, until that actor changes it. No actor agrees on numbers with another, and nothing another actor does changes it. Nothing is taken from when placements were made, where actors stand, or when mail came.
 
@@ -74,13 +76,13 @@ Render: draws c, a          — reordered, b culled
 - An actor that streams chunks into slots makes each slot's placements once, joined `Listed`, and sends a list, nearest last, when the order changes or a chunk comes or goes. A chunk out of view is left off the next list; a slot whose chunk changed lists its new placements once they are ready, and releasing the old ones takes them out of the list meanwhile.
 - Culling and level of detail are an actor's own, by what it lists, with nothing kept on the render root for either but the list.
 - ADR-0023's case for a list kept on the render root holds for the order too: a list carries ids, eight bytes each, where carrying the draws themselves was 960 KB a frame for 30,000, and it is carried only when it changes. The meshes, programs, bindings, and bind groups stay made and kept, and only the order travels. An actor that needs no order sends nothing, as before; one whose order is fixed sends one list, ever.
-- **The render root keeps state for lists: one `Vec` of placements for each actor in each pass of each frame**, with a stamp on each listed join. It cannot go out of step with the placements, as only its owner changes it: by a new list, checked whole, or by releasing a listed placement, which takes it out; and the owner ending takes it. No other actor's mail, release, or ending touches it.
+- **The render root keeps state for lists: one list for each actor** (ADR-0055; one for each actor in each pass of each frame before it), with a stamp on each listed join. It cannot go out of step with the placements, as only its owner changes it: by a new list, checked whole, or by releasing a listed placement, which takes it out; and the owner ending takes it. No other actor's mail, release, or ending touches it.
 - The render root handles one more kind, `DrawList`, within an actor's 64 (ADR-0013: `HandledList`).
 - An actor that sends no list in a frame draws its last list's order there: a list it was late with shows the order before it for that frame, never a gap.
-- ADR-0023 and ADR-0025 are edited to match: a join is `Loose` or `Listed`, and order within a pass may be declared by the actor that made the placements. ADR-0026's dispatches keep their rule, and are run grouped by program as a pass's loose placements are drawn.
+- ADR-0023 and ADR-0025 are edited to match: order within a pass is declared by the lists, from the root list down (ADR-0055). Dispatches are listed too (ADR-0055: `Entry::Run`).
 - What is decided separately, each when it is needed:
-  - **Dispatches in lists.** Dispatches of one pass still run in no order an actor may rely on, and one that needs another's output is in a later pass (ADR-0026).
-  - **Refusing loose placements whose order shows**, once lists give a way to declare it: a placement whose program blends by `Alpha`, or is `Opaque` with no depth test, or one that blends `Additive` beside one that blends `Multiply`, sharing a pass with another. Then an order nobody declared could not be written. Lists are the step that makes this possible.
+  - **Dispatches in lists.** Settled by ADR-0055: a dispatch is listed (`Entry::Run`), and runs in its list's order.
+  - **Refusing loose placements whose order shows.** Settled by ADR-0055: nothing is loose, so an order nobody declared cannot be written.
   - **A volatile array one actor owns and others read at the boundary of a step**, for data many actors read each frame.
 
 ## Alternatives considered
