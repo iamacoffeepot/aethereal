@@ -295,11 +295,33 @@ fn an_entry_the_pointer_reaches_names_its_place_and_cursor_and_is_refused_from_a
     let ignores = Entry::Draw { placement, pointer: Pointer::Ignores };
     let child = |_: &PathSegment| HUD;
 
-    let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, blocks: true, cursor: Cursor::Hand });
+    let hearing = Hearing::Everything { blocks: true, cursor: Cursor::Hand };
+    let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, hearing });
     let listed = blocks.listed(2, (Some(hearer), None), (child, empty));
     assert_eq!(listed, Ok(Listed::Draw { placement: 3, picks: reached }));
     assert_eq!(blocks.listed(2, (None, None), (child, empty)), Err(EntryRefused::Unheard));
     assert_eq!(ignores.listed(2, (None, None), (child, empty)), Ok(draw(3)));
+}
+
+#[test]
+fn an_entry_that_hears_presses_alone_reaches_its_sender_declaring_no_cursor() {
+    // Catches an entry that hears presses alone kept as one the pointer ignores, so a press into a child never reaches
+    // the parent that listed it over the child; and one let through from an actor that handles no pointer event, whose
+    // presses would be dropped.
+    let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
+    let Ok(window) = aethereal_data::from_bytes(&0_u64.to_le_bytes(), &mut aethereal_data::Budget::new(8)) else {
+        panic!("a window's id is its number");
+    };
+    let rect = Rect2 { min: Vec2::ZERO, max: Vec2::new(4.0, 4.0) };
+    let over_child = Entry::hit::<Interface>(Frame::Main(window), rect, Pointer::Presses);
+    let child = |_: &PathSegment| HUD;
+
+    let listed = over_child.listed(5, (Some(hearer), None), (child, empty));
+    let Ok(Listed::Hit { picks, .. }) = listed else {
+        panic!("a hit is kept as a hit: {listed:?}");
+    };
+    assert_eq!(picks, Picks::Reaches(Reaching { actor: hearer, entry: 5, hearing: Hearing::Presses }));
+    assert_eq!(over_child.listed(5, (None, None), (child, empty)), Err(EntryRefused::Unheard));
 }
 
 #[test]

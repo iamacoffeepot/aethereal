@@ -4,11 +4,12 @@
 //! and one no list walked names is not issued (ADR-0055). Each list is checked whole as it is handled, and what it
 //! found is kept, so drawing it looks nothing up and refuses nothing.
 //!
-//! What a list draws is also what the pointer reaches: each draw says whether it blocks the pointer, lets it through, or
-//! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
-//! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055). Each
-//! entry the pointer reaches also declares, as part of how it is reached, the cursor the window shows while it is the
-//! topmost entry the pointer reaches, or the one a press reached while its button is held; one it ignores declares none.
+//! What a list draws is also what the pointer reaches: each draw says whether it blocks the pointer, lets it through,
+//! hears its presses alone, or is not there to it, and a hit is a place in the sequence that draws nothing but is
+//! reached as a draw is. The window delivers each pointer event, top-down, to the sender of each entry drawn under it,
+//! until one blocks (ADR-0055). Each entry the pointer reaches also declares, as part of how it is reached, the cursor
+//! the window shows while it is the topmost entry the pointer reaches, or the one a press reached while its button is
+//! held; one that hears presses alone, or that the pointer ignores, declares none.
 //!
 //! A call places its child, and says which coordinates the child draws in: its caller's, moved to an origin, or the
 //! window's pixels, wherever its caller sits; and what the child's drawing is cut to, never past its caller's clip.
@@ -32,7 +33,7 @@ use aethereal_actor::records::Naming;
 use aethereal_actor::{Child, ChildOf, ProtocolRef};
 use aethereal_data::{ActorId, ActorPath, Bound, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
-use aethereal_window::{Cursor, CursorUnfit, Hearer, KeyHearer, KeySet, KeysEntry, Reach};
+use aethereal_window::{Cursor, CursorUnfit, Hearer, Hearing, KeyHearer, KeySet, KeysEntry, Reach};
 use std::collections::{HashMap, HashSet};
 use std::{slice, vec};
 
@@ -78,7 +79,8 @@ pub enum Entry {
 }
 
 /// How the pointer reaches an entry where it draws, and, when it does, the cursor the window shows while the entry is
-/// the top of what the pointer reaches there. An entry it does not reach declares no cursor, as none would be read.
+/// the top of what the pointer reaches there. An entry the window never chooses the cursor from declares none, as none
+/// would be read.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.render.pointer")]
 pub enum Pointer {
@@ -86,6 +88,10 @@ pub enum Pointer {
     Blocks(Cursor),
     /// It is reached, showing this cursor, and so is what is beneath it.
     Passes(Cursor),
+    /// It is reached by a press alone, which goes on to what is beneath it: no move, release, wheel, or hover reaches
+    /// it, no capture holds it, and the window chooses the cursor as if it were not drawn. A parent lists it over a child
+    /// it calls, so a press into the child reaches the parent as well.
+    Presses,
     /// It is not reached: the pointer goes to what is beneath it, as if it were not drawn.
     Ignores,
 }
@@ -257,17 +263,18 @@ impl Entry {
         (child_id, length): (impl Fn(&PathSegment) -> ActorId, impl Fn(&Bytes) -> usize),
     ) -> Result<Listed, EntryRefused> {
         let picks = |pointer: &Pointer| -> Result<Picks, EntryRefused> {
-            let (blocks, cursor) = match pointer {
+            let hearing = match pointer {
                 Pointer::Ignores => return Ok(Picks::Ignores),
-                Pointer::Blocks(cursor) => (true, cursor),
-                Pointer::Passes(cursor) => (false, cursor),
+                Pointer::Blocks(cursor) => Hearing::Everything { blocks: true, cursor: cursor.clone() },
+                Pointer::Passes(cursor) => Hearing::Everything { blocks: false, cursor: cursor.clone() },
+                Pointer::Presses => Hearing::Presses,
             };
-            if let Cursor::Image(image) = cursor {
+            if let Hearing::Everything { cursor: Cursor::Image(image), .. } = &hearing {
                 image.check(length(&image.pixels)).map_err(EntryRefused::Cursor)?;
             }
             let actor = hearer.ok_or(EntryRefused::Unheard)?;
 
-            Ok(Picks::Reaches(Reaching { actor, entry: at, blocks, cursor: cursor.clone() }))
+            Ok(Picks::Reaches(Reaching { actor, entry: at, hearing }))
         };
         let listed = match self {
             Self::Draw { placement, pointer } => Listed::Draw { placement: placement.id, picks: picks(pointer)? },
@@ -309,20 +316,19 @@ pub(crate) enum Picks {
     Reaches(Reaching),
 }
 
-/// The entry `entry` of the list `actor` sent, which the pointer reaches, whether it blocks the pointer from what is
-/// beneath it, and the cursor it shows: a [`Reach`] once the walk places it.
+/// The entry `entry` of the list `actor` sent, which the pointer reaches, and what of the pointer it hears: a [`Reach`]
+/// once the walk places it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reaching {
     pub actor: ProtocolRef<Hearer>,
     pub entry: u32,
-    pub blocks: bool,
-    pub cursor: Cursor,
+    pub hearing: Hearing,
 }
 
 impl Reaching {
     /// The entry as the window is told of it, drawn with its list's origin at `origin`, in surface pixels.
     pub fn at(&self, origin: Vec2) -> Reach {
-        Reach { actor: self.actor, entry: self.entry, blocks: self.blocks, origin, cursor: self.cursor.clone() }
+        Reach { actor: self.actor, entry: self.entry, origin, hearing: self.hearing.clone() }
     }
 }
 

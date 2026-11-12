@@ -28,13 +28,22 @@ fn actor(number: u64) -> ProtocolRef<Hearer> {
 /// The entry `entry` of `actor`'s list, drawn at the window's origin, blocking the pointer from what is beneath it,
 /// declaring the default cursor.
 fn blocks(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: true, origin: Vec2::ZERO, cursor: Cursor::Default }
+    let hearing = Hearing::Everything { blocks: true, cursor: Cursor::Default };
+
+    Reach { actor, entry, origin: Vec2::ZERO, hearing }
 }
 
 /// The entry `entry` of `actor`'s list, drawn at the window's origin, letting the pointer through to what is beneath
 /// it, declaring the default cursor.
 fn passes(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
-    Reach { actor, entry, blocks: false, origin: Vec2::ZERO, cursor: Cursor::Default }
+    let hearing = Hearing::Everything { blocks: false, cursor: Cursor::Default };
+
+    Reach { actor, entry, origin: Vec2::ZERO, hearing }
+}
+
+/// The entry `entry` of `actor`'s list, drawn at the window's origin, hearing presses alone.
+fn presses(actor: ProtocolRef<Hearer>, entry: u32) -> Reach {
+    Reach { actor, entry, origin: Vec2::ZERO, hearing: Hearing::Presses }
 }
 
 /// `reach`, its list drawn with its origin at `x`, `y` of the window.
@@ -42,9 +51,11 @@ fn drawn_at(reach: Reach, x: f32, y: f32) -> Reach {
     Reach { origin: Vec2::new(x, y), ..reach }
 }
 
-/// `reach`, declaring `cursor`.
+/// `reach`, which hears every pointer event, declaring `cursor`.
 fn showing(mut reach: Reach, cursor: Cursor) -> Reach {
-    reach.cursor = cursor;
+    if let Hearing::Everything { cursor: declared, .. } = &mut reach.hearing {
+        *declared = cursor;
+    }
 
     reach
 }
@@ -72,6 +83,7 @@ fn heard(events: &[Event]) -> Cascade {
 const MOVED: Event = Event::PointerMoved { x: 1.0, y: 2.0 };
 const PRESSED: Event = Event::PointerDown { x: 1.0, y: 2.0, button: Button::Main };
 const RELEASED: Event = Event::PointerUp { x: 1.0, y: 2.0, button: Button::Main };
+const WHEELED: Event = Event::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: 3.0 };
 
 #[test]
 fn a_press_reaches_down_to_the_topmost_entry_that_blocks_and_no_lower() {
@@ -596,4 +608,71 @@ fn a_window_asks_its_host_for_a_cursor_only_as_the_one_it_shows_changes() -> Res
     assert_eq!(shown(&mut harness, vec![], 3)?, set(Cursor::Default));
 
     Ok(())
+}
+
+#[test]
+fn a_press_reaches_an_entry_that_hears_presses_alone_and_goes_on_beneath_it_to_the_topmost_that_blocks() {
+    // Catches an entry that hears presses alone missing the press, so a parent's focused field keeps its caret after
+    // a click into its child; one that stops the press, so the child it is listed over never hears its own click; and
+    // one beneath an entry that blocks still sent the press, so a click on the console blurs the game's field.
+    let (parent, child, beneath) = (actor(1), actor(2), actor(3));
+    let mut cascade = heard(&[PRESSED]);
+    let stack = [presses(parent, 7), blocks(child, 2), presses(beneath, 0)];
+
+    let sent = cascade.picked(WINDOW, under(1, &stack));
+
+    let down = PointerEvent::PointerDown { x: 1.0, y: 2.0, button: Button::Main };
+    let expected = vec![to(child, 2, PointerEvent::PointerEntered), to(parent, 7, down), to(child, 2, down)];
+    assert_eq!(sent, expected);
+}
+
+#[test]
+fn an_entry_that_hears_presses_alone_hears_no_move_hover_wheel_or_release_and_is_never_captured() {
+    // Catches an entry that hears presses alone treated as one that passes: hovered, so the parent lights a widget the
+    // child covers; sent the moves and the wheel under the pointer; captured by its press, so a drag in the child also
+    // drags in the parent and the release reaches it; and named as what the release was over, so a drop into the child
+    // lands on the parent.
+    let (parent, child) = (actor(1), actor(2));
+    let mut cascade = heard(&[MOVED, PRESSED, MOVED, RELEASED, WHEELED]);
+    let stack = [presses(parent, 7), blocks(child, 2)];
+
+    let sent = cascade.picked(WINDOW, under(5, &stack));
+
+    let over = Over::Entry { actor: child, entry: 2, x: 1.0, y: 2.0 };
+    let moved = PointerEvent::PointerMoved { x: 1.0, y: 2.0 };
+    let down = PointerEvent::PointerDown { x: 1.0, y: 2.0, button: Button::Main };
+    let up = PointerEvent::PointerUp { x: 1.0, y: 2.0, button: Button::Main, over };
+    let wheel = PointerEvent::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: 3.0 };
+    let expected = vec![
+        to(child, 2, PointerEvent::PointerEntered),
+        to(child, 2, moved),
+        to(parent, 7, down),
+        to(child, 2, down),
+        to(child, 2, moved),
+        to(child, 2, up),
+        to(child, 2, wheel),
+    ];
+    assert_eq!(sent, expected);
+}
+
+#[test]
+fn an_entry_that_hears_presses_alone_never_chooses_the_cursor_and_a_drag_beneath_it_keeps_the_dragged_one() {
+    // Catches the cursor taken from an entry that hears presses alone, so a parent's hit over its child replaces the
+    // child's I-beam with the default; and that entry captured first by the press, so the child's drag never shows the
+    // grip it declares once its drag begins.
+    let (parent, child) = (actor(1), actor(2));
+    let mut resting = Cascade::default();
+    resting.picked(WINDOW, under(0, &[presses(parent, 7), showing(blocks(child, 2), Cursor::Text)]));
+    let mut dragging = heard(&[PRESSED, MOVED]);
+    dragging.picked(WINDOW, under(1, &[presses(parent, 7), showing(blocks(child, 2), Cursor::Grab)]));
+    let pressed = dragging.cursor().clone();
+
+    dragging.picked(WINDOW, under(2, &[presses(parent, 7), showing(blocks(child, 2), Cursor::Grabbing)]));
+    let mut alone = Cascade::default();
+    alone.picked(WINDOW, under(0, &[presses(parent, 7)]));
+
+    assert_eq!(resting.cursor(), &Cursor::Text);
+    assert_eq!(pressed, Cursor::Grab);
+    assert_eq!(dragging.cursor(), &Cursor::Grabbing, "the child's drag began beneath the parent's hit");
+    assert_eq!(alone.cursor(), &Cursor::Default);
 }
