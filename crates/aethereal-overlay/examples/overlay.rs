@@ -60,7 +60,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Launches the backdrop with the overlay listed, and drawn as the root list's one root, the link to the hub beside them, and a toolbox of the renderer's,
+/// Launches the backdrop with the overlay listed, the root list drawing the overlay over the backdrop, the link to the hub beside them, and a toolbox of the renderer's,
 /// the window's, the pacer's, and the logs' tools offered to the tools the link hands the hub, on as many workers as the machine has cores, at most
 /// four, with what its command line and environment set over that.
 fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
@@ -93,7 +93,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
             (CaptureTool, RecordTool, TargetTool, StatsTool, LogsTool, InputTool, WindowTool, PaceTool),
             Tools,
         >>()
-        .draws::<(Overlay,)>()
+        .draws::<(Backdrop, Overlay)>()
         .flags(|flags| {
             flags.flag("size", 's', WindowsSettings::FIRST_SIZE).flag("mode", 'm', WindowsSettings::FIRST_MODE).flag(
                 "title",

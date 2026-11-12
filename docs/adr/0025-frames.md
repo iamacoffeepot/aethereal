@@ -129,7 +129,7 @@ enum Read { Float, Uint, Depth }   // texture_2d<f32>, texture_2d<u32>, texture_
 Place {
     mesh: MeshId,
     instances: Drawn,
-    joins: Vec<Join>,          // Join::listed::<Splats>(frame, program, bindings): the pass by its type's id,
+    joins: Vec<Join>,          // Join::to::<Splats>(frame, program, bindings): the pass by its type's id,
                                // drawn only while its maker lists it (ADR-0031, ADR-0055)
 }                                                                    -> Made<PlacementId> | Refused
 ```

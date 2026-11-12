@@ -1,18 +1,19 @@
-//! The page's entry points, and an actor that places two squares and a tint, then reads back what was drawn and the
-//! storage it drew from.
+//! The page's entry points, and an actor that places two squares and a tint over them and lists them, the root list's
+//! one root, then reads back what was drawn and the storage it drew from.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::Main;
-use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
+use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, PlacementId, Resource};
 use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
@@ -28,7 +29,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the reader.
+/// the renderer, which opens WebGPU on it, and the reader, the root list.
 ///
 /// # Errors
 ///
@@ -42,6 +43,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Reader>()
+        .draws::<(Reader,)>()
         .run()?
         .await?;
 
@@ -130,8 +132,8 @@ const TEXELS: [u8; 16] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130
 /// The frames drawn before the reader reads one back, so both placements are drawn.
 const SETTLED: u32 = 3;
 
-/// The reader: it makes what it draws one ask after another, each answer carrying what was made so far, places it,
-/// and once a few frames are drawn reads back a frame, its texture, its storage, and a frame's time.
+/// The reader: it makes what it draws one ask after another, each answer carrying what was made so far, places it and
+/// lists it, and once a few frames are drawn reads back a frame, its texture, its storage, and a frame's time.
 #[derive(Bound)]
 #[kind(name = "aether.example.reader")]
 enum Reader {
@@ -173,8 +175,8 @@ struct MadePrograms {
 enum Placing {
     /// The splats, with what the tint is then placed with.
     Splats { mesh: MeshId, tint: ProgramId, storage: StorageId },
-    /// The tint.
-    Tint { storage: StorageId },
+    /// The tint, once the splats were placed.
+    Tint { storage: StorageId, splats: PlacementId },
 }
 
 /// What the texture was asked for with: the storage the splats are drawn from, read back with it.
@@ -398,14 +400,18 @@ impl Handles<Answer<Stored, MadePrograms>> for Reader {
 }
 
 impl Handles<Answer<Placed, Placing>> for Reader {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>, Asks<Path<Renderer>, CreateTexture, Splatted>);
+    type Sends = (
+        Asks<Path<Renderer>, Place, Placing>,
+        Tells<Path<Renderer>, DrawList>,
+        Asks<Path<Renderer>, CreateTexture, Splatted>,
+    );
 
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
             return Ok(());
         };
@@ -414,13 +420,17 @@ impl Handles<Answer<Placed, Placing>> for Reader {
         };
         let storage = match placing {
             Placing::Splats { mesh, tint, storage } => {
-                // Drawn after the splats, as the renderer draws the programs it made first first; nothing promises it.
                 let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
                 let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
-                turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint { storage })?;
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint { storage, splats: placement })?;
                 return Ok(());
             }
-            Placing::Tint { storage } => storage,
+            Placing::Tint { storage, splats } => {
+                // The tint is listed after the splats, so it is drawn over them.
+                let entries = [splats, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
+                storage
+            }
         };
         let pixels = match turn.put(TEXELS.to_vec()) {
             Ok(pixels) => pixels,

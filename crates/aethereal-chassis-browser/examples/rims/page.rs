@@ -1,21 +1,23 @@
 //! The page's entry points, and an actor that makes a frame of a floor drawn at one sample writing its depth, rims drawn
 //! at four samples with their alpha as their coverage, reading the floor's depth and a depth of their own, and an
-//! effect that lays the rims on the floor onto the canvas, then places the floor and five rims in it.
+//! effect that lays the rims on the floor onto the canvas, then places the floor and five rims in it and lists them,
+//! the root list's one root.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
 use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, samples, scale};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
-use aethereal_render::placement::{Drawn, Join, Place, Placed};
+use aethereal_render::placement::{Drawn, Join, Place, Placed, PlacementId};
 use aethereal_render::program::{
     Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
@@ -26,7 +28,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the rimmer.
+/// the renderer, which opens WebGPU on it, and the rimmer, the root list.
 ///
 /// # Errors
 ///
@@ -40,6 +42,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Rimmer>()
+        .draws::<(Rimmer,)>()
         .run()?
         .await?;
 
@@ -167,7 +170,7 @@ fn lay(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
 const RIMS: u32 = 5;
 
 /// The rimmer: it makes what it draws one ask after another, each answer carrying what was made so far, makes its
-/// frame, and places the floor and the rims.
+/// frame, and places the floor and the rims and lists them.
 #[derive(Bound)]
 #[kind(name = "aether.example.rimmer")]
 enum Rimmer {
@@ -220,8 +223,8 @@ struct MadePrograms {
 enum Placing {
     /// The floor, with what the rims are then placed with.
     Floor { mesh: MeshId, rims: ProgramId },
-    /// The rims.
-    Rims,
+    /// The rims, once the floor was placed.
+    Rims { floor: PlacementId },
 }
 
 impl Actor for Rimmer {
@@ -456,29 +459,35 @@ impl Handles<Answer<Framed, MadePrograms>> for Rimmer {
     }
 }
 
+/// The floor placed, the rims are asked for; the rims placed, both are listed.
 impl Handles<Answer<Placed, Placing>> for Rimmer {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>,);
+    type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
             return Ok(());
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        let Placing::Floor { mesh, rims } = placing else {
-            say(String::from("placed floor rims"));
-            *self = Self::Drawing;
-            return Ok(());
-        };
-        let join = Join::to::<Rims>(Frame::Main(window), rims, Vec::new());
-        let place = Place { mesh, instances: Drawn::Count(RIMS), joins: vec![join] };
-        turn.to(path::<Renderer>(())).ask(&place, &Placing::Rims)?;
+        match placing {
+            Placing::Floor { mesh, rims } => {
+                let join = Join::to::<Rims>(Frame::Main(window), rims, Vec::new());
+                let place = Place { mesh, instances: Drawn::Count(RIMS), joins: vec![join] };
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Rims { floor: placement })?;
+            }
+            Placing::Rims { floor } => {
+                let entries = [floor, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
+                say(String::from("placed floor rims"));
+                *self = Self::Drawing;
+            }
+        }
 
         Ok(())
     }

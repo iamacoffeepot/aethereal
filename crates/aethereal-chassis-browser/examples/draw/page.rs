@@ -1,4 +1,5 @@
-//! The page's entry points, and an actor that places a ring of triangles and moves them at each `Tick`.
+//! The page's entry points, and an actor that places a ring of triangles, lists it, the root list's one root, and moves
+//! them at each `Tick`.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
@@ -8,6 +9,7 @@ use aethereal_actor::{
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -25,15 +27,19 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the drawer.
+/// the renderer, which opens WebGPU on it, and the drawer, the root list.
 ///
 /// # Errors
 ///
 /// When the canvas or WebGPU on it will not open, the page will not be listened to, or a root does not begin.
 #[wasm_bindgen(wasm_bindgen_futures = aethereal_chassis_browser::wasm_bindgen_futures)]
 pub async fn start() -> Result<Program, JsError> {
-    let program =
-        Browser::program().with_cycle::<(Tick, Render)>().root::<Windows>().root::<Renderer>().root::<Drawer>();
+    let program = Browser::program()
+        .with_cycle::<(Tick, Render)>()
+        .root::<Windows>()
+        .root::<Renderer>()
+        .root::<Drawer>()
+        .draws::<(Drawer,)>();
 
     Ok(Program::from(program.run()?.await?))
 }
@@ -91,7 +97,7 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 /// The drawer: it asks the shape of its window's main pass, makes what it draws one ask after another, each answer
-/// carrying what was made so far, places it, and from then writes the ring at each `Tick`.
+/// carrying what was made so far, places it and lists it, and from then writes the ring at each `Tick`.
 #[derive(Bound)]
 #[kind(name = "aether.example.drawer")]
 enum Drawer {
@@ -370,16 +376,18 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Drawer {
 }
 
 impl Handles<Answer<Placed, MadeAll>> for Drawer {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
         (answered, made): (Answered<Placed>, MadeAll),
-        _: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Placed::Made(placement)) => {
                 say(format!("placed {placement:?}"));
+                let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
                 *self = Self::Drawing { instances: made.instances, uniforms: made.uniforms };
             }
             Answered::Yes(Placed::Refused(why)) => say(format!("the ring was not placed: {why:?}")),

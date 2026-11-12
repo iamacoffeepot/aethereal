@@ -17,8 +17,8 @@ fn count(@builtin(global_invocation_id) at: vec3<u32>) {
 }
 ";
 
-/// [`COUNT`], made and kept in `kept`, with a field of 64 elements it writes, both made by [`MAKER`]: their ids.
-fn counting(gpu: &Gpu, kept: &mut Kept) -> (ComputeId, StorageId) {
+/// [`COUNT`], made and kept in `kept`, with a field of 64 elements it writes, both made by `maker`: their ids.
+pub(super) fn counting(gpu: &Gpu, kept: &mut Kept, maker: ActorId) -> (ComputeId, StorageId) {
     let create = CreateCompute {
         wgsl: blob(),
         entry: String::from("count"),
@@ -32,28 +32,28 @@ fn counting(gpu: &Gpu, kept: &mut Kept) -> (ComputeId, StorageId) {
         panic!("the counting program is checked");
     };
     let compute = kept.ids.next();
-    kept.computes.keep(compute, MAKER, compute_pipeline(gpu.device(), &create, COUNT, checked));
+    kept.computes.keep(compute, maker, compute_pipeline(gpu.device(), &create, COUNT, checked));
     let storage = kept.ids.next();
     let buffer = upload(gpu, &[0; 256], STORAGE_USAGE);
-    kept.storage.keep(storage, MAKER, Storage { buffer, size: 256 });
+    kept.storage.keep(storage, maker, Storage { buffer, size: 256 });
 
     (ComputeId { id: compute }, StorageId { id: storage })
 }
 
 /// A dispatch of `compute` over each element of `field`, which it writes, in the pass [`Compute`] of `frame`.
-fn counts(frame: Frame, (compute, field): (ComputeId, StorageId)) -> CreateDispatch {
+pub(super) fn counts(frame: Frame, (compute, field): (ComputeId, StorageId)) -> CreateDispatch {
     let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(field) }];
 
     CreateDispatch { join: Dispatch::to::<Compute>(frame, compute, bindings), size: Invocations::PerElement(field) }
 }
 
 /// The dispatch `create` asks for, asked to run once.
-fn run_once(create: CreateDispatch) -> RunDispatch {
+pub(super) fn run_once(create: CreateDispatch) -> RunDispatch {
     RunDispatch { join: create.join, size: create.size }
 }
 
 /// Asks `kept` to run `run` once, for [`MAKER`], as the renderer does: checked and kept until it runs. Its id.
-fn asked_once(device: &wgpu::Device, kept: &mut Kept, run: RunDispatch) -> u64 {
+pub(super) fn asked_once(device: &wgpu::Device, kept: &mut Kept, run: RunDispatch) -> u64 {
     let Ok(made) = kept.checked_dispatch(device, &run.dispatch(), MAKER) else {
         panic!("the dispatch to run once is made");
     };
@@ -95,7 +95,7 @@ fn a_dispatch_run_once_runs_in_the_first_cycle_that_draws_its_frame_and_never_ag
     let gpu = Gpu::new(device.clone(), queue.clone());
     let second = nth_window(1);
     let mut kept = kept_for(&device, &[window(), second]);
-    let counting = counting(&gpu, &mut kept);
+    let counting = counting(&gpu, &mut kept, MAKER);
     let run = run_once(counts(Frame::Main(second), counting));
     let once = asked_once(&device, &mut kept, run);
 
@@ -115,7 +115,7 @@ fn a_dispatch_run_once_whose_frame_goes_for_good_never_runs_and_one_whose_frame_
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let gpu = Gpu::new(device.clone(), queue.clone());
     let mut kept = kept(&device);
-    let counting = counting(&gpu, &mut kept);
+    let counting = counting(&gpu, &mut kept, MAKER);
     let main = PassSpec::of::<Main>(Does::Draw {
         into: Target::End,
         depth: DepthUse::Off,
@@ -155,7 +155,7 @@ fn a_dispatch_run_once_counts_among_its_pass_s_dispatches_until_it_has_run() {
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let gpu = Gpu::new(device.clone(), queue.clone());
     let mut kept = kept(&device);
-    let counting = counting(&gpu, &mut kept);
+    let counting = counting(&gpu, &mut kept, MAKER);
     let writes = counts(Frame::Main(window()), counting);
     asked_once(&device, &mut kept, run_once(writes.clone()));
 

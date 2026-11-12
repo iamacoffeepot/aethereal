@@ -1,16 +1,20 @@
 //! Lines of text over the window example's ring, for eyes to judge the renderer's text by (ADR-0052): its own
 //! proportional font at 13, 18, and 32 pixels, its monospace font at 13, a line of two coloured runs, an outlined line
 //! over the ring, and a line clipped by a box. Each line is asked for, then placed over the window's main pass once it
-//! is made.
+//! is made, and listed, top to bottom, in the captions' draw list, which the program's root list calls after the ring
+//! (ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Top,
+    Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Main;
+use aethereal_render::placement::PlacementId;
 use aethereal_render::text::{
     Align, Clip, Colour, CreateText, Font, Layer, Outline, PlaceText, Run, TextJoin, TextMade, TextPlaced, Wrap,
     widest_outline,
@@ -44,11 +48,14 @@ pub struct Captioned {
     window: WindowId,
 }
 
-/// The captions: they ask for each line's text as the program starts, and place each as it is made.
+/// The captions: they ask for each line's text as the program starts, place each as it is made, and list each placed,
+/// top to bottom.
 #[derive(Bound)]
 #[kind(name = "aether.example.captions")]
 pub struct Captions {
     window: WindowId,
+    /// Each line placed so far, by its number, beside its placement, in the order of the numbers.
+    placed: Vec<(u32, PlacementId)>,
 }
 
 /// Which line a text or its placement was asked for, counted from zero.
@@ -79,7 +86,7 @@ impl Actor for Captions {
     fn begin(captioned: Captioned, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
-        Ok(Self { window: captioned.window })
+        Ok(Self { window: captioned.window, placed: Vec::new() })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -179,18 +186,24 @@ impl Handles<Answer<TextMade, Caption>> for Captions {
     }
 }
 
+/// A line placed is listed in its place among the others, top to bottom.
 impl Handles<Answer<TextPlaced, Caption>> for Captions {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
         (answered, caption): (Answered<TextPlaced>, Caption),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let placed = matches!(answered, Answered::Yes(TextPlaced::Made(_)));
-        if !placed {
+        let Answered::Yes(TextPlaced::Made(placement)) = answered else {
             turn.log(Level::Error, format_args!("{caption:?} was not placed: {answered:?}"));
-        }
+            return Ok(());
+        };
+        let at = self.placed.partition_point(|(line, _)| *line < caption.line);
+        self.placed.insert(at, (caption.line, placement));
+        let entries =
+            self.placed.iter().map(|(_, placement)| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
 
         Ok(())
     }

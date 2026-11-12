@@ -24,7 +24,7 @@ The fault seen was of the same kind. Placements of one program in one pass were 
 
 **An actor may declare the order of its own placements within a pass, by sending the list of them to draw, in order. The list is kept until the actor sends another.**
 
-**Amended by ADR-0055.** Every join is listed: `Order`, `Loose`, and `Join::to` are removed, and a placement no list names is not drawn. An actor sends one list, `DrawList { entries }`, not one for each frame and pass: each placement's join names its frame and pass, and the list's entries are drawn in each pass they land in, in list order. A list may call the sender's direct children (`Entry::Call(Child)`), whose lists are drawn at that place, and the program's setup writes the root list. Order between actors is declared by those calls. The rest of this record holds for the list as ADR-0055 shapes it.
+**Amended by ADR-0055.** Every join is listed: `Order` and `Loose` are removed, the listed join takes the plain name `Join::to`, and a placement no list names is not drawn. A dispatch is listed too (`Entry::Run`), and runs only where a list names it. An actor sends one list, `DrawList { entries }`, not one for each frame and pass: each placement's join names its frame and pass, and the list's entries are drawn in each pass they land in, in list order. A list may call the sender's direct children (`Entry::Call(Child)`), whose lists are drawn at that place, and the program's setup writes the root list. Order between actors is declared by those calls. The rest of this record holds for the list as ADR-0055 shapes it.
 
 ```rust
 Place { mesh: MeshId, instances: Drawn, joins: Vec<Join> }                    -> Made<PlacementId> | Refused

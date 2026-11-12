@@ -1,18 +1,20 @@
 //! The page's entry points, and an actor that makes items in storage, makes the window's main frame with three compute
 //! passes before the one that draws, dispatches into them the three passes of an ordered compaction that culls the
-//! items into a list and a count each frame, and places a program drawn as many times as the count says, then reads
-//! the count and the list back to see that the GPU kept what it expects, in order.
+//! items into a list and a count each frame, and places a program drawn as many times as the count says, lists them
+//! all, the root list's one root, then reads the count and the list back to see that the GPU kept what it expects, in
+//! order.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
-    Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
+    Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::builder::{FrameBuilder, Onto, depth};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
@@ -33,7 +35,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the culler.
+/// the renderer, which opens WebGPU on it, and the culler, the root list.
 ///
 /// # Errors
 ///
@@ -47,6 +49,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Culler>()
+        .draws::<(Culler,)>()
         .run()?
         .await?;
 
@@ -157,7 +160,8 @@ const QUAD_INDICES: u32 = 6;
 const SETTLED: u32 = 3;
 
 /// The culler: it makes what it runs and draws one ask after another, each answer carrying what was made so far, makes
-/// the frame, places and dispatches into it, and reads the arguments and the list back once a few frames have passed.
+/// the frame, places and dispatches into it, lists them, and reads the arguments and the list back once a few frames
+/// have passed.
 #[derive(Bound)]
 #[kind(name = "aether.example.culler")]
 enum Culler {
@@ -262,13 +266,14 @@ struct Made {
     arguments: StorageId,
 }
 
-/// Which pass's dispatch was asked for, with everything made.
+/// Which pass's dispatch was asked for, with everything made, and the entries of the culler's list so far: the
+/// placement, then each dispatch made, in the order made.
 #[derive(Plain)]
 #[kind(name = "aether.example.dispatching")]
 enum Dispatching {
-    Tally { made: Made },
-    Offsets { made: Made },
-    Scatter { made: Made },
+    Tally { made: Made, entries: Vec<Entry> },
+    Offsets { made: Made, entries: Vec<Entry> },
+    Scatter { made: Made, entries: Vec<Entry> },
 }
 
 /// Which storage a reading is of.
@@ -581,15 +586,15 @@ impl Handles<Answer<Framed, Made>> for Culler {
 fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
     let frame = Frame::Main(window);
     match dispatching {
-        Dispatching::Tally { made } => CreateDispatch {
+        Dispatching::Tally { made, .. } => CreateDispatch {
             join: Dispatch::to::<Tally>(frame, made.culls.tally, bound(&[(0, made.items), (1, made.totals)])),
             size: Invocations::PerElement(made.items),
         },
-        Dispatching::Offsets { made } => CreateDispatch {
+        Dispatching::Offsets { made, .. } => CreateDispatch {
             join: Dispatch::to::<Offsets>(frame, made.culls.offsets, bound(&[(1, made.totals), (3, made.arguments)])),
             size: Invocations::Workgroups([1, 1, 1]),
         },
-        Dispatching::Scatter { made } => {
+        Dispatching::Scatter { made, .. } => {
             let bindings = bound(&[(0, made.items), (2, made.visible), (4, made.totals)]);
             CreateDispatch {
                 join: Dispatch::to::<Scatter>(frame, made.culls.scatter, bindings),
@@ -607,39 +612,47 @@ impl Handles<Answer<Placed, Made>> for Culler {
         (answered, made): (Answered<Placed>, Made),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("the dots were not placed: {answered:?}"));
             return Ok(());
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        let dispatching = Dispatching::Tally { made };
+        let dispatching =
+            Dispatching::Tally { made, entries: vec![Entry::Draw { placement, pointer: Pointer::Ignores }] };
         turn.to(path::<Renderer>(())).ask(&dispatch(window, &dispatching), &dispatching)?;
 
         Ok(())
     }
 }
 
+/// Each pass's dispatch made, the next is asked for; the last made, the placement and the three are listed.
 impl Handles<Answer<Dispatched, Dispatching>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
+    type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
         &mut self,
         (answered, dispatching): (Answered<Dispatched>, Dispatching),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Dispatched::Made(_)) = answered else {
+        let Answered::Yes(Dispatched::Made(dispatched)) = answered else {
             say(format!("a pass of the cull was not dispatched: {answered:?}"));
             return Ok(());
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
+        let ran = Entry::Run(dispatched);
         let next = match dispatching {
-            Dispatching::Tally { made } => Dispatching::Offsets { made },
-            Dispatching::Offsets { made } => Dispatching::Scatter { made },
-            Dispatching::Scatter { made } => {
+            Dispatching::Tally { made, entries } => {
+                Dispatching::Offsets { made, entries: [entries, vec![ran]].concat() }
+            }
+            Dispatching::Offsets { made, entries } => {
+                Dispatching::Scatter { made, entries: [entries, vec![ran]].concat() }
+            }
+            Dispatching::Scatter { made, entries } => {
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: [entries, vec![ran]].concat() })?;
                 say(format!("placed dispatched items={ITEMS} workgroups={GROUPS}"));
                 *self = Self::Running { arguments: made.arguments, visible: made.visible, drawn: 0 };
                 return Ok(());

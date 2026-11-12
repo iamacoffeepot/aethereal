@@ -45,7 +45,7 @@ struct DrawList { entries: Vec<Entry> }   // the sender's list: its own calls, a
 
 enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
-    Run(DispatchId),                                          // a dispatch of the sender's, in a compute pass
+    Run(DispatchId),                                          // a dispatch of the sender's, in the compute pass it joins
     Call(Child),                                              // draw what this direct child of the sender draws, here
     Hit { frame: Frame, pass: PassName, rect: Rect, pointer: Pointer }, // drawn into that pass's picking stack only (see Input)
     Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
@@ -58,7 +58,8 @@ enum Pointer { Blocks, Passes, Ignores }
 - **A parent's list is the only order between actors.** Reordering children is the parent sending a new list (ADR-0031: a later list replaces an earlier one). It is one list, so the change lands whole, and nothing below the parent changes. A parent can reorder its children every frame, as one that sorts transparent children by distance does, at the cost of one list.
 - **An actor whose parent does not call it is not drawn.** An actor's list is kept until it sends another, and drawn only where its parent calls it. The setup's root list and the parents' lists decide what is on screen.
 - **Lists are authored in parallel.** No actor waits on another's list: a parent names the child, and the walk takes whatever list the child last sent. A list that is late shows the last one, never a gap (ADR-0031).
-- **An actor's list is the same in every frame and every pass.** The frame and pass of each call are declared through what is listed: a placement's join names its frame and pass (`Join::listed::<Interface>(frame, ..)`), a dispatch's names its compute pass, and `Hit` and `Keys` name their frame. For each pass of each frame, the walk issues the entries that land there, in order.
+- **An actor's list is the same in every frame and every pass.** The frame and pass of each call are declared through what is listed: a placement's join names its frame and pass (`Join::to::<Interface>(frame, ..)`), a dispatch's names its compute pass (`Dispatch::to::<Compute>(frame, ..)`), and `Hit` and `Keys` name their frame. For each pass of each frame, the walk issues the entries that land there, in order.
+- **A dispatch asked to run once is in no list.** `RunDispatch` (ADR-0026) has no id, so no list can name it: it runs in its pass before the dispatches listed there, in the order asked. Its place cannot show, as the check refuses two dispatches of one pass of which one writes what the other uses (ADR-0026: `DispatchRefused::Written`).
 
 ### The root list is fixed at setup
 
@@ -112,7 +113,7 @@ enum Pointer { Blocks, Passes, Ignores }
 ## Consequences
 
 - **The draw sequence is reproducible.** The same lists give the same calls in the same order every frame and every run, so ties at equal depth do not flicker, captures compare, and an actor can draw front to back on purpose.
-- **Removed:** `Order`, `Join::to`, `Listing::Loose`, the renderer's loose-mesh and loose-text walks, and grouping a pass's draws or dispatches by program. A placement or dispatch draws only when a list names it, and one that no list names is logged. Every drawing actor sends a list. The 17 call sites of `Join::to` outside tests, `TextJoin::to`, and the tests that use `Order::Loose` move to lists, called from the root list or a parent.
+- **Removed:** `Order`, the loose `Join::to` and `TextJoin::to`, `Listing::Loose`, the renderer's loose-mesh and loose-text walks, and grouping a pass's draws or dispatches by program. A placement or dispatch draws only when a list names it; one that no list names draws nothing, and is not logged, as leaving an entry out of a list is how an actor hides it. With every join listed, `Join::listed` and `TextJoin::listed` said nothing more, and take the plain names `Join::to` and `TextJoin::to`, as `Dispatch::to` names a dispatch's pass. Every drawing actor sends a list. The call sites that drew loose, outside tests and in them, move to lists, called from the root list or a parent.
 - **Every pixel of a window traces to an actor.** The picking stack names the actor and entry that drew a pixel, and the chain of calls above it, so an inspector, an agent's "what is at (x, y)", and the authoring menu's "select what I clicked" read what input already reads.
 - **Each actor's list can be recorded on its own thread,** as a GPU render bundle, and the bundles executed in the walk's order. Not needed now, but nothing in the order prevents it.
 - **Each program in a window frame's passes gets a step it did not write,** and each window frame gets a probe buffer and a readback. Programs run in a texture frame get neither: a texture frame has no pointer.
@@ -122,10 +123,10 @@ enum Pointer { Blocks, Passes, Ignores }
   - ADR-0031's lists stand as the form of every list, and its "order between actors is still not promised" is replaced. Both items it left for later are settled: dispatches are listed (`Entry::Run`), and nothing is loose.
   - ADR-0053's key focus slot (`TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocus`) is replaced by `Keys` entries. The overlay is last in the root list, so it draws on top.
 - **Follow-on work, in order:**
-  1. The `Interface` pass, the root list in setup, and `Call`, beside `Loose`.
-  2. The overlay moves to `Interface`, last in the root list, as the first client.
-  3. Picking and the input cascade in the window.
-  4. Every `Loose` site moves to a list, and `Order` is deleted.
+  1. The `Interface` pass, the root list in setup, and `Call`, beside `Loose`. Done.
+  2. The overlay moves to `Interface`, last in the root list, as the first client. Done.
+  3. Picking and the input cascade in the window. Done.
+  4. Every `Loose` site moves to a list, dispatches are listed (`Entry::Run`), and `Order` is deleted. Done.
   5. The widget library's own ADR: screens as actors, layout, widget identity across rebuilds, a pool of texts, and clipping for scroll views.
 - **Left open:** texture frames that do not read each other still run in the order of their ids (ADR-0025). Ids come from one count in the order mail was handled, so that order can differ between runs. Whether it must be declared is not decided here.
 

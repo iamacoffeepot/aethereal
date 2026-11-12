@@ -241,7 +241,7 @@ impl Handles<Answer<Uniformed, ChartInstanced>> for Overlay {
             return Ok(());
         };
         let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let join = Join::listed::<Interface>(Frame::Main(self.window), instanced.program, bindings);
+        let join = Join::to::<Interface>(Frame::Main(self.window), instanced.program, bindings);
         let place = Place { mesh: instanced.mesh, instances: Drawn::Records(instanced.instances), joins: vec![join] };
         turn.to(path::<Renderer>(())).ask(&place, &ChartMade { instances: instanced.instances, uniforms })?;
 
@@ -294,7 +294,7 @@ impl Handles<Answer<TextMade, TextAsked>> for Overlay {
             layer: Layer::Over,
             opacity: 1.0,
             clip,
-            joins: vec![TextJoin::listed::<Interface>(Frame::Main(self.window))],
+            joins: vec![TextJoin::to::<Interface>(Frame::Main(self.window))],
         };
         turn.to(path::<Renderer>(())).ask(&place, &TextReady { role, text })?;
 

@@ -60,12 +60,11 @@ pub(in crate::renderer) fn quads(gpu: &Gpu, kept: &mut Kept, wgsl: &str, depth: 
 }
 
 /// A placement by `maker` of a quad from `left` to `right` across the window, top to bottom, tinted `tint` by
-/// `program`, joining the window's main frame's pass [`Main`] as `order` says, each made and kept in `kept`. Answers
-/// its id.
+/// `program`, joining the window's main frame's pass [`Main`], each made and kept in `kept`. Answers its id.
 pub(in crate::renderer) fn placed(
     gpu: &Gpu,
     kept: &mut Kept,
-    (maker, program, order): (ActorId, ProgramId, placement::Order),
+    (maker, program): (ActorId, ProgramId),
     (left, right): (f32, f32),
     tint: [f32; 4],
 ) -> PlacementId {
@@ -90,10 +89,7 @@ pub(in crate::renderer) fn placed(
 
     let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(UniformsId { id: uniforms }) }];
     let frame = Frame::Main(window());
-    let join = match order {
-        placement::Order::Loose => Join::to::<Main>(frame, program, bindings),
-        placement::Order::Listed => Join::listed::<Main>(frame, program, bindings),
-    };
+    let join = Join::to::<Main>(frame, program, bindings);
     let place = Place { mesh: MeshId { id: mesh_id }, instances: Drawn::Count(1), joins: vec![join] };
     assert_eq!(placement::check(&place, &*kept), Ok(()));
     let made = kept.placement(gpu.device(), &place);
@@ -106,10 +102,9 @@ pub(in crate::renderer) fn placed(
     PlacementId { id }
 }
 
-/// A placement by [`MAKER`] of a quad over the whole window, tinted grey by `program`, joining [`Main`] as `order`
-/// says.
-fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId, order: placement::Order) -> PlacementId {
-    placed(gpu, kept, (MAKER, program, order), (-1.0, 1.0), [0.5, 0.5, 0.5, 0.5])
+/// A placement by [`MAKER`] of a quad over the whole window, tinted grey by `program`, joining [`Main`].
+fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId) -> PlacementId {
+    placed(gpu, kept, (MAKER, program), (-1.0, 1.0), [0.5, 0.5, 0.5, 0.5])
 }
 
 /// A list drawing `placements`, in order.
@@ -152,21 +147,20 @@ fn nothing_drawn() -> (Gpu, Kept, ProgramId) {
 }
 
 #[test]
-fn a_listed_placement_draws_only_while_a_list_holds_it_after_the_loose_in_the_lists_order() {
-    // Catches a placement joined listed drawn loose before any list names it, or still drawn once a newer list leaves
-    // it out; an empty list that keeps the last list drawing; and a list drawn in the order of its placements' ids, or
-    // a hash of them, rather than its own.
+fn a_placement_draws_only_while_a_list_holds_it_in_the_lists_order() {
+    // Catches a placement drawn before any list names it, as every placement once was, or still drawn once a newer
+    // list leaves it out; an empty list that keeps the last list drawing; and a list drawn in the order of its
+    // placements' ids, or a hash of them, rather than its own.
     let (gpu, mut kept, program) = nothing_drawn();
-    let loose = whole(&gpu, &mut kept, program, placement::Order::Loose);
-    let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id], "no list names the listed ones");
+    let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program));
+    assert_eq!(drawn_in_main(&kept), Vec::<u64>::new(), "no list names them");
 
     assert_eq!(kept.listed(main_list(&[c, a, b]), MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id, c.id, a.id, b.id]);
+    assert_eq!(drawn_in_main(&kept), vec![c.id, a.id, b.id]);
     assert_eq!(kept.listed(main_list(&[b, c]), MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id, b.id, c.id], "a culled by being left out");
+    assert_eq!(drawn_in_main(&kept), vec![b.id, c.id], "a culled by being left out");
     assert_eq!(kept.listed(main_list(&[]), MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id], "an empty list draws none");
+    assert_eq!(drawn_in_main(&kept), Vec::<u64>::new(), "an empty list draws none");
 }
 
 #[test]
@@ -175,8 +169,8 @@ fn a_list_refused_leaves_the_last_drawing_and_a_listed_placement_released_leaves
     // the last; and a released placement left in its maker's list, drawn after its release or found missing at
     // `Render`, or another's release that takes it out.
     let (gpu, mut kept, program) = nothing_drawn();
-    let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
-    let theirs = placed(&gpu, &mut kept, (OTHER, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
+    let [a, b, c] = [(); 3].map(|()| whole(&gpu, &mut kept, program));
+    let theirs = placed(&gpu, &mut kept, (OTHER, program), (-1.0, 1.0), [0.0; 4]);
     assert_eq!(kept.listed(main_list(&[a, b, c]), MAKER), Ok(()));
 
     let not_owned = Err(ListRefused { at: 1, why: EntryRefused::NotOwner });
@@ -195,8 +189,8 @@ fn a_list_refused_leaves_the_last_drawing_and_a_listed_placement_released_leaves
 fn an_actor_that_ends_takes_its_lists_and_another_actors_list_draws_on() {
     // Catches an ended actor's lists kept, naming placements that went with it, and another actor's dropped with them.
     let (gpu, mut kept, program) = nothing_drawn();
-    let mine = whole(&gpu, &mut kept, program, placement::Order::Listed);
-    let theirs = placed(&gpu, &mut kept, (OTHER, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
+    let mine = whole(&gpu, &mut kept, program);
+    let theirs = placed(&gpu, &mut kept, (OTHER, program), (-1.0, 1.0), [0.0; 4]);
     assert_eq!(kept.listed(main_list(&[mine]), MAKER), Ok(()));
     assert_eq!(kept.listed(main_list(&[theirs]), OTHER), Ok(()));
 
@@ -210,19 +204,18 @@ fn a_pass_draws_the_lists_walked_from_the_root_list_each_child_where_its_parent_
     // the walk: a child drawn after its parent's list rather than where it is called, and an actor no list calls
     // drawn; and a parent's new list that reorders its own placements but leaves its child where it was.
     let (gpu, mut kept, program) = nothing_drawn();
-    let loose = whole(&gpu, &mut kept, program, placement::Order::Loose);
-    let [a, b] = [(); 2].map(|()| whole(&gpu, &mut kept, program, placement::Order::Listed));
-    let mut listed = |maker| placed(&gpu, &mut kept, (maker, program, placement::Order::Listed), (-1.0, 1.0), [0.0; 4]);
+    let [a, b] = [(); 2].map(|()| whole(&gpu, &mut kept, program));
+    let mut listed = |maker| placed(&gpu, &mut kept, (maker, program), (-1.0, 1.0), [0.0; 4]);
     let (child, stray) = (listed(CHILD), listed(STRAY));
     assert_eq!(kept.listed(main_list(&[child]), CHILD), Ok(()));
     assert_eq!(kept.listed(main_list(&[stray]), STRAY), Ok(()));
     let parent = vec![drawn(a, Picks::Ignores), Listed::Call(CHILD), drawn(b, Picks::Ignores)];
     assert_eq!(kept.listed(parent, MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id, a.id, child.id, b.id]);
+    assert_eq!(drawn_in_main(&kept), vec![a.id, child.id, b.id]);
 
     let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), Listed::Call(CHILD)];
     assert_eq!(kept.listed(reordered, MAKER), Ok(()));
-    assert_eq!(drawn_in_main(&kept), vec![loose.id, b.id, a.id, child.id]);
+    assert_eq!(drawn_in_main(&kept), vec![b.id, a.id, child.id]);
 }
 
 /// A frame onto a texture 4 by 4 of `Rgba8`, of one pass, [`Main`], drawing with depth.
@@ -253,7 +246,7 @@ fn a_texture_frame_is_walked_from_its_maker_and_a_main_frame_replaced_from_the_r
     assert_eq!(kept.roots(Frame::Texture(frame)), vec![OTHER]);
     assert_eq!(kept.roots(Frame::Main(window())), vec![MAKER, OTHER]);
 
-    let listed = whole(&gpu, &mut kept, program, placement::Order::Listed);
+    let listed = whole(&gpu, &mut kept, program);
     assert_eq!(kept.listed(main_list(&[listed]), MAKER), Ok(()));
 
     let main = PassSpec::of::<Main>(Does::Draw {
@@ -292,7 +285,7 @@ fn overlap(gpu: &Gpu, unrelated: u32, order: [usize; 2]) -> [u8; 4] {
         kept.ids.next();
     }
     let program = tinted(gpu, &mut kept);
-    let listed = (MAKER, program, placement::Order::Listed);
+    let listed = (MAKER, program);
     let red = placed(gpu, &mut kept, listed, (-1.0, 0.5), [1.0, 0.0, 0.0, 0.5]);
     let blue = placed(gpu, &mut kept, listed, (-0.5, 1.0), [0.0, 0.0, 1.0, 0.5]);
     let quads = [red, blue];

@@ -1,6 +1,7 @@
 //! Dispatches: one compute program, run in one compute pass of a frame, with what it binds, over a count of
 //! invocations, asked for by any actor and checked as it is made, as a placement is, so running it cannot fail
-//! (ADR-0026). One runs in each cycle that draws its frame until it is released, or once, answering when it has run.
+//! (ADR-0026). One runs where its maker's draw list names it, in each cycle that draws its frame, until it is
+//! released (ADR-0055); or once, answering when it has run.
 
 #[cfg(test)]
 mod tests;
@@ -14,8 +15,9 @@ use crate::storage::{self, DISPATCH_ARGUMENTS, StorageId};
 use aethereal_data::{ActorId, Plain};
 
 /// Asks the renderer to run the compute program `join` names in the compute pass it names, with what it binds, over
-/// `size`, in each cycle that draws its frame until it is released: a cycle that draws nothing runs no pass, and a
-/// window's main frame not drawn in a cycle runs none of its dispatches. Answered with [`Dispatched`].
+/// `size`, where its maker's last [`DrawList`](crate::draw_list::DrawList) names it, in the order the lists are walked,
+/// in each cycle that draws its frame until it is released: a cycle that draws nothing runs no pass, and a window's main
+/// frame not drawn in a cycle runs none of its dispatches (ADR-0055). Answered with [`Dispatched`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.create_dispatch")]
 pub struct CreateDispatch {
@@ -26,7 +28,9 @@ pub struct CreateDispatch {
 /// Asks the renderer to run the compute program `join` names once, in the compute pass it names, with what it binds,
 /// over `size`, in the first cycle that draws its frame. It is checked when it is asked, as a [`CreateDispatch`] is,
 /// and refused at once as one is; while it waits it keeps what it binds and counts among its pass's dispatches. It has
-/// no id and nothing to release. Answered with [`DispatchRan`] once the commands of the cycle it ran in are submitted,
+/// no id and nothing to release, and no list names it: it runs in its pass before the dispatches listed there, in the
+/// order asked, which shows nowhere, as the check refuses two dispatches of one pass of which one writes what the other
+/// uses. Answered with [`DispatchRan`] once the commands of the cycle it ran in are submitted,
 /// so what is submitted after sees what it wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.run_dispatch")]
@@ -156,8 +160,8 @@ pub enum DispatchRefused {
     /// Its workgroups, three words from the byte `at`, lie off a word or past the storage's `bytes`.
     Arguments { at: u64, bytes: u64 },
     /// It writes storage another dispatch of its pass reads or writes, or reads storage one of its pass writes, as the
-    /// dispatches of one pass run in no order; or it writes storage a dispatch of another frame writes, and no order of
-    /// frames runs one before the other.
+    /// order of one pass's dispatches is the lists', which can change at any `Render`; or it writes storage a dispatch
+    /// of another frame writes, and no order of frames runs one before the other.
     Written,
     /// It binds the texture of a frame, or storage a frame writes, that reads the frame it joins, through frames
     /// between or at once, or has that frame read storage it writes: frames would read each other round.

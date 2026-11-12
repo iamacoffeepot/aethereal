@@ -18,8 +18,9 @@ use crate::texture::TextureId;
 use crate::uniforms::UniformsId;
 use aethereal_data::Plain;
 
-/// Asks the renderer to draw `mesh` for each of `instances` in every pass `joins` names, once in each, at every frame
-/// until it is released. Answered with [`Placed`].
+/// Asks the renderer to draw `mesh` for each of `instances` in every pass `joins` names, once in each, wherever its
+/// maker's last [`DrawList`](crate::draw_list::DrawList) holds it, in the order the lists are walked, until it is
+/// released (ADR-0055). Answered with [`Placed`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.place")]
 pub struct Place {
@@ -29,7 +30,7 @@ pub struct Place {
 }
 
 /// One pass a placement draws in: the pass `pass` of `frame`, drawn with `program`, binding what `bindings` names at
-/// each place the program binds, in every frame or only while its maker's list holds it, as `order` says (ADR-0031).
+/// each place the program binds, where its maker's list holds it (ADR-0055).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.join")]
 pub struct Join {
@@ -37,33 +38,14 @@ pub struct Join {
     pub pass: PassName,
     pub program: ProgramId,
     pub bindings: Vec<Bind>,
-    pub order: Order,
 }
 
 impl Join {
-    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`, in every frame: the pass named by its type.
+    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`: the pass named by its type.
     #[must_use]
     pub const fn to<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
-        Self { frame, pass: PassName::of::<P>(), program, bindings, order: Order::Loose }
+        Self { frame, pass: PassName::of::<P>(), program, bindings }
     }
-
-    /// The pass `P` of `frame`, drawn with `program`, binding `bindings`, while its maker's last
-    /// [`DrawList`](crate::draw_list::DrawList) holds it, in the order the lists are walked (ADR-0055).
-    #[must_use]
-    pub const fn listed<P: Pass>(frame: Frame, program: ProgramId, bindings: Vec<Bind>) -> Self {
-        Self { frame, pass: PassName::of::<P>(), program, bindings, order: Order::Listed }
-    }
-}
-
-/// When a join is drawn, and in what order among its pass's placements (ADR-0031).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.render.order")]
-pub enum Order {
-    /// In every frame, among the pass's placements in no order an actor may rely on.
-    Loose,
-    /// While its maker's last list holds it, in the order the lists are walked from the program's root list
-    /// (ADR-0055).
-    Listed,
 }
 
 /// How many times a placement is drawn.

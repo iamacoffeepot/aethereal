@@ -15,7 +15,7 @@ use crate::dispatch::{
     self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, RunDispatch,
     Runs, Unrun, Use,
 };
-use crate::draw_list::{self, DrawList, EntryRefused, ListRefused, Listed, Listing, Lists, Picks, Placements};
+use crate::draw_list::{DrawList, ListRefused, Listables, Listed, Lists, Picks};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
 use crate::frame::{
@@ -64,7 +64,7 @@ use groups::{Binds, Entry, Groups};
 use picking::{InPass, Picker, Picking, Probing, Stacks};
 use std::collections::HashMap;
 use std::mem;
-use text::{Listable, PlacedText, TextJoined, Texts};
+use text::{PlacedText, TextJoined, Texts};
 use walk::{End, Making, ReadGroup, Step, Walk};
 use watching::Watch;
 
@@ -627,15 +627,14 @@ struct Placement {
     joins: Vec<Joined>,
 }
 
-/// One pass a placement draws in, with what it draws there with: whether it is drawn loose or by its maker's list, the
-/// program's id, which a pass draws loose placements together by, its pipeline and what it was made against, the bind
+/// One pass a placement draws in, with what it draws there with: the program's id, which a pass sets a pipeline anew
+/// only when it changes by, its pipeline and what it was made against, the bind
 /// groups made for it, from group 1 when the program reads targets of the pass and from group 0 when it reads none,
 /// the group its program binds the picking step in, and the textures and storage they bind, by their ids, with the
 /// storage the placement reads its counts from.
 struct Joined {
     frame: Frame,
     pass: PassName,
-    listing: Listing,
     fits: Fits,
     program: u64,
     pipeline: wgpu::RenderPipeline,
@@ -1851,7 +1850,13 @@ impl Kept {
             Release::Uniforms(uniforms) => self.uniforms.release(uniforms.id, by).map(drop),
             Release::Storage(storage) => self.storage.release(storage.id, by).map(drop),
             Release::Placement(placement) => self.release_placement(placement.id, by),
-            Release::Dispatch(dispatch) => self.dispatches.release(dispatch.id, by).map(drop),
+            Release::Dispatch(dispatch) => {
+                let released = self.dispatches.release(dispatch.id, by);
+                if let Owned::Mine(_) = &released {
+                    self.lists.released(dispatch.id, by);
+                }
+                released.map(drop)
+            }
             Release::Font(font) => self.text.faces.made.release(font.id, by).map(drop),
             Release::Text(text) => self.text.release_text(text.id, by, &mut self.lists),
             Release::Frame(frame) => {
@@ -1956,15 +1961,9 @@ impl Kept {
         // A program that reads targets binds them in its first group, which the pass binds.
         let first = u32::from(!reads.is_empty());
 
-        let listing = match join.order {
-            placement::Order::Loose => Listing::Loose,
-            placement::Order::Listed => Listing::Listed { stamp: 0 },
-        };
-
         Ok(Joined {
             frame: join.frame,
             pass: join.pass,
-            listing,
             fits: Fits { shape: program.shape, reads: reads.clone() },
             program: join.program.id,
             pipeline: program.pipeline.clone(),
@@ -2317,7 +2316,9 @@ impl Kept {
     /// Checks `list`, sent by `by`, whole, and keeps it in place of `by`'s last list: refused as [`Lists::check`]
     /// refuses it.
     fn listed(&mut self, list: Vec<Listed>, by: ActorId) -> Result<(), ListRefused> {
-        self.lists.check(list, by, &mut Listable { meshes: &mut self.placements, texts: &mut self.text.placed })
+        let listable = Listable { meshes: &self.placements, texts: &self.text.placed, dispatches: &self.dispatches };
+
+        self.lists.check(list, by, &listable)
     }
 
     /// The roots the walk of the lists for `frame` begins from: the program's root list for a window's main frame, and
@@ -2338,7 +2339,9 @@ impl Kept {
             .walk(self.roots(frame))
             .filter_map(|listed| match listed {
                 Listed::Keys { frame: declared, entry } if *declared == frame => Some(entry.clone()),
-                Listed::Keys { .. } | Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } => None,
+                Listed::Keys { .. } | Listed::Draw { .. } | Listed::Run(_) | Listed::Call(_) | Listed::Hit { .. } => {
+                    None
+                }
             })
             .collect();
         keys.reverse();
@@ -2665,20 +2668,11 @@ impl Kept {
             .collect()
     }
 
-    /// Records into `recording` every dispatch that joins the compute pass `pass` of `frame`, each compute program's
-    /// together, setting each pipeline once, those asked to run once among them. Nothing orders them among themselves:
-    /// the check refuses two in one pass that one writes what the other uses. Answers the ids of those asked to run
-    /// once that it recorded.
+    /// Records into `recording` every dispatch run in the compute pass `pass` of `frame`, in the order
+    /// [`computed`](Self::computed) answers, setting a pipeline only where the dispatch run before used another compute
+    /// program. Answers the ids of those asked to run once that it recorded.
     fn compute(&self, recording: &mut wgpu::ComputePass<'_>, frame: Frame, pass: PassName) -> Vec<u64> {
-        let mut joined: Vec<(u64, &Dispatching)> = self
-            .dispatching()
-            .filter(|(id, dispatch)| {
-                let joins = dispatch.runs_in(frame, pass);
-                let held = self.held.contains(id);
-                joins && !held
-            })
-            .collect();
-        joined.sort_unstable_by_key(|(_, dispatch)| dispatch.compute);
+        let joined = self.computed(frame, pass);
         let once = joined.iter().map(|(id, _)| *id).filter(|id| self.once.get(*id).is_some()).collect();
         let mut pipeline = 0;
         for (_, dispatch) in joined {
@@ -2697,6 +2691,28 @@ impl Kept {
         }
 
         once
+    }
+
+    /// Each dispatch run in the compute pass `pass` of `frame`, under its id, in the order it runs: those asked to run
+    /// once, in the order they were asked, then those the lists walked from the frame's roots name, each in its list's
+    /// order, each child's where its parent calls it (ADR-0055). One no list walked names is not run, and neither is
+    /// one held, as it writes what another writes in a frame it is in no order with.
+    fn computed(&self, frame: Frame, pass: PassName) -> Vec<(u64, &Dispatching)> {
+        let mut once: Vec<(u64, &Dispatching)> = self.once.iter().collect();
+        once.sort_unstable_by_key(|(id, _)| *id);
+        let listed = self.lists.walk(self.roots(frame)).filter_map(|entry| match *entry {
+            Listed::Run(id) => self.dispatches.get(id).map(|dispatch| (id, dispatch)),
+            Listed::Draw { .. } | Listed::Call(_) | Listed::Hit { .. } | Listed::Keys { .. } => None,
+        });
+
+        once.into_iter()
+            .chain(listed)
+            .filter(|(id, dispatch)| {
+                let joins = dispatch.runs_in(frame, pass);
+                let held = self.held.contains(id);
+                joins && !held
+            })
+            .collect()
     }
 
     /// Every dispatch kept, each under its id, in no order: those that run until released and those asked to run once.
@@ -2816,34 +2832,13 @@ impl Kept {
         }
     }
 
-    /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, under its id, with
-    /// its join of the pass, in the order it is drawn: those of meshes joined loose, each program's together, then
-    /// those of texts joined loose, then the lists walked from the frame's roots, each in its order, each child drawn
+    /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, with its join of the
+    /// pass, in the order it is drawn: the lists walked from the frame's roots, each in its order, each child drawn
     /// where its parent calls it, meshes and texts alike, with each hit listed in the pass in its place (ADR-0031,
-    /// ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not drawn, and neither is one joined
-    /// listed that no list walked holds. The pointer reaches a loose join nowhere.
+    /// ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not drawn, and neither is a placement
+    /// no list walked holds.
     fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<Issued<'_>> {
-        let mut meshes: Vec<(u64, &Placement, &Joined)> = self
-            .placements
-            .iter()
-            .flat_map(|(id, placement)| placement.joins.iter().map(move |join| (id, placement, join)))
-            .filter(|(_, _, join)| {
-                let draws = join.draws_in(frame, pass, fits);
-                let unlisted = join.listing == Listing::Loose;
-                draws && unlisted
-            })
-            .collect();
-        meshes.sort_unstable_by_key(|(_, _, join)| join.program);
-        let texts = self.text.loose((frame, pass), fits).into_iter();
-        let listed = self.lists.walk(self.roots(frame)).filter_map(|entry| self.issued(entry, (frame, pass), fits));
-        let loose = |drawable| Issued::Draw { drawable, picks: Picks::Ignores };
-
-        meshes
-            .into_iter()
-            .map(|(_, placement, join)| loose(Drawable::Mesh(placement, join)))
-            .chain(texts.map(|(_, placed, join)| loose(Drawable::Text(placed, join))))
-            .chain(listed)
-            .collect()
+        self.lists.walk(self.roots(frame)).filter_map(|entry| self.issued(entry, (frame, pass), fits)).collect()
     }
 
     /// What the listed `entry` issues in the pass `pass` of `frame`, whose programs are made against `fits`: its
@@ -2858,20 +2853,20 @@ impl Kept {
                 let is_here = hit == frame && hit_pass == pass;
                 is_here.then_some(Issued::Hit { rect, picks })
             }
-            Listed::Call(_) | Listed::Keys { .. } => None,
+            Listed::Run(_) | Listed::Call(_) | Listed::Keys { .. } => None,
         }
     }
 
-    /// The placement `placement`, of a mesh or of a text, with its join drawn listed in the pass `pass` of `frame`,
-    /// whose programs are made against `fits`: none when it joins the pass loose, or not at all, or is of another shape.
+    /// The placement `placement`, of a mesh or of a text, with its join drawn in the pass `pass` of `frame`, whose
+    /// programs are made against `fits`: none when it does not join the pass, or is of another shape.
     /// The placement is kept, as a release takes it out of its maker's list in the release's turn.
     fn listed_in(&self, placement: u64, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Drawable<'_>> {
         if let Some(made) = self.placements.get(placement) {
-            let join = made.joins.iter().find(|join| join.listed_in(frame, pass, fits))?;
+            let join = made.joins.iter().find(|join| join.draws_in(frame, pass, fits))?;
             return Some(Drawable::Mesh(made, join));
         }
         let placed = self.text.placed.get(placement)?;
-        let join = placed.joins().iter().find(|join| join.listed_in(frame, pass, fits))?;
+        let join = placed.joins().iter().find(|join| join.draws_in(frame, pass, fits))?;
 
         Some(Drawable::Text(placed, join))
     }
@@ -2904,30 +2899,27 @@ impl Joined {
         self.joins(frame, pass) && self.fits == *fits
     }
 
-    /// Whether it draws listed in the pass `pass` of `frame`, whose programs are made against `fits`: while its maker's
-    /// list holds it, as [`draws_in`](Self::draws_in) says.
-    fn listed_in(&self, frame: Frame, pass: PassName, fits: &Fits) -> bool {
-        let listed = self.listing != Listing::Loose;
-
-        listed && self.draws_in(frame, pass, fits)
-    }
-
     /// Whether it is the join of the pass `pass` of `frame`, whatever that pass is made against now.
     fn joins(&self, frame: Frame, pass: PassName) -> bool {
         self.frame == frame && self.pass == pass
     }
 }
 
-/// What a list's check finds of the placements kept.
-impl Placements for Made<Placement> {
-    fn stamp(&mut self, placement: u64, by: ActorId, number: u64) -> Result<(), EntryRefused> {
-        let joins = match self.owned(placement, by) {
-            Owned::Mine(made) => &mut made.joins,
-            Owned::NotOwner => return Err(EntryRefused::NotOwner),
-            Owned::Unknown => return Err(EntryRefused::Placement),
-        };
+/// What a list's check finds: the placements of meshes and of texts, under one count of ids, and the dispatches that
+/// run until released. One asked to run once has no id its maker was given, and no list names it.
+struct Listable<'a> {
+    meshes: &'a Made<Placement>,
+    texts: &'a Made<PlacedText>,
+    dispatches: &'a Made<Dispatching>,
+}
 
-        draw_list::stamp(joins.iter_mut().map(|join| &mut join.listing), number)
+impl Listables for Listable<'_> {
+    fn placement_maker(&self, placement: u64) -> Option<ActorId> {
+        self.meshes.maker(placement).or_else(|| self.texts.maker(placement))
+    }
+
+    fn dispatch_maker(&self, dispatch: u64) -> Option<ActorId> {
+        self.dispatches.maker(dispatch)
     }
 }
 

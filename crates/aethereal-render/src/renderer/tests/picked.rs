@@ -45,9 +45,9 @@ fn hit(rect: Rect2, picks: Picks) -> Listed {
     Listed::Hit { frame: Frame::Main(window()), pass: PassName::of::<Main>(), rect, picks }
 }
 
-/// A quad by [`MAKER`] over the whole window, listed, tinted grey.
+/// A quad by [`MAKER`] over the whole window, tinted grey.
 fn whole(gpu: &Gpu, kept: &mut Kept, program: ProgramId) -> PlacementId {
-    placed(gpu, kept, (MAKER, program, placement::Order::Listed), (-1.0, 1.0), [0.5, 0.5, 0.5, 0.5])
+    placed(gpu, kept, (MAKER, program), (-1.0, 1.0), [0.5, 0.5, 0.5, 0.5])
 }
 
 /// A window 4 by 4 of the window's format, to draw into and copy from.
@@ -194,7 +194,7 @@ fn stacked(gpu: &Gpu, count: u32) -> Vec<Reach> {
 fn at_depths(gpu: &Gpu, order: [usize; 2]) -> Vec<Reach> {
     let mut kept = kept(gpu.device());
     let program = quads(gpu, &mut kept, DEEP, Depth::TestWrite);
-    let listed = (MAKER, program, placement::Order::Listed);
+    let listed = (MAKER, program);
     let near = placed(gpu, &mut kept, listed, (-1.0, 1.0), [1.0, 0.0, 0.0, 0.25]);
     let far = placed(gpu, &mut kept, listed, (-1.0, 1.0), [0.0, 0.0, 1.0, 0.75]);
     let entries = [(near, 0), (far, 1)];

@@ -1,20 +1,22 @@
 //! The page's entry points, and an actor that seeds a field of particles, dispatches a compute program that moves
-//! them and places a program that draws them, then reads the field back twice to see that it moved.
+//! them and places a program that draws them, lists both, the root list's one root, then reads the field back twice to
+//! see that it moved.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick, Top,
-    Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
+    Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations};
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Compute, Main};
-use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
+use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, PlacementId, Resource};
 use aethereal_render::program::{
     Access, Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId,
     Programmed,
@@ -29,7 +31,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the simulator.
+/// the renderer, which opens WebGPU on it, and the simulator, the root list.
 ///
 /// # Errors
 ///
@@ -43,6 +45,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Simulator>()
+        .draws::<(Simulator,)>()
         .run()?
         .await?;
 
@@ -116,7 +119,7 @@ const PARTICLES: u32 = 256;
 const SETTLED: u32 = 3;
 
 /// The simulator: it makes what it runs and draws one ask after another, each answer carrying what was made so far,
-/// dispatches and places it, then reads the field back twice, a few frames apart.
+/// dispatches and places it, lists both, then reads the field back twice, a few frames apart.
 #[derive(Bound)]
 #[kind(name = "aether.example.simulator")]
 enum Simulator {
@@ -186,11 +189,12 @@ struct Placing {
     storage: StorageId,
 }
 
-/// What the dispatch was asked for with: the field it moves.
+/// What the dispatch was asked for with: the field it moves, and the placement that draws it.
 #[derive(Plain)]
 #[kind(name = "aether.example.dispatching")]
 struct Dispatching {
     storage: StorageId,
+    placement: PlacementId,
 }
 
 impl Actor for Simulator {
@@ -423,7 +427,7 @@ impl Handles<Answer<Placed, Placing>> for Simulator {
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("the dots were not placed: {answered:?}"));
             return Ok(());
         };
@@ -437,24 +441,27 @@ impl Handles<Answer<Placed, Placing>> for Simulator {
             join: Dispatch::to::<Compute>(Frame::Main(window), placing.simulate, bindings),
             size: Invocations::PerElement(storage),
         };
-        turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { storage })?;
+        turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { storage, placement })?;
 
         Ok(())
     }
 }
 
+/// The dispatch made is listed, run before the dots are drawn.
 impl Handles<Answer<Dispatched, Dispatching>> for Simulator {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
         (answered, dispatching): (Answered<Dispatched>, Dispatching),
-        _: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Dispatched::Made(_)) = answered else {
+        let Answered::Yes(Dispatched::Made(dispatch)) = answered else {
             say(format!("the field was not dispatched: {answered:?}"));
             return Ok(());
         };
+        let drawn = Entry::Draw { placement: dispatching.placement, pointer: Pointer::Ignores };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![Entry::Run(dispatch), drawn] })?;
         say(format!("placed dispatched particles={PARTICLES}"));
         *self = Self::Running { storage: dispatching.storage, drawn: 0 };
 

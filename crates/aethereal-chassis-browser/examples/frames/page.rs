@@ -1,22 +1,23 @@
 //! The page's entry points, and an actor that makes a frame of a sky, an effect that reads nothing, a depth pass over
 //! it, a pass tested against that, a pattern drawn at half size, and a tint over all of them that lays the pattern
-//! over a band of the scene, places a surface and a splat in it, then reads back what was drawn and times the frame's
-//! passes.
+//! over a band of the scene, places a surface and a splat in it and lists them, the root list's one root, then reads
+//! back what was drawn and times the frame's passes.
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
 use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
 use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
-use aethereal_render::placement::{Drawn, Join, Place, Placed};
+use aethereal_render::placement::{Drawn, Join, Place, Placed, PlacementId};
 use aethereal_render::program::{
     Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
@@ -29,7 +30,7 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Bootstraps the program on the page with the window root, which opens the page's canvas as the one window,
-/// the renderer, which opens WebGPU on it, and the framer.
+/// the renderer, which opens WebGPU on it, and the framer, the root list.
 ///
 /// # Errors
 ///
@@ -43,6 +44,7 @@ pub async fn start() -> Result<Program, JsError> {
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Framer>()
+        .draws::<(Framer,)>()
         .run()?
         .await?;
 
@@ -181,7 +183,7 @@ fn tint(@builtin(position) at: vec4<f32>, @location(0) uv: vec2<f32>) -> @locati
 const SETTLED: u32 = 3;
 
 /// The framer: it makes what it draws one ask after another, each answer carrying what was made so far, makes its
-/// frame, places a surface and a splat, and once a few frames are drawn reads back a frame and times one.
+/// frame, places a surface and a splat and lists them, and once a few frames are drawn reads back a frame and times one.
 #[derive(Bound)]
 #[kind(name = "aether.example.framer")]
 enum Framer {
@@ -250,8 +252,8 @@ struct MadePrograms {
 enum Placing {
     /// The surface, with what the splat is then placed with.
     Surface { mesh: MeshId, splat: ProgramId },
-    /// The splat.
-    Splat,
+    /// The splat, once the surface was placed.
+    Splat { surface: PlacementId },
 }
 
 impl Actor for Framer {
@@ -538,29 +540,36 @@ impl Handles<Answer<Framed, MadePrograms>> for Framer {
     }
 }
 
+/// The surface placed, the splat is asked for; the splat placed, both are listed.
 impl Handles<Answer<Placed, Placing>> for Framer {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>,);
+    type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(_)) = answered else {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
             return Ok(());
         };
         let Self::Making { window } = *self else {
             return Ok(());
         };
-        let Placing::Surface { mesh, splat } = placing else {
-            say(String::from("placed surface splat"));
-            *self = Self::Drawing { window, drawn: 0 };
-            return Ok(());
-        };
-        let join = Join::to::<Splats>(Frame::Main(window), splat, Vec::new());
-        let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
-        turn.to(path::<Renderer>(())).ask(&place, &Placing::Splat)?;
+        match placing {
+            Placing::Surface { mesh, splat } => {
+                let join = Join::to::<Splats>(Frame::Main(window), splat, Vec::new());
+                let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Splat { surface: placement })?;
+            }
+            Placing::Splat { surface } => {
+                let entries =
+                    [surface, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
+                say(String::from("placed surface splat"));
+                *self = Self::Drawing { window, drawn: 0 };
+            }
+        }
 
         Ok(())
     }

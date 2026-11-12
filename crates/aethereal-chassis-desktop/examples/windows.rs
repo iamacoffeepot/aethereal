@@ -28,12 +28,12 @@ use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{DrawList, Entry};
+use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::{Frame, ShapeOf, Shaped};
 use aethereal_render::instances::{CreateInstances, Instanced, InstancesId, WriteInstances};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::Main;
-use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
+use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, PlacementId, Resource};
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, ProgramId, Programmed,
 };
@@ -328,7 +328,7 @@ struct Shows {
 }
 
 /// A scene, keyed by the window it draws in: it asks the shape of its window's main pass as it begins, makes what it
-/// draws one ask after another, each answer carrying what was made so far, places it, and from then writes the ring at
+/// draws one ask after another, each answer carrying what was made so far, places it and lists it, and from then writes the ring at
 /// each `Tick`, about the pointer. It subscribes to its window, declares every key of it in its draw list, letting
 /// them through, prints what it hears, toggles the window's mode on F11, and keeps the time between each `Tick` and the last, which it prints as its window closes, and ends.
 #[derive(Bound)]
@@ -360,8 +360,8 @@ struct Scene {
 enum Ring {
     /// Its asks are under way, and nothing is placed.
     Making,
-    /// The ring is placed: these are the instances and uniforms it writes.
-    Drawing { instances: InstancesId, uniforms: UniformsId },
+    /// The ring is placed, and listed: these are the placement, and the instances and uniforms it writes.
+    Drawing { placement: PlacementId, instances: InstancesId, uniforms: UniformsId },
 }
 
 impl ChildOf for Scene {
@@ -433,11 +433,8 @@ impl Actor for Scene {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
-        let hears = Entry::Keys { frame: Frame::Main(shows.window), keys: KeySet::All, blocks: false };
-        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(shows.window)), &Nothing)?;
-
-        Ok(Self {
+        let scene = Self {
             window: shows.window,
             runs: shows.runs,
             count: shows.count,
@@ -451,11 +448,27 @@ impl Actor for Scene {
             held: 0,
             turned_millis: 0,
             intervals: Vec::new(),
-        })
+        };
+        turn.to(path::<Renderer>(())).send(&scene.list())?;
+
+        Ok(scene)
     }
 
     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
         Ok(())
+    }
+}
+
+impl Scene {
+    /// Its draw list: the ring, once it is placed, then every key of its window, heard and let through.
+    fn list(&self) -> DrawList {
+        let hears = Entry::Keys { frame: Frame::Main(self.window), keys: KeySet::All, blocks: false };
+        let entries = match self.ring {
+            Ring::Making => vec![hears],
+            Ring::Drawing { placement, .. } => vec![Entry::Draw { placement, pointer: Pointer::Ignores }, hears],
+        };
+
+        DrawList { entries }
     }
 }
 
@@ -740,16 +753,17 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
 }
 
 impl Handles<Answer<Placed, MadeAll>> for Scene {
-    type Sends = ();
+    type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
         &mut self,
         (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         match answered {
-            Answered::Yes(Placed::Made(_)) => {
-                self.ring = Ring::Drawing { instances: made.instances, uniforms: made.uniforms };
+            Answered::Yes(Placed::Made(placement)) => {
+                self.ring = Ring::Drawing { placement, instances: made.instances, uniforms: made.uniforms };
+                turn.to(path::<Renderer>(())).send(&self.list())?;
             }
             Answered::Yes(Placed::Refused(why)) => {
                 turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
@@ -797,7 +811,7 @@ impl Handles<On<Tick>> for Scene {
         } else {
             self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
         };
-        let Ring::Drawing { instances, uniforms } = self.ring else {
+        let Ring::Drawing { instances, uniforms, .. } = self.ring else {
             return Ok(());
         };
         let records = ring(self.turned_millis, self.count, self.warm);
