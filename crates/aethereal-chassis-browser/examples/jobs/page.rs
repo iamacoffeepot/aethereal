@@ -19,7 +19,7 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::Shape;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::time::Duration;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -483,11 +483,7 @@ impl Handles<Answer<Placed, Nothing>> for Prober {
             return Ok(());
         };
         placed.push(square);
-        let entries = placed.iter().map(|placement| Entry::Draw {
-            placement: *placement,
-            pointer: Pointer::Ignores,
-            cursor: Cursor::Default,
-        });
+        let entries = placed.iter().map(|placement| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
         turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
 
         Ok(())

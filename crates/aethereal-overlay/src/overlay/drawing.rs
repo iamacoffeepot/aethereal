@@ -306,13 +306,9 @@ pub(super) fn listing(window: WindowId, stop: Stop, surface: Surface, placements
     };
     let mut entries = vec![Entry::Keys { frame, keys, blocks: true }];
     if console {
-        entries.push(Entry::hit::<Interface>(frame, Layout::of(surface).console(), Pointer::Blocks, Cursor::Default));
+        entries.push(Entry::hit::<Interface>(frame, Layout::of(surface).console(), Pointer::Blocks(Cursor::Default)));
     }
-    entries.extend(placements.into_iter().map(|placement| Entry::Draw {
-        placement,
-        pointer: Pointer::Ignores,
-        cursor: Cursor::Default,
-    }));
+    entries.extend(placements.into_iter().map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores }));
 
     entries
 }

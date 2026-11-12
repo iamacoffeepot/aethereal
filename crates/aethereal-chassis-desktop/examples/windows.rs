@@ -41,7 +41,7 @@ use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Cursor, Event, InitialWindows, KeyEvent, KeySet, Keyed, Logical, Mode, ModeSet, OpenWindow, Opened,
+    self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Logical, Mode, ModeSet, OpenWindow, Opened,
     SetMode, Surface, Window, WindowId, Windows,
 };
 use core::error::Error;
@@ -465,9 +465,7 @@ impl Scene {
         let hears = Entry::Keys { frame: Frame::Main(self.window), keys: KeySet::All, blocks: false };
         let entries = match self.ring {
             Ring::Making => vec![hears],
-            Ring::Drawing { placement, .. } => {
-                vec![Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Default }, hears]
-            }
+            Ring::Drawing { placement, .. } => vec![Entry::Draw { placement, pointer: Pointer::Ignores }, hears],
         };
 
         DrawList { entries }

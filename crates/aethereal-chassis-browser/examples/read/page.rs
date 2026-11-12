@@ -24,7 +24,7 @@ use aethereal_render::storage::{CreateStorage, StorageId, Stored};
 use aethereal_render::texture::{CreateTexture, TextureFormat, TextureId, Textured};
 use aethereal_render::timing::{TimeFrame, Timed};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -427,11 +427,7 @@ impl Handles<Answer<Placed, Placing>> for Reader {
             }
             Placing::Tint { storage, splats } => {
                 // The tint is listed after the splats, so it is drawn over them.
-                let entries = [splats, placement].map(|placement| Entry::Draw {
-                    placement,
-                    pointer: Pointer::Ignores,
-                    cursor: Cursor::Default,
-                });
+                let entries = [splats, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
                 turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
                 storage
             }

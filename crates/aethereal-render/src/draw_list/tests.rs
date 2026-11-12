@@ -288,12 +288,11 @@ fn an_entry_the_pointer_reaches_names_its_place_and_cursor_and_is_refused_from_a
     // Catches an entry told to its sender by a number other than its place in the list, so a click on the second
     // button presses the first; its cursor left behind, so the window shows the arrow over it; one the pointer reaches
     // let through from an actor that handles no pointer event, whose events would be dropped as it blocks everything
-    // beneath it; and an entry the pointer ignores refused for it, or carrying its cursor into the stack, so a shadow
-    // drawn over a text field shows its cursor in place of the field's.
+    // beneath it; and an entry the pointer ignores refused for it.
     let hearer = ProtocolRef::found(aethereal_actor::Seated { id: MAKER, seat: aethereal_actor::SeatNumber::new(1) });
     let placement = PlacementId { id: 3 };
-    let blocks = Entry::Draw { placement, pointer: Pointer::Blocks, cursor: Cursor::Hand };
-    let ignores = Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Text };
+    let blocks = Entry::Draw { placement, pointer: Pointer::Blocks(Cursor::Hand) };
+    let ignores = Entry::Draw { placement, pointer: Pointer::Ignores };
     let child = |_: &PathSegment| HUD;
 
     let reached = Picks::Reaches(Reaching { actor: hearer, entry: 2, blocks: true, cursor: Cursor::Hand });
@@ -313,7 +312,7 @@ fn an_entry_whose_cursor_is_an_image_its_pixels_do_not_fill_is_refused() {
         panic!("a window's id is its number");
     };
     let rect = Rect2 { min: Vec2::ZERO, max: Vec2::new(4.0, 4.0) };
-    let held = Entry::hit::<Interface>(Frame::Main(window), rect, Pointer::Blocks, Cursor::Image(image));
+    let held = Entry::hit::<Interface>(Frame::Main(window), rect, Pointer::Blocks(Cursor::Image(image)));
     let child = |_: &PathSegment| HUD;
 
     let filled = held.listed(0, (Some(hearer), None), (child, |_: &Bytes| 2 * 2 * 4));

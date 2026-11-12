@@ -17,7 +17,7 @@ use aethereal_render::placement::{Drawn, Join, Place, Placed};
 use aethereal_render::program::{Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance, Programmed};
 use aethereal_render::shape::Shape;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId};
+use aethereal_window::{InitialWindows, WindowId};
 
 /// A program that draws its triangle where its corners are, in clip space, shaded by height with faint stripes.
 const SHADE: &str = "
@@ -227,7 +227,7 @@ impl Handles<Answer<Placed, BackdropPlacing>> for Backdrop {
             turn.log(Level::Error, format_args!("the backdrop was not placed: {answered:?}"));
             return Ok(());
         };
-        let drawn = Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Default };
+        let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
         turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
 
         Ok(())

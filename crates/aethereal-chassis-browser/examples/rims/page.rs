@@ -23,7 +23,7 @@ use aethereal_render::program::{
 };
 use aethereal_render::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -482,11 +482,7 @@ impl Handles<Answer<Placed, Placing>> for Rimmer {
                 turn.to(path::<Renderer>(())).ask(&place, &Placing::Rims { floor: placement })?;
             }
             Placing::Rims { floor } => {
-                let entries = [floor, placement].map(|placement| Entry::Draw {
-                    placement,
-                    pointer: Pointer::Ignores,
-                    cursor: Cursor::Default,
-                });
+                let entries = [floor, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
                 turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
                 say(String::from("placed floor rims"));
                 *self = Self::Drawing;

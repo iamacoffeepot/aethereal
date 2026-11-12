@@ -21,7 +21,7 @@ use aethereal_render::program::{
 use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use core::f32::consts::TAU;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -386,7 +386,7 @@ impl Handles<Answer<Placed, MadeAll>> for Drawer {
         match answered {
             Answered::Yes(Placed::Made(placement)) => {
                 say(format!("placed {placement:?}"));
-                let drawn = Entry::Draw { placement, pointer: Pointer::Ignores, cursor: Cursor::Default };
+                let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
                 turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
                 *self = Self::Drawing { instances: made.instances, uniforms: made.uniforms };
             }

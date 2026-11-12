@@ -24,7 +24,7 @@ use aethereal_render::shape::{ColourFormat, Shape};
 use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::{Release, Renderer};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_window::{Cursor, InitialWindows, WindowId, Windows};
+use aethereal_window::{InitialWindows, WindowId, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -451,11 +451,7 @@ impl Handles<Answer<Placed, Placing>> for Mapper {
         let (mesh, show, map, texture) = match placing {
             Placing::Map { mesh, show, map, texture } => (mesh, show, map, texture),
             Placing::Show { map, texture, placed } => {
-                let entries = [placed, placement].map(|placement| Entry::Draw {
-                    placement,
-                    pointer: Pointer::Ignores,
-                    cursor: Cursor::Default,
-                });
+                let entries = [placed, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
                 turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
                 say(String::from("placed map show"));
                 *self = Self::Drawing { window, map, texture, drawn: 0 };
