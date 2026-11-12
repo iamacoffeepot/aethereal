@@ -48,7 +48,7 @@ struct DrawList { span: Span, entries: Vec<Entry> }       // where in the order,
 enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
     Run(DispatchId),                                          // a dispatch of the sender's, in a compute pass
-    Span(u32),                                                // the child span `Child { maker: sender, n }`, issued here
+    Span(Span),                                               // a child span the sender minted and handed forward: its list is issued here
     Hit { frame: Frame, rect: Rect, pointer: Pointer },       // drawn into that frame's picking stack only (see Input)
     Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
 }
@@ -56,7 +56,7 @@ enum Pointer { Blocks, Passes, Ignores }
 ```
 
 - **A span is a name, and it is minted by its maker without asking anyone.** A child span is `Child { maker, n }`, where `maker` is the actor that names it in its list and `n` is a number it chooses. Splitting is data: the maker puts the child's name into the config of the actor it spawns, or hands it on, and lists it where the child belongs. No message asks the renderer for a span, and nothing waits for an answer.
-- **The parent's list places its children.** A parent can draw a background, name a child, then draw a border over it: `[Draw(background), Span(0), Draw(border)]`. Reordering children is sending a new list (ADR-0031: a later list replaces an earlier one). A library offers `split`, `push`, `insert_before`, and `reorder` as helpers that build that list.
+- **The parent's list places its children.** A parent can draw a background, name a child, then draw a border over it: `[Draw(background), Span(hud), Draw(border)]`, where `hud` is the same `Span` value it put in the child's config. A `Span` entry naming a span the sender did not mint is refused. Reordering children is sending a new list (ADR-0031: a later list replaces an earlier one). A library offers `split`, `push`, `insert_before`, and `reorder` as helpers that build that list.
 - **One actor lists into a span.** The first list sent into a span claims it for its sender, until the sender ends. A list from another actor into it is refused and logged, naming the lister, as `may_replace` refuses a second frame owner. Two actors in one span would put two lists' order at the mercy of mail arrival, which is the fault this ADR removes. No other check is made: a span's name is not secret, and an actor that names another's span is a bug, refused loudly.
 - **A span named by no list is not drawn,** and a list into a span no parent names is kept and not drawn. Nothing reaches the sequence except through the tree.
 - **A span is universal: it is an actor's place in the order, and nothing else.** It is the same in every frame and every pass. The frame and pass of each call are declared by the actor, through what it lists: a placement's join names its frame and pass (`Join::listed::<Interface>(frame, ..)`), a dispatch's names its compute pass, and `Hit` and `Keys` name their frame. For each pass of each frame, the renderer issues the entries of a list that land there, in list order. An actor has one span.
