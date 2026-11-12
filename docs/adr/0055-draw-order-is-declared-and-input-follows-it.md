@@ -20,11 +20,11 @@ What is already decided:
 
 ## Decision
 
-**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. An actor's draw list holds its own calls, and it can call another actor: `Call(hud)` draws whatever Hud draws, at that place. So drawing is a tree of actors, and a parent's list is the only thing that orders its children. The root is the setup's list of root actors, fixed for the program's life. Actors author their lists in parallel; the renderer walks the tree from the root and issues the calls in that order. `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
+**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. An actor's draw list holds its own calls, and it can call its direct children: `Call(child::<Hud>(()))` draws whatever Hud draws, at that place. So drawing is a tree of actors, an actor is drawn only where its parent calls it, and a parent's list is the only thing that orders its children. The root is the setup's list of root actors, fixed for the program's life. Actors author their lists in parallel; the renderer walks the tree from the root and issues the calls in that order. `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
 
 ```
 setup: root list ── [World, Game, Authoring, Overlay]   (fixed for the program's life)
-Game:  [Draw(background), Call(hud), Call(inventory), Draw(border)]
+Game:  [Draw(background), Call(child::<Hud>), Call(child::<Inventory>), Draw(border)]
 Hud:   [Draw(health), Draw(minimap)]
 renderer: frames → passes → walk from the root, entering each Call → each list as sent
 window: pointer ── probe ── stack in call order ── top-down until one blocks ──> actors
@@ -46,17 +46,17 @@ struct DrawList { entries: Vec<Entry> }   // the sender's list: its own calls, a
 enum Entry {
     Draw { placement: PlacementId, pointer: Pointer },        // a mesh or a text placement of the sender's
     Run(DispatchId),                                          // a dispatch of the sender's, in a compute pass
-    Call(ActorRef),                                           // draw what this actor draws, here
+    Call(Child),                                              // draw what this direct child of the sender draws, here
     Hit { frame: Frame, rect: Rect, pointer: Pointer },       // drawn into that frame's picking stack only (see Input)
     Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
 }
 enum Pointer { Blocks, Passes, Ignores }
 ```
 
-- **An actor is drawable.** `Call(hud)` in a list issues Hud's own list at that place. A parent can draw before its children, between them, and after them: `[Draw(background), Call(hud), Call(inventory), Draw(border)]`.
+- **An actor is drawable, by its parent.** `Call(child::<Hud>(()))` in a list issues Hud's own list at that place. A parent can draw before its children, between them, and after them: `[Draw(background), Call(hud), Call(inventory), Draw(border)]`.
+- **A list calls only its sender's direct children.** A call takes the sender-relative path `Child<D>` (`path/relative.rs`: `child`), with `D` one type whose `ChildOf` parent is the sender's type, so a call of anything else does not compile. The renderer resolves it from the sender's own path, one segment down: it reads no actor tree, and nothing outside the sender can be named. Each actor so has exactly one place it can be drawn, its parent's list, and a second call or a cycle cannot be written.
 - **A parent's list is the only order between actors.** Reordering children is the parent sending a new list (ADR-0031: a later list replaces an earlier one). It is one list, so the change lands whole, and nothing below the parent changes. A parent can reorder its children every frame, as one that sorts transparent children by distance does, at the cost of one list.
-- **Only an actor some list calls is drawn.** An actor's list is kept until it sends another, and drawn only where a list calls it. The setup's root list and the parents' lists decide what is on screen.
-- **The walk issues each actor once.** A second call of an actor already entered in the walk, which a cycle also is, is refused and logged.
+- **An actor whose parent does not call it is not drawn.** An actor's list is kept until it sends another, and drawn only where its parent calls it. The setup's root list and the parents' lists decide what is on screen.
 - **Lists are authored in parallel.** No actor waits on another's list: a parent names the child, and the walk takes whatever list the child last sent. A list that is late shows the last one, never a gap (ADR-0031).
 - **An actor's list is the same in every frame and every pass.** The frame and pass of each call are declared through what is listed: a placement's join names its frame and pass (`Join::listed::<Interface>(frame, ..)`), a dispatch's names its compute pass, and `Hit` and `Keys` name their frame. For each pass of each frame, the walk issues the entries that land there, in order.
 
@@ -77,7 +77,7 @@ enum Pointer { Blocks, Passes, Ignores }
 - **Every actor in the root list is checked as the program is built.** It must be a root of this program, found as `Ordered<I>` finds a root (ADR-0029). And it must be drawable: its begin or one of its handlers declares that it sends a draw list, `Tells<Path<Renderer>, DrawList>` in its `BeginSends` or `Sends`. The check reads the sends the actor already declares, and nothing is added to mark an actor drawable. A root list that names an actor that is not a root here, or one that never draws, does not build.
 - **Nobody holds the root list, and it never changes.** No actor can reorder it or put itself above the dev overlay.
 - **The same root list applies to every window's main frame,** including windows opened while the program runs (ADR-0027). An actor that draws in a window it opened draws there through its joins.
-- **A texture frame's maker is its root:** the maker's list is the frame's root list, and it calls whatever else draws there.
+- **A texture frame's maker is its root:** the maker's list is the frame's root list, and it calls its children to draw there.
 
 ### The interface pass
 
@@ -135,6 +135,7 @@ enum Pointer { Blocks, Passes, Ignores }
 - **Spans: order coordinates (`[1, 0]` is game → hud) handed down by splitting, each actor submitting its list with its span.** A reorder hands new coordinates down the whole subtree, which tears it across frames as each level adopts, needs counters that never reuse a coordinate, and a parent can only draw under its children. A parent's list that calls its children reorders in one list and draws over them.
 - **The order the roots are listed in, as the root list.** That order is the setup's dependency order: a root reaches only roots listed before it (ADR-0029: `Ordered<I>`). A game that reaches the authoring tool would have to be listed after it, and so draw over it.
 - **The root list held by one app actor.** That actor could reorder it at any time and put itself above the overlay.
+- **Calling any actor, not only a direct child.** An actor could then be drawn in two places, lists could call each other round, and the renderer would have to refuse both at the walk. Showing another actor's drawing elsewhere, such as the game inside an editor's viewport when the game is not the editor's child, goes through a texture the other actor draws into.
 - **Keeping `Loose` for drawing whose order "does not show"** (opaque, depth-tested). Draw calls always run in some order, and a loose order is a hash map's. Keeping it would leave two ways to draw, and an undeclared sequence.
 - **A pass for each root actor.** It needs no new concept, but a pass that writes depth clears it, so the world's roots could not share one depth buffer, and each pass costs about 35 µs.
 - **Hit testing on rects the renderer derives from entries.** The renderer does not know where a placement lands, because its program places it.
