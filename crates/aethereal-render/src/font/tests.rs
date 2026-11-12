@@ -15,7 +15,7 @@ pub fn noto() -> Font {
 
 /// The glyph of `character`, which the fixture has.
 fn glyph(font: &Font, character: char) -> GlyphId {
-    font.glyph(character).expect("the fixture draws the character")
+    font.metrics().glyph(character).expect("the fixture draws the character")
 }
 
 /// `outline`'s contours with every point mapped by `map`.
@@ -33,8 +33,8 @@ fn the_character_map_finds_each_character_and_misses_what_the_font_lacks() {
     // place: a letter would draw another letter's glyph. The glyph numbers are the font's, read apart with Python.
     let font = noto();
 
-    let found = ['A', 'V', 'o', '@', '\u{e9}', '\u{1d11}'].map(|character| font.glyph(character));
-    let lacked = ['\u{4e2d}', '\u{1f600}'].map(|character| font.glyph(character));
+    let found = ['A', 'V', 'o', '@', '\u{e9}', '\u{1d11}'].map(|character| font.metrics().glyph(character));
+    let lacked = ['\u{4e2d}', '\u{1f600}'].map(|character| font.metrics().glyph(character));
 
     let expected = [36, 57, 82, 35, 171, 1263].map(|number| Some(GlyphId(number)));
     assert_eq!(found, expected);
@@ -67,7 +67,7 @@ fn pairs_the_font_kerns_are_kerned_and_others_are_not() {
     // from the wrong field, or the `kern` feature's lookups missed. A and V, and T and o, are drawn together in every
     // Latin font; H and H, two stems, are not.
     let font = noto();
-    let pair = |left: char, right: char| font.kerning(glyph(&font, left), glyph(&font, right));
+    let pair = |left: char, right: char| font.metrics().kerning(glyph(&font, left), glyph(&font, right));
 
     assert!(pair('A', 'V') < 0, "A V kerns by {}", pair('A', 'V'));
     assert!(pair('T', 'o') < 0, "T o kerns by {}", pair('T', 'o'));
@@ -105,7 +105,7 @@ fn garbled_bytes_are_refused_or_read_never_a_panic() {
             garbled[at] = garbled[at].wrapping_add(u8::try_from(next() % 255 + 1).expect("fits"));
         }
         if let Ok(font) = Font::read(&garbled) {
-            let shaped = font.shape("Sphinx of black quartz, judge my vow.\nAV To \u{e9}");
+            let shaped = font.metrics().shape("Sphinx of black quartz, judge my vow.\nAV To \u{e9}");
             assert_eq!(shaped.lines.len(), 2);
         }
     }

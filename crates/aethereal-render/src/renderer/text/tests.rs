@@ -14,8 +14,9 @@ use crate::renderer::tests::lists::{OTHER, adapter_device, drawn_in_main, main_l
 use crate::renderer::tests::{MAKER, kept, window};
 use crate::renderer::{Reading, copy_frame, mapped_bytes};
 use crate::shape::{ColourFormat, Samples};
+use crate::text::faces::FontKey;
 use crate::text::generate::generate;
-use crate::text::{Clip, Colour, Font, Layer, TextJoin, TextPlacementRefused, widest_outline};
+use crate::text::{Clip, Colour, Font, Layer, Run, TextJoin, TextPlacementRefused, widest_outline};
 use crate::texture::TextureFormat;
 use crate::{Gpu, frame};
 use aethereal_data::Plain;
@@ -70,19 +71,23 @@ fn generated(kept: &mut Kept, gpu: Opened<'_>) {
 /// The glyphs of the layout `text` shows, each once: none while it shows nothing.
 fn shown(kept: &Kept, text: TextId) -> Option<Vec<GlyphKey>> {
     match &kept.text.made.get(text.id)?.shown {
-        Shown::Ready { shown } | Shown::Rewriting { shown, .. } => Some(shown.laid.keys().collect()),
+        Shown::Ready { shown } | Shown::Rewriting { shown, .. } => {
+            Some(kept.text.made.get(text.id)?.typeface.keys(&shown.laid).collect())
+        }
         Shown::Waiting { .. } => None,
     }
 }
 
 /// The glyphs the renderer's own proportional font draws `text` with, each once, in the order a layout keys them.
 fn keys_of(kept: &Kept, text: &str) -> Vec<GlyphKey> {
-    let Some(sans) = kept.text.faces.face(Font::Sans) else {
+    let Some(sans) = kept.text.faces.typeface(Font::Sans) else {
         panic!("the renderer's own font is kept");
     };
     let mut keys: Vec<GlyphKey> = text
         .chars()
-        .filter_map(|character| Some(GlyphKey { font: FontKey::Sans, glyph: sans.font.glyph(character)? }))
+        .filter_map(|character| {
+            Some(GlyphKey { font: FontKey::Sans, glyph: sans.own.font.metrics().glyph(character)? })
+        })
         .collect();
     keys.sort_unstable();
     keys.dedup();
@@ -160,10 +165,11 @@ fn quad_of(kept: &Kept, text: TextId, size: f32, at: Vec2) -> (GlyphKey, Rect2) 
     let Some(slot) = kept.text.atlas.slot(laid) else {
         panic!("the glyph is in the atlas");
     };
-    let Some(sans) = kept.text.faces.face(Font::Sans) else {
+    let Some(sans) = kept.text.faces.typeface(Font::Sans) else {
         panic!("the renderer's own font is kept");
     };
-    let ascender = f32::from(sans.font.line_metrics().ascender) * sans.font.pixels_per_unit(size);
+    let sans = sans.own.font.metrics();
+    let ascender = f32::from(sans.line_metrics().ascender) * sans.pixels_per_unit(size);
     let factor = size / font::msdf::BASE_PIXELS_PER_EM;
     // A field's place and size are some tens of texels, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
@@ -371,11 +377,9 @@ fn on_a_gpu_the_widest_outline_is_a_rim_around_the_glyph_and_its_quad_past_the_f
 
         let pixels = drawn_pixels(&mut kept, gpu, side);
         let (laid, quad) = quad_of(&kept, text, size, at);
-        let Some(field) =
-            kept.text.faces.face(Font::Sans).and_then(|sans| {
-                sans.font.msdf(laid.glyph, font::msdf::BASE_PIXELS_PER_EM, font::msdf::DEFAULT_PADDING)
-            })
-        else {
+        let Some(field) = kept.text.faces.typeface(Font::Sans).and_then(|sans| {
+            sans.own.font.msdf(laid.glyph, font::msdf::BASE_PIXELS_PER_EM, font::msdf::DEFAULT_PADDING)
+        }) else {
             panic!("the glyph has a field");
         };
         let pixel = |x: u32, y: u32| {

@@ -2,8 +2,8 @@
 //! character the text's own lacks.
 
 use super::*;
-use crate::text::Font;
-use crate::text::faces::{Faces, FontKey};
+use crate::font::Font;
+use crate::text::faces::{MONO, SANS};
 use core::slice;
 
 /// A character the renderer's own monospace font draws and its proportional one lacks: a box-drawing line.
@@ -12,16 +12,16 @@ const ONLY_MONO: char = '\u{2500}';
 /// A character neither of the renderer's own fonts draws: an emoji.
 const IN_NEITHER: char = '\u{1f600}';
 
-/// The renderer's own proportional font, and its own monospace one as a font an actor made, under the id 7.
-fn faces() -> (Face, Face) {
-    let Ok(faces) = Faces::new() else {
+/// No fallbacks.
+const NO_FALLBACKS: &[Metrics] = &[];
+
+/// The metrics of the renderer's own proportional font and its own monospace one.
+fn faces() -> (Metrics, Metrics) {
+    let (Ok(sans), Ok(mono)) = (Font::read(SANS), Font::read(MONO)) else {
         panic!("the renderer's own fonts are read");
     };
-    let (Some(sans), Some(mono)) = (faces.face(Font::Sans), faces.face(Font::Mono)) else {
-        panic!("the renderer's own fonts are kept");
-    };
 
-    (sans, Face { key: FontKey::Made(7), font: mono.font })
+    (sans.metrics().clone(), mono.metrics().clone())
 }
 
 /// One white run of `text`.
@@ -29,11 +29,11 @@ fn white(text: &str) -> Vec<Run> {
     vec![Run::new(text, Colour::WHITE)]
 }
 
-/// How far `character`'s glyph moves the pen in `face` at `size`, in pixels.
-fn advance(face: &Face, character: char, size: f32) -> f32 {
-    let glyph = face.font.glyph(character).unwrap_or(GlyphId::MISSING);
+/// How far `character`'s glyph moves the pen in the font of `metrics` at `size`, in pixels.
+fn advance(metrics: &Metrics, character: char, size: f32) -> f32 {
+    let glyph = metrics.glyph(character).unwrap_or(GlyphId::MISSING);
 
-    f32::from(face.font.advance(glyph).unwrap_or(0)) * face.font.pixels_per_unit(size)
+    f32::from(metrics.advance(glyph).unwrap_or(0)) * metrics.pixels_per_unit(size)
 }
 
 /// The glyphs of `laid` on the baseline `baseline`, by their origins' `x`, left to right.
@@ -67,7 +67,7 @@ fn a_wrapped_line_breaks_after_its_last_space_and_each_line_starts_at_its_own_le
     let word = advance(&sans, 'w', size) * 4.0;
     // Room for "wwww wwww" but not a third word.
     let width = word.mul_add(2.0, advance(&sans, ' ', size)) + 1.0;
-    let laid = lay_out(&sans, &[], size, &white("wwww wwww wwww"), (Wrap::At { width }, Align::Left));
+    let laid = lay_out(&sans, NO_FALLBACKS, size, &white("wwww wwww wwww"), (Wrap::At { width }, Align::Left));
 
     assert_eq!(laid.lines, 2);
     let lines = baselines(&laid);
@@ -78,7 +78,7 @@ fn a_wrapped_line_breaks_after_its_last_space_and_each_line_starts_at_its_own_le
     let line_height = lines[1] - lines[0];
     // A line's height is some thousands of font units, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss)]
-    let expected = sans.font.line_metrics().line_height() as f32 * sans.font.pixels_per_unit(size);
+    let expected = sans.line_metrics().line_height() as f32 * sans.pixels_per_unit(size);
     assert!((line_height - expected).abs() < 0.01, "lines are a line height apart: {line_height} {expected}");
 }
 
@@ -86,7 +86,7 @@ fn a_wrapped_line_breaks_after_its_last_space_and_each_line_starts_at_its_own_le
 fn a_word_wider_than_the_wrap_is_left_whole() {
     // Catches a wrap that breaks a line with no space in it, or loops on it.
     let (sans, _) = faces();
-    let laid = lay_out(&sans, &[], 20.0, &white("wwwwwwwwww"), (Wrap::At { width: 10.0 }, Align::Left));
+    let laid = lay_out(&sans, NO_FALLBACKS, 20.0, &white("wwwwwwwwww"), (Wrap::At { width: 10.0 }, Align::Left));
 
     assert_eq!((laid.lines, laid.glyphs.len()), (1, 10));
 }
@@ -99,8 +99,8 @@ fn right_and_centred_lines_end_at_and_straddle_the_wrap_width_whatever_their_tra
     let size = 16.0;
     let width = 200.0;
     let runs = white("ab ab ab ab ab ab ab ab ab ab ab ab");
-    let right = lay_out(&sans, &[], size, &runs, (Wrap::At { width }, Align::Right));
-    let centred = lay_out(&sans, &[], size, &runs, (Wrap::At { width }, Align::Centre));
+    let right = lay_out(&sans, NO_FALLBACKS, size, &runs, (Wrap::At { width }, Align::Right));
+    let centred = lay_out(&sans, NO_FALLBACKS, size, &runs, (Wrap::At { width }, Align::Centre));
     assert!(right.lines > 1, "the text wraps");
     // Every line ends in a `b`, so it ends where its last glyph's origin is, and one `b` further.
     let ends = |laid: &Laid, baseline: f32| {
@@ -126,20 +126,20 @@ fn a_character_the_font_lacks_is_drawn_by_the_first_fallback_that_has_it_and_els
     // Catches a fallback passed over, a fallback glyph set by the text's own font's advance or kerned against its
     // neighbours in another font's units, and a character no font has listed once for each time it appears.
     let (sans, mono) = faces();
-    assert!(sans.font.glyph(ONLY_MONO).is_none() && mono.font.glyph(ONLY_MONO).is_some(), "the fixture's premise");
+    assert!(sans.glyph(ONLY_MONO).is_none() && mono.glyph(ONLY_MONO).is_some(), "the fixture's premise");
     let size = 30.0;
     let text = format!("a{ONLY_MONO}b{IN_NEITHER}{IN_NEITHER}");
     let laid = lay_out(&sans, slice::from_ref(&mono), size, &white(&text), (Wrap::None, Align::Left));
 
-    let fonts: Vec<FontKey> = laid.glyphs.iter().map(|glyph| glyph.key.font).collect();
-    assert_eq!(fonts, [FontKey::Sans, FontKey::Made(7), FontKey::Sans, FontKey::Sans, FontKey::Sans]);
-    assert_eq!(laid.glyphs[3].key.glyph, GlyphId::MISSING);
+    let fonts: Vec<Which> = laid.glyphs.iter().map(|glyph| glyph.font).collect();
+    assert_eq!(fonts, [Which::Own, Which::Fallback(0), Which::Own, Which::Own, Which::Own]);
+    assert_eq!(laid.glyphs[3].glyph, GlyphId::MISSING);
     assert_eq!(laid.missing, vec![IN_NEITHER], "listed once");
     let expected = advance(&sans, 'a', size) + advance(&mono, ONLY_MONO, size);
     assert!((laid.glyphs[2].origin.x - expected).abs() < 0.01, "b follows the line by its own font's advance");
 
-    let alone = lay_out(&sans, &[], size, &white(&text), (Wrap::None, Align::Left));
-    assert_eq!(alone.glyphs[1].key, GlyphKey { font: FontKey::Sans, glyph: GlyphId::MISSING });
+    let alone = lay_out(&sans, NO_FALLBACKS, size, &white(&text), (Wrap::None, Align::Left));
+    assert_eq!((alone.glyphs[1].font, alone.glyphs[1].glyph), (Which::Own, GlyphId::MISSING));
     assert_eq!(alone.missing, vec![ONLY_MONO, IN_NEITHER]);
 }
 
@@ -150,7 +150,7 @@ fn each_glyph_takes_its_runs_colour() {
     let (sans, _) = faces();
     let red = Colour::opaque(1.0, 0.0, 0.0);
     let runs = vec![Run::new("a b\n", Colour::WHITE), Run::new("cd", red)];
-    let laid = lay_out(&sans, &[], 12.0, &runs, (Wrap::None, Align::Left));
+    let laid = lay_out(&sans, NO_FALLBACKS, 12.0, &runs, (Wrap::None, Align::Left));
 
     let colours: Vec<Colour> = laid.glyphs.iter().map(|glyph| glyph.colour).collect();
     assert_eq!(colours, [Colour::WHITE, Colour::WHITE, red, red]);

@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests;
 
-use super::{Font, GlyphId};
+use super::{GlyphId, Metrics};
 use aethereal_math::Vec2;
 use std::ops::Range;
 
@@ -61,8 +61,8 @@ enum After {
     Glyph(GlyphId),
 }
 
-impl Font {
-    /// Shapes `text` in this font.
+impl Metrics {
+    /// Shapes `text` in the font these are the metrics of.
     #[must_use]
     pub fn shape(&self, text: &str) -> Shaped {
         let mut glyphs = Vec::new();

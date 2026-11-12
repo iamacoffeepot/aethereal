@@ -1,13 +1,16 @@
-//! Text (ADR-0052): fonts made from the bytes of TrueType files, texts laid out from runs in a font at a size, and
-//! texts placed in the passes of frames at a point in their pixels. The renderer draws every placed text with its own
-//! glyph program, from one atlas of glyphs' distance fields that it fills, in jobs off its turn, as texts need them.
-//! What is asked is checked here; what is kept is the render root's.
+//! Text (ADR-0052): fonts made from the renderer's own or the bytes of TrueType files, each with fallbacks fixed as it
+//! is made, texts laid out from runs in a font at a size, and texts placed in the passes of frames at a point in their
+//! pixels. The renderer draws every placed text with its own glyph program, from one atlas of glyphs' distance fields
+//! that it fills, in jobs off its turn, as texts need them. A font's metrics are handed to whoever asks, so an actor
+//! measures a text, laid out as the renderer lays it out, in its own turn. What is asked is checked here; what is kept
+//! is the render root's.
 
 pub(crate) mod atlas;
 pub(crate) mod faces;
 pub mod generate;
 pub(crate) mod glyph_program;
 pub(crate) mod layout;
+mod measure;
 pub(crate) mod placement;
 #[cfg(test)]
 mod tests;
@@ -20,13 +23,28 @@ use crate::placement::{JoinRefused, PlacementId};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
+pub use measure::{Measured, measure};
 
-/// Asks the renderer for a font, read from `bytes`, the bytes of a TrueType file, in the render root's turn. Answered
-/// with [`FontMade`].
-#[derive(Bound)]
+/// Asks the renderer for a font made from `source`, a character it lacks looked for in each of `fallbacks` in turn,
+/// fonts made before it. The fallbacks are fixed for the font's life: a fallback released later changes nothing about
+/// it, and a fallback's own fallbacks are not tried. Answered with [`FontMade`].
+#[derive(Debug, Bound)]
 #[kind(name = "aether.render.create_font")]
 pub struct CreateFont {
-    pub bytes: Bytes,
+    pub source: FontSource,
+    pub fallbacks: Vec<FontId>,
+}
+
+/// What a font is made from.
+#[derive(Debug, Bound)]
+#[kind(name = "aether.render.font_source")]
+pub enum FontSource {
+    /// The renderer's own proportional font, whose glyphs are shared, not read again.
+    Sans,
+    /// The renderer's own monospace font, whose glyphs are shared, not read again.
+    Mono,
+    /// The bytes of a TrueType file, read in the render root's turn.
+    Bytes(Bytes),
 }
 
 /// A font the renderer made, which only its maker may release.
@@ -36,25 +54,54 @@ pub struct FontId {
     pub(crate) id: u64,
 }
 
-/// What the renderer answers [`CreateFont`] with: the font, or why its bytes were not read, naming the table that was
-/// wrong.
+/// What the renderer answers [`CreateFont`] with: the font, or why it was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.render.font_made")]
 pub enum FontMade {
     Made(FontId),
-    Refused(FontRefused),
+    Refused(FontNotMade),
 }
 
-/// The fonts tried, in order, for a character a text's own font has not, for every text laid out from then: one list
-/// for the render root, set by any actor, each list replacing the one before. It has no answer, and a font in it that
-/// is not made, or is released, is passed over.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.render.fallback_fonts")]
-pub struct FallbackFonts {
-    pub fonts: Vec<FontId>,
+/// Why a font was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.font_not_made")]
+pub enum FontNotMade {
+    /// Its bytes were not read as a TrueType font: the refusal names the table that was wrong.
+    Read(FontRefused),
+    /// Its fallback at `fallback`, counted from zero, is not kept: never made, or released.
+    Fallback { fallback: u32 },
+    /// Its metrics would take the render root past its share of the budget for blobs.
+    Unstored,
 }
 
-/// The font a text is laid out in: one of the renderer's own two, or one an actor made.
+/// Asks the renderer for the metrics of `font` and its fallbacks, to measure text in it as it is laid out (see
+/// [`measure`]). Answered with [`FontMetrics`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.read_metrics")]
+pub struct ReadMetrics {
+    pub font: Font,
+}
+
+/// What the renderer answers [`ReadMetrics`] with: the metrics of the font's own face and of each of its fallbacks', in
+/// the order tried, each a blob [`Metrics::decode`](crate::font::Metrics::decode) reads. Metrics are tens of kilobytes,
+/// past what one piece of mail holds, so each is encoded once, as its face is read, and every answer hands over the
+/// same blobs.
+#[derive(Debug, Bound)]
+#[kind(name = "aether.render.font_metrics")]
+pub enum FontMetrics {
+    Read { own: Bytes, fallbacks: Vec<Bytes> },
+    Refused(MetricsRefused),
+}
+
+/// Why a font's metrics were not answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.render.metrics_refused")]
+pub enum MetricsRefused {
+    /// No font is kept as the one named: never made, or released.
+    Font,
+}
+
+/// The font a text is laid out in: one of the renderer's own two, which have no fallbacks, or one an actor made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 #[kind(name = "aether.render.font")]
 pub enum Font {
@@ -62,7 +109,7 @@ pub enum Font {
     Sans,
     /// The renderer's own monospace font.
     Mono,
-    /// A font made of a TrueType file's bytes.
+    /// A font an actor made.
     Made(FontId),
 }
 

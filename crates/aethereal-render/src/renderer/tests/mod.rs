@@ -17,6 +17,7 @@ use crate::pass::{Compute, Interface, Main, Pass};
 use crate::placement::Resource;
 use crate::program::Fixed;
 use crate::shape::Samples;
+use crate::text::faces::tests::faces;
 use aethereal_data::{Budget, from_bytes};
 
 /// The actor that makes everything here.
@@ -71,11 +72,7 @@ fn kept_for(device: &wgpu::Device, windows: &[WindowId]) -> Kept {
         })
         .collect();
 
-    let Ok(kept) = Kept::new(device, windowed, vec![MAKER, lists::OTHER]) else {
-        panic!("the renderer's own fonts are read");
-    };
-
-    kept
+    Kept::new(device, windowed, vec![MAKER, lists::OTHER], faces())
 }
 
 /// The renderer's kept state, on `device`, before anything is asked of it, drawing into a window of `Bgra8`.

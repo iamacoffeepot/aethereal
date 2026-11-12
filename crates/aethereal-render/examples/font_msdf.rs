@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let fields = TEXT
         .chars()
-        .filter_map(|character| font.glyph(character))
+        .filter_map(|character| font.metrics().glyph(character))
         .chain([GlyphId::MISSING])
         .filter_map(|glyph| Some((glyph, font.msdf(glyph, BASE_PIXELS_PER_EM, DEFAULT_PADDING)?)))
         .collect::<HashMap<_, _>>();
@@ -72,7 +72,7 @@ fn time(font: &Font) {
     println!("read {} glyphs in {:.2} ms", font.glyph_count(), read.as_secs_f64() * 1000.0);
 
     for character in ['g', 'W', '@'] {
-        let Some(glyph) = font.glyph(character) else {
+        let Some(glyph) = font.metrics().glyph(character) else {
             continue;
         };
         let started = Instant::now();
@@ -95,7 +95,7 @@ fn time(font: &Font) {
 fn fields(font: &Font, path: &Path) -> Result<(), Box<dyn Error>> {
     let fields = GLYPHS
         .chars()
-        .filter_map(|character| font.msdf(font.glyph(character)?, BASE_PIXELS_PER_EM, DEFAULT_PADDING))
+        .filter_map(|character| font.msdf(font.metrics().glyph(character)?, BASE_PIXELS_PER_EM, DEFAULT_PADDING))
         .collect::<Vec<_>>();
     let gap = 8;
     let width = fields.iter().map(|field| field.width as usize * MAGNIFIED + gap).sum::<usize>() + gap;
@@ -120,8 +120,8 @@ fn fields(font: &Font, path: &Path) -> Result<(), Box<dyn Error>> {
 /// Draws [`TEXT`] at `size` pixels to the em from the fields, black on white: cut at 0.5 above, and smoothed over a
 /// pixel below.
 fn text(font: &Font, fields: &HashMap<GlyphId, Msdf>, size: f32) -> (usize, usize, Vec<u8>) {
-    let shaped = font.shape(TEXT);
-    let scale = font.pixels_per_unit(size);
+    let shaped = font.metrics().shape(TEXT);
+    let scale = font.metrics().pixels_per_unit(size);
     let factor = size / BASE_PIXELS_PER_EM;
     let margin = 8.0;
     let lines = shaped.lines.len() as f32;
@@ -132,7 +132,8 @@ fn text(font: &Font, fields: &HashMap<GlyphId, Msdf>, size: f32) -> (usize, usiz
     let mut grey = vec![255_u8; width * height];
 
     for (index, smooth) in [false, true].into_iter().enumerate() {
-        let baseline = margin + index as f32 * (block + margin) + f32::from(font.line_metrics().ascender) * scale;
+        let baseline =
+            margin + index as f32 * (block + margin) + f32::from(font.metrics().line_metrics().ascender) * scale;
         for glyph in &shaped.glyphs {
             let Some(field) = fields.get(&glyph.glyph) else {
                 continue;
