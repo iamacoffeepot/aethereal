@@ -40,8 +40,7 @@ window: pointer ── probe ── stack in call order ── top-down until on
 ### Spans
 
 ```rust
-pub trait Layer: Kind {}                                      // a root span, named by type, as `Pass` is
-enum Span { Layer(LayerName), Child { maker: ActorId, n: u32 } }
+enum Span { Root { pass: PassName, n: u32 }, Child { maker: ActorId, n: u32 } }   // a root chunk, or a child
 
 #[kind(name = "aether.render.draw_list")]
 struct DrawList { frame: Frame, pass: PassName, span: Span, entries: Vec<Entry> }
@@ -65,15 +64,20 @@ enum Pointer { Blocks, Passes, Ignores }
 
 ### The root is split once, at setup
 
-- **The setup declares each pass's root order, by types,** as a frame's passes are named by type:
+- **The setup splits each pass's root, and the split's order is the draw order.** Each chunk goes into its root actor's config as a span, the same way a parent puts a child's span into the config of the child it spawns:
 
   ```rust
+  let [world] = setup.split::<Main>();
+  let [game, authoring, dev] = setup.split::<Interface>();   // the renderer's config gets this order
+
   program
-      .layers::<Main, (World,)>()
-      .layers::<Interface, (Game, Authoring, Dev)>()
+      .root::<World>(WorldConfig { span: world, .. })
+      .root::<Game>(GameConfig { span: game, .. })
+      .root::<Authoring>(AuthoringConfig { span: authoring, .. })
+      .root::<Overlay>(OverlayConfig { span: dev, .. });
   ```
 
-  The renderer's config carries it. A root actor reaches its chunk by needing it: a root that needs `Layer<Game>` is given the name `Span::Layer(Game)`, and it lists into it.
+  A root's span is `Span::Root { pass, n }`, its place in the pass's split. Roots and children get their spans the same way, so the top of the tree has no special case.
 - **The root is never handed to anyone, and its order never changes.** No actor holds the whole root, so none can reorder it or slip something above the dev overlay. Each actor gets only its chunk.
 - **The same root order applies to every window's main frame,** including windows opened while the program runs (ADR-0027), which have no setup of their own. An actor that draws in a window it opened lists into its own chunk with that window's frame.
 - **A texture frame's maker declares that frame's root order** in `CreateFrame`, fixed for the frame's life, and lists into it as its own.
@@ -114,13 +118,13 @@ enum Pointer { Blocks, Passes, Ignores }
 - **Every pixel of a window traces to an actor.** The picking stack names the span and entry that drew a pixel, so an inspector, an agent's "what is at (x, y)", and the authoring menu's "select what I clicked" read what input already reads.
 - **Each program in a window frame's passes gets a step it did not write,** and each window frame gets a probe buffer and a readback. Programs run in a texture frame get neither: a texture frame has no pointer.
 - **ADR-0023, ADR-0025, ADR-0031, and ADR-0053 are edited to match.**
-  - ADR-0023's refusal of an order key holds: layers are types declared in one place, and spans are names, not numbers that actors agree on.
+  - ADR-0023's refusal of an order key holds: the root order is split in one place, the setup, and every span is handed down by whoever holds the one above it, never a number that actors agree on.
   - ADR-0025's "order is declared where drawing is described" holds and is now total. Its "no order within one pass between actors" and its interface-as-texture-frame are replaced.
   - ADR-0031's lists stand as the form of every list, and its "order between actors is still not promised" is replaced. Both items it left for later are settled: dispatches are listed (`Entry::Run`), and nothing is loose.
-  - ADR-0053's key focus slot (`TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocus`) is replaced by `Keys` entries. The overlay moves to the top `Interface` layer.
+  - ADR-0053's key focus slot (`TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocus`) is replaced by `Keys` entries. The overlay moves to the last root chunk of `Interface`.
 - **Follow-on work, in order:**
-  1. The `Interface` pass, layers in setup, and lists into spans, beside `Loose`.
-  2. The overlay moves to the top layer as the first client.
+  1. The `Interface` pass, the root split in setup, and lists into spans, beside `Loose`.
+  2. The overlay moves to the last root chunk as the first client.
   3. Picking and the input cascade in the window.
   4. Every `Loose` site moves to a span, and `Order` is deleted.
   5. The widget library's own ADR: screens as actors, layout, widget identity across rebuilds, a pool of texts, and clipping for scroll views.
@@ -130,10 +134,11 @@ enum Pointer { Blocks, Passes, Ignores }
 
 - **A z-index on each actor or placement.** Numbers that unrelated actors must agree on, which ADR-0023 refused.
 - **An app-wide list of actors in draw order**, sent by the window's owner. It orders actors only at one level, and an overlay over any app would need the app to put it in its list.
+- **Root chunks named by layer types** (`.layers::<Interface, (Game, Authoring, Dev)>()`), each found by a root through its needs. A trait and a lookup that a span passed straight into the config does not need.
 - **The root handed to one app actor, which splits it.** That actor could reorder the root at any time and put itself above the overlay. Splitting at setup gives the same order with no holder.
 - **Spans as resources made by the renderer, in a slab with generations, path keys packed in a `u128`, and a cap.** Each split would be a round trip before a child could be spawned with its span. A path key changes when a sibling is inserted, and the flattened walk already is the order.
 - **Keeping `Loose` for drawing whose order "does not show"** (opaque, depth-tested). Draw calls always run in some order, and a loose order is a hash map's. Keeping it would leave two ways to draw, and an undeclared sequence.
-- **A pass for each layer.** It needs no new concept, but a pass that writes depth clears it, so the world's layers could not share one depth buffer, and each pass costs about 35 µs.
+- **A pass for each root chunk.** It needs no new concept, but a pass that writes depth clears it, so the world's chunks could not share one depth buffer, and each pass costs about 35 µs.
 - **Hit testing on rects the renderer derives from entries.** The renderer does not know where a placement lands, because its program places it.
 - **Rects sent by each screen to the window.** A second structure, which would have to be kept in the sequence's order by some other means.
 - **A full-window id buffer.** Exact, but about 75 MB at 1080p and 300 MB at 4K for four layers. Probes give the same stacks for a few hundred bytes.
