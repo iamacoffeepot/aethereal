@@ -155,7 +155,7 @@ impl Actor for Stage {
             if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
                 turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
             }
-            entries.push(Entry::call(child::<Scene>(window), Area::WHOLE));
+            entries.push(Entry::call(child::<Scene>(window), Area::WINDOW));
         }
         turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 

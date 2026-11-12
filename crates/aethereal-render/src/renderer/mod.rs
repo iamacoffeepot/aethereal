@@ -15,7 +15,7 @@ use crate::dispatch::{
     self, Computes, CreateDispatch, DispatchId, DispatchRan, DispatchRefused, Dispatched, Dispatches, Grid, Runs,
     Unrun, Use,
 };
-use crate::draw_list::{Area, Cut, DrawList, ListRefused, Listables, Listed, Lists, Picks, Walking};
+use crate::draw_list::{Cut, DrawList, ListRefused, Listables, Listed, Lists, Picks, Walking, Within};
 use crate::effect::{self, COVER, COVER_ENTRY, CreateEffect, Effected, MadeEffect, Read};
 use crate::font::FontRefused;
 use crate::frame::{
@@ -2799,18 +2799,18 @@ impl Kept {
         }
         let mut pipeline = 0;
         for issued in self.drawn((frame, pass), fits) {
-            let (drawable, picks, area) = match issued {
-                Issued::Draw { drawable, picks, area } => (drawable, picks, area),
+            let (drawable, picks, within) = match issued {
+                Issued::Draw { drawable, picks, within } => (drawable, picks, within),
                 Issued::Hit { rect, picks, origin } => {
                     picking.hit(rect, (picks, origin), in_pass);
                     continue;
                 }
             };
-            let Cut::Pixels { x, y, width, height } = area.clip.pixels(in_pass.scale, in_pass.size) else {
+            let Cut::Pixels { x, y, width, height } = within.clip.pixels(in_pass.scale, in_pass.size) else {
                 continue;
             };
             recording.set_scissor_rect(x, y, width, height);
-            let offset = picking.call(picks, area.origin, in_pass);
+            let offset = picking.call(picks, within.origin, in_pass);
             let (placement, join) = match drawable {
                 Drawable::Mesh(placement, join) => (placement, join),
                 Drawable::Text(placed, join) => {
@@ -2860,7 +2860,7 @@ impl Kept {
 
     /// Each placement drawn in the pass `pass` of `frame`, whose programs are made against `fits`, with its join of the
     /// pass, in the order it is drawn: the lists walked from the frame's roots, each in its order, each child drawn
-    /// where its parent calls it, in the area its parent places it, meshes and texts alike, with each hit listed in
+    /// where its parent calls it, where its parent's call places it, meshes and texts alike, with each hit listed in
     /// the pass in its place (ADR-0031, ADR-0052, ADR-0055). A join of another shape, or reading other targets, is not
     /// drawn, and neither is a placement no list walked holds.
     fn drawn(&self, (frame, pass): (Frame, PassName), fits: &Fits) -> Vec<Issued<'_>> {
@@ -2868,18 +2868,18 @@ impl Kept {
     }
 
     /// What the entry `walking` reaches issues in the pass `pass` of `frame`, whose programs are made against `fits`:
-    /// its placement's join drawn there, in its list's area, or itself, a hit listed there, its rect moved to its
+    /// its placement's join drawn there, where its list is, or itself, a hit listed there, its rect moved to its
     /// list's origin and cut to its list's clip; none when it neither draws nor is hit there.
     fn issued(&self, walking: Walking<'_>, (frame, pass): (Frame, PassName), fits: &Fits) -> Option<Issued<'_>> {
-        let Walking { entry, area } = walking;
+        let Walking { entry, within } = walking;
         match *entry {
             Listed::Draw { placement, picks } => {
                 let drawable = self.listed_in(placement, (frame, pass), fits)?;
-                Some(Issued::Draw { drawable, picks, area })
+                Some(Issued::Draw { drawable, picks, within })
             }
             Listed::Hit { frame: hit, pass: hit_pass, rect, picks } => {
                 let is_here = hit == frame && hit_pass == pass;
-                is_here.then_some(Issued::Hit { rect: area.cut(rect), picks, origin: area.origin })
+                is_here.then_some(Issued::Hit { rect: within.cut(rect), picks, origin: within.origin })
             }
             Listed::Run(_) | Listed::Call { .. } | Listed::Keys { .. } => None,
         }
@@ -2900,10 +2900,10 @@ impl Kept {
     }
 }
 
-/// What a pass issues in its order, each as the pointer reaches it: a placement's join drawn in its list's area, or a
+/// What a pass issues in its order, each as the pointer reaches it: a placement's join drawn where its list is, or a
 /// hit, which draws nothing, over its rect in the window's pixels, its list's origin at `origin` (ADR-0055).
 enum Issued<'a> {
-    Draw { drawable: Drawable<'a>, picks: Picks, area: Area },
+    Draw { drawable: Drawable<'a>, picks: Picks, within: Within },
     Hit { rect: Rect2, picks: Picks, origin: Vec2 },
 }
 

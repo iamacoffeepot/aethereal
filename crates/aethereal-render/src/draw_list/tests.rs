@@ -46,7 +46,7 @@ const fn draw(id: u64) -> Listed {
 
 /// A call of `child`, placed where its caller is.
 const fn call(child: ActorId) -> Listed {
-    Listed::Call { child, area: Area::WHOLE }
+    Listed::Call { child, area: Area::CALLER }
 }
 
 /// A list drawing the placements `ids`, in order.
@@ -170,31 +170,50 @@ const fn rect(min: [f32; 2], max: [f32; 2]) -> Rect2 {
 }
 
 #[test]
-fn nested_areas_compose_origins_adding_and_each_clip_moved_by_its_caller_and_cut_to_its_caller_s() {
-    // Catches a child's area taken as given, in its caller's coordinates, as if they were the surface's, so a list
-    // inside a panel inside a window draws at the list's offset from the surface's corner; a clip left where it was
-    // given, not moved by the caller's origin; a clip that widens what the caller was cut to, so a child draws out of
-    // its parent's panel; and a list's entries drawn in its parent's area, or a sibling's after the child's (ADR-0055).
+fn nested_areas_compose_from_the_window_down_each_clip_cut_to_its_caller_s_whatever_its_mode() {
+    // Catches an inheriting child's area taken as given, as if its caller's coordinates were the window's, so a list
+    // inside a panel draws at the list's offset from the window's corner; a clip left where it was given, not moved
+    // by its caller's origin; an absolute child moved by its ancestors' origins, so a scene placed in the window's
+    // pixels lands off by its parent's offset, and its own inheriting children not added from the window's corner; a
+    // clip, of either mode, that widens what the caller was cut to, so a child draws out of its parent's box; and a
+    // list's entries drawn where its parent's are, or a sibling's after the child's (ADR-0055).
     let kept = Kept::new();
     let mut lists = lists();
-    let panel = Area::rect(rect([100.0, 50.0], [300.0, 250.0]));
-    let scrolled = Area { origin: Vec2::new(10.0, -40.0), clip: Clip::To(rect([0.0, 0.0], [400.0, 150.0])) };
-    let parent = vec![draw(1), Listed::Call { child: HUD, area: panel }, draw(4)];
+    let panel = rect([100.0, 50.0], [300.0, 250.0]);
+    let scrolled = Area::Inherit { origin: Vec2::new(10.0, -40.0), clip: Clip::To(rect([0.0, 0.0], [400.0, 150.0])) };
+    let on_screen = Area::Absolute { clip: Clip::To(rect([0.0, 0.0], [150.0, 500.0])) };
+    let nudged = Area::Inherit { origin: Vec2::new(7.0, 8.0), clip: Clip::Whole };
+    let parent = vec![draw(1), Listed::Call { child: HUD, area: Area::rect(panel) }, draw(4)];
     assert_eq!(lists.check(parent, MAKER, &kept), Ok(()));
-    let hud = vec![draw(2), Listed::Call { child: MAP, area: scrolled }];
+    let hud =
+        vec![draw(2), Listed::Call { child: MAP, area: scrolled }, Listed::Call { child: OTHER, area: on_screen }];
     assert_eq!(lists.check(hud, HUD, &make(HUD, 2)), Ok(()));
     assert_eq!(lists.check(draws(&[3]), MAP, &make(MAP, 3)), Ok(()));
+    assert_eq!(lists.check(vec![draw(5), Listed::Call { child: STRAY, area: nudged }], OTHER, &kept), Ok(()));
+    assert_eq!(lists.check(draws(&[7]), STRAY, &make(STRAY, 7)), Ok(()));
 
-    let areas: Vec<(u64, Area)> = lists
+    let placed: Vec<(u64, Within)> = lists
         .walk(vec![MAKER])
         .filter_map(|walking| match walking.entry {
-            Listed::Draw { placement, .. } => Some((*placement, walking.area)),
+            Listed::Draw { placement, .. } => Some((*placement, walking.within)),
             Listed::Run(_) | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
         })
         .collect();
 
-    let in_scroll = Area { origin: Vec2::new(110.0, 10.0), clip: Clip::To(rect([100.0, 50.0], [300.0, 200.0])) };
-    assert_eq!(areas, vec![(1, Area::WHOLE), (2, panel), (3, in_scroll), (4, Area::WHOLE)]);
+    let at = |x, y, clip| Within { origin: Vec2::new(x, y), clip: Clip::To(clip) };
+    let in_panel = at(100.0, 50.0, panel);
+    let in_scroll = at(110.0, 10.0, rect([100.0, 50.0], [300.0, 200.0]));
+    let on_screen_in_panel = at(0.0, 0.0, rect([100.0, 50.0], [150.0, 250.0]));
+    let nudged_on_screen = at(7.0, 8.0, rect([100.0, 50.0], [150.0, 250.0]));
+    let expected = vec![
+        (1, Within::WINDOW),
+        (2, in_panel),
+        (3, in_scroll),
+        (5, on_screen_in_panel),
+        (7, nudged_on_screen),
+        (4, Within::WINDOW),
+    ];
+    assert_eq!(placed, expected);
 }
 
 #[test]
@@ -216,7 +235,9 @@ fn a_clip_cuts_a_target_s_pixels_at_their_middles_scaled_to_the_target_and_withi
     assert_eq!(past.pixels(full, size), Cut::Pixels { x: 0, y: 0, width: 64, height: 32 });
     let outside = Clip::To(rect([70.0, 0.0], [90.0, 10.0]));
     assert_eq!(outside.pixels(full, size), Cut::Nothing);
-    let beside = Area::rect(rect([15.0, 0.0], [25.0, 10.0])).within(Area::rect(rect([20.0, 0.0], [30.0, 10.0])));
+    let beside = Within::WINDOW
+        .called(Area::rect(rect([20.0, 0.0], [30.0, 10.0])))
+        .called(Area::rect(rect([15.0, 0.0], [25.0, 10.0])));
     assert_eq!(beside.clip.pixels(full, size), Cut::Nothing, "a child placed past its caller's clip");
 }
 

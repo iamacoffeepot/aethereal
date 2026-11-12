@@ -8,10 +8,11 @@
 //! is not there to it, and a hit is a place in the sequence that draws nothing but is reached as a draw is. The window
 //! delivers each pointer event, top-down, to the sender of each entry drawn under it, until one blocks (ADR-0055).
 //!
-//! A call places its child: the area it gives, in its own coordinates, says where the child's `0, 0` lands and what
-//! the child's drawing is cut to. Areas compose down the walk, origins adding and clips cut by the caller's, so each
-//! entry is drawn moved by its list's origin, after its program places it, and cut to its list's clip; and the pointer
-//! reaches it there, as it was drawn (ADR-0055).
+//! A call places its child, and says which coordinates the child draws in: its caller's, moved to an origin, or the
+//! window's pixels, wherever its caller sits; and what the child's drawing is cut to, never past its caller's clip.
+//! The walk carries where each list is drawn, its origin and clip in the window's pixels, so each entry is drawn moved
+//! by its list's origin, after its program places it, and cut to its list's clip; and the pointer reaches it there,
+//! as it was drawn (ADR-0055).
 //!
 //! The keys follow the same sequence: an entry declares the keys its sender hears in a window, and the renderer sends
 //! each window the declarations its main frame's walk holds, the last called first, whenever they change. The window
@@ -57,12 +58,12 @@ pub enum Entry {
     /// A dispatch of the sender's, run here in the compute pass it joins: in each cycle that draws its frame, or in the
     /// first alone, when it runs once.
     Run(DispatchId),
-    /// What a direct child of the sender draws, drawn here, placed in `area` of the sender's coordinates: moved so its
-    /// `0, 0` lands at the area's origin, and cut to the area's clip.
+    /// What a direct child of the sender draws, drawn here, in the coordinates `area` says, and cut to its clip within
+    /// the sender's.
     Call { child: Callee, area: Area },
     /// A place in the pass `pass` of `frame` that draws nothing, reached by the pointer within `rect`, in the sender's
-    /// coordinates, and within the sender's clip, as `pointer` says: a modal's backdrop, an invisible handle, or the world's catch-all. A frame
-    /// that ends on a texture has no pointer, and nothing there is reached.
+    /// coordinates, and within the sender's clip, as `pointer` says: a modal's backdrop, an invisible handle, or the
+    /// world's catch-all. A frame that ends on a texture has no pointer, and nothing there is reached.
     Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer },
     /// The keys the sender hears in the window whose main frame is `frame`, at this place in the sequence: each key
     /// `keys` holds reaches it, after the declarations called after this one, and, when it `blocks`, none called
@@ -83,16 +84,21 @@ pub enum Pointer {
     Ignores,
 }
 
-/// Where a call places its child, in its caller's coordinates: where the child's `0, 0` lands, and the clip its drawing
-/// is cut to. A root list's actors are placed in [`Area::WHOLE`], whose coordinates are the surface's pixels.
+/// Where a call places its child: which coordinates it draws in, and the clip its drawing is cut to. Whatever the
+/// mode, the clip is cut to its caller's, so a child never draws outside its caller's box. A root list's actors draw
+/// in the window's pixels, cut to the whole surface.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.render.area")]
-pub struct Area {
-    pub origin: Vec2,
-    pub clip: Clip,
+pub enum Area {
+    /// The child draws in its caller's coordinates moved to `origin`, so it moves with its caller: a list that
+    /// scrolls, a panel dragged, a widget animated. `clip` is in the caller's coordinates.
+    Inherit { origin: Vec2, clip: Clip },
+    /// The child draws in the window's pixels wherever its caller sits, so it knows where it is on screen: a scene, a
+    /// tooltip at the pointer. `clip` is in the window's pixels.
+    Absolute { clip: Clip },
 }
 
-/// What a call's child's drawing is cut to, in its caller's coordinates.
+/// What a call's child's drawing is cut to, in the coordinates its area's mode names.
 #[derive(Debug, Clone, Copy, PartialEq, Plain)]
 #[kind(name = "aether.render.area_clip")]
 pub enum Clip {
@@ -111,34 +117,58 @@ pub(crate) enum Cut {
 }
 
 impl Area {
-    /// The child's `0, 0` where its caller's is, cut to nothing more than its caller is: the area a root is drawn in,
-    /// the whole surface.
-    pub const WHOLE: Self = Self { origin: Vec2::ZERO, clip: Clip::Whole };
+    /// The child in the window's pixels, cut to nothing more than its caller is: a scene that fills its window.
+    pub const WINDOW: Self = Self::Absolute { clip: Clip::Whole };
 
-    /// The child placed at `rect`: its `0, 0` at the rect's least corner, and cut to the rect.
+    /// The child in its caller's coordinates as they are, cut to nothing more than its caller is.
+    pub const CALLER: Self = Self::Inherit { origin: Vec2::ZERO, clip: Clip::Whole };
+
+    /// The child in its caller's coordinates, placed at `rect` of them: its `0, 0` at the rect's least corner, and cut
+    /// to the rect.
     #[must_use]
     pub const fn rect(rect: Rect2) -> Self {
-        Self { origin: rect.min, clip: Clip::To(rect) }
+        Self::Inherit { origin: rect.min, clip: Clip::To(rect) }
     }
+}
 
-    /// This area, given in `caller`'s coordinates, in the coordinates `caller` is given in: its origin moved by the
-    /// caller's, and its clip moved by it and cut to the caller's clip.
-    #[must_use]
-    pub fn within(self, caller: Self) -> Self {
-        let clip = match self.clip {
-            Clip::Whole => caller.clip,
-            Clip::To(rect) => Clip::To(caller.cut(rect)),
+/// Where a list is drawn, in the window's pixels: where its `0, 0` lands, and what its drawing is cut to. The walk
+/// carries one for each list, the root list's [`Within::WINDOW`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Within {
+    pub origin: Vec2,
+    pub clip: Clip,
+}
+
+impl Within {
+    /// The window's own: its `0, 0` at the window's, cut to the whole surface.
+    pub const WINDOW: Self = Self { origin: Vec2::ZERO, clip: Clip::Whole };
+
+    /// Where a child called in `area` by a list drawn here is drawn: an inheriting child at this origin moved by its
+    /// own, an absolute one at the window's; and either cut to its clip, in the coordinates its mode names, within
+    /// this clip.
+    pub fn called(self, area: Area) -> Self {
+        let (origin, clip, from) = match area {
+            Area::Inherit { origin, clip } => (self.origin + origin, clip, self.origin),
+            Area::Absolute { clip } => (Vec2::ZERO, clip, Vec2::ZERO),
+        };
+        let clip = match clip {
+            Clip::Whole => self.clip,
+            Clip::To(rect) => Clip::To(self.clipped(rect.translate(from))),
         };
 
-        Self { origin: caller.origin + self.origin, clip }
+        Self { origin, clip }
     }
 
-    /// `rect`, in this area's coordinates, in the coordinates it is given in: moved by its origin, and cut to its clip.
+    /// `rect`, in this list's coordinates, in the window's pixels: moved by its origin, and cut to its clip.
     pub fn cut(self, rect: Rect2) -> Rect2 {
-        let moved = rect.translate(self.origin);
+        self.clipped(rect.translate(self.origin))
+    }
+
+    /// `rect`, in the window's pixels, cut to its clip.
+    fn clipped(self, rect: Rect2) -> Rect2 {
         match self.clip {
-            Clip::Whole => moved,
-            Clip::To(clip) => moved.intersection(clip),
+            Clip::Whole => rect,
+            Clip::To(clip) => rect.intersection(clip),
         }
     }
 }
@@ -176,8 +206,8 @@ pub struct Callee {
 }
 
 impl Entry {
-    /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it, placed in
-    /// `area` of the sender's coordinates: a place deeper than a child does not build. The call holds only the child's
+    /// A call of `child`, a child of the list's sender, as [`child`](aethereal_actor::child) names it, placed as
+    /// `area` says: a place deeper than a child does not build. The call holds only the child's
     /// segment, and the renderer finds the child one segment beneath whoever sends the list, so a call names only its
     /// sender's own direct child.
     #[must_use]
@@ -376,9 +406,9 @@ impl Lists {
         })
     }
 
-    /// The draws, dispatches, hits, and keys listed from `roots`, in the order of the walk, each in the area its list is
-    /// drawn in, in surface pixels: each root's list in turn, in [`Area::WHOLE`], each child entered where it is called,
-    /// in the area its call gives within its caller's, so a list's calls draw between its own entries as it lists them
+    /// The draws, dispatches, hits, and keys listed from `roots`, in the order of the walk, each where its list is
+    /// drawn: each root's list in turn, [`Within::WINDOW`], each child entered where it is called, placed as its
+    /// call's area says within its caller, so a list's calls draw between its own entries as it lists them
     /// (ADR-0055). An actor no list from `roots` calls is not drawn.
     pub fn walk(&self, roots: Vec<ActorId>) -> Walked<'_> {
         Walked { kept: &self.kept, roots: roots.into_iter(), entered: Vec::new() }
@@ -389,28 +419,28 @@ impl Lists {
 pub(crate) struct Walked<'a> {
     kept: &'a HashMap<ActorId, Vec<Listed>>,
     roots: vec::IntoIter<ActorId>,
-    /// The lists being drawn, each beside the area it is drawn in, the one called last on top: a stack, so the walk's
-    /// depth costs no frames.
-    entered: Vec<(slice::Iter<'a, Listed>, Area)>,
+    /// The lists being drawn, each beside where it is drawn, the one called last on top: a stack, so the
+    /// walk's depth costs no frames.
+    entered: Vec<(slice::Iter<'a, Listed>, Within)>,
 }
 
-/// One entry the walk reaches, drawn in `area`, its list's, in surface pixels.
+/// One entry the walk reaches, drawn `within` where its list is.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Walking<'a> {
     pub entry: &'a Listed,
-    pub area: Area,
+    pub within: Within,
 }
 
 impl Walked<'_> {
-    /// Enters the list of `actor`, drawn in `area`, when it has one. No actor stands deeper than a path's most
+    /// Enters the list of `actor`, drawn `within`, when it has one. No actor stands deeper than a path's most
     /// segments, so a call that would go deeper, which only two ids that collide could write, is not entered.
-    fn enter(&mut self, actor: ActorId, area: Area) {
+    fn enter(&mut self, actor: ActorId, within: Within) {
         let Some(list) = self.kept.get(&actor) else {
             return;
         };
-        let within = self.entered.len() < ActorPath::MAX_DEPTH;
-        if within {
-            self.entered.push((list.iter(), area));
+        let shallow = self.entered.len() < ActorPath::MAX_DEPTH;
+        if shallow {
+            self.entered.push((list.iter(), within));
         }
     }
 }
@@ -422,14 +452,14 @@ impl<'a> Iterator for Walked<'a> {
         loop {
             let Some((list, caller)) = self.entered.last_mut() else {
                 let root = self.roots.next()?;
-                self.enter(root, Area::WHOLE);
+                self.enter(root, Within::WINDOW);
                 continue;
             };
             let caller = *caller;
             match list.next() {
-                Some(Listed::Call { child, area }) => self.enter(*child, area.within(caller)),
+                Some(Listed::Call { child, area }) => self.enter(*child, caller.called(*area)),
                 Some(entry @ (Listed::Draw { .. } | Listed::Run(_) | Listed::Hit { .. } | Listed::Keys { .. })) => {
-                    return Some(Walking { entry, area: caller });
+                    return Some(Walking { entry, within: caller });
                 }
                 None => {
                     self.entered.pop();

@@ -20,11 +20,11 @@ What is already decided:
 
 ## Decision
 
-**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. An actor's draw list holds its own calls, and it can call its direct children: `Entry::call(child::<Hud>(()), area)` draws whatever Hud draws, at that place in the sequence, moved to the area's origin and cut to its clip. So drawing is a tree of actors, an actor is drawn only where its parent calls it, and a parent's list is the only thing that orders its children. The root is the setup's list of root actors, fixed for the program's life. Actors author their lists in parallel; the renderer walks the tree from the root and issues the calls in that order. `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
+**The sequence of draw calls the renderer issues is fully declared, and the renderer never chooses an order. An actor's draw list holds its own calls, and it can call its direct children: `Entry::call(child::<Hud>(()), area)` draws whatever Hud draws, at that place in the sequence, in the coordinates the area names, and cut to its clip within the caller's. So drawing is a tree of actors, an actor is drawn only where its parent calls it, and a parent's list is the only thing that orders its children. The root is the setup's list of root actors, fixed for the program's life. Actors author their lists in parallel; the renderer walks the tree from the root and issues the calls in that order. `Loose` is removed. Input reads the same sequence: the renderer records what was drawn under the pointer, in call order, and the window delivers the pointer, and keys, top-down through what was declared there.**
 
 ```
 setup: root list ── [World, Game, Authoring, Overlay]   (fixed for the program's life)
-Game:  [Draw(background), call(child::<Hud>, WHOLE), call(child::<Inventory>, rect(panel)), Draw(border)]
+Game:  [Draw(background), call(child::<Hud>, WINDOW), call(child::<Inventory>, rect(panel)), Draw(border)]
 Hud:   [Draw(health), Draw(minimap)]
 renderer: frames → passes → walk from the root, entering each call in its area → each list as sent, moved and cut
 window: pointer ── probe ── stack in call order ── top-down until one blocks ──> actors
@@ -33,7 +33,7 @@ window: pointer ── probe ── stack in call order ── top-down until on
 
 ### The sequence is declared
 
-- **The renderer issues a frame's calls in one order, and every step of it is declared.** Frames, then each frame's passes in the order their author wrote (ADR-0025), then the walk from the root, each list exactly as sent, entering each called actor's list where it is called, in the area the call gives it.
+- **The renderer issues a frame's calls in one order, and every step of it is declared.** Frames, then each frame's passes in the order their author wrote (ADR-0025), then the walk from the root, each list exactly as sent, entering each called actor's list where it is called, placed as the call's area says.
 - **The renderer never reorders a list.** A list is not grouped by program and not reordered for pipelines. The renderer skips setting a pipeline that is already set, so a list that keeps one program together pays for no switches.
 - **What a call does is not the renderer's concern.** An opaque mesh, a blended one, a text, a dispatch: each is issued where it was listed. An actor that sorts by distance, by material, or by nothing sends its list in that order, and that is the order.
 
@@ -52,12 +52,16 @@ enum Entry {
 }
 enum Pointer { Blocks, Passes, Ignores }
 
-struct Area { origin: Vec2, clip: Clip }   // in the caller's coordinates
+enum Area {
+    Inherit { origin: Vec2, clip: Clip },  // the caller's coordinates moved to origin; clip in the caller's coordinates
+    Absolute { clip: Clip },               // the window's pixels wherever the caller sits; clip in the window's pixels
+}
 enum Clip { Whole, To(Rect2) }             // Whole: cut only where the caller is cut
 
-Entry::call(child::<Scene>(window), Area::WHOLE)
-Entry::call(child::<Hud>(()), Area::rect(panel))                 // origin at panel.min, cut to panel
-Entry::call(child::<List>(()), Area { origin, clip: Clip::To(view) })
+Entry::call(child::<Scene>(window), Area::WINDOW)                            // Absolute { clip: Whole }
+Entry::call(child::<Hud>(()), Area::rect(panel))                            // Inherit: origin at panel.min, cut to panel
+Entry::call(child::<List>(()), Area::Inherit { origin, clip: Clip::To(view) })
+Entry::call(child::<Tooltip>(()), Area::CALLER)                             // Inherit { origin: ZERO, clip: Whole }
 ```
 
 - **An actor is drawable, by its parent.** `Entry::call(child::<Hud>(()), area)` in a list issues Hud's own list at that place. A parent can draw before its children, between them, and after them: `[Draw(background), call(hud), call(inventory), Draw(border)]`. `Entry::call` is the one way to write a call, and every call says where its child sits.
@@ -72,9 +76,11 @@ Entry::call(child::<List>(()), Area { origin, clip: Clip::To(view) })
 
 A program places what it draws by its own program, uniforms, and instances, in the surface's pixels (ADR-0024, ADR-0052), so without more a child must know where on the surface it stands, and nothing stops it drawing over its parent's neighbours. A call says both.
 
-- **A call carries where its child sits:** an origin, where the child's `0, 0` lands, and a clip, the rect its drawing is cut to, both in the caller's coordinates. `Area::WHOLE` places the child where its caller is, cut only where the caller is cut; `Area::rect(panel)` puts its `0, 0` at the panel's corner and cuts it to the panel; a scroll view gives an origin above its view, and the view as the clip.
-- **Nesting composes.** Origins add, and a clip is moved by the caller's origin and cut to the caller's clip (`Area::within`). The root list's actors are placed in `Area::WHOLE`, whose coordinates are the surface's pixels, cut to the whole surface. The walk carries each list's area, so every entry is drawn in the area its list stands in, and the renderer reads no actor tree to find it.
-- **The same in every pass.** A list is the same in every frame and every pass, and so is its area. The origin moves a draw in screen space, after its program projects it: its clip-space position is moved by the origin's share of its frame's end, `2·dx/width` across and `−2·dy/height` down, times its `w`, so a 3D child moves as a viewport would, its perspective unchanged. The clip is a scissor. Neither is in an actor's program, uniforms, `Place`, or bindings: they are the renderer's.
+- **A call carries where its child sits, and says which coordinates the child draws in,** so a reader of the call site knows. The area is one of two modes:
+  - **`Inherit { origin, clip }`:** the child draws in its caller's coordinates moved to `origin`, and `clip` is in the caller's coordinates. It fits a child that moves with its parent: a list that scrolls, a panel dragged, a widget animated. `Area::rect(panel)` puts its `0, 0` at the panel's corner and cuts it to the panel; a scroll view gives an origin above its view, and the view as the clip; `Area::CALLER` draws it where its caller does.
+  - **`Absolute { clip }`:** the child draws in the window's pixels wherever its caller sits, and `clip` is in the window's pixels. It fits a child that needs to know where it is on screen: a scene that fills its window, `Area::WINDOW`, or what is placed at the pointer.
+- **Nesting composes, from the window down.** The walk carries, for each list, where it is drawn in the window's pixels: its origin and its clip. The root list's actors are drawn at the window's origin, cut to the whole surface. An `Inherit` child's origin is its caller's plus its own; an `Absolute` child's is the window's, zero, whatever its ancestors are, and its own `Inherit` children add from there. **Whatever the mode, a child's clip is cut to its caller's:** a child never draws outside its caller's box. The renderer reads no actor tree to find any of it.
+- **The same in every pass.** A list is the same in every frame and every pass, and so is where it is drawn. The origin moves a draw in screen space, after its program projects it: its clip-space position is moved by the origin's share of its frame's end, `2·dx/width` across and `−2·dy/height` down, times its `w`, so a 3D child moves as a viewport would, its perspective unchanged. The clip is a scissor. Neither is in an actor's program, uniforms, `Place`, or bindings: they are the renderer's.
 - **The shift is made in the vertex stage, by the renderer's own step.** The record of each draw's call that picking binds (see Input) also holds its shift, and before each return of every draw program's vertex stage, and the glyph program's, the renderer adds `position.xy += shift * position.w`, as it adds the picking step before each return of the fragment stage. The record's binding is seen by both stages, and binds nothing a program's budget did not already leave it: the step's group, and a uniform block in each stage, are taken out of what a program may list. Each draw that is moved or picked has a record of its own, keyed no call when it is not picked; one at the surface's origin that the pointer does not reach shares the first, which moves nothing.
 - **The clip is a scissor for each draw:** the clip, in the surface's pixels, scaled to the pass's target as the target's scale scales the end (ADR-0048), taking each pixel whose middle is within it, and kept within the target. A draw whose clip covers no pixel is not issued.
 - **A hit is moved and cut on the CPU:** its rect, in its sender's coordinates, is moved by its list's origin and cut to its list's clip before the renderer tests the probes against it.
@@ -118,7 +124,7 @@ A program places what it draws by its own program, uniforms, and instances, in t
 
 **Pointer events cascade.** The window keeps each probe's newest stack and delivers every pointer event (`PointerMoved`, `PointerDown`, `PointerUp`, `Wheel`) top-down through it: to the actor whose list holds each entry, until the first entry whose pointer is `Blocks`, all in one step, with no answer asked. Each actor is told which of its entries was hit, so it does not test its own widgets again.
 
-- **In the entry's own coordinates.** Each entry of a stack carries the origin its list was drawn at (`Reach { actor, entry, blocks, origin }`), and the positions an actor is told through it (`Pointed`) are the surface's less that origin, so a child hears a click as it drew, from its own `0, 0`.
+- **In the entry's own coordinates.** Each entry of a stack carries the origin its list was drawn at, in the window's pixels (`Reach { actor, entry, blocks, origin }`), and the positions an actor is told through it (`Pointed`) are the surface's less that origin, so a child hears a click as it drew: an `Inherit` child from its own `0, 0`, and an `Absolute` child in the window's pixels.
 - **Hover:** when the set of entries delivered to changes, those left get `PointerLeft` and those reached get `PointerEntered`. An entry is its actor and its number, wherever it was drawn, so a parent that moves a child under a resting pointer sends it neither.
 - **Capture:** the entries a `PointerDown` reached get every move and the `PointerUp` until the button comes up, wherever the pointer goes, as a key that is down keeps whom its press was sent to (ADR-0053). Their positions are given from the origin each entry was drawn at when the press reached it: a child that moves during a drag hears positions from where it was at the press. Live origins wait for a need.
 - **The wheel follows the pointer**, so a console that blocks stops the wheel from zooming the game beneath it, which ADR-0053 got by sending the wheel with key focus.
@@ -138,14 +144,14 @@ A program places what it draws by its own program, uniforms, and instances, in t
 - **Every pixel of a window traces to an actor.** The picking stack names the actor and entry that drew a pixel, and the chain of calls above it, so an inspector, an agent's "what is at (x, y)", and the authoring menu's "select what I clicked" read what input already reads.
 - **Each actor's list can be recorded on its own thread,** as a GPU render bundle, and the bundles executed in the walk's order. Not needed now, but nothing in the order prevents it.
 - **Each program in a window frame's passes gets a step it did not write,** and each window frame gets a probe buffer and a readback. Programs run in a texture frame get neither: a texture frame has no pointer. Every draw program and the glyph program also get the vertex stage's shift, in every frame, and a draw that is moved or picked has a record of 32 bytes in one buffer the renderer writes each `Render`.
-- **A child draws and hears in its own coordinates.** What it places with `Place` and texts' `at` are moved by its list's origin, and cut to its list's clip, and the pointer reaches it there. Raw subscribers still hear the window's events in its surface pixels (ADR-0024).
+- **A child draws and hears in the coordinates its call names.** What it places with `Place` and texts' `at` are moved by its list's origin, zero for an `Absolute` child, and cut to its list's clip, and the pointer reaches it there. Raw subscribers still hear the window's events in its surface pixels (ADR-0024).
 - **ADR-0023, ADR-0024, ADR-0025, ADR-0031, ADR-0052, and ADR-0053 are edited to match.**
   - ADR-0023's refusal of an order key holds: the root list is written in one place, the setup, and every other order is a parent's list, never a number that actors agree on.
   - ADR-0025's "order is declared where drawing is described" holds and is now total. Its "no order within one pass between actors" and its interface-as-texture-frame are replaced.
   - ADR-0031's lists stand as the form of every list, and its "order between actors is still not promised" is replaced. Both items it left for later are settled: dispatches are listed (`Entry::Run`), and nothing is loose.
   - ADR-0053's key focus slot (`TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocus`) is replaced by `Keys` entries. The overlay is last in the root list, so it draws on top.
   - ADR-0024's positions in the surface's pixels hold for the window's events and raw subscribers; an entry's `Pointed` is in its list's coordinates.
-  - ADR-0052's text placed at a point in its frame's pixels is moved by the origin of the area its list is drawn in, and cut to that area's clip as well as its own.
+  - ADR-0052's text placed at a point in its frame's pixels is moved by the origin its list is drawn at, and cut to its list's clip as well as its own.
 - **Follow-on work, in order:**
   1. The `Interface` pass, the root list in setup, and `Call`, beside `Loose`. Done.
   2. The overlay moves to `Interface`, last in the root list, as the first client. Done.

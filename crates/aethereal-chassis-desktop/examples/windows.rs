@@ -217,7 +217,7 @@ impl Director {
             .iter()
             .flat_map(|window| {
                 let keys = Entry::Keys { frame: Frame::Main(*window), keys: directing(), blocks: false };
-                [keys, Entry::call(child::<Scene>(*window), Area::WHOLE)]
+                [keys, Entry::call(child::<Scene>(*window), Area::WINDOW)]
             })
             .collect();
 

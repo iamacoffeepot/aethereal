@@ -11,7 +11,7 @@ mod told;
 
 use super::*;
 use crate::asked::blob;
-use crate::draw_list::EntryRefused;
+use crate::draw_list::{Area, EntryRefused};
 use crate::frame::{PassSpec, Scale, TargetKind, TargetSpec};
 use crate::pass::{Compute, Interface, Main, Pass};
 use crate::placement::Resource;

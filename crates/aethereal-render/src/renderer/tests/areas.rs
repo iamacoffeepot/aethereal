@@ -62,7 +62,7 @@ fn on_a_gpu_a_child_lands_at_the_origin_its_caller_gives_it() {
     let Some((gpu, adapter)) = gpu() else {
         return;
     };
-    let placed = Area { origin: Vec2::new(1.0, 1.0), clip: Clip::Whole };
+    let placed = Area::Inherit { origin: Vec2::new(1.0, 1.0), clip: Clip::Whole };
     let mut kept = child_in(&gpu, placed, (-1.0, 0.0), Picks::Ignores);
 
     let lit = red(&gpu, &mut kept);
@@ -81,7 +81,7 @@ fn on_a_gpu_a_child_at_a_negative_origin_shows_what_lies_past_its_own_surface_si
         return;
     };
     // The quad lies from the child's fourth pixel to its eighth: wholly right of a window four pixels wide.
-    let scrolled = Area { origin: Vec2::new(-4.0, 0.0), clip: Clip::Whole };
+    let scrolled = Area::Inherit { origin: Vec2::new(-4.0, 0.0), clip: Clip::Whole };
     let mut kept = child_in(&gpu, scrolled, (1.0, 3.0), Picks::Ignores);
 
     let lit = red(&gpu, &mut kept);
@@ -97,7 +97,7 @@ fn on_a_gpu_what_a_child_draws_outside_its_clip_is_cut() {
     let Some((gpu, adapter)) = gpu() else {
         return;
     };
-    let cut = Area { origin: Vec2::new(1.0, 0.0), clip: Clip::To(rect([0.0, 1.0], [3.0, 3.0])) };
+    let cut = Area::Inherit { origin: Vec2::new(1.0, 0.0), clip: Clip::To(rect([0.0, 1.0], [3.0, 3.0])) };
     let mut kept = child_in(&gpu, cut, (-1.0, 1.0), Picks::Ignores);
 
     let lit = red(&gpu, &mut kept);
@@ -115,7 +115,7 @@ fn on_a_gpu_a_child_is_picked_where_it_is_drawn_and_not_where_its_clip_cuts_it()
     let Some((gpu, adapter)) = gpu() else {
         return;
     };
-    let placed = Area { origin: Vec2::new(2.0, 0.0), clip: Clip::To(rect([0.0, 0.0], [3.0, 4.0])) };
+    let placed = Area::Inherit { origin: Vec2::new(2.0, 0.0), clip: Clip::To(rect([0.0, 0.0], [3.0, 4.0])) };
     let mut kept = child_in(&gpu, placed, (-1.0, 1.0), reaches(0, true));
 
     let unmoved = read_back_at(&gpu, &mut kept, (1.5, 1.5));
@@ -140,7 +140,7 @@ fn a_hit_is_moved_by_its_list_s_origin_and_cut_to_its_clip() {
     let handles =
         vec![hit(rect([0.0, 0.0], [1.0, 4.0]), reaches(0, true)), hit(rect([1.0, 0.0], [2.0, 4.0]), reaches(1, true))];
     assert_eq!(kept.listed(handles, CHILD), Ok(()));
-    let placed = Area { origin: Vec2::new(2.0, 0.0), clip: Clip::To(rect([0.0, 0.0], [3.0, 4.0])) };
+    let placed = Area::Inherit { origin: Vec2::new(2.0, 0.0), clip: Clip::To(rect([0.0, 0.0], [3.0, 4.0])) };
     assert_eq!(kept.listed(vec![called(CHILD, placed)], MAKER), Ok(()));
     let mut at = |x| probed(&gpu, &mut kept, &frame, (x, 1.5, false)).picked(&written(&[], &[])).1.pointer;
 

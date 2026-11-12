@@ -214,11 +214,11 @@ fn a_pass_draws_the_lists_walked_from_the_root_list_each_child_where_its_parent_
     let (child, stray) = (listed(CHILD), listed(STRAY));
     assert_eq!(kept.listed(main_list(&[child]), CHILD), Ok(()));
     assert_eq!(kept.listed(main_list(&[stray]), STRAY), Ok(()));
-    let parent = vec![drawn(a, Picks::Ignores), called(CHILD, Area::WHOLE), drawn(b, Picks::Ignores)];
+    let parent = vec![drawn(a, Picks::Ignores), called(CHILD, Area::CALLER), drawn(b, Picks::Ignores)];
     assert_eq!(kept.listed(parent, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![a.id, child.id, b.id]);
 
-    let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), called(CHILD, Area::WHOLE)];
+    let reordered = vec![drawn(b, Picks::Ignores), drawn(a, Picks::Ignores), called(CHILD, Area::CALLER)];
     assert_eq!(kept.listed(reordered, MAKER), Ok(()));
     assert_eq!(drawn_in_main(&kept), vec![b.id, a.id, child.id]);
 }
