@@ -1,7 +1,7 @@
 //! Layout: where Taffy puts each node, by its style's flex and grid settings, at the screen's size and UI scale.
 
-use super::{Boxed, lay_out};
-use crate::fonts::Fonts;
+use super::{Boxed, Layouts};
+use crate::fonts::{Fonts, Texts};
 use crate::style::{Edges, Gap, Length, Space, Style, Track};
 use crate::tree::{Node, Segment, Tree};
 use crate::widgets::{Column, Grid, Row, Stack};
@@ -20,9 +20,10 @@ fn boxes(tree: &Tree, size: Vec2, scale: f32) -> Vec<Boxed> {
         panic!("the tree lays out");
     };
     let fonts = Fonts::default();
-    let mut measuring = fonts.measuring(scale);
+    let mut texts = Texts::default();
+    let mut measuring = fonts.measuring(&mut texts, scale);
 
-    lay_out(&flattened.nodes, &[], &mut measuring, size, scale).boxes
+    Layouts::default().lay_out(&flattened.nodes, &[], &mut measuring, size, scale).boxes.clone()
 }
 
 /// The rect from `x`, `y`, `width` by `height`.

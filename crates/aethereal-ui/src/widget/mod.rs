@@ -47,6 +47,19 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
     /// How it lays its children out.
     fn arrange(&self) -> Arrange;
 
+    /// Whether `other`, the widget built at its key the pass before, lays out as it does: arranges its children, keeps
+    /// its room, and measures as it does. Its screen lays out again only when some widget does not, or something
+    /// outside the tree changed; when only drawing changed, it draws the new tree in the boxes the last layout gave.
+    ///
+    /// By default every setting is read by layout, so a widget lays out anew whenever any of them changed, and a
+    /// widget that does not override this can never be drawn in a box laid out for other settings. A widget whose
+    /// drawing changes often while its size does not, as a chart's columns slide every frame in a box its style sizes,
+    /// overrides it to compare only what [`Self::arrange`], [`Self::measure`], [`Self::room`], and [`Self::lines`]
+    /// read: a setting they read and this leaves out lays the widget out at what it was when last laid out.
+    fn same_layout(&self, other: &Self) -> bool {
+        self == other
+    }
+
     /// The size of its content, in pixels, within `offer`: called for a leaf alone, as layout asks. A leaf with no
     /// content of its own, sized by its style, measures nothing.
     fn measure(&self, style: &Style, measuring: &mut Measuring<'_>, offer: Offer) -> Vec2 {
@@ -301,6 +314,8 @@ pub trait Built: Debug + Send {
     fn as_any(&self) -> &dyn Any;
     /// Whether `other` is a widget of the same type and the same settings.
     fn same(&self, other: &dyn Built) -> bool;
+    /// Whether `other` is a widget of the same type that lays out as it does.
+    fn same_layout(&self, other: &dyn Built) -> bool;
     /// How it lays its children out.
     fn arrange(&self) -> Arrange;
     /// The size of its content within `offer`.
@@ -370,6 +385,10 @@ impl<W: Widget> Built for W {
 
     fn same(&self, other: &dyn Built) -> bool {
         other.as_any().downcast_ref::<Self>().is_some_and(|other| self == other)
+    }
+
+    fn same_layout(&self, other: &dyn Built) -> bool {
+        other.as_any().downcast_ref::<Self>().is_some_and(|other| Widget::same_layout(self, other))
     }
 
     fn arrange(&self) -> Arrange {

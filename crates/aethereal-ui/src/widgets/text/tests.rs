@@ -1,8 +1,8 @@
 //! `Text`: the box it measures is the box the renderer lays it out in, as it is made to be drawn.
 
 use super::Text;
-use crate::fonts::Fonts;
-use crate::layout::lay_out;
+use crate::fonts::{Fonts, Texts};
+use crate::layout::Layouts;
 use crate::style::{Alignment, Length, Style};
 use crate::tree::{Node, Segment, Tree};
 use crate::widget::{Draws, Focused, Laid, Lit, Piece, Stateless, TextDraw, Widget};
@@ -34,8 +34,10 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     };
     let mut known = Fonts::default();
     known.read(Font::Sans, sans(), Vec::new());
-    let mut measuring = known.measuring(1.0);
-    let boxes = lay_out(&flattened.nodes, &[], &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes;
+    let mut texts = Texts::default();
+    let mut measuring = known.measuring(&mut texts, 1.0);
+    let mut layouts = Layouts::default();
+    let boxes = layouts.lay_out(&flattened.nodes, &[], &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes.clone();
 
     let laid_box = boxes[2];
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));

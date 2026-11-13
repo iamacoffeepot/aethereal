@@ -8,16 +8,19 @@
 //! reorders and goes with it (ADR-0056: Lists and conditions are settings). A widget's identity is its [`KeyPath`], the
 //! segments from the root to it.
 
+mod compare;
 mod element;
 #[cfg(test)]
 mod tests;
 
+pub use compare::{Difference, Relaid};
 pub use element::{Element, whole, windows};
 
 use crate::drag::{DragSource, DropTarget};
 use crate::style::Style;
 use crate::widget::{Built, Widget};
 use aethereal_data::Plain;
+use core::borrow::Borrow;
 use core::fmt;
 use std::collections::BTreeSet;
 
@@ -139,6 +142,13 @@ impl KeyPath {
             Segment::Item(key) => Some(key),
             Segment::Place(_) => None,
         }
+    }
+}
+
+/// A path is its segments, so what is kept by path is found by a run of segments without making a path of them.
+impl Borrow<[Segment]> for KeyPath {
+    fn borrow(&self) -> &[Segment] {
+        &self.segments
     }
 }
 

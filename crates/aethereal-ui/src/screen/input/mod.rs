@@ -30,6 +30,7 @@ use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
+use crate::fonts::Asker;
 use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Tree};
@@ -254,7 +255,7 @@ impl Screen {
     /// Takes in the tree the screen's view built after its methods took in what input raised, so the next input reaches
     /// its widgets as they now are; the next `Prepare` lays it out.
     pub fn rebuilt(&mut self, tree: Tree) {
-        self.unkept.last = Last::Built(Box::new(tree));
+        self.unkept.built(tree);
         self.fresh = Fresh::Stale;
     }
 
@@ -402,7 +403,7 @@ impl Screen {
         heard: &mut Heard,
         take: impl FnOnce(&dyn Built, &mut Vec<u8>, &mut Input<'_, '_>) -> T,
     ) -> Option<T> {
-        let Worked { last: Last::Built(tree), fonts, placed, .. } = &*self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, texts, placed, .. } = &mut *self.unkept else {
             return None;
         };
         let node = tree.find(path)?;
@@ -410,7 +411,8 @@ impl Screen {
         let widget = node.widget();
         let mut state = self.table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
         let before = state.clone();
-        let mut measuring = fonts.measuring(self.viewport.scale);
+        let mut measuring = fonts.measuring(texts, self.viewport.scale);
+        measuring.at(path, Asker::Drawing);
         let mut input = Input::new(node.style(), *laid, &mut measuring, &mut heard.raised);
         let took = take(widget, &mut state, &mut input);
         if state != before {

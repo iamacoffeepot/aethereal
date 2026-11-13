@@ -7,6 +7,7 @@ use super::*;
 use crate::draw::frame_bytes;
 use crate::style::{Length, Style};
 use crate::tree::{KeyPath, Node, Segment};
+use crate::widget::{Offer, Stateless, Widget};
 use crate::widgets::{Column, Stack, Text};
 use aethereal_actor::Answered;
 use aethereal_data::{Budget, from_bytes};
@@ -252,4 +253,76 @@ fn a_draw_that_goes_is_released_only_once_a_list_without_it_is_sent() {
     let released = orders.iter().position(|order| matches!(order, Order::Release(_)));
     let after = matches!((placed, released), (Some(placed), Some(released)) if placed < released);
     assert!(after, "the old label is released once its replacement is placed and listed: {orders:?}");
+}
+
+/// A swatch: as tall as `tall`, filled with `colour`, which layout does not read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Swatch {
+    tall: f32,
+    colour: Colour,
+}
+
+impl Widget for Swatch {
+    type State = Stateless;
+
+    fn arrange(&self) -> Arrange {
+        Arrange::Leaf
+    }
+
+    fn same_layout(&self, other: &Self) -> bool {
+        self.tall.to_bits() == other.tall.to_bits()
+    }
+
+    fn measure(&self, _: &Style, _: &mut Measuring<'_>, _: Offer) -> Vec2 {
+        Vec2::new(0.0, self.tall)
+    }
+
+    fn draw(&self, _: &Stateless, _: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
+        draws.quad(Quad {
+            rect: laid.rect,
+            clip: laid.clip,
+            colour: self.colour,
+            border_width: 0.0,
+            border_colour: self.colour,
+            radius: 0.0,
+            sample: Sample::Solid,
+        });
+    }
+}
+
+#[test]
+fn a_change_only_drawing_reads_is_drawn_in_the_boxes_laid_out_before() {
+    // Catches a tree that differs only in what a widget draws taken for the same tree, so the swatch keeps its old
+    // colour until something else changes.
+    let mut screen = screen();
+    let swatch =
+        |colour| stack(vec![Node::new(Segment::Place(0), Swatch { tall: 10.0, colour }, Style::default(), Vec::new())]);
+    let prepared = screen.prepare(swatch(Colour::opaque(1.0, 0.0, 0.0)), &[]);
+    answered(&mut screen, &prepared.orders, false);
+
+    let recoloured = screen.prepare(swatch(Colour::opaque(0.0, 0.0, 1.0)), &[]);
+
+    assert_eq!(recoloured.outcome, Outcome::Laid);
+    let written = sent(&recoloured.orders).iter().any(|order| matches!(order, Order::WriteInstances { .. }));
+    assert!(written, "the new colour is written: {:?}", recoloured.orders);
+}
+
+#[test]
+fn a_tree_taken_in_after_input_lays_out_as_it_stands() {
+    // Catches a tree a screen's methods rebuilt after input kept without being compared with the one laid out, so the
+    // next `Prepare`, building the same tree again, hands back the boxes of the tree before it.
+    let mut screen = screen();
+    let wide = |width: f32| {
+        let style = Style { width: Length::Pixels(width), ..filled(Colour::opaque(1.0, 0.0, 0.0)) };
+        stack(vec![Node::new(Segment::Place(0), Stack, style, Vec::new())])
+    };
+    let prepared = screen.prepare(wide(20.0), &[]);
+    answered(&mut screen, &prepared.orders, false);
+
+    screen.rebuilt(wide(40.0));
+    let _ = screen.prepare(wide(40.0), &[]);
+
+    let path = KeyPath::of(&[Segment::Place(0), Segment::Place(0)]);
+    let placed = screen.unkept.placed.iter().find(|(placed, _)| *placed == path).map(|(_, laid)| laid.rect.width());
+    assert_eq!(placed, Some(40.0));
 }

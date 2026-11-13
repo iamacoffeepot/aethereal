@@ -36,6 +36,11 @@ impl Widget for MeterGraph {
         Arrange::Leaf
     }
 
+    /// Nothing of it is laid out: it stretches to the box its style gives it, in which its history slides every frame.
+    fn same_layout(&self, _: &Self) -> bool {
+        true
+    }
+
     fn draw(&self, _: &Stateless, _: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let mut fills = Vec::new();
         drawn(&mut fills, laid.content, Scale(laid.scale), &self.drawn);
