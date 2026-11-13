@@ -9,9 +9,9 @@
 //! choose the tab beside the open one, round from the last to the first, and Home and End the first and the last.
 //!
 //! ```text
-//! Tabs { selected: self.tab, change: self.open(),     Tabs { titles: ["Items", "Skills"], selected, change }
-//!     Tab { title: "Items", … }               ──>     Tab { title: "Items" } at Place(0), when selected is 0
-//!     Tab { title: "Skills", … }                      Tab { title: "Skills" } at Place(1), when selected is 1
+//! Tabs { selected: self.tab, change => self.open(),     Tabs { titles: ["Items", "Skills"], selected, change }
+//!     Tab { title: "Items", … }                 ──>     Tab { title: "Items" } at Place(0), when selected is 0
+//!     Tab { title: "Skills", … }                        Tab { title: "Skills" } at Place(1), when selected is 1
 //! }
 //! ```
 

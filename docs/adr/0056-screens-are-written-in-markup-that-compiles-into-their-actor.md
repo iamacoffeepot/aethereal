@@ -23,7 +23,7 @@ What is already decided:
 
 ## Decision
 
-**A screen is an actor. Its view is written as markup in a Rust macro, `aethereal_ui::view!`, in the screen's own `.rs` file: each element is a widget, each setting a typed field of it, children give layout and draw order, and references name what the view reads from the screen in a small subset of Rust. The macro expands the markup into the actor's Rust, and the styles it names are Rust items, made by `aethereal_ui::style!`. Nothing reads markup at runtime. In every `Prepare`, the screen builds its widget tree and compares it with the last; only when it changed, or something outside it did, does the screen lay it out with Taffy and send what changed of its one draw list. Widgets are library code with no actors of their own. A panel with a life of its own is a child actor, placed by a call's area.**
+**A screen is an actor. Its view is written as markup in a Rust macro, `aethereal_ui::view!`, in the screen's own `.rs` file: each element is a widget, each setting or event a typed field of it, children give layout and draw order, and references name what the view reads from the screen in a small subset of Rust. The macro expands the markup into the actor's Rust, and the styles it names are Rust items, made by `aethereal_ui::style!`. Nothing reads markup at runtime. In every `Prepare`, the screen builds its widget tree and compares it with the last; only when it changed, or something outside it did, does the screen lay it out with Taffy and send what changed of its one draw list. Widgets are library code with no actors of their own. A panel with a life of its own is a child actor, placed by a call's area.**
 
 *Amended: markup moves out of XML files compiled by a build script and into Rust macros, written in rsx style, the shape Dioxus uses. Sheets become Rust items, and their ordered layering is dropped.*
 
@@ -53,26 +53,26 @@ use aethereal_ui::prelude::*;
 use crate::theme::*;
 
 aethereal_ui::style! {
-    pub inventory: panel { direction: column, gap: 8, padding: 12 }
+    pub inventory: panel { gap: 8, padding: 12 }
     pub title: text { font_size: 24 }
     pub slots: grid { columns: 6, gap: 4 }
 }
 
-aethereal_ui::view! { Inventory,
+aethereal_ui::view! { Inventory, ui,
     Column { style: inventory,
         Text { style: title, "Inventory" }
         Text { "Gold: {self.gold}" }
 
         Grid { style: slots, items: self.items as item key item.id,
             Tooltip {
-                ItemSlot { item: item, click: self.select(item.id), drag: item.id, drop: self.place(item.slot) }
+                ItemSlot { item: item, click => self.select(item.id), drag: item.id, drop => self.place(item.slot) }
                 Text { "{item.name}" }
             }
         }
 
         Column { style: detail, show: self.selected_item() as item,
             Text { "{item.name}" }
-            Button { click: self.equip(item.id), "Equip" }
+            Button { click => self.equip(item.id), "Equip" }
         }
     }
 }
@@ -80,10 +80,10 @@ aethereal_ui::view! { Inventory,
 
 `panel`, `text`, `grid`, and `detail` are the theme's styles, brought in by its `use`; `inventory`, `title`, and `slots` are the screen's own, each starting from one of them.
 
-- **A screen's markup is one call of `aethereal_ui::view!` in the screen's own `.rs` file:** the screen's type, then the root of its tree (*amended: markup moves into Rust macros*). Its styles and its methods sit in the same file or beside it, as ordinary Rust.
+- **A screen's markup is one call of `aethereal_ui::view!` in the screen's own `.rs` file:** the screen's type, the field that holds its library, as `screen!(Inventory, ui)` names it, then the root of its tree (*amended: markup moves into Rust macros*). Its styles and its methods sit in the same file or beside it, as ordinary Rust.
 - **An element is written `TypeName { settings, children, text }`, and its name is the widget's Rust type name, exactly:** `ItemSlot { … }` is `ItemSlot`, so a search finds the type and every use. Element names are capitalized because types are. That is the shape of Dioxus's `rsx!`.
 - **A lowercase element is a markup keyword, not a type.** One is left, `child` (see Child actors), so a reader tells a widget from a keyword on sight.
-- **A `name: value` pair is one of the widget's settings,** in snake_case as its Rust field is. A literal value is parsed by the setting's type: `6`, `"below"`, `true`. Settings are separated by commas, as a struct's fields are, and come before children and text.
+- **A `name: value` pair is one of the widget's settings, and a `name => call` pair one of its events,** each in snake_case as its Rust field is. A literal value is parsed by the setting's type: `6`, `"Equip"`, `true`. Settings and events are separated by commas, as a struct's fields are, and come before children and text.
 - **A nested element is a child, and children are both layout order and draw order.** A later child draws over an earlier one.
 - **A string literal is the widget's text,** and may hold references, as a `format!` string does: `"Gold: {self.gold}"`.
 - **Markup is Rust tokens laid out as the tree it builds,** so its structure shows at a glance, it diffs and merges as text, and an agent writes it as it writes the Rust around it.
@@ -92,11 +92,12 @@ aethereal_ui::view! { Inventory,
 
 - **A reference needs no braces, since Rust tokens already tell it from a literal** (*amended: markup moves into Rust macros*): `6`, `"detail"`, and `true` are literals; `self.gold`, `item.name`, `self.selected_item()`, and `self.select(item.id)` are references.
 - **`self` is the screen.** A field reads as `self.gold`, and a method call as `self.selected_item()`: the parentheses show it is a call. A name without `self` is a local made by `as`: `item.name`.
+- **Any other path names a Rust item, such as an enum variant or a constant, and rustc checks it:** `side: Side::Below`, `inside: Inside::Closes`, `area: CallArea::Inherit`. So a fixed choice is a path, never a string, and a misspelled one is a build error.
 - **Only paths, field access, and method calls whose arguments are paths are allowed.** No operators, literals inside calls, closures, or blocks. A view that needs a computed value calls a `&self` method that computes it, so a negation is a method such as `unlocked()`. Logic lives in Rust, never in the view.
 - **A text interpolates as a `format!` string does:** `Text { "Gold: {self.gold}" }`, each part in braces held to the same subset. `{{` and `}}` write a brace.
-- **`style` is the one setting that names a Rust item rather than reading the screen:** `style: title` names a style (see Styles are Rust items).
+- **`style` is the one setting whose bare name names a Rust item rather than reading the screen:** `style: title` names a style, and `style: grid { columns: 6 }` extends one in place (see Styles are Rust items).
 - **The macro parses each value as a Rust expression and refuses anything outside the subset,** with a `compile_error!` at the offending token.
-- **The setting decides when the call runs.** A setting (`show`, `items`, a text) runs when the view is built and must be a `&self` method. An event (`click`, `change`, `drop`) runs when the event fires and must be a `&mut self` method.
+- **Events take an arrow, `=>`, and settings a colon, `:`.** A `:` value (`show`, `items`, `drag`), and a text, is read when the view is built, and a call in it must be a `&self` method. A `=>` value (`click`, `change`, `drop`) is called when the event fires, and must be a `&mut self` method, or, in a composite, one of its `raises` names. The macro sees one screen's tokens, never another macro's declarations, so it cannot tell a composite's own event from a setting by name: the arrow carries what it cannot look up.
 
 ### Lists and conditions are settings, not elements
 
@@ -135,7 +136,7 @@ Node::new(Segment::Place(2), Scroll::down().list(lines), list_style(), built)
 
 - **A scroll's window is read from the table as it stands** (*settled by the library's scroll stage*). `Screen::rows` takes the scroll's offset from its state and the pitch of its lines, where they start and how far apart they are, from its last layout, and answers the lines its content box shows with a margin of two each way, and, wherever it stands, the item that has the focus or holds the widget that has. So a turn of the wheel builds what it shows in the very next view, Tab finds the next row built, and a focused row scrolled out of view keeps its focus and its state. The view stays plain code over the screen's fields, and an unchanged list at an unchanged offset is the same tree, so it is skipped.
 - **The lines of a list in a scroll are one length** (*settled by the library's scroll stage*): the distance from the first row built to the second, or with one row, its length and the gap. Each built row is placed at its item's line, and what the scroll holds runs to the list's last line, so the content's length, the thumb, and the end are known without building every row. A list whose rows differ in length still shows and scrolls, but its rows overlap or part, and its window may be measured anew each frame: a list of rows of differing lengths is a column in a scroll, built whole.
-- **What it costs.** The view names the screen's library field and the scroll's key path, which the macro knows. A scroll never laid out builds its first row to measure, and shows the rest a frame later, as it does after a resize. Each item is visited once per view to ask whether it is built, and the tree holds only those built.
+- **What it costs.** The view names the screen's library field, which `view!` is given after the screen's type, and the scroll's key path, which the macro counts from the markup. A scroll never laid out builds its first row to measure, and shows the rest a frame later, as it does after a resize. Each item is visited once per view to ask whether it is built, and the tree holds only those built.
 
 ### Events call the screen's methods
 
@@ -144,20 +145,20 @@ fn select(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) ->
 fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, text: String) -> Result<(), Fault> { … }
 ```
 
-- **An event names the method and its arguments:** `click: self.select(item.id)` (*amended: markup moves into Rust macros*). The turn is passed implicitly, as Rust passes `self`.
+- **An event names the method and its arguments:** `click => self.select(item.id)` (*amended: markup moves into Rust macros*). The turn is passed implicitly, as Rust passes `self`.
 - **An event's arguments are copied when the view is built, and must be `Copy`.** That steers them to ids, never to a snapshot of an item that may have changed between the draw and the click.
-- **A widget that hands a value with its event hands it after the arguments:** a text input's `change` and `submit` the text, a toggle's `change` whether it is on, a slider's `change` its value. `change: self.rename(item.id)` calls `rename(turn, item, text)`.
+- **A widget that hands a value with its event hands it after the arguments:** a text input's `change` and `submit` the text, a toggle's `change` whether it is on, a slider's `change` its value. `change => self.rename(item.id)` calls `rename(turn, item, text)`.
 - **rustc checks the call against the method's signature:** the macro writes the call with the markup's spans, so an error in it points at the event.
 - **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send** (*settled by the library's input stage*). A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below), and the drop a release mails to another actor and its refusal of one (*added by the library's drag stage*: Drag and drop is one path).
 
-**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event setting of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32), Dropped(E, Payload)}`, `Index` a choice counted from zero, as tabs' (*added by the library's scroll stage*), and `Dropped` the payload a drag carried, as a drop's and a `drop_outside`'s (*added by the library's drag stage*).
+**What the markup compiles into** (*settled by the library's input stage*). The tree compares by value, so an event is a value, never a closure: each event of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32), Dropped(E, Payload)}`, `Index` a choice counted from zero, as tabs' (*added by the library's scroll stage*), and `Dropped` the payload a drag carried, as a drop's and a `drop_outside`'s (*added by the library's drag stage*).
 
 ```rust
-// what view! { Inventory, … } in inventory.rs expands to
+// what view! { Inventory, ui, … } in inventory.rs expands to
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InventoryEvent {
-    Select(ItemId),        // ItemSlot { click: self.select(item.id) }
-    Rename(ItemId),        // TextInput { change: self.rename(item.id) }
+    Select(ItemId),        // ItemSlot { click => self.select(item.id) }
+    Rename(ItemId),        // TextInput { change => self.rename(item.id) }
 }
 
 impl View for Inventory {
@@ -212,7 +213,7 @@ aethereal_ui::style! {
 - **A theme is a module of styles.** A screen's own look is its own styles, starting from the theme's, written beside its view.
 - **An element names one style, `style: title`, or extends one for itself alone, `style: grid { columns: 6 }`.** A misspelled style is a rustc error.
 - **Styles compile into the screens that use them.** A style is a function the view calls, so nothing is stored or mailed at runtime. Editing a theme means rebuilding and publishing the screens that use it (ADR-0054).
-- **A style sets layout as well as look:** `direction`, `gap`, `padding`, `width`, `columns`, and the rest of Taffy's flex and grid settings, as well as colours, borders, fonts, and sizes.
+- **A style sets layout as well as look:** `gap`, `padding`, `width`, `columns`, and the rest of Taffy's flex and grid settings, as well as colours, borders, fonts, and sizes. Which way a flex container runs is not a style's: `Row` or `Column` decides it.
 - **A colour is written as a call, `rgb(232, 217, 160)`, or as a string, never as a bare `#hex`,** which does not tokenize reliably as Rust.
 
 ### Your own widgets: composites in markup, primitives in Rust
@@ -224,7 +225,7 @@ aethereal_ui::widget! {
     struct ItemSlot { item: Item }
     raises click;
 
-    Button { style: slot, click: click,
+    Button { style: slot, click => click,
         Stack {
             Image { src: item.icon }
             Text { style: count, show: item.stacks(), "{item.count}" }
@@ -234,7 +235,7 @@ aethereal_ui::widget! {
 ```
 
 - **A composite is a function of its params** (*amended: markup moves into Rust macros*). It has no state and no `self`, so its references are its params and its locals. It compiles to a Rust type, `ItemSlot`, with the params as fields.
-- **A composite declares the events it raises and passes them on:** `raises click;`, so the screen's `click` goes to the slot, and the slot hands it to its `Button`.
+- **A composite declares the events it raises and passes them on:** `raises click;`, so the screen's `click => …` goes to the slot, and the slot passes it to its `Button` with `click => click`.
 - **A primitive draws or lays out something new, and is written in Rust.** It implements `Widget`, and the stock widgets are written the same way:
 
 ```rust
@@ -257,7 +258,7 @@ impl<E: Event> Widget for Button<E> {
 ```
 
 - **Either kind is used by its type name.** The screen brings it into scope with an ordinary `use`, and the stock widgets come from a prelude. There is no registry: rustc resolves every element name. Rewriting a composite as a primitive changes no screen that uses it.
-- **A screen's `view!` cannot read a `widget!`'s contents,** as one macro cannot read another's, so it writes a composite's element as it writes a primitive's, its settings as the fields of its type, and the composite's own expansion builds its tree.
+- **A screen's `view!` cannot read a `widget!`'s contents,** as one macro cannot read another's, so it writes a composite's element as it writes a primitive's, its settings as the fields of its type and its events with an arrow, and the composite's own expansion builds its tree.
 - **Composites are shared as Rust code,** as styles are: a screen brings one in with `use`.
 
 ### Widget state is kept by key
@@ -305,7 +306,7 @@ impl<E: Event> Widget for Button<E> {
 *Settled by the library's popup stage:*
 
 ```rust
-Popup { side: "below", inside: "closes",
+Popup { side: Side::Below, inside: Inside::Closes,
     Row { style: field, Text { "{self.sort_name()}" } }   // its anchor: what it opens from
     Column { style: menu, /* … */ }                      // its content, in the top layer while it is open
 }
@@ -317,10 +318,10 @@ Tooltip {
 ```
 
 - **A popup's first child is its anchor, and the rest is its content.** The anchor, the child at the first place in the markup, is laid out in the popup's box as a `Stack`'s child is, and the popup is the widget that holds it: what its content is placed against. The content is laid out and drawn only while the popup is open, each piece as a root of its own, as wide and tall as it asks within the screen, out of the flow of every box around it. Content of more than one widget lies at one place, as a `Stack`'s children do, so content is one container.
-- **The content is placed on the popup's `side`: `below`, the default, `above`, `right`, or `left`.** Below or above, it starts at the anchor's left edge; right or left, at its top edge. Where it does not fit on its side and the other side has more room, it flips; then it shifts as little as it can to stay within the screen, and one longer than the screen starts at its start. It is placed where the anchor stands once every scroll around the anchor has slid it, so it moves with the scroll, and it is cut by nothing but the screen.
+- **The content is placed on the popup's `side`: `Side::Below`, the default, `Side::Above`, `Side::Right`, or `Side::Left`.** Below or above, it starts at the anchor's left edge; right or left, at its top edge. Where it does not fit on its side and the other side has more room, it flips; then it shifts as little as it can to stay within the screen, and one longer than the screen starts at its start. It is placed where the anchor stands once every scroll around the anchor has slid it, so it moves with the scroll, and it is cut by nothing but the screen.
 - **Each open popup's content is a layer of its own,** listed after everything else of its screen in markup order, so a popup within another's content draws over it. A popup's content is a surface of its own: the wheel, the keys the widgets around the focus hear, and the scrolls Tab slides to show the focus stop at it, so a popup's content never slides the scroll its anchor stands in.
 - **Whether a popup is open is its own state, and it is the button of its anchor.** Its tint, focus ring, and hit are listed over its anchor's, so a click on its anchor opens it and a second shuts it, as Enter and Space do while it has focus, and an anchor that is itself pressed, a button, is its label. So no screen method opens one, and a dropdown is a composite.
-- **Its screen shuts it** when a press it hears lands outside it, on anything it lists a hit for, as a press clears focus; when Escape is pressed and it is the topmost open popup, focus within its content going back to it, which the screen declares Escape for while a popup is open; when its anchor goes from the tree, after which it stays shut; and, with `inside: "closes"`, when a click within its content raises an event, after the event is raised. A click that raises nothing, on a nested popup's anchor or on empty space, leaves it open. A press on the game beneath, which the screen does not hear, leaves it open: a popup that must shut on any click is modal.
+- **Its screen shuts it** when a press it hears lands outside it, on anything it lists a hit for, as a press clears focus; when Escape is pressed and it is the topmost open popup, focus within its content going back to it, which the screen declares Escape for while a popup is open; when its anchor goes from the tree, after which it stays shut; and, with `inside: Inside::Closes`, when a click within its content raises an event, after the event is raised. A click that raises nothing, on a nested popup's anchor or on empty space, leaves it open. A press on the game beneath, which the screen does not hear, leaves it open: a popup that must shut on any click is modal.
 - **A modal popup's backdrop is a hit over the whole screen, blocking the pointer with the default cursor,** listed in its layer before its content: a press on it shuts the popup and every popup within it. While a modal popup is open, the screen declares Tab and Escape, and Tab moves only through the focusable widgets of the topmost modal popup's content.
 - **A tooltip is placed as a popup is,** below by default, and opens once the pointer has rested on its anchor for its `delay`, half a second unless it says otherwise. It shuts as the pointer leaves its anchor, and a press while the pointer is on it shuts it until the pointer leaves and comes back.
 - **A tooltip never takes focus and never blocks the pointer.** Its own hit, under its anchor's, passes the pointer on with the default cursor, so an anchor that lists no hit of its own is still known to be under the pointer, and a press through it leaves focus where it was. Its content lists no hit, and Tab passes it.
@@ -340,12 +341,12 @@ A panel with a life of its own is a child actor:
 Everything else is widgets in one actor. An actor per widget would cost a mailbox, a turn, and a copy of its data for every row, and would spread one click across several turns.
 
 ```rust
-child { actor: self.minimap, area: "inherit", style: minimap_slot }
+child { actor: self.minimap, area: CallArea::Inherit, style: minimap_slot }
 ```
 
 - **`child` is a keyword, not a widget type.** It takes a slot in the layout like any widget, sized by its style.
 - **The screen spawns and holds its children in Rust.** Markup only places them: `show` hides a child and never stops it.
-- **The library calls the child where its slot is,** with `Area::inherit(slot)` or `Area::absolute(slot)`. `area` says which: `inherit` for a child that moves with the screen, and `absolute` for one that needs to know where it is in the window (ADR-0055).
+- **The library calls the child where its slot is,** with `Area::inherit(slot)` or `Area::absolute(slot)`. `area` says which: `CallArea::Inherit` for a child that moves with the screen, and `CallArea::Absolute` for one that needs to know where it is in the window (ADR-0055).
 - **The library mails each child its size when it changes.** A child that is a screen lays out to that size. Moving a child sends nothing; only resizing does.
 - **The pointer reaches the child directly,** since it drew what is under the pointer. The child talks to its parent by mail, handled by the parent's ordinary handlers, not by markup events.
 
@@ -356,13 +357,13 @@ child { actor: self.minimap, area: "inherit", style: minimap_slot }
 let spawned = turn.spawn::<Minimap>(&(), config)?;
 let minimap = Called::new(child::<Minimap>(()), spawned);
 
-// what view! writes for child { actor: self.minimap, area: "inherit", style: minimap_slot }
+// what view! writes for child { actor: self.minimap, area: CallArea::Inherit, style: minimap_slot }
 Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_slot())
 ```
 
 - **A child a screen places is a `Called`:** where the renderer finds it beneath the screen, a call's `Callee`, and the reference its size is mailed through, a `ProtocolRef<(Resize,)>`. `Called::new(child::<C>(key), reference)` builds only for a type that may stand beneath the screen's and takes `Resize`, from the reference its spawn answered. It is a value compared by value, so the view copies it into its slot at each build, and a tree whose children stand as they stood is still skipped.
 - **The slot is a leaf that draws nothing of its own,** sized by its style alone. Its style's background and border draw beneath the child, and it is reached by the pointer only where its style fills its box, as a panel is. The library lists the call after the slot's own draws and hit, at the slot's place in the tree's order, placed at the slot's content box, so a slot's border and padding frame its child, and cut to that box within what the slot is cut to. So a child in a scroll slides with it and is cut to it, and one in a popup's content is called in that popup's layer of the top layer while the popup is open. A slot hidden, by `show` or a shut popup, is not called, and nothing is sent to its child.
-- **`area: "inherit"` is `Area::Inherit` at the content box's corner,** in the screen's coordinates. **`area: "absolute"` is `Area::Absolute`,** the slot's box taken to be in the window's pixels, which holds for a screen that is a root or is itself called in the window's pixels. An absolute child is told its size and never where its slot is, so it is for a child that draws where it is by the window's pixels, as a scene does; a child that is a screen lays out from its own corner, and is called `inherit`.
+- **`area: CallArea::Inherit` is `Area::Inherit` at the content box's corner,** in the screen's coordinates. **`area: CallArea::Absolute` is `Area::Absolute`,** the slot's box taken to be in the window's pixels, which holds for a screen that is a root or is itself called in the window's pixels. An absolute child is told its size and never where its slot is, so it is for a child that draws where it is by the window's pixels, as a scene does; a child that is a screen lays out from its own corner, and is called `CallArea::Inherit`.
 - **The size is `Resize { viewport }`,** a plain kind, as it carries no reference: the slot's content box's size in pixels, in the screen's frame and at its UI scale. The `Prepare` that lays a slot out mails it when it is not what that child was told by the layout before, so a move sends nothing, and a resize, or a change of the screen's frame or scale, sends one, once. A child shown again after it was left out is told again, as it may have missed a change while it was hidden.
 - **A child that is a screen lays out to it, as a root screen lays out to its window's size:** `handles!` lists `Resize`, and `screen!` writes its handler, which hands the viewport to `Screen::resize`, so the screen lays out at its next `Prepare`. Every screen takes it, so a screen can be placed by another as it is; a root is never sent one. A child that is not a screen handles `Resize` itself.
 - **What it costs:** every screen handles one kind more, `Resize`, whose handler sends the library's sends. Those, which `Prepare` and the handlers of the library's answers declare, gain one send place, `ToAny<(Resize,), Resize>`, which reaches a child of any type through the reference its `Called` holds; so a screen's own sends, its `Controls::Sends`, gain nothing, and a child of a new type adds nothing to either.
@@ -371,7 +372,7 @@ Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_s
 ### Drag and drop is one path
 
 ```rust
-ItemSlot { item: item, drag: item.id, drop: self.place(item.slot), drop_outside: self.discard() }
+ItemSlot { item: item, drag: item.id, drop => self.place(item.slot), drop_outside => self.discard() }
 ```
 
 ```rust
@@ -391,10 +392,10 @@ fn discard(&mut self, turn: &mut Turn<'_, Self, InventorySends>, dragged: ItemId
 
 *Settled by the library's drag stage:*
 
-**What the markup compiles into.** `drag` and `drop` are settings of the element's node, as `items` is, so any widget, a composite's root among them, can be dragged or dropped on; they compare by value with the rest of the tree.
+**What the markup compiles into.** `drag` and `drop` belong to the element's node, as `items` does, so any widget, a composite's root among them, can be dragged or dropped on; they compare by value with the rest of the tree.
 
 ```rust
-// ItemSlot { item: item, drag: item.id, drop: self.place(item.slot), drop_outside: self.discard() }
+// ItemSlot { item: item, drag: item.id, drop => self.place(item.slot), drop_outside => self.discard() }
 Node::new(Segment::Item(ItemKey::from(item.id)), ItemSlot { item: item.clone() }, slot_style(), vec![])
     .with_drag(DragSource::new(item.id).outside(InventoryEvent::Discard))
     .with_drop(DropTarget::new(InventoryEvent::Place(item.slot), Self::place))
@@ -431,7 +432,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 - **`Tabs` takes the open tab as a param and raises `change` with the tab chosen, counted from zero, as `Raised::Index`:** which tab is open is game state, so it never opens one itself. It is one stop of the focus, its ring on the open header, and the arrows choose the tab beside the open one, Home and End the first and the last. Its headers are its own drawing, in its room above its panel.
 
 ```rust
-Tabs { selected: self.tab, change: self.open(),
+Tabs { selected: self.tab, change => self.open(),
     Tab { title: "Items", /* … */ }
     Tab { title: "Skills", /* … */ }
 }
@@ -443,7 +444,7 @@ let panels = match self.tab { 0 => vec![items_panel], 1 => vec![skills_panel], _
 Node::new(Segment::Place(3), Tabs::new(&["Items", "Skills"], self.tab, InventoryEvent::Open), tabs_style(), panels)
 ```
 
-Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Popup` and `Button`: a `Popup` with `inside: "closes"`, its anchor what shows the choice and its content a `Button` for each option, raising the composite's `change`. Opening and shutting it are the popup's own, so it needs no method of the screen's (*settled by the library's popup stage*).
+Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Popup` and `Button`: a `Popup` with `inside: Inside::Closes`, its anchor what shows the choice and its content a `Button` for each option, raising the composite's `change`. Opening and shutting it are the popup's own, so it needs no method of the screen's (*settled by the library's popup stage*).
 
 ### Expanded by a macro, never read at runtime
 

@@ -44,11 +44,11 @@ pub trait Controls: Actor {
 /// names.
 ///
 /// ```ignore
-/// // what view! { Inventory, … } in inventory.rs expands to
+/// // what view! { Inventory, ui, … } in inventory.rs expands to
 /// #[derive(Debug, Clone, Copy, PartialEq)]
 /// pub enum InventoryEvent {
-///     Select(ItemId),        // ItemSlot { click: self.select(item.id) }
-///     Rename(ItemId),        // TextInput { change: self.rename(item.id) }
+///     Select(ItemId),        // ItemSlot { click => self.select(item.id) }
+///     Rename(ItemId),        // TextInput { change => self.rename(item.id) }
 /// }
 ///
 /// impl aethereal_ui::View for Inventory {
@@ -66,7 +66,7 @@ pub trait Controls: Actor {
 /// }
 /// ```
 pub trait View: Controls {
-    /// One variant for each event setting of the markup, holding the arguments the view copied as it was built.
+    /// One variant for each event of the markup, holding the arguments the view copied as it was built.
     type Event: Event;
 
     /// Builds the screen's tree from the screen as it is.

@@ -10,9 +10,9 @@
 //! popup blocks the pointer from the rest of its screen and holds Tab within its content while it is open.
 //!
 //! ```text
-//! Popup { side: "below", inside: "closes",           Popup::new().closing()
-//!     Row { style: field, Text { "{label}" } }        its anchor: what it is opened from
-//!     Column { style: menu, … }                       its content, in the top layer while it is open
+//! Popup { side: Side::Below, inside: Inside::Closes,    Popup::new().closing()
+//!     Row { style: field, Text { "{label}" } }          its anchor: what it is opened from
+//!     Column { style: menu, … }                         its content, in the top layer while it is open
 //! }
 //! ```
 

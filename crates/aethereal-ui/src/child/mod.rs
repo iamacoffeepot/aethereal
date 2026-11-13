@@ -6,7 +6,7 @@
 //! child that is a screen lays out to it; moving the slot sends nothing.
 //!
 //! ```text
-//! child { actor: self.minimap, area: "inherit", style: minimap_slot }
+//! child { actor: self.minimap, area: CallArea::Inherit, style: minimap_slot }
 //!     ──> Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_slot())
 //!     ──> layout: a leaf, sized by its style ──> Entry::Call at its content box, in draw order
 //!                                           └──> a size not told before? ──> Resize, mailed to the child
@@ -78,7 +78,7 @@ pub type Resizes = (Resize,);
 /// impl View for Hud {
 ///     type Event = ();
 ///
-///     /// What `child { actor: self.minimap, area: "inherit" }` compiles into, in a column.
+///     /// What `child { actor: self.minimap, area: CallArea::Inherit }` compiles into, in a column.
 ///     fn view(&self) -> Tree {
 ///         let slot = Style { width: Length::Pixels(120.0), height: Length::Pixels(120.0), ..Style::default() };
 ///         let minimap = Node::call(Segment::Place(0), self.minimap.clone(), CallArea::Inherit, slot);

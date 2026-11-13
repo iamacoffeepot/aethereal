@@ -3,7 +3,7 @@
 //! it has; and the events it raises, each a value of its screen's event type, with the value a widget hands with it.
 //! The wheel is not a widget's: it slides the innermost scroll under the pointer that can still move that way.
 //!
-//! An event is a value, never a closure, so a tree still compares by value: the markup compiles each event setting
+//! An event is a value, never a closure, so a tree still compares by value: the markup compiles each event
 //! into a variant of one enum of the screen's, holding the arguments the view copied as it was built, and the screen's
 //! [`View::on`](crate::View::on) matches each variant to the method it names.
 
