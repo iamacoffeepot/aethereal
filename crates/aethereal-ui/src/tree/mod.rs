@@ -11,6 +11,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::drag::{DragSource, DropTarget};
 use crate::style::Style;
 use crate::widget::{Built, Widget};
 use aethereal_data::Plain;
@@ -138,19 +139,47 @@ impl KeyPath {
     }
 }
 
-/// One node of a tree: a widget, its style, and its children, told apart from its siblings by its segment.
+/// One node of a tree: a widget, its style, and its children, told apart from its siblings by its segment; and what
+/// its markup's `drag` and `drop` make of it, a widget dragged and one dropped on (ADR-0056: Drag and drop is one path).
 pub struct Node {
     segment: Segment,
     widget: Box<dyn Built>,
     style: Style,
     children: Vec<Self>,
+    /// What a press and a move drag from it, fixed when the view builds it: none for a widget the markup gives no
+    /// `drag`.
+    drag: Option<DragSource>,
+    /// What it takes dropped on it, fixed when the view builds it: none for a widget the markup gives no `drop`.
+    drop: Option<DropTarget>,
 }
 
 impl Node {
     /// The widget `widget` at `segment` among its siblings, styled `style`, over `children` in layout and draw order.
     #[must_use]
     pub fn new<W: Widget>(segment: Segment, widget: W, style: Style, children: Vec<Self>) -> Self {
-        Self { segment, widget: Box::new(widget), style, children }
+        Self { segment, widget: Box::new(widget), style, children, drag: None, drop: None }
+    }
+
+    /// It, dragged as `source` says: what the markup's `drag`, and its `drop_outside`, compile into.
+    #[must_use]
+    pub fn with_drag(self, source: DragSource) -> Self {
+        Self { drag: Some(source), ..self }
+    }
+
+    /// It, taking drops as `target` says: what the markup's `drop` compiles into.
+    #[must_use]
+    pub fn with_drop(self, target: DropTarget) -> Self {
+        Self { drop: Some(target), ..self }
+    }
+
+    /// What a press and a move drag from it, if it is a source.
+    pub(crate) const fn drag(&self) -> Option<&DragSource> {
+        self.drag.as_ref()
+    }
+
+    /// What it takes dropped on it, if it is a target.
+    pub(crate) const fn drop_target(&self) -> Option<&DropTarget> {
+        self.drop.as_ref()
     }
 
     /// The widget, as built.
@@ -175,8 +204,10 @@ impl PartialEq for Node {
         let style = self.style == other.style;
         let widget = self.widget.same(&*other.widget);
         let children = self.children == other.children;
+        let drag = self.drag == other.drag;
+        let drop = self.drop == other.drop;
 
-        segment && style && widget && children
+        segment && style && widget && children && drag && drop
     }
 }
 
@@ -188,6 +219,8 @@ impl fmt::Debug for Node {
             .field("widget", &self.widget)
             .field("style", &self.style)
             .field("children", &self.children)
+            .field("drag", &self.drag)
+            .field("drop", &self.drop)
             .finish()
     }
 }

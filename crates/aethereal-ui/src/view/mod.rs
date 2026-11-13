@@ -8,17 +8,19 @@
 //!                                   fn equip(&mut self, turn, item: ItemId) -> Result<(), Fault>   (what `on` calls)
 //! ```
 
+use crate::drag::{Dropped, Drops};
 use crate::input::{Event, Key, Raised};
 use crate::screen::{Heard, ImeAsked};
 use crate::tree::Tree;
-use aethereal_actor::{Actor, Allows, Asks, DeclaredBy, Fault, Level, Path, Sends, Turn, path};
+use aethereal_actor::{Actor, Allows, Asks, DeclaredBy, Fault, Level, Path, Sends, ToAny, Turn, path};
 use aethereal_window::{AllowIme, Windows};
 
 /// What a screen writes by hand beside the methods its events call: what those methods and its `key` may send, the
 /// keys it hears of its own, and what it does with each.
 pub trait Controls: Actor {
     /// What the screen's event methods and its `key` may send: [`sends!`](crate::sends!) of its own sends, which adds
-    /// the library's ask of the window's input method. A method an event calls takes `&mut Turn<'_, Self, Self::Sends>`.
+    /// the library's ask of the window's input method, its drop mailed to another actor, and its refusal of a drop it
+    /// takes nothing of. A method an event calls takes `&mut Turn<'_, Self, Self::Sends>`.
     type Sends: Sends + DeclaredBy<Self>;
 
     /// The keys `key` handles, by their places on the keyboard (`"KeyI"`, `"Escape"`): the screen's list declares them,
@@ -100,23 +102,39 @@ pub enum Took {
 }
 
 /// Takes in `heard`, what a turn of input left, in `screen`'s handler: asks the window's input method what it said,
-/// logs its lines, calls the method each raised event names, in the order raised, and then the screen's `key` with each
-/// key left for it. An event of another screen's type, which no markup raises, is logged.
+/// logs its lines, and mails each drag dropped on another actor that takes drops, its payload put as a blob; then calls
+/// the method each raised event names, in the order raised, a drag's `drop_outside` last when the actor it was dropped
+/// on takes no drops or its payload was not put, and then the screen's `key` with each key left for it. An event of
+/// another screen's type, which no markup raises, is logged.
 ///
 /// # Errors
 ///
 /// A fault when a send was not written.
-pub fn take_in<A, I>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A, A::Sends>) -> Result<Took, Fault>
+pub fn take_in<A, I, J>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A, A::Sends>) -> Result<Took, Fault>
 where
     A: View,
-    A::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I>,
+    A::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
 {
-    let Heard { raised, keys, imes, lines } = heard;
+    let Heard { mut raised, keys, imes, away, lines } = heard;
     for (level, line) in lines {
         turn.log(level, line);
     }
     for allow in imes {
         turn.to(path::<Windows>(())).ask(&allow, &ImeAsked)?;
+    }
+    for away in away {
+        let Some(target) = turn.cast::<Drops>(away.to) else {
+            raised.extend(away.outside);
+            continue;
+        };
+        let Ok(blob) = turn.put(away.payload.bytes()) else {
+            turn.log(Level::Error, "a drop was not mailed: its payload was not put");
+            raised.extend(away.outside);
+            continue;
+        };
+        let dropped =
+            Dropped { payload: away.payload.carried(blob), entry: away.entry, at: away.at, source: away.source };
+        turn.to(target).send(&dropped)?;
     }
     let quiet = raised.is_empty() && keys.is_empty();
     let took = if quiet {

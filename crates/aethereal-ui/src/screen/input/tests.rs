@@ -6,11 +6,12 @@ use super::super::orders::Order;
 use super::super::tests::{answered, id, last_list, mono, screen};
 use super::super::{Listed, Outcome, Screen};
 use super::Heard;
-use crate::input::Raised;
+use crate::input::{Input, Pointing, Raised};
 use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
-use crate::widgets::{Button, Column, Press, Slider, Tab, Tabs, Text, TextInput, Toggle};
+use crate::widget::{Arrange, Draws, Laid, Stateless, Widget};
+use crate::widgets::{Button, Column, Press, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_data::ActorId;
 use aethereal_render::draw_list::{Entry, Pointer};
@@ -32,6 +33,8 @@ pub(in crate::screen) enum Ev {
     Flipped,
     Slid,
     Opened,
+    Placed(u32),
+    Discarded,
 }
 
 /// The screen's actor, as the window names it.
@@ -362,6 +365,86 @@ fn a_slider_dragged_outside_its_box_still_sets_its_value() {
     assert_eq!(pressed, vec![Raised::Number(Ev::Slid, 5.0)]);
     assert_eq!(overshot, vec![Raised::Number(Ev::Slid, 10.0)]);
     assert_eq!(after, vec![]);
+}
+
+#[test]
+fn a_slider_held_while_a_widget_before_it_starts_drawing_still_hears_its_moves_and_release() {
+    // Catches what the capture sends read against the newest list, so a slider dragged while the button before it
+    // starts drawing its hover tint, which renumbers every entry after it, hears its moves no more and never its
+    // release, which reaches whatever now has its entry's number, and it is left dragging.
+    let mut screen = screen();
+    let tree = || {
+        column(vec![
+            Node::new(Segment::Place(0), Button::new(Ev::Click(1)), sized(40.0, 20.0), vec![]),
+            Node::new(Segment::Place(1), Slider::new(0.0, 0.0, 10.0, 1.0, Ev::Slid), sized(100.0, 10.0), vec![]),
+        ])
+    };
+    laid(&mut screen, tree(), &[]);
+    let button = hit(&screen, &child(0));
+    let slider = hit(&screen, &child(1));
+
+    press(&mut screen, slider, 50.0, 25.0);
+    point(&mut screen, button, PointerEvent::PointerEntered);
+    laid(&mut screen, tree(), &[]);
+    let renumbered = hit(&screen, &child(1));
+    let moved = raised(point(&mut screen, slider, PointerEvent::PointerMoved { x: 100.0, y: 25.0 }));
+    release(&mut screen, slider, 100.0, 25.0, Over::Nothing);
+    let sliding = screen.table().state::<Slider<Ev>>(&child(1));
+
+    assert_ne!(renumbered, slider, "the button's tint renumbers the slider's hit");
+    assert_eq!(moved, vec![Raised::Number(Ev::Slid, 10.0)]);
+    assert_eq!(sliding, Some(Sliding { hovered: false, dragging: false }));
+}
+
+/// A widget the pointer reaches that raises `Click(id)` for each move and release it hears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Heeds {
+    id: u32,
+}
+
+impl Widget for Heeds {
+    type State = Stateless;
+
+    fn arrange(&self) -> Arrange {
+        Arrange::Leaf
+    }
+
+    fn draw(&self, _: &Stateless, _: &Style, _: &Laid, _: &mut Draws<'_, '_>) {}
+
+    fn pointer(&self, _: &Stateless) -> Pointer {
+        Pointer::Blocks(Cursor::Default)
+    }
+
+    fn pointed(&self, _: &mut Stateless, pointing: Pointing, input: &mut Input<'_, '_>) {
+        let follows = matches!(pointing, Pointing::Moved { .. } | Pointing::Up { .. });
+        if follows {
+            input.raise(Raised::Event(Ev::Click(self.id)));
+        }
+    }
+}
+
+#[test]
+fn a_held_widget_whose_key_leaves_hears_nothing_more_and_neither_does_what_took_its_number() {
+    // Catches what the capture sends to a widget gone from the tree handed to the widget that now has its entry's
+    // number, so a row removed under the pointer passes its drag and its release to the row after it; and a hold
+    // never let go, so the entry's number goes on naming the gone widget after every button is up.
+    let mut screen = screen();
+    let heeding =
+        |id: u32| Node::new(Segment::Item(ItemKey::new(u64::from(id))), Heeds { id }, sized(40.0, 20.0), vec![]);
+    laid(&mut screen, column(vec![heeding(1), heeding(2)]), &[]);
+    let first = hit(&screen, &item(1));
+
+    press(&mut screen, first, 10.0, 10.0);
+    laid(&mut screen, column(vec![heeding(2)]), &[]);
+    let taken = hit(&screen, &item(2));
+    let moved = raised(point(&mut screen, first, PointerEvent::PointerMoved { x: 10.0, y: 15.0 }));
+    let released = raised(release(&mut screen, first, 10.0, 10.0, over(taken, 10.0, 10.0)));
+    let after = raised(point(&mut screen, taken, PointerEvent::PointerMoved { x: 10.0, y: 10.0 }));
+
+    assert_eq!(taken, first, "the second widget now has the first's entry number");
+    assert_eq!(moved, vec![]);
+    assert_eq!(released, vec![]);
+    assert_eq!(after, vec![Raised::Event(Ev::Click(2))], "with every button up, the number is read in the newest list");
 }
 
 #[test]

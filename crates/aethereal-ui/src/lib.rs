@@ -25,6 +25,11 @@
 //! - [`Called`] and [`Node::call`]: a child actor the screen spawns and holds, placed in a slot of its tree, called
 //!   there in the area [`CallArea`] names, and mailed its size, a [`Resize`], whenever it changes; a child that is a
 //!   screen lays out to it.
+//! - [`DragSource`] and [`DropTarget`]: a widget a press and a move past [`DRAG_THRESHOLD`] drag, carrying the
+//!   [`Payload`] its view copied, and one that takes a payload of the kind its drop's method takes last. A drop on the
+//!   screen's own widget raises that widget's drop; one on another actor mails it [`Dropped`], which a screen's library
+//!   takes in the same way and refuses, [`DropRefused`], when nothing takes it; and one nothing takes raises the
+//!   source's `drop_outside`.
 //!
 //! A screen is written as its markup will compile it:
 //!
@@ -109,6 +114,7 @@
 #![forbid(unsafe_code)]
 
 mod child;
+mod drag;
 mod draw;
 mod fonts;
 mod input;
@@ -123,11 +129,14 @@ mod widget;
 pub mod widgets;
 
 pub use child::{CallArea, Called, Resize, Resizes};
+pub use drag::{
+    Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
+};
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Used};
 pub use screen::{
-    DrawKey, Heard, ImeAsked, Instancing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared, Programming, Rows,
-    Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
+    DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared,
+    Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track};
 pub use table::{Focus, Table};
@@ -146,16 +155,18 @@ pub mod prelude {
         Texture, Toggle, Tooltip,
     };
     pub use crate::{
-        Alignment, Border, CallArea, Called, Controls, Distribute, Edges, Gap, Inside, ItemKey, Key, KeyPath, Length,
-        Node, Placed, Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space, Style, Target, Track, Tree, View,
-        Viewport,
+        Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
+        Key, KeyPath, Length, Node, Payload, Placed, Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space,
+        Style, Target, Track, Tree, View, Viewport,
     };
 }
 
 /// What [`screen!`], [`handles!`], and [`sends!`] name, so a screen's crate need not.
 #[doc(hidden)]
 pub mod __private {
-    pub use aethereal_actor::{Answer, Answered, Asks, Fault, Handles, On, Path, Prepare, Slept, Turn};
+    pub use aethereal_actor::{
+        Answer, Answered, Asks, Fault, Handles, On, Path, Prepare, Slept, ToAny, ToSender, Turn,
+    };
     pub use aethereal_render::frame::Shaped;
     pub use aethereal_render::instances::Instanced;
     pub use aethereal_render::mesh::Meshed;
@@ -168,8 +179,9 @@ pub mod __private {
 }
 
 /// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, the answer to
-/// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, and the size a
-/// screen that places it as a child mails it; then each of `$own`, what the screen handles of its own.
+/// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, the size a
+/// screen that places it as a child mails it, a drag another actor dropped on it, and the refusal of one it dropped on
+/// another; then each of `$own`, what the screen handles of its own.
 #[macro_export]
 macro_rules! handles {
     ($($own:ty),* $(,)?) => {
@@ -190,14 +202,17 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::ImeAllowed, $crate::ImeAsked>,
             $crate::__private::Answer<$crate::__private::Slept, $crate::Tipping>,
             $crate::Resize,
+            $crate::Dropped,
+            $crate::DropRefused,
             $($own,)*
         )
     };
 }
 
-/// A screen's [`Controls::Sends`]: the library's ask of the window's input method, which input may make, then each of
-/// `$own`, what the screen's event methods and its `key` send of their own. A handler's sends are at most 24, so a
-/// screen's own are at most 23.
+/// A screen's [`Controls::Sends`]: the library's ask of the window's input method, which input may make, its drop mailed
+/// to another actor, which a release may make, and its refusal of a drop it takes nothing of, which a drop may make;
+/// then each of `$own`, what the screen's event methods and its `key` send of their own. A handler's sends are at most
+/// 24, so a screen's own are at most 21.
 #[macro_export]
 macro_rules! sends {
     ($($own:ty),* $(,)?) => {
@@ -207,6 +222,8 @@ macro_rules! sends {
                 $crate::__private::AllowIme,
                 $crate::ImeAsked,
             >,
+            $crate::__private::ToAny<$crate::Drops, $crate::Dropped>,
+            $crate::__private::ToSender<$crate::DropRefused>,
             $($own,)*
         )
     };
@@ -216,8 +233,10 @@ macro_rules! sends {
 /// its `Prepare`, which builds the tree with its [`View`] and hands it to the screen with its [`Controls::HOTKEYS`]; the
 /// pointer and the keys its list reaches, whose raised events call its methods through [`View::on`] and whose keys
 /// left over call [`Controls::key`], after which its view is built again for the next input to reach; each answer the
-/// library's asks bring; the end of each tooltip's sleep; and the size a screen that places it as a child mails it,
-/// which it lays out to as a root screen lays out to its window's. A screen's markup compiles into a call of it.
+/// library's asks bring; the end of each tooltip's sleep; the size a screen that places it as a child mails it, which it
+/// lays out to as a root screen lays out to its window's; and a drag dropped on it by another actor, which raises its
+/// target's drop as a drop of its own does, and a refusal of one it dropped, which raises its source's
+/// `drop_outside`. A screen's markup compiles into a call of it.
 #[macro_export]
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
@@ -297,6 +316,36 @@ macro_rules! screen {
                 turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 self.$field.resize(resize.viewport).send(turn)
+            }
+        }
+
+        impl $crate::__private::Handles<$crate::Dropped> for $screen {
+            type Sends = <Self as $crate::Controls>::Sends;
+
+            fn handle(
+                &mut self,
+                dropped: $crate::Dropped,
+                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+            ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                let payload = dropped.payload.payload(|blob| turn.read(blob));
+                match self.$field.dropped(dropped.entry, &payload) {
+                    $crate::Landing::Taken(heard) => $crate::screen!(@take $field, self, heard, turn),
+                    $crate::Landing::Refused => Ok(turn.reply(&dropped.refused())?),
+                }
+            }
+        }
+
+        impl $crate::__private::Handles<$crate::DropRefused> for $screen {
+            type Sends = <Self as $crate::Controls>::Sends;
+
+            fn handle(
+                &mut self,
+                refused: $crate::DropRefused,
+                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+            ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                let payload = refused.payload.payload(|blob| turn.read(blob));
+                let heard = self.$field.refused(&refused.source, payload);
+                $crate::screen!(@take $field, self, heard, turn)
             }
         }
     };
