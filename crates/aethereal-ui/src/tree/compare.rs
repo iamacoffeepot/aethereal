@@ -79,10 +79,10 @@ impl Tree {
             segments.truncate(depth - 1);
             segments.push(new.segment);
             let styled = old.style == new.style;
-            let laid = old.widget.same_layout(&*new.widget);
+            let drawn = old.widget.same(&*new.widget);
+            let laid = drawn || old.widget.same_layout(&*new.widget);
             let kept = same_keys(&old.children, &new.children);
             let lays_alike = styled && laid && kept;
-            let drawn = old.widget.same(&*new.widget);
             let dragged = old.drag == new.drag;
             let dropped = old.drop == new.drop;
             let draws_alike = drawn && dragged && dropped;
