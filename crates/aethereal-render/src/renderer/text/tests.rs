@@ -205,6 +205,26 @@ fn a_new_text_shows_nothing_until_its_glyphs_are_in_and_a_written_one_shows_what
 }
 
 #[test]
+fn a_new_text_waits_until_every_glyph_it_draws_is_in_and_never_on_a_space() {
+    // Catches a new text answered before its glyphs are in, which its asker lists beside panels that then show a frame
+    // or more before it; and one that waits on what is never generated, a space, so it is never answered at all.
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let gpu = (&device, &queue);
+    let mut kept = kept(&device);
+    let text = made(&mut kept, MAKER, "a b", 20.0);
+    let blank = made(&mut kept, MAKER, " ", 20.0);
+
+    let waited = kept.text.waits(text.id);
+    generated(&mut kept, gpu);
+    let again = made(&mut kept, MAKER, "b a", 20.0);
+
+    assert!(waited, "a and b are not generated");
+    assert!(!kept.text.waits(blank.id), "a space has no glyph to generate");
+    assert!(!kept.text.waits(text.id), "a and b are in");
+    assert!(!kept.text.waits(again.id), "a text of glyphs already in waits on nothing");
+}
+
+#[test]
 fn only_a_text_s_maker_writes_or_releases_it_and_releasing_it_takes_every_placement_of_it() {
     // Catches a write or release by another actor let through; and a released text's placements left behind, drawing
     // a text that is gone, or left in another actor's list, found missing at `Render`.

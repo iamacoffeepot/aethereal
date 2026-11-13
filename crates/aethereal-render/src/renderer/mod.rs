@@ -90,11 +90,13 @@ pub struct Renderer {
     timed: Subscribers<(GpuTimes,)>,
 }
 
-/// The reads, timings, and dispatches the renderer owes: those of the next frame, each read under the window it reads,
-/// those copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's bytes,
-/// and timings, and the maker to tell of each dispatch that runs once and has not, under its id.
+/// The reads, timings, texts, and dispatches the renderer owes: those of the next frame, each read under the window it
+/// reads, those copied and waiting on their buffer's map, each under the read the buffer is kept by: pixels, storage's
+/// bytes, and timings; each new text whose glyphs are still to come, under its id; and the maker to tell of each
+/// dispatch that runs once and has not, under its id.
 #[derive(Bound)]
 struct Owed {
+    texts: Vec<(u64, Held<TextMade>)>,
     frames: Vec<(WindowId, Held<Pixels>)>,
     timings: Vec<Held<Timed>>,
     reading: Vec<(u64, Held<Pixels>)>,
@@ -767,6 +769,7 @@ impl Actor for Renderer {
         }
 
         let owed = Owed {
+            texts: Vec::new(),
             frames: Vec::new(),
             timings: Vec::new(),
             reading: Vec::new(),
