@@ -1,0 +1,5 @@
+error: settings and events come before an element's children and text
+ --> tests/refusals/setting_after_child.rs:3:30
+  |
+3 |     Column { Text { "Gold" } style: panel }
+  |                              ^^^^^

@@ -8,8 +8,10 @@
 //! [`View::on`](crate::View::on) matches each variant to the method it names.
 
 mod raised;
+mod raises;
 
 pub use raised::{Erased, Event, Raised};
+pub use raises::{Raises, Raising, raising};
 
 use crate::fonts::Measuring;
 use crate::style::Style;

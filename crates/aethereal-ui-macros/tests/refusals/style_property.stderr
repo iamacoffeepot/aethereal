@@ -1,0 +1,5 @@
+error: a style has no property `colur`
+ --> tests/refusals/style_property.rs:3:17
+  |
+3 |     pub label { colur: rgb(232, 217, 160) }
+  |                 ^^^^^

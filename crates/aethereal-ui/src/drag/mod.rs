@@ -190,7 +190,7 @@ impl PartialEq for DragSource {
 /// What the markup's `drop` compiles into: a widget that takes a payload of the kind `takes`, raising `event`, copied as
 /// the view was built, with the payload handed after it.
 ///
-/// A bag whose slots each drag their item and take one dropped on them, written as its markup will compile it:
+/// A bag whose slots each drag their item and take one dropped on them, in markup:
 ///
 /// ```
 /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
@@ -207,46 +207,25 @@ impl PartialEq for DragSource {
 /// #[kind(name = "aether.example.item_id")]
 /// pub struct ItemId(u32);
 ///
+/// /// A slot of the bag, at its place, and the item it holds.
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+/// #[kind(name = "aether.example.slot")]
+/// pub struct Slot {
+///     at: u32,
+///     item: ItemId,
+/// }
+///
 /// #[derive(Bound)]
 /// #[kind(name = "aether.example.bag")]
 /// pub struct Bag {
-///     slots: Vec<ItemId>,
+///     slots: Vec<Slot>,
 ///     dropped: Vec<ItemId>,
 ///     ui: Screen,
 /// }
 ///
-/// /// What the bag's `view!` expands to:
-/// /// `Button { drag: item, drop => self.place(at), drop_outside => self.discard() }`, once for each slot.
-/// #[derive(Debug, Clone, Copy, PartialEq)]
-/// pub enum BagEvent {
-///     Place(u32),
-///     Discard,
-/// }
-///
-/// impl View for Bag {
-///     type Event = BagEvent;
-///
-///     fn view(&self) -> Tree {
-///         let slot = |at: u32, item: ItemId| {
-///             Node::new(Segment::Item(ItemKey::from(at)), Button::new(BagEvent::Place(at)), Style::default(), vec![])
-///                 .with_drag(DragSource::new(item).outside(BagEvent::Discard))
-///                 .with_drop(DropTarget::new(BagEvent::Place(at), Self::place))
-///         };
-///         let slots = (0..).zip(&self.slots).map(|(at, item)| slot(at, *item)).collect();
-///
-///         Tree::new(Node::new(Segment::Place(0), Row, Style::default(), slots))
-///     }
-///
-///     fn on(&mut self, turn: &mut Turn<'_, Self, BagSends>, raised: Raised<BagEvent>) -> Result<(), Fault> {
-///         match raised {
-///             Raised::Dropped(BagEvent::Place(at), payload) => {
-///                 aethereal_ui::dropped(turn, &payload, |turn, item| self.place(turn, at, item))
-///             }
-///             Raised::Dropped(BagEvent::Discard, payload) => {
-///                 aethereal_ui::dropped(turn, &payload, |turn, item| self.discard(turn, item))
-///             }
-///             unmatched => aethereal_ui::unmatched(turn, &unmatched),
-///         }
+/// aethereal_ui::view! { Bag, ui,
+///     Row { items: self.slots as slot key slot.at,
+///         Stack { drag: slot.item, drop => self.place(slot.at), drop_outside => self.discard() }
 ///     }
 /// }
 ///
@@ -257,13 +236,15 @@ impl PartialEq for DragSource {
 ///     type Sends = BagSends;
 /// }
 ///
+/// #[aethereal_ui::events]
 /// impl Bag {
-///     /// Puts `item` in the slot at `at`: the payload comes last.
+///     /// Puts `item` in the slot at `at`, and what that slot held where `item` was: the payload comes last.
 ///     fn place(&mut self, _: &mut Turn<'_, Self, BagSends>, at: u32, item: ItemId) -> Result<(), Fault> {
-///         let from = self.slots.iter().position(|held| *held == item);
-///         let to = usize::try_from(at).ok().filter(|to| *to < self.slots.len());
+///         let from = self.slots.iter().position(|slot| slot.item == item);
+///         let to = self.slots.iter().position(|slot| slot.at == at);
 ///         if let (Some(from), Some(to)) = (from, to) {
-///             self.slots.swap(from, to);
+///             self.slots[from].item = self.slots[to].item;
+///             self.slots[to].item = item;
 ///         }
 ///
 ///         Ok(())
@@ -271,7 +252,7 @@ impl PartialEq for DragSource {
 ///
 ///     /// Drops `item` out of the bag, where nothing took it.
 ///     fn discard(&mut self, _: &mut Turn<'_, Self, BagSends>, item: ItemId) -> Result<(), Fault> {
-///         self.slots.retain(|held| *held != item);
+///         self.slots.retain(|slot| slot.item != item);
 ///         self.dropped.push(item);
 ///
 ///         Ok(())
@@ -291,16 +272,19 @@ impl PartialEq for DragSource {
 /// #
 /// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
 /// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
-/// #         Ok(Self { slots: vec![ItemId(1), ItemId(2)], dropped: Vec::new(), ui })
+/// #         let slots = vec![Slot { at: 0, item: ItemId(1) }, Slot { at: 1, item: ItemId(2) }];
+/// #         Ok(Self { slots, dropped: Vec::new(), ui })
 /// #     }
 /// #
 /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
-///
-/// aethereal_ui::screen!(Bag, ui);
 /// ```
+///
+/// Each `Stack` it expands to is `Element::node(Stack {}, Segment::Item(ItemKey::from(slot.at)), vec![])`, then
+/// `.with_drag(DragSource::new(slot.item).outside(BagEvent::Discard))` and
+/// `.with_drop(DropTarget::new(BagEvent::Place(slot.at), Self::place))`.
 #[derive(Debug)]
 pub struct DropTarget {
     takes: KindId,

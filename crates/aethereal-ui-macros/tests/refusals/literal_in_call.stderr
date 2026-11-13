@@ -1,0 +1,5 @@
+error: a literal is not allowed inside a call: name a `&self` method that computes the value
+ --> tests/refusals/literal_in_call.rs:3:33
+  |
+3 |     Column { show: self.affords(3) }
+  |                                 ^

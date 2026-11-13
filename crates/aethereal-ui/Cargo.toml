@@ -13,6 +13,9 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-math = { path = "../aethereal-math" }
 aethereal-render = { path = "../aethereal-render" }
+# The markup a screen is written in, `view!`, `style!`, and `widget!`, expanded as it is built, never read at runtime
+# (ADR-0056: Expanded by a macro).
+aethereal-ui-macros = { path = "../aethereal-ui-macros" }
 # The pointer, the keys, and the input method a screen's list reaches, and the cursor it declares (ADR-0055, ADR-0051).
 aethereal-window = { path = "../aethereal-window" }
 # Flexbox and CSS grid over the library's own tree, through Taffy's low-level traits, never its tree type (MIT):

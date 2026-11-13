@@ -1,0 +1,5 @@
+error: an argument of a call is a path or a field, never a call of its own
+ --> tests/refusals/call_in_argument.rs:3:37
+  |
+3 |     Button { click => self.buy(self.price()) }
+  |                                     ^^^^^

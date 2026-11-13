@@ -8,6 +8,12 @@
 //!                                   fn equip(&mut self, turn, item: ItemId) -> Result<(), Fault>   (what `on` calls)
 //! ```
 
+mod method;
+#[cfg(test)]
+mod tests;
+
+pub use method::{Handed, Method};
+
 use crate::drag::{Dropped, Drops};
 use crate::input::{Event, Key, Raised};
 use crate::screen::{Heard, ImeAsked};
@@ -41,15 +47,14 @@ pub trait Controls: Actor {
 }
 
 /// What a screen's markup compiles into: the enum of its events, its view, and the call of the method each event
-/// names.
+/// names. [`view!`](crate::view!) writes it, and nothing else in the same impl:
 ///
-/// ```ignore
+/// ```text
 /// // what view! { Inventory, ui, … } in inventory.rs expands to
-/// #[derive(Debug, Clone, Copy, PartialEq)]
 /// pub enum InventoryEvent {
-///     Select(ItemId),        // ItemSlot { click => self.select(item.id) }
-///     Rename(ItemId),        // TextInput { change => self.rename(item.id) }
-/// }
+///     Select(<Inventory as __InventoryEventArgs>::select_0),   // ItemSlot { click => self.select(item.id) }
+///     Rename(<Inventory as __InventoryEventArgs>::rename_0),   // TextInput { change => self.rename(item.id) }
+/// }                                                            //   each argument's type, as #[events] declares it
 ///
 /// impl aethereal_ui::View for Inventory {
 ///     type Event = InventoryEvent;
@@ -57,11 +62,10 @@ pub trait Controls: Actor {
 ///     fn view(&self) -> Tree { /* the tree, each event built from the arguments copied now */ }
 ///
 ///     fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
-///         match raised {
-///             Raised::Event(InventoryEvent::Select(item)) => self.select(turn, item),
-///             Raised::Text(InventoryEvent::Rename(item), text) => self.rename(turn, item, text),
-///             unmatched => aethereal_ui::unmatched(turn, &unmatched),
-///         }
+///         match raised.event() {
+///             InventoryEvent::Select(item) => Method::call(Self::select, self, turn, (item,), raised),
+///             InventoryEvent::Rename(item) => Method::call(Self::rename, self, turn, (item,), raised),
+///         }   // select(turn, item) on a click; rename(turn, item, text) on a change, the text its hand
 ///     }
 /// }
 /// ```

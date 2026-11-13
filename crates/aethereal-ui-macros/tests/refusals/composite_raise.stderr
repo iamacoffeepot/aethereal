@@ -1,0 +1,5 @@
+error: the composite raises no `press`: declare it, `raises press;`
+ --> tests/refusals/composite_raise.rs:6:23
+  |
+6 |     Button { click => press }
+  |                       ^^^^^

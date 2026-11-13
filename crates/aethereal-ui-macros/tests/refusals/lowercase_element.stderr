@@ -1,0 +1,5 @@
+error: an element is named by its widget's type, which is capitalized; the one lowercase element is `child`
+ --> tests/refusals/lowercase_element.rs:3:14
+  |
+3 |     Column { text { "Gold" } }
+  |              ^^^^

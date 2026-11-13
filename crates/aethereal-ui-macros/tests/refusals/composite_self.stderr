@@ -1,0 +1,5 @@
+error: a composite has no `self`: its references are its params and the locals its `as` makes
+ --> tests/refusals/composite_self.rs:5:30
+  |
+5 |     Column { Bar { fraction: self.level, .. } }
+  |                              ^^^^

@@ -64,7 +64,7 @@ aethereal_ui::view! { Inventory, ui,
         Text { "Gold: {self.gold}" }
 
         Grid { style: slots, items: self.items as item key item.id,
-            Tooltip {
+            Tooltip { ..,
                 ItemSlot { item: item, click => self.select(item.id), drag: item.id, drop => self.place(item.slot) }
                 Text { "{item.name}" }
             }
@@ -72,9 +72,16 @@ aethereal_ui::view! { Inventory, ui,
 
         Column { style: detail, show: self.selected_item() as item,
             Text { "{item.name}" }
-            Button { click => self.equip(item.id), "Equip" }
+            Button { click => self.equip(item.id), Text { "Equip" } }
         }
     }
+}
+
+#[aethereal_ui::events]
+impl Inventory {
+    fn select(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
+    fn place(&mut self, turn: &mut Turn<'_, Self, InventorySends>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
+    fn equip(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
 }
 ```
 
@@ -86,6 +93,9 @@ aethereal_ui::view! { Inventory, ui,
 - **A `name: value` pair is one of the widget's settings, and a `name => call` pair one of its events,** each in snake_case as its Rust field is. A literal value is parsed by the setting's type: `6`, `"Equip"`, `true`. Settings and events are separated by commas, as a struct's fields are, and come before children and text.
 - **A nested element is a child, and children are both layout order and draw order.** A later child draws over an earlier one.
 - **A string literal is the widget's text,** and may hold references, as a `format!` string does: `"Gold: {self.gold}"`.
+- **A string literal sets the widget's `text` field, so a widget with no `text` holds a `Text` child for its label** (*settled by the library's macro stage*): `Button { click => self.equip(item.id), Text { "Equip" } }`. The macro cannot see a widget's fields, so it cannot tell a label to go into a child.
+- **`..` among an element's settings leaves the fields the markup does not write at their defaults** (*settled by the library's macro stage*): it is written `..Default::default()`, Rust's rest of a struct, so `Popup { .., side: Side::Above }` and `Scroll { .., items: … }` set what they name and the rest is the widget's `Default`. Without it, every field is written, as in a struct literal, so a field added to a widget is a build error in each screen that does not write it.
+- **The impl that holds a screen's methods carries `#[aethereal_ui::events]`** (*settled by the library's macro stage*). A variant of the event enum holds the arguments the view copies, `Select(ItemId)`, but the markup writes only their values, `item.id`, and stable Rust gives a macro no way to name the type of an expression or of another item's parameter. So the attribute reads each method's signature and declares the type of each parameter after the turn on a hidden trait of the screen, and the enum's variants name them there: `Select(<Inventory as __InventoryEventArgs>::select_0)`. A screen whose events copy no arguments can leave it off. Its methods' argument types are owned types, never references or `impl`, and a screen has one such impl.
 - **Markup is Rust tokens laid out as the tree it builds,** so its structure shows at a glance, it diffs and merges as text, and an agent writes it as it writes the Rust around it.
 
 ### References are a small subset of Rust
@@ -105,6 +115,7 @@ Every element is a widget; there is no `for` or `if` inside the tree.
 
 - **`items` repeats a widget's one child, once per item.** `items: self.items as item key item.id` names the list, the local for each item, and the key that tells items apart. A widget with `items` has exactly one child, its template; a header above a list is a sibling in an outer widget.
 - **The widget that lays the items out owns them.** A `Scroll` with `items` builds only the rows that are on screen.
+- **Which widgets build only the rows they show is the widget's declaration, not its name** (*settled by the library's macro stage*): a primitive says it with `Widget::WINDOWS`, and takes the lines its rows stand at in `Widget::window`, as `Scroll` does, so a program's own scrolling primitive is windowed the same way. For an element with `items`, `view!` writes both expansions and asks the element's type which one runs, by a constant the compiler folds. A composite never windows its items, and a composite's markup, which has no screen to ask, builds every item; one that holds a widget that windows them is refused as it is built for a screen.
 - **`show` takes a `bool` or an `Option`.** With a `bool`, `show: self.unlocked()`, the widget shows while it is true. With an `Option`, `show: self.selected_item() as item`, the widget shows while it is `Some`, and `as` names the value inside.
 - **The key keeps each item's widget state with the item** when the list reorders, and drops that state when the item leaves.
 - **An item's node is told apart by its key, not its place** (*settled by the library's scroll stage*): the segment of its key path is `Segment::Item(ItemKey)` where every other node's is `Segment::Place(n)`. An `ItemKey` is a number: the key's type converts with `From`, which the library gives every integer and a program writes for its own ids, so a key that is not a number is a build error. Focus on an item, or within one, clears when the item leaves, as for any key that goes.
@@ -114,7 +125,7 @@ Every element is a widget; there is no `for` or `if` inside the tree.
 
 ```rust
 // Grid { style: slots, items: self.items as item key item.id, ItemSlot { item: item } }
-let built = self.items.iter().map(|item| Node::new(Segment::Item(ItemKey::from(item.id)), ItemSlot { item: item.clone() }, slot_style(), vec![]));
+let built = self.items.iter().map(|item| Element::styled(ItemSlot { item: item.clone() }, Segment::Item(ItemKey::from(item.id)), slot_style(), vec![]));
 Node::new(Segment::Place(1), Grid, slots(), built.collect())
 ```
 
@@ -157,21 +168,20 @@ fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, te
 // what view! { Inventory, ui, … } in inventory.rs expands to
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InventoryEvent {
-    Select(ItemId),        // ItemSlot { click => self.select(item.id) }
-    Rename(ItemId),        // TextInput { change => self.rename(item.id) }
+    Select(<Inventory as __InventoryEventArgs>::select_0),   // ItemSlot { click => self.select(item.id) }: an ItemId
+    Rename(<Inventory as __InventoryEventArgs>::rename_0),   // TextInput { change => self.rename(item.id) }
 }
 
 impl View for Inventory {
     type Event = InventoryEvent;
 
-    fn view(&self) -> Tree { … }   // Button::new(InventoryEvent::Select(item.id)), built from the item now
+    fn view(&self) -> Tree { … }   // ItemSlot { click: InventoryEvent::Select(item.id).into(), … }, built from the item now
 
     fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
-        match raised {
-            Raised::Event(InventoryEvent::Select(item)) => self.select(turn, item),
-            Raised::Text(InventoryEvent::Rename(item), text) => self.rename(turn, item, text),
-            unmatched => aethereal_ui::unmatched(turn, &unmatched),
-        }
+        match raised.event() {
+            InventoryEvent::Select(item) => Method::call(Self::select, self, turn, (item,), raised),   // Raised::Event: select(turn, item)
+            InventoryEvent::Rename(item) => Method::call(Self::rename, self, turn, (item,), raised),   // Raised::Text: rename(turn, item, text)
+        }   // an event raised with another hand than its method takes goes to aethereal_ui::unmatched
     }
 }
 
@@ -193,6 +203,8 @@ impl Controls for Inventory {
 ```
 
 - **The whole of what `view!` emits is the enum, one `impl View`, and the call of `screen!`,** so nothing generated shares an impl with what is written by hand.
+- **Which `Raised` variant an event's method takes is chosen by what the method takes after its copied arguments, not by the widget** (*settled by the library's macro stage*): nothing, `Raised::Event`; a `String`, `Raised::Text`; a `bool`, `Raised::Flag`; an `f32`, `Raised::Number`; a `u32`, `Raised::Index`. Only the widget's type knows what it hands, and `view!` cannot see into it, least of all into a composite, so `on` calls each method through `Method`, whose impl rustc picks by the method's signature, as a drop's `DropMethod` is read. Drops keep their own arm, which hands the payload to `dropped`.
+- **An event a widget may raise is a `Raises<E>`, `Nothing` or `Event(E)`, and is written with `=>` like any event** (*settled by the library's macro stage*): `TextInput { change => self.search(), submit => self.send() }`, and one left out with `..` raises nothing. Markup sets every event through `Into`, so a field the widget must raise, `E`, and one it may, `Raises<E>`, take the same markup; and since `Into` reaches more than one type, the element is named as raising the screen's event type through `Raising`, which each widget with events implements, `type Event = E`, and `widget!` writes for a composite.
 - **The input handlers take in a turn of input, then call the screen's methods,** in the order the events were raised, then its `key` with each key left for it. After any method runs, the view is built again for the input that follows, so a second click before the next frame carries the arguments the view copies now, not those of the last `Prepare`. The next `Prepare` lays it out.
 - **A widget's event type is the screen's,** `Button<InventoryEvent>`. A tree holds widgets of any type, so what a widget raises is held without its type and taken back as the screen's: only a tree built by hand can hold another screen's event, and that is logged.
 
@@ -236,6 +248,8 @@ aethereal_ui::widget! {
 
 - **A composite is a function of its params** (*amended: markup moves into Rust macros*). It has no state and no `self`, so its references are its params and its locals. It compiles to a Rust type, `ItemSlot`, with the params as fields.
 - **A composite declares the events it raises and passes them on:** `raises click;`, so the screen's `click => …` goes to the slot, and the slot passes it to its `Button` with `click => click`.
+- **A composite that raises events is generic over the screen's event type, as `Button<E>` is** (*settled by the library's macro stage*): `ItemSlot<E> { item: Item, click: E }`. The screen sets each of its `raises` to a variant of its own enum, and the composite passes it on unchanged, so what its widgets raise is the screen's own event.
+- **Every element is built through one trait, `Element`, which `widget!` implements for the composite** (*settled by the library's macro stage*): `view!` writes each element the same way, `Element::node(widget, segment, children)`, or `Element::styled` with the style its markup names. A primitive is its own node, by a blanket impl over `Widget`, and a composite builds its tree in place, its root styled where it is placed. So `view!` never needs to know which kind a type is, and the tree stays plain nodes.
 - **A primitive draws or lays out something new, and is written in Rust.** It implements `Widget`, and the stock widgets are written the same way:
 
 ```rust
@@ -306,12 +320,12 @@ impl<E: Event> Widget for Button<E> {
 *Settled by the library's popup stage:*
 
 ```rust
-Popup { side: Side::Below, inside: Inside::Closes,
+Popup { .., side: Side::Below, inside: Inside::Closes,
     Row { style: field, Text { "{self.sort_name()}" } }   // its anchor: what it opens from
     Column { style: menu, /* … */ }                      // its content, in the top layer while it is open
 }
 
-Tooltip {
+Tooltip { ..,
     ItemSlot { item: item }                              // its anchor
     Text { style: tip, "{item.name}" }                   // its content, once the pointer has rested
 }
@@ -396,7 +410,7 @@ fn discard(&mut self, turn: &mut Turn<'_, Self, InventorySends>, dragged: ItemId
 
 ```rust
 // ItemSlot { item: item, drag: item.id, drop => self.place(item.slot), drop_outside => self.discard() }
-Node::new(Segment::Item(ItemKey::from(item.id)), ItemSlot { item: item.clone() }, slot_style(), vec![])
+Element::styled(ItemSlot { item: item.clone() }, Segment::Item(ItemKey::from(item.id)), slot_style(), vec![])
     .with_drag(DragSource::new(item.id).outside(InventoryEvent::Discard))
     .with_drop(DropTarget::new(InventoryEvent::Place(item.slot), Self::place))
 
@@ -427,7 +441,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 
 **`Scroll` and `Tabs`** (*settled by the library's scroll stage*):
 
-- **A primitive that scrolls arranges its children as `Arrange::Scroll(axis)`:** one after another along the axis, never shrunk to fit, cut to its content box, and slid by its offset. Its offset is its state; it says how far it has slid (`offset`) and is slid (`scroll_to`) by the library, which clamps it to what it can scroll as it lays out, so it never stays past the end when what it holds shrinks. A widget may keep `room` inside its border for what it draws of its own, and its `Laid` says how far its children reach, `extent`, the items it did not build counted.
+- **A primitive that scrolls arranges its children as `Arrange::Scroll(axis)`,** and one that builds only the rows of a list it shows declares `Widget::WINDOWS` and takes its window in `Widget::window` (*the declaration settled by the library's macro stage*): one after another along the axis, never shrunk to fit, cut to its content box, and slid by its offset. Its offset is its state; it says how far it has slid (`offset`) and is slid (`scroll_to`) by the library, which clamps it to what it can scroll as it lays out, so it never stays past the end when what it holds shrinks. A widget may keep `room` inside its border for what it draws of its own, and its `Laid` says how far its children reach, `extent`, the items it did not build counted.
 - **`Scroll`** keeps room along its far side for its bar. A press on the thumb drags it under capture, held where it was grabbed; a press elsewhere on the bar jumps the thumb's middle there. It can hold focus, and Page Up, Page Down, Home, and End slide it while it or a widget within it has focus.
 - **`Tabs` takes the open tab as a param and raises `change` with the tab chosen, counted from zero, as `Raised::Index`:** which tab is open is game state, so it never opens one itself. It is one stop of the focus, its ring on the open header, and the arrows choose the tab beside the open one, Home and End the first and the last. Its headers are its own drawing, in its room above its panel.
 
@@ -469,7 +483,7 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
 - **The library adds nothing to the actor framework.** It draws through its actor's list, receives input that already exists, and uses the window, the renderer, and jobs as any actor does.
 - **Two crates are added.**
   - `aethereal-ui` is the runtime: widgets, the widget table, layout, input routing, and diffing. It compiles into guests, so it cannot live in `aethereal-render` (native, wgpu) or `aethereal-actor` (the framework, which this library must not touch), and it is not the overlay, which is one of its users.
-  - `aethereal-ui-macros` is the proc-macro crate of `view!`, `style!`, and `widget!`, over `syn`, `quote`, and `proc-macro2`, with no XML parser. `aethereal-ui` re-exports it, so a screen writes `aethereal_ui::view!`. A proc-macro crate runs on the build machine only, so `syn` still never enters a guest.
+  - `aethereal-ui-macros` is the proc-macro crate of `view!`, `style!`, and `widget!`, and of the attribute `#[events]` (*settled by the library's macro stage*), over `syn`, `quote`, and `proc-macro2`, with no XML parser. `aethereal-ui` re-exports it, so a screen writes `aethereal_ui::view!`. A proc-macro crate runs on the build machine only, so `syn` still never enters a guest.
 - **Taffy becomes a dependency of `aethereal-ui`,** pinned exactly, without default features, and checked in CI for supply-chain changes.
 - **The window gains two things, each an amendment to ADR-0055 and ADR-0024:**
   - a release under a held button reports the topmost actor under the pointer, its entry, and the position in that entry's coordinates;

@@ -1,0 +1,5 @@
+error: a reference is a path, a field, or a method call whose arguments are paths: no operators, literals inside calls, closures, or blocks; a computed value is a `&self` method that computes it
+ --> tests/refusals/closure.rs:3:20
+  |
+3 |     Column { show: |gold| gold }
+  |                    ^

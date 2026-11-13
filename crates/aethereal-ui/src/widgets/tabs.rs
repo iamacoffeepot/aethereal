@@ -17,7 +17,7 @@
 
 use super::press::{HOVERED, RING, RING_WIDTH};
 use crate::fonts::{Measuring, Unmeasured};
-use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Raising, Used};
 use crate::style::{Edges, Style};
 use crate::widget::{Arrange, Axis, Draws, Laid, Quad, Sample, Stateless, TextDraw, Widget};
 use aethereal_data::Plain;
@@ -128,6 +128,10 @@ impl<E: Event> Tabs<E> {
             input.raise(Raised::Index(self.change, tab));
         }
     }
+}
+
+impl<E: Event> Raising for Tabs<E> {
+    type Event = E;
 }
 
 impl<E: Event> Widget for Tabs<E> {
