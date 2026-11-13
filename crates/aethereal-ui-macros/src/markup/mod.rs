@@ -7,7 +7,8 @@
 //! ```
 //!
 //! A lowercase name is a keyword: the element `child`, and the settings `style`, `show`, `items`, and `drag`, and the
-//! events `drop` and `drop_outside`, which belong to the node rather than the widget. Every other name is a field of
+//! events `drop` and `drop_outside`, which belong to the node rather than the widget; and `memo`, written alone among
+//! the settings, which keeps a composite while what the markup writes into it stands. Every other name is a field of
 //! the widget's type.
 
 mod check;
@@ -42,6 +43,7 @@ pub struct Element {
     pub drop: Dropping,
     pub outside: Outside,
     pub rest: Rest,
+    pub memo: Memo,
     pub children: Vec<Self>,
     /// Its text, the string literal among its children: none for an element whose markup writes none.
     pub text: Option<Text>,
@@ -132,6 +134,13 @@ pub enum Outside {
     Raises(Call),
 }
 
+/// Whether an element is built at every view, or kept while what its markup writes into it stands.
+pub enum Memo {
+    Built,
+    /// `memo`, written here: a composite in a screen's view, kept by the screen while its inputs stand.
+    Kept(Span),
+}
+
 /// Whether the fields the markup leaves out take the widget's defaults.
 pub enum Rest {
     /// None is left out: the markup writes every field, as a struct literal does.
@@ -155,6 +164,7 @@ impl Element {
             drop: Dropping::Refuses,
             outside: Outside::Nothing,
             rest: Rest::Written,
+            memo: Memo::Built,
             children: Vec::new(),
             text: None,
         }

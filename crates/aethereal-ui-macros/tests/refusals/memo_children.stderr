@@ -1,0 +1,5 @@
+error: `memo` keeps a composite built from its fields alone: children read the screen, so it holds none
+ --> tests/refusals/memo_children.rs:4:16
+  |
+4 |         Slot { memo, item: self.item,
+  |                ^^^^

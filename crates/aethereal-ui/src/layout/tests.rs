@@ -3,7 +3,7 @@
 use super::{Boxed, Layouts};
 use crate::fonts::{Fonts, Texts};
 use crate::style::{Edges, Gap, Length, Space, Style, Track};
-use crate::tree::{Node, Segment, Tree};
+use crate::tree::{Node, Segment, Shape, Tree};
 use crate::widgets::{Column, Grid, Row, Stack};
 use aethereal_math::{Rect2, Vec2};
 
@@ -16,14 +16,15 @@ fn sized(place: u32, width: f32, height: f32) -> Node {
 
 /// The boxes of `tree`, in tree order, laid out in a screen `size` across and down at `scale`.
 fn boxes(tree: &Tree, size: Vec2, scale: f32) -> Vec<Boxed> {
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the tree lays out");
     };
     let fonts = Fonts::default();
     let mut texts = Texts::default();
     let mut measuring = fonts.measuring(&mut texts, scale);
 
-    Layouts::default().lay_out(&flattened.nodes, &[], &mut measuring, size, scale).boxes.clone()
+    Layouts::default().lay_out(&flattened, &[], &mut measuring, (size, scale), (1, 1)).boxes.clone()
 }
 
 /// The rect from `x`, `y`, `width` by `height`.

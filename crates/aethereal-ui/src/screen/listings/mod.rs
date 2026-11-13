@@ -20,28 +20,31 @@
 mod tests;
 
 use super::{Slot, Standing};
-use crate::tree::{KeyPath, Relaid, Segment};
+use crate::tree::{Flattened, Stamps, Was};
 use crate::widget::Laid;
-use std::collections::BTreeMap;
+use core::mem;
 
-/// What each widget listed as its screen last laid it out, by its key path, with what its listing read; and the number
-/// of the layout listing now, counted from the screen's first.
+/// What each widget listed as its screen last laid it out, in the tree order of the flattening numbered `generation`,
+/// with what its listing read; and what is listed in the layout under way, in its flattening's order.
 #[derive(Debug, Default)]
 pub(super) struct Listings {
-    by: BTreeMap<KeyPath, Kept>,
-    pass: u64,
+    by: Vec<Kept>,
+    generation: u64,
+    next: Vec<Kept>,
 }
 
-/// What one widget listed: its places in its screen's list, those listed where it stands and those listed over its
-/// anchor, and whether it blocks the pointer from what is within it; what its listing read beside its tree's node; and
-/// the number of the layout that last listed it.
-#[derive(Debug)]
-struct Kept {
-    read: Read,
-    now: Vec<Slot>,
-    later: Vec<Slot>,
-    blocks: bool,
-    pass: u64,
+/// What one widget listed, if it listed anything: what its listing read beside its tree's node, what it lists, and the
+/// build of the tree it was listed from.
+#[derive(Debug, Default)]
+enum Kept {
+    /// Nothing: it was hidden, new, or let go.
+    #[default]
+    Unlisted,
+    Listed {
+        read: Read,
+        listed: Listed,
+        built: u64,
+    },
 }
 
 /// What a widget's listing reads beside its tree's node: where it is drawn, its state's bytes, how it stands with its
@@ -66,10 +69,49 @@ pub(super) struct Reading<'state> {
 
 /// What a widget lists: its places in its screen's list, those listed where it stands and those listed over its anchor,
 /// and whether it blocks the pointer from what is within it.
+#[derive(Debug)]
 pub(super) struct Listed {
     pub now: Vec<Slot>,
     pub later: Vec<Slot>,
     pub blocks: bool,
+}
+
+/// What a widget lists, as a layout reads it: its places where it stands and over its anchor, and whether it blocks
+/// the pointer from what is within it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Listing<'listed> {
+    pub now: &'listed [Slot],
+    pub later: &'listed [Slot],
+    pub blocks: bool,
+}
+
+impl Listed {
+    /// It, as a layout reads it.
+    pub(super) fn listing(&self) -> Listing<'_> {
+        Listing { now: &self.now, later: &self.later, blocks: self.blocks }
+    }
+}
+
+impl Kept {
+    /// Whether it holds for a node stamped `stamps` whose listing reads what `reading` finds: its node has drawn as it
+    /// did since the build it was listed from, and it reads the same.
+    fn holds(&self, stamps: Stamps, reading: Reading<'_>) -> bool {
+        match self {
+            Self::Listed { read, built, .. } => {
+                let drawn = stamps.drawn <= *built;
+                drawn && read.is(reading)
+            }
+            Self::Unlisted => false,
+        }
+    }
+
+    /// What it lists, as a layout reads it: nothing, unlisted.
+    fn listing(&self) -> Listing<'_> {
+        match self {
+            Self::Listed { listed, .. } => listed.listing(),
+            Self::Unlisted => Listing { now: &[], later: &[], blocks: false },
+        }
+    }
 }
 
 impl Read {
@@ -89,20 +131,6 @@ impl Read {
         let surfaced = self.live == reading.live;
 
         placed && stated && stood && surfaced
-    }
-}
-
-impl Kept {
-    /// What `listed` lists, read as `reading` found it, in the layout numbered `pass`.
-    fn of(reading: Reading<'_>, listed: &Listed, pass: u64) -> Self {
-        let Listed { now, later, blocks } = listed;
-
-        Self { read: Read::of(reading), now: now.clone(), later: later.clone(), blocks: *blocks, pass }
-    }
-
-    /// What it lists, again.
-    fn again(&self) -> Listed {
-        Listed { now: self.now.clone(), later: self.later.clone(), blocks: self.blocks }
     }
 }
 
@@ -131,72 +159,58 @@ fn bits(laid: &Laid) -> [u32; 15] {
 }
 
 impl Listings {
-    /// Begins a layout's pass over what was kept, numbered after the last.
-    pub(super) fn begin(&mut self) {
-        self.pass += 1;
+    /// Begins a layout's pass over `flattened`: what each widget kept follows it to where it stands, and what was kept
+    /// in the order of any flattening but the last is let go.
+    pub(super) fn begin(&mut self, flattened: &Flattened<'_>) {
+        let following = self.generation + 1 == flattened.generation;
+        let reshaped = !following;
+        if reshaped {
+            self.by.clear();
+        }
+        self.generation = flattened.generation;
+        self.next.clear();
+        self.next.resize_with(flattened.nodes.len(), Kept::default);
     }
 
-    /// What the widget at `path` lists as its listing reads what `reading` finds: what it listed last, when it kept that
-    /// and read the same; otherwise what `list` lists. Either way kept for the next layout.
-    pub(super) fn list(&mut self, path: &KeyPath, reading: Reading<'_>, list: impl FnOnce() -> Listed) -> Listed {
-        let pass = self.pass;
-        match self.by.get_mut(path) {
-            Some(kept) if kept.read.is(reading) => {
-                kept.pass = pass;
-                kept.again()
-            }
-            Some(kept) => {
-                let listed = list();
-                *kept = Kept::of(reading, &listed, pass);
-                listed
-            }
-            None => {
-                let listed = list();
-                self.by.insert(path.clone(), Kept::of(reading, &listed, pass));
-                listed
-            }
-        }
+    /// What the widget at `at` in the flattening, which stood at `was` in the last, and whose node's stamps are
+    /// `stamps`, lists as its listing reads what `reading` finds, from the tree of the build `built`: what it listed
+    /// last, when it kept that, its node has drawn as it did since, and it reads the same; otherwise what `list` lists.
+    /// Either way kept for the next layout.
+    pub(super) fn list(
+        &mut self,
+        (at, was, stamps): (usize, Was, Stamps),
+        reading: Reading<'_>,
+        built: u64,
+        list: impl FnOnce() -> Listed,
+    ) -> Listing<'_> {
+        let kept = match was {
+            Was::At(old) if old < self.by.len() => mem::take(&mut self.by[old]),
+            Was::At(_) | Was::New => Kept::Unlisted,
+        };
+        let holds = kept.holds(stamps, reading);
+        let kept = match kept {
+            Kept::Listed { read, listed, .. } if holds => Kept::Listed { read, listed, built },
+            Kept::Listed { .. } | Kept::Unlisted => Kept::Listed { read: Read::of(reading), listed: list(), built },
+        };
+        self.next[at] = kept;
+
+        self.next[at].listing()
     }
 
     /// Ends the layout's pass: what a widget it did not list kept is let go, and, when it `waited` for a font's metrics
     /// and so sends no draws, everything is, as what it listed was never drawn.
     pub(super) fn end(&mut self, waited: bool) {
-        let pass = self.pass;
+        mem::swap(&mut self.by, &mut self.next);
+        self.next.clear();
         if waited {
             self.by.clear();
-            return;
         }
-        self.by.retain(|_, kept| kept.pass == pass);
     }
 
-    /// Lets go of what the widget at `path` kept, as its draws were not made.
-    pub(super) fn forget(&mut self, path: &KeyPath) {
-        self.by.remove(path);
-    }
-
-    /// Lets go of what the widget at `path`, and each within it, kept.
-    fn within(&mut self, path: &[Segment]) {
-        self.by.retain(|kept, _| !kept.segments().starts_with(path));
-    }
-}
-
-/// A widget whose node changed in any way lets go of what it kept; one that left the tree takes what it kept with it,
-/// with all within it; and one new to the tree takes nothing kept at or within its path, which may be left from a tree
-/// before the last, when a tree between was never laid out.
-impl Relaid for Listings {
-    fn changed(&mut self, path: &[Segment]) {
-        self.by.remove(path);
-    }
-
-    fn redrawn(&mut self, path: &[Segment]) {
-        self.by.remove(path);
-    }
-
-    fn entered(&mut self, path: &[Segment]) {
-        self.within(path);
-    }
-
-    fn left(&mut self, path: &[Segment]) {
-        self.within(path);
+    /// Lets go of what the widget at `at` in the last flattening kept, as its draws were not made.
+    pub(super) fn forget(&mut self, at: usize) {
+        if let Some(kept) = self.by.get_mut(at) {
+            *kept = Kept::Unlisted;
+        }
     }
 }

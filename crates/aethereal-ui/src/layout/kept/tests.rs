@@ -6,7 +6,7 @@ use super::Layouts;
 use crate::fonts::{Fonts, Measuring, Texts};
 use crate::layout::Laidout;
 use crate::style::{Edges, Length, Space, Style};
-use crate::tree::{Node, Segment, Tree};
+use crate::tree::{Difference, Memos, Node, Segment, Shape, Tree};
 use crate::widget::{Arrange, Draws, Laid, Lines, Offer, Stateless, Widget};
 use crate::widgets::{Column, Row, Scroll, Text};
 use aethereal_math::Vec2;
@@ -36,18 +36,32 @@ fn known() -> Fonts {
     fonts
 }
 
-/// What a screen keeps from one layout to the next, with the fonts it knows and the tree it last laid out.
+/// What a screen keeps from one layout to the next, with the fonts it knows, the tree it last laid out and its last
+/// flattening, and the number of its last build and of the last that laid out otherwise.
 struct Screen {
     fonts: Fonts,
     texts: Texts,
     layouts: Layouts,
     last: Tree,
+    shape: Shape,
+    builds: u64,
+    relaid: u64,
 }
 
 impl Screen {
     /// A screen knowing `fonts` that has laid `tree` out in a screen `size` across and down at `scale`.
     fn new(fonts: Fonts, tree: Tree, size: Vec2, scale: f32) -> Self {
-        let mut screen = Self { fonts, texts: Texts::default(), layouts: Layouts::default(), last: tree };
+        let mut last = tree;
+        let _ = last.first(&mut Memos::default(), 1);
+        let mut screen = Self {
+            fonts,
+            texts: Texts::default(),
+            layouts: Layouts::default(),
+            last,
+            shape: Shape::default(),
+            builds: 1,
+            relaid: 1,
+        };
         let _ = screen.laid(size, scale);
 
         screen
@@ -55,9 +69,12 @@ impl Screen {
 
     /// Takes in `tree` as a screen does, compared with the last so what it kept is told what changed, without laying
     /// it out.
-    fn built(&mut self, tree: Tree) {
-        let Self { texts, layouts, last, .. } = self;
-        let _ = last.compare(&tree, &mut (layouts, texts));
+    fn built(&mut self, mut tree: Tree) {
+        self.builds += 1;
+        let difference = self.last.merge(&mut tree, &mut self.texts, &mut Memos::default(), self.builds);
+        if difference == Difference::Layout {
+            self.relaid = self.builds;
+        }
         self.last = tree;
     }
 
@@ -71,13 +88,14 @@ impl Screen {
     /// Lays the last tree out from what was kept, in a screen `size` across and down at `scale`, as one pass of a
     /// screen does.
     fn laid(&mut self, size: Vec2, scale: f32) -> Laidout {
-        let Self { fonts, texts, layouts, last } = self;
-        let Ok(flattened) = last.flat() else {
+        let Self { fonts, texts, layouts, last, shape, builds, relaid } = self;
+        let Ok(flattened) = last.flat(shape) else {
             panic!("the tree lays out");
         };
         texts.begin(scale);
         let mut measuring = fonts.measuring(texts, scale);
-        let Laidout { boxes, pitches } = layouts.lay_out(&flattened.nodes, &[], &mut measuring, size, scale);
+        let Laidout { boxes, pitches } =
+            layouts.lay_out(&flattened, &[], &mut measuring, (size, scale), (*builds, *relaid));
         let laidout = Laidout { boxes: boxes.clone(), pitches: pitches.clone() };
         texts.sweep();
 
@@ -87,13 +105,14 @@ impl Screen {
 
 /// `tree` laid out in a screen `size` across and down at `scale` by layouts and texts that kept nothing, with `fonts`.
 fn fresh(fonts: &Fonts, tree: &Tree, size: Vec2, scale: f32) -> Laidout {
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the tree lays out");
     };
     let mut texts = Texts::default();
     let mut layouts = Layouts::default();
     let mut measuring = fonts.measuring(&mut texts, scale);
-    let Laidout { boxes, pitches } = layouts.lay_out(&flattened.nodes, &[], &mut measuring, size, scale);
+    let Laidout { boxes, pitches } = layouts.lay_out(&flattened, &[], &mut measuring, (size, scale), (1, 1));
 
     Laidout { boxes: boxes.clone(), pitches: pitches.clone() }
 }

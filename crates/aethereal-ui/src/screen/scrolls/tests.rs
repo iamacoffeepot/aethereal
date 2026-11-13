@@ -11,7 +11,7 @@ use super::MARGIN;
 use crate::input::{Held, Key};
 use crate::style::{Length, Style};
 use crate::table::Focus;
-use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
+use crate::tree::{ItemKey, KeyPath, Node, Segment, Shape, Tree};
 use crate::widget::Laid;
 use crate::widgets::{Button, Column, Scroll};
 use aethereal_math::{Rect2, Vec2};
@@ -55,7 +55,8 @@ fn listed_in(screen: &Screen, keys: &[u64], scroll: Scroll) -> Tree {
 
 /// The keys of the rows `tree` built, in order.
 fn built(tree: &Tree) -> Vec<ItemKey> {
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the list's tree is walked");
     };
 

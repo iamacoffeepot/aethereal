@@ -33,7 +33,7 @@ use super::{Fresh, Last, Listed, Orders, Screen, Worked};
 use crate::fonts::Asker;
 use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
-use crate::tree::{KeyPath, Node, Tree};
+use crate::tree::{KeyPath, Node, Shape, Tree};
 use crate::widget::Built;
 use aethereal_actor::{Answered, Level};
 use aethereal_data::{ActorId, Plain};
@@ -352,7 +352,8 @@ impl Screen {
         let Last::Built(tree) = &self.unkept.last else {
             return Used::Passed;
         };
-        let Ok(flattened) = tree.flat() else {
+        let mut shape = Shape::default();
+        let Ok(flattened) = tree.flat(&mut shape) else {
             return Used::Passed;
         };
         let surfaces = popups::surfaces(&flattened.nodes, &self.table);

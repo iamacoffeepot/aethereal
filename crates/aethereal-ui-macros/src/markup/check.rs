@@ -5,8 +5,9 @@
 //! Each refusal is an error at the token that caused it; every one found is reported, not only the first.
 
 use super::reference::{Head, Reference};
-use super::{Call, Dropping, Element, Kind, Look, Outside, Repeat, Rest, Shown};
+use super::{Call, Dropping, Element, Kind, Look, Memo, Outside, Repeat, Rest, Shown};
 use crate::style;
+use proc_macro2::Span;
 use syn::Ident;
 
 /// What one macro allows its markup to name.
@@ -19,6 +20,9 @@ pub trait Names {
 
     /// Refuses a drop this macro cannot take.
     fn drop(&self, call: &Call) -> syn::Result<()>;
+
+    /// Refuses `memo`, written at `span`, where this macro cannot keep a composite.
+    fn memo(&self, span: Span) -> syn::Result<()>;
 }
 
 /// The names in scope where a reference is read: the locals each `as` around it made, and a composite's params.
@@ -113,8 +117,37 @@ fn element(element: &Element, names: &impl Names, scope: &Scope, found: &mut Fou
     }
 }
 
+/// Checks `memo` on `element`, written at `span`: a composite placed in a screen's view, built from what its markup
+/// writes into it alone, so it holds no children, takes no items, and is neither dragged nor dropped on, whose values
+/// read more than its fields.
+fn memo(element: &Element, span: Span, names: &impl Names, found: &mut Found) {
+    found.keep(names.memo(span));
+    let alone = element.children.is_empty();
+    if !alone {
+        let message =
+            "`memo` keeps a composite built from its fields alone: children read the screen, so it holds none";
+        found.keep(Err(syn::Error::new(span, message)));
+    }
+    let fixed = matches!(element.drag, super::Drag::Fixed);
+    let refuses = matches!(element.drop, Dropping::Refuses);
+    let still = matches!(element.outside, Outside::Nothing);
+    let placed = fixed && refuses && still;
+    if !placed {
+        let message =
+            "`memo` keeps a composite built from its fields alone: `drag` and `drop` go on an element around it";
+        found.keep(Err(syn::Error::new(span, message)));
+    }
+    let tabs = element.is("Tabs");
+    if tabs {
+        found.keep(Err(syn::Error::new(span, "`memo` keeps a composite, and `Tabs` is a primitive")));
+    }
+}
+
 /// Checks a widget's element, read in `scope`.
 fn widget(element: &Element, names: &impl Names, scope: &Scope, found: &mut Found) {
+    if let Memo::Kept(span) = element.memo {
+        memo(element, span, names, found);
+    }
     look(&element.look, found);
     for field in &element.fields {
         value(&field.value, names, scope, found);
@@ -192,6 +225,9 @@ fn tabs(element: &Element, found: &mut Found) {
 
 /// Checks a child actor's slot: it takes its `actor` and its `area`, and a `style` and a `show`, and holds nothing.
 fn slot(element: &Element, names: &impl Names, scope: &Scope, found: &mut Found) {
+    if let Memo::Kept(span) = element.memo {
+        found.keep(Err(syn::Error::new(span, "`memo` keeps a composite, and a `child` slot places an actor")));
+    }
     look(&element.look, found);
     for field in &element.fields {
         let known = field.name == "actor" || field.name == "area";
