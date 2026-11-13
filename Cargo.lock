@@ -306,10 +306,22 @@ dependencies = [
  "aethereal-data",
  "aethereal-math",
  "aethereal-render",
+ "aethereal-ui-macros",
  "aethereal-window",
  "pollster",
  "taffy",
  "wgpu",
+]
+
+[[package]]
+name = "aethereal-ui-macros"
+version = "0.1.0"
+dependencies = [
+ "aethereal-ui",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "trybuild",
 ]
 
 [[package]]
@@ -2968,6 +2980,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
+name = "target-tuple"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3116,6 +3134,21 @@ name = "tracing-core"
 version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+
+[[package]]
+name = "trybuild"
+version = "1.0.122"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62db9c92d704393fbf2132041720cc80b689f2d3f28521015c2ac866223c11b8"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-tuple",
+ "termcolor",
+ "toml",
+]
 
 [[package]]
 name = "ttf-parser"

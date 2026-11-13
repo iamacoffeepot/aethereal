@@ -29,6 +29,21 @@ pub enum Raised<E> {
     Dropped(E, Payload),
 }
 
+impl<E: Copy> Raised<E> {
+    /// The event raised, whatever its widget handed with it: what a screen's `on` matches first.
+    #[must_use]
+    pub const fn event(&self) -> E {
+        match self {
+            Self::Event(event)
+            | Self::Text(event, _)
+            | Self::Flag(event, _)
+            | Self::Number(event, _)
+            | Self::Index(event, _)
+            | Self::Dropped(event, _) => *event,
+        }
+    }
+}
+
 /// A screen's event, held without its type.
 #[derive(Debug)]
 pub struct Erased(Box<dyn Any + Send>);

@@ -1,0 +1,5 @@
+error[E0425]: cannot find function `missing` in this scope
+ --> tests/refusals/unknown_style.rs:3:16
+  |
+3 |     pub label: missing { font_size: 24 }
+  |                ^^^^^^^ not found in this scope

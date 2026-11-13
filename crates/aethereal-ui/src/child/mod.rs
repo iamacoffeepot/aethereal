@@ -44,7 +44,7 @@ pub type Resizes = (Resize,);
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
 /// use aethereal_ui::prelude::*;
-/// # use aethereal_actor::{Asks, Ending, Path, Turn};
+/// # use aethereal_actor::{Asks, Ending, Path};
 /// # use aethereal_render::Renderer;
 /// # use aethereal_render::frame::ShapeOf;
 /// #
@@ -75,20 +75,14 @@ pub type Resizes = (Resize,);
 /// #[kind(name = "aether.example.no_minimap")]
 /// pub struct NoMinimap;
 ///
-/// impl View for Hud {
-///     type Event = ();
+/// aethereal_ui::style! {
+///     pub minimap_slot { width: 120, height: 120 }
+/// }
 ///
-///     /// What `child { actor: self.minimap, area: CallArea::Inherit }` compiles into, in a column.
-///     fn view(&self) -> Tree {
-///         let slot = Style { width: Length::Pixels(120.0), height: Length::Pixels(120.0), ..Style::default() };
-///         let minimap = Node::call(Segment::Place(0), self.minimap.clone(), CallArea::Inherit, slot);
-///
-///         Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![minimap]))
+/// aethereal_ui::view! { Hud, ui,
+///     Column {
+///         child { actor: self.minimap, area: CallArea::Inherit, style: minimap_slot }
 ///     }
-/// #
-/// #     fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<()>) -> Result<(), Fault> {
-/// #         aethereal_ui::unmatched(turn, &raised)
-/// #     }
 /// }
 ///
 /// impl Actor for Hud {
@@ -130,17 +124,7 @@ pub type Resizes = (Resize,);
 /// #     }
 /// # }
 /// #
-/// # impl View for Minimap {
-/// #     type Event = ();
-/// #
-/// #     fn view(&self) -> Tree {
-/// #         Tree::new(Node::new(Segment::Place(0), Stack, Style::default(), vec![]))
-/// #     }
-/// #
-/// #     fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<()>) -> Result<(), Fault> {
-/// #         aethereal_ui::unmatched(turn, &raised)
-/// #     }
-/// # }
+/// # aethereal_ui::view! { Minimap, ui, Stack {} }
 /// #
 /// # impl Controls for Hud {
 /// #     type Sends = aethereal_ui::sends![];
@@ -153,9 +137,6 @@ pub type Resizes = (Resize,);
 /// # impl ChildOf for Hud {
 /// #     type Parent = Top;
 /// # }
-///
-/// aethereal_ui::screen!(Hud, ui);
-/// aethereal_ui::screen!(Minimap, ui);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub struct Called {

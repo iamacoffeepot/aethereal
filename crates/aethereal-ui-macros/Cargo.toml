@@ -1,0 +1,25 @@
+[package]
+name = "aethereal-ui-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The macros of the widget library: view!, style!, widget!, and #[events] (ADR-0056)"
+
+# Runs on the build machine only, so syn never enters a guest (ADR-0056: Consequences).
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+
+# The refusals are compile-fail cases, each built as a crate of its own against the library, and its error compared
+# with the one the macro is written to give.
+[dev-dependencies]
+aethereal-ui = { path = "../aethereal-ui" }
+trybuild = "1"
+
+[lints]
+workspace = true

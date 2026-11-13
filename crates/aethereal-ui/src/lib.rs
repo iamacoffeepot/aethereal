@@ -18,6 +18,9 @@
 //! - [`Style`]: every property a style sets, resolved.
 //! - [`View`] and [`Controls`]: what a screen's markup compiles into, its event enum, its view, and the call of each
 //!   event's method; and what is written by hand beside those methods, its sends and its hotkeys.
+//! - [`Element`] and [`Method`]: what markup's elements and events are built and called through: an element a
+//!   primitive's own node or the tree a composite builds, and an event's method called with the arguments its view
+//!   copied and, when it takes one, what its widget handed, by the method's own signature.
 //! - [`Screen`]: what the library keeps in the screen's actor, and what it does in the screen's turns, as
 //!   [`screen!`] writes the screen's handlers: among them, the content of each open widget that arranges its children
 //!   as a popup, a [`Popup`](widgets::Popup) or a program's own, drawn in the screen's top layer, and the wait of each
@@ -31,7 +34,9 @@
 //!   takes in the same way and refuses, [`DropRefused`], when nothing takes it; and one nothing takes raises the
 //!   source's `drop_outside`.
 //!
-//! A screen is written as its markup will compile it:
+//! A screen is written in markup (ADR-0056: Markup): its view in [`view!`], its styles in [`style!`], its own
+//! composites in [`widget!`], and, on the impl of the methods its events call, [`events`](macro@events), which declares
+//! the types of what those events copy, since the markup writes only their values:
 //!
 //! ```
 //! use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
@@ -44,30 +49,29 @@
 //! #[kind(name = "aether.example.hud")]
 //! pub struct Hud {
 //!     gold: u32,
+//!     price: u32,
 //!     ui: Screen,
 //! }
 //!
-//! /// What the hud's `view!` expands to: a `Text` of its gold, and a `Button` whose `click` spends five.
-//! #[derive(Debug, Clone, Copy, PartialEq)]
-//! pub enum HudEvent {
-//!     Spend(u32),
+//! aethereal_ui::style! {
+//!     pub panel { padding: 8, gap: 4, background: rgb(28, 24, 20) }
+//!     pub label: panel { font_size: 20, colour: "#e8d9a0" }
 //! }
 //!
-//! impl View for Hud {
-//!     type Event = HudEvent;
+//! aethereal_ui::widget! {
+//!     /// A button that spends `amount`, labelled with it.
+//!     pub struct Coin { amount: u32 }
+//!     raises click;
 //!
-//!     fn view(&self) -> Tree {
-//!         let gold = Node::new(Segment::Place(0), Text::new(&format!("Gold: {}", self.gold)), Style::default(), vec![]);
-//!         let spend = Node::new(Segment::Place(1), Button::new(HudEvent::Spend(5)), Style::default(), vec![]);
-//!
-//!         Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![gold, spend]))
+//!     Button { click => click,
+//!         Text { "Spend {amount}" }
 //!     }
+//! }
 //!
-//!     fn on(&mut self, turn: &mut Turn<'_, Self, HudSends>, raised: Raised<HudEvent>) -> Result<(), Fault> {
-//!         match raised {
-//!             Raised::Event(HudEvent::Spend(amount)) => self.spend(turn, amount),
-//!             unmatched => aethereal_ui::unmatched(turn, &unmatched),
-//!         }
+//! aethereal_ui::view! { Hud, ui,
+//!     Column { style: panel,
+//!         Text { style: label, "Gold: {self.gold}" }
+//!         Coin { amount: self.price, click => self.spend(self.price) }
 //!     }
 //! }
 //!
@@ -78,6 +82,7 @@
 //!     type Sends = HudSends;
 //! }
 //!
+//! #[aethereal_ui::events]
 //! impl Hud {
 //!     fn spend(&mut self, _: &mut Turn<'_, Self, HudSends>, amount: u32) -> Result<(), Fault> {
 //!         self.gold = self.gold.saturating_sub(amount);
@@ -100,18 +105,21 @@
 //!         let target = Target::of::<Interface>(frame);
 //!         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
 //!
-//!         Ok(Self { gold: 0, ui })
+//!         Ok(Self { gold: 100, price: 5, ui })
 //!     }
 //!
 //!     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
 //!         Ok(())
 //!     }
 //! }
-//!
-//! aethereal_ui::screen!(Hud, ui);
 //! ```
 
 #![forbid(unsafe_code)]
+
+// The macros name the library from the root, `::aethereal_ui::…`, as a screen's crate does; its own tests are written
+// in them too.
+#[cfg(test)]
+extern crate self as aethereal_ui;
 
 mod child;
 mod drag;
@@ -128,6 +136,7 @@ mod view;
 mod widget;
 pub mod widgets;
 
+pub use aethereal_ui_macros::{events, style, view, widget};
 pub use child::{CallArea, Called, Resize, Resizes};
 pub use drag::{
     Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
@@ -138,10 +147,10 @@ pub use screen::{
     DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared,
     Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
 };
-pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track};
+pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
 pub use table::{Focus, Table};
-pub use tree::{ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
-pub use view::{Controls, Took, View, take_in, unmatched};
+pub use tree::{Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
+pub use view::{Controls, Handed, Method, Took, View, take_in, unmatched};
 pub use widget::{
     Arrange, Axis, Draws, Inside, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side, Slices, Stateless,
     TextDraw, Tip, Widget,
@@ -157,7 +166,7 @@ pub mod prelude {
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
         Key, KeyPath, Length, Node, Payload, Placed, Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space,
-        Style, Target, Track, Tree, View, Viewport,
+        Style, Target, Track, Tree, View, Viewport, rgb, rgba,
     };
 }
 

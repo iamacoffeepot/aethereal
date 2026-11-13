@@ -1,0 +1,5 @@
+error: an event of a screen calls one of its methods: `click => self.select(item.id)`
+ --> tests/refusals/screen_raise.rs:3:23
+  |
+3 |     Button { click => click }
+  |                       ^^^^^

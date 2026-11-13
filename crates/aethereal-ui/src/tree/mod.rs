@@ -8,8 +8,11 @@
 //! reorders and goes with it (ADR-0056: Lists and conditions are settings). A widget's identity is its [`KeyPath`], the
 //! segments from the root to it.
 
+mod element;
 #[cfg(test)]
 mod tests;
+
+pub use element::Element;
 
 use crate::drag::{DragSource, DropTarget};
 use crate::style::Style;

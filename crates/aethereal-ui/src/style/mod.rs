@@ -6,8 +6,12 @@
 //! Sizes are logical pixels. The screen multiplies them by its UI scale as it lays out, so one scale enlarges
 //! everything without touching a style.
 
+mod colour;
 mod convert;
+#[cfg(test)]
+mod tests;
 
+pub use colour::{rgb, rgba};
 pub use convert::{Parent, flow};
 
 use aethereal_render::text::{Align, Colour, Font, Outline};

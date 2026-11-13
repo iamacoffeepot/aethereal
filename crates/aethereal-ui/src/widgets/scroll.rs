@@ -63,6 +63,13 @@ pub enum Drag {
     Thumb { grip: f32 },
 }
 
+/// A scroll down through its children: what markup's `Scroll { .., … }` leaves the rest at, its lines set by `items`.
+impl Default for Scroll {
+    fn default() -> Self {
+        Self::down()
+    }
+}
+
 impl Scroll {
     /// A scroll down through its children.
     #[must_use]
