@@ -10,10 +10,10 @@
 //! popup blocks the pointer from the rest of its screen and holds Tab within its content while it is open.
 //!
 //! ```text
-//! <Popup side="below" inside="closes">         Popup::new().closing()
-//!     <Row class="field"><Text>{label}</Text></Row>     its anchor: what it is opened from
-//!     <Column class="menu">…</Column>                    its content, in the top layer while it is open
-//! </Popup>
+//! Popup { side: "below", inside: "closes",           Popup::new().closing()
+//!     Row { style: field, Text { "{label}" } }        its anchor: what it is opened from
+//!     Column { style: menu, … }                       its content, in the top layer while it is open
+//! }
 //! ```
 
 use super::press::{PRESSES, Press, shade};

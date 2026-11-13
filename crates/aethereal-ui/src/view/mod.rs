@@ -3,7 +3,7 @@
 //! handlers [`screen!`](crate::screen!) writes read both, and take in what input leaves with [`take_in`].
 //!
 //! ```text
-//! inventory.xml ── build script ──> impl View for Inventory { type Event = InventoryEvent; fn view; fn on }
+//! inventory.rs: view! ── macro ───> impl View for Inventory { type Event = InventoryEvent; fn view; fn on }
 //! inventory.rs  ── by hand ───────> impl Controls for Inventory { type Sends; const HOTKEYS; fn key }
 //!                                   fn equip(&mut self, turn, item: ItemId) -> Result<(), Fault>   (what `on` calls)
 //! ```
@@ -44,11 +44,11 @@ pub trait Controls: Actor {
 /// names.
 ///
 /// ```ignore
-/// // inventory_view.rs, from inventory.xml
+/// // what view! { Inventory, … } in inventory.rs expands to
 /// #[derive(Debug, Clone, Copy, PartialEq)]
 /// pub enum InventoryEvent {
-///     Select(ItemId),        // <ItemSlot click="{self.select(item.id)}"/>
-///     Rename(ItemId),        // <TextInput change="{self.rename(item.id)}"/>
+///     Select(ItemId),        // ItemSlot { click: self.select(item.id) }
+///     Rename(ItemId),        // TextInput { change: self.rename(item.id) }
 /// }
 ///
 /// impl aethereal_ui::View for Inventory {
@@ -66,7 +66,7 @@ pub trait Controls: Actor {
 /// }
 /// ```
 pub trait View: Controls {
-    /// One variant for each event attribute of the markup, holding the arguments the view copied as it was built.
+    /// One variant for each event setting of the markup, holding the arguments the view copied as it was built.
     type Event: Event;
 
     /// Builds the screen's tree from the screen as it is.

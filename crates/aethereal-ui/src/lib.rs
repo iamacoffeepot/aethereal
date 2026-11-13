@@ -15,7 +15,7 @@
 //!   [`Scroll`](widgets::Scroll) builds only the items its [`Rows`] say it shows.
 //! - [`Widget`]: a primitive. It arranges its children, measures itself as a leaf, draws itself, and takes in input;
 //!   its state is kept by key in the screen's [`Table`], with the screen's focus.
-//! - [`Style`]: every property a sheet compiles into, resolved.
+//! - [`Style`]: every property a style sets, resolved.
 //! - [`View`] and [`Controls`]: what a screen's markup compiles into, its event enum, its view, and the call of each
 //!   event's method; and what is written by hand beside those methods, its sends and its hotkeys.
 //! - [`Screen`]: what the library keeps in the screen's actor, and what it does in the screen's turns, as
@@ -47,7 +47,7 @@
 //!     ui: Screen,
 //! }
 //!
-//! /// What `hud.xml` compiles into: `<Button click="{self.spend(5)}">`.
+//! /// What the hud's `view!` expands to: a `Text` of its gold, and a `Button` whose `click` spends five.
 //! #[derive(Debug, Clone, Copy, PartialEq)]
 //! pub enum HudEvent {
 //!     Spend(u32),

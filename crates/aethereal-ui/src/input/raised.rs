@@ -9,7 +9,7 @@ use crate::drag::Payload;
 use core::any::Any;
 use core::fmt::Debug;
 
-/// A screen's event: what its markup's event attributes compile into, one variant for each, holding the arguments the
+/// A screen's event: what its markup's event settings compile into, one variant for each, holding the arguments the
 /// view copied as it was built. Those are `Copy`, ids rather than snapshots of what may change before the click, so an
 /// event is too.
 pub trait Event: Debug + PartialEq + Copy + Send + 'static {}

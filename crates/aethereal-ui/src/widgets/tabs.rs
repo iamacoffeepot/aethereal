@@ -9,10 +9,10 @@
 //! choose the tab beside the open one, round from the last to the first, and Home and End the first and the last.
 //!
 //! ```text
-//! <Tabs selected="{self.tab}" change="{self.open}">     Tabs { titles: ["Items", "Skills"], selected, change }
-//!     <Tab title="Items">…</Tab>                    ──>     Tab { title: "Items" } at Place(0), when selected is 0
-//!     <Tab title="Skills">…</Tab>                           Tab { title: "Skills" } at Place(1), when selected is 1
-//! </Tabs>
+//! Tabs { selected: self.tab, change: self.open(),     Tabs { titles: ["Items", "Skills"], selected, change }
+//!     Tab { title: "Items", … }               ──>     Tab { title: "Items" } at Place(0), when selected is 0
+//!     Tab { title: "Skills", … }                      Tab { title: "Skills" } at Place(1), when selected is 1
+//! }
 //! ```
 
 use super::press::{HOVERED, RING, RING_WIDTH};
@@ -48,7 +48,7 @@ pub struct Tabs<E> {
 }
 
 /// One tab's panel, titled `title`, its children one after another down: what `Tabs` shows below its headers while
-/// its tab is open. Its title is what its header shows, which the markup's build hands `Tabs`.
+/// its tab is open. Its title is what its header shows, which the markup's macro hands `Tabs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub title: String,

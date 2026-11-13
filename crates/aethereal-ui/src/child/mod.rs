@@ -6,8 +6,8 @@
 //! child that is a screen lays out to it; moving the slot sends nothing.
 //!
 //! ```text
-//! <child actor="{self.minimap}" area="inherit" class="minimap"/>
-//!     ──> Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_style())
+//! child { actor: self.minimap, area: "inherit", style: minimap_slot }
+//!     ──> Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_slot())
 //!     ──> layout: a leaf, sized by its style ──> Entry::Call at its content box, in draw order
 //!                                           └──> a size not told before? ──> Resize, mailed to the child
 //! ```
@@ -33,7 +33,7 @@ pub struct Resize {
 /// What a child a screen places is reached by: an actor that takes [`Resize`].
 pub type Resizes = (Resize,);
 
-/// A child actor a screen places in a slot of its tree, as its markup's `actor="{self.minimap}"` reads it: where the
+/// A child actor a screen places in a slot of its tree, as its markup's `actor: self.minimap` reads it: where the
 /// renderer finds the child beneath the screen, which a call names, and the reference its size is mailed through. The
 /// screen makes it once, from the child it spawned, and keeps it in its state; the view copies it into the slot each
 /// time it builds, so a tree whose children stand as they stood compares equal and is skipped.
@@ -78,7 +78,7 @@ pub type Resizes = (Resize,);
 /// impl View for Hud {
 ///     type Event = ();
 ///
-///     /// What `<child actor="{self.minimap}" area="inherit"/>` compiles into, in a column.
+///     /// What `child { actor: self.minimap, area: "inherit" }` compiles into, in a column.
 ///     fn view(&self) -> Tree {
 ///         let slot = Style { width: Length::Pixels(120.0), height: Length::Pixels(120.0), ..Style::default() };
 ///         let minimap = Node::call(Segment::Place(0), self.minimap.clone(), CallArea::Inherit, slot);
@@ -191,7 +191,7 @@ pub enum CallArea {
 
 impl Node {
     /// The slot at `segment` among its siblings, styled `style`, where the child `called` is placed in the area `area`
-    /// names: what the markup's `<child>` compiles into. It has no children, and is sized by its style alone.
+    /// names: what the markup's `child` compiles into. It has no children, and is sized by its style alone.
     #[must_use]
     pub fn call(segment: Segment, called: Called, area: CallArea, style: Style) -> Self {
         Self::new(segment, Calling { called, area }, style, Vec::new())
