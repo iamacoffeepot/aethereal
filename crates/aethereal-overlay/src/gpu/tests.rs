@@ -2,10 +2,9 @@ use super::{GpuFigures, GraphTop, PassTimes, graph};
 use crate::chart::tests::{Record, read};
 use crate::colour::{BONE, MAUVE, MUTED_VIOLET, SLATE_BLUE, STONE, Swatch};
 use crate::frames::Slide;
-use crate::layout::{GUTTER_CHARACTERS, Layout};
-use aethereal_math::Rect2;
+use crate::layout::{GUTTER_CHARACTERS, Scale};
+use aethereal_math::{Rect2, Vec2};
 use aethereal_render::stats::FrameBudget;
-use aethereal_window::Surface;
 
 /// A millisecond, in nanoseconds.
 const MILLI: u64 = 1_000_000;
@@ -20,9 +19,15 @@ const FAST: FrameBudget = FrameBudget::Limit { nanos: 4_170_000 };
 const MAIN: &str = "aether.render.main";
 const OVERLAY: &str = "aether.render.overlay";
 
-/// The layout the graph's tests draw on.
-fn layout() -> Layout {
-    Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 })
+/// The graph's box on a window 1080 pixels tall at a scale of one: as wide as the frame chart above it, and two thirds
+/// as tall.
+const AREA: Rect2 = Rect2 { min: Vec2::new(10.0, 110.0), max: Vec2::new(966.0, 153.0) };
+
+/// The columns of `times` cut for a chart of `count`.
+fn cut(times: &mut PassTimes, count: u32) -> Vec<super::Spanned<super::Stack>> {
+    times.cut(count);
+
+    times.columns().collect()
 }
 
 /// How tall `nanos` stands in `area` against a top of `top_nanos`.
@@ -35,7 +40,7 @@ fn tall(area: Rect2, nanos: u64, top_nanos: u64) -> f32 {
 }
 
 /// Two columns a second apart: the first of three frames, `main` and `overlay` in each, the second of one frame of
-/// `spike` in the main pass alone; drawn against `budget`, its records read back, and the top it was drawn to.
+/// `spike` in the main pass alone; drawn against `budget`, its boxes read back, and the top it was drawn to.
 fn drawn(main: u64, overlay: u64, spike: u64, budget: FrameBudget) -> (Vec<Record>, GraphTop) {
     let mut times = PassTimes::default();
     times.take(100 * MILLI, [(MAIN, main), (OVERLAY, overlay)]);
@@ -43,11 +48,11 @@ fn drawn(main: u64, overlay: u64, spike: u64, budget: FrameBudget) -> (Vec<Recor
     times.take(300 * MILLI, [(MAIN, 10 * main), (OVERLAY, overlay)]);
     times.take(1_100 * MILLI, [(MAIN, spike)]);
     let slide = Slide { newest: 1, through: 0.5, span_nanos: 1_000 * MILLI };
-    let mut bytes = Vec::new();
+    let mut fills = Vec::new();
 
-    let top = graph(&mut bytes, layout(), slide, budget, times.columns(60));
+    let top = graph(&mut fills, AREA, Scale(1.0), slide, budget, cut(&mut times, 60));
 
-    (read(&bytes), top)
+    (read(&fills), top)
 }
 
 /// A column's stack is its passes in the order their labels were first heard, whatever order a frame ran them in,
@@ -56,7 +61,7 @@ fn drawn(main: u64, overlay: u64, spike: u64, budget: FrameBudget) -> (Vec<Recor
 /// mean, which one spike drags up, a log scale, or a top under the tallest stack, which clips it, is caught.
 #[test]
 fn a_column_stacks_each_pass_s_median_in_the_order_first_heard() {
-    let area = layout().gpu_graph();
+    let area = AREA;
 
     let (drawn, top) = drawn(4 * MILLI, MILLI, 10 * MILLI, LIMIT);
 
@@ -94,7 +99,7 @@ fn the_top_rounds_the_tallest_stack_up_to_a_step() {
         let mut times = PassTimes::default();
         times.take(100 * MILLI, [(MAIN, tallest_nanos / 2), (OVERLAY, tallest_nanos - tallest_nanos / 2)]);
 
-        let top = GraphTop::of(times.columns(60));
+        let top = GraphTop::of(cut(&mut times, 60));
 
         assert_eq!(top.nanos(), top_nanos, "the tallest stack of {tallest_nanos} ns");
     }
@@ -105,7 +110,7 @@ fn the_top_rounds_the_tallest_stack_up_to_a_step() {
 /// budget, or one drawn where it falls off the scale, is caught.
 #[test]
 fn the_budget_is_dashed_only_under_the_top() {
-    let area = layout().gpu_graph();
+    let area = AREA;
 
     let (under, top) = drawn(4 * MILLI, MILLI, 10 * MILLI, FAST);
     let (over, _) = drawn(4 * MILLI, MILLI, 10 * MILLI, LIMIT);
@@ -146,7 +151,7 @@ fn the_gutter_says_the_graph_s_top() {
         let mut times = PassTimes::default();
         times.take(100 * MILLI, [(MAIN, top_nanos)]);
 
-        let runs = GraphTop::of(times.columns(60)).runs();
+        let runs = GraphTop::of(cut(&mut times, 60)).runs();
 
         let written: String = runs.iter().map(|run| run.text.as_str()).collect();
         assert_eq!(written, line);

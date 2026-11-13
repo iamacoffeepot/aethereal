@@ -1,12 +1,11 @@
 use super::scale::height_fraction;
-use super::{RECORD_BYTES, marks, records};
-use crate::colour::{BONE, LICHEN, OCHRE, PANEL_OPACITY, SAND, SLATE, SLATE_TEAL, STONE};
+use super::{Fill, marks, records};
+use crate::colour::{BONE, LICHEN, OCHRE, SAND, SLATE_TEAL, STONE};
 use crate::frames::{Column, Slide};
-use crate::layout::Layout;
-use crate::stop::Stop;
+use crate::layout::Scale;
+use aethereal_math::{Rect2, Vec2};
 use aethereal_render::stats::FrameBudget;
 use aethereal_render::text::Colour;
-use aethereal_window::Surface;
 
 /// A budget of 16.7 milliseconds, in nanoseconds.
 const BUDGET: u64 = 16_700_000;
@@ -14,26 +13,30 @@ const BUDGET: u64 = 16_700_000;
 /// That budget, as a limit the frames are held to.
 const LIMIT: FrameBudget = FrameBudget::Limit { nanos: BUDGET };
 
-/// How many records come before the columns at the band's stop: the band's panel, its three dividers, and the line at
-/// twice the budget.
-const BEFORE_COLUMNS: usize = 5;
+/// How many boxes come before the columns: the line at twice the budget.
+const BEFORE_COLUMNS: usize = 1;
 
-/// One record read back: its box, left, top, width, and height, and its colour.
+/// The scale of a window of one pixel to the logical one.
+const SCALE: Scale = Scale(1.0);
+
+/// The chart's box on a window 1080 pixels tall at that scale: 956 pixels wide, as the left column leaves it beside
+/// its gutter, and 65 tall.
+const CHART: Rect2 = Rect2 { min: Vec2::new(10.0, 10.0), max: Vec2::new(966.0, 75.0) };
+
+/// One box read back: its left, top, width, and height, and its colour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     pub area: [f32; 4],
     pub colour: Colour,
 }
 
-/// The records `bytes` holds, in order.
-pub fn read(bytes: &[u8]) -> Vec<Record> {
-    let float = |chunk: &[u8], at: usize| f32::from_ne_bytes([chunk[at], chunk[at + 1], chunk[at + 2], chunk[at + 3]]);
-    bytes
-        .chunks_exact(RECORD_BYTES as usize)
-        .map(|chunk| {
-            let [left, top, width, height, red, green, blue, alpha] =
-                [0, 4, 8, 12, 16, 20, 24, 28].map(|at| float(chunk, at));
-            Record { area: [left, top, width, height], colour: Colour { red, green, blue, alpha } }
+/// The boxes `fills` holds, in order.
+pub fn read(fills: &[Fill]) -> Vec<Record> {
+    fills
+        .iter()
+        .map(|fill| Record {
+            area: [fill.area.min.x, fill.area.min.y, fill.area.width(), fill.area.height()],
+            colour: fill.colour,
         })
         .collect()
 }
@@ -65,41 +68,30 @@ fn the_scale_doubles_by_sevenths_from_a_quarter_budget_to_thirty_two() {
 
 /// Each of a column's three bars is the colour of its layer whatever the budget, so a column over the budget still
 /// draws its median in lichen, and a spike of forty budgets is drawn no taller than the chart, so a bar shaded by the
-/// budget, or a spike that spills over the band, is caught. The panels come first, beneath the columns, and the
-/// console's strips and the lines between them only at its stop.
+/// budget, or a spike that spills over the band, is caught.
 #[test]
 fn layers_keep_their_colours_whatever_the_budget_and_are_held_to_the_chart() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let chart = layout.chart();
     let columns = [flat(2, BUDGET / 2), flat(1, BUDGET * 3 / 2), flat(0, BUDGET * 40)];
     let slide = Slide { newest: 2, through: 0.5, span_nanos: 1_000_000_000 };
-    let mut band = Vec::new();
-    let mut console = Vec::new();
+    let mut fills = Vec::new();
 
-    records(&mut band, layout, Stop::Band, columns, slide, LIMIT);
-    records(&mut console, layout, Stop::Console, columns, slide, LIMIT);
+    records(&mut fills, CHART, SCALE, columns, slide, LIMIT);
 
-    let (band, console) = (read(&band), read(&console));
-    assert_eq!(console.len(), band.len() + 4);
-    assert_eq!(band[0].colour, SLATE.at(PANEL_OPACITY));
-    let shaded: Vec<Colour> = band[BEFORE_COLUMNS..BEFORE_COLUMNS + 9].iter().map(|record| record.colour).collect();
+    let band = read(&fills);
+    let shaded: Vec<Colour> = band[BEFORE_COLUMNS..][..9].iter().map(|record| record.colour).collect();
     let layers = [SAND.opaque(), LICHEN.opaque(), SLATE_TEAL.opaque()];
     assert_eq!(shaded, [layers, layers, layers].concat());
     let spike = band[BEFORE_COLUMNS + 6].area;
-    assert_eq!((spike[1], spike[3]), (chart.min.y, chart.height()));
+    assert_eq!((spike[1], spike[3]), (CHART.min.y, CHART.height()));
 }
 
-/// The box of each column drawn on `layout` from `columns` at `slide`, in order: the first of each column's three
-/// records, after the band's panel and the line at twice the budget, before the budget line's dashes.
-fn bars(layout: Layout, columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
-    let mut bytes = Vec::new();
-    records(&mut bytes, layout, Stop::Band, columns.iter().copied(), slide, LIMIT);
+/// The box of each column drawn from `columns` at `slide`, in order: the first of each column's three boxes, after the
+/// line at twice the budget, before the budget line's dashes.
+fn bars(columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
+    let mut fills = Vec::new();
+    records(&mut fills, CHART, SCALE, columns.iter().copied(), slide, LIMIT);
 
-    read(&bytes)[BEFORE_COLUMNS..BEFORE_COLUMNS + columns.len() * 3]
-        .iter()
-        .step_by(3)
-        .map(|record| record.area)
-        .collect()
+    read(&fills)[BEFORE_COLUMNS..][..columns.len() * 3].iter().step_by(3).map(|record| record.area).collect()
 }
 
 /// Every column moves left by the share of a pitch the newest cycle came through its span, the newest growing out of
@@ -107,16 +99,15 @@ fn bars(layout: Layout, columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
 /// columns, or spills past its box as it slides is caught.
 #[test]
 fn columns_slide_left_through_their_span() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let (chart, pitch) = (layout.chart(), layout.column_pitch());
-    let newest = u64::from(super::column_count(layout));
+    let (chart, pitch) = (CHART, SCALE.column_pitch());
+    let newest = u64::from(SCALE.columns_across(chart.width(), 3_000));
     let columns = [newest, newest - 1, 0].map(|span| flat(span, BUDGET));
     assert_eq!(newest, 191, "1080 does not hold 191 columns of 4 pixels and a gap");
 
     // At 1080 the chart is 956 pixels wide, left of the rows' gutter, 191 columns of 5 and 1 over, so the column 191
     // back is cut at the left edge once it has come half way through its span.
-    let early = bars(layout, &columns, Slide { newest, through: 0.5, span_nanos: 1_000_000_000 });
-    let late = bars(layout, &columns, Slide { newest, through: 0.75, span_nanos: 1_000_000_000 });
+    let early = bars(&columns, Slide { newest, through: 0.5, span_nanos: 1_000_000_000 });
+    let late = bars(&columns, Slide { newest, through: 0.75, span_nanos: 1_000_000_000 });
 
     let [newest_early, before_early, oldest_early] = [early[0], early[1], early[2]];
     let [newest_late, before_late, oldest_late] = [late[0], late[1], late[2]];
@@ -128,17 +119,14 @@ fn columns_slide_left_through_their_span() {
 }
 
 /// A budget that is a reference is drawn in a lighter dash than a limit, bone at half a limit's opacity and sparser, at
-/// the same height, so a budget the frames are not held to does not read as one they are; and its closer dashes fit in the
-/// room the records are given.
+/// the same height, so a budget the frames are not held to does not read as one they are.
 #[test]
 fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let slide = Slide { newest: 0, through: 0.0, span_nanos: 1_000_000_000 };
     let line = |budget| {
-        let mut bytes = Vec::new();
-        records(&mut bytes, layout, Stop::Band, [], slide, budget);
-        assert!(bytes.len() <= super::records_bytes(layout), "{budget:?} overflows its room");
-        read(&bytes)[BEFORE_COLUMNS..].to_vec()
+        let mut fills = Vec::new();
+        records(&mut fills, CHART, SCALE, [], slide, budget);
+        read(&fills)[BEFORE_COLUMNS..].to_vec()
     };
 
     let limit = line(LIMIT);
@@ -155,30 +143,29 @@ fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
 /// than the chart reaches is not drawn, so a tick that slides the wrong way, or at the wrong rate, is caught.
 #[test]
 fn a_mark_s_tick_stands_at_its_time() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let (chart, pitch) = (layout.chart(), layout.column_pitch());
+    let (chart, pitch) = (CHART, SCALE.column_pitch());
     let span_nanos = 1_000_000_000;
     // The newest moment is 300.25 spans in; the mark is at 297.75.
     let slide = Slide { newest: 300, through: 0.25, span_nanos };
     let mark = 297 * span_nanos + span_nanos * 3 / 4;
-    let mut bytes = Vec::new();
+    let mut fills = Vec::new();
 
-    marks(&mut bytes, layout, slide, [mark, 0]);
+    marks(&mut fills, CHART, SCALE, slide, [mark, 0]);
 
-    let ticks = read(&bytes);
+    let ticks = read(&fills);
     assert_eq!(ticks.len(), 1, "a mark older than the chart is drawn");
     assert_eq!(ticks[0].colour, OCHRE.opaque());
     assert_eq!(ticks[0].area[0], pitch.mul_add(-2.5, chart.max.x));
     assert_eq!((ticks[0].area[1], ticks[0].area[3]), (chart.min.y, chart.height()));
 }
 
-/// Everything drawn at the band's stop on `layout` with one column, a column's pitch left of the chart's right edge.
-fn drawn_with(layout: Layout, column: Column) -> Vec<Record> {
+/// Everything drawn with one column, a column's pitch left of the chart's right edge.
+fn drawn_with(column: Column) -> Vec<Record> {
     let slide = Slide { newest: 6, through: 0.0, span_nanos: 1_000_000_000 };
-    let mut bytes = Vec::new();
-    records(&mut bytes, layout, Stop::Band, [Column { span: 5, ..column }], slide, LIMIT);
+    let mut fills = Vec::new();
+    records(&mut fills, CHART, SCALE, [Column { span: 5, ..column }], slide, LIMIT);
 
-    read(&bytes)
+    read(&fills)
 }
 
 /// On the log scale a column's three bars each stand the column's width from the chart's foot, back to front: its
@@ -187,20 +174,19 @@ fn drawn_with(layout: Layout, column: Column) -> Vec<Record> {
 /// the column, or out of order, which hides a shorter bar behind a taller one, is caught.
 #[test]
 fn a_column_stands_its_three_bars_back_to_front_on_the_log_scale() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
-    let (chart, width) = (layout.chart(), layout.column_pixels());
+    let (chart, width) = (CHART, SCALE.column_pixels());
     let at = |sevenths: f32| (sevenths / 7.0).mul_add(-chart.height(), chart.max.y);
     let near = |a: f32, b: f32| (a - b).abs() <= 1.0;
     // The fastest is half the budget, one seventh up; the median the budget, two sevenths; the slowest four budgets,
     // four sevenths.
     let column = Column { span: 0, fastest_nanos: BUDGET / 2, median_nanos: BUDGET, slowest_nanos: BUDGET * 4 };
 
-    let drawn = drawn_with(layout, column);
+    let drawn = drawn_with(column);
 
-    let ours = &drawn[BEFORE_COLUMNS..BEFORE_COLUMNS + 3];
+    let ours = &drawn[BEFORE_COLUMNS..][..3];
     let colours: Vec<Colour> = ours.iter().map(|record| record.colour).collect();
     assert_eq!(colours, vec![SAND.opaque(), LICHEN.opaque(), SLATE_TEAL.opaque()]);
-    let left = chart.max.x - layout.column_pitch();
+    let left = chart.max.x - SCALE.column_pitch();
     for (bar, sevenths) in ours.iter().map(|record| record.area).zip([4.0, 2.0, 1.0]) {
         assert_eq!((bar[0], bar[2]), (left, width));
         assert!(near(bar[1], at(sevenths)) && near(bar[1] + bar[3], chart.max.y), "{bar:?} is not {sevenths}/7 up");

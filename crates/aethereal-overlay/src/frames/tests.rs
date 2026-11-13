@@ -28,8 +28,9 @@ fn extend(times: &mut FrameTimes, deltas: impl IntoIterator<Item = u64>) {
 /// Each column of a chart of `count` whose span ended before the newest's, by its span.
 fn finished(times: &mut FrameTimes, count: u32) -> BTreeMap<u64, Column> {
     let newest = times.slide(count).newest;
+    times.cut(count);
 
-    times.columns(count).filter(|column| column.span < newest).map(|column| (column.span, column)).collect()
+    times.columns().filter(|column| column.span < newest).map(|column| (column.span, column)).collect()
 }
 
 /// The column of cycles each `delta_nanos` long, in order, and how many cycles its sample kept.
@@ -103,7 +104,8 @@ fn columns_are_spans_of_the_programs_time_and_keep_the_slowest() {
     // column; the other three in the seventh's, the slowest of them 1.2 seconds, the median 0.3, and the fastest 0.1.
     let mut frames = times([5_000 * MILLI, 1_200 * MILLI, 300 * MILLI, 100 * MILLI]);
 
-    let columns: Vec<Column> = frames.columns(60).collect();
+    frames.cut(60);
+    let columns: Vec<Column> = frames.columns().collect();
 
     let spans: Vec<u64> = columns.iter().map(|column| column.span).collect();
     assert_eq!(spans, vec![6, 5]);
@@ -122,13 +124,15 @@ fn a_chart_cut_again_mid_stream_bins_the_cycles_again() {
     let cycle = || [4, 5, 4, 6].map(|millis| millis * MILLI).into_iter().cycle();
     let mut resized = times(cycle().take(4_000));
     let mut fresh = resized.clone();
-    let _ = resized.columns(226).count();
+    resized.cut(226);
 
-    let _ = resized.columns(1_000).count();
+    resized.cut(1_000);
     extend(&mut resized, cycle().take(2_000));
     extend(&mut fresh, cycle().take(2_000));
-    let again: Vec<Column> = resized.columns(1_000).collect();
-    let only: Vec<Column> = fresh.columns(1_000).collect();
+    resized.cut(1_000);
+    fresh.cut(1_000);
+    let again: Vec<Column> = resized.columns().collect();
+    let only: Vec<Column> = fresh.columns().collect();
 
     assert_eq!(again, only);
     assert!(again.len() > 2, "{again:?} are too few to tell");

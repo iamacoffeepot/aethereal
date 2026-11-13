@@ -1,9 +1,9 @@
 //! The band's right column (ADR-0053: The three stops, Memory): one meter a row for each limit the engine can hit,
 //! process, blobs, backlog, guests, and GPU, read from the engine's figures four times a second and from each frame's
 //! statistics, the five rows sharing the column's height; in each row, as the left column's rows are, a graph across
-//! the column to a gutter at its right, every row's graph between the same two edges (`rows`): a bar against its limit
-//! where the meter has one (`bars`), or else the meter's last minute (`history`); and in the gutter each meter's label
-//! and value as text (`figures`).
+//! the column to a gutter at its right, every row's graph between the same two edges (`rows`), drawn by the row's
+//! primitive (`widget`): a bar against its limit where the meter has one (`bars`), or else the meter's last minute
+//! (`history`); and in the gutter each meter's label and value as text (`figures`).
 
 mod bars;
 mod figures;
@@ -11,19 +11,17 @@ mod history;
 mod rows;
 #[cfg(test)]
 mod tests;
+mod widget;
 
-pub use bars::MOST_BAR_RECORDS;
-/// The fewest characters a meter's row takes, which the layout's tests fit across the right column.
-#[cfg(test)]
-pub use figures::ROW_CHARACTERS;
-pub use history::{HISTORIES, MOST_METER_COLUMNS, MeterHistories};
-pub use rows::rows;
+pub use history::{MOST_METER_COLUMNS, MeterHistories};
+pub use rows::drawn;
+pub use widget::{MeterDrawn, MeterGraph};
 
 use aethereal_actor::{Against, EngineStats, Figures, Process};
 use aethereal_data::Plain;
 
 /// How many meters the right column holds, a row each.
-pub const METERS: usize = 5;
+const METERS: usize = 5;
 
 /// Which meter, in the order they stand from the top of the right column.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]

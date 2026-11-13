@@ -1,24 +1,27 @@
-//! The overlay's actor (ADR-0053): a root on the program's first window, subscribed to it for its size, and to the
-//! engine's tools root for the tools the console calls. Its draw list declares the keys it hears there, the backtick
-//! alone, or every key while the console is open, from the moment it begins. It makes what it draws once the window
-//! has said its size, and draws it in its own draw list in the window's interface pass while it is shown (ADR-0031,
-//! ADR-0055). As it begins it spawns the worker of its own tools and offers them.
+//! The overlay's actor (ADR-0053): a root on the program's first window, and a screen of the widget library (ADR-0056),
+//! which lays out and draws its band and console in its own draw list in the window's interface pass, declares the keys
+//! it hears, and takes in what its list reaches. It subscribes to its window for its size, and to the engine's tools
+//! root for the tools the console calls; as it begins it spawns the worker of its own tools and offers them.
+//!
+//! ```text
+//! Tick, FrameStats, GpuTimes, the engine's figures and log ──> the band's and the console's state
+//! Prepare ──> view (`view`): the band's primitives and the console's widgets ──> the library lays out and draws
+//! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
+//! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
+//! ```
 
 mod console;
-mod drawing;
-mod making;
+mod controls;
+mod stats;
 #[cfg(test)]
 mod tests;
-mod texts;
+mod view;
 
 pub use console::{Calling, Offering};
-pub use making::{
-    ChartAsked, ChartInstanced, ChartMade, ChartMeshed, ChartProgrammed, ChartShaped, TextAsked, TextReady,
-};
 
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
-use crate::gpu::{GpuFigures, GpuTiming, GraphTop};
+use crate::gpu::{GpuFigures, GpuTiming};
 use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
@@ -29,22 +32,16 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::DrawList;
-use aethereal_render::frame::Shaped;
-use aethereal_render::instances::{Instanced, InstancesId};
-use aethereal_render::mesh::Meshed;
-use aethereal_render::placement::{Placed, PlacementId};
-use aethereal_render::program::Programmed;
+use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
-use aethereal_render::text::{TextMade, TextPlaced};
-use aethereal_render::uniforms::{Uniformed, UniformsId};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
-use aethereal_window::{self as window, Event, InitialWindows, Keyed, Pointed, Surface, Window, WindowId};
-use texts::Texts;
+use aethereal_ui::{Screen, Shaping, Target, Viewport};
+use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
 
-/// How often the figures beneath the chart are worked out again while it is shown: four times a second. Their text
-/// is written only when what it shows changes.
+/// How often the figures beneath the chart, and the engine's memory for the meters, are worked out again while the
+/// overlay is shown: four times a second. The library writes a text again only when what it shows changes.
 const FIGURES_EVERY_NANOS: u64 = 250_000_000;
 
 /// How often the engine's recent log is read while the overlay is shown: about once a second (ADR-0053).
@@ -70,23 +67,22 @@ impl<H: Host> Bootstrap<H> for Overlay {
 #[derive(Plain)]
 #[kind(name = "aether.overlay.config")]
 pub struct OverlayConfig {
-    window: WindowId,
+    pub window: WindowId,
 }
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
-/// cycle's time, each frame's statistics, and the GPU's time over each frame's passes, and draws the band over what
-/// the program drew, against the frame budget the renderer's statistics bring. At the console's stop it takes every key
-/// of the window, and the wheel over the console's panel, and its line calls the engine's tools. While it is hidden it
-/// draws nothing and hears no `Tick` and no statistics, only its window, the backtick, its tools, and its marks, so the
-/// renderer counts nothing for it.
+/// cycle's time, each frame's statistics, and the GPU's time over each frame's passes, which its band shows against
+/// the frame budget the renderer's statistics bring. At the console's stop its line takes every key of the window, and
+/// its panel the pointer and the wheel over it, and its line calls the engine's tools. While it is hidden it draws
+/// nothing and hears no `Tick` and no statistics, only its window, the backtick, its tools, its marks, and the library's
+/// `Prepare`, whose tree is then the same each frame, so nothing is laid out or sent and the renderer counts nothing for
+/// it.
 #[derive(Bound)]
 #[kind(name = "aether.overlay")]
 pub struct Overlay {
-    window: WindowId,
     stop: Stop,
-    /// The window's surface as it was last heard: the window sends it as the overlay subscribes, before anything else,
-    /// and nothing is made or drawn before then.
-    surface: Surface,
+    /// What the widget library keeps of the overlay's screen: its size, its widgets' state, and what it drew.
+    ui: Screen,
     frames: FrameTimes,
     /// The frame time the chart measures each cycle against, as the renderer's statistics last said: the program's own,
     /// which follows its present mode and the display its window is on (ADR-0053: Frame statistics). Until they first
@@ -96,14 +92,8 @@ pub struct Overlay {
     gpu: GpuTiming,
     /// The figures beneath the GPU's graph, as they were last worked out.
     gpu_figures: GpuFigures,
-    /// The top the GPU's graph was last drawn to, which the gutter beside it says.
-    gpu_top: GraphTop,
     /// Each frame's draws, triangles, and bytes uploaded, as its statistics tell them.
     lines: FrameLines,
-    chart: Chart,
-    /// The overlay's texts: the chart's figures, the band's count of warnings and errors, and the console's scrollback
-    /// and prompt.
-    texts: Texts,
     /// The figures beneath the chart, as they were last worked out.
     figures: Figures,
     /// The program's time from which the figures are next worked out.
@@ -122,18 +112,6 @@ pub struct Overlay {
     logs_due_nanos: u64,
 }
 
-/// What the overlay has made of its one placement: the panels, the chart, the marks' ticks, and the cursor.
-#[derive(Bound)]
-enum Chart {
-    /// Not asked for: the window has not said its size.
-    Unasked,
-    /// Its asks are under way, one after another.
-    Making,
-    /// Placed: the records it is drawn from, how many of them were last written, the surface's size it reads, and the
-    /// placement its list names.
-    Made { instances: InstancesId, written: u32, uniforms: UniformsId, placement: PlacementId },
-}
-
 impl ChildOf for Overlay {
     type Parent = Top;
 }
@@ -141,41 +119,30 @@ impl ChildOf for Overlay {
 impl Actor for Overlay {
     type Config = OverlayConfig;
     type Key = ();
-    type Handles = (
+    type Handles = aethereal_ui::handles![
         Event,
-        Keyed,
-        Pointed,
         On<Tick>,
         FrameStats,
         GpuTimes,
-        Answer<Shaped, ChartAsked>,
-        Answer<Meshed, ChartShaped>,
-        Answer<Programmed, ChartMeshed>,
-        Answer<Instanced, ChartProgrammed>,
-        Answer<Uniformed, ChartInstanced>,
-        Answer<Placed, ChartMade>,
-        Answer<TextMade, TextAsked>,
-        Answer<TextPlaced, TextReady>,
         Sheets,
         Answer<Called, Calling>,
         Answer<Offered, Offering>,
         Marked,
-    );
+    ];
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,
-        Tells<Path<Renderer>, DrawList>,
+        Asks<Path<Renderer>, ShapeOf, Shaping>,
         Tells<Path<Tools>, aethereal_tools::Subscribe>,
         Asks<Path<Tools>, Offer, Offering>,
     );
     type EndSends = ();
 
-    /// Subscribes to its window and to the engine's tools, sends its list, hidden, which hears the backtick, and spawns
-    /// the worker of its own tools and offers them.
+    /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
+    /// which hears the backtick, and spawns the worker of its own tools and offers them.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let surface = Surface { width: 1, height: 1, scale: 1.0 };
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
-        let entries = drawing::listing(config.window, Stop::Hidden, surface, Vec::new());
-        turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
+        let target = Target::of::<Interface>(Frame::Main(config.window));
+        let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
         turn.to(path::<Tools>(())).send(&aethereal_tools::Subscribe)?;
         match turn.spawn::<OverlayTools>(&(), OverlayToolsConfig) {
             Ok(worker) => {
@@ -188,17 +155,13 @@ impl Actor for Overlay {
         }
 
         Ok(Self {
-            window: config.window,
             stop: Stop::Hidden,
-            surface,
+            ui,
             frames: FrameTimes::default(),
             budget: FrameBudget::UNTOLD,
             gpu: GpuTiming::default(),
             gpu_figures: GpuFigures::default(),
-            gpu_top: GraphTop::default(),
             lines: FrameLines::default(),
-            chart: Chart::Unasked,
-            texts: Texts::default(),
             figures: Figures::default(),
             figures_due_nanos: 0,
             console: Console::default(),

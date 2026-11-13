@@ -217,7 +217,9 @@ dependencies = [
  "aethereal-substrate",
  "aethereal-tcp",
  "aethereal-tools",
+ "aethereal-ui",
  "aethereal-window",
+ "wgpu",
 ]
 
 [[package]]

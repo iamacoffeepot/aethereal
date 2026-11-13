@@ -57,6 +57,15 @@ pub struct Heard {
     pub(crate) lines: Vec<(Level, String)>,
 }
 
+/// Where the text a key types goes, as it comes after the key (ADR-0051): to the focused widget, or nowhere, when the
+/// screen's own `key` took the key that typed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
+pub(in crate::screen) enum Typed {
+    #[default]
+    Focus,
+    Dropped,
+}
+
 /// The place in a list of the entry numbered `entry`.
 pub(super) fn place(entry: u32) -> usize {
     usize::try_from(entry).unwrap_or(usize::MAX)
@@ -187,10 +196,13 @@ impl Screen {
         }
     }
 
-    /// Takes in a key or typed text through the keys the screen declared. A key goes to the focused widget, then, when
-    /// it passed it, to the focus keys, Tab and Escape, then to the screen's own `key`; typed text goes to the focused
-    /// widget. The modifiers are watched as they go down and come up, whichever declaration they come through.
-    pub fn keyed(&mut self, keyed: Keyed) -> Heard {
+    /// Takes in a key or typed text through the keys the screen declared. A key of `first`, the keys the screen takes
+    /// before its focus ([`Controls::FIRST`](crate::Controls::FIRST)), goes to the screen's own `key` alone; any other
+    /// goes to the focused widget, then, when it passed it, to the focus keys, Tab and Escape, then to the screen's
+    /// `key`. Typed text goes where the key that typed it went: to the focused widget, unless the screen's `key` took
+    /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. The modifiers
+    /// are watched as they go down and come up, whichever declaration they come through.
+    pub fn keyed(&mut self, keyed: Keyed, first: &[&str]) -> Heard {
         let mut heard = Heard::default();
         let Some(Listed::Keys(role)) = self.listing.get(place(keyed.entry)) else {
             return heard;
@@ -201,17 +213,40 @@ impl Screen {
                 self.modifiers.pressed(&code);
                 if screen {
                     let key = Key { code, key, repeat, held: self.modifiers.held() };
-                    self.pressed(key, &mut heard);
+                    self.typed = self.pressed(key, first, &mut heard);
                 }
             }
             KeyEvent::KeyUp { code, .. } => self.modifiers.released(&code),
             KeyEvent::Text { text } if screen => {
-                if let Focus::On(path) = self.table.focus().clone() {
+                let focused = self.table.focus().clone();
+                if let (Focus::On(path), Typed::Focus) = (focused, self.typed) {
                     self.input(&path, &mut heard, |widget, state, input| widget.typed(state, &text, input));
                 }
             }
             KeyEvent::Text { .. } => {}
         }
+
+        heard
+    }
+
+    /// Gives the screen's focus to the widget at `path` in the tree it last built, as a press on it would, when it can
+    /// hold focus: for a screen that brings focus to a widget of its own accord, as a console to its line as it opens.
+    /// The next `Prepare` lays the screen out, and allows the window's input method when the widget types.
+    pub fn focus(&mut self, path: &KeyPath) {
+        let focusable = self.widget(path).is_some_and(Built::focusable);
+        let moves = focusable && *self.table.focus() != Focus::On(path.clone());
+        if moves {
+            self.table.focus_on(Focus::On(path.clone()));
+            self.fresh = Fresh::Stale;
+        }
+    }
+
+    /// Hands `key` to the widget at `path` in the tree it last built as though it had the screen's focus, and answers
+    /// what it raised, for the screen's handler to take in: a key the screen took passed on to a widget without focus,
+    /// as a console's Page Up to its scrollback while its line has focus. Nothing when no widget stands there.
+    pub fn press_key(&mut self, path: &KeyPath, key: &Key) -> Heard {
+        let mut heard = Heard::default();
+        self.input(path, &mut heard, |widget, state, input| widget.key(state, key, input));
 
         heard
     }
@@ -233,9 +268,16 @@ impl Screen {
         orders
     }
 
-    /// Takes in `key`, pressed: the focused widget, each widget it is within that hears the key, innermost first and up
-    /// to the popup whose content it is in, the focus keys, and the screen, in turn, until one uses it.
-    fn pressed(&mut self, key: Key, heard: &mut Heard) {
+    /// Takes in `key`, pressed: the screen alone when it is one of `first`; otherwise the focused widget, each widget it
+    /// is within that hears the key, innermost first and up to the popup whose content it is in, the focus keys, and the
+    /// screen, in turn, until one uses it. Answers where the text it types goes: to the focus, or nowhere when the
+    /// screen took it.
+    fn pressed(&mut self, key: Key, first: &[&str], heard: &mut Heard) -> Typed {
+        let taken_first = first.contains(&key.code.as_str());
+        if taken_first {
+            heard.keys.push(key);
+            return Typed::Dropped;
+        }
         let focus = self.table.focus().clone();
         let (focused, around) = match &focus {
             Focus::On(path) => {
@@ -245,7 +287,7 @@ impl Screen {
             Focus::Nowhere => (None, Vec::new()),
         };
         if focused == Some(Used::Used) {
-            return;
+            return Typed::Focus;
         }
         for within in around {
             let listens = self.widget(&within).is_some_and(|widget| widget.hears().holds(&key.code));
@@ -254,13 +296,15 @@ impl Screen {
             }
             let used = self.input(&within, heard, |widget, state, input| widget.key(state, &key, input));
             if used == Some(Used::Used) {
-                return;
+                return Typed::Focus;
             }
         }
         if self.focus_key(&key, heard) == Used::Used {
-            return;
+            return Typed::Focus;
         }
         heard.keys.push(key);
+
+        Typed::Dropped
     }
 
     /// Takes in `key` as a focus key: Tab moves focus to the next widget it reaches in tree order, and with Shift to

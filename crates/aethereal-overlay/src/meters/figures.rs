@@ -7,22 +7,12 @@
 
 use super::{EngineMemory, Held, MemoryFigures, Meter, ProcessMemory};
 use crate::colour::{BONE, STONE, Swatch};
-#[cfg(test)]
-use crate::layout::METER_GAP_CHARACTERS;
 use crate::layout::{GUTTER_CHARACTERS, GUTTER_LABEL_CHARACTERS};
 use crate::tools::bytes_shown;
 use aethereal_render::text::Run;
 
 /// How many characters a value is given, flush right: the gutter's after its label's.
 const VALUE_CHARACTERS: usize = GUTTER_CHARACTERS - GUTTER_LABEL_CHARACTERS;
-
-/// The fewest characters a meter's graph or bar keeps on a narrow window.
-#[cfg(test)]
-const FEWEST_GRAPH_CHARACTERS: usize = 8;
-
-/// The fewest characters a meter's row takes: its fewest graph, the space after it, and the gutter.
-#[cfg(test)]
-pub const ROW_CHARACTERS: usize = FEWEST_GRAPH_CHARACTERS + METER_GAP_CHARACTERS + GUTTER_CHARACTERS;
 
 impl Meter {
     /// What the right column calls the meter, its memory `memory`: the process's is `heap` where the chassis reads the

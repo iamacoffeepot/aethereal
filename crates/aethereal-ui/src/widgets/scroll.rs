@@ -39,20 +39,39 @@ const TRACK_STRENGTH: f32 = 0.15;
 const THUMB_STRENGTH: f32 = 0.5;
 const DRAGGED_STRENGTH: f32 = 0.8;
 
-/// What it holds, along `axis`, slid through: its children, or, as `lines` says, the items of a list it built.
+/// What it holds, along `axis`, slid through: its children, or, as `lines` says, the items of a list it built; and
+/// where it keeps to as what it holds grows, as `keeps` says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scroll {
     pub axis: Axis,
     pub lines: Lines,
+    pub keeps: Keeps,
 }
 
-/// How far a scroll has slid what it holds, in pixels, and whether a press on its bar drags its thumb.
+/// Where a scroll keeps to as what it holds grows or shrinks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Keeps {
+    /// Its offset from its start, so what it shows stays put as more is added past it.
+    #[default]
+    Offset,
+    /// Its end, while it stands there: what is added past its end slides into view, as a console's scrollback or a
+    /// chat's does; slid back from its end, it keeps its offset, and slid to its end again, keeps to it. One never laid
+    /// out starts at its end.
+    End,
+}
+
+/// How far a scroll has slid what it holds, in pixels; whether a press on its bar drags its thumb; and how far it could
+/// slide as it was last laid out, which tells whether it stood at its end.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Plain)]
 #[kind(name = "aether.ui.scroll")]
 pub struct Scrolling {
     pub offset: f32,
     pub drag: Drag,
+    pub travel: f32,
 }
+
+/// How near its end, in pixels, a scroll stands at it: a part of a pixel, as an offset clamped to its end is its end.
+const AT_END: f32 = 0.5;
 
 /// Whether a press drags a scroll's thumb.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Plain)]
@@ -74,13 +93,19 @@ impl Scroll {
     /// A scroll down through its children.
     #[must_use]
     pub const fn down() -> Self {
-        Self { axis: Axis::Column, lines: Lines::Whole }
+        Self { axis: Axis::Column, lines: Lines::Whole, keeps: Keeps::Offset }
     }
 
     /// A scroll across through its children.
     #[must_use]
     pub const fn across() -> Self {
-        Self { axis: Axis::Row, lines: Lines::Whole }
+        Self { axis: Axis::Row, lines: Lines::Whole, keeps: Keeps::Offset }
+    }
+
+    /// It, keeping to its end while it stands there.
+    #[must_use]
+    pub fn keeping_to_end(self) -> Self {
+        Self { keeps: Keeps::End, ..self }
     }
 
     /// It, its children the items of a list its `lines` name.
@@ -187,6 +212,17 @@ impl Widget for Scroll {
 
     fn scroll_to(&self, scrolling: &mut Scrolling, offset: f32) {
         scrolling.offset = offset;
+    }
+
+    /// Kept to its end, it slides to the end of what it now holds while it stood at the end of what it held; either way
+    /// it keeps how far it can now slide.
+    fn settle(&self, scrolling: &mut Scrolling, travel: f32) {
+        let stood_at_end = scrolling.offset >= scrolling.travel - AT_END;
+        let follows = self.keeps == Keeps::End && stood_at_end;
+        if follows {
+            scrolling.offset = travel;
+        }
+        scrolling.travel = travel;
     }
 
     /// Its bar, faint, and its thumb over it, while it holds more than it shows; and its focus ring.

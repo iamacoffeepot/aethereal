@@ -75,7 +75,7 @@ use aethereal_render::text::Font;
 use aethereal_window::Cursor;
 use children::Told;
 use drags::Grip;
-use input::Hold;
+use input::{Hold, Typed};
 use keys::{Declared, Ime, Modifiers, Role};
 use layers::Layer;
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
@@ -125,11 +125,12 @@ impl Viewport {
 }
 
 /// What the library keeps of a screen: where it draws, how big it is, the program it draws quads with, its widget
-/// table, what it has drawn by key and what it lists in what order, the list it last sent and what each entry of it
-/// is, what each entry a press reached was when it reached it, while a button is down on it, whether what it last laid
-/// out is current, the modifiers held, what it last asked of its window's input method, what its tooltips wait on: the
-/// hits the pointer reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked
-/// at; the size it last told each child it places; and where it stands with a drag.
+/// table, what it has drawn by key, what it drew that the list it last sent may still name, and what it lists in what
+/// order, the list it last sent and what each entry of it is, what each entry a press reached was when it reached it,
+/// while a button is down on it, whether what it last laid out is current, the modifiers held, where the text the last
+/// key typed goes, what it last asked of its window's input method, what its tooltips wait on: the hits the pointer
+/// reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked at; the size it
+/// last told each child it places; and where it stands with a drag.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -138,6 +139,9 @@ pub struct Screen {
     table: Table,
     /// What each draw is, and what the renderer made of it, by key.
     layers: Vec<Layer>,
+    /// The draws no longer drawn, or made anew, that the list last sent may still name: released as the next list is
+    /// sent.
+    retired: Vec<Layer>,
     /// What the last layout lists of its widgets, in tree order.
     order: Vec<Slot>,
     /// The keys the last layout declares, listed before the widgets.
@@ -153,6 +157,8 @@ pub struct Screen {
     serial: u64,
     fresh: Fresh,
     modifiers: Modifiers,
+    /// Where the text the last key typed goes, as it follows its key.
+    typed: Typed,
     ime: Ime,
     /// The paths of the widgets whose hits the pointer reaches, as the window said it came onto and left each.
     reached: Vec<KeyPath>,
@@ -278,6 +284,7 @@ impl Screen {
             program: Program::Making,
             table: Table::default(),
             layers: Vec::new(),
+            retired: Vec::new(),
             order: Vec::new(),
             keys: Vec::new(),
             listed: Vec::new(),
@@ -286,6 +293,7 @@ impl Screen {
             serial: 0,
             fresh: Fresh::Stale,
             modifiers: Modifiers::default(),
+            typed: Typed::Focus,
             ime: Ime::Stopped,
             reached: Vec::new(),
             hovers: 0,
@@ -484,12 +492,22 @@ impl Screen {
     }
 
     /// The list the screen draws by, once nothing it draws is still being made: the keys it declares, then each draw
-    /// the renderer made and each hit, in tree order, sent when it is not the list last sent.
+    /// the renderer made and each hit, in tree order, sent when it is not the list last sent; and then what was retired
+    /// is released, as the list the renderer draws by no longer names it.
     fn settle(&mut self, orders: &mut Orders) {
         let making = self.layers.iter().any(Layer::is_making);
         if making {
             return;
         }
+        self.listed_now(orders);
+        for retired in self.retired.drain(..) {
+            retired.release(orders);
+        }
+    }
+
+    /// Sends the list the screen draws by when it is not the list last sent: the keys it declares, then each draw the
+    /// renderer made and each hit, in tree order.
+    fn listed_now(&mut self, orders: &mut Orders) {
         let Target { frame, pass } = self.target;
         let mut entries = Vec::new();
         let mut listing = Vec::new();
@@ -687,15 +705,21 @@ fn listed(
     Listing { drawn, now, later, blocks }
 }
 
-/// Clamps the offset of `widget`, a scroll along `axis` at `path` laid at `laid`, to what it can scroll, keeping the
-/// clamped offset in `table`, and answers how far it slides what is within it.
+/// Settles `widget`, a scroll along `axis` at `path` laid at `laid`, at what it can now scroll, and clamps its offset to
+/// it, keeping what changed of its state in `table`, and answers how far it slides what is within it.
 fn fit(table: &mut Table, path: &KeyPath, widget: &dyn Built, laid: &Laid, axis: Axis) -> Vec2 {
-    let mut state = table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
+    let kept = table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
+    let mut state = kept.clone();
+    let travel = laid.travel(axis);
+    widget.settle(&mut state, travel);
     let offset = widget.offset(&state);
-    let fitted = offset.clamp(0.0, laid.travel(axis));
+    let fitted = offset.clamp(0.0, travel);
     let clamped = fitted.to_bits() != offset.to_bits();
     if clamped {
         widget.scroll_to(&mut state, fitted);
+    }
+    let changed = state != kept;
+    if changed {
         table.write(path, widget.state_kind(), state);
     }
 

@@ -153,11 +153,10 @@ impl FrameTimes {
         self.samples.back().map_or(0, |sample| sample.elapsed_nanos)
     }
 
-    /// The columns of a chart of `count`, each the span of the program's time it covers and the fastest, the median,
-    /// and the slowest of its cycles: only those some cycle fell in, from the newest, back to the one `count + 1` spans before
-    /// it, as the chart's width holds a little more than `count` columns and the oldest two slide off its left edge. A
-    /// chart cut into another count than it was last is binned again from the cycles kept.
-    pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Column> + '_ {
+    /// Cuts the chart into `count` columns, keeping only those some cycle fell in from the newest back to the one
+    /// `count + 1` spans before it, as the chart's width holds a little more than `count` columns and the oldest two
+    /// slide off its left edge. A chart cut into another count than it was last is binned again from the cycles kept.
+    pub fn cut(&mut self, count: u32) {
         let span_nanos = span_nanos(count);
         let recut = self.bins.span_nanos() != span_nanos;
         if recut {
@@ -168,7 +167,11 @@ impl FrameTimes {
         }
         let oldest = (self.newest_nanos() / span_nanos).saturating_sub(u64::from(count) + 1);
         self.bins.keep_from(oldest);
+    }
 
+    /// The columns of the chart as it was last cut, each the span of the program's time it covers and the fastest, the
+    /// median, and the slowest of its cycles, from the newest.
+    pub fn columns(&self) -> impl Iterator<Item = Column> + '_ {
         self.bins.newest_first()
     }
 

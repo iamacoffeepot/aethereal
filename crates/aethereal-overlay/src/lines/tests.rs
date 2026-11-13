@@ -3,9 +3,20 @@ use super::{FrameLines, rows};
 use crate::chart::tests::read;
 use crate::colour::STONE;
 use crate::frames::Slide;
-use crate::layout::Layout;
+use crate::layout::Scale;
+use aethereal_math::{Rect2, Vec2};
 use aethereal_render::stats::FrameDrawn;
-use aethereal_window::Surface;
+
+/// The rows' box on a window 1080 pixels tall at a scale of one: as wide as the frame chart, and three lines tall.
+const AREA: Rect2 = Rect2 { min: Vec2::new(10.0, 170.0), max: Vec2::new(966.0, 224.6) };
+
+/// The row `index` from the top: a third of the box, its bars three pixels in from its top and foot.
+fn row(index: u8) -> Rect2 {
+    let tall = AREA.height() / 3.0;
+    let top = f32::from(index).mul_add(tall, AREA.min.y);
+
+    Rect2 { min: Vec2::new(AREA.min.x, top + 3.0), max: Vec2::new(AREA.max.x, top + tall - 3.0) }
+}
 
 /// What a frame that recorded `draws`, drew no triangles, and uploaded fifteen bytes drew.
 const fn frame(draws: u32) -> FrameDrawn {
@@ -18,19 +29,19 @@ const fn frame(draws: u32) -> FrameDrawn {
 /// is caught.
 #[test]
 fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
-    let layout = Layout::of(Surface { width: 1920, height: 1080, scale: 1.0 });
     let second = 1_000_000_000;
     let mut lines = FrameLines::default();
     for (elapsed_nanos, draws) in [(second / 10, 10), (second / 5, 30), (second * 11 / 10, 15)] {
         lines.push(elapsed_nanos, frame(draws));
     }
     let slide = Slide { newest: 1, through: 0.5, span_nanos: second };
-    let mut records = Vec::new();
+    let mut fills = Vec::new();
+    lines.cut(60);
 
-    rows(&mut records, layout, slide, &lines.columns(60));
+    rows(&mut fills, AREA, Scale(1.0), slide, &lines.columns());
 
-    let drawn = read(&records);
-    let (draws_row, uploaded_row) = (layout.row(0), layout.row(2));
+    let drawn = read(&fills);
+    let (draws_row, uploaded_row) = (row(0), row(2));
     let heights: Vec<f32> = drawn.iter().map(|record| record.area[3]).collect();
     let expected = [draws_row.height() / 2.0, draws_row.height(), uploaded_row.height(), uploaded_row.height()];
     let near = heights.len() == expected.len() && heights.iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.01);

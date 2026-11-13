@@ -10,13 +10,16 @@ description = "The dev overlay: one root any program lists, which draws how the 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
-# Its panels and the chart are laid out in the math crate's boxes, as the renderer's texts are clipped in them.
+# Its charts are drawn in the math crate's boxes, as the widget library lays them out.
 aethereal-math = { path = "../aethereal-math" }
 aethereal-render = { path = "../aethereal-render" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 # The console's commands are the engine's tools: it reads their sheets, calls them through the tools root, and prints
 # their answers (ADR-0053: Commands are tools).
 aethereal-tools = { path = "../aethereal-tools" }
+# The overlay is a screen of the widget library: its band and console are written in its markup, laid out, drawn, and
+# reached by input through it, and its charts are primitives of its own the library lays out (ADR-0056).
+aethereal-ui = { path = "../aethereal-ui" }
 aethereal-window = { path = "../aethereal-window" }
 
 # The `overlay` example draws a backdrop with the overlay listed, in an engine linked to a hub that it hands
@@ -30,6 +33,9 @@ aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tcp = { path = "../aethereal-tcp" }
 aethereal-window = { path = "../aethereal-window", features = ["tools"] }
+# The overlay's test runs it in an engine the test steps, beside the renderer on a device that draws nothing (ADR-0036).
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "noop"] }
 
 [lints]
 workspace = true

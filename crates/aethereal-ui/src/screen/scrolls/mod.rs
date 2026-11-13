@@ -130,10 +130,11 @@ impl Screen {
         let Arrange::Scroll(axis) = widget.arrange() else {
             return unlaid;
         };
-        let state = self.table.bytes(list).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
+        let mut state = self.table.bytes(list).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
         let stride = pitch.stride.max(1.0);
         let view = axis.along(laid.content.size());
         let most = stride.mul_add(length(count), pitch.lead - view).max(0.0);
+        widget.settle(&mut state, most);
         let offset = widget.offset(&state).clamp(0.0, most);
         let first = line(((offset - pitch.lead) / stride).floor(), count).saturating_sub(MARGIN);
         let end = line(((offset + view - pitch.lead) / stride).ceil(), count).saturating_add(MARGIN).min(count);

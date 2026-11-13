@@ -163,8 +163,8 @@ pub use widget::{
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text, TextInput,
-        Texture, Toggle, Tooltip,
+        Bar, Button, Column, Fill, Grid, Image, Keeps, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text,
+        TextInput, Texture, Toggle, Tooltip,
     };
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
@@ -287,7 +287,7 @@ macro_rules! screen {
                 keyed: $crate::__private::Keyed,
                 turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
-                let heard = self.$field.keyed(keyed);
+                let heard = self.$field.keyed(keyed, <Self as $crate::Controls>::FIRST);
                 $crate::screen!(@take $field, self, heard, turn)
             }
         }

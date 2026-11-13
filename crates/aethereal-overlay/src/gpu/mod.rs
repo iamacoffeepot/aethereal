@@ -1,8 +1,9 @@
 //! The GPU's time over each frame's passes (ADR-0053: The three stops), as the renderer's [`GpuTimes`] tell it a frame
 //! or more after the frame: kept over the frame chart's axis by the cycle each frame was drawn in, and cut into its
 //! columns, each a stack of its frames' passes, every pass at its median over the column's frames, so the stack is a
-//! typical frame of the column, drawn to a top ranged to the tallest stack (`graph`); and the figures beneath the graph, each pass's median over the window and the
-//! share of a frame the GPU was busy (`figures`). A pass is known by its label, and given a place in the stack and a
+//! typical frame of the column, drawn to a top ranged to the tallest stack (`graph`) by the primitive that draws it
+//! (`widget`); and the figures beneath the graph, each pass's median over the window and the share of a frame the GPU
+//! was busy (`figures`). A pass is known by its label, and given a place in the stack and a
 //! colour in the order the labels are first heard (`labels`). On a device without timestamps there is nothing to keep.
 
 mod figures;
@@ -10,9 +11,11 @@ mod graph;
 mod labels;
 #[cfg(test)]
 mod tests;
+mod widget;
 
 pub use figures::{GpuFigures, unsupported};
 pub use graph::{GraphTop, graph};
+pub use widget::{GpuGraph, GpuShown};
 
 use crate::binned::{Accrue, Binned, Spanned, Thinned, median};
 use aethereal_data::Plain;
@@ -127,10 +130,13 @@ impl PassTimes {
         self.binned.push(elapsed_nanos, timed);
     }
 
-    /// The graph's columns for a chart of `count`, from the newest back, cut as the frame chart's are.
-    pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Spanned<Stack>> + Clone + '_ {
+    /// Cuts the graph into the columns of a chart of `count`, as the frame chart's are.
+    pub fn cut(&mut self, count: u32) {
         self.binned.cut(count);
+    }
 
+    /// The graph's columns as it was last cut, from the newest back.
+    pub fn columns(&self) -> impl Iterator<Item = Spanned<Stack>> + Clone + '_ {
         self.binned.newest_first()
     }
 

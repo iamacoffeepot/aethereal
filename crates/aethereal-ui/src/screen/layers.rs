@@ -21,6 +21,7 @@ use aethereal_render::text::{
     Clip, CreateText, Layer as TextLayer, MoveText, PlaceText, Run, TextId, TextJoin, TextMade, TextPlaced, WriteText,
 };
 use core::fmt::Debug;
+use core::mem;
 
 /// Where a draw is kept: its widget's key path, and its place among the widget's layers.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Plain)]
@@ -116,7 +117,7 @@ impl Layer {
     }
 
     /// Releases what the renderer made of it and holds: what an answer still to come makes is released as it comes.
-    fn release(&self, orders: &mut Orders) {
+    pub(super) fn release(&self, orders: &mut Orders) {
         match self.stage {
             Stage::Quads { instances, placement, .. } => {
                 orders.release(Release::Placement(placement));
@@ -194,18 +195,16 @@ const fn moved(placement: PlacementId, placing: Placed) -> MoveText {
 
 impl Screen {
     /// Draws `drawn`, each layer of each widget's draws in tree order, beside its key, listed as `order` says: each
-    /// kept layer no longer drawn is released, each new one made, each changed one written or made anew; and the list
-    /// is sent once nothing in it is still being made.
+    /// kept layer no longer drawn is retired, each new one made, each changed one written or made anew, the one it
+    /// replaces retired; and the list is sent once nothing in it is still being made, and only then is what was retired
+    /// released, so the list the renderer draws by until then never names what it has let go.
     pub(super) fn draw(&mut self, drawn: Vec<(DrawKey, Content)>, order: Vec<Slot>, orders: &mut Orders) {
         let mut wanted: Vec<&DrawKey> = drawn.iter().map(|(key, _)| key).collect();
         wanted.sort_unstable();
-        self.layers.retain(|layer| {
-            let kept = wanted.binary_search(&&layer.key).is_ok();
-            if !kept {
-                layer.release(orders);
-            }
-            kept
-        });
+        let (kept, retired): (Vec<Layer>, Vec<Layer>) =
+            self.layers.drain(..).partition(|layer| wanted.binary_search(&&layer.key).is_ok());
+        self.layers = kept;
+        self.retired.extend(retired);
         self.order = order;
         for (key, content) in drawn {
             match self.layers.binary_search_by(|layer| layer.key.cmp(&key)) {
@@ -215,9 +214,9 @@ impl Screen {
                     layer.settle(orders);
                 }
                 Ok(at) => {
-                    self.layers[at].release(orders);
                     let layer = self.make(key, content, orders);
-                    self.layers[at] = layer;
+                    let replaced = mem::replace(&mut self.layers[at], layer);
+                    self.retired.push(replaced);
                 }
                 Err(at) => {
                     let layer = self.make(key, content, orders);
