@@ -53,7 +53,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
     - a meter with a limit writes the bytes it holds alone, as its bar shows their share of the limit, so every value fits the gutter and nothing is cut as a value changes; the backlog's actor is not in the band, which has no room for it in a fixed gutter: the `memory` tool names it;
     - the engine's figures are read at the figures' pace, four times a second, each reading of process and guests kept in its meter's history, and the GPU meter from each frame's statistics, every kind of its memory summed, each frame kept in its history and the newest shown as the figures are read; a text is written again only when what it shows changes;
     - the column ends after the meters: the GPU adapter, its backend, and its driver do not change while the program runs, so the band does not keep them in view; `render_stats` answers them, called from the console or by an agent (see Frame statistics).
-- **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds key focus, and gives it up as the console closes. Under ADR-0055 it declares this in its list instead: `Keys { frame, keys: KeySet::All, blocks: true }` while the console is open, and only the backtick while it is not, and a `Hit` over the console that blocks the pointer, so the wheel over it scrolls the console alone.
+- **The band and the console:** the console beneath the band, a third of the window: scrollback, the line being typed, and a grey completion ahead of the cursor. While the console is open the overlay holds the keys: it declares in its list `Keys { frame, keys: KeySet::All, blocks: true }` while the console is open, and only the backtick while it is not, and a `Hit` over the console that blocks the pointer, so the wheel over it scrolls the console alone.
 
 ### Commands are tools
 
@@ -100,23 +100,9 @@ Called::Output ── schema ── Form, printed ──> scrollback
 
 ### Key focus
 
-**Replaced by ADR-0055.** Keys cascade through the declared draw order: an actor declares the keys it hears with a `Keys` entry in its list, and each key goes top-down through those entries until one blocks. `TakeKeyFocus`, `ReleaseKeyFocus`, `KeyFocusGained`, `KeyFocusLost`, and the slot below are removed, and the overlay is last in the setup's root list, in the `Interface` pass, so its backtick reaches it whatever holds the keys beneath. The section below records the slot as it was decided.
+**Keys reach an actor through the declared draw order** (ADR-0055: `Keys`). An actor declares the keys it hears with a `Keys` entry in its list, and each key goes top-down through those entries until one blocks. The overlay is last in the setup's root list, in the `Interface` pass, so its backtick reaches it whatever holds the keys beneath. A UI built of several actors needs no scope of its own: each actor's `Keys` entry sits at its place in the declared order.
 
-**Each window's actor gains key focus, as aether's ADR-0248 §9 has it, without its scope:**
-
-```rust
-TakeKeyFocus                 // to the window's actor, path::<Window>(window); no answer; the sender holds its slot
-ReleaseKeyFocus              // to the window's actor; no answer; empties the slot if the sender holds it
-KeyFocusGained { window }    // to the new holder
-KeyFocusLost { window }      // to the holder it replaced, the one that released, or the holder of a closed window
-```
-
-- **Each window has one slot,** empty or held by one actor. While it is held, that window's key events, `Event::Text`, the input method's events, and `Event::Wheel` go only to the holder, which hears them as one of the window's subscribers. Input performed by `send_input` is routed the same way.
-- **Wheel turns follow the keys.** While an actor holds the slot, the wheel turns go to it too, the same as keys and typed text: the open console scrolls its scrollback by the wheel, and a turn that also reached the game beneath would zoom it. When the console closes the slot empties, and the game hears the wheel again.
-- **The slot is the window's actor's,** as it is what sends a window's events to its subscribers. A take and a release go to it, as `Perform` does, so they name no window; the notices name it by its `WindowId`. Both chassis push what they hear through the window root to that actor, so both are routed by the slot with no code of their own.
-- **The latest take wins,** and the holder it replaced hears `KeyFocusLost`. A release, the holder's end, or the window closing empties the slot; nothing is handed back.
 - **A key that is down keeps who heard its press,** and its repeats and its release go to them, so a character walking as the console opens stops. The window losing the keyboard forgets the keys down, as their releases never come.
-- **The take is refused as the program is built** for an actor that does not handle `KeyFocusGained`, as a sender's type is checked against the replies of what it sends, and the window replies with it. `KeyFocusLost` goes to the replaced holder, not as a reply, so a sender that does not handle it too is refused as the take is handled, and logged.
 
 ### Tools held in every engine
 
@@ -174,21 +160,20 @@ The GPU's passes are told apart by slate blue, muted violet, and mauve, cycling 
 ### Where it lives
 
 - **`aethereal-overlay`,** a crate of its own. It reads the window, the renderer, the tools, and the lifecycle, and both the desktop and browser chassis list it, so no capability's crate can hold it.
-- **`Tools` lives in `aethereal-tools`; key focus in `aethereal-window`; frame statistics in `aethereal-render`; `EngineStats` in `aethereal-substrate`.** Each is useful without the overlay.
+- **`Tools` lives in `aethereal-tools`; the key cascade in `aethereal-window`; frame statistics in `aethereal-render`; `EngineStats` in `aethereal-substrate`.** Each is useful without the overlay.
 
 ## Consequences
 
 - **Any program lists `Overlay` and has the band and the console,** on desktop and in the browser, without writing any of it. ichor's own console pass goes.
 - **A tool is a console command once its input marks its flags,** and a person at the window and an agent reach the same tools.
 - **An engine with no hub holds tools,** so tools can be tested and called in a program that never links.
-- **Key focus serves any text field,** not only the console: a chat box takes it the same way. Under ADR-0055 a text field declares `Keys` in its list while it wants them.
+- **Key focus serves any text field,** not only the console: a text field declares `Keys` in its list while it wants them (ADR-0055).
 - **The renderer counts what it makes and draws each frame,** and spends nothing on it while no one subscribes.
-- **Changes to decided work:** ADR-0028 gains positional flags and comma lists; ADR-0037's `ToolSheet` gains `flags`; ADR-0038's `Link` stops holding tools and forwards `Tools`'s; ADR-0044's `Log` view gains a ring in each part, and its logs tool `read_recent`; ADR-0024's key events are routed by key focus.
+- **Changes to decided work:** ADR-0028 gains positional flags and comma lists; ADR-0037's `ToolSheet` gains `flags`; ADR-0038's `Link` stops holding tools and forwards `Tools`'s; ADR-0044's `Log` view gains a ring in each part, and its logs tool `read_recent`; ADR-0024's key events are routed through the declared `Keys` entries (ADR-0055).
 - **Follow-on work this leaves open:**
   - a binary that calls a tool from a shell, with the same flags;
   - pipeline statistics (vertex and fragment invocations), on GPUs that have them;
   - a mouse on the overlay's panels;
-  - key focus for a UI built of several actors (aether's `Subtree` scope). Settled by ADR-0055: each actor's `Keys` entry sits at its place in the declared order.
 
 ## Alternatives considered
 
@@ -197,6 +182,7 @@ The GPU's passes are told apart by slate blue, muted violet, and mauve, cycling 
 - **A tree of words each tool writes beside its sheet, as Minecraft's Brigadier.** The most freedom, but a second description of each input to keep in step with it, where attributes on the fields cannot drift.
 - **Commands the overlay knows itself.** A second set beside the tools, which agents could not call.
 - **The overlay in front of the program's input,** the program subscribing to it rather than the window. Every program would be wired through the overlay.
+- **Key focus as a slot on each window's actor,** as aether's ADR-0248 §9 has it, without its scope: `TakeKeyFocus` and `ReleaseKeyFocus`, the latest take wins, the holders told `KeyFocusGained` and `KeyFocusLost`, and the wheel sent with the keys. Two mechanisms beside global shortcuts, and a sibling that takes focus silences the overlay's backtick (ADR-0055).
 - **Key focus held by the window root,** the take naming its window. The root does not send a window's events to its subscribers, so it would hand each change to the window's actor, and a take sent to the root would bring no reply the sender's type is checked against.
 - **Key focus as a stack.** A release would hand keys back to the one before, but every holder would have to release in order; aether's single slot has served.
 - **A flag for the budget.** It would be wrong the moment the present mode or the monitor changed.

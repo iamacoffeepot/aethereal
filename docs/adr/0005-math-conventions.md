@@ -115,7 +115,7 @@ A function that compares against a tolerance states the tolerance and why it is 
 - `f32` holds about seven decimal digits, so a position a few kilometres from the origin resolves to about a millimetre and degrades beyond that. A world larger than that keeps positions relative to a nearby origin. That scheme belongs to the piece that owns the world, above this crate.
 - The same inputs give the same floats on both hosts and in a guest, as far as this crate is concerned. A piece that needs two engines to agree bit for bit still has to control everything else that touches its floats.
 - Scalar code is slower than SIMD. A piece that measures a hot loop over many vectors solves it there, over its own arrays; the types that travel stay as they are.
-- Adding a type, or a convention such as a second Euler order, is an amendment to this ADR.
+- Adding a type, or a convention such as a second Euler order, is an edit to this ADR.
 
 ## Alternatives considered
 

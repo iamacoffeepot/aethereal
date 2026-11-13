@@ -35,7 +35,7 @@ impl Handles<Answer<ModeSet, Toggle>> for Game { .. }         // ModeSet::Set { 
 
 - **A window is opened at a size in the host's logical pixels**, the size a person sees whatever the screen, since its scale is the host's to know only once the window is on a screen. Its answer carries the surface as it was opened, its size in its pixels and its scale (ADR-0024: `Surface`), so the asker draws at the size the window is, as a subscriber learns from `Resized`.
 - **The answer is the window's id**, and from then on it is a window as one opened at setup is: an actor reaches it by `path::<Window>(window)` and subscribes to it, and makes a frame that ends on it (ADR-0025: `Ends::Window`).
-- **The window root gives the id, in the turn that asks for the window**, from a count that starts after the windows opened at setup, which its config lists. ADR-0024 gave every id on the host's side, as the root had no way back to the host. It has one now, its controller, and the id goes with the request. **This departs from every id being given by the host**: one count, kept in one actor's turns, so ids never repeat and the order windows were asked for is the order of their ids.
+- **The window root gives the id, in the turn that asks for the window**, from a count that starts after the windows opened at setup, which its config lists. The root has a way back to the host, its controller, so the id goes with the request, and is not given by the host: one count, kept in one actor's turns, so ids never repeat and the order windows were asked for is the order of their ids.
 
 **The window root asks the host through a controller, and hears back through its one source.**
 
@@ -57,7 +57,7 @@ pub enum Heard {                                       // what the root's one so
 }
 ```
 
-- **One controller and one source, and the source is the one the root already has.** ADR-0019 gives a host system whose order of use can be observed one controller, so windows opened and closed land in the order the root's turns asked. And a window's opening reaches the root before anything the window heard, as both come through one source, in the order the host pushed them: no event reaches a window's actor before the actor is made. **This departs from ADR-0024, under which the window capability had a source and no controller.**
+- **One controller and one source, and the source is the one the root already has.** ADR-0019 gives a host system whose order of use can be observed one controller, so windows opened and closed land in the order the root's turns asked. And a window's opening reaches the root before anything the window heard, as both come through one source, in the order the host pushed them: no event reaches a window's actor before the actor is made.
 - **The root holds the request** (ADR-0017: `Held`), pushes `Windowing::Open`, and answers once its source brings `Opened` or `Unopened` for that id: on `Opened` it makes the window's actor beneath it, as it makes those of the windows opened at setup, then answers. A window whose actor is refused is answered `Unopened::Refused`, and the root asks the host to close it.
 - **An asker that ends before it is answered does not stop the window.** The window is opened, the answer goes to no one (ADR-0017: an answer to an ended actor is dropped), and the window stands until it is closed. Opening a window is not undone by its asker going, as nothing a capability pushed to its host is undone (ADR-0019).
 
@@ -90,9 +90,9 @@ WindowsConfig { .., closing: Closing::ByButton }      // the default; or Closing
 ```
 
 - **`Closing::ByButton`**: on `CloseRequested`, the window's actor sends it to its subscribers, as before, and the root closes the window as if `CloseWindow` had been asked.
-- **`Closing::ByProgram`**: `CloseRequested` only asks, as ADR-0024 decided. The program closes the window, or does not.
-- **A desktop chassis asks the program to stop once its last window has closed.** This replaces the rule, since #253, that the close button of a program's only window quits it. A program with several windows needs no code of its own to be closed one window at a time.
-- **This departs from ADR-0024's "`CloseRequested` asks; it closes nothing"**: a program that draws one window and handles nothing would otherwise never close. A program that confirms before closing says so once, in its config.
+- **`Closing::ByProgram`**: `CloseRequested` only asks (ADR-0024). The program closes the window, or does not.
+- **A desktop chassis asks the program to stop once its last window has closed.** A program with several windows needs no code of its own to be closed one window at a time.
+- **The button closes by default**: a program that draws one window and handles nothing would otherwise never close. A program that confirms before closing says so once, in its config.
 
 **A window is shown in a mode: chosen at setup, asked of the root while the program runs, and heard when it changes.**
 

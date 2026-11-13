@@ -152,8 +152,8 @@ A step's turns read what the engine holds as the step began, and its changes are
 ## Consequences
 
 - **A guest's behaviour can be changed while the program runs,** by building its module and calling `publish`. Its actors keep their state and move before a batch of their own choosing, and `upgrades` says who moved, who answered `Later`, and who failed.
-- **This amends ADR-0009's libraries.** ADR-0009 had a library for each namespace, each the only one that could publish its kinds. One library per program holds every kind's head, so no namespace is registered, and a program lists no module: what is in `Code` runs, and its systems' own modules run for the kinds `Code` does not make.
-- **This amends ADR-0009's "nothing moves a running actor".** An actor still chooses whether and when it moves, as ADR-0009 requires, and is never moved during a turn or a batch. What changes is who asks: the engine asks before each batch, so no actor watches the heads, and none can forget to.
+- **A program has one library** (ADR-0009). One library holds every kind's head, rather than a library for each namespace, each the only one that could publish its kinds, so no namespace is registered, and a program lists no module: what is in `Code` runs, and its systems' own modules run for the kinds `Code` does not make.
+- **Nothing moves a running actor** (ADR-0009). An actor chooses whether and when it moves, and is never moved during a turn or a batch. The engine asks before each batch, so no actor watches the heads, and none can forget to.
 - **This decides what ADR-0015 left open:** a guest's state is taken out to replace its code as it is taken out for another part, and put back when the move fails.
 - **A native actor never moves.** A screen meant to change live is written as a guest. ichor's actors are native today; one of its screens changes live once it is a guest.
 - **Every guest type writes `upgrade`,** a few lines when it has nothing to wait for. `take_over` is written only when a version changes the state's layout.

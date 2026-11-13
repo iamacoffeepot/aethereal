@@ -38,8 +38,7 @@ pub enum TargetPixels {
 pub enum ReadRefused { /* as now */ Frame, Target, Multisampled, Outside }
 ```
 
-*Amended as built:* a request of its own, answered by `TargetKind`, not a `Readable` answered as `Pixels`. `Pixels` names its layout by `TextureFormat`, which is also what `CreateTexture` makes, and a depth format there would let any actor make depth textures.
-
+- **It is a request of its own, whose answer names its layout by `TargetKind`,** not a `Readable` answered as `Pixels`. `Pixels` names its layout by `TextureFormat`, which is also what `CreateTexture` makes, and a depth format there would let any actor make depth textures.
 - **Read now, not at the next frame,** as a texture is. A target holds the last `Render`'s drawing until the next one, so it is read under a held clock without advancing it (ADR-0045). The agent captures a still, then reads the same frame's depth.
 - **The region is in the end's pixels,** the window's surface pixels for a main frame. The renderer cuts it to the end, then scales it to the target as the target's scale scales the end: each side divided, the origin rounded down and the far edge up, so a half-scale target is read at the pixel that covers the one asked. The answer's region is the target's pixels read.
 - **Only the region reaches the blob.** A float or whole-number target copies only the region. WebGPU copies a depth texture only whole, so a depth target is copied whole into the GPU buffer, and the region is cut from it once mapped: 33 MB of GPU buffer at 4K, never a blob.
@@ -63,7 +62,7 @@ pub struct TargetRead {
 pub enum Values { Float(Vec<[f32; 4]>), Uint(Vec<u32>), Depth(Vec<f32>) }
 ```
 
-- **`TargetTool`, in `aethereal-render` behind its `tools` feature,** reads `Readable::Target` of the window's main frame and answers the values as numbers, so the agent reads depth or an id without decoding bytes.
+- **`TargetTool`, in `aethereal-render` behind its `tools` feature,** asks `ReadFrameTarget` of the window's main frame and answers the values as numbers, so the agent reads depth or an id without decoding bytes.
 - **`around` is a radius in the window's pixels:** 0 reads the one pixel, and at most 16 reads a 33-pixel square, cut to the window, so the agent can see an edge near its mark. A float is answered from its 16-bit half.
 - The usual use: `capture_frame` a still, the owner marks a pixel, `read_target { window: "0", target: 0, at, around: 2 }` reads the depth under it, and the program's own tool turns it into a world point.
 
@@ -78,7 +77,7 @@ pub enum Values { Float(Vec<[f32; 4]>), Uint(Vec<u32>), Depth(Vec<f32>) }
 - **Every program reads its depth, target 0, with no change of its own,** where its main frame is the renderer's own or keeps depth at one sample.
 - **Targets made copyable cost nothing measurable,** a usage flag on textures that exist already.
 - **A world point needs the program's camera,** so a program that wants agents to pick in its world offers a tool for it. Ichor's painter does that with its own camera and target layout.
-- **A target can be read only on the main frame of a window,** through the tool. A frame that ends on a texture is read through `Readable::Target` by an actor that holds its id, which no agent does.
+- **A target can be read only on the main frame of a window,** through the tool. A frame that ends on a texture is read through `ReadFrameTarget` by an actor that holds its id, which no agent does.
 - **Follow-on work this leaves open:** reading a target at the next frame rather than the last; multisampled depth, resolved by a pass of its own; a shared way for a program to name its targets, so an agent need not know target 0 is depth.
 
 ## Alternatives considered

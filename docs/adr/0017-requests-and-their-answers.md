@@ -74,7 +74,7 @@ An answer kind is a kind like any other, with nothing to implement for the case 
 - **A request that does not read** does not reach its handler. The engine answers its asker `Unanswered::Unreadable`, as it answers `Failed`, and the receiver's turn goes on to its next piece of mail.
 - **Other mail that does not read** is dropped, and the receiver's log says so, with the reason the actor crate gives a read that fails (ADR-0009: `Unreadable`).
 
-**This departs from this record as first written**, in which mail that did not decode as its kind failed the receiver's turn and so ended it: one oversized answer then ended a long-lived actor such as `Mcp` (ADR-0037), which had done nothing wrong.
+**Failing the receiver's turn for it would end the wrong actor:** one oversized answer would end a long-lived actor such as `Mcp` (ADR-0037), which had done nothing wrong.
 
 **An answer that comes later is held.** A receiver that cannot answer in the turn of the request holds it, and answers from any later turn:
 
@@ -141,8 +141,7 @@ self.serving.take(key).map(|stream| stream.finish(turn, &ReadDone::Ok));        
 - Mail says whether it asks, and which request it answers, in a tie of eight bytes that every piece carries (`Tie`): a request is marked, and an answer names its request by the count, which its receiver sent; what the engine says of an unanswered request is marked as the engine's. Every turn reads it, to find an answer's context and what it owes its source. Measured in steady state with fused hops, against the engine without it, a piece of mail cost about 10 percent more in `count`, 6 to 8 percent in `pingpong`, 4 percent in `big`, and 1 to 3 percent in `world`, `churn-wide`, and `fib`. About 4 points of `count` are the envelope's eight bytes, and the rest the reads each turn makes. Carrying the tie in the mail's payload, so mail that is no request stores nothing more, would take back most of the first; it is left until a load is bound by how fast mail goes.
 - A guest asks, replies, holds, and answers in records its host reads, and its host holds it to what it claims, as it does for resources (ADR-0015).
 - The reply through a tuple of kinds that nothing checks (ADR-0016) is unchanged for plain replies. A request cannot be sent through a tuple, so it cannot reach an asker that does not handle its answer.
-- A request that times out is its asker's to decide: the engine sets no deadline, as it sets none on a job, and the asker measures time with a `Sleep` job and `turn.now()` (ADR-0018).
-  *Replaced by ADR-0041: a request carries a deadline, inherited by the requests made for it, and the engine answers it `Expired` when it passes.*
+- **A request carries a deadline** (ADR-0041), inherited by the requests made for it, and the engine answers it `Expired` when it passes.
 - **A request is not cancelled.** An asker that stops waiting notes the request in its own state and passes over the answer when it comes. Every request is answered exactly once, so the note goes when the answer does. The context, and the pins on the blobs it refers to, stay in the asker's seat until then: until the receiver answers, ends, or lets the request go. A receiver that should stop the work it was asked for is told so by mail of a kind its protocol carries, as it is told anything else.
 - A stream costs the engine nothing new. Its parts are mail, so they fuse (ADR-0013) and join a run of sends as any mail does, and a held request keeps no stage but `Stop` from finishing (ADR-0020), so a long stream holds back no frame.
 - Every stream is paced, and an asker that grants no credit stalls its own stream. Whoever opened it decides when to give up, as with any request.
