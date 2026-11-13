@@ -166,8 +166,7 @@ A `Box<T>` is its contents. It has `T`'s shape, `T`'s bytes, and `T`'s layout, s
 - **A door states the boundary; the value does not.** Mail is the door between actors: a send requires `Encode<Actors>` of what it carries, and a handler `Decode<Actors>`. A door out of the engine requires `Engines`. A type that never crosses between actors is still encoded, by the actor that keeps it.
 - Whatever crosses between engines also crosses between actors, because `Actors` makes every offer `Engines` makes.
 - An author chooses between two derives: `Plain`, and the one for a type holding a bound value, which enters with the first such value. They write the same codec. `Plain` also states that the type is only its bytes.
-- A value decoded from a large input is copied out of it. Views that borrow from the input are a separate trait beside `Plain` if they are ever needed, and do not change it. Large payloads have another answer: a handle that crosses actors without a copy.
-  *Decided in ADR-0042: bytes that cross between actors are a blob, held as `Bytes`, and a byte vector does not cross `Actors`.*
+- A value decoded from a large input is copied out of it. Views that borrow from the input are a separate trait beside `Plain` if they are ever needed, and do not change it. Large payloads have another answer: a handle that crosses actors without a copy. Bytes that cross between actors are a blob, held as `Bytes`, and a byte vector does not cross `Actors` (ADR-0042).
 - On a little-endian machine an implementation may encode a padding-free struct of fixed-width fields by copying it (ADR-0002). Nothing in the trait shows whether it does.
 - Types from other crates are `Plain` only through an implementation here or a local newtype.
 
