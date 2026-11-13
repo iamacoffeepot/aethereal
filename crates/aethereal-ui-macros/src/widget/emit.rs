@@ -75,6 +75,8 @@ pub fn composite(composite: &Composite, params: &[Ident]) -> TokenStream {
 
         #raising
 
+        impl #implemented ::aethereal_ui::Composite for #name #applied {}
+
         impl #implemented ::aethereal_ui::Element for #name #applied {
             fn node(
                 self,

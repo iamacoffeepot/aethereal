@@ -1,6 +1,6 @@
 //! A tree's nodes in tree order, and the trees refused before they are laid out.
 
-use super::{ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
+use super::{ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Shape, Tree, TreeRefused};
 use crate::style::Style;
 use crate::widgets::Column;
 
@@ -16,15 +16,17 @@ fn nodes_come_in_tree_order_each_with_its_path_and_its_children() {
     // under another.
     let tree = Tree::new(column(0, vec![column(0, vec![column(4, Vec::new())]), column(2, Vec::new())]));
 
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the tree is walked");
     };
     let flat = flattened.nodes;
 
-    let paths: Vec<KeyPath> = flat.iter().map(|flat| flat.path.clone()).collect();
+    let paths: Vec<KeyPath> = flat.iter().map(|flat| (*flat.path).clone()).collect();
     let place = |segments: &[u32]| KeyPath::of(&segments.iter().map(|at| Segment::Place(*at)).collect::<Vec<_>>());
     assert_eq!(paths, vec![place(&[0]), place(&[0, 0]), place(&[0, 0, 4]), place(&[0, 2])]);
-    let children: Vec<Vec<usize>> = flat.iter().map(|flat| flat.children.clone()).collect();
+    let children: Vec<Vec<usize>> = flat.iter().map(|flat| flat.children.to_vec()).collect();
     assert_eq!(children, vec![vec![1, 3], vec![2], vec![], vec![]]);
 }
 
@@ -38,8 +40,8 @@ fn a_tree_with_two_siblings_of_one_segment_or_too_deep_is_refused() {
         deep = column(0, vec![deep]);
     }
 
-    let refused = twice.flat().err();
-    let too_deep = Tree::new(deep).flat().err();
+    let refused = twice.flat(&mut Shape::default()).err();
+    let too_deep = Tree::new(deep).flat(&mut Shape::default()).err();
 
     let path = KeyPath::of(&[Segment::Place(0), Segment::Place(1)]);
     assert_eq!(refused, Some(TreeRefused::Twice { path }));
@@ -55,12 +57,13 @@ fn an_item_whose_key_an_earlier_sibling_has_is_left_out_and_named_never_merged()
     let list = column(0, vec![item(1, Vec::new()), item(2, Vec::new()), item(1, vec![column(0, Vec::new())])]);
 
     let tree = Tree::new(list);
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("a list with a key twice is still walked");
     };
 
     let path = |key: u64| KeyPath::of(&[Segment::Place(0), Segment::Item(ItemKey::new(key))]);
-    let paths: Vec<KeyPath> = flattened.nodes.iter().map(|flat| flat.path.clone()).collect();
+    let paths: Vec<KeyPath> = flattened.nodes.iter().map(|flat| (*flat.path).clone()).collect();
     assert_eq!(paths, vec![KeyPath::of(&[Segment::Place(0)]), path(1), path(2)], "the first of the key is kept, alone");
     assert_eq!(flattened.twice, vec![path(1)]);
 }

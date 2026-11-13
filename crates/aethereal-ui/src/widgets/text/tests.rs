@@ -4,7 +4,7 @@ use super::Text;
 use crate::fonts::{Fonts, Texts};
 use crate::layout::Layouts;
 use crate::style::{Alignment, Length, Style};
-use crate::tree::{Node, Segment, Tree};
+use crate::tree::{Node, Segment, Shape, Tree};
 use crate::widget::{Draws, Focused, Laid, Lit, Piece, Stateless, TextDraw, Widget};
 use crate::widgets::Column;
 use aethereal_math::{Rect2, Vec2};
@@ -29,7 +29,8 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     let text = Node::new(Segment::Place(0), Text::new(text), style.clone(), Vec::new());
     let column = Node::new(Segment::Place(0), Column, column, vec![text]);
     let tree = Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![column]));
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the tree lays out");
     };
     let mut known = Fonts::default();
@@ -37,7 +38,7 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
     let mut texts = Texts::default();
     let mut measuring = known.measuring(&mut texts, 1.0);
     let mut layouts = Layouts::default();
-    let boxes = layouts.lay_out(&flattened.nodes, &[], &mut measuring, Vec2::new(400.0, 300.0), 1.0).boxes.clone();
+    let boxes = layouts.lay_out(&flattened, &[], &mut measuring, (Vec2::new(400.0, 300.0), 1.0), (1, 1)).boxes.clone();
 
     let laid_box = boxes[2];
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));

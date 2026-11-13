@@ -23,7 +23,7 @@ impl Layers {
     }
 
     /// Lists `slots`, of a widget that stands as `stands` says, after what was listed there before.
-    pub fn list(&mut self, stands: Stands, slots: Vec<Slot>) {
+    pub fn list(&mut self, stands: Stands, slots: impl IntoIterator<Item = Slot>) {
         match stands {
             Stands::Base => self.base.extend(slots),
             Stands::Top { popup } => {
@@ -136,8 +136,8 @@ pub fn lift(
         let backdrop = Slot::Backdrop { path: node.path.clone(), rect: screen };
         layers.list(Stands::Top { popup: at }, vec![backdrop]);
     }
-    let first = anchor(&node.path);
-    let content = node.children.iter().filter(|child| flat[**child].path != first);
+    let first = anchor(node.path);
+    let content = node.children.iter().filter(|child| *flat[**child].path != first);
 
     content
         .map(|child| {
@@ -151,8 +151,8 @@ pub fn lift(
 /// The first place in `flat` past the anchor of the popup `node` at `at`, `ends` the first place past each node's
 /// descendants: where what the popup lists over its anchor is listed. Past the popup itself when it has no anchor.
 pub fn past_anchor(node: &Flat<'_>, flat: &[Flat<'_>], ends: &[usize], at: usize) -> usize {
-    let first = anchor(&node.path);
-    let held = node.children.iter().find(|child| flat[**child].path == first);
+    let first = anchor(node.path);
+    let held = node.children.iter().find(|child| *flat[**child].path == first);
 
     held.map_or(at + 1, |held| ends[*held])
 }

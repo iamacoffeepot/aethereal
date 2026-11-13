@@ -32,6 +32,8 @@
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
 //! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
 
+#[cfg(test)]
+mod again;
 mod around;
 mod children;
 mod drags;
@@ -60,7 +62,9 @@ use crate::fonts::{Asker, Fonts, Measuring, Texts};
 use crate::layout::{Laidout, Layouts, Pitch};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{Difference, Flat, KeyPath, Node, Tree};
+use crate::tree::{
+    Composite, Difference, Flat, Flattened, KeyPath, Look, Memos, Node, Segment, Shape, Tree, TreeRefused,
+};
 use crate::unkept::Unkept;
 use crate::widget::{Draws, Focused, Laid, Lit, Piece, Quad, Sample};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
@@ -175,7 +179,18 @@ pub struct Screen {
     /// The size the last layout told each child it places, or found it was told before.
     told: Vec<Told>,
     grip: Grip,
+    /// Whether the list last sent may no longer be the one to send: its order, its keys, or a draw in it changed since.
+    sent: Sent,
     unkept: Unkept<Worked>,
+}
+
+/// Whether the list a screen last sent still stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Sent {
+    /// Nothing it is made from changed since it was made.
+    Current,
+    /// Its order, its keys, or a draw in it changed: it is made again once nothing in it is still being made.
+    Stale,
 }
 
 /// One place in what a screen lists of its widgets, in tree order.
@@ -252,6 +267,14 @@ enum Fresh {
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
+    /// The number of the last tree built, counted from one, and of the last build that laid out otherwise than the
+    /// tree before it.
+    builds: u64,
+    relaid: u64,
+    /// What each composite marked `memo` in the last tree was built from, by its key path.
+    memos: Memos,
+    /// The last tree's last flattening, kept for the next.
+    shape: Shape,
     fonts: Fonts,
     texts: Texts,
     layouts: Layouts,
@@ -267,15 +290,22 @@ impl Worked {
     /// Takes in `tree`, the tree the screen's view built, in place of the last unless it is the same: what its layouts,
     /// texts, and listings keep is told what of it lays out or draws otherwise ([`Relaid`](crate::tree::Relaid)). How
     /// it differs from the last.
-    fn built(&mut self, tree: Tree) -> Difference {
-        let Self { last, layouts, texts, listings, .. } = self;
+    fn built(&mut self, mut tree: Tree) -> Difference {
+        self.builds += 1;
+        let build = self.builds;
+        let Self { last, memos, texts, .. } = self;
         let difference = match last {
-            Last::Built(last) => last.compare(&tree, &mut (layouts, texts, listings)),
-            Last::Unbuilt => Difference::Layout,
+            Last::Built(last) => last.merge(&mut tree, texts, memos, build),
+            Last::Unbuilt => tree.first(memos, build),
         };
-        let same = difference == Difference::Same;
-        if !same {
-            *last = Last::Built(Box::new(tree));
+        let relaid = difference == Difference::Layout;
+        if relaid {
+            self.relaid = build;
+        }
+        let Self { last, .. } = self;
+        match last {
+            Last::Built(kept) => **kept = tree,
+            Last::Unbuilt => *last = Last::Built(Box::new(tree)),
         }
 
         difference
@@ -359,6 +389,7 @@ impl Screen {
             hover: Hover::Settled,
             told: Vec::new(),
             grip: Grip::Loose,
+            sent: Sent::Stale,
             unkept: Unkept::default(),
         }
     }
@@ -367,6 +398,20 @@ impl Screen {
     #[must_use]
     pub const fn table(&self) -> &Table {
         &self.table
+    }
+
+    /// The node of the composite `build` makes at `path`, which `view!` writes for an element marked `memo`, styled
+    /// as `look` says: the composite the last tree built at `path`, taken whole, while it is of the same type, was
+    /// styled alike, and is `same` as the composite this view would build, its every input compared; otherwise built.
+    #[doc(hidden)]
+    pub fn memo<T: Composite + Send + 'static>(
+        &self,
+        path: &[Segment],
+        look: Look,
+        build: impl Fn() -> T,
+        same: impl FnOnce(&T) -> bool,
+    ) -> Node {
+        self.unkept.memos.node(path, look, build, same)
     }
 
     /// Its viewport, as last set.
@@ -436,40 +481,34 @@ impl Screen {
             return Outcome::Waiting;
         }
         let lit = self.lit();
-        let Worked { last: Last::Built(tree), fonts, texts, layouts, listings, pieces, placed, pitches } =
+        let builds = (self.unkept.builds, self.unkept.relaid);
+        let Worked { last: Last::Built(tree), shape, fonts, texts, layouts, listings, pieces, placed, pitches, .. } =
             &mut *self.unkept
         else {
             return Outcome::Waiting;
         };
-        let flattened = match tree.flat() {
-            Ok(flattened) => flattened,
-            Err(refused) => {
-                orders.log(Level::Error, format!("the screen's tree was refused: {refused:?}"));
-                return Outcome::Refused;
-            }
+        let Ok(flattened) = flattened(tree, shape, orders) else {
+            return Outcome::Refused;
         };
-        for twice in &flattened.twice {
-            orders.log(Level::Error, format!("an item's key is another's before it, so it is left out: {twice:?}"));
-        }
-        let flat = flattened.nodes;
-        let surfaces = popups::stood(&flat, &mut self.table);
+        let flat = flattened.nodes.as_slice();
+        let surfaces = popups::stood(flat, &mut self.table);
         let focus = self.table.focus().clone();
-        let tops = popups::tops(&flat, &surfaces);
+        let tops = popups::tops(flat, &surfaces);
         let viewport = self.viewport;
         texts.begin(viewport.scale);
         let mut measuring = fonts.measuring(texts, viewport.scale);
         let Laidout { boxes, pitches: pitched } =
-            layouts.lay_out(&flat, &tops, &mut measuring, viewport.size, viewport.scale);
+            layouts.lay_out(&flattened, &tops, &mut measuring, (viewport.size, viewport.scale), builds);
         *pitches = pitched.iter().map(|(at, pitch)| (flat[*at].path.clone(), *pitch)).collect();
 
-        let ends = spans(&flat);
+        let ends = spans(flat);
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
         let mut layers = Layers::default();
         let mut pending: Vec<Pending> = Vec::new();
         let mut around = Around::new(flat.len(), viewport.rect());
         let mut laid_out = Vec::with_capacity(flat.len());
         let mut told = Vec::new();
-        listings.begin();
+        listings.begin(&flattened);
         for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
@@ -478,43 +517,45 @@ impl Screen {
                 laid_out.push((node.path.clone(), laid));
                 continue;
             }
-            let opens = popper(node.node.widget()).filter(|popper| popper.open(&self.table, &node.path));
+            let opens = popper(node.node.widget()).filter(|popper| popper.open(&self.table, node.path));
             if let Some(popper) = opens {
-                for (content, shift) in lift(&mut layers, &flat, boxes, at, popper, laid.rect, viewport.rect()) {
+                for (content, shift) in lift(&mut layers, flat, boxes, at, popper, laid.rect, viewport.rect()) {
                     around.lift(content, shift, viewport.rect());
                 }
             }
 
             let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, around.covered(at));
-            let state = self.table.bytes(&node.path).unwrap_or_default();
+            let state = self.table.bytes(node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
             let reading = Reading { laid: drawing, state, standing, live };
             let mut anew = || listed(node, reading, &laid, (&mut measuring, &mut *pieces), &mut drawn);
+            let called;
             let listing = match calling(node.node.widget()) {
                 Some(slot) => {
                     told.push(Told::of(slot, &laid, viewport));
-                    anew()
+                    called = anew();
+                    called.listing()
                 }
-                None => listings.list(&node.path, reading, anew),
+                None => listings.list((at, flattened.was[at], node.node.stamps()), reading, builds.0, anew).0,
             };
-            layers.list(surface.stands, listing.now);
+            layers.list(surface.stands, listing.now.iter().cloned());
             if let Holding::Slides { slide, cut } = holding {
-                layers.list(surface.stands, vec![around.shift(at, slide, cut)]);
+                layers.list(surface.stands, [around.shift(at, slide, cut)]);
                 pending.push(Pending { until: ends[at], stands: surface.stands, slots: vec![Slot::Unshift] });
             }
             let deferred = !listing.later.is_empty();
             if deferred {
-                let until = past_anchor(node, &flat, &ends, at);
-                pending.push(Pending { until, stands: surface.stands, slots: listing.later });
+                let until = past_anchor(node, flat, &ends, at);
+                pending.push(Pending { until, stands: surface.stands, slots: listing.later.to_vec() });
             }
-            around.cover((node, at), &flat, listing.blocks, opens.is_some());
+            around.cover((node, at), flat, listing.blocks, opens.is_some());
             laid_out.push((node.path.clone(), laid));
         }
         layers.settle(&mut pending, usize::MAX);
         *placed = laid_out;
-        let open = popups::open(&flat, &surfaces, &self.table);
-        self.keys = keys::declared(&flat, &focus, hotkeys, open, self.taking);
-        let typing = keys::typing(&flat, &focus);
+        let open = popups::open(flat, &surfaces, &self.table);
+        declare(&mut self.keys, &mut self.sent, keys::declared(flat, &focus, hotkeys, open, self.taking));
+        let typing = keys::typing(flat, &focus);
 
         let waited = measuring.waited();
         for font in measuring.into_unmet() {
@@ -557,7 +598,11 @@ impl Screen {
         if making {
             return;
         }
-        self.listed_now(orders);
+        let stale = self.sent == Sent::Stale;
+        if stale {
+            self.listed_now(orders);
+            self.sent = Sent::Current;
+        }
         for retired in self.retired.drain(..) {
             retired.release(orders);
         }
@@ -626,6 +671,33 @@ impl Screen {
     }
 }
 
+/// Keeps `keys` as the keys a screen declares, in place of `kept`: its list is made again, as `sent` says, when they
+/// changed.
+fn declare(kept: &mut Vec<Declared>, sent: &mut Sent, keys: Vec<Declared>) {
+    let rekeyed = keys != *kept;
+    if rekeyed {
+        *kept = keys;
+        *sent = Sent::Stale;
+    }
+}
+
+/// `tree`'s nodes in tree order, flattened from `shape`, which keeps this flattening for the next; each item left out
+/// as a sibling before it has its key is logged into `orders`, and a tree refused is logged there and answered.
+fn flattened<'tree>(
+    tree: &'tree Tree,
+    shape: &'tree mut Shape,
+    orders: &mut Orders,
+) -> Result<Flattened<'tree>, TreeRefused> {
+    let flattened = tree.flat(shape).inspect_err(|refused| {
+        orders.log(Level::Error, format!("the screen's tree was refused: {refused:?}"));
+    })?;
+    for twice in &flattened.twice {
+        orders.log(Level::Error, format!("an item's key is another's before it, so it is left out: {twice:?}"));
+    }
+
+    Ok(flattened)
+}
+
 /// Where the entries of a list being made are drawn from the screen's own coordinates, as the shifts open before each
 /// move them, and where they were before each shift still open, the last opened on top.
 #[derive(Debug)]
@@ -671,15 +743,15 @@ impl Standing {
     /// it stands with a drag `grip`, and within a widget that blocks the pointer or not, `covered`.
     fn of(node: &Flat<'_>, focus: &Focus, lit: Option<&KeyPath>, grip: &Grip, covered: bool) -> Self {
         let focused = match focus {
-            Focus::On(path) if *path == node.path => Focused::Yes,
+            Focus::On(path) if path == node.path => Focused::Yes,
             Focus::On(_) | Focus::Nowhere => Focused::No,
         };
         let lit = match lit {
-            Some(path) if *path == node.path => Lit::Yes,
+            Some(path) if path == node.path => Lit::Yes,
             Some(_) | None => Lit::No,
         };
         let dragged = match grip {
-            Grip::Dragging { path, .. } if *path == node.path => {
+            Grip::Dragging { path, .. } if path == node.path => {
                 node.node.drag().map_or(Dragged::Not, |_| Dragged::Source)
             }
             Grip::Dragging { .. } | Grip::Pressed { .. } | Grip::Loose => Dragged::Not,
@@ -712,7 +784,7 @@ fn listed<'flat>(
 ) -> Listing {
     let Reading { laid, state, standing, live } = reading;
     let Standing { focused, lit, .. } = standing;
-    measuring.at(&node.path, Asker::Drawing);
+    measuring.at(node.path, Asker::Drawing);
     let widget = node.node.widget();
     let style = node.node.style();
     let over = popper(widget).is_some_and(Popper::over);

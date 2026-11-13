@@ -87,4 +87,10 @@ impl Names for Declared<'_> {
                        `drop` where the composite is placed";
         Err(syn::Error::new(call.span(), message))
     }
+
+    fn memo(&self, span: proc_macro2::Span) -> syn::Result<()> {
+        let message = "`memo` keeps a composite placed in a screen's view: a composite builds its own tree whole each \
+                       time it is built";
+        Err(syn::Error::new(span, message))
+    }
 }

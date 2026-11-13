@@ -152,7 +152,9 @@ pub use screen::{
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
 pub use table::{Focus, Table};
-pub use tree::{Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused, whole, windows};
+pub use tree::{Composite, Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused, whole, windows};
+#[doc(hidden)]
+pub use tree::{Look, same};
 pub use view::{Controls, Handed, Method, Took, View, take_in, unmatched};
 pub use widget::{
     Arrange, Axis, Draws, Inside, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side, Slices, Stateless,

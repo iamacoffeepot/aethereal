@@ -45,7 +45,7 @@
 
 use super::check::Scope;
 use super::reference::{Head, Reference};
-use super::{Call, Drag, Dropping, Element, Kind, Look, Outside, Repeat, Rest, Shown, Value};
+use super::{Call, Drag, Dropping, Element, Kind, Look, Memo, Outside, Repeat, Rest, Shown, Value};
 use crate::spans;
 use crate::style;
 use proc_macro2::{Literal, TokenStream};
@@ -227,6 +227,9 @@ impl<'markup> Emitter<'markup> {
             let raised = self.raised();
             quote_spanned!(span=> ::aethereal_ui::raising::<#raised, _>(#literal))
         };
+        if let (Memo::Kept(_), Owner::Screen { field, .. }) = (&element.memo, &self.owner) {
+            return self.memo(element, path, place, scope, field, &widget);
+        }
         let Listing { widget, children, built } = listing(widget, children, listed, span);
         let segment = &place.segment;
         let node = match (styling, &element.look) {
@@ -245,6 +248,74 @@ impl<'markup> Emitter<'markup> {
         let drop = self.drop(element);
 
         quote!({ #before #built #node #drag #drop })
+    }
+
+    /// The node of `element`, a composite of the type at `path` marked `memo` in a screen's view, at `place`, read in
+    /// `scope`, its screen's library in `field`, built as `widget`: the screen keeps it while each input its markup
+    /// writes, a field read from the screen or a local, an event, and its text, is the same as the one it was last built
+    /// from at its key path, and its style is too. A literal, and a field left at its default, is the same at each build
+    /// of one place in the markup, which the key path names, so it is not compared.
+    ///
+    /// ```text
+    /// Message { memo, message: message, click => self.open(message.id) }
+    ///     ──> self.ui.memo(&[…path], Look::Own, || Message { message: message.clone(), click: … },
+    ///             |&Message { message: ref a0, click: ref a1, .. }| same(a0, Borrow::borrow(&message)) && same(a1, &…))
+    /// ```
+    fn memo(
+        &self,
+        element: &Element,
+        path: &Path,
+        place: &Place,
+        scope: &Scope,
+        field: &Ident,
+        widget: &TokenStream,
+    ) -> TokenStream {
+        let span = spans::at(span_of(path));
+        let segments = &place.path;
+        let look = match &element.look {
+            Look::Unstyled => quote!(::aethereal_ui::Look::Own),
+            look => {
+                let style = Self::look(look);
+                quote!(::aethereal_ui::Look::Given(#style))
+            }
+        };
+        let mut bound = Vec::new();
+        let mut compared = Vec::new();
+        let mut bind = |name: &Ident, now: TokenStream| {
+            let local = format_ident!("memo_{}", bound.len(), span = spans::hidden());
+            bound.push(quote!(#name: ref #local));
+            compared.push(quote_spanned!(spans::at(name.span())=> ::aethereal_ui::same(#local, #now)));
+        };
+        for field in &element.fields {
+            if let Value::Reference(read) = &field.value {
+                let now = if item(read, scope) {
+                    quote!(&#read)
+                } else {
+                    quote_spanned!(spans::at(read.span())=> ::core::borrow::Borrow::borrow(&#read))
+                };
+                bind(&field.name, now);
+            }
+        }
+        for event in &element.events {
+            let value = self.event(&event.call);
+            bind(&event.name, quote_spanned!(spans::at(event.call.span())=> &::core::convert::Into::into(#value)));
+        }
+        if let Some(text) = &element.text {
+            let holes = text.holes().next().is_some();
+            if holes {
+                let string = text.string();
+                bind(&format_ident!("text", span = text.literal.span()), quote!(&#string));
+            }
+        }
+        let same = if compared.is_empty() {
+            quote!(true)
+        } else {
+            quote!(#(#compared)&&*)
+        };
+
+        quote_spanned!(span=>
+            self.#field.memo(&[#(#segments),*], #look, || #widget, |&#path { #(#bound,)* .. }| #same)
+        )
     }
 
     /// The type an element's events convert to: the screen's event enum, or a composite's `E`.

@@ -6,7 +6,7 @@
 
 use super::orders::Orders;
 use super::program::Made;
-use super::{Screen, Slot, Target};
+use super::{Screen, Sent, Slot, Target};
 use crate::draw::{Binding, Content, Placing as Placed};
 use crate::tree::KeyPath;
 use aethereal_actor::{Answered, Level};
@@ -205,13 +205,17 @@ impl Screen {
     /// it replaces retired, and each a widget listed again as it was stands as it is; and the list is sent once nothing in it is still being made, and only then is what was retired
     /// released, so the list the renderer draws by until then never names what it has let go.
     pub(super) fn draw(&mut self, drawn: Vec<(DrawKey, Content)>, order: Vec<Slot>, orders: &mut Orders) {
-        self.order = order;
-        let mut wanted: Vec<&DrawKey> = self.order.iter().filter_map(Slot::draws).collect();
-        wanted.sort_unstable();
-        let (kept, retired): (Vec<Layer>, Vec<Layer>) =
-            self.layers.drain(..).partition(|layer| wanted.binary_search(&&layer.key).is_ok());
-        self.layers = kept;
-        self.retired.extend(retired);
+        let reordered = order != self.order;
+        if reordered {
+            self.order = order;
+            self.sent = Sent::Stale;
+            let mut wanted: Vec<&DrawKey> = self.order.iter().filter_map(Slot::draws).collect();
+            wanted.sort_unstable();
+            let (kept, retired): (Vec<Layer>, Vec<Layer>) =
+                self.layers.drain(..).partition(|layer| wanted.binary_search(&&layer.key).is_ok());
+            self.layers = kept;
+            self.retired.extend(retired);
+        }
         for (key, content) in drawn {
             match self.layers.binary_search_by(|layer| layer.key.cmp(&key)) {
                 Ok(at) if self.layers[at].holds(&content) => {
@@ -223,10 +227,12 @@ impl Screen {
                     let layer = self.make(key, content, orders);
                     let replaced = mem::replace(&mut self.layers[at], layer);
                     self.retired.push(replaced);
+                    self.sent = Sent::Stale;
                 }
                 Err(at) => {
                     let layer = self.make(key, content, orders);
                     self.layers.insert(at, layer);
+                    self.sent = Sent::Stale;
                 }
             }
         }
@@ -282,7 +288,10 @@ impl Screen {
         if let Ok(at) = self.layers.binary_search_by(|layer| layer.key.cmp(key)) {
             self.layers.remove(at);
         }
-        self.unkept.listings.forget(&key.path);
+        self.sent = Sent::Stale;
+        if let Some(at) = self.unkept.shape.position(&key.path) {
+            self.unkept.listings.forget(at);
+        }
         orders.log(Level::Error, format!("the screen's draw at {key:?} was not made: {why:?}"));
         self.settle(orders);
     }
@@ -346,6 +355,7 @@ impl Screen {
         };
         layer.stage = Stage::Quads { instances, placement, capacity: *capacity, written: written.clone() };
         layer.settle(&mut orders);
+        self.sent = Sent::Stale;
         self.settle(&mut orders);
 
         orders
@@ -410,6 +420,7 @@ impl Screen {
         };
         layer.stage = Stage::Text { text, placement, written: written.clone(), placed: *placed };
         layer.settle(&mut orders);
+        self.sent = Sent::Stale;
         self.settle(&mut orders);
 
         orders

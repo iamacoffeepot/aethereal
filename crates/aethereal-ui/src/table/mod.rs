@@ -51,7 +51,7 @@ impl Table {
     /// Focus held by a path no node names, or by a widget that cannot hold it, is cleared.
     pub(crate) fn refresh(&mut self, flat: &[Flat<'_>]) {
         if let Focus::On(path) = &self.focus {
-            let holds = flat.iter().any(|flat| flat.path == *path && flat.node.widget().focusable());
+            let holds = flat.iter().any(|flat| flat.path == path && flat.node.widget().focusable());
             if !holds {
                 self.focus = Focus::Nowhere;
             }
@@ -66,7 +66,7 @@ impl Table {
             .map(|flat| {
                 let widget = flat.node.widget();
                 let kind = widget.state_kind();
-                let found = was.binary_search_by(|kept| kept.path.cmp(&flat.path)).ok().map(|at| &mut was[at]);
+                let found = was.binary_search_by(|kept| kept.path.cmp(flat.path)).ok().map(|at| &mut was[at]);
                 let state = match found {
                     Some(kept) if kept.kind.same(kind) => mem::take(&mut kept.state),
                     Some(_) | None => widget.first_state(),
@@ -88,7 +88,7 @@ impl Table {
         counted
             && flat.iter().all(|flat| {
                 let kind = flat.node.widget().state_kind();
-                self.found(&flat.path).is_some_and(|kept| kept.kind.same(kind))
+                self.found(flat.path).is_some_and(|kept| kept.kind.same(kind))
             })
     }
 

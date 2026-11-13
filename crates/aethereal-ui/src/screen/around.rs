@@ -5,7 +5,8 @@
 //!
 //! What a scroll holds is listed within a shift ([`Slot::Shift`]), in the scroll's content's coordinates, where its
 //! offset is not counted: the shift moves it back by the offset and cuts it to the scroll's content box, so a row that
-//! stays in view is drawn where it was drawn, and only the shift moves as the scroll slides.
+//! stays in view is drawn where it was drawn, and only the shift moves as the scroll slides; and it is cut to all the
+//! scroll may slide through, which its extent does not bound, so it is drawn where it was as the scroll's content grows.
 //!
 //! ```text
 //! node ──> stand: laid (screen) ── less the shifts around it ──> drawing (listed) ──> its children handed on:
@@ -70,7 +71,7 @@ impl Around {
         let widget = flat.node.widget();
         let holding = match widget.arrange() {
             Arrange::Scroll(axis) => {
-                let slide = fit(table, &flat.path, widget, &laid, axis);
+                let slide = fit(table, flat.path, widget, &laid, axis);
                 Holding::Slides { slide, cut: clip.intersection(laid.content) }
             }
             Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => Holding::Flows,
@@ -80,7 +81,7 @@ impl Around {
             Holding::Flows => (Vec2::ZERO, clip, self.cuts[at]),
             Holding::Slides { slide, cut } => (slide, cut, scrolled(&drawing)),
         };
-        for child in &flat.children {
+        for child in flat.children {
             self.shifts[*child] = shift + slide;
             self.clips[*child] = cut;
             self.moved[*child] = self.moved[at] + slide;
@@ -118,7 +119,7 @@ impl Around {
     /// layer, out of what blocks around its anchor.
     pub(super) fn cover(&mut self, (node, at): (&Flat<'_>, usize), flat: &[Flat<'_>], blocks: bool, open: bool) {
         let covers = self.covered[at] || blocks;
-        for child in &node.children {
+        for child in node.children {
             let held = flat[*child].path.segments().last() == Some(&Segment::Place(0));
             let lifted = open && !held;
             self.covered[*child] = covers && !lifted;
@@ -127,15 +128,17 @@ impl Around {
 }
 
 /// What is within a scroll drawn at `drawing` is cut to, in its content's coordinates, where its offset is not counted:
-/// all it slides through, from its content box's top left as far as its children reach, or its content box where they
-/// reach less far. Its offset within what it can slide shows its content box within this, so its children are cut to
-/// its content box alone, by the shift its content is listed in.
+/// all it may slide through, from its content box's top left on as far as a screen could hold. Its children reach no
+/// further than its extent, and the shift its content is listed in cuts them to its content box, so this cuts nothing
+/// that shows; it reads neither its extent nor its offset, so a row stays drawn as it was while what the scroll holds
+/// grows past it, as a log or a transcript does with each line added.
 fn scrolled(drawing: &Laid) -> Rect2 {
-    let content = drawing.content;
-    let reach = drawing.extent.max(content.size());
-
-    Rect2::from_origin_size(content.min, reach)
+    Rect2::from_origin_size(drawing.content.min, Vec2::splat(UNCUT))
 }
+
+/// How far what a scroll holds may reach past its content box's top left, in pixels: past any screen, and a whole
+/// number an `f32` holds exactly.
+const UNCUT: f32 = 16_777_216.0;
 
 /// Settles `widget`, a scroll along `axis` at `path` laid at `laid`, at what it can now scroll, and clamps its offset to
 /// it, keeping what changed of its state in `table`, and answers how far it slides what is within it.
