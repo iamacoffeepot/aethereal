@@ -215,8 +215,8 @@ impl PartialEq for DragSource {
 ///     ui: Screen,
 /// }
 ///
-/// /// What `bag.xml` compiles into:
-/// /// `<Button drag="{item}" drop="{self.place(at)}" drop_outside="{self.discard()}">`, once for each slot.
+/// /// What the bag's `view!` expands to:
+/// /// `Button { drag: item, drop => self.place(at), drop_outside => self.discard() }`, once for each slot.
 /// #[derive(Debug, Clone, Copy, PartialEq)]
 /// pub enum BagEvent {
 ///     Place(u32),

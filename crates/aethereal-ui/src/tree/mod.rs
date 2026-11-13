@@ -31,7 +31,7 @@ pub enum Segment {
     Item(ItemKey),
 }
 
-/// What tells one item of a list from the others, as `key="{item.id}"` names it: a field of the item, `Copy` and
+/// What tells one item of a list from the others, as `key item.id` names it: a field of the item, `Copy` and
 /// compared by value, turned into the number its widget state is kept under. A type used as a key converts with
 /// `From`, which the library gives every integer and a program writes for its own ids, and two items it tells apart
 /// must convert to two keys: two items of one list with one key are one key to the library, and the later is left out
@@ -187,7 +187,7 @@ impl Node {
         &*self.widget
     }
 
-    /// Its style, resolved from the screen's sheets.
+    /// Its style, resolved from the style its markup names.
     pub(crate) const fn style(&self) -> &Style {
         &self.style
     }

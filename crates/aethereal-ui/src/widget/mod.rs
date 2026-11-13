@@ -1,7 +1,7 @@
 //! What a widget is (ADR-0056: Your own widgets): a value of its settings, which takes part in layout as it arranges
 //! its children, measures itself when it is a leaf, and draws itself into its screen's draw list. A primitive, stock
-//! or a program's own, implements [`Widget`]; a composite is markup the build expands into primitives, so it implements
-//! nothing here.
+//! or a program's own, implements [`Widget`]; a composite is markup `widget!` expands into a type whose tree is
+//! built of primitives, so it implements nothing here.
 //!
 //! A widget keeps no state of its own. What it needs between rebuilds, hover or a scroll offset, is its
 //! [`Widget::State`], which the screen's widget table makes, keeps, and drops by the widget's key (ADR-0056: Widget

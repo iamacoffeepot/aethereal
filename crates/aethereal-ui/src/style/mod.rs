@@ -1,9 +1,10 @@
-//! A widget's style, resolved (ADR-0056: Styles are sheets, compiled in): every property the sheets compile into, as
-//! concrete values. The markup's build resolves each element's style from the sheets it lists and the attributes on
-//! it, and the runtime takes the result as it is: nothing is looked up, cascaded, or inherited here.
+//! A widget's style, resolved (ADR-0056: Styles are Rust items): every property a style sets, as concrete values.
+//! `style!` makes each style a function that starts from one other style, or none, and sets properties over it, and an
+//! element names one, or extends one for itself alone; the runtime takes the result as it is: nothing is looked up,
+//! cascaded, or inherited here.
 //!
 //! Sizes are logical pixels. The screen multiplies them by its UI scale as it lays out, so one scale enlarges
-//! everything without touching a sheet.
+//! everything without touching a style.
 
 mod convert;
 
@@ -13,7 +14,7 @@ use aethereal_render::text::{Align, Colour, Font, Outline};
 
 /// Every property a widget is styled by: its box, how it lays its children out, where it stands in its parent's grid,
 /// how it looks, and its text. Which way a flex container runs is not here: it is the widget, `Row` or `Column`, so a
-/// sheet cannot say otherwise than the tag.
+/// style cannot say otherwise than the element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
     pub width: Length,

@@ -11,10 +11,10 @@
 //! its content lists no hit and nothing Tab reaches.
 //!
 //! ```text
-//! <Tooltip>                                    Tooltip::new()
-//!     <ItemSlot item="{item}"/>                its anchor
-//!     <Text class="tip">{item.name}</Text>     its content, shown once the pointer has rested on its anchor
-//! </Tooltip>
+//! Tooltip {                                    Tooltip::new()
+//!     ItemSlot { item: item }                  its anchor
+//!     Text { style: tip, "{item.name}" }      its content, shown once the pointer has rested on its anchor
+//! }
 //! ```
 
 use crate::style::Style;
