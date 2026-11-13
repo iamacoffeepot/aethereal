@@ -536,7 +536,7 @@ impl Screen {
                     called = anew();
                     called.listing()
                 }
-                None => listings.list((at, flattened.was[at], node.node.stamps()), reading, builds.0, anew).0,
+                None => listings.list((at, flattened.was[at], node.node.stamps()), reading, builds.0, anew),
             };
             layers.list(surface.stands, listing.now.iter().cloned());
             if let Holding::Slides { slide, cut } = holding {

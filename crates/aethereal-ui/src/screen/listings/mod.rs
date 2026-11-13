@@ -93,6 +93,18 @@ impl Listed {
 }
 
 impl Kept {
+    /// Whether it holds for a node stamped `stamps` whose listing reads what `reading` finds: its node has drawn as it
+    /// did since the build it was listed from, and it reads the same.
+    fn holds(&self, stamps: Stamps, reading: Reading<'_>) -> bool {
+        match self {
+            Self::Listed { read, built, .. } => {
+                let drawn = stamps.drawn <= *built;
+                drawn && read.is(reading)
+            }
+            Self::Unlisted => false,
+        }
+    }
+
     /// What it lists, as a layout reads it: nothing, unlisted.
     fn listing(&self) -> Listing<'_> {
         match self {
@@ -146,15 +158,6 @@ fn bits(laid: &Laid) -> [u32; 15] {
     .map(f32::to_bits)
 }
 
-/// How a widget's listing stood against what was kept of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Again {
-    /// It read what it read, and lists what it listed.
-    Kept,
-    /// It was listed anew.
-    Fresh,
-}
-
 impl Listings {
     /// Begins a layout's pass over `flattened`: what each widget kept follows it to where it stands, and what was kept
     /// in the order of any flattening but the last is let go.
@@ -179,22 +182,19 @@ impl Listings {
         reading: Reading<'_>,
         built: u64,
         list: impl FnOnce() -> Listed,
-    ) -> (Listing<'_>, Again) {
+    ) -> Listing<'_> {
         let kept = match was {
             Was::At(old) if old < self.by.len() => mem::take(&mut self.by[old]),
             Was::At(_) | Was::New => Kept::Unlisted,
         };
-        let (kept, again) = match kept {
-            Kept::Listed { read, listed, built: then } if stamps.drawn <= then && read.is(reading) => {
-                (Kept::Listed { read, listed, built }, Again::Kept)
-            }
-            Kept::Listed { .. } | Kept::Unlisted => {
-                (Kept::Listed { read: Read::of(reading), listed: list(), built }, Again::Fresh)
-            }
+        let holds = kept.holds(stamps, reading);
+        let kept = match kept {
+            Kept::Listed { read, listed, .. } if holds => Kept::Listed { read, listed, built },
+            Kept::Listed { .. } | Kept::Unlisted => Kept::Listed { read: Read::of(reading), listed: list(), built },
         };
         self.next[at] = kept;
 
-        (self.next[at].listing(), again)
+        self.next[at].listing()
     }
 
     /// Ends the layout's pass: what a widget it did not list kept is let go, and, when it `waited` for a font's metrics

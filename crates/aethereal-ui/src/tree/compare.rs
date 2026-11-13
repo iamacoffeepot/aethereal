@@ -107,7 +107,7 @@ impl Tree {
                 *new = mem::replace(old, Node::kept(new.segment));
                 continue;
             }
-            let differs = difference_of(old, new);
+            let (differs, keyed) = difference_of(old, new);
             new.stamps = match differs {
                 Differs::Layout => {
                     relaid.changed(&segments);
@@ -123,7 +123,6 @@ impl Tree {
             };
             remembered(old, new, &segments, memos);
             let depth = depth + 1;
-            let keyed = same_keys(&old.children, &new.children);
             if keyed {
                 for (old, new) in old.children.iter_mut().zip(&mut new.children) {
                     stack.push(Pair { old, new, depth });
@@ -170,8 +169,8 @@ enum Differs {
 
 /// How `new` differs from `old`, the last tree's node at its key path: in its layout, when its style, its widget's
 /// layout, or its children's keys changed; in its drawing alone, when its widget's other settings, or what it drags
-/// or takes dropped, changed.
-fn difference_of(old: &Node, new: &Node) -> Differs {
+/// or takes dropped, changed. Beside it, whether their children stand at the same keys in the same order.
+fn difference_of(old: &Node, new: &Node) -> (Differs, bool) {
     let styled = old.style == new.style;
     let drawn = old.widget.same(&*new.widget);
     let laid = drawn || old.widget.same_layout(&*new.widget);
@@ -180,16 +179,22 @@ fn difference_of(old: &Node, new: &Node) -> Differs {
     let dragged = old.drag == new.drag;
     let dropped = old.drop == new.drop;
     let draws_alike = drawn && dragged && dropped;
-    match (lays_alike, draws_alike) {
+    let differs = match (lays_alike, draws_alike) {
         (false, _) => Differs::Layout,
         (true, false) => Differs::Drawing,
         (true, true) => Differs::Not,
-    }
+    };
+
+    (differs, kept)
 }
 
 /// Keeps what `new`, at `path`, was built from when it is a composite marked `memo` built at this view, and lets go of
 /// what `old`, the last tree's node there, was built from when `new` is no such composite.
 fn remembered(old: &Node, new: &mut Node, path: &[Segment], memos: &mut Memos) {
+    let plain = matches!((&old.memo, &new.memo), (Memo::Plain, Memo::Plain));
+    if plain {
+        return;
+    }
     match mem::replace(&mut new.memo, Memo::Plain) {
         Memo::Built(inputs) => {
             memos.keep(path, inputs);

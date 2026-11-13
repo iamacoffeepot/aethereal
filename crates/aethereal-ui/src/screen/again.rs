@@ -9,6 +9,7 @@
 use super::input::tests::{hit, laid, over, press, release};
 use super::tests::{mono, screen};
 use super::{DrawKey, Last, Listed, Screen, Slot, Viewport, Worked};
+use crate::Look;
 use crate::draw::Content;
 use crate::prelude::*;
 use crate::table::{Focus, Table};
@@ -435,4 +436,52 @@ fn a_kept_line_is_taken_whole_and_a_changed_one_is_built() {
     let kept = |key: u64| tree.find(&line(key)).is_some_and(Node::is_kept);
     assert!(kept(1), "an unchanged line is a marker the screen takes the last tree's line for");
     assert!(!kept(2), "a changed line is built");
+}
+
+#[test]
+fn a_pressed_line_reordered_and_replaced_keeps_its_state_with_its_key() {
+    // Catches a widget's state read at its place in tree order when the table no longer stands in that order: the
+    // pressed line, its list reversed, would draw another line pressed; and a table taken as kept because it counts as
+    // many states as the tree has nodes, though a line was replaced by another.
+    let mut board = laid_board();
+    let button = KeyPath::of(&[Segment::Place(0), Segment::Place(1), Segment::Item(ItemKey::new(4))]);
+    let at = hit(&board.ui, &button);
+    let _ = press(&mut board.ui, at, 2.0, 2.0);
+    board.lay_out();
+
+    board.entries.reverse();
+    let (kept, fresh) = again(&mut board);
+    assert_eq!(kept, fresh, "reversed");
+
+    board.entries[0] = entry(41, 41);
+    let (kept, fresh) = again(&mut board);
+    assert_eq!(kept, fresh, "replaced");
+}
+
+#[test]
+fn a_kept_line_placed_in_another_style_is_built_again() {
+    // Catches a kept composite compared without the style it is placed with: a line whose element names another style
+    // would keep the last one's background.
+    let tree = |screen: &Screen, colour| {
+        let note = entry(1, 1);
+        let style = Style { background: colour, ..Style::default() };
+        let line = screen.memo(
+            &[Segment::Place(0), Segment::Place(0)],
+            Look::Given(style),
+            || Line { entry: note.clone(), click: BoardEvent::Pick(1) },
+            |_| true,
+        );
+        Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![line]))
+    };
+    let mut screen = ready();
+    let built = tree(&screen, rgb(200, 0, 0));
+    let _ = laid(&mut screen, built, &[]);
+
+    let built = tree(&screen, rgb(0, 0, 200));
+    let _ = laid(&mut screen, built, &[]);
+    let mut fresh = ready();
+    let built = tree(&fresh, rgb(0, 0, 200));
+    let _ = laid(&mut fresh, built, &[]);
+
+    assert_eq!(seen(&screen), seen(&fresh));
 }
