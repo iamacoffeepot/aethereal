@@ -5,7 +5,8 @@ use aethereal_actor::{Bytes, Carries, Protocol};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;
 
-/// The methods a server takes. A request of any other is answered `501` before it reaches the handler.
+/// The methods a server takes, and a client writes. A request of any other is answered `501` before it reaches the
+/// handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.method")]
 pub enum Method {
@@ -34,6 +35,20 @@ impl Method {
         };
 
         Some(method)
+    }
+
+    /// The token a request line writes it as.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Head => "HEAD",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Delete => "DELETE",
+            Self::Patch => "PATCH",
+            Self::Options => "OPTIONS",
+        }
     }
 }
 

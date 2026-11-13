@@ -6,8 +6,9 @@ use core::error::Error;
 use core::fmt;
 use core::mem::size_of;
 
-/// The HTTP capability's section, `http`: its limits on servers and on what each request may hold, and how long each
-/// part of an exchange may take (ADR-0035). They are the root's config. Where listeners bind is `Tcp`'s setting.
+/// The HTTP capability's section, `http`: its limits on servers and on what each request may hold, how long each part
+/// of an exchange may take, and its limits on clients and on what each response may hold (ADR-0035). They are the
+/// root's config. Where listeners bind is `Tcp`'s setting.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.http.settings")]
 #[settings]
@@ -40,6 +41,17 @@ pub struct HttpSettings {
     /// exchange's ask of its handler, which every request made for it inherits, at every hop (ADR-0041).
     #[flag]
     pub answer_within_millis: u32,
+    /// The most clients the root holds.
+    #[flag]
+    pub most_clients: u32,
+    /// The most bytes of a response's head a client reads, and of each line of a chunked body, past which the
+    /// response fails as too large.
+    #[flag]
+    pub most_reply_head_bytes: u32,
+    /// The most bytes of a response's body a client reads whole, past which the response fails as too large. A body
+    /// streamed has no limit: it is never held whole.
+    #[flag]
+    pub most_reply_body_bytes: u32,
 }
 
 impl Default for HttpSettings {
@@ -54,6 +66,9 @@ impl Default for HttpSettings {
             request_within_millis: 10_000,
             idle_within_millis: 60_000,
             answer_within_millis: 300_000,
+            most_clients: 64,
+            most_reply_head_bytes: 16 * 1024,
+            most_reply_body_bytes: 8 * 1024 * 1024,
         }
     }
 }
@@ -62,22 +77,22 @@ impl Default for HttpSettings {
 const LEAST_HEADER_BYTES: usize = 4;
 
 impl HttpSettings {
-    /// The most bytes a turn reads into one piece of mail of a server of these settings: a request's head, as the most
-    /// headers that fit, as reading a list charges each of its elements whole. Its body and each chunk read are blobs,
-    /// which no mail's limit weighs (ADR-0042).
+    /// The most bytes a turn reads into one piece of mail of these settings: a request's head or a response's,
+    /// whichever may be larger, as the most headers that fit, as reading a list charges each of its elements whole. A
+    /// body and each chunk read are blobs, which no mail's limit weighs (ADR-0042).
     #[must_use]
     pub fn most_read_bytes(&self) -> usize {
-        let head = size(self.most_head_bytes);
+        let head = size(self.most_head_bytes.max(self.most_reply_head_bytes));
         let headers = (head / LEAST_HEADER_BYTES).saturating_mul(size_of::<Header>());
 
         head.saturating_add(headers)
     }
 
-    /// The most bytes of blobs a request of a server of these settings holds at once: its whole body, and the chunk
-    /// read beside it (ADR-0042).
+    /// The most bytes of blobs a request to a server, or a response to a client, of these settings holds at once: its
+    /// whole body, whichever may be larger, and the chunk read beside it (ADR-0042).
     #[must_use]
     pub fn most_blob_bytes(&self) -> usize {
-        size(self.most_body_bytes).saturating_add(size(self.chunk_bytes))
+        size(self.most_body_bytes.max(self.most_reply_body_bytes)).saturating_add(size(self.chunk_bytes))
     }
 }
 
@@ -87,7 +102,7 @@ fn size(bytes: u32) -> usize {
 }
 
 /// Why `Http` did not start: mail it would send could not be read, so a request within its limits would never reach
-/// its handler (ADR-0017).
+/// its handler, nor a response its asker (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadLimitTooLow {
     /// The most bytes a turn reads into one piece of mail.
@@ -147,6 +162,27 @@ impl HttpSettings {
             request_within_millis: self.request_within_millis,
             idle_within_millis: self.idle_within_millis,
             answer_within_millis: self.answer_within_millis,
+        }
+    }
+}
+
+/// What every client holds to: the settings that bound one response (ADR-0035).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.http.client_limits")]
+pub struct ClientLimits {
+    pub most_head_bytes: u32,
+    pub most_body_bytes: u32,
+    pub window: u32,
+}
+
+impl HttpSettings {
+    /// The limits each client holds to.
+    #[must_use]
+    pub const fn client_limits(&self) -> ClientLimits {
+        ClientLimits {
+            most_head_bytes: self.most_reply_head_bytes,
+            most_body_bytes: self.most_reply_body_bytes,
+            window: self.window,
         }
     }
 }
