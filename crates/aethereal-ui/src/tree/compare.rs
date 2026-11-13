@@ -113,13 +113,9 @@ impl Tree {
     /// than this one's at its key, each new to it, and each of this one's gone from it: walked with a stack of its own,
     /// so a tree's depth costs no frames.
     ///
-    /// A tree equal to this one is told by value first, which stops at the first node that differs, so a tree at rest
-    /// costs no more than comparing it.
+    /// Each pair of nodes is compared once, in one walk, so a tree at rest costs what comparing it by value would, and
+    /// one that changed costs no more (*settled by the library's draw-cost stage*).
     pub(crate) fn compare(&self, new: &Self, relaid: &mut impl Relaid) -> Difference {
-        let equal = self == new;
-        if equal {
-            return Difference::Same;
-        }
         let rooted = self.root.segment == new.root.segment;
         if !rooted {
             relaid.left(&[self.root.segment]);

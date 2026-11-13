@@ -14,6 +14,7 @@ mod tests;
 use crate::tree::{Flat, KeyPath};
 use crate::widget::Widget;
 use aethereal_data::{Budget, KindId, Plain, from_bytes};
+use core::mem;
 
 /// The most bytes a state read out of the table may decode into.
 const MOST_STATE_BYTES: usize = 64 * 1024;
@@ -45,7 +46,8 @@ struct Kept {
 
 impl Table {
     /// Keeps a state for each node of `flat`, a tree's nodes: a state kept under the node's path, of its widget's
-    /// state's kind, stays as it is; any other is made with `Default`; and a state no node's path names is dropped.
+    /// state's kind, stays as it is, moved and not copied; any other is made with `Default`; and a state no node's path
+    /// names is dropped. A table that keeps each node's state already is left as it is.
     /// Focus held by a path no node names, or by a widget that cannot hold it, is cleared.
     pub(crate) fn refresh(&mut self, flat: &[Flat<'_>]) {
         if let Focus::On(path) = &self.focus {
@@ -54,13 +56,21 @@ impl Table {
                 self.focus = Focus::Nowhere;
             }
         }
+        let unchanged = self.holds_each(flat);
+        if unchanged {
+            return;
+        }
+        let mut was = mem::take(&mut self.kept);
         let mut kept: Vec<Kept> = flat
             .iter()
             .map(|flat| {
                 let widget = flat.node.widget();
                 let kind = widget.state_kind();
-                let found = self.found(&flat.path).filter(|kept| kept.kind.same(kind));
-                let state = found.map_or_else(|| widget.first_state(), |kept| kept.state.clone());
+                let found = was.binary_search_by(|kept| kept.path.cmp(&flat.path)).ok().map(|at| &mut was[at]);
+                let state = match found {
+                    Some(kept) if kept.kind.same(kind) => mem::take(&mut kept.state),
+                    Some(_) | None => widget.first_state(),
+                };
 
                 Kept { path: flat.path.clone(), kind, state }
             })
@@ -68,6 +78,18 @@ impl Table {
         kept.sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
         self.kept = kept;
+    }
+
+    /// Whether it keeps a state of its widget's kind for each node of `flat`, and nothing else: what a refresh would
+    /// keep, as a tree that changed none of its keys or widgets' types leaves it.
+    fn holds_each(&self, flat: &[Flat<'_>]) -> bool {
+        let counted = self.kept.len() == flat.len();
+
+        counted
+            && flat.iter().all(|flat| {
+                let kind = flat.node.widget().state_kind();
+                self.found(&flat.path).is_some_and(|kept| kept.kind.same(kind))
+            })
     }
 
     /// The state kept under `path`, if any.
