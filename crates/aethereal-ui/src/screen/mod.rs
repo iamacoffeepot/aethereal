@@ -696,8 +696,8 @@ fn listed<'flat>(
     let mut now = Vec::new();
     let mut later = Vec::new();
     let mut number = 0;
-    for (pieces, into) in [(beneath, &mut now), (above, &mut later)] {
-        for content in layered(pieces) {
+    for (mut pieces, into) in [(beneath, &mut now), (above, &mut later)] {
+        for content in layered(&mut pieces) {
             let key = DrawKey { path: node.path.clone(), layer: number };
             number += 1;
             drawn.push((key.clone(), content));

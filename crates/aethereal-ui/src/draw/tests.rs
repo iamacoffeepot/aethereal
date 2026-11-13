@@ -221,7 +221,10 @@ fn drawn(device: &wgpu::Device, queue: &wgpu::Queue, drawing: &Drawing) -> Vec<V
         layout: &shifting,
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: shift.as_entire_binding() }],
     });
-    let records: Vec<u8> = drawing.quads.iter().flat_map(record).collect();
+    let mut records: Vec<u8> = Vec::new();
+    for quad in &drawing.quads {
+        record(quad, &mut records);
+    }
     let corners = buffer(device, &corners(), wgpu::BufferUsages::VERTEX);
     let instances = buffer(device, &records, wgpu::BufferUsages::VERTEX);
     let indices = buffer(device, &triangles(), wgpu::BufferUsages::INDEX);
@@ -485,16 +488,16 @@ fn a_run_of_plain_fills_writes_each_cut_to_its_clip_in_a_quarter_of_a_record() {
     // record, four times the bytes a fill needs; a fill not cut to its clip, which the fill program does not cut; one
     // the clip leaves nothing of still written; and a run holding a rounded quad drawn as fills, which squares it.
     let clip = rect([0.0, 0.0], [10.0, 10.0]);
-    let fills = vec![
+    let mut fills = vec![
         Piece::Quad(plain(rect([2.0, 2.0], [4.0, 4.0]), clip)),
         Piece::Quad(plain(rect([8.0, 0.0], [12.0, 10.0]), clip)),
         Piece::Quad(plain(rect([20.0, 0.0], [30.0, 10.0]), clip)),
     ];
     let rounded = Quad { radius: 2.0, ..plain(rect([0.0, 0.0], [4.0, 4.0]), clip) };
-    let mixed = vec![Piece::Quad(plain(rect([0.0, 0.0], [4.0, 4.0]), clip)), Piece::Quad(rounded)];
+    let mut mixed = vec![Piece::Quad(plain(rect([0.0, 0.0], [4.0, 4.0]), clip)), Piece::Quad(rounded)];
 
-    let filled = layered(fills);
-    let kept = layered(mixed);
+    let filled = layered(&mut fills);
+    let kept = layered(&mut mixed);
 
     let floats = |records: &[u8]| -> Vec<f32> {
         records.chunks_exact(4).map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect()
