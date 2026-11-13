@@ -236,7 +236,7 @@ impl Listener {
             if stream.set_nonblocking(true).is_err() {
                 continue;
             }
-            let socket = turn.keep(Socket(stream))?;
+            let socket = turn.keep(Socket::Tcp(stream))?;
             let config = ConnectionConfig {
                 socket: turn.give(socket)?,
                 framing: self.framing,

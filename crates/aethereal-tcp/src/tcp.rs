@@ -1,10 +1,13 @@
 //! The TCP capability's root (ADR-0033).
 
-use crate::dial::{Dial, Reached};
-use crate::{BoundSocket, ConnectionConfig, Dialed, Framing, Listener, ListenerConfig, Shut, SocketAddress};
+use crate::dial::{Dial, DialUnix, Reached, ReachedUnix};
+use crate::{
+    BoundSocket, ConnectionConfig, Dialed, Framing, Listener, ListenerConfig, Shut, Socket, SocketAddress, SocketPath,
+    Unaddressable,
+};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, ToSender,
-    ToType, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handles, Held,
+    ToSender, ToType, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -60,6 +63,33 @@ pub enum Connected {
     Unavailable,
 }
 
+/// What an actor asks the root to dial on this machine: the Unix socket at `path`, and how the connection frames what
+/// it reads. The connection is a [`Dialed`], read and written as one dialed over TCP is.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.tcp.connect_unix")]
+pub struct ConnectUnix {
+    pub path: SocketPath,
+    pub framing: Framing,
+}
+
+/// What a connect to a Unix socket came to.
+#[derive(Debug, Bound)]
+#[kind(name = "aether.tcp.connected_unix")]
+pub enum ConnectedUnix {
+    /// Connected: the connection beneath the root.
+    Open { connection: ActorRef<Dialed> },
+    /// The path can name no socket, so nothing was dialed.
+    Unaddressable(Unaddressable),
+    /// No socket is at the path.
+    Missing,
+    /// Nothing listens on the socket, or the host refused the connect.
+    Refused,
+    /// The root holds its most connections.
+    Full,
+    /// The host serves no dialer, or has no Unix sockets.
+    Unavailable,
+}
+
 /// What the root is made from: where listeners bind, and its limits (ADR-0033).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tcp.config")]
@@ -77,12 +107,29 @@ pub struct Dialing {
     number: u64,
 }
 
-/// A connect the root holds until its dial is answered.
+/// What the root keeps for a dial to a Unix socket it runs: which connect it was run for.
+#[derive(Debug, PartialEq, Eq, Plain)]
+#[kind(name = "aether.tcp.dialing_unix")]
+pub struct DialingUnix {
+    number: u64,
+}
+
+/// A connect the root holds until its dial is answered, and answers with an `A`.
 #[derive(Bound)]
-struct Waiting {
-    held: Held<Connected>,
+struct Waiting<A> {
+    held: Held<A>,
     framing: Framing,
     asker: u64,
+}
+
+/// What became of a socket a dial made, as the root stands a connection up on it.
+enum Opening {
+    /// The connection stands beneath the root.
+    Open(ActorRef<Dialed>),
+    /// Its asker has ended: the socket is not taken, and the engine drops it.
+    Unasked,
+    /// The connection could not be spawned.
+    Refused,
 }
 
 /// A listener or a connection the root opened, and the actor that asked for it.
@@ -92,8 +139,8 @@ struct Opened<C> {
     asker: u64,
 }
 
-/// The TCP capability: listens and dials for every other actor (ADR-0033). An actor asks it a [`Listen`] or a
-/// [`Connect`] at its typed path, `path::<Tcp>(())`.
+/// The TCP capability: listens and dials for every other actor (ADR-0033). An actor asks it a [`Listen`], a
+/// [`Connect`], or a [`ConnectUnix`] at its typed path, `path::<Tcp>(())`.
 ///
 /// It watches each actor that asks, and when one ends, shuts every listener
 /// and connection it opened for it.
@@ -103,7 +150,8 @@ pub struct Tcp {
     config: TcpConfig,
     listeners: BTreeMap<u16, Opened<Listener>>,
     dialed: BTreeMap<u64, Opened<Dialed>>,
-    waiting: BTreeMap<u64, Waiting>,
+    waiting: BTreeMap<u64, Waiting<Connected>>,
+    waiting_unix: BTreeMap<u64, Waiting<ConnectedUnix>>,
     /// The actors watched for having asked.
     askers: Vec<u64>,
     next: u64,
@@ -123,10 +171,16 @@ impl Carries<Connect> for Tcp {
     type Answers = (Connected,);
 }
 
+/// Asked at its typed path, it answers a connect to a Unix socket once its dial is answered, or at once when the path
+/// can name no socket.
+impl Carries<ConnectUnix> for Tcp {
+    type Answers = (ConnectedUnix,);
+}
+
 impl Actor for Tcp {
     type Config = TcpConfig;
     type Key = ();
-    type Handles = (Listen, Connect, Answer<Reached, Dialing>, Ended);
+    type Handles = (Listen, Connect, ConnectUnix, Answer<Reached, Dialing>, Answer<ReachedUnix, DialingUnix>, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -136,6 +190,7 @@ impl Actor for Tcp {
             listeners: BTreeMap::new(),
             dialed: BTreeMap::new(),
             waiting: BTreeMap::new(),
+            waiting_unix: BTreeMap::new(),
             askers: Vec::new(),
             next: 0,
         })
@@ -161,18 +216,40 @@ impl Handles<Connect> for Tcp {
     type Sends = (ToSender<Connected>,);
 
     fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let open = self.dialed.len() + self.waiting.len();
-        let is_full = open >= usize::try_from(self.config.most_connections).unwrap_or(usize::MAX);
-        if is_full {
+        if self.is_full() {
             turn.reply(&Connected::Full)?;
             return Ok(());
         }
         let held = turn.hold()?;
         let asker = self.watch_asker(turn);
-        let number = self.next;
-        self.next += 1;
+        let number = self.number();
         turn.run(&Dial::new(connect.host, connect.port), &Dialing { number })?;
         self.waiting.insert(number, Waiting { held, framing: connect.framing, asker });
+
+        Ok(())
+    }
+}
+
+impl Handles<ConnectUnix> for Tcp {
+    type Sends = (ToSender<ConnectedUnix>,);
+
+    fn handle(&mut self, connect: ConnectUnix, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let path = match connect.path.checked() {
+            Ok(path) => String::from(path),
+            Err(why) => {
+                turn.reply(&ConnectedUnix::Unaddressable(why))?;
+                return Ok(());
+            }
+        };
+        if self.is_full() {
+            turn.reply(&ConnectedUnix::Full)?;
+            return Ok(());
+        }
+        let held = turn.hold()?;
+        let asker = self.watch_asker(turn);
+        let number = self.number();
+        turn.run(&DialUnix::new(path), &DialingUnix { number })?;
+        self.waiting_unix.insert(number, Waiting { held, framing: connect.framing, asker });
 
         Ok(())
     }
@@ -191,29 +268,44 @@ impl Handles<Answer<Reached, Dialing>> for Tcp {
         };
         let connected = match answered {
             Answered::Yes(Reached::Open { socket, peer }) => {
-                let is_asked = self.askers.contains(&asker);
-                if !is_asked {
-                    // Its asker has ended: the socket is not taken, and the engine drops it.
-                    return Ok(());
-                }
-                let socket = turn.take(socket)?;
-                let config = ConnectionConfig {
-                    socket: turn.give(socket)?,
-                    framing,
-                    most_unsent_bytes: self.config.most_unsent_bytes,
-                };
-                match turn.spawn::<Dialed>(&dialing.number, config) {
-                    Ok(connection) => {
-                        turn.watch(connection);
-                        self.dialed.insert(dialing.number, Opened { child: connection, asker });
-                        Connected::Open { connection, peer }
-                    }
-                    Err(_) => Connected::Refused,
+                match self.open(turn, dialing.number, socket, framing, asker)? {
+                    Opening::Open(connection) => Connected::Open { connection, peer },
+                    Opening::Unasked => return Ok(()),
+                    Opening::Refused => Connected::Refused,
                 }
             }
             Answered::Yes(Reached::Unresolved) => Connected::Unresolved,
             Answered::Yes(Reached::Refused) | Answered::No(_) => Connected::Refused,
             Answered::Yes(Reached::Unavailable) => Connected::Unavailable,
+        };
+        turn.answer(held, &connected)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<ReachedUnix, DialingUnix>> for Tcp {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, dialing): (Answered<ReachedUnix>, DialingUnix),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(Waiting { held, framing, asker }) = self.waiting_unix.remove(&dialing.number) else {
+            return Ok(());
+        };
+        let connected = match answered {
+            Answered::Yes(ReachedUnix::Open { socket }) => {
+                match self.open(turn, dialing.number, socket, framing, asker)? {
+                    Opening::Open(connection) => ConnectedUnix::Open { connection },
+                    Opening::Unasked => return Ok(()),
+                    Opening::Refused => ConnectedUnix::Refused,
+                }
+            }
+            Answered::Yes(ReachedUnix::Missing) => ConnectedUnix::Missing,
+            Answered::Yes(ReachedUnix::Refused) | Answered::No(_) => ConnectedUnix::Refused,
+            Answered::Yes(ReachedUnix::Unavailable) => ConnectedUnix::Unavailable,
         };
         turn.answer(held, &connected)?;
 
@@ -284,6 +376,47 @@ impl Tcp {
         self.listeners.insert(port, Opened { child: listener, asker });
 
         Ok(Listening::Bound { listener, port })
+    }
+
+    /// Whether the root holds its most connections: those dialed, and those it is dialing.
+    fn is_full(&self) -> bool {
+        let open = self.dialed.len() + self.waiting.len() + self.waiting_unix.len();
+
+        open >= usize::try_from(self.config.most_connections).unwrap_or(usize::MAX)
+    }
+
+    /// The number of the next dial, which keys the connection it makes.
+    fn number(&mut self) -> u64 {
+        let number = self.next;
+        self.next += 1;
+
+        number
+    }
+
+    /// Stands a connection up beneath the root on the socket a dial made, keyed `number`, for `asker`: unless `asker`
+    /// has ended in the meantime, when the socket is not taken.
+    fn open<S>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        number: u64,
+        socket: Given<Socket>,
+        framing: Framing,
+        asker: u64,
+    ) -> Result<Opening, Fault> {
+        let is_asked = self.askers.contains(&asker);
+        if !is_asked {
+            return Ok(Opening::Unasked);
+        }
+        let socket = turn.take(socket)?;
+        let config =
+            ConnectionConfig { socket: turn.give(socket)?, framing, most_unsent_bytes: self.config.most_unsent_bytes };
+        let Ok(connection) = turn.spawn::<Dialed>(&number, config) else {
+            return Ok(Opening::Refused);
+        };
+        turn.watch(connection);
+        self.dialed.insert(number, Opened { child: connection, asker });
+
+        Ok(Opening::Open(connection))
     }
 
     /// Watches the sender of the mail handled, once, and answers who it is.
