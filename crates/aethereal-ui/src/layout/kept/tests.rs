@@ -11,7 +11,7 @@ use crate::widget::{Arrange, Draws, Laid, Lines, Offer, Stateless, Widget};
 use crate::widgets::{Column, Row, Scroll, Text};
 use aethereal_math::Vec2;
 use aethereal_render::font::{Font as FontFile, Metrics};
-use aethereal_render::text::Font;
+use aethereal_render::text::{Font, Run, Wrap, measure};
 
 /// The renderer's own monospace font.
 const MONO: &[u8] = include_bytes!("../../../../aethereal-render/fonts/IBMPlexMono-Regular.ttf");
@@ -19,13 +19,19 @@ const MONO: &[u8] = include_bytes!("../../../../aethereal-render/fonts/IBMPlexMo
 /// The size of the screen the trees are laid out in, unless a test resizes it.
 const SCREEN: Vec2 = Vec2::new(320.0, 200.0);
 
-/// The fonts of a screen that knows the monospace font's metrics.
-fn known() -> Fonts {
+/// The monospace font's metrics, as the renderer hands them.
+fn mono() -> Metrics {
     let Ok(font) = FontFile::read(MONO) else {
         panic!("the renderer's monospace font reads");
     };
+
+    font.metrics().clone()
+}
+
+/// The fonts of a screen that knows the monospace font's metrics.
+fn known() -> Fonts {
     let mut fonts = Fonts::default();
-    fonts.read(Font::Mono, font.metrics().clone(), Vec::<Metrics>::new());
+    fonts.read(Font::Mono, mono(), Vec::new());
 
     fonts
 }
@@ -269,4 +275,52 @@ fn a_change_layout_does_not_read_keeps_the_boxes_and_one_it_does_lays_out_anew()
 
         assert_eq!(laid, fresh(&fonts, &charted(label, tall, slide), SCREEN, 1.0), "{label} {tall} {slide}");
     }
+}
+
+/// Two texts side by side, as tabs' headers are: as wide as both, each measured on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pair {
+    left: String,
+    right: String,
+}
+
+impl Widget for Pair {
+    type State = Stateless;
+
+    fn arrange(&self) -> Arrange {
+        Arrange::Leaf
+    }
+
+    fn measure(&self, style: &Style, measuring: &mut Measuring<'_>, _: Offer) -> Vec2 {
+        let size = style.font_size * measuring.scale();
+        let mut wide = |text: &str| {
+            let runs = [Run::new(text, style.colour)];
+            measuring.text(Font::Mono, size, &runs, Wrap::None).map_or(0.0, |measured| measured.width)
+        };
+
+        Vec2::new(wide(&self.left) + wide(&self.right), 1.0)
+    }
+
+    fn draw(&self, _: &Stateless, _: &Style, _: &Laid, _: &mut Draws<'_, '_>) {}
+}
+
+#[test]
+fn each_text_a_widget_measures_is_measured_as_itself() {
+    // Catches texts kept by their widget's key alone, so the second text a widget measures is answered with the
+    // first's box, as every header of a tab strip would be the first's width.
+    let style = Style::default();
+    let pair = Pair { left: String::from("ab"), right: String::from("a much longer one") };
+    let row = Node::new(
+        Segment::Place(0),
+        Row,
+        Style::default(),
+        vec![Node::new(Segment::Place(0), pair, style.clone(), Vec::new())],
+    );
+    let tree = Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![row]));
+    let mut screen = Screen::new(known(), tree, SCREEN, 1.0);
+
+    let laid = screen.laid(SCREEN, 1.0);
+
+    let wide = |text: &str| measure(&mono(), &[], style.font_size, &[Run::new(text, style.colour)], Wrap::None).width;
+    assert_eq!(laid.boxes[2].rect.width(), wide("ab") + wide("a much longer one"));
 }

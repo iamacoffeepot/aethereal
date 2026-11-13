@@ -8,7 +8,7 @@ mod tests;
 
 use super::{Laidout, Laying, Tree, boxed, in_flow};
 use crate::fonts::{Asker, Measuring};
-use crate::style::{Edges, Parent, flow};
+use crate::style::{Parent, flow};
 use crate::tree::{Flat, KeyPath, Relaid, Segment};
 use aethereal_math::Vec2;
 use core::mem;
@@ -21,10 +21,12 @@ use taffy::{AvailableSpace, Cache, Dimension, Layout, NodeId, Position, Size, co
 /// A layout whose tree lays out as the last one did, at the same size, scale, and open popups, is the last one: its
 /// boxes are handed back, and Taffy does not run. Otherwise Taffy runs, and a node whose layout is kept, whose own
 /// settings and whose children's laid out as they did, answers from what it kept, so only what changed and what holds
-/// it is laid out again. What tells it what changed is the comparison of each tree with the last ([`Relaid`]), and its
-/// own: a node whose style, as Taffy reads it, is not what it kept, as its room or its parent's arrangement changed, is
-/// laid out again, with all that holds it; and every node kept is let go at another UI scale, which every length and
-/// measure reads, and after a layout that met a font whose metrics had not come.
+/// it is laid out again. What tells it what changed is the comparison of each tree with the last ([`Relaid`]): a node
+/// whose style, widget's layout, or children changed lets go of what it kept, as does every node holding it, and a node
+/// new to the tree, or one whose cache is empty, is laid out again with all that holds it. Every node kept is let go at
+/// another UI scale, which every length and measure reads, and after a layout that met a font whose metrics had not
+/// come. What a node's style as Taffy reads it takes beside its own, its room and what its parent and its place make of
+/// it, follows from what the comparison tells and the size, scale, and popups the boxes hold at.
 #[derive(Debug, Default)]
 pub struct Layouts {
     /// What Taffy kept of each node, by its key path, as the last layout left it.
@@ -67,41 +69,20 @@ impl LaidAt {
 }
 
 /// What Taffy keeps of one node from one layout to the next: its place in tree order when it was kept, which Taffy
-/// names it by; how it flowed; Taffy's cache of what it laid out; where its parent laid it; and the boxes out of flow
-/// it holds, by their places.
+/// names it by; Taffy's cache of what it laid out; where its parent laid it; and the boxes out of flow it holds, by
+/// their places.
 #[derive(Debug)]
 pub(super) struct Kept {
     at: usize,
-    flow: Flow,
     pub(super) cache: Cache,
     pub(super) layout: Layout,
     pub(super) hoisted: Vec<NodeId>,
 }
 
-/// What a node's style as Taffy reads it takes beside its own style and its widget's arrangement, which its tree's
-/// comparison tells of: what its parent is to it, the room it keeps, and where it is placed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Flow {
-    parent: Parent,
-    room: Edges<f32>,
-    placed: Placing,
-}
-
-/// Where a node is laid out.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Placing {
-    /// It is the root, the screen's size, here.
-    Root(Vec2),
-    /// It is the content of an open popup, out of flow in the screen's box.
-    Top,
-    /// In its parent's box, as its parent lays it out, or nowhere, in a shut popup's content.
-    Held,
-}
-
 impl Kept {
-    /// A node at `at` that flows as `flow` says, laid out nowhere yet.
-    const fn new(at: usize, flow: Flow) -> Self {
-        Self { at, flow, cache: Cache::new(), layout: Layout::with_order(0), hoisted: Vec::new() }
+    /// A node at `at`, laid out nowhere yet.
+    const fn new(at: usize) -> Self {
+        Self { at, cache: Cache::new(), layout: Layout::with_order(0), hoisted: Vec::new() }
     }
 
     /// It, at `at` in tree order: what it hoisted moves with it, as its subtree stands unchanged.
@@ -185,31 +166,20 @@ impl Layouts {
             let arrange = widget.arrange();
             measuring.at(&node.path, Asker::Layout);
             let room = widget.room(node.node.style(), measuring);
-            let mut style = flow(node.node.style(), arrange, parent, room, scale);
-            let placed = match at {
-                0 => Placing::Root(size),
-                _ if tops.contains(&at) => Placing::Top,
-                _ => Placing::Held,
+            let style = flow(node.node.style(), arrange, parent, room, scale);
+            let (key, kept) = match was.remove_entry(&node.path) {
+                Some((key, kept)) => (key, kept.moved(at)),
+                None => (node.path.clone(), Kept::new(at)),
             };
-            match placed {
-                Placing::Root(size) => {
-                    style.size = Size { width: Dimension::length(size.x), height: Dimension::length(size.y) };
-                }
-                Placing::Top => style.position = Position::Absolute,
-                Placing::Held => {}
-            }
-            let flowed = Flow { parent, room, placed };
-            let (key, kept, changed) = match was.remove_entry(&node.path) {
-                Some((key, kept)) => {
-                    let reflowed = kept.flow != flowed;
-                    let emptied = kept.cache.is_empty();
-                    (key, Kept { flow: flowed, ..kept.moved(at) }, reflowed || emptied)
-                }
-                None => (node.path.clone(), Kept::new(at, flowed), true),
-            };
-            anew[at] = changed;
+            anew[at] = kept.cache.is_empty();
             keys.push(key);
             nodes.push(Laying { arrange, flat: node, children: children.clone(), style, kept });
+        }
+        if let Some(root) = nodes.first_mut() {
+            root.style.size = Size { width: Dimension::length(size.x), height: Dimension::length(size.y) };
+        }
+        for top in tops {
+            nodes[*top].style.position = Position::Absolute;
         }
         let reached = reached(&flowing, tops);
         for (at, reached) in reached.iter().enumerate().rev() {
