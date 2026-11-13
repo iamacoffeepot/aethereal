@@ -47,6 +47,7 @@ aethereal-http = { path = "../aethereal-http" }
 aethereal-library = { path = "../aethereal-library", features = ["tools"] }
 aethereal-link = { path = "../aethereal-link", features = ["tools"] }
 aethereal-mcp = { path = "../aethereal-mcp" }
+aethereal-sessions = { path = "../aethereal-sessions" }
 aethereal-store = { path = "../aethereal-store", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
 
