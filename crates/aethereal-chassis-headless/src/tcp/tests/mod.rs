@@ -1,5 +1,8 @@
 //! The TCP capability on the native host (ADR-0033).
 
+#[cfg(unix)]
+mod unix;
+
 use super::*;
 use crate::waiting;
 use aethereal_actor::{

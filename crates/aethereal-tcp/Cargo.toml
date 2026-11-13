@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The TCP capability: a root whose listeners and connections own their sockets, read as streams paced by credit (ADR-0033)"
+description = "The TCP capability: a root whose listeners and connections own their sockets, read as streams paced by credit, and which dials Unix sockets too (ADR-0033)"
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }

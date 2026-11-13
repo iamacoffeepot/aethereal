@@ -1,5 +1,5 @@
-//! The TCP capability on the native host: its dialer, names looked up and connected to on threads of its own, and its
-//! bootstrap, which serves the dialer and the host's poller (ADR-0033, ADR-0034).
+//! The TCP capability on the native host: its dialer, names looked up and connected to, and Unix sockets connected to,
+//! on threads of its own, and its bootstrap, which serves the dialer and the host's poller (ADR-0033, ADR-0034).
 
 #[cfg(test)]
 mod tests;
@@ -7,12 +7,20 @@ mod tests;
 use crate::{Headless, Poller};
 use aethereal_actor::Service;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
+#[cfg(unix)]
+use aethereal_tcp::UnixDialing;
 use aethereal_tcp::{Dialer, Dialing, Tcp, TcpSettings, Undialed};
 use crossbeam_queue::SegQueue;
 use std::future::Future;
+#[cfg(unix)]
+use std::io::ErrorKind;
 use std::mem;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::num::NonZeroUsize;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -21,8 +29,9 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
 /// The native host's dialer (ADR-0033): each dial done on one of threads of its own, which looks the name up and tries
-/// each of its addresses in turn, so a dial never blocks the thread that polls it, and is woken once it has connected
-/// or given up. Dropping the last reference to it stops its threads once each has finished what it was dialing.
+/// each of its addresses in turn, or connects to the Unix socket at a path, so a dial never blocks the thread that
+/// polls it, and is woken once it has connected or given up. Dropping the last reference to it stops its threads once
+/// each has finished what it was dialing.
 pub struct Dialers {
     shared: Arc<Shared>,
     /// The threads that dial, which the dials asked wake in turn.
@@ -43,21 +52,23 @@ struct Shared {
 }
 
 /// One dial asked: where to, and where its connection goes.
-struct Asked {
-    host: String,
-    port: u16,
-    delivery: Arc<Mutex<Delivery>>,
+enum Asked {
+    /// To `port` on `host`, over TCP.
+    Host { host: String, port: u16, delivery: Arc<Mutex<Delivery<TcpStream>>> },
+    /// To the Unix socket at `path`.
+    #[cfg(unix)]
+    Path { path: PathBuf, delivery: Arc<Mutex<Delivery<UnixStream>>> },
 }
 
-/// Where a dial stands, as the thread that dials and the job that polls it both see it. A lock, as the two are on
-/// different threads and either may come first.
-enum Delivery {
+/// Where a dial for a connection `S` stands, as the thread that dials and the job that polls it both see it. A lock, as
+/// the two are on different threads and either may come first.
+enum Delivery<S> {
     /// Asked, and not yet polled.
     Asked,
     /// Polled before it had connected: woken once it has, or has given up.
     Polled(Waker),
     /// Dialed: the connection, or why there is none.
-    Dialed(Result<TcpStream, Undialed>),
+    Dialed(Result<S, Undialed>),
     /// Handed to the job that polled it.
     Handed,
 }
@@ -102,14 +113,27 @@ impl Dialers {
 
         Self::new(threads, Duration::from_millis(u64::from(settings.dial_within_millis)))
     }
+
+    /// Queues `asked`, and wakes the next of its threads to take it.
+    fn ask(&self, asked: Asked) {
+        self.shared.asked.push(asked);
+        let dialer = self.next.fetch_add(1, Ordering::Relaxed) % self.dialing.len();
+        self.dialing[dialer].unpark();
+    }
 }
 
 impl Dialer for Dialers {
     fn dial<'a>(&'a self, host: &'a str, port: u16) -> Dialing<'a> {
         let delivery = Arc::new(Mutex::new(Delivery::Asked));
-        self.shared.asked.push(Asked { host: String::from(host), port, delivery: Arc::clone(&delivery) });
-        let dialer = self.next.fetch_add(1, Ordering::Relaxed) % self.dialing.len();
-        self.dialing[dialer].unpark();
+        self.ask(Asked::Host { host: String::from(host), port, delivery: Arc::clone(&delivery) });
+
+        Box::pin(Dial { delivery })
+    }
+
+    #[cfg(unix)]
+    fn dial_unix<'a>(&'a self, path: &'a Path) -> UnixDialing<'a> {
+        let delivery = Arc::new(Mutex::new(Delivery::Asked));
+        self.ask(Asked::Path { path: path.to_path_buf(), delivery: Arc::clone(&delivery) });
 
         Box::pin(Dial { delivery })
     }
@@ -154,11 +178,11 @@ impl Drop for Dialers {
 /// Takes dials and does each until it is told to stop, parking whenever there is none to take.
 fn dial(shared: &Shared) {
     loop {
-        while let Some(Asked { host, port, delivery }) = shared.asked.pop() {
-            let dialed = connect(&host, port, shared.within);
-            let was = mem::replace(&mut *delivered(&delivery), Delivery::Dialed(dialed));
-            if let Delivery::Polled(waker) = was {
-                waker.wake();
+        while let Some(asked) = shared.asked.pop() {
+            match asked {
+                Asked::Host { host, port, delivery } => deliver(&delivery, connect(&host, port, shared.within)),
+                #[cfg(unix)]
+                Asked::Path { path, delivery } => deliver(&delivery, connect_unix(&path)),
             }
         }
         if shared.stopping.load(Ordering::Acquire) {
@@ -182,18 +206,38 @@ fn connect(host: &str, port: u16, within: Duration) -> Result<TcpStream, Undiale
         .ok_or(Undialed::Refused)
 }
 
+/// A connection to the Unix socket at `path`, set not to block. A path with nothing at it is told from a socket that
+/// nothing listens on, so a caller can tell a service that is not there from one that has stopped.
+#[cfg(unix)]
+fn connect_unix(path: &Path) -> Result<UnixStream, Undialed> {
+    let stream = UnixStream::connect(path).map_err(|error| match error.kind() {
+        ErrorKind::NotFound => Undialed::Unresolved,
+        _ => Undialed::Refused,
+    })?;
+
+    stream.set_nonblocking(true).map(|()| stream).map_err(|_| Undialed::Refused)
+}
+
+/// Hands `dialed` to the dial `delivery` is of, waking the job that polled it if it has.
+fn deliver<S>(delivery: &Mutex<Delivery<S>>, dialed: Result<S, Undialed>) {
+    let was = mem::replace(&mut *delivered(delivery), Delivery::Dialed(dialed));
+    if let Delivery::Polled(waker) = was {
+        waker.wake();
+    }
+}
+
 /// Where a dial stands, whatever a thread that panicked holding it left.
-fn delivered(delivery: &Mutex<Delivery>) -> MutexGuard<'_, Delivery> {
+fn delivered<S>(delivery: &Mutex<Delivery<S>>) -> MutexGuard<'_, Delivery<S>> {
     delivery.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A dial, as the job that asked it polls it.
-struct Dial {
-    delivery: Arc<Mutex<Delivery>>,
+/// A dial for a connection `S`, as the job that asked it polls it.
+struct Dial<S> {
+    delivery: Arc<Mutex<Delivery<S>>>,
 }
 
-impl Future for Dial {
-    type Output = Result<TcpStream, Undialed>;
+impl<S> Future for Dial<S> {
+    type Output = Result<S, Undialed>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let mut delivery = delivered(&self.delivery);

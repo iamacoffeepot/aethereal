@@ -1,8 +1,10 @@
-//! The job that dials out: made by the TCP capability's root alone (ADR-0033).
+//! The jobs that dial out, over TCP or to a Unix socket: made by the TCP capability's root alone (ADR-0033).
 
 use crate::{Dialer, Socket, SocketAddress, Undialed};
 use aethereal_actor::{Fault, Given, Job, Runner, Running};
 use aethereal_data::{Bound, Plain};
+#[cfg(unix)]
+use std::path::Path;
 
 /// Connects to `port` on `host` through the host's dialer, and answers with the socket it made (ADR-0018:
 /// `Running::hand`). It is private to this crate, so no actor but the root dials, and the root's limit on connections
@@ -49,12 +51,67 @@ impl Job for Dial {
                 let Ok(peer) = stream.peer_addr() else {
                     return Ok(Reached::Refused);
                 };
-                Reached::Open { socket: job.hand(Socket(stream)), peer: SocketAddress::from(peer) }
+                Reached::Open { socket: job.hand(Socket::Tcp(stream)), peer: SocketAddress::from(peer) }
             }
             Err(Undialed::Unresolved) => Reached::Unresolved,
             Err(Undialed::Refused) => Reached::Refused,
         };
 
         Ok(reached)
+    }
+}
+
+/// Connects to the Unix socket at `path`, which the root has checked, through the host's dialer, and answers with the
+/// socket it made. It is private to this crate, as [`Dial`] is, so the root's limit on connections holds for these too.
+#[derive(Plain)]
+#[kind(name = "aether.tcp.dial_unix")]
+pub struct DialUnix {
+    path: String,
+}
+
+impl DialUnix {
+    pub const fn new(path: String) -> Self {
+        Self { path }
+    }
+}
+
+/// What a dial to a Unix socket came to.
+#[derive(Bound)]
+#[kind(name = "aether.tcp.reached_unix")]
+pub enum ReachedUnix {
+    /// Connected: the socket, on its way to the root.
+    Open { socket: Given<Socket> },
+    /// No socket is at the path.
+    Missing,
+    /// Nothing listens on the socket, or the host refused the connect.
+    Refused,
+    /// The host serves no dialer, or has no Unix sockets.
+    Unavailable,
+}
+
+/// It waits on the host's dialer, as [`Dial`] does: a connect to a listener whose backlog is full waits for room.
+impl Job for DialUnix {
+    type Done = ReachedUnix;
+    const RUNNER: Runner = Runner::Io;
+
+    #[cfg(unix)]
+    async fn run(self, job: &mut Running) -> Result<ReachedUnix, Fault> {
+        let Some(dialer) = job.service::<dyn Dialer>() else {
+            return Ok(ReachedUnix::Unavailable);
+        };
+        let connected = dialer.dial_unix(Path::new(&self.path)).await;
+        let reached = match connected {
+            Ok(stream) => ReachedUnix::Open { socket: job.hand(Socket::Unix(stream)) },
+            Err(Undialed::Unresolved) => ReachedUnix::Missing,
+            Err(Undialed::Refused) => ReachedUnix::Refused,
+        };
+
+        Ok(reached)
+    }
+
+    /// A host with no Unix sockets has none to dial.
+    #[cfg(not(unix))]
+    async fn run(self, _: &mut Running) -> Result<ReachedUnix, Fault> {
+        Ok(ReachedUnix::Unavailable)
     }
 }

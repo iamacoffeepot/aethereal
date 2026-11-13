@@ -20,7 +20,6 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
-use std::net::TcpStream;
 use std::{iter, mem};
 
 /// The most bytes a connection reads from its socket in one call.
@@ -424,13 +423,13 @@ impl Connection {
     /// `sent` each write whose bytes all went. The socket and the parts' bytes are both shared borrows of the turn, so
     /// they are held together: the kernel writes a socket through `&` (ADR-0042).
     fn write_unsent<A, S>(&mut self, turn: &Turn<'_, A, S>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
-        let Ok(Socket(stream)) = turn.resource(&self.socket) else {
+        let Ok(socket) = turn.resource(&self.socket) else {
             return Err(HungUp::Reset);
         };
-        // `Write` is implemented for `&TcpStream`, and its methods take `&mut self`: the reference is the `self`.
-        let mut stream: &TcpStream = stream;
+        // `Write` is implemented for `&Socket`, and its methods take `&mut self`: the reference is the `self`.
+        let mut socket: &Socket = socket;
         while let Some(first) = self.unsent.first() {
-            let gathered = write_gathered(&mut stream, first.pieces(turn), &mut self.written)?;
+            let gathered = write_gathered(&mut socket, first.pieces(turn), &mut self.written)?;
             if gathered == Gathered::Blocked {
                 return Ok(());
             }
@@ -445,9 +444,11 @@ impl Connection {
     /// it stopped. The bytes are read into that buffer itself, which the connection keeps from read to read.
     fn fill<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<Filled, HungUp> {
         let most = self.framing.most();
-        let Ok(Socket(socket)) = turn.open(&mut self.socket) else {
+        let Ok(socket) = turn.open(&mut self.socket) else {
             return Err(HungUp::Reset);
         };
+        // `Read` is implemented for `&Socket`, as `Write` is.
+        let mut socket: &Socket = socket;
         while self.read.len() < most {
             let start = self.read.len();
             let room = (most - start).min(CHUNK);
