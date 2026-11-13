@@ -211,8 +211,11 @@ impl Screen {
             self.sent = Sent::Stale;
             let mut wanted: Vec<&DrawKey> = self.order.iter().filter_map(Slot::draws).collect();
             wanted.sort_unstable();
-            let (kept, retired): (Vec<Layer>, Vec<Layer>) =
-                self.layers.drain(..).partition(|layer| wanted.binary_search(&&layer.key).is_ok());
+            let mut wanted = wanted.into_iter().peekable();
+            let (kept, retired): (Vec<Layer>, Vec<Layer>) = self.layers.drain(..).partition(|layer| {
+                while wanted.next_if(|key| **key < layer.key).is_some() {}
+                wanted.next_if(|key| **key == layer.key).is_some()
+            });
             self.layers = kept;
             self.retired.extend(retired);
         }

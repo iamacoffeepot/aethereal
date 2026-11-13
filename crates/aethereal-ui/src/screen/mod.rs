@@ -525,7 +525,7 @@ impl Screen {
             }
 
             let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, around.covered(at));
-            let state = self.table.bytes(node.path).unwrap_or_default();
+            let state = self.table.bytes_at(at, node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
             let reading = Reading { laid: drawing, state, standing, live };
             let mut anew = || listed(node, reading, &laid, (&mut measuring, &mut *pieces), &mut drawn);
