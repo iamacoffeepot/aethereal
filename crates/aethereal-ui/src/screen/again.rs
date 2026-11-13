@@ -485,3 +485,41 @@ fn a_kept_line_placed_in_another_style_is_built_again() {
 
     assert_eq!(seen(&screen), seen(&fresh));
 }
+
+#[test]
+fn a_pressed_line_in_a_list_keyed_out_of_order_draws_pressed_and_no_other_does() {
+    // Catches a widget's state read at its node's place in tree order when the widget table, kept in the order of its
+    // paths, does not stand in that order: a list keyed in reverse would draw the pressed tint on another line. A fresh
+    // screen reads states the same way, so this is asserted of the draws themselves.
+    let mut board = Board::first(ready());
+    board.entries.reverse();
+    board.lay_out();
+    let button = |key: u64| KeyPath::of(&[Segment::Place(0), Segment::Place(1), Segment::Item(ItemKey::new(key))]);
+    let at = hit(&board.ui, &button(4));
+
+    let _ = press(&mut board.ui, at, 2.0, 2.0);
+    board.lay_out();
+
+    let drawn: Vec<u64> =
+        (0..6).filter(|key| board.ui.layers.iter().any(|layer| layer.key().path == button(*key))).collect();
+    assert_eq!(drawn, vec![4], "only the pressed line's button draws, its tint and its ring");
+}
+
+#[test]
+fn a_flattening_no_layout_followed_lets_go_of_what_was_kept() {
+    // Catches what layouts and listings keep in tree order taken to stand in the order of the last flattening when a
+    // flattening came between that they never followed: what one node kept would be read as another's.
+    let mut board = laid_board();
+    board.entries.reverse();
+    let tree = board.view();
+    board.ui.rebuilt(tree);
+    let Worked { last: Last::Built(tree), shape, .. } = &mut *board.ui.unkept else {
+        panic!("the screen built a tree");
+    };
+    let _ = tree.flat(shape).is_ok();
+
+    board.entries.insert(1, entry(40, 2));
+    let (kept, fresh) = again(&mut board);
+
+    assert_eq!(kept, fresh);
+}

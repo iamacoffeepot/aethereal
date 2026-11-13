@@ -358,7 +358,6 @@ impl Screen {
         };
         layer.stage = Stage::Quads { instances, placement, capacity: *capacity, written: written.clone() };
         layer.settle(&mut orders);
-        self.sent = Sent::Stale;
         self.settle(&mut orders);
 
         orders
@@ -423,7 +422,6 @@ impl Screen {
         };
         layer.stage = Stage::Text { text, placement, written: written.clone(), placed: *placed };
         layer.settle(&mut orders);
-        self.sent = Sent::Stale;
         self.settle(&mut orders);
 
         orders
