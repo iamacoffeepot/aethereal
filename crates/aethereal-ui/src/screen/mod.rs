@@ -6,8 +6,8 @@
 //!
 //! - **Identical, and nothing outside the tree changed since:** nothing more. No layout, no mail, and the renderer keeps
 //!   the last list (ADR-0031).
-//! - **Different:** the tree is laid out, each widget's draws are compared with the last by key, and only what changed
-//!   is sent; the draw list is sent when it changed.
+//! - **Different:** the tree is laid out; a widget that would draw what it drew lists it again, the rest are drawn and
+//!   their draws compared with the last by key, and only what changed is sent; the draw list is sent when it changed.
 //!
 //! Nothing marks what changed, so nothing can be forgotten. What changes outside the tree goes through the library, so
 //! the library knows to lay out at the next `Prepare` though the tree is the same: a font's metrics coming, the
@@ -16,9 +16,9 @@
 //!
 //! What a layout lists, in tree order, is each widget's draws, then a hit over its box when the pointer reaches it,
 //! after the keys the screen declares; and the library keeps what each entry of the list it sent is, so input through
-//! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys). A scroll slides
-//! what is within it by the offset its state keeps, clamped to what it can scroll as it is laid out, and cuts it to its
-//! content box; a list in a scroll builds only the items its window shows, as [`Screen::rows`] says. The content of each
+//! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys). What a scroll
+//! holds is listed within a shift that slides it by the offset its state keeps, clamped to what it can scroll as it is
+//! laid out, and cuts it to its content box; a list in a scroll builds only the items its window shows, as [`Screen::rows`] says. The content of each
 //! open popup is listed after everything else, in its own layer of the screen's top layer, in tree order: placed against
 //! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal. A child
 //! actor the screen places in a slot is called where the slot's content box is, at the slot's place in the list, and is
@@ -32,6 +32,7 @@
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
 //! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
 
+mod around;
 mod children;
 mod drags;
 mod input;
@@ -56,12 +57,12 @@ pub use scrolls::Rows;
 use crate::child::{self, calling};
 use crate::draw::{Content, layered};
 use crate::fonts::{Asker, Fonts, Measuring, Texts};
-use crate::layout::{Boxed, Laidout, Layouts, Pitch};
+use crate::layout::{Laidout, Layouts, Pitch};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{Difference, Flat, KeyPath, Node, Segment, Tree};
+use crate::tree::{Difference, Flat, KeyPath, Node, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Lit, Quad, Sample};
+use crate::widget::{Draws, Focused, Laid, Lit, Piece, Quad, Sample};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -72,6 +73,7 @@ use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
 use aethereal_window::Cursor;
+use around::{Around, Holding, Stood};
 use children::Told;
 use drags::Grip;
 use input::{Hold, Typed};
@@ -254,6 +256,9 @@ struct Worked {
     texts: Texts,
     layouts: Layouts,
     listings: Listings,
+    /// What one widget draws is gathered in, empty between widgets: kept from one layout to the next, so a widget that
+    /// draws hundreds of quads grows nothing to gather them.
+    pieces: Vec<Piece>,
     placed: Vec<(KeyPath, Laid)>,
     pitches: Vec<(KeyPath, Pitch)>,
 }
@@ -431,7 +436,8 @@ impl Screen {
             return Outcome::Waiting;
         }
         let lit = self.lit();
-        let Worked { last: Last::Built(tree), fonts, texts, layouts, listings, placed, pitches } = &mut *self.unkept
+        let Worked { last: Last::Built(tree), fonts, texts, layouts, listings, pieces, placed, pitches } =
+            &mut *self.unkept
         else {
             return Outcome::Waiting;
         };
@@ -460,29 +466,14 @@ impl Screen {
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
         let mut layers = Layers::default();
         let mut pending: Vec<Pending> = Vec::new();
-        let mut covered = vec![false; flat.len()];
-        let mut shifts = vec![Vec2::ZERO; flat.len()];
-        let mut clips = vec![viewport.rect(); flat.len()];
-        let mut moved = vec![Vec2::ZERO; flat.len()];
-        let mut cuts = vec![viewport.rect(); flat.len()];
+        let mut around = Around::new(flat.len(), viewport.rect());
         let mut laid_out = Vec::with_capacity(flat.len());
         let mut told = Vec::new();
         listings.begin();
         for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
-            let (laid, holding) = stand(&mut self.table, node, boxed, shifts[at], clips[at], viewport.scale);
-            let drawing = Laid { clip: cuts[at], ..laid.relative_to(-moved[at]) };
-            let (slide, cut, region) = match holding {
-                Holding::Flows => (Vec2::ZERO, clips[at], cuts[at]),
-                Holding::Slides { slide, cut } => (slide, cut, scrolled(&drawing)),
-            };
-            for child in &node.children {
-                shifts[*child] = shifts[at] + slide;
-                clips[*child] = cut;
-                moved[*child] = moved[at] + slide;
-                cuts[*child] = region;
-            }
+            let Stood { laid, drawing, holding } = around.stand(&mut self.table, node, at, boxed, viewport.scale);
             if surface.stands == Stands::Hidden {
                 laid_out.push((node.path.clone(), laid));
                 continue;
@@ -490,30 +481,25 @@ impl Screen {
             let opens = popper(node.node.widget()).filter(|popper| popper.open(&self.table, &node.path));
             if let Some(popper) = opens {
                 for (content, shift) in lift(&mut layers, &flat, boxes, at, popper, laid.rect, viewport.rect()) {
-                    shifts[content] = shift;
-                    clips[content] = viewport.rect();
-                    moved[content] = Vec2::ZERO;
-                    cuts[content] = viewport.rect();
+                    around.lift(content, shift, viewport.rect());
                 }
             }
 
-            let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, covered[at]);
+            let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, around.covered(at));
             let state = self.table.bytes(&node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
             let reading = Reading { laid: drawing, state, standing, live };
-            let mut list = || listed(node, reading, &laid, &mut measuring, &mut drawn);
+            let mut anew = || listed(node, reading, &laid, (&mut measuring, &mut *pieces), &mut drawn);
             let listing = match calling(node.node.widget()) {
                 Some(slot) => {
                     told.push(Told::of(slot, &laid, viewport));
-                    list()
+                    anew()
                 }
-                None => listings.list(&node.path, reading, list),
+                None => listings.list(&node.path, reading, anew),
             };
             layers.list(surface.stands, listing.now);
             if let Holding::Slides { slide, cut } = holding {
-                let shift =
-                    Slot::Shift { origin: -slide, clip: Rect2 { min: cut.min + moved[at], max: cut.max + moved[at] } };
-                layers.list(surface.stands, vec![shift]);
+                layers.list(surface.stands, vec![around.shift(at, slide, cut)]);
                 pending.push(Pending { until: ends[at], stands: surface.stands, slots: vec![Slot::Unshift] });
             }
             let deferred = !listing.later.is_empty();
@@ -521,12 +507,7 @@ impl Screen {
                 let until = past_anchor(node, &flat, &ends, at);
                 pending.push(Pending { until, stands: surface.stands, slots: listing.later });
             }
-            let covers = covered[at] || listing.blocks;
-            for child in &node.children {
-                let held = flat[*child].path.segments().last() == Some(&Segment::Place(0));
-                let lifted = opens.is_some() && !held;
-                covered[*child] = covers && !lifted;
-            }
+            around.cover((node, at), &flat, listing.blocks, opens.is_some());
             laid_out.push((node.path.clone(), laid));
         }
         layers.settle(&mut pending, usize::MAX);
@@ -558,7 +539,6 @@ impl Screen {
     /// screen out with them, though its tree is the same.
     pub(crate) fn metrics_read(&mut self, font: Font, own: Metrics, fallbacks: Vec<Metrics>) {
         self.unkept.fonts.read(font, own, fallbacks);
-        self.unkept.listings.clear();
         self.fresh = Fresh::Stale;
     }
 
@@ -566,7 +546,6 @@ impl Screen {
     /// `Prepare`.
     pub(crate) fn metrics_refused(&mut self, font: Font) {
         self.unkept.fonts.refused(font);
-        self.unkept.listings.clear();
         self.fresh = Fresh::Stale;
     }
 
@@ -647,42 +626,6 @@ impl Screen {
     }
 }
 
-/// Where `flat`, laid out as `boxed` at `scale`, stands once the scrolls around it have slid it by `shift` and cut it to
-/// `clip`; and what it does to what is within it: a scroll slides it by its offset, clamped in `table`, and cuts it to
-/// its content box.
-fn stand(table: &mut Table, flat: &Flat<'_>, boxed: &Boxed, shift: Vec2, clip: Rect2, scale: f32) -> (Laid, Holding) {
-    let moved = |rect: Rect2| Rect2 { min: rect.min - shift, max: rect.max - shift };
-    let laid = Laid { rect: moved(boxed.rect), content: moved(boxed.content), clip, extent: boxed.extent, scale };
-    let widget = flat.node.widget();
-    let holding = match widget.arrange() {
-        Arrange::Scroll(axis) => {
-            Holding::Slides { slide: fit(table, &flat.path, widget, &laid, axis), cut: clip.intersection(laid.content) }
-        }
-        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => Holding::Flows,
-    };
-
-    (laid, holding)
-}
-
-/// What a node does to where what is within it stands, in the screen's pixels: nothing; or, as a scroll, slides it by
-/// `slide` and cuts it to `cut`, its content box within what it is cut to.
-#[derive(Debug, Clone, Copy)]
-enum Holding {
-    Flows,
-    Slides { slide: Vec2, cut: Rect2 },
-}
-
-/// What is within a scroll drawn at `drawing` is cut to, in its content's coordinates, where its offset is not counted:
-/// all it slides through, from its content box's top left as far as its children reach, or its content box where they
-/// reach less far. Its offset within what it can slide shows its content box within this, so its children are cut to
-/// its content box alone, by the shift its content is listed in.
-fn scrolled(drawing: &Laid) -> Rect2 {
-    let content = drawing.content;
-    let reach = drawing.extent.max(content.size());
-
-    Rect2::from_origin_size(content.min, reach)
-}
-
 /// Where the entries of a list being made are drawn from the screen's own coordinates, as the shifts open before each
 /// move them, and where they were before each shift still open, the last opened on top.
 #[derive(Debug)]
@@ -755,7 +698,7 @@ enum Dragged {
 }
 
 /// What the widget of `node` lists, laid, stated, and standing as `reading` finds it, laid at `placed` in the screen's
-/// own coordinates, its draws, by key, written into `drawn`: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and
+/// own coordinates, its draws gathered in `pieces`, empty, and written by key into `drawn`: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and
 /// a hit over its box when the pointer reaches it there and its surface is live, then the call of the child it places,
 /// when it is a child's slot, so the child draws over the slot's background and is reached before it, and over the
 /// call, where the child shows, a hit that hears presses alone. A popup's own drawing and hit are listed over its
@@ -764,7 +707,7 @@ fn listed<'flat>(
     node: &'flat Flat<'flat>,
     reading: Reading<'_>,
     placed: &Laid,
-    measuring: &mut Measuring<'flat>,
+    (measuring, pieces): (&mut Measuring<'flat>, &mut Vec<Piece>),
     drawn: &mut Vec<(DrawKey, Content)>,
 ) -> Listing {
     let Reading { laid, state, standing, live } = reading;
@@ -773,10 +716,9 @@ fn listed<'flat>(
     let widget = node.node.widget();
     let style = node.node.style();
     let over = popper(widget).is_some_and(Popper::over);
-    let mut beneath = Vec::new();
     let backed = fills(style);
     if backed {
-        Draws::new(&mut beneath, measuring, focused, lit).quad(Quad {
+        Draws::new(pieces, measuring, focused, lit).quad(Quad {
             rect: laid.rect,
             clip: laid.clip,
             colour: style.background,
@@ -786,19 +728,19 @@ fn listed<'flat>(
             sample: Sample::Solid,
         });
     }
-    let mut above = Vec::new();
-    let own = if over {
-        &mut above
+    let beneath = pieces.len();
+    widget.draw(state, style, &laid, &mut Draws::new(pieces, measuring, focused, lit));
+    let mut above = if over {
+        pieces.split_off(beneath)
     } else {
-        &mut beneath
+        Vec::new()
     };
-    widget.draw(state, style, &laid, &mut Draws::new(own, measuring, focused, lit));
 
     let mut now = Vec::new();
     let mut later = Vec::new();
     let mut number = 0;
-    for (mut pieces, into) in [(beneath, &mut now), (above, &mut later)] {
-        for content in layered(&mut pieces) {
+    for (pieces, into) in [(pieces, &mut now), (&mut above, &mut later)] {
+        for content in layered(pieces) {
             let key = DrawKey { path: node.path.clone(), layer: number };
             number += 1;
             drawn.push((key.clone(), content));
@@ -830,27 +772,6 @@ fn listed<'flat>(
     }
 
     Listing { now, later, blocks }
-}
-
-/// Settles `widget`, a scroll along `axis` at `path` laid at `laid`, at what it can now scroll, and clamps its offset to
-/// it, keeping what changed of its state in `table`, and answers how far it slides what is within it.
-fn fit(table: &mut Table, path: &KeyPath, widget: &dyn Built, laid: &Laid, axis: Axis) -> Vec2 {
-    let kept = table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
-    let mut state = kept.clone();
-    let travel = laid.travel(axis);
-    widget.settle(&mut state, travel);
-    let offset = widget.offset(&state);
-    let fitted = offset.clamp(0.0, travel);
-    let clamped = fitted.to_bits() != offset.to_bits();
-    if clamped {
-        widget.scroll_to(&mut state, fitted);
-    }
-    let changed = state != kept;
-    if changed {
-        table.write(path, widget.state_kind(), state);
-    }
-
-    axis.vector(fitted)
 }
 
 /// Whether `style` fills its box: a background or a border, drawn beneath its widget.

@@ -227,7 +227,18 @@ pub fn record(quad: &Quad, records: &mut Vec<u8>) {
         slice_uv,
     ];
 
-    records.extend(vectors.iter().flatten().flat_map(|value| value.to_le_bytes()));
+    write::<{ RECORD_BYTES as usize }>(records, vectors.as_flattened());
+}
+
+/// Writes `floats` after what `records` holds, each in its four little-endian bytes, gathered first so they are
+/// written as one run.
+fn write<const BYTES: usize>(records: &mut Vec<u8>, floats: &[f32]) {
+    let mut bytes = [0_u8; BYTES];
+    for (place, value) in bytes.chunks_exact_mut(4).zip(floats) {
+        place.copy_from_slice(&value.to_le_bytes());
+    }
+
+    records.extend_from_slice(&bytes);
 }
 
 /// Writes the record of `quad`, a plain fill, as the fill program reads it, after what `records` holds: its box cut to
@@ -239,7 +250,7 @@ pub fn fill(quad: &Quad, records: &mut Vec<u8>) {
     }
     let vectors = [[cut.min.x, cut.min.y, cut.max.x, cut.max.y], quad.colour.channels()];
 
-    records.extend(vectors.iter().flatten().flat_map(|value| value.to_le_bytes()));
+    write::<{ FILL_BYTES as usize }>(records, vectors.as_flattened());
 }
 
 /// Whether `quad` is a plain fill: solid, square, and borderless, so its box, its clip, and its colour say all of it.

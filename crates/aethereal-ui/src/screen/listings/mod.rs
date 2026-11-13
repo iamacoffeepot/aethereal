@@ -6,8 +6,9 @@
 //! drags and drops are the tree's, and the tree's comparison tells of a node whose any of them changed ([`Relaid`]),
 //! which lets go of what it kept. The rest is compared, to the bit: where it is drawn, its state, and how it stands with
 //! its screen's input and its surface. Beside them its drawing reads only the fonts' metrics and the UI scale its
-//! measures are taken at: the scale is where it is drawn, and a font's metrics coming or refused lets go of everything
-//! kept, as does a layout that met a font whose metrics had not come, whose draws are not sent.
+//! measures are taken at. The scale is where it is drawn. A font's metrics are read once, as they come or are refused,
+//! and a drawing that met a font whose metrics had not come waited for them: a layout that waited sends no draws, and
+//! keeps nothing of what it listed, so no listing kept was drawn without the metrics a fresh one would read.
 //!
 //! ```text
 //! compare ──> Relaid: changed, redrawn, entered, left ──> what each widget kept is let go
@@ -171,11 +172,6 @@ impl Listings {
     /// Lets go of what the widget at `path` kept, as its draws were not made.
     pub(super) fn forget(&mut self, path: &KeyPath) {
         self.by.remove(path);
-    }
-
-    /// Lets go of everything kept, as a font's metrics came or were refused, which any widget's drawing may read.
-    pub(super) fn clear(&mut self) {
-        self.by.clear();
     }
 
     /// Lets go of what the widget at `path`, and each within it, kept.

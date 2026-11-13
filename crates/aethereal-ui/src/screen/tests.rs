@@ -7,7 +7,7 @@ use super::*;
 use crate::draw::frame_bytes;
 use crate::style::{Length, Style};
 use crate::tree::{KeyPath, Node, Segment};
-use crate::widget::{Offer, Stateless, Widget};
+use crate::widget::{Arrange, Offer, Stateless, Widget};
 use crate::widgets::{Column, Stack, Text};
 use aethereal_actor::Answered;
 use aethereal_data::{Budget, from_bytes};

@@ -3,6 +3,7 @@
 //! and the hits with those of a screen that kept nothing, holding the same state, laying the changed page out once.
 
 use super::super::input::tests::laid;
+use super::super::orders::Order;
 use super::super::tests::{mono, screen};
 use super::super::{DrawKey, Fresh, Outcome, Screen, Slot, Viewport};
 use crate::draw::Content;
@@ -11,8 +12,10 @@ use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Segment, Tree};
 use crate::widget::{Arrange, Draws, Laid, Lines, Quad, Sample, Stateless, Widget};
 use crate::widgets::{Column, Row, Scroll, Text};
+use aethereal_actor::Answered;
 use aethereal_math::Vec2;
-use aethereal_render::font::Font as FontFile;
+use aethereal_render::font::{Font as FontFile, Metrics};
+use aethereal_render::instances::{Instanced, InstancesRefused};
 use aethereal_render::text::{Colour, Font};
 
 /// A swatch of `colour` filling its box, which lays out as any other swatch does, so a change of colour is drawing
@@ -322,8 +325,36 @@ fn a_change_drawn_in_a_layout_that_waited_for_a_font_is_drawn_once_it_comes() {
     assert_eq!(drawing(&kept), drawing(&fresh));
 }
 
+#[test]
+fn a_draw_the_renderer_did_not_make_is_asked_for_again_at_the_next_layout() {
+    // Catches a widget whose draw the renderer refused listed again as it was, which draws nothing while it reads the
+    // same, as no layer of it stands to list.
+    let style = Style { width: Length::Pixels(10.0), height: Length::Pixels(10.0), ..Style::default() };
+    let page = || {
+        let swatch = Node::new(Segment::Place(0), Swatch { colour: RED }, style.clone(), Vec::new());
+        Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![swatch]))
+    };
+    let mut screen = ready();
+    let first = screen.prepare(page(), &[]);
+    let asked = first.orders.orders().iter().find_map(|order| match order {
+        Order::Instances { context, .. } => Some(context.clone()),
+        _ => None,
+    });
+    let Some(asked) = asked else {
+        panic!("the swatch's instances are asked for: {:?}", first.orders);
+    };
+    let refused = Instanced::Refused(InstancesRefused::Capacity { capacity: 0 });
+    let _ = screen.instanced(Answered::Yes(refused), asked);
+
+    screen.fresh = Fresh::Stale;
+    let again = screen.prepare(page(), &[]);
+
+    let asks_again = again.orders.orders().iter().any(|order| matches!(order, Order::Instances { .. }));
+    assert!(asks_again, "the swatch's instances are asked for again: {:?}", again.orders);
+}
+
 /// The renderer's own proportional font's metrics, which set a text otherwise than the monospace font's.
-fn sans() -> aethereal_render::font::Metrics {
+fn sans() -> Metrics {
     let Ok(font) = FontFile::read(SANS) else {
         panic!("the renderer's proportional font reads");
     };
