@@ -13,13 +13,14 @@ use core::mem;
 use std::collections::BTreeMap;
 
 /// How a tree differs from the last one built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Difference {
     /// Not at all: the same tree, rebuilt.
     Same,
     /// Only in what some of its widgets draw: it lays out as the last one did.
     Drawing,
-    /// In how some of it lays out.
+    /// In how some of it lays out: what a screen that has built nothing yet stands at.
+    #[default]
     Layout,
 }
 

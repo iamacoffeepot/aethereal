@@ -160,6 +160,6 @@ impl Hasher for Folding {
     }
 
     fn write_isize(&mut self, word: isize) {
-        self.fold(u64::from_ne_bytes(word.to_ne_bytes()));
+        self.write_usize(word.cast_unsigned());
     }
 }

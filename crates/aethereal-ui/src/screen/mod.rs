@@ -271,6 +271,8 @@ struct Worked {
     /// tree before it.
     builds: u64,
     relaid: u64,
+    /// How the last tree built differed from the one before it.
+    difference: Difference,
     /// What each composite marked `memo` in the last tree was built from, by its key path.
     memos: Memos,
     /// The last tree's last flattening, kept for the next.
@@ -287,10 +289,17 @@ struct Worked {
 }
 
 impl Worked {
-    /// Takes in `tree`, the tree the screen's view built, in place of the last unless it is the same: what its layouts,
-    /// texts, and listings keep is told what of it lays out or draws otherwise ([`Relaid`](crate::tree::Relaid)). How
-    /// it differs from the last.
+    /// Takes in `tree`, the tree the screen's view built, merged with the last: each node stamped with the build it
+    /// last laid out and drew otherwise at, and what its texts keep told what of it lays out or draws otherwise
+    /// ([`Relaid`](crate::tree::Relaid)). How it differs from the last. While the screen stands still, the last tree
+    /// built the same as the one before it, a tree is first compared with it whole, which stops at the first node that
+    /// differs: one equal is let go, and the last stands with its stamps, at the cost of a comparison alone.
     fn built(&mut self, mut tree: Tree) -> Difference {
+        let still = self.difference == Difference::Same;
+        let unchanged = still && matches!(&self.last, Last::Built(last) if **last == tree);
+        if unchanged {
+            return Difference::Same;
+        }
         self.builds += 1;
         let build = self.builds;
         let Self { last, memos, texts, .. } = self;
@@ -302,6 +311,7 @@ impl Worked {
         if relaid {
             self.relaid = build;
         }
+        self.difference = difference;
         let Self { last, .. } = self;
         match last {
             Last::Built(kept) => **kept = tree,
