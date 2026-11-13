@@ -58,7 +58,7 @@ impl Turn<'_> {
 
 **Reading stays a turn's.** `turn.read(&bytes)` borrows from the store, a view no turn changes (ADR-0014). A helper that reads is handed the slice. `to_json` takes the bytes it reads, and the link writes a `Bytes` into a frame by reading it in its turn: a frame crosses to another engine at `Bare`, so its bytes are copied there, as a frame's are now. A turn that hands blob bytes to a resource it holds, as a connection writes them to its socket, reaches the resource with `turn.resource(&handle)`, a shared borrow of the turn as `turn.read` is, so the two are held together; `turn.open` borrows the turn whole and cannot be. A socket is written through a shared reference (`Write for &TcpStream`), so the bytes go from the store to the socket with no copy.
 
-**TCP and HTTP move bytes as blobs.** The amendment to ADR-0033:
+**TCP and HTTP move bytes as blobs** (ADR-0033: `Write`, `Frame`):
 
 ```rust
 pub struct Write { pub parts: Vec<Bytes> }    // written with one gathered write, in order

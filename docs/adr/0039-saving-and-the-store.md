@@ -85,7 +85,7 @@ pub struct Stored { pub entries: Vec<Entry> }   // newest first
 pub struct Entry  { pub hash: StoreHash, pub names: Vec<StoreName>, pub bytes: u64, pub pinned: bool, pub held: bool }
 ```
 
-- **A name never spells a hash:** 64 lowercase hexadecimal digits are refused, so text naming a binary is a hash when it spells one (amended by ADR-0040).
+- **A name never spells a hash:** 64 lowercase hexadecimal digits are refused, so text naming a binary is a hash when it spells one (ADR-0040).
 - **A name points at the hash last checked in under it.** A check-in moves its name. A hash that loses its last name stays in the store, unnamed, until it is pruned; so a hash always names one build, and an older build is reached by its hash.
 - **A pin keeps an entry from being pruned,** asked by hash with `Pin` and cleared with `Unpin`. A name keeps it too.
 - **A hold keeps an entry while its holder lives.** `Hold { hash }` is answered `Held` and watched (`turn.watch` on the asker): when the holder ends, the hold goes. It is what the next ADR's spawner asks before it starts an engine of a hash, so a name moved by a rebuild never prunes a binary that is running. A hold is kept in the root's state, not on disk: a hub's restart ends the engines it ran.
