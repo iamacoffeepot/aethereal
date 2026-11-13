@@ -22,23 +22,21 @@ The fault seen was of the same kind. Placements of one program in one pass were 
 
 ## Decision
 
-**An actor may declare the order of its own placements within a pass, by sending the list of them to draw, in order. The list is kept until the actor sends another.**
-
-**Amended by ADR-0055.** Every join is listed: `Order` and `Loose` are removed, the listed join takes the plain name `Join::to`, and a placement no list names is not drawn. A dispatch is listed too (`Entry::Run`), and runs only where a list names it. An actor sends one list, `DrawList { entries }`, not one for each frame and pass: each placement's join names its frame and pass, and the list's entries are drawn in each pass they land in, in list order. A list may call the sender's direct children (`Entry::call(child, area)`), whose lists are drawn at that place, in the coordinates the area names, its caller's moved to an origin or the window's, and cut to its clip within the caller's, and the program's setup writes the root list. Order between actors is declared by those calls. The rest of this record holds for the list as ADR-0055 shapes it.
+**An actor declares the order of what it draws by sending the list of it, in order: its own placements and dispatches, and the direct children it calls. The list is kept until the actor sends another, and a placement no list names is not drawn.**
 
 ```rust
 Place { mesh: MeshId, instances: Drawn, joins: Vec<Join> }                    -> Made<PlacementId> | Refused
-struct Join { frame: Frame, pass: PassName, program: ProgramId, bindings: Vec<Bind>, order: Order }
-enum Order { Loose, Listed }     // Join::to::<P>(..) is Loose, as every join has been; Join::listed::<P>(..) is Listed
+struct Join { frame: Frame, pass: PassName, program: ProgramId, bindings: Vec<Bind> }   // Join::to::<P>(frame, ..)
 
-DrawList { frame: Frame, pass: PassName, placements: Vec<PlacementId> }      // no answer; DrawList::of::<P>(frame, placements)
+DrawList { entries: Vec<Entry> }      // no answer; Entry::Draw, Entry::Run, Entry::call(child, area), .. (ADR-0055)
 ```
 
-- **A join is loose or listed.** A loose join is drawn in every frame, as ADR-0025 draws a join. A listed join is drawn while its placement is in its maker's list for that frame and pass. A placement may join one pass loose and another listed: a depth pass that needs no order, and the pass that blends, which does.
+- **Every join is listed.** A placement draws in a pass it joins while it is in its maker's list. An actor sends one list, not one for each frame and pass: each placement's join names its frame and pass, a window's main frame by the window or a texture frame by its id (ADR-0025: `Frame::Main`), and the list's entries are drawn in each pass they land in, in list order. A placement may join a depth pass that needs no order and the pass that blends, which does, and the one list orders both. A join on a window's main frame follows the main frame when it is replaced.
 - **A listed placement draws while it is listed, in list order.** A new list that leaves it out stops it from the next `Render`. So an actor culls by leaving a placement out, and switches a level of detail by listing another.
-- `DrawList::of::<P>` names the pass by its type, as `Join::to::<P>` does, and `frame` is a window's main frame by the window or a texture frame by its id, as a join names it (ADR-0025: `Frame::Main`). A list for a window's main frame follows the main frame when it is replaced, as the placements that joined it do.
+- **A dispatch is listed too** (`Entry::Run`), and runs only where a list names it, in the list's order (ADR-0026).
+- **A list may call the sender's direct children** (`Entry::call(child, area)`), whose lists are drawn at that place, in the coordinates the area names, its caller's moved to an origin or the window's, and cut to its clip within the caller's. The program's setup writes the root list (ADR-0055).
 
-**A list is kept until it is replaced.** Every `Render` draws each actor's last list for each pass, and a new list takes the place of its sender's last for that frame and pass at the next `Render` after it is handled. There is no other mail to draw.
+**A list is kept until it is replaced.** Every `Render` draws each actor's last list, and a new list takes the place of its sender's last at the next `Render` after it is handled. There is no other mail to draw.
 
 ```
 Tick:   actor → DrawList [a, b, c]
@@ -51,19 +49,19 @@ Render: draws c, a          — reordered, b culled
 
 - Every turn `Tick` set off has run before `Render` is sent (ADR-0020), so a list sent in a `Tick` is drawn from that frame's `Render`.
 - **A fixed order is sent once, and a changing order is sent when it changes.** An actor that sorts its placements every frame sends a list only when the sort comes out different. An actor whose order is fixed needs no `Tick` to keep drawing it.
-- **A placement joined `Listed` that is in no list is not drawn**: nothing has ordered it. One made and joined `Listed` draws from the first `Render` after a list that names it.
-- **An empty list is a list.** It draws none of its sender's listed placements in that pass, and is how an actor stops drawing them all.
-- **The render root keeps one list for each actor in each pass of each frame.** A list for a frame that ends on a texture goes when that frame does.
+- **A placement that is in no list is not drawn**: nothing has ordered it. One made draws from the first `Render` after a list that names it.
+- **An empty list is a list.** It draws none of its sender's placements, and is how an actor stops drawing them all.
+- **The render root keeps one list for each actor.**
 - **A list is not answered**, as a write is not (ADR-0023): an order that changes as the camera moves is sent as often as it changes, and an answer each time would be mail nobody reads.
 
-**A listed placement released drops out of its maker's list.** The list and the release are both the maker's, as only a placement's maker releases it (ADR-0023: who may change what), so the two never go out of step. The release takes the placement's entry out of the list in the release's own turn, keeping the rest in order, and the next `Render` draws the rest. A placement keeps what it draws until it is released, and a placement released is drawn no more, listed or loose (ADR-0023). **An actor that ends takes its lists with it**, as its placements go when it ends (ADR-0021).
+**A listed placement released drops out of its maker's list.** The list and the release are both the maker's, as only a placement's maker releases it (ADR-0023: who may change what), so the two never go out of step. The release takes the placement's entry out of the list in the release's own turn, keeping the rest in order, and the next `Render` draws the rest. A placement keeps what it draws until it is released, and a placement released is drawn no more (ADR-0023). **An actor that ends takes its lists with it**, as its placements go when it ends (ADR-0021).
 
-**Each list is checked whole when it is handled.** Each id names a placement that the list's sender made, that is kept, and that joins that frame's pass `Listed`; and no id is named twice.
+**Each list is checked whole when it is handled.** Each placement or dispatch it names is one that the list's sender made and that is kept, each actor it calls is a direct child of the sender (ADR-0055), and no id is named twice.
 
-- **One that fails is refused whole**, which is logged, and **that actor's last list for that pass stands.** A list half drawn would be an order nobody declared, and a bad list never blanks what its sender drew there.
+- **One that fails is refused whole**, which is logged, and **that actor's last list stands.** A list half drawn would be an order nobody declared, and a bad list never blanks what its sender drew there.
 - **The check rides on the lookup the draw needs anyway.** Each id is looked up as the list is handled, and the list keeps what it found, so nothing is looked up or refused at `Render` (ADR-0025). A release changes a list between `Render`s, in the release's turn, never at one. A duplicate is found by stamping each listed join with a number the render root counts up for each list it checks: a join already stamped with this list's number is named twice.
 
-**A later list replaces an earlier one, whenever it comes.** Two lists in the same step or the same frame are two lists: the last handled before a `Render` is what that `Render` draws. An actor whose camera's view comes in a later turn of the `Tick` than its first list sends a newer one, and keeps no track of whether it sent one already. Only the same actor's list is replaced: each actor has its own list in each pass.
+**A later list replaces an earlier one, whenever it comes.** Two lists in the same step or the same frame are two lists: the last handled before a `Render` is what that `Render` draws. An actor whose camera's view comes in a later turn of the `Tick` than its first list sends a newer one, and keeps no track of whether it sent one already. Only the same actor's list is replaced: each actor has its own list.
 
 **Order between actors is declared by the lists that call them** (ADR-0055: `Call`). A list is drawn in its order, with each child it calls drawn at the place it is called, from the setup's root list down. The render root sets each program's pipeline as seldom as it can without reordering: within the sequence, it switches only where neighbouring calls use different programs.
 
@@ -73,16 +71,14 @@ Render: draws c, a          — reordered, b culled
 
 ## Consequences
 
-- An actor that streams chunks into slots makes each slot's placements once, joined `Listed`, and sends a list, nearest last, when the order changes or a chunk comes or goes. A chunk out of view is left off the next list; a slot whose chunk changed lists its new placements once they are ready, and releasing the old ones takes them out of the list meanwhile.
+- An actor that streams chunks into slots makes each slot's placements once, and sends a list, nearest last, when the order changes or a chunk comes or goes. A chunk out of view is left off the next list; a slot whose chunk changed lists its new placements once they are ready, and releasing the old ones takes them out of the list meanwhile.
 - Culling and level of detail are an actor's own, by what it lists, with nothing kept on the render root for either but the list.
-- ADR-0023's case for a list kept on the render root holds for the order too: a list carries ids, eight bytes each, where carrying the draws themselves was 960 KB a frame for 30,000, and it is carried only when it changes. The meshes, programs, bindings, and bind groups stay made and kept, and only the order travels. An actor that needs no order sends nothing, as before; one whose order is fixed sends one list, ever.
-- **The render root keeps state for lists: one list for each actor** (ADR-0055; one for each actor in each pass of each frame before it), with a stamp on each listed join. It cannot go out of step with the placements, as only its owner changes it: by a new list, checked whole, or by releasing a listed placement, which takes it out; and the owner ending takes it. No other actor's mail, release, or ending touches it.
+- ADR-0023's case for a list kept on the render root holds for the order too: a list carries ids, eight bytes each, where carrying the draws themselves was 960 KB a frame for 30,000, and it is carried only when it changes. The meshes, programs, bindings, and bind groups stay made and kept, and only the order travels. An actor whose order is fixed sends one list, ever.
+- **The render root keeps state for lists: one list for each actor**, with a stamp on each listed join. It cannot go out of step with the placements, as only its owner changes it: by a new list, checked whole, or by releasing a listed placement, which takes it out; and the owner ending takes it. No other actor's mail, release, or ending touches it.
 - The render root handles one more kind, `DrawList`, within an actor's 64 (ADR-0013: `HandledList`).
 - An actor that sends no list in a frame draws its last list's order there: a list it was late with shows the order before it for that frame, never a gap.
 - ADR-0023 and ADR-0025 are edited to match: order within a pass is declared by the lists, from the root list down (ADR-0055). Dispatches are listed too (ADR-0055: `Entry::Run`).
 - What is decided separately, each when it is needed:
-  - **Dispatches in lists.** Settled by ADR-0055: a dispatch is listed (`Entry::Run`), and runs in its list's order.
-  - **Refusing loose placements whose order shows.** Settled by ADR-0055: nothing is loose, so an order nobody declared cannot be written.
   - **A volatile array one actor owns and others read at the boundary of a step**, for data many actors read each frame.
 
 ## Alternatives considered

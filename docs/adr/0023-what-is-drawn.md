@@ -103,8 +103,6 @@ enum Readable { Frame(WindowId), Texture(TextureId) }            // storage is r
 TimeFrame                  -> Timed::Took { passes: Vec<u64> } | Timed::Refused
 ```
 
-*Amended by ADR-0043: `Readable::Frame` names its window, where it read the first window drawn.*
-
 - `Readable::Frame(window)` reads the next frame drawn onto that window's canvas, as its pass leaves it, and a texture is read as it is when the ask is handled. Pixels are answered row by row from the top, each row packed tight, as a blob (ADR-0014). The render root copies them into a buffer whose rows are padded to the 256 bytes WebGPU copies rows on, and cuts the padding off as it reads them.
 - A frame is answered in `Rgba8`, or `Rgba8Srgb` for a canvas that encodes its colours, red first: a canvas laid out blue first, as browsers often prefer, has each pixel's red and blue swapped. A canvas of any other format is refused (`Format`), and so is one the chassis did not open to be copied from (`Uncopied`). A frame larger than the store lets one worker put is refused (`Unstored`). An ask for a window the render root does not keep is refused at once (`Window`), and one held for a window that closes before it is drawn is refused as it closes; a window handed no frame in a cycle keeps its asks until it is drawn.
 - `TimeFrame` times the next frame drawn: the nanoseconds from the beginning of each of its passes to its end, in the order it runs them: each pass of each frame that ends on a texture, in the order the frames run, then each of the window's main frame (ADR-0025). The GPU writes a timestamp as each pass begins and ends, which WebGPU offers only on a device with the optional `timestamp-query` feature. The chassis asks for the feature when the adapter offers it. An ask on a device without it is refused at once (`Unsupported`), not when the engine is built, so a program that times nothing never needs it.
@@ -121,11 +119,11 @@ enum Mapped { Ready { read: u64 }, Failed { read: u64 } }  // brought from the s
 - The render root reads the mapped bytes in the turn that handles `Mapped`, unmaps the buffer, and answers every ask the read holds. A map that failed is answered `Unmapped`.
 - `Mapped` is read only when it comes from the render root itself, as what its own source brings does. Reading a buffer that is not mapped stops the program, so word of a map from any other actor is logged and left.
 
-**This departs from ADR-0021 in three places,** and ADR-0021 is edited to match:
+**Three things are added to ADR-0021's render root,** which ADR-0021 states too:
 
-- `CreateProgram` gains `instances`.
+- `CreateProgram` takes `instances`.
 - The render root is made from a controller and a source beside the GPU, for the maps it waits on. Nothing new is added to what a controller or a source carries (ADR-0019).
-- ADR-0021 had a program's values come only through its uniforms, with materials made later. A placement's bindings are those values, bound once when it is made: a material, kept with the one placement that uses it. A material that many placements share is still later work.
+- A program's values come through its uniforms and through a placement's bindings, bound once when the placement is made: a material, kept with the one placement that uses it. A material that many placements share is still later work.
 
 ## Consequences
 
@@ -135,11 +133,11 @@ enum Mapped { Ready { read: u64 }, Failed { read: u64 } }  // brought from the s
 - The canvas is opened to be copied from, whether or not anything reads it back. WebGPU lets every canvas be copied from; wgpu names only drawing among a canvas's capabilities, as they are fixed rather than asked of the browser, so the browser's chassis asks for copying without asking wgpu.
 - The render root handles each write in a turn of its own, one after another, on one thread. Writes are batched by their writers, so this stays a few turns a frame for most programs; if the render root's turns become a frame's cost, the alternative below is where it goes.
 - A resource released while placed is kept on the GPU until its last placement goes: an actor that releases a mesh it still has placed frees no memory until it releases the placements too.
-- Layers by depth asks a 2D program to write a depth per instance and test it. Programs that blend, a UI's translucent panels, particles, glass, draw in an order nothing promises until a frame's passes are decided.
+- Layers by depth asks a 2D program to write a depth per instance and test it. Programs that blend, a UI's translucent panels, particles, glass, are ordered by the lists that draw them (ADR-0055) or by passes of their own (ADR-0025).
 - What is decided separately, each when it is needed:
-  - **The frame's passes**: decided by ADR-0025.
+  - **The frame's passes** (ADR-0025).
   - **Materials shared by many placements**, and texture arrays.
-  - **Compute programs, and storage they write**: decided by ADR-0026. A range of a mesh's indices per placement.
+  - **Compute programs, and storage they write** (ADR-0026). A range of a mesh's indices per placement.
   - **Spreading uploads over the frames before first use** (ADR-0021).
 
 ## Alternatives considered

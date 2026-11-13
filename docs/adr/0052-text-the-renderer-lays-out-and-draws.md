@@ -3,12 +3,6 @@
 - **Status:** Accepted
 - **Date:** 2026-11-09
 
-> **Amended (2026-11-12): metrics and measuring.** A program that lays out around its text, as a widget library lays
-> out a screen in one turn, needs each text's size without placing it. A font's metrics become a value that layout runs
-> on, handed to any actor as blobs kept for the font's life, and measuring a text is a pure function over them (see
-> *Metrics and measuring*). A font is made from a source and fallbacks fixed for its life, one level deep, and the one
-> list of fallbacks for the render root, `FallbackFonts`, is removed (see *Fonts*).
-
 ## Context
 
 No program can draw text. ichor's console uses an 8×8 bitmap font and a pass written by hand. The dev overlay, labels, nameplates, damage numbers, menus, and chat will all need text, so text is used by nearly every program, and it belongs where everything drawn is made.
@@ -24,10 +18,12 @@ Drawing text takes five steps:
 What is already decided:
 
 - **An actor asks the render root to make what it draws,** and is answered with its id or a refusal saying why (ADR-0021: `CreateMesh`, `CreateTexture`, `CreateProgram`, `Made`, `Refused`). What is drawn is kept on the render root, and only what changes is sent (ADR-0023).
-- **A placement draws a mesh in the passes it joins,** with a program and bindings for each join (ADR-0023, ADR-0025: `Place`, `Join`, `Frame::{Main, Texture}`). A join is loose, drawn every frame, or listed, drawn only while it is in its maker's draw list, in the list's order (ADR-0031: `Order`, `DrawList`). Order between two actors' placements in one pass is not promised.
+- **A placement draws a mesh in the passes it joins,** with a program and bindings for each join (ADR-0023, ADR-0025: `Place`, `Join`, `Frame::{Main, Texture}`). A placement is drawn only while it is in its maker's draw list, in the list's order (ADR-0031: `DrawList`), and order between actors is declared by the lists that call them (ADR-0055: `Call`).
 - **The renderer knows no camera** (ADR-0048). A program's camera keeps the view and projection.
 - **A position in a window is in its surface pixels,** from the top left (ADR-0024: `Event`).
 - **Heavy work runs in a job, off the render root's turn,** as `capture_frame` encodes its PNG (ADR-0043).
+
+A program that lays out around its text, as a widget library lays out a screen in one turn, needs each text's size without placing it.
 
 ## Decision
 
@@ -63,7 +59,7 @@ WriteText { text: TextId, runs: Vec<Run> }     // no answer, as a write is not (
 - **A text is what is laid out, not where it is drawn.** It keeps its glyphs, their positions, and its lines, as a mesh keeps its vertices. Where it is drawn is its placement's. One text may be placed more than once.
 - **A run is a part of the text with one colour,** so a console line has a dim timestamp, a coloured level, and the message in one text. One font and one size for each text keep the layout simple; mixing them in one text is later work.
 - **`\n` breaks a line.** Other control characters are not drawn.
-- **A write lays the text out again.** Its placements draw the new text from the first `Render` at which all of the new text's glyphs are in the atlas. Until then they draw the text as it was, so a rewritten line never flickers or shows half its glyphs. A new text's placements draw nothing until all its glyphs are in the atlas, so a new text is answered once it can be drawn: at once when its glyphs are all in the atlas, and otherwise once the last it waits on is written in. An asker that lists a text beside what else it draws then shows them together. A glyph that fits nowhere in the atlas, or has no outline, is not waited on. *Amended by ADR-0056's overlay stage: a new text was answered as it was made.*
+- **A write lays the text out again.** Its placements draw the new text from the first `Render` at which all of the new text's glyphs are in the atlas. Until then they draw the text as it was, so a rewritten line never flickers or shows half its glyphs. A new text's placements draw nothing until all its glyphs are in the atlas, so a new text is answered once it can be drawn: at once when its glyphs are all in the atlas, and otherwise once the last it waits on is written in. An asker that lists a text beside what else it draws then shows them together. A glyph that fits nowhere in the atlas, or has no outline, is not waited on.
 - **Refused as it is made:** a size outside 1 to 1024 pixels, an outline wider than the size allows, a font not made or released, and runs over 64 KB. A refused write is logged, and the text keeps what it had.
 - **A character no font has never refuses a text.** It draws the font's missing glyph, a box, and the renderer logs each such character once. People type anything, and one emoji must not refuse a chat line.
 - **Released as anything made is, by its maker,** with its placements.
@@ -83,8 +79,8 @@ PlaceText {
 MoveText { placement: PlacementId, at: Point, layer: Layer, opacity: f32, clip: Clip }   // no answer
 ```
 
-- **A placed text is a placement,** so it goes in its maker's draw list and is ordered with the maker's other placements (ADR-0031). A console lists its panel, its lines, and its cursor in that order. A placed text is drawn only while its maker lists it, as any placement is (*amended by ADR-0055*: a join was `Listed` or `Loose`, drawn in every frame). Leaving a placement out of the list stops drawing it, and the text stays made.
-- **`at` is in the frame's pixels:** a window's main frame's surface pixels, from its top left, or a texture frame's. Text is placed on the screen only. (*Amended by ADR-0055*: those are the coordinates its maker's list is drawn in, which its parent's call names: the text is moved by the list's origin, zero for a list drawn in the window's pixels, and cut to the list's clip as well as its own, whose box is in the same coordinates as `at`.) A program that wants text at a point in its world projects the point with its own camera and moves the placement, giving `Layer::At` the point's depth so that what is nearer hides it.
+- **A placed text is a placement,** so it goes in its maker's draw list and is ordered with the maker's other placements (ADR-0031). A console lists its panel, its lines, and its cursor in that order. A placed text is drawn only while its maker lists it, as any placement is (ADR-0055). Leaving a placement out of the list stops drawing it, and the text stays made.
+- **`at` is in the coordinates its maker's list is drawn in,** which its parent's call names (ADR-0055): a window's main frame's surface pixels, from its top left, or a texture frame's, moved by the list's origin, zero for a list drawn in the window's pixels. The text is cut to the list's clip as well as its own, whose box is in the same coordinates as `at`. Text is placed on the screen only. A program that wants text at a point in its world projects the point with its own camera and moves the placement, giving `Layer::At` the point's depth so that what is nearer hides it.
 - **A join names no program and no bindings.** The renderer draws a text with its own glyph program, made for each shape of pass it joins: its target's format, samples, and depth. A join into a pass that reads targets is refused, as the glyph program reads none (ADR-0025: `JoinRefused::Reads`).
 - **`clip` cuts what is drawn to a box,** so a console's scrollback, moved a line at a time, never draws past its panel. The glyph program discards what falls outside the box, so placements that clip differently still draw together.
 - **`MoveText` does not lay the text out again.** A damage number that rises and fades is one write a frame of a few bytes. Its sender is the placement's maker, as for every write.
@@ -102,11 +98,10 @@ enum FontNotMade { Read(FontRefused), Fallback { fallback: u32 }, Unstored }
 
 - **A font is made from a source: one of the renderer's own, or the bytes of a TrueType file** (`.ttf`, outlines of quadratic curves), which the program reads with the file capability. The render root reads the font's tables as it is made, in its turn, and refuses a font it cannot read, saying which table (`FontNotMade::Read`). CFF outlines (most `.otf` files), WOFF2, and variable fonts are refused for now.
 - **A font made from `Sans` or `Mono` shares the renderer's own:** its parsed font, its metrics' blob, and its glyphs in the atlas, which are keyed by the face they were read from, not by the font's id. Nothing is read, encoded, or generated a second time, so a program makes `Sans` with fallbacks of its own for the cost of the fallbacks.
-- **The renderer carries two fonts, `Font::Sans` and `Font::Mono`,** open-licensed (SIL OFL), compiled in, so every program, browser or desktop, draws text with nothing to load. Which faces is chosen by the owner from samples drawn by the engine before this lands. *Amended once chosen: the owner picked IBM Plex Sans and IBM Plex Mono, one family for both, from sheets of five candidates each.*
+- **The renderer carries two fonts, `Font::Sans` and `Font::Mono`,** open-licensed (SIL OFL), compiled in, so every program, browser or desktop, draws text with nothing to load. They are IBM Plex Sans and IBM Plex Mono, one family for both, which the owner chose from sheets of five candidates each, drawn by the engine.
 - **A font's fallbacks are fixed as it is made, and are one level deep.** A character a text's font lacks is looked for in each of its fallbacks in turn, then drawn as the font's missing glyph. Each fallback's own face is what the font keeps: a fallback's own fallbacks are never tried, so what a font draws depends only on the fonts its maker named, and no chain of fallbacks can loop. The renderer's own two have no fallbacks. Japanese, Chinese, and Korean fonts are many megabytes, so none is carried: a program that needs one makes it and names it as a fallback.
 - **A fallback that is not made, or is released, refuses the font,** naming its place in the list (`FontNotMade::Fallback { fallback }`). A fallback released later changes nothing about a font that named it, or about the texts laid out in that font: the font keeps what it needs of each fallback, its parsed face and its metrics' blob, as a text keeps its font after the font is released.
 - **A font whose metrics would take the render root past its share of the budget for blobs is refused** (`FontNotMade::Unstored`, ADR-0042).
-- *Amended (2026-11-12): a font was made from bytes alone, `CreateFont { bytes }`, and fallbacks were one list for the render root, `FallbackFonts { fonts }`, set by any actor, the last list sent replacing the one before, a font in it not made or released passed over. One actor's list changed every other actor's text, a text's fallbacks changed under it as the list did, and an actor that measured could not know which list a text would be laid out with. `FallbackFonts` is removed; nothing sent it.*
 - **Shaping is simple:** each character is mapped to a glyph by the font's character map, advanced by its advance, with the pairs the font kerns kerned (`kern`, and pair adjustment in `GPOS`). That serves Latin, Greek, Cyrillic, and Han, kana, and Hangul text, which needs no joining. Scripts that join or reorder, such as Arabic and the Indic scripts, are drawn in their characters' plain forms until shaping is extended.
 - **Weights and italics are fonts of their own,** each its own file.
 
@@ -156,13 +151,13 @@ struct Measured { width: f32, height: f32, lines: u32 }
 
 ## Alternatives considered
 
-- **A separate text actor.** Its placements would not be ordered with the program's own, as order between actors is not promised, and every text field would be two actors exchanging mail.
+- **A separate text actor.** Its placements would be ordered with the program's own only where the program's list calls it (ADR-0055), and every text field would be two actors exchanging mail.
 - **A library a program uses to make glyph meshes itself.** Every program would keep an atlas of its own, and text would not be shared.
 - **Fonts and shaping in a crate of their own.** No second user needs them. A module moves to a crate when one does. Measuring adds none: an actor that measures already depends on `aethereal-render` for the kinds it mails the renderer.
 - **A font's metrics as mail.** Past the engine's `read_limit` for any font, and many times past it for a Japanese, Chinese, or Korean one.
 - **The renderer measuring a text when asked.** A round of mail for each text, so an actor laying out a screen waits a turn for each size, where it needs them all in the turn it lays the screen out in.
 - **Metrics encoded at each ask.** Tens of kilobytes encoded and put again for every actor that asks, where one blob serves them all.
-- **Fallbacks one list for the render root,** as first decided. One actor's list changes every other actor's text, and a measure could not know which list a text will be laid out with.
+- **Fallbacks one list for the render root,** `FallbackFonts { fonts }`, set by any actor, the last list sent replacing the one before. One actor's list changes every other actor's text, a text's fallbacks change under it as the list does, and a measure could not know which list a text will be laid out with.
 - **Fallbacks followed to their own fallbacks.** What a font draws would depend on fonts its maker never named, and a chain could loop.
 - **Kerning held in hash maps, rebuilt as metrics are decoded.** Their order is not their written order, so a decode would rebuild every map; sorted lists are the shape written, and are searched by halves in a few comparisons for a pair.
 - **Coverage rasterised at each size.** Crisper at the smallest sizes, but each size is another set of glyphs, scaling and rotating re-rasterise, and an outline is another raster.

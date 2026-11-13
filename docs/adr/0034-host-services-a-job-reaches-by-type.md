@@ -45,7 +45,7 @@ impl Job for Load {
 ```
 
 - **A service is keyed by its type,** usually a trait object (`dyn Storage`), and held as an `Arc` of it. The set holds at most one of each type. Serving a second one of a type replaces the first, the same as a host whose second root serves the same service.
-- **`Running::service` is a lookup that can miss.** A host that serves no storage leaves it out of the set, and the job answers as its capability decides: `Load` answers `FileRead::Unavailable`, as `NoStorage` did. **This departs from a stand-in service for each absence** (`NoStorage`, `NoDialer`): an absent service is absent, and the capability that looks for it says what that means.
+- **`Running::service` is a lookup that can miss.** A host that serves no storage leaves it out of the set, and the job answers as its capability decides: `Load` answers `FileRead::Unavailable`. **No stand-in service fills an absence** (a `NoStorage` or a `NoDialer`): an absent service is absent, and the capability that looks for it says what that means.
 - **The set is fixed once the runners are made.** ADR-0029 has a host make its runners once its roots have bootstrapped, with what they served. The set is built then, wrapped in an `Arc`, and never changes, so it takes no lock.
 
 **A runner carries the set and nothing else of its host's services.** `JobType::drive` takes the timer and the set: `drive(bytes, lent, limit, timer, services)`. Every runner holds one `Arc<Services>` and hands it to every job it drives: `Inline`, the native runners and their `Io` thread, and the browser's event loop. A capability added later changes none of them.
@@ -64,14 +64,13 @@ impl<S: ?Sized + Send + Sync + 'static> Serves<Service<S>> for Headless { .. }
 cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));
 ```
 
-- **A host implements `Serves<Service<S>>` once, for every `S`.** Its serving keeps a `Services`, and adds each service a root serves. **This departs from a hosting type and a `Serves` impl for each capability** (`FileHosting`, `Serves<FileHosting>`, `Serving::files`), which are removed.
+- **A host implements `Serves<Service<S>>` once, for every `S`.** Its serving keeps a `Services`, and adds each service a root serves. **No capability has a hosting type and a `Serves` impl of its own** (a `FileHosting`, `Serves<FileHosting>`, `Serving::files`).
 - **The ends a host drives itself keep their own `Serves` impls:** the window's `Hosting` and the renderer's `Drawing` (ADR-0024, ADR-0021). These are not services a job reaches. They are fronts the host's event loop works through, and a host that cannot drive one should fail to build when a root serves it.
 - **A host's crate still implements each service it can,** and writes each capability's bootstrap on it (ADR-0029). That is where host-specific code belongs: `Directories` in the native host's crate, and the browser's fetching in the browser's. Only the core's plumbing stops naming capabilities.
 
 **What moves:**
 
 - `Storage`, `Reading`, `Unread`, and `Namespace` move from `aethereal-actor` to `aethereal-files`. `NoStorage`, `Running::storage`, and `FileHosting` are removed.
-- ADR-0032's statement "the host's storage reaches a job as its timer does", and the `Storage` sketch beside it, are replaced by this record.
 - ADR-0033's dialer becomes `aethereal-tcp`'s: `Dialer`, `Dialing`, and `Undialed` live in that crate, `Dial` finds the dialer with `job.service::<dyn Dialer>()`, and a host with none is answered `Reached::Unavailable`. `Running::dialer` and `NoDialer` are never added.
 
 ## Consequences
@@ -85,7 +84,7 @@ cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));
 
 ## Alternatives considered
 
-- **The timer's route for every service** (ADR-0032 as first written). Each capability with a host service touches five layers in every host, and the core comes to name every capability.
+- **The timer's route for every service**: a field of `Running` and an argument of every runner. Each capability with a host service touches five layers in every host, and the core comes to name every capability.
 - **One struct of every host service, `HostServices { timer, storage, dialer, .. }`.** One argument instead of several, but still a type in the core that names every capability, and edited for each new one.
 - **A service generic on the job, `Job::Service`, handed to `run`.** The runner would have to know each job's service type to find it, which is the naming this record removes.
 - **A service as a resource an actor owns** (ADR-0010), passed in the job. A job is given no resource (ADR-0018), and a service is shared by every job that runs at once, not owned by one actor.
