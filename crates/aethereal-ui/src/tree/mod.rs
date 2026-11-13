@@ -12,7 +12,7 @@ mod element;
 #[cfg(test)]
 mod tests;
 
-pub use element::Element;
+pub use element::{Element, whole, windows};
 
 use crate::drag::{DragSource, DropTarget};
 use crate::style::Style;

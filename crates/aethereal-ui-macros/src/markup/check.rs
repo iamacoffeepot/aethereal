@@ -19,9 +19,6 @@ pub trait Names {
 
     /// Refuses a drop this macro cannot take.
     fn drop(&self, call: &Call) -> syn::Result<()>;
-
-    /// Refuses a list in a `Scroll`, which builds only the rows its screen says it shows, where the macro cannot ask.
-    fn rows(&self, scroll: &Element) -> syn::Result<()>;
 }
 
 /// The names in scope where a reference is read: the locals each `as` around it made, and a composite's params.
@@ -153,9 +150,6 @@ fn widget(element: &Element, names: &impl Names, scope: &Scope, found: &mut Foun
                 let message = "`items` repeats one child, its template, once for each item: a header above the list \
                                is a sibling in an outer element";
                 found.keep(Err(syn::Error::new(element.span, message)));
-            }
-            if element.is("Scroll") {
-                found.keep(names.rows(element));
             }
             within
         }

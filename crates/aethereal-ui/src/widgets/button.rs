@@ -4,7 +4,7 @@
 //! the hand.
 
 use super::press::{PRESSES, Press, shade};
-use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Raising, Used};
 use crate::style::Style;
 use crate::widget::{Arrange, Draws, Laid, Widget};
 use aethereal_render::draw_list::Pointer;
@@ -22,6 +22,10 @@ impl<E> Button<E> {
     pub const fn new(click: E) -> Self {
         Self { click }
     }
+}
+
+impl<E: Event> Raising for Button<E> {
+    type Event = E;
 }
 
 impl<E: Event> Widget for Button<E> {

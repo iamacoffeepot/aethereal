@@ -15,9 +15,33 @@
 //! ```
 //!
 //! A node's segment is its place among its siblings in the markup, counted from zero, whether or not a sibling before
-//! it is shown, or the key of its item; the root's is `Segment::Place(0)`. A `Scroll` with `items` asks its screen
-//! which rows to build by its own key path, which is written here from its place in the markup and the keys of the
-//! items around it. A `Tabs` builds the open tab's panel alone, at that tab's place.
+//! it is shown, or the key of its item; the root's is `Segment::Place(0)`. A `Tabs` builds the open tab's panel alone,
+//! at that tab's place.
+//!
+//! An element with `items` asks its type whether it windows them (`Element::WINDOWS`, which a primitive declares as
+//! `Widget::WINDOWS`), so the choice is the type's, never its name's. In a screen both ways are written, and the
+//! compiler folds the one the type's constant leaves out: a type that windows asks its screen which rows to build by
+//! its own key path, written here from its place in the markup and the keys of the items around it, and takes the
+//! lines they stand at; any other builds every item. A composite has no screen to ask, so it builds every item, and
+//! one whose type windows them is refused as the composite is built.
+//!
+//! ```text
+//! Scroll { .., items: self.items as item key item.id, Text { "{item.name}" } }
+//!     ──> let (widget, items) = {
+//!             let widget = Scroll { ..Default::default() };
+//!             if windows(&widget) {
+//!                 let (lines, rows) = { self.ui.rows(&KeyPath::of(&[…]), len) … rows.finish() };
+//!                 (Element::window(widget, lines), rows)
+//!             } else {
+//!                 (widget, { every item })
+//!             }
+//!         };
+//!         Element::node(widget, Segment::Place(2), items)
+//! ```
+//!
+//! Each event is set through `Into`, so a field the widget must raise, `E`, and one it may, `Raises<E>`, are written
+//! alike, and the widget is named as raising the screen's event type, or a composite's `E`, through `raising`, which
+//! tells a generic widget the type `Into` converts to.
 
 use super::check::Scope;
 use super::reference::{Head, Reference};
@@ -28,7 +52,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Ident, Path};
 
-/// Whose markup is written: what its events compile into, and what its `Scroll`s ask.
+/// Whose markup is written: what its events compile into, and whom its lists ask which rows they show.
 pub enum Owner<'markup> {
     /// A screen's view: its event enum, each event a variant of it, and the field that holds its `Screen`.
     Screen { events: &'markup Ident, field: &'markup Ident },
@@ -154,13 +178,10 @@ impl<'markup> Emitter<'markup> {
         } else {
             match &element.repeat {
                 Repeat::Once => self.children(element, place, scope),
-                Repeat::Items { list, local, key } if element.is("Scroll") => {
-                    self.scroll(element, place, scope, (list, local, key))
-                }
                 Repeat::Items { list, local, key } => self.items(element, place, scope, (list, local, key)),
             }
         };
-        let Built { before, extra, children } = built;
+        let Built { before, extra, children, listed } = built;
         let children = match appended {
             Appended::Nothing => children,
             Appended::After(appended) => quote!({
@@ -187,7 +208,7 @@ impl<'markup> Emitter<'markup> {
         entries.extend(element.events.iter().map(|event| {
             let name = &event.name;
             let value = self.event(&event.call);
-            quote!(#name: #value)
+            quote_spanned!(spans::at(event.call.span())=> #name: ::core::convert::Into::into(#value))
         }));
         entries.extend(element.text.iter().map(|text| {
             let string = text.string();
@@ -198,9 +219,16 @@ impl<'markup> Emitter<'markup> {
             Rest::Written => quote!(),
             Rest::Defaulted(span) => quote_spanned!(spans::at(span)=> ..::core::default::Default::default()),
         };
-        let widget = quote_spanned!(spans::at(span_of(path))=> #path { #(#entries,)* #rest });
-        let segment = &place.segment;
         let span = spans::at(span_of(path));
+        let literal = quote_spanned!(span=> #path { #(#entries,)* #rest });
+        let widget = if element.events.is_empty() {
+            literal
+        } else {
+            let raised = self.raised();
+            quote_spanned!(span=> ::aethereal_ui::raising::<#raised, _>(#literal))
+        };
+        let Listing { widget, children, built } = listing(widget, children, listed, span);
+        let segment = &place.segment;
         let node = match (styling, &element.look) {
             (Styling::Own, Look::Unstyled) => {
                 quote_spanned!(span=> ::aethereal_ui::Element::node(#widget, #segment, #children))
@@ -216,7 +244,15 @@ impl<'markup> Emitter<'markup> {
         let drag = self.drag(element);
         let drop = self.drop(element);
 
-        quote!({ #before #node #drag #drop })
+        quote!({ #before #built #node #drag #drop })
+    }
+
+    /// The type an element's events convert to: the screen's event enum, or a composite's `E`.
+    fn raised(&self) -> TokenStream {
+        match &self.owner {
+            Owner::Screen { events, .. } => quote!(#events),
+            Owner::Composite => quote!(E),
+        }
     }
 
     /// The `.with_drag` of a dragged element, its `drop_outside` with it.
@@ -270,54 +306,62 @@ impl<'markup> Emitter<'markup> {
         }))
     }
 
-    /// The children of an element whose `items` repeat its one child, each at its item's key.
+    /// The children of an element whose `items` repeat its one child: every item, each at its key, and, in a screen,
+    /// the rows its screen says it shows, for a type that windows them.
     fn items(&self, element: &Element, place: &Place, scope: &Scope, (list, local, key): Items<'_>) -> Built {
         let children = format_ident!("children", span = spans::hidden());
         let keyed = key_of(place);
         let within = scope.with(local);
         let template = place.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
         let push = self.template(element, &template, &within, |node| quote!(#children.push(#node);));
-
-        Built::children(quote!({
+        let every = quote!({
             let mut #children = ::std::vec::Vec::new();
             for #local in &#list {
                 let #keyed = ::aethereal_ui::ItemKey::from(#key);
                 #push
             }
             #children
-        }))
+        });
+        let listed = match &self.owner {
+            Owner::Screen { field, .. } => {
+                Listed::Windowed(self.rows(element, place, scope, field, (list, local, key)))
+            }
+            Owner::Composite => Listed::Whole,
+        };
+
+        Built { before: TokenStream::new(), extra: Vec::new(), children: every, listed }
     }
 
-    /// The rows of a `Scroll` whose `items` repeat its one child: only those its screen says it shows, asked by the
-    /// scroll's own key path, and the lines they stand at.
-    fn scroll(&self, element: &Element, place: &Place, scope: &Scope, (list, local, key): Items<'_>) -> Built {
-        let Owner::Screen { field, .. } = &self.owner else {
-            let refused = quote!(::core::compile_error!("a composite's `Scroll` builds its rows whole"));
-            return Built::children(refused);
-        };
-        let [path, source, rows, at, lines, built] = ["path", "source", "rows", "at", "lines", "built"]
-            .map(|name| format_ident!("{name}", span = spans::hidden()));
+    /// The rows of a screen's list whose type windows them: only those its screen says it shows, asked by the list's
+    /// own key path, and the lines they stand at, `(Lines, Vec<Node>)`.
+    fn rows(
+        &self,
+        element: &Element,
+        place: &Place,
+        scope: &Scope,
+        field: &Ident,
+        (list, local, key): Items<'_>,
+    ) -> TokenStream {
+        let [path, source, rows, at] =
+            ["path", "source", "rows", "at"].map(|name| format_ident!("{name}", span = spans::hidden()));
         let keyed = key_of(place);
         let within = scope.with(local);
         let template = place.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
         let push = self.template(element, &template, &within, |node| quote!(#rows.push(#at, #node);));
         let segments = &place.path;
-        let before = quote!(
-            let (#lines, #built) = {
-                let #path = ::aethereal_ui::KeyPath::of(&[#(#segments),*]);
-                let #source = &#list;
-                let mut #rows = self.#field.rows(&#path, #source.len());
-                for (#at, #local) in ::core::iter::IntoIterator::into_iter(#source).enumerate() {
-                    let #keyed = ::aethereal_ui::ItemKey::from(#key);
-                    if #rows.builds(#at, #keyed) {
-                        #push
-                    }
-                }
-                #rows.finish()
-            };
-        );
 
-        Built { before, extra: vec![quote!(lines: #lines)], children: quote!(#built) }
+        quote!({
+            let #path = ::aethereal_ui::KeyPath::of(&[#(#segments),*]);
+            let #source = &#list;
+            let mut #rows = self.#field.rows(&#path, #source.len());
+            for (#at, #local) in ::core::iter::IntoIterator::into_iter(#source).enumerate() {
+                let #keyed = ::aethereal_ui::ItemKey::from(#key);
+                if #rows.builds(#at, #keyed) {
+                    #push
+                }
+            }
+            #rows.finish()
+        })
     }
 
     /// The panel of a `Tabs`' open tab, at that tab's place, and the titles of every tab, from their `Tab`s.
@@ -340,7 +384,7 @@ impl<'markup> Emitter<'markup> {
         );
         let extra = vec![quote!(titles: ::std::vec![#(#titles),*]), quote!(selected: #selected)];
 
-        Built { before, extra, children: quote!(#panels) }
+        Built { before, extra, children: quote!(#panels), listed: Listed::Fixed }
     }
 
     /// The one child of an element with `items`, its template, built at `place` and handed to `push`.
@@ -435,17 +479,66 @@ fn value(value: &Value, scope: &Scope) -> TokenStream {
 type Items<'markup> = (&'markup Reference, &'markup Ident, &'markup Reference);
 
 /// What a widget's node is built from, besides its own settings: statements written before it, fields of its widget
-/// the macro sets, and the expression of its children.
+/// the macro sets, the expression of its children, and whether they are a list's items.
 struct Built {
     before: TokenStream,
     extra: Vec<TokenStream>,
     children: TokenStream,
+    listed: Listed,
 }
 
 impl Built {
     /// Children alone, with nothing before them and no field set.
     fn children(children: TokenStream) -> Self {
-        Self { before: TokenStream::new(), extra: Vec::new(), children }
+        Self { before: TokenStream::new(), extra: Vec::new(), children, listed: Listed::Fixed }
+    }
+}
+
+/// Whether an element's children are a list's items, and so how its widget is finished.
+enum Listed {
+    /// They are not: its children are those its markup writes.
+    Fixed,
+    /// They are a composite's list, every item built: its widget is refused as the composite is built when its type
+    /// windows its items.
+    Whole,
+    /// They are a screen's list: every item built, or, when its widget's type windows them, the rows and lines this
+    /// expression asks the screen for.
+    Windowed(TokenStream),
+}
+
+/// A widget finished as its children's listing says: the expression of the widget and of its children, after the
+/// statements `built`.
+struct Listing {
+    widget: TokenStream,
+    children: TokenStream,
+    built: TokenStream,
+}
+
+/// `widget` and `children` finished as `listed` says, written at `span`: a screen's list asks the widget's type
+/// whether it windows, and both ways are written, the compiler folding the one its constant leaves out.
+fn listing(widget: TokenStream, children: TokenStream, listed: Listed, span: proc_macro2::Span) -> Listing {
+    match listed {
+        Listed::Fixed => Listing { widget, children, built: TokenStream::new() },
+        Listed::Whole => {
+            let widget = quote_spanned!(span=> ::aethereal_ui::whole(#widget));
+            Listing { widget, children, built: TokenStream::new() }
+        }
+        Listed::Windowed(rows) => {
+            let [windowed, items, lines, shown] =
+                ["windowed", "items", "lines", "shown"].map(|name| format_ident!("{name}", span = spans::hidden()));
+            let built = quote_spanned!(span=>
+                let (#windowed, #items) = {
+                    let #windowed = #widget;
+                    if ::aethereal_ui::windows(&#windowed) {
+                        let (#lines, #shown) = #rows;
+                        (::aethereal_ui::Element::window(#windowed, #lines), #shown)
+                    } else {
+                        (#windowed, #children)
+                    }
+                };
+            );
+            Listing { widget: quote!(#windowed), children: quote!(#items), built }
+        }
     }
 }
 

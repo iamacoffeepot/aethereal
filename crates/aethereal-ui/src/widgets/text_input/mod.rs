@@ -19,7 +19,7 @@ mod tests;
 use line::{Line, Selecting, Toward};
 
 use crate::fonts::{Measuring, Unmeasured};
-use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Raises, Raising, Used};
 use crate::style::Style;
 use crate::widget::{Arrange, Draws, Laid, Offer, Offered, Quad, Sample, TextDraw, Widget};
 use aethereal_data::Plain;
@@ -37,14 +37,13 @@ const CARET_WIDTH: f32 = 1.0;
 /// How strong its selection is, of its style's colour's alpha.
 const SELECTION_STRENGTH: f32 = 0.3;
 
-/// A line of `text` typed into, raising `change` with each edit and `submit` with Enter.
-///
-/// `submit` is `None` when the markup names no submit event; it is fixed as the view builds the widget.
+/// A line of `text` typed into, raising `change` with each edit and, when it raises one, `submit` with Enter: markup's
+/// `submit => …` sets it, and markup that leaves it out with `..` raises nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextInput<E> {
     pub text: String,
     pub change: E,
-    pub submit: Option<E>,
+    pub submit: Raises<E>,
 }
 
 /// A text input's caret and the other end of its selection, byte offsets into its text, and whether a press on it is
@@ -61,13 +60,13 @@ impl<E> TextInput<E> {
     /// A text input showing `text`, raising `change`, and no submit.
     #[must_use]
     pub fn new(text: &str, change: E) -> Self {
-        Self { text: String::from(text), change, submit: None }
+        Self { text: String::from(text), change, submit: Raises::Nothing }
     }
 
     /// It, raising `submit` with Enter.
     #[must_use]
     pub fn submit(self, submit: E) -> Self {
-        Self { submit: Some(submit), ..self }
+        Self { submit: Raises::Event(submit), ..self }
     }
 
     /// Its text as `editing` stands in it.
@@ -168,6 +167,10 @@ impl<E: Event> TextInput<E> {
             input.raise(Raised::Text(self.change, line.text.clone()));
         }
     }
+}
+
+impl<E: Event> Raising for TextInput<E> {
+    type Event = E;
 }
 
 impl<E: Event> Widget for TextInput<E> {
@@ -285,7 +288,7 @@ impl<E: Event> Widget for TextInput<E> {
             "Home" => line.moved(Toward::Start, selecting),
             "End" => line.moved(Toward::End, selecting),
             "Enter" | "NumpadEnter" => {
-                if let Some(submit) = self.submit {
+                if let Raises::Event(submit) = self.submit {
                     input.raise(Raised::Text(submit, self.text.clone()));
                 }
             }

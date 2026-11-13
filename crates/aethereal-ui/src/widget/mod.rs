@@ -1,7 +1,8 @@
 //! What a widget is (ADR-0056: Your own widgets): a value of its settings, which takes part in layout as it arranges
 //! its children, measures itself when it is a leaf, and draws itself into its screen's draw list. A primitive, stock
 //! or a program's own, implements [`Widget`]; a composite is markup `widget!` expands into a type whose tree is
-//! built of primitives, so it implements nothing here.
+//! built of primitives, so it implements [`Element`](crate::Element) alone, and [`Raising`](crate::Raising) when it
+//! raises events.
 //!
 //! A widget keeps no state of its own. What it needs between rebuilds, hover or a scroll offset, is its
 //! [`Widget::State`], which the screen's widget table makes, keeps, and drops by the widget's key (ADR-0056: Widget
@@ -66,6 +67,24 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
     /// through, or the window a list built of its items.
     fn lines(&self) -> &Lines {
         &WHOLE
+    }
+
+    /// Whether it windows the items markup's `items` gives it: builds only the rows its screen says it shows, asked by
+    /// its key path ([`Screen::rows`](crate::Screen::rows)), and takes the lines they stand at in [`Self::window`]. A
+    /// widget that arranges its children as a scroll and answers [`Self::lines`] declares it, as `Scroll` does; every
+    /// other widget builds every item.
+    const WINDOWS: bool = false;
+
+    /// It, its children the items of a list at `lines`, as its screen answered the window: what markup's `items` gives a
+    /// widget that [windows](Self::WINDOWS) them, which [`Self::lines`] then answers.
+    #[must_use]
+    fn window(self, lines: Lines) -> Self
+    where
+        Self: Sized,
+    {
+        let _ = lines;
+
+        self
     }
 
     /// How far it has slid its children along its axis, in pixels, as `state` stands: for a widget that arranges

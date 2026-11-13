@@ -1,7 +1,10 @@
-//! A composite written out: its type, and its `Element` impl, which builds its root where its screen places it.
+//! A composite written out: its type, its `Element` impl, which builds its root where its screen places it, and, when
+//! it raises events, its `Raising` impl, which names the type its events convert to.
 //!
 //! ```text
 //! pub struct ItemSlot<E> { pub item: Item, pub click: E }
+//!
+//! impl<E: Event> Raising for ItemSlot<E> { type Event = E; }
 //!
 //! impl<E: Event> Element for ItemSlot<E> {
 //!     fn node(self, segment, children) -> Node { Element::styled(self, segment, <its root's style>, children) }
@@ -14,7 +17,8 @@
 //!
 //! A composite's event type is the screen's, `E`, as a stock widget's is (`Button<E>`): the screen's view sets each of
 //! its `raises` to a variant of the screen's event enum, and the composite passes it on unchanged, so what its widget
-//! raises is the screen's own event.
+//! raises is the screen's own event. It builds every item of a list it holds, as it has no screen to ask which rows
+//! one shows, so `Element::WINDOWS` is left `false`.
 
 use super::Composite;
 use crate::markup::{Emitter, Owner, Scope};
@@ -47,10 +51,15 @@ pub fn composite(composite: &Composite, params: &[Ident]) -> TokenStream {
         Fields::Unit | Fields::Unnamed(_) => Vec::new(),
     };
     let raised = raises.iter().map(|raise| quote!(pub #raise: E));
-    let (declared, implemented, applied) = if raises.is_empty() {
-        (quote!(), quote!(), quote!())
+    let (declared, implemented, applied, raising) = if raises.is_empty() {
+        (quote!(), quote!(), quote!(), quote!())
     } else {
-        (quote!(<E>), quote!(<E: ::aethereal_ui::Event>), quote!(<E>))
+        let raising = quote! {
+            impl<E: ::aethereal_ui::Event> ::aethereal_ui::Raising for #name<E> {
+                type Event = E;
+            }
+        };
+        (quote!(<E>), quote!(<E: ::aethereal_ui::Event>), quote!(<E>), raising)
     };
     let [segment, style, appended, children] =
         ["segment", "style", "appended", "children"].map(|name| format_ident!("{name}", span = spans::hidden()));
@@ -63,6 +72,8 @@ pub fn composite(composite: &Composite, params: &[Ident]) -> TokenStream {
             #(#fields,)*
             #(#raised,)*
         }
+
+        #raising
 
         impl #implemented ::aethereal_ui::Element for #name #applied {
             fn node(

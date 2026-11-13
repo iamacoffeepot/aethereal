@@ -9,8 +9,8 @@
 //! middle there and drags it. With focus, or with a widget within it focused, Page Up and Page Down slide it a box's
 //! length, and Home and End to its ends.
 //!
-//! Given `items`, it builds only the items it shows: its lines are [`Lines::Window`], made by [`Rows`](crate::Rows)
-//! as the view asks the screen which items to build.
+//! Given `items`, it builds only the items it shows, as it declares ([`Widget::WINDOWS`]): its lines are
+//! [`Lines::Window`], made by [`Rows`](crate::Rows) as the view asks the screen which items to build.
 
 use super::press::ring;
 use crate::fonts::Measuring;
@@ -158,6 +158,8 @@ impl Bar {
 impl Widget for Scroll {
     type State = Scrolling;
 
+    const WINDOWS: bool = true;
+
     fn arrange(&self) -> Arrange {
         Arrange::Scroll(self.axis)
     }
@@ -173,6 +175,10 @@ impl Widget for Scroll {
 
     fn lines(&self) -> &Lines {
         &self.lines
+    }
+
+    fn window(self, lines: Lines) -> Self {
+        self.list(lines)
     }
 
     fn offset(&self, scrolling: &Scrolling) -> f32 {

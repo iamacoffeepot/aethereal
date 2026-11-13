@@ -1,9 +1,10 @@
 //! What a composite may name (ADR-0056: Expanded by a macro): it sees its own declarations, so it refuses a name it
 //! does not declare. Its references read its params and its locals, and Rust items; its events pass on its `raises`;
-//! and it has no `self`, no methods, and no screen to ask which rows a `Scroll` shows.
+//! and it has no `self` and no methods. It has no screen to ask which rows a list shows either, which its type, not its
+//! name, says it needs, so that refusal is the type's, as the composite is built (`aethereal_ui::whole`).
 
 use super::Composite;
-use crate::markup::{self, Call, Element, Head, Names, Scope};
+use crate::markup::{self, Call, Head, Names, Scope};
 use syn::{Fields, Ident};
 
 /// What a composite's markup names: its params, its locals, and its `raises`.
@@ -85,11 +86,5 @@ impl Names for Declared<'_> {
         let message = "a composite takes no drops: a drop calls a screen's method, which names the payload's kind; give \
                        `drop` where the composite is placed";
         Err(syn::Error::new(call.span(), message))
-    }
-
-    fn rows(&self, scroll: &Element) -> syn::Result<()> {
-        let message = "a composite's `Scroll` cannot ask its screen which rows it shows: place the list in the screen's \
-                       view, or in a `Column` here, built whole";
-        Err(syn::Error::new(scroll.span, message))
     }
 }

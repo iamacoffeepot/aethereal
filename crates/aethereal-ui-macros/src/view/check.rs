@@ -28,10 +28,6 @@ impl Names for Screen {
     fn drop(&self, call: &Call) -> syn::Result<()> {
         self.event(call)
     }
-
-    fn rows(&self, _: &Element) -> syn::Result<()> {
-        Ok(())
-    }
 }
 
 /// One variant of a screen's event enum: the method it calls, how many arguments the view copies for it, and what

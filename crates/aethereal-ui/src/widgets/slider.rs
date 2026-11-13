@@ -8,7 +8,7 @@
 
 use super::press::ring;
 use crate::fonts::Measuring;
-use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Raising, Used};
 use crate::style::Style;
 use crate::widget::{Arrange, Draws, Laid, Offer, Offered, Quad, Sample, Widget};
 use aethereal_data::Plain;
@@ -126,6 +126,10 @@ impl<E: Event> Slider<E> {
         let (least, most) = self.ends();
         self.set(fraction.mul_add(most - least, least), input);
     }
+}
+
+impl<E: Event> Raising for Slider<E> {
+    type Event = E;
 }
 
 impl<E: Event> Widget for Slider<E> {

@@ -1,7 +1,8 @@
 //! A screen's scrolls (ADR-0056: Lists and conditions are settings; Focus and keys): which items of a list in a scroll
 //! the view builds, the wheel, and focus moved by Tab brought into view.
 //!
-//! A list in a scroll builds only the items it shows. The view asks [`Screen::rows`] for the window of the list at a key
+//! A list in a scroll whose type windows its items ([`Widget::WINDOWS`](crate::Widget::WINDOWS)), as `Scroll` does, builds
+//! only the items it shows. The view asks [`Screen::rows`] for the window of the list at a key
 //! path: the lines its scroll's content box shows at its offset as the table keeps it, by the pitch its last layout
 //! measured, and a margin of [`MARGIN`] lines each way, so Tab finds the next item built and a turn of the wheel shows
 //! no gap. The focused item is built wherever it stands, so it keeps its focus and its state while it is scrolled out

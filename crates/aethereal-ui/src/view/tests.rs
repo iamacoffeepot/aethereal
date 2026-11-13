@@ -1,9 +1,10 @@
 //! A screen written in markup builds the tree its expansion is written to build: the same tree written by hand, node
 //! for node, so a wrong place among siblings, a wrong key, a wrong event variant or its arguments, a composite built
-//! wrong, a hidden element counted out of its siblings' places, or a scroll's rows asked wrong fails it.
+//! wrong, a hidden element counted out of its siblings' places, an optional event left unset, or a list's rows asked
+//! wrong, in a `Scroll` or in a program's own primitive that windows its items, fails it.
 
 use crate::prelude::*;
-use crate::widget::{Axis, Lines};
+use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Stateless, Widget};
 use crate::widgets::Text;
 use aethereal_actor::{Actor, Asks, Beginning, ChildOf, Ending, Fault, Path, Top, Turn};
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
@@ -45,6 +46,40 @@ pub struct Shop {
     ui: Screen,
 }
 
+/// A program's own scrolling primitive, named apart from `Scroll`: it windows the items markup gives it, as it
+/// declares, so its list is built as a `Scroll`'s is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reel {
+    lines: Lines,
+}
+
+/// A reel through every child it holds: what markup's `Reel { .., … }` leaves it at, its lines set by `items`.
+impl Default for Reel {
+    fn default() -> Self {
+        Self { lines: Lines::Whole }
+    }
+}
+
+impl Widget for Reel {
+    type State = Stateless;
+
+    const WINDOWS: bool = true;
+
+    fn arrange(&self) -> Arrange {
+        Arrange::Scroll(Axis::Column)
+    }
+
+    fn lines(&self) -> &Lines {
+        &self.lines
+    }
+
+    fn window(self, lines: Lines) -> Self {
+        Self { lines }
+    }
+
+    fn draw(&self, _: &Stateless, _: &Style, _: &Laid, _: &mut Draws<'_, '_>) {}
+}
+
 aethereal_ui::style! {
     pub panel { padding: 8, gap: 4 }
     pub title: panel { font_size: 24, colour: rgb(232, 217, 160) }
@@ -77,7 +112,7 @@ aethereal_ui::view! { Shop, ui,
             Text { "{ware.name}" }
         }
         Text { show: self.open, "{{open}}" }
-        TextInput { text: self.query, change => self.search(), submit: None }
+        TextInput { text: self.query, change => self.search(), submit => self.buy() }
         Toggle { on: self.muted, change => self.mute() }
         Slider { value: self.volume, min: 0.0, max: 1.0, step: 0.25, change => self.set_volume() }
         Tabs { selected: self.tab, change => self.open_tab(),
@@ -85,6 +120,9 @@ aethereal_ui::view! { Shop, ui,
             Tab { title: "Sold", Text { "sold" } }
         }
         Scroll { .., items: self.wares as ware key ware.id,
+            Text { "{ware.name}" }
+        }
+        Reel { .., items: self.wares as ware key ware.id,
             Text { "{ware.name}" }
         }
     }
@@ -120,6 +158,12 @@ impl Shop {
 
     fn search(&mut self, _: &mut Turn<'_, Self, ShopSends>, query: String) -> Result<(), Fault> {
         self.query = query;
+        Ok(())
+    }
+
+    fn buy(&mut self, _: &mut Turn<'_, Self, ShopSends>, query: String) -> Result<(), Fault> {
+        self.query = query;
+        self.open = true;
         Ok(())
     }
 
@@ -188,7 +232,7 @@ fn unlaid() -> Screen {
 }
 
 /// A node of `widget` at `segment`, unstyled, over `children`.
-fn node<W: crate::Widget>(segment: Segment, widget: W, children: Vec<Node>) -> Node {
+fn node<W: Widget>(segment: Segment, widget: W, children: Vec<Node>) -> Node {
     Node::new(segment, widget, Style::default(), children)
 }
 
@@ -208,26 +252,28 @@ fn slot(ware: WareId, name: &str, slot: u32) -> Node {
 }
 
 /// The shop's tree, as its markup is written to build it: each place counted in the markup, the hidden `Text` at 3
-/// among them, each item at its key, the open tab's panel alone at its place, and the scroll's first row alone.
+/// among them, each item at its key, the open tab's panel alone at its place, and the first row alone of the scroll
+/// and of the reel, each windowed by its type.
 fn by_hand() -> Tree {
     let grid = Style { columns: vec![Track::Fraction(1.0); 3], ..cells() };
     let tabs =
         Tabs { titles: vec![String::from("Wares"), String::from("Sold")], selected: 1, change: ShopEvent::OpenTab };
     let sold = node(Segment::Place(1), Tab { title: String::from("Sold") }, vec![text(Segment::Place(0), "sold")]);
-    let scroll = Scroll { axis: Axis::Column, lines: Lines::Window { count: 2, at: vec![0] } };
+    let window = Lines::Window { count: 2, at: vec![0] };
+    let scroll = Scroll { axis: Axis::Column, lines: window.clone() };
+    let input =
+        TextInput { text: String::from("pe"), change: ShopEvent::Search, submit: Raises::Event(ShopEvent::Buy) };
+    let first = || text(Segment::Item(ItemKey::from(WareId(1))), "Apple");
     let children = vec![
         Node::new(Segment::Place(0), Text::new("Wares: 2"), title(), vec![]),
         Node::new(Segment::Place(1), Grid, grid, vec![slot(WareId(1), "Apple", 4), slot(WareId(2), "Pear", 5)]),
         node(Segment::Place(2), Column, vec![text(Segment::Place(0), "Pear")]),
-        node(
-            Segment::Place(4),
-            TextInput { text: String::from("pe"), change: ShopEvent::Search, submit: None },
-            vec![],
-        ),
+        node(Segment::Place(4), input, vec![]),
         node(Segment::Place(5), Toggle::new(true, ShopEvent::Mute), vec![]),
         node(Segment::Place(6), Slider::new(0.5, 0.0, 1.0, 0.25, ShopEvent::SetVolume), vec![]),
         node(Segment::Place(7), tabs, vec![sold]),
-        node(Segment::Place(8), scroll, vec![text(Segment::Item(ItemKey::from(WareId(1))), "Apple")]),
+        node(Segment::Place(8), scroll, vec![first()]),
+        node(Segment::Place(9), Reel { lines: window }, vec![first()]),
     ];
 
     Tree::new(Node::new(Segment::Place(0), Column, panel(), children))

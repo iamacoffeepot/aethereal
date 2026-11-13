@@ -11,8 +11,9 @@
 //! ```
 //!
 //! - [`Tree`] and [`Node`]: what a view builds, each node a widget, its style, and its children, compared by value; a
-//!   child a widget's `items` repeats is told apart by its [`ItemKey`], and a list in a
-//!   [`Scroll`](widgets::Scroll) builds only the items its [`Rows`] say it shows.
+//!   child a widget's `items` repeats is told apart by its [`ItemKey`], and a list in a widget that declares it windows
+//!   its items ([`Widget::WINDOWS`]), a [`Scroll`](widgets::Scroll) or a program's own, builds only the items its
+//!   [`Rows`] say it shows.
 //! - [`Widget`]: a primitive. It arranges its children, measures itself as a leaf, draws itself, and takes in input;
 //!   its state is kept by key in the screen's [`Table`], with the screen's focus.
 //! - [`Style`]: every property a style sets, resolved.
@@ -20,7 +21,9 @@
 //!   event's method; and what is written by hand beside those methods, its sends and its hotkeys.
 //! - [`Element`] and [`Method`]: what markup's elements and events are built and called through: an element a
 //!   primitive's own node or the tree a composite builds, and an event's method called with the arguments its view
-//!   copied and, when it takes one, what its widget handed, by the method's own signature.
+//!   copied and, when it takes one, what its widget handed, by the method's own signature. An event a widget must
+//!   raise is its event type, `E`, and one it may is a [`Raises<E>`](Raises); markup sets both through `Into`, the
+//!   widget naming its event type through [`Raising`].
 //! - [`Screen`]: what the library keeps in the screen's actor, and what it does in the screen's turns, as
 //!   [`screen!`] writes the screen's handlers: among them, the content of each open widget that arranges its children
 //!   as a popup, a [`Popup`](widgets::Popup) or a program's own, drawn in the screen's top layer, and the wait of each
@@ -142,14 +145,14 @@ pub use drag::{
     Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
 };
 pub use fonts::{Measuring, Unmeasured};
-pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Used};
+pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising};
 pub use screen::{
     DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared,
     Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
 pub use table::{Focus, Table};
-pub use tree::{Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused};
+pub use tree::{Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused, whole, windows};
 pub use view::{Controls, Handed, Method, Took, View, take_in, unmatched};
 pub use widget::{
     Arrange, Axis, Draws, Inside, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side, Slices, Stateless,
@@ -165,8 +168,8 @@ pub mod prelude {
     };
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
-        Key, KeyPath, Length, Node, Payload, Placed, Raised, Rows, Screen, Segment, SelfAlign, Shaping, Side, Space,
-        Style, Target, Track, Tree, View, Viewport, rgb, rgba,
+        Key, KeyPath, Length, Node, Payload, Placed, Raised, Raises, Rows, Screen, Segment, SelfAlign, Shaping, Side,
+        Space, Style, Target, Track, Tree, View, Viewport, rgb, rgba,
     };
 }
 

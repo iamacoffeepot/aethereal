@@ -4,7 +4,7 @@
 
 use super::press::{Press, shade};
 use crate::fonts::Measuring;
-use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Event, Hears, Input, Key, Pointing, Raised, Raising, Used};
 use crate::style::Style;
 use crate::widget::{Arrange, Draws, Laid, Offer, Quad, Sample, Widget};
 use aethereal_math::{Rect2, Vec2};
@@ -34,6 +34,10 @@ impl<E> Toggle<E> {
     pub const fn new(on: bool, change: E) -> Self {
         Self { on, change }
     }
+}
+
+impl<E: Event> Raising for Toggle<E> {
+    type Event = E;
 }
 
 impl<E: Event> Widget for Toggle<E> {
