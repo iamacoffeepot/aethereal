@@ -61,8 +61,8 @@ struct Page {
     swatch: Colour,
     /// The background of the line beneath the head.
     line: Colour,
-    /// Whether the head holds a second swatch.
-    second: bool,
+    /// The head's second swatch.
+    second: Second,
     /// The items of a list of fifty the scroll built.
     items: Vec<u32>,
 }
@@ -70,7 +70,7 @@ struct Page {
 impl Page {
     /// The page every test starts from.
     fn first() -> Self {
-        Self { label: "Gold", swatch: RED, line: BLUE, second: false, items: (0..8).collect() }
+        Self { label: "Gold", swatch: RED, line: BLUE, second: Second::Absent, items: (0..8).collect() }
     }
 
     /// Its tree: a column of a row holding the label and its swatch, or two, a line of text over a background, and a
@@ -82,8 +82,8 @@ impl Page {
             Node::new(Segment::Place(0), Text::new(self.label), mono.clone(), Vec::new()),
             Node::new(Segment::Place(1), Swatch { colour: self.swatch }, square.clone(), Vec::new()),
         ];
-        if self.second {
-            head.push(Node::new(Segment::Place(2), Swatch { colour: BLUE }, square.clone(), Vec::new()));
+        if let Second::Of(colour) = self.second {
+            head.push(Node::new(Segment::Place(2), Swatch { colour }, square.clone(), Vec::new()));
         }
         let row = Style { gap: Gap { rows: Space::Pixels(4.0), columns: Space::Pixels(4.0) }, ..Style::default() };
         let line = Style { background: self.line, ..mono.clone() };
@@ -111,6 +111,13 @@ impl Page {
             ],
         ))
     }
+}
+
+/// Whether a page's head holds a second swatch, and of what colour.
+#[derive(Clone, Copy)]
+enum Second {
+    Absent,
+    Of(Colour),
 }
 
 /// The path of the page's scroll.
@@ -198,7 +205,7 @@ fn a_node_added_and_taken_away_is_listed_as_the_tree_stands() {
     let first = Page::first();
     let mut screen = after(&first);
 
-    let added = Page { second: true, ..first.clone() };
+    let added = Page { second: Second::Of(BLUE), ..first.clone() };
     let (kept, fresh) = again(&mut screen, &added);
     assert_eq!(kept, fresh, "added");
 
@@ -210,11 +217,11 @@ fn a_node_added_and_taken_away_is_listed_as_the_tree_stands() {
 fn a_node_that_leaves_and_comes_back_before_a_layout_is_drawn_anew() {
     // Catches what a widget kept outliving it, when the tree it left was never laid out: the widget that comes back at
     // its key with other settings drawn as the one that left was.
-    let first = Page { second: true, ..Page::first() };
+    let first = Page { second: Second::Of(BLUE), ..Page::first() };
     let mut screen = after(&first);
 
-    let _ = screen.unkept.built(Page { second: false, ..first.clone() }.tree());
-    let back = Page { second: true, swatch: BLUE, ..first };
+    let _ = screen.unkept.built(Page { second: Second::Absent, ..first.clone() }.tree());
+    let back = Page { second: Second::Of(RED), ..first };
     let (kept, fresh) = again(&mut screen, &back);
 
     assert_eq!(kept, fresh);
