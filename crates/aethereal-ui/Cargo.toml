@@ -27,6 +27,21 @@ taffy = { version = "=0.15.1", default-features = false, features = ["std", "fle
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "noop", "dx12", "metal", "vulkan"] }
 pollster = { workspace = true }
+# The `guest_counter` example runs the counter guest, a screen built for wasm32 into its `Code`, placed by a native
+# screen, in an engine linked to a hub that it hands `capture_frame` (ADR-0043), `send_input` (ADR-0046), and the
+# library's `publish` and `upgrades` (ADR-0054). The guest is a path dependency for its type, which the stage spawns.
+aethereal-chassis-desktop = { path = "../aethereal-chassis-desktop" }
+aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
+aethereal-files = { path = "../aethereal-files" }
+aethereal-guest-counter = { path = "guests/counter" }
+aethereal-library = { path = "../aethereal-library", features = ["tools"] }
+aethereal-link = { path = "../aethereal-link" }
+aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
+aethereal-render = { path = "../aethereal-render", features = ["tools"] }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tcp = { path = "../aethereal-tcp" }
+aethereal-tools = { path = "../aethereal-tools" }
+aethereal-window = { path = "../aethereal-window", features = ["tools"] }
 
 [lints]
 workspace = true

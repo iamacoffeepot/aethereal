@@ -41,9 +41,11 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"
 openh264 = { version = "=0.9.9", default-features = false, features = ["source"], optional = true }
 
 # A browser's GPU is WebGPU, used on the page's one thread, so what it makes is never shared between threads: that is
-# what lets the GPU be a resource, which is `Send` (ADR-0010).
+# what lets the GPU be a resource, which is `Send` (ADR-0010). The backend is the browser chassis's, which names it: a
+# guest built for wasm32 names the renderer's mail too, and links no browser's bindings its host could not give it
+# (ADR-0015).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["fragile-send-sync-non-atomic-wasm"] }
 
 # The build script packages the shared shader pieces in `shaders/` for dependents' build scripts (ADR-0030). It is
 # before its first stable release, so a newer version is taken on purpose, with the pieces' validation test as its gate.

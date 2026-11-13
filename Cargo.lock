@@ -140,6 +140,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-guest-counter"
+version = "0.0.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-render",
+ "aethereal-ui",
+]
+
+[[package]]
 name = "aethereal-guest-echo"
 version = "0.0.0"
 dependencies = [
@@ -305,9 +315,19 @@ name = "aethereal-ui"
 version = "0.1.0"
 dependencies = [
  "aethereal-actor",
+ "aethereal-chassis-desktop",
+ "aethereal-chassis-headless",
  "aethereal-data",
+ "aethereal-files",
+ "aethereal-guest-counter",
+ "aethereal-library",
+ "aethereal-link",
  "aethereal-math",
+ "aethereal-pace",
  "aethereal-render",
+ "aethereal-substrate",
+ "aethereal-tcp",
+ "aethereal-tools",
  "aethereal-ui-macros",
  "aethereal-window",
  "pollster",
