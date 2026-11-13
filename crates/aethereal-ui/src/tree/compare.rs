@@ -5,7 +5,8 @@
 //! Two nodes at one key path lay out alike when their styles are the same, their widgets lay out alike
 //! ([`Widget::same_layout`](crate::Widget::same_layout)), and their children stand at the same keys in the same order.
 //! What a widget draws beside that, its settings layout does not read and what its markup drags and drops, is drawing
-//! alone.
+//! alone. A node that lays out otherwise, or draws otherwise, is told of, so what a screen keeps of its draws lets go of
+//! a widget whose settings changed in any way (*settled by the library's draw-cost stage*).
 
 use super::{Node, Segment, Tree};
 use std::collections::BTreeMap;
@@ -21,12 +22,26 @@ pub enum Difference {
     Layout,
 }
 
+impl Difference {
+    /// It, with some widget's drawing differing beside what it says.
+    const fn with_drawing(self) -> Self {
+        match self {
+            Self::Same | Self::Drawing => Self::Drawing,
+            Self::Layout => Self::Layout,
+        }
+    }
+}
+
 /// What hears which nodes of a tree lay out otherwise than the last tree's at their keys, and which came and went: what
 /// a screen keeps of its layouts and its texts, to let go of what no longer holds.
 pub trait Relaid {
     /// The node at `path`, the root's segment first, lays out otherwise: its style, its widget's layout, or the keys of
     /// its children changed.
     fn changed(&mut self, path: &[Segment]);
+
+    /// The node at `path` lays out as it did and draws otherwise: its widget's settings that layout does not read, or
+    /// what its markup drags and drops, changed.
+    fn redrawn(&mut self, path: &[Segment]);
 
     /// The node at `path` is new to the tree, with all within it: the last tree had none there.
     fn entered(&mut self, path: &[Segment]);
@@ -42,6 +57,11 @@ impl<One: Relaid, Other: Relaid> Relaid for (&mut One, &mut Other) {
         self.1.changed(path);
     }
 
+    fn redrawn(&mut self, path: &[Segment]) {
+        self.0.redrawn(path);
+        self.1.redrawn(path);
+    }
+
     fn entered(&mut self, path: &[Segment]) {
         self.0.entered(path);
         self.1.entered(path);
@@ -50,6 +70,33 @@ impl<One: Relaid, Other: Relaid> Relaid for (&mut One, &mut Other) {
     fn left(&mut self, path: &[Segment]) {
         self.0.left(path);
         self.1.left(path);
+    }
+}
+
+/// Three hearers hear alike.
+impl<One: Relaid, Other: Relaid, Third: Relaid> Relaid for (&mut One, &mut Other, &mut Third) {
+    fn changed(&mut self, path: &[Segment]) {
+        self.0.changed(path);
+        self.1.changed(path);
+        self.2.changed(path);
+    }
+
+    fn redrawn(&mut self, path: &[Segment]) {
+        self.0.redrawn(path);
+        self.1.redrawn(path);
+        self.2.redrawn(path);
+    }
+
+    fn entered(&mut self, path: &[Segment]) {
+        self.0.entered(path);
+        self.1.entered(path);
+        self.2.entered(path);
+    }
+
+    fn left(&mut self, path: &[Segment]) {
+        self.0.left(path);
+        self.1.left(path);
+        self.2.left(path);
     }
 }
 
@@ -98,8 +145,11 @@ impl Tree {
                     relaid.changed(&segments);
                     Difference::Layout
                 }
-                (true, false) if difference == Difference::Same => Difference::Drawing,
-                (true, _) => difference,
+                (true, false) => {
+                    relaid.redrawn(&segments);
+                    difference.with_drawing()
+                }
+                (true, true) => difference,
             };
             let depth = depth + 1;
             if kept {

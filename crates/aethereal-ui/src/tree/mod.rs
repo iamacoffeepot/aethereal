@@ -264,7 +264,8 @@ impl Tree {
 
     /// Its nodes in tree order, the order they lay out and draw in, each beside its path and the places of its
     /// children in the list: walked with a stack of its own, so a tree's depth costs no frames. An item whose key a
-    /// sibling before it has is left out, with its descendants, and named in [`Flattened::twice`].
+    /// sibling before it has is left out, with its descendants, and named in [`Flattened::twice`]; children whose keys
+    /// stand in order, as markup's places and most lists' keys do, share none, and are taken as they are.
     ///
     /// # Errors
     ///
@@ -288,18 +289,25 @@ impl Tree {
                     born
                 }
             };
-            let mut seen = BTreeSet::new();
-            let mut kept = Vec::with_capacity(node.children.len());
-            for (born, child) in node.children.iter().enumerate() {
-                let fresh = seen.insert(child.segment);
-                match child.segment {
-                    _ if fresh => kept.push((born, child)),
-                    Segment::Place(_) => return Err(TreeRefused::Twice { path: path.child(child.segment) }),
-                    Segment::Item(_) => twice.push(path.child(child.segment)),
+            let ordered = node.children.windows(2).all(|pair| pair[0].segment < pair[1].segment);
+            if ordered {
+                for (born, child) in node.children.iter().enumerate().rev() {
+                    stack.push((child, path.child(child.segment), Parent::At { at, born }));
                 }
-            }
-            for (born, child) in kept.into_iter().rev() {
-                stack.push((child, path.child(child.segment), Parent::At { at, born }));
+            } else {
+                let mut seen = BTreeSet::new();
+                let mut kept = Vec::with_capacity(node.children.len());
+                for (born, child) in node.children.iter().enumerate() {
+                    let fresh = seen.insert(child.segment);
+                    match child.segment {
+                        _ if fresh => kept.push((born, child)),
+                        Segment::Place(_) => return Err(TreeRefused::Twice { path: path.child(child.segment) }),
+                        Segment::Item(_) => twice.push(path.child(child.segment)),
+                    }
+                }
+                for (born, child) in kept.into_iter().rev() {
+                    stack.push((child, path.child(child.segment), Parent::At { at, born }));
+                }
             }
             nodes.push(Flat { path, node, born, children: Vec::new() });
         }

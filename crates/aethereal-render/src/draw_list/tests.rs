@@ -64,7 +64,9 @@ fn walked(lists: &Lists, roots: &[ActorId]) -> Vec<u64> {
         .filter_map(|walking| match walking.entry {
             Listed::Draw { placement, .. } => Some(*placement),
             Listed::Run(dispatch) => Some(*dispatch),
-            Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Call { .. } | Listed::Hit { .. } | Listed::Shift { .. } | Listed::Unshift | Listed::Keys { .. } => {
+                None
+            }
         })
         .collect()
 }
@@ -199,7 +201,12 @@ fn nested_areas_compose_from_the_window_down_each_clip_cut_to_its_caller_s_whate
         .walk(vec![MAKER])
         .filter_map(|walking| match walking.entry {
             Listed::Draw { placement, .. } => Some((*placement, walking.within)),
-            Listed::Run(_) | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Run(_)
+            | Listed::Call { .. }
+            | Listed::Hit { .. }
+            | Listed::Shift { .. }
+            | Listed::Unshift
+            | Listed::Keys { .. } => None,
         })
         .collect();
 
@@ -217,6 +224,92 @@ fn nested_areas_compose_from_the_window_down_each_clip_cut_to_its_caller_s_whate
         (4, Within::WINDOW),
     ];
     assert_eq!(placed, expected);
+}
+
+/// A shift of the entries after it to `origin`, cut to `clip`.
+const fn shift(origin: [f32; 2], clip: Rect2) -> Listed {
+    Listed::Shift { origin: Vec2::new(origin[0], origin[1]), clip: Clip::To(clip) }
+}
+
+#[test]
+fn a_shift_places_its_sender_s_own_entries_as_a_call_places_a_child_until_its_unshift() {
+    // Catches a shift that moves nothing, or moves what follows its unshift; a clip of a shift that widens what its list
+    // was cut to, or is taken in the window's pixels rather than its list's; nested shifts that do not add, or an
+    // unshift that goes back past the shift it closes; a child called within a shift drawn where its caller's list
+    // stands rather than where the shift moved it; and a hit within a shift tested where it was listed, not moved.
+    let kept = Kept::new();
+    let mut lists = lists();
+    let view = rect([0.0, 20.0], [200.0, 120.0]);
+    let row = rect([0.0, 0.0], [100.0, 300.0]);
+    let Ok(window) = aethereal_data::from_bytes(&0_u64.to_le_bytes(), &mut aethereal_data::Budget::new(8)) else {
+        panic!("a window's id is its number");
+    };
+    let hit = Listed::Hit {
+        frame: Frame::Main(window),
+        pass: PassName::of::<Interface>(),
+        rect: rect([0.0, 10.0], [50.0, 30.0]),
+        picks: Picks::Ignores,
+    };
+    let list = vec![
+        draw(1),
+        shift([0.0, -50.0], view),
+        draw(2),
+        hit,
+        shift([10.0, 0.0], row),
+        Listed::Call { child: HUD, area: Area::CALLER },
+        Listed::Unshift,
+        draw(3),
+        Listed::Unshift,
+        draw(4),
+    ];
+    assert_eq!(lists.check(list, MAKER, &kept), Ok(()));
+    assert_eq!(lists.check(draws(&[7]), HUD, &make(HUD, 7)), Ok(()));
+
+    let placed: Vec<(Option<u64>, Within)> = lists
+        .walk(vec![MAKER])
+        .filter_map(|walking| match walking.entry {
+            Listed::Draw { placement, .. } => Some((Some(*placement), walking.within)),
+            Listed::Hit { .. } => Some((None, walking.within)),
+            Listed::Run(_) | Listed::Call { .. } | Listed::Shift { .. } | Listed::Unshift | Listed::Keys { .. } => None,
+        })
+        .collect();
+
+    let scrolled = Within { origin: Vec2::new(0.0, -50.0), clip: Clip::To(view) };
+    let nested = Within { origin: Vec2::new(10.0, -50.0), clip: Clip::To(rect([0.0, 20.0], [100.0, 120.0])) };
+    let expected = vec![
+        (Some(1), Within::WINDOW),
+        (Some(2), scrolled),
+        (None, scrolled),
+        (Some(7), nested),
+        (Some(3), scrolled),
+        (Some(4), Within::WINDOW),
+    ];
+    assert_eq!(placed, expected);
+}
+
+#[test]
+fn a_list_whose_shifts_do_not_close_in_order_is_refused() {
+    // Catches an unshift with no shift open taken in, which would move what follows it back past its list's own place;
+    // a shift never closed let through, which leaves where the rest stands to the walk; and shifts nested past their
+    // bound, which a list could write without end.
+    let kept = Kept::new();
+    let mut lists = lists();
+    let whole = rect([0.0, 0.0], [10.0, 10.0]);
+    let deep: Vec<Listed> = (0..=MOST_SHIFTS).map(|_| shift([0.0, 0.0], whole)).collect();
+    let deepest = u32::try_from(MOST_SHIFTS).unwrap_or(u32::MAX);
+    let refused = |at, why| Err(ListRefused { at, why });
+    let cases = [
+        (vec![draw(1), Listed::Unshift], refused(1, EntryRefused::Unshifted)),
+        (
+            vec![shift([0.0, 0.0], whole), draw(1), shift([1.0, 1.0], whole), Listed::Unshift],
+            refused(0, EntryRefused::Unclosed),
+        ),
+        (deep, refused(deepest, EntryRefused::Deep)),
+    ];
+
+    for (refusing, why) in cases {
+        assert_eq!(lists.check(refusing.clone(), MAKER, &kept), why, "{refusing:?}");
+    }
 }
 
 #[test]

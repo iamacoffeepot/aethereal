@@ -109,7 +109,7 @@ fn drawn_and_called(orders: &[Order]) -> Vec<Option<(Callee, Area)>> {
         .filter_map(|entry| match entry {
             Entry::Draw { .. } => Some(None),
             Entry::Call { child, area } => Some(Some((child, area))),
-            Entry::Run(_) | Entry::Hit { .. } | Entry::Keys { .. } => None,
+            Entry::Run(_) | Entry::Hit { .. } | Entry::Shift { .. } | Entry::Unshift | Entry::Keys { .. } => None,
         })
         .collect()
 }
@@ -206,9 +206,10 @@ fn a_child_is_told_its_size_when_its_slot_or_the_scale_changes_and_never_when_it
 
 #[test]
 fn a_child_in_a_scroll_slides_with_it_and_is_cut_to_it() {
-    // Catches a child placed where its slot was laid out rather than where the scroll slid it, so it stays put while the
-    // list around it moves; one cut only to its own slot, so it draws past the scroll's edge; and a scroll that tells
-    // the child its size as it slides, though only its place changed.
+    // Catches a child called outside the shift of what the scroll holds, so it stays put while the list around it
+    // moves; a shift that does not move by the scroll's offset, or is not cut to the scroll's content box, so the child
+    // draws past the scroll's edge; a call placed anew as the scroll slides, though only the shift around it moved; and
+    // a scroll that tells the child its size as it slides, though only its place changed.
     let mut screen = screen();
     let scroll_style = Style { width: Length::Pixels(200.0), height: Length::Pixels(50.0), ..Style::default() };
     let tree = || {
@@ -224,12 +225,30 @@ fn a_child_in_a_scroll_slides_with_it_and_is_cut_to_it() {
 
     let offset = screen.table().state::<Scroll>(&scroll).unwrap_or_default().offset;
     assert!(offset > 0.0, "the wheel slid the scroll");
-    let unslid = Area::Inherit { origin: Vec2::new(0.0, 30.0), clip: Clip::To(rect([0.0, 30.0], [80.0, 50.0])) };
-    let top = 30.0 - offset;
-    let slid_area = Area::Inherit { origin: Vec2::new(0.0, top), clip: Clip::To(rect([0.0, top], [80.0, 50.0])) };
-    assert_eq!(area_of(&first, 1), unslid);
-    assert_eq!(area_of(&slid, 1), slid_area);
+    let called = Area::Inherit { origin: Vec2::new(0.0, 30.0), clip: Clip::To(rect([0.0, 30.0], [80.0, 70.0])) };
+    let view = Clip::To(rect([0.0, 0.0], [192.0, 50.0]));
+    assert_eq!(area_of(&first, 1), called);
+    assert_eq!(area_of(&slid, 1), called, "the call stands where it stood in what the scroll holds");
+    assert_eq!(shifted(&first), vec![(Vec2::ZERO, view)]);
+    assert_eq!(shifted(&slid), vec![(Vec2::new(0.0, -offset), view)]);
     assert_eq!(resizes(&slid), vec![]);
+}
+
+/// The origin and clip of each shift in the screen's last list among `orders`.
+fn shifted(orders: &[Order]) -> Vec<(Vec2, Clip)> {
+    last_list(orders)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Shift { origin, clip } => Some((origin, clip)),
+            Entry::Draw { .. }
+            | Entry::Run(_)
+            | Entry::Call { .. }
+            | Entry::Hit { .. }
+            | Entry::Unshift
+            | Entry::Keys { .. } => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -353,9 +372,10 @@ fn a_widget_listed_after_a_child_is_reached_through_its_own_entry() {
 #[test]
 fn the_hit_over_a_child_is_listed_over_its_call_at_what_it_is_cut_to_and_hears_presses_alone() {
     // Catches the hit listed before the call, so the child's own entries stand over it and a press the child blocks
-    // never reaches the screen; one over the slot's border box, or not cut to the scroll around it, so a press on the
-    // slot's padding or past the scroll's edge counts as a press into the child; and one that blocks or passes, so it
-    // takes the child's cursor, its hover, and its drags.
+    // never reaches the screen; one over the slot's border box, or listed outside the shift of what the scroll around
+    // it holds, which cuts it to the scroll's edge, so a press on the slot's padding or past the scroll's edge counts
+    // as a press into the child; and one that blocks or passes, so it takes the child's cursor, its hover, and its
+    // drags.
     let mut screen = screen();
     let scroll_style = Style { width: Length::Pixels(200.0), height: Length::Pixels(30.0), ..Style::default() };
     let padded = Style { padding: Edges::all(Space::Pixels(5.0)), ..sized(80.0, 40.0) };
@@ -370,10 +390,12 @@ fn the_hit_over_a_child_is_listed_over_its_call_at_what_it_is_cut_to_and_hears_p
         panic!("the child is called: {sent:?}");
     };
     let over = sent.get(called + 1).cloned();
-    let cut = rect([5.0, 5.0], [75.0, 30.0]);
+    let padding = rect([5.0, 5.0], [75.0, 35.0]);
     let expected =
-        Entry::Hit { frame: screen.target.frame, pass: screen.target.pass, rect: cut, pointer: Pointer::Presses };
+        Entry::Hit { frame: screen.target.frame, pass: screen.target.pass, rect: padding, pointer: Pointer::Presses };
     assert_eq!(over, Some(expected));
+    assert_eq!(shifted(&orders), vec![(Vec2::ZERO, Clip::To(rect([0.0, 0.0], [192.0, 30.0])))]);
+    assert!(matches!(sent.get(called + 2), Some(Entry::Unshift)), "the hit stands within the shift: {sent:?}");
 }
 
 #[test]

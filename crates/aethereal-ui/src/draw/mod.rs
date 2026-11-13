@@ -22,6 +22,7 @@ use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
 use aethereal_render::text::{Align, Font, Outline, Run, Wrap};
 use aethereal_render::texture::TextureId;
+use core::ops::Range;
 
 /// The program that draws every quad of a screen: the unit square's corner placed in its record's box and turned into
 /// clip space by the frame's size in the uniform; then the texture sampled at the record's region, its edges kept by
@@ -203,9 +204,8 @@ pub fn frame_bytes(width: u32, height: u32) -> Vec<u8> {
     size.iter().flat_map(|value| value.to_le_bytes()).collect()
 }
 
-/// The record of `quad`, as the program reads it.
-#[must_use]
-pub fn record(quad: &Quad) -> Vec<u8> {
+/// Writes the record of `quad`, as the program reads it, after what `records` holds.
+pub fn record(quad: &Quad, records: &mut Vec<u8>) {
     let Quad { rect, clip, colour, border_width, border_colour, radius, sample } = *quad;
     let (uv, inset, slice_uv) = match sample {
         Sample::Solid => (Rect2 { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0) }, [0.0; 4], [0.0; 4]),
@@ -227,20 +227,30 @@ pub fn record(quad: &Quad) -> Vec<u8> {
         slice_uv,
     ];
 
-    vectors.iter().flatten().flat_map(|value| value.to_le_bytes()).collect()
+    write::<{ RECORD_BYTES as usize }>(records, vectors.as_flattened());
 }
 
-/// The record of `quad`, a plain fill, as the fill program reads it: its box cut to its clip, and its colour; none when
-/// the clip leaves nothing of it.
-#[must_use]
-pub fn fill(quad: &Quad) -> Vec<u8> {
+/// Writes `floats` after what `records` holds, each in its four little-endian bytes, gathered first so they are
+/// written as one run.
+fn write<const BYTES: usize>(records: &mut Vec<u8>, floats: &[f32]) {
+    let mut bytes = [0_u8; BYTES];
+    for (place, value) in bytes.chunks_exact_mut(4).zip(floats) {
+        place.copy_from_slice(&value.to_le_bytes());
+    }
+
+    records.extend_from_slice(&bytes);
+}
+
+/// Writes the record of `quad`, a plain fill, as the fill program reads it, after what `records` holds: its box cut to
+/// its clip, and its colour; nothing when the clip leaves nothing of it.
+pub fn fill(quad: &Quad, records: &mut Vec<u8>) {
     let cut = quad.rect.intersection(quad.clip);
     if cut.is_empty() {
-        return Vec::new();
+        return;
     }
     let vectors = [[cut.min.x, cut.min.y, cut.max.x, cut.max.y], quad.colour.channels()];
 
-    vectors.iter().flatten().flat_map(|value| value.to_le_bytes()).collect()
+    write::<{ FILL_BYTES as usize }>(records, vectors.as_flattened());
 }
 
 /// Whether `quad` is a plain fill: solid, square, and borderless, so its box, its clip, and its colour say all of it.
@@ -306,22 +316,26 @@ pub struct Placing {
     pub clip: Rect2,
 }
 
-/// A widget's draws, `pieces`, in its layers: each run of quads that sample one texture, a solid quad sampling the
-/// white pixel, in one layer, and each text in a layer of its own, in the order they were drawn. A run of solid quads
-/// that are all plain fills is drawn by the fill program.
-pub fn layered(pieces: Vec<Piece>) -> Vec<Content> {
+/// A widget's draws, `pieces`, in its layers, taken out of `pieces`: each run of quads that sample one texture, a solid
+/// quad sampling the white pixel, in one layer, and each text in a layer of its own, in the order they were drawn. A
+/// run of solid quads that are all plain fills is drawn by the fill program. Each layer's records are written into one
+/// buffer of the size they take, so a widget that draws hundreds of quads makes no buffer for each.
+pub fn layered(pieces: &mut Vec<Piece>) -> Vec<Content> {
+    let mut quads: Vec<Quad> = Vec::with_capacity(pieces.len());
     let mut runs: Vec<Gathered> = Vec::new();
-    for piece in pieces {
+    for piece in pieces.drain(..) {
         match piece {
             Piece::Quad(quad) => {
                 let binding = match quad.sample {
                     Sample::Solid => Binding::White,
                     Sample::Texture { texture, .. } => Binding::Texture(texture),
                 };
+                let at = quads.len();
+                quads.push(quad);
                 match runs.last_mut() {
-                    Some(Gathered::Quads { binding: last, quads }) if *last == binding => quads.push(quad),
+                    Some(Gathered::Quads { binding: last, span }) if *last == binding => span.end = at + 1,
                     Some(Gathered::Quads { .. } | Gathered::Text(_)) | None => {
-                        runs.push(Gathered::Quads { binding, quads: vec![quad] });
+                        runs.push(Gathered::Quads { binding, span: at..at + 1 });
                     }
                 }
             }
@@ -329,26 +343,37 @@ pub fn layered(pieces: Vec<Piece>) -> Vec<Content> {
         }
     }
 
-    runs.into_iter().map(Gathered::content).collect()
+    runs.into_iter().map(|run| run.content(&quads)).collect()
 }
 
-/// A run of a widget's draws that one layer draws: quads of one binding, or a text.
+/// A run of a widget's draws that one layer draws: quads of one binding, the span of them among the widget's quads, or
+/// a text.
 enum Gathered {
-    Quads { binding: Binding, quads: Vec<Quad> },
+    Quads { binding: Binding, span: Range<usize> },
     Text(TextDraw),
 }
 
 impl Gathered {
-    /// The layer that draws it: its quads' records, as fills when they are all plain fills; or its text.
-    fn content(self) -> Content {
+    /// The layer that draws it, its quads among `quads`: their records, as fills when they are all plain fills; or its
+    /// text.
+    fn content(self, quads: &[Quad]) -> Content {
         match self {
-            Self::Quads { binding, quads } => {
+            Self::Quads { binding, span } => {
+                let quads = &quads[span];
                 let plain = quads.iter().all(is_plain);
-                let (binding, records) = if plain {
-                    (Binding::Fill, quads.iter().flat_map(fill).collect())
+                let binding = if plain {
+                    Binding::Fill
                 } else {
-                    (binding, quads.iter().flat_map(record).collect())
+                    binding
                 };
+                let mut records = Vec::with_capacity(quads.len() * binding.record_bytes() as usize);
+                for quad in quads {
+                    if plain {
+                        fill(quad, &mut records);
+                    } else {
+                        record(quad, &mut records);
+                    }
+                }
 
                 Content::Quads { binding, records }
             }

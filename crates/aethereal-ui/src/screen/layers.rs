@@ -96,6 +96,12 @@ impl Layer {
         &self.key
     }
 
+    /// What it should be.
+    #[cfg(test)]
+    pub(super) const fn content(&self) -> &Content {
+        &self.content
+    }
+
     /// Whether something of it is still being made, so no list may name it yet.
     pub(super) const fn is_making(&self) -> bool {
         matches!(
@@ -194,18 +200,18 @@ const fn moved(placement: PlacementId, placing: Placed) -> MoveText {
 }
 
 impl Screen {
-    /// Draws `drawn`, each layer of each widget's draws in tree order, beside its key, listed as `order` says: each
-    /// kept layer no longer drawn is retired, each new one made, each changed one written or made anew, the one it
-    /// replaces retired; and the list is sent once nothing in it is still being made, and only then is what was retired
+    /// Draws `drawn`, each layer of each widget drawn anew in tree order, beside its key, listed as `order` says: each
+    /// kept layer `order` no longer lists is retired, each new one made, each changed one written or made anew, the one
+    /// it replaces retired, and each a widget listed again as it was stands as it is; and the list is sent once nothing in it is still being made, and only then is what was retired
     /// released, so the list the renderer draws by until then never names what it has let go.
     pub(super) fn draw(&mut self, drawn: Vec<(DrawKey, Content)>, order: Vec<Slot>, orders: &mut Orders) {
-        let mut wanted: Vec<&DrawKey> = drawn.iter().map(|(key, _)| key).collect();
+        self.order = order;
+        let mut wanted: Vec<&DrawKey> = self.order.iter().filter_map(Slot::draws).collect();
         wanted.sort_unstable();
         let (kept, retired): (Vec<Layer>, Vec<Layer>) =
             self.layers.drain(..).partition(|layer| wanted.binary_search(&&layer.key).is_ok());
         self.layers = kept;
         self.retired.extend(retired);
-        self.order = order;
         for (key, content) in drawn {
             match self.layers.binary_search_by(|layer| layer.key.cmp(&key)) {
                 Ok(at) if self.layers[at].holds(&content) => {
@@ -270,11 +276,13 @@ impl Screen {
         ours.then_some(layer)
     }
 
-    /// Drops the layer kept under `key`, which was not made, and logs `why`.
+    /// Drops the layer kept under `key`, which was not made, and logs `why`: what its widget listed is let go, so the
+    /// next layout draws it anew and asks for it again.
     fn unmade(&mut self, key: &DrawKey, why: &dyn Debug, orders: &mut Orders) {
         if let Ok(at) = self.layers.binary_search_by(|layer| layer.key.cmp(key)) {
             self.layers.remove(at);
         }
+        self.unkept.listings.forget(&key.path);
         orders.log(Level::Error, format!("the screen's draw at {key:?} was not made: {why:?}"));
         self.settle(orders);
     }

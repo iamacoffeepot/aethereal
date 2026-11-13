@@ -2341,7 +2341,9 @@ impl Kept {
                 | Listed::Draw { .. }
                 | Listed::Run(_)
                 | Listed::Call { .. }
-                | Listed::Hit { .. } => None,
+                | Listed::Hit { .. }
+                | Listed::Shift { .. }
+                | Listed::Unshift => None,
             })
             .collect();
         keys.reverse();
@@ -2736,7 +2738,12 @@ impl Kept {
             .walk(self.roots(frame))
             .filter_map(|walking| match *walking.entry {
                 Listed::Run(id) => self.dispatches.get(id).map(|dispatch| (id, dispatch)),
-                Listed::Draw { .. } | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
+                Listed::Draw { .. }
+                | Listed::Call { .. }
+                | Listed::Hit { .. }
+                | Listed::Shift { .. }
+                | Listed::Unshift
+                | Listed::Keys { .. } => None,
             })
             .filter(|(id, dispatch)| {
                 let joins = dispatch.runs_in(frame, pass);
@@ -2913,7 +2920,7 @@ impl Kept {
                 let is_here = *hit == frame && *hit_pass == pass;
                 is_here.then_some(Issued::Hit { rect: within.cut(*rect), picks, origin: within.origin })
             }
-            Listed::Run(_) | Listed::Call { .. } | Listed::Keys { .. } => None,
+            Listed::Run(_) | Listed::Call { .. } | Listed::Shift { .. } | Listed::Unshift | Listed::Keys { .. } => None,
         }
     }
 

@@ -67,6 +67,33 @@ pub(in crate::screen) enum Typed {
     Dropped,
 }
 
+/// `event`, through an entry of the screen's list drawn `moved` from the screen's own coordinates, as the screen's own
+/// coordinates place it: the window tells each entry of the pointer from where its list, and each shift around it,
+/// drew it, so each place is moved back by the shifts. What a release was over is in its own entry's coordinates
+/// whoever hears it, and stands as told.
+fn in_screen(event: PointerEvent, moved: Vec2) -> PointerEvent {
+    let at = |x: f32, y: f32| (x + moved.x, y + moved.y);
+    match event {
+        PointerEvent::PointerMoved { x, y } => {
+            let (x, y) = at(x, y);
+            PointerEvent::PointerMoved { x, y }
+        }
+        PointerEvent::PointerDown { x, y, button } => {
+            let (x, y) = at(x, y);
+            PointerEvent::PointerDown { x, y, button }
+        }
+        PointerEvent::PointerUp { x, y, button, over } => {
+            let (x, y) = at(x, y);
+            PointerEvent::PointerUp { x, y, button, over }
+        }
+        PointerEvent::Wheel { x, y, delta_x, delta_y } => {
+            let (x, y) = at(x, y);
+            PointerEvent::Wheel { x, y, delta_x, delta_y }
+        }
+        PointerEvent::PointerEntered | PointerEvent::PointerLeft => event,
+    }
+}
+
 /// The place in a list of the entry numbered `entry`.
 pub(super) fn place(entry: u32) -> usize {
     usize::try_from(entry).unwrap_or(usize::MAX)
@@ -91,36 +118,38 @@ impl Screen {
     /// A release's `over` is read in the list last sent, as it was probed at the release.
     pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
         let mut heard = Heard::default();
-        let Some(listed) = self.reached_by(pointed.entry, pointed.event) else {
+        let Pointed { entry, event, .. } = pointed;
+        let Some((listed, moved)) = self.reached_by(entry, event) else {
             return heard;
         };
-        self.hold(pointed.entry, pointed.event, &listed);
+        self.hold(entry, event, (&listed, moved));
+        let event = in_screen(event, moved);
         let path = match listed {
             Listed::Hit(path) => path,
             Listed::Backdrop(popup) => {
-                if let PointerEvent::PointerDown { .. } = pointed.event {
+                if let PointerEvent::PointerDown { .. } = event {
                     self.pressed_in(&Pressing::Behind(popup));
                 }
                 return heard;
             }
             Listed::Child(slot) => {
-                if let PointerEvent::PointerDown { button, .. } = pointed.event {
+                if let PointerEvent::PointerDown { button, .. } = event {
                     self.pressed_into(slot, button, &mut heard);
                 }
                 return heard;
             }
-            Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_) => return heard,
+            Listed::Keys(_) | Listed::Draw(_) | Listed::Call(_) | Listed::Shift | Listed::Unshift => return heard,
         };
-        let follows = matches!(pointed.event, PointerEvent::PointerMoved { .. } | PointerEvent::PointerUp { .. });
+        let follows = matches!(event, PointerEvent::PointerMoved { .. } | PointerEvent::PointerUp { .. });
         let gone = self.widget(&path).is_none();
         let lost = follows && gone;
         if lost {
             self.lost(&path);
             return heard;
         }
-        let ended = match pointed.event {
+        let ended = match event {
             PointerEvent::PointerEntered | PointerEvent::PointerLeft => {
-                let entered = pointed.event == PointerEvent::PointerEntered;
+                let entered = event == PointerEvent::PointerEntered;
                 self.reach(&path, entered);
                 self.passed();
                 Ended::Press
@@ -140,14 +169,14 @@ impl Screen {
             PointerEvent::PointerUp { .. } | PointerEvent::Wheel { .. } => Ended::Press,
         };
         let dragged = matches!(ended, Ended::Drag(_));
-        if let (Ended::Drag(payload), PointerEvent::PointerUp { over, .. }) = (ended, pointed.event) {
+        if let (Ended::Drag(payload), PointerEvent::PointerUp { over, .. }) = (ended, event) {
             self.land(&path, payload, over, me, &mut heard);
         }
         let Some(origin) = self.origin(&path) else {
             return heard;
         };
         let at = |x: f32, y: f32| Vec2::new(x, y) - origin;
-        let pointing = match pointed.event {
+        let pointing = match event {
             PointerEvent::PointerEntered => Pointing::Entered,
             PointerEvent::PointerLeft => Pointing::Left,
             PointerEvent::PointerMoved { x, y } => Pointing::Moved { at: at(x, y) },
@@ -163,8 +192,7 @@ impl Screen {
             }
         };
         let pressed = matches!(pointing, Pointing::Down { button: Button::Main, .. });
-        let passes =
-            matches!(self.listed.get(place(pointed.entry)), Some(Entry::Hit { pointer: Pointer::Passes(_), .. }));
+        let passes = matches!(self.listed.get(place(entry)), Some(Entry::Hit { pointer: Pointer::Passes(_), .. }));
         let focuses = pressed && !passes;
         if focuses {
             let focusable = self.widget(&path).is_some_and(Built::focusable);
