@@ -2,6 +2,9 @@
 //!
 //! The library writes the screen's `Keys` entries (ADR-0055) from its focus and its hotkeys:
 //!
+//! - **The screen says it takes every key now** ([`Controls::takes_every_key`](crate::Controls::takes_every_key)):
+//!   every key, blocking, whatever has its focus, as a console takes every key while it is open though a press on its
+//!   panel moved focus off its line.
 //! - **A widget that types has focus,** a text input: every key, blocking, so a key typed into it never reaches the
 //!   game, and the window's input method is allowed while it has (ADR-0051).
 //! - **Otherwise,** the screen's hotkeys; and, while a widget has focus, Tab, Escape, the keys that widget hears, and
@@ -16,7 +19,7 @@
 //! content it is in.
 
 use super::popups::{Open, boundary};
-use super::{Screen, Target};
+use super::{Fresh, Screen, Target};
 use crate::input::{Hears, Held};
 use crate::table::Focus;
 use crate::tree::{Flat, KeyPath};
@@ -51,6 +54,15 @@ pub(super) enum Role {
     Screen,
     /// The modifiers, which it watches go down and come up, and lets through.
     Modifiers,
+}
+
+/// Whether a screen takes every key of its window, as its `Controls` last said at a `Prepare`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub(super) enum Taking {
+    /// The keys its hotkeys and its focus declare.
+    Declared,
+    /// Every key, blocking, whatever has its focus.
+    Every,
 }
 
 /// What a screen last asked of its window's input method: it starts stopped, as every window's does (ADR-0051).
@@ -129,9 +141,19 @@ pub(super) fn typing(flat: &[Flat<'_>], focus: &Focus) -> bool {
     heard(flat, focus) == Some(Hears::Typing)
 }
 
-/// The keys a screen whose widgets are `flat` declares, with `focus`, `hotkeys` its own, and its popups `open` as they
-/// are, in the order they are listed.
-pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str], open: Open) -> Vec<Declared> {
+/// The keys a screen whose widgets are `flat` declares, with `focus`, `hotkeys` its own, its popups `open` as they
+/// are, and taking every key or not as `taking` says, in the order they are listed.
+pub(super) fn declared(
+    flat: &[Flat<'_>],
+    focus: &Focus,
+    hotkeys: &[&str],
+    open: Open,
+    taking: Taking,
+) -> Vec<Declared> {
+    let every = vec![Declared { keys: KeySet::All, blocks: true, role: Role::Screen }];
+    if taking == Taking::Every {
+        return every;
+    }
     let mut codes: Vec<&str> = hotkeys.to_vec();
     match open {
         Open::Nothing => {}
@@ -139,9 +161,7 @@ pub(super) fn declared(flat: &[Flat<'_>], focus: &Focus, hotkeys: &[&str], open:
         Open::Modal => codes.extend([TAB, ESCAPE]),
     }
     match heard(flat, focus) {
-        Some(Hears::Typing) => {
-            return vec![Declared { keys: KeySet::All, blocks: true, role: Role::Screen }];
-        }
+        Some(Hears::Typing) => return every,
         Some(Hears::Keys(hears)) => {
             codes.extend([TAB, ESCAPE]);
             codes.extend(hears);
@@ -187,6 +207,20 @@ pub(super) fn tabbed(flat: &[Flat<'_>], reaches: &[bool], focus: &Focus, back: b
 }
 
 impl Screen {
+    /// Says whether the screen takes every key of its window now, whatever has its focus, as its `Controls` answers at
+    /// each `Prepare`: a change lays it out at that `Prepare` though its tree is the same, so its list declares it.
+    pub fn take_keys(&mut self, every: bool) {
+        let taking = if every {
+            Taking::Every
+        } else {
+            Taking::Declared
+        };
+        if taking != self.taking {
+            self.taking = taking;
+            self.fresh = Fresh::Stale;
+        }
+    }
+
     /// What to ask of the window's input method as a widget that types gains or loses focus, `typing`: allowed while
     /// one has it, and stopped after (ADR-0051), each asked only as it changes, and never for a screen that draws into
     /// a texture, which has no window.

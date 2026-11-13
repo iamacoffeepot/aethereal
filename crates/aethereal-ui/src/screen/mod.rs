@@ -76,7 +76,7 @@ use aethereal_window::Cursor;
 use children::Told;
 use drags::Grip;
 use input::{Hold, Typed};
-use keys::{Declared, Ime, Modifiers, Role};
+use keys::{Declared, Ime, Modifiers, Role, Taking};
 use layers::Layer;
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
 use program::Program;
@@ -126,7 +126,7 @@ impl Viewport {
 
 /// What the library keeps of a screen: where it draws, how big it is, the program it draws quads with, its widget
 /// table, what it has drawn by key, what it drew that the list it last sent may still name, and what it lists in what
-/// order, the list it last sent and what each entry of it is, what each entry a press reached was when it reached it,
+/// order, whether it takes every key, the list it last sent and what each entry of it is, what each entry a press reached was when it reached it,
 /// while a button is down on it, whether what it last laid out is current, the modifiers held, where the text the last
 /// key typed goes, what it last asked of its window's input method, what its tooltips wait on: the hits the pointer
 /// reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked at; the size it
@@ -146,6 +146,8 @@ pub struct Screen {
     order: Vec<Slot>,
     /// The keys the last layout declares, listed before the widgets.
     keys: Vec<Declared>,
+    /// Whether it takes every key whatever has its focus, as its `Controls` last said.
+    taking: Taking,
     /// The entries of the list last sent.
     listed: Vec<Entry>,
     /// What each entry of the list last sent is, which input through it reaches.
@@ -287,6 +289,7 @@ impl Screen {
             retired: Vec::new(),
             order: Vec::new(),
             keys: Vec::new(),
+            taking: Taking::Declared,
             listed: Vec::new(),
             listing: Vec::new(),
             held: Vec::new(),
@@ -457,7 +460,7 @@ impl Screen {
         layers.settle(&mut pending, usize::MAX);
         *placed = laid_out;
         let open = popups::open(&flat, &surfaces, &self.table);
-        self.keys = keys::declared(&flat, &focus, hotkeys, open);
+        self.keys = keys::declared(&flat, &focus, hotkeys, open, self.taking);
         let typing = keys::typing(&flat, &focus);
 
         let waited = measuring.waited();

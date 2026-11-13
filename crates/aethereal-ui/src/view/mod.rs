@@ -40,6 +40,14 @@ pub trait Controls: Actor {
     /// that types has focus.
     const FIRST: &'static [&'static str] = &[];
 
+    /// Whether the screen takes every key of its window now, whatever has its focus: while it says so, its list
+    /// declares every key, blocking, so none reaches what is beneath it, as a console takes every key while it is open
+    /// though a press on its panel moved focus off its line. Each key then reaches the focus, if any, then the screen's
+    /// `key`. Asked at each `Prepare`; a screen that never takes every key leaves it.
+    fn takes_every_key(&self) -> bool {
+        false
+    }
+
     /// Takes in a key pressed that neither the focused widget nor the focus keys used: one of [`Self::HOTKEYS`], or,
     /// while a widget that types has focus, any key it passed; and each of [`Self::FIRST`], before the focus hears it.
     ///

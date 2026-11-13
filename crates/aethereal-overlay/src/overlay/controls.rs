@@ -1,8 +1,8 @@
 //! What the overlay's keys and its line's events do (ADR-0053: The three stops, Commands are tools; ADR-0056: Focus and
-//! keys). The backtick, a hotkey of its screen, steps the overlay through its stops; at the console's stop the line's
-//! text input has the screen's focus, so the console takes every key of the window, and the backtick, Escape, and Tab
-//! come to the overlay before the line hears them, as the console's own: the backtick steps on, Escape closes the
-//! console, and Tab completes the word before the caret. Up and Down, which the line passes, step its history, and Page
+//! keys). The backtick, a hotkey of its screen, steps the overlay through its stops; at the console's stop the screen
+//! takes every key of the window, whatever has its focus, and the line's text input has the focus, so the backtick,
+//! Escape, and Tab come to the overlay before the line hears them, as the console's own: the backtick steps on, Escape
+//! closes the console, and Tab completes the word before the caret. Up and Down, which the line passes, step its history, and Page
 //! Up and Page Down are handed to the scrollback's scroll. The line's edits keep its text, and Enter runs it.
 
 use super::Overlay;
@@ -29,6 +29,12 @@ impl Controls for Overlay {
     const HOTKEYS: &'static [&'static str] = &[STEP_KEY];
 
     const FIRST: &'static [&'static str] = &[STEP_KEY, CLOSE_KEY, COMPLETE_KEY];
+
+    /// The console takes every key of the window while it is open (ADR-0053), though a press on its panel moved focus
+    /// off its line until the next `Tick` gives it back.
+    fn takes_every_key(&self) -> bool {
+        self.stop.console()
+    }
 
     fn key(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, key: Key) -> Result<(), Fault> {
         let console = self.stop.console();

@@ -304,6 +304,32 @@ fn a_focused_text_input_declares_every_key_blocking_and_gives_them_up_on_blur() 
 }
 
 #[test]
+fn a_screen_that_takes_every_key_declares_them_all_whatever_has_its_focus_and_gives_them_up_as_it_stops() {
+    // Catches a screen that takes every key only while its text input has focus, so a press elsewhere on it lets the
+    // window's keys reach the game until the screen focuses the input again; a change of whether it takes every key
+    // that waits for its tree to change before its list says so; and every key kept after it stops.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("gold")]);
+    laid(&mut screen, tree(), &["KeyI"]);
+
+    screen.take_keys(true);
+    let (_, taking) = laid(&mut screen, tree(), &["KeyI"]);
+    let declared = keys(&screen, Role::Screen);
+    let letter = key_down(&mut screen, declared, "KeyQ", "q");
+    screen.take_keys(false);
+    let (_, after) = laid(&mut screen, tree(), &["KeyI"]);
+
+    let every = Entry::Keys { frame: screen.target.frame, keys: KeySet::All, blocks: true };
+    let first = |orders: &[Order]| last_list(orders).and_then(|list| list.first().cloned());
+    assert_eq!(screen.table().focus(), &Focus::Nowhere);
+    assert_eq!(first(&taking), Some(every));
+    assert_eq!(left_over(&letter), vec!["KeyQ"], "a key none uses still reaches the screen");
+    let hotkeys =
+        Entry::Keys { frame: screen.target.frame, keys: KeySet::Of(vec![String::from("KeyI")]), blocks: true };
+    assert_eq!(first(&after), Some(hotkeys));
+}
+
+#[test]
 fn a_key_no_widget_uses_reaches_the_screen_and_a_typed_letter_does_not() {
     // Catches a key the focused text input passed being dropped, so a screen's F2 does nothing while it is typed in; a
     // letter typed into it reaching the screen's hotkeys too; and a hotkey that never reaches the screen without focus.

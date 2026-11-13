@@ -242,9 +242,10 @@ macro_rules! sends {
 }
 
 /// Writes a screen's handlers of what is the library's, for the screen `$screen`, whose [`Screen`] is in its `$field`:
-/// its `Prepare`, which builds the tree with its [`View`] and hands it to the screen with its [`Controls::HOTKEYS`]; the
-/// pointer and the keys its list reaches, whose raised events call its methods through [`View::on`] and whose keys
-/// left over call [`Controls::key`], after which its view is built again for the next input to reach; each answer the
+/// its `Prepare`, which builds the tree with its [`View`] and hands it to the screen with its [`Controls::HOTKEYS`],
+/// once it has said whether it takes every key ([`Controls::takes_every_key`]); the pointer and the keys its list
+/// reaches, whose raised events call its methods through [`View::on`] and whose keys left over call [`Controls::key`],
+/// after which its view is built again for the next input to reach; each answer the
 /// library's asks bring; the end of each tooltip's sleep; the size a screen that places it as a child mails it, which it
 /// lays out to as a root screen lays out to its window's; and a drag dropped on it by another actor, which raises its
 /// target's drop as a drop of its own does, and a refusal of one it dropped, which raises its source's
@@ -260,6 +261,8 @@ macro_rules! screen {
                 _: $crate::__private::Prepare,
                 turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                let every = <Self as $crate::Controls>::takes_every_key(self);
+                self.$field.take_keys(every);
                 let tree = <Self as $crate::View>::view(self);
                 let hotkeys = <Self as $crate::Controls>::HOTKEYS;
                 self.$field.prepare(tree, hotkeys).orders.send(turn)
