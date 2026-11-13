@@ -32,7 +32,7 @@ pub(super) fn id<T: Plain>(number: u64) -> T {
 /// A screen 200 by 100 pixels at a UI scale of 1, whose program is made.
 pub(super) fn screen() -> Screen {
     let mut screen = Screen::new(Target::of::<Interface>(Frame::Main(id(0))), Viewport::window(200, 100, 1.0));
-    screen.program = Program::Made(Made { mesh: id(1), program: id(2), uniforms: id(3), white: id(4) });
+    screen.program = Program::Made(Made { mesh: id(1), program: id(2), fills: id(5), uniforms: id(3), white: id(4) });
 
     screen
 }

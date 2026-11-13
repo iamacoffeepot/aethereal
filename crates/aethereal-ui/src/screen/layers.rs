@@ -7,7 +7,7 @@
 use super::orders::Orders;
 use super::program::Made;
 use super::{Screen, Slot, Target};
-use crate::draw::{Binding, Content, Placing as Placed, RECORD_BYTES, record_layout};
+use crate::draw::{Binding, Content, Placing as Placed};
 use crate::tree::KeyPath;
 use aethereal_actor::{Answered, Level};
 use aethereal_data::Plain;
@@ -139,7 +139,7 @@ impl Layer {
                     | Stage::Quads { capacity, .. } => capacity,
                     Stage::Texting { .. } | Stage::TextPlacing { .. } | Stage::Text { .. } => 0,
                 };
-                let fits = records_in(records) <= capacity;
+                let fits = records_in(*wanted, records) <= capacity;
                 binding == wanted && fits
             }
             (Content::Text { shape, .. }, Content::Text { shape: wanted, .. }) => shape == wanted,
@@ -151,12 +151,12 @@ impl Layer {
     /// and where it is placed.
     fn settle(&mut self, orders: &mut Orders) {
         match (&self.content, &mut self.stage) {
-            (Content::Quads { records, .. }, Stage::Quads { instances, written, .. }) => {
+            (Content::Quads { binding, records }, Stage::Quads { instances, written, .. }) => {
                 if records != written {
                     let shorter = records.len() < written.len();
                     orders.write_instances(*instances, 0, records.clone());
                     if shorter {
-                        orders.write_instances(*instances, records_in(records), Vec::new());
+                        orders.write_instances(*instances, records_in(*binding, records), Vec::new());
                     }
                     written.clone_from(records);
                 }
@@ -176,10 +176,10 @@ impl Layer {
     }
 }
 
-/// How many records `records` holds.
-fn records_in(records: &[u8]) -> u32 {
-    // Records are 128 bytes each, and a widget draws a handful.
-    u32::try_from(records.len() / RECORD_BYTES as usize).unwrap_or(u32::MAX)
+/// How many records `records`, of `binding`'s, holds.
+fn records_in(binding: Binding, records: &[u8]) -> u32 {
+    // A record is at most 128 bytes, and a widget draws at most thousands.
+    u32::try_from(records.len() / binding.record_bytes() as usize).unwrap_or(u32::MAX)
 }
 
 /// Room for `records` records, and for some more besides, so a layer whose records grow a little is written, not made
@@ -232,10 +232,10 @@ impl Screen {
         let serial = self.serial;
         self.serial += 1;
         let stage = match &content {
-            Content::Quads { records, .. } => {
-                let capacity = capacity_for(records_in(records));
+            Content::Quads { binding, records } => {
+                let capacity = capacity_for(records_in(*binding, records));
                 let asked = Instancing { key: key.clone(), serial };
-                orders.ask_instances(asked, record_layout(), capacity, records.clone());
+                orders.ask_instances(asked, binding.layout(), capacity, records.clone());
                 Stage::Instancing { serial, capacity, written: records.clone() }
             }
             Content::Text { shape, runs, .. } => {
@@ -408,19 +408,25 @@ impl Screen {
     }
 }
 
-/// The one pass a layer of quads joins: the screen's, drawn with the library's program, binding the frame's size, the
-/// texture its quads sample, and a sampler that blends texels and reads the edge past it.
+/// The one pass a layer of quads joins: the screen's, drawn with the fill program, binding the frame's size; or with
+/// the library's program, binding the frame's size, the texture its quads sample, and a sampler that blends texels
+/// and reads the edge past it.
 fn joined(target: Target, made: Made, binding: Binding) -> Join {
-    let texture = match binding {
-        Binding::White => made.white,
-        Binding::Texture(texture) => texture,
-    };
+    let frame = Bind { group: 0, binding: 0, to: Resource::Uniforms(made.uniforms) };
     let sampling = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
-    let bindings = vec![
-        Bind { group: 0, binding: 0, to: Resource::Uniforms(made.uniforms) },
-        Bind { group: 0, binding: 1, to: Resource::Texture(texture) },
-        Bind { group: 0, binding: 2, to: Resource::Sampler(sampling) },
-    ];
+    let sampled = |texture| {
+        let bindings = vec![
+            frame,
+            Bind { group: 0, binding: 1, to: Resource::Texture(texture) },
+            Bind { group: 0, binding: 2, to: Resource::Sampler(sampling) },
+        ];
+        (made.program, bindings)
+    };
+    let (program, bindings) = match binding {
+        Binding::Fill => (made.fills, vec![frame]),
+        Binding::White => sampled(made.white),
+        Binding::Texture(texture) => sampled(texture),
+    };
 
-    Join { frame: target.frame, pass: target.pass, program: made.program, bindings }
+    Join { frame: target.frame, pass: target.pass, program, bindings }
 }

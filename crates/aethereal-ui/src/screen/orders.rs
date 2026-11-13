@@ -8,9 +8,9 @@
 use super::input::ImeAsked;
 use super::layers::{Instancing, Placing, TextPlacing, Texting};
 use super::popups::Tipping;
-use super::program::{Meshing, MetricsAsked, Programming, Uniforming, Whitening};
+use super::program::{Asked, Meshing, MetricsAsked, Programming, Uniforming, Whitening};
 use crate::child::{Resize, Resizes};
-use crate::draw::{FRAME_BYTES, PLACE, PROGRAM, SHADE, corner_layout, corners, record_layout, triangles};
+use crate::draw::{FRAME_BYTES, PLACE, SHADE, corner_layout, corners, fill_layout, record_layout, triangles};
 use aethereal_actor::{
     Allows, Answer, Asks, Fault, Handles, Level, Path, ProtocolRef, Sleep, Slept, Tells, ToAny, Turn, path,
 };
@@ -62,7 +62,7 @@ pub struct Orders {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Order {
     Mesh(Meshing),
-    Program(Programming, Shape),
+    Program(Programming),
     Uniforms(Uniforming, Vec<u8>),
     White(Whitening),
     Metrics(MetricsAsked),
@@ -119,8 +119,8 @@ impl Orders {
         self.orders.push(Order::Mesh(context));
     }
 
-    pub(super) fn ask_program(&mut self, context: Programming, shape: Shape) {
-        self.orders.push(Order::Program(context, shape));
+    pub(super) fn ask_program(&mut self, context: Programming) {
+        self.orders.push(Order::Program(context));
     }
 
     pub(super) fn ask_uniforms(&mut self, context: Uniforming, bytes: Vec<u8>) {
@@ -232,12 +232,12 @@ impl Orders {
                     let mesh = CreateMesh { layout: corner_layout(), vertices, indices };
                     turn.to(renderer).ask(&mesh, &context)?;
                 }
-                Order::Program(context, shape) => {
-                    let Ok(wgsl) = turn.put(Vec::from(PROGRAM)) else {
+                Order::Program(context) => {
+                    let Ok(wgsl) = turn.put(Vec::from(context.asked.wgsl())) else {
                         turn.log(Level::Error, "the screen's program was not made: its text was not put");
                         continue;
                     };
-                    turn.to(renderer).ask(&program(wgsl, shape), &context)?;
+                    turn.to(renderer).ask(&program(wgsl, context.shape, context.asked), &context)?;
                 }
                 Order::Uniforms(context, bytes) => {
                     let Ok(bytes) = turn.put(bytes) else {
@@ -317,21 +317,27 @@ impl Orders {
     }
 }
 
-/// The library's program, from `wgsl`, made against `shape`: it reads the unit square and a record for each quad,
-/// binds the frame's size, a texture, and a sampler, and lays what it draws over what is drawn by its alpha, testing no
-/// depth.
-fn program(wgsl: aethereal_actor::Bytes, shape: Shape) -> CreateProgram {
+/// The program `asked` names, from `wgsl`, made against `shape`: it reads the unit square and a record for each quad,
+/// binds the frame's size, and for the library's program a texture and a sampler too, and lays what it draws over
+/// what is drawn by its alpha, testing no depth.
+fn program(wgsl: aethereal_actor::Bytes, shape: Shape, asked: Asked) -> CreateProgram {
+    let frame = Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: FRAME_BYTES } };
+    let (records, bindings) = match asked {
+        Asked::Quads => {
+            let texture = Binding { group: 0, binding: 1, kind: BindingKind::Texture };
+            let sampler = Binding { group: 0, binding: 2, kind: BindingKind::Sampler };
+            (record_layout(), vec![frame, texture, sampler])
+        }
+        Asked::Fills { .. } => (fill_layout(), vec![frame]),
+    };
+
     CreateProgram {
         wgsl,
         vertex: String::from(PLACE),
         fragment: String::from(SHADE),
         layout: corner_layout(),
-        instances: PerInstance::Records(record_layout()),
-        bindings: vec![
-            Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: FRAME_BYTES } },
-            Binding { group: 0, binding: 1, kind: BindingKind::Texture },
-            Binding { group: 0, binding: 2, kind: BindingKind::Sampler },
-        ],
+        instances: PerInstance::Records(records),
+        bindings,
         reads: Vec::new(),
         state: Fixed { blend: Blend::Alpha, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
         shape,
