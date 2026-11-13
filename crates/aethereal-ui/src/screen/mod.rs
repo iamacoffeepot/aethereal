@@ -37,6 +37,7 @@ mod drags;
 mod input;
 mod keys;
 mod layers;
+mod listings;
 mod orders;
 mod popups;
 mod program;
@@ -53,7 +54,6 @@ pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, White
 pub use scrolls::Rows;
 
 use crate::child::{self, calling};
-use crate::drag::DragSource;
 use crate::draw::{Content, layered};
 use crate::fonts::{Asker, Fonts, Measuring, Texts};
 use crate::layout::{Boxed, Laidout, Layouts, Pitch};
@@ -77,6 +77,7 @@ use drags::Grip;
 use input::{Hold, Typed};
 use keys::{Declared, Ime, Modifiers, Role, Taking};
 use layers::Layer;
+use listings::{Listed as Listing, Listings, Reading};
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
 use program::Program;
 
@@ -188,6 +189,16 @@ enum Slot {
     Child { path: KeyPath, rect: Rect2 },
 }
 
+impl Slot {
+    /// The key of the layer of draws it lists, if it lists one.
+    fn draws(&self) -> Option<&DrawKey> {
+        match self {
+            Self::Draw(key) => Some(key),
+            Self::Hit { .. } | Self::Backdrop { .. } | Self::Call { .. } | Self::Child { .. } => None,
+        }
+    }
+}
+
 /// What an entry of the list a screen sent is.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 enum Listed {
@@ -217,26 +228,27 @@ enum Fresh {
 }
 
 /// What a screen works out again rather than keep: the tree it last built, the fonts it knows and what it measured of
-/// its texts, what its layouts keep for the next, where its last layout put each widget, by key path, in tree order,
-/// and the pitch of each scroll's lines, by key path.
+/// its texts, what its layouts keep for the next, what each widget last listed, where its last layout put each widget,
+/// by key path, in tree order, and the pitch of each scroll's lines, by key path.
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
     fonts: Fonts,
     texts: Texts,
     layouts: Layouts,
+    listings: Listings,
     placed: Vec<(KeyPath, Laid)>,
     pitches: Vec<(KeyPath, Pitch)>,
 }
 
 impl Worked {
-    /// Takes in `tree`, the tree the screen's view built, in place of the last unless it is the same: what its layouts
-    /// and texts keep is told what of it lays out otherwise ([`Relaid`](crate::tree::Relaid)). How it differs from the
-    /// last.
+    /// Takes in `tree`, the tree the screen's view built, in place of the last unless it is the same: what its layouts,
+    /// texts, and listings keep is told what of it lays out or draws otherwise ([`Relaid`](crate::tree::Relaid)). How
+    /// it differs from the last.
     fn built(&mut self, tree: Tree) -> Difference {
-        let Self { last, layouts, texts, .. } = self;
+        let Self { last, layouts, texts, listings, .. } = self;
         let difference = match last {
-            Last::Built(last) => last.compare(&tree, &mut (layouts, texts)),
+            Last::Built(last) => last.compare(&tree, &mut (layouts, texts, listings)),
             Last::Unbuilt => Difference::Layout,
         };
         let same = difference == Difference::Same;
@@ -401,7 +413,8 @@ impl Screen {
             return Outcome::Waiting;
         }
         let lit = self.lit();
-        let Worked { last: Last::Built(tree), fonts, texts, layouts, placed, pitches } = &mut *self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, texts, layouts, listings, placed, pitches } = &mut *self.unkept
+        else {
             return Outcome::Waiting;
         };
         let flattened = match tree.flat() {
@@ -434,6 +447,7 @@ impl Screen {
         let mut clips = vec![viewport.rect(); flat.len()];
         let mut laid_out = Vec::with_capacity(flat.len());
         let mut told = Vec::new();
+        let mut relisting = listings.relist();
         for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
@@ -457,11 +471,15 @@ impl Screen {
             let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, covered[at]);
             let state = self.table.bytes(&node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
-            if let Some(slot) = calling(node.node.widget()) {
-                told.push(Told::of(slot, &laid, viewport));
-            }
-            let listing = listed(node, &laid, state, standing, live, &mut measuring);
-            drawn.extend(listing.drawn);
+            let reading = Reading { laid, state, standing, live };
+            let mut list = || listed(node, reading, &mut measuring, &mut drawn);
+            let listing = match calling(node.node.widget()) {
+                Some(slot) => {
+                    told.push(Told::of(slot, &laid, viewport));
+                    list()
+                }
+                None => relisting.list(&node.path, reading, list),
+            };
             layers.list(surface.stands, listing.now);
             let deferred = !listing.later.is_empty();
             if deferred {
@@ -489,6 +507,9 @@ impl Screen {
             orders.ask_metrics(font);
         }
         texts.sweep();
+        if !waited {
+            listings.keep(relisting);
+        }
         for allow in self.typing(typing) {
             orders.allow_ime(allow);
         }
@@ -505,6 +526,7 @@ impl Screen {
     /// screen out with them, though its tree is the same.
     pub(crate) fn metrics_read(&mut self, font: Font, own: Metrics, fallbacks: Vec<Metrics>) {
         self.unkept.fonts.read(font, own, fallbacks);
+        self.unkept.listings.clear();
         self.fresh = Fresh::Stale;
     }
 
@@ -512,6 +534,7 @@ impl Screen {
     /// `Prepare`.
     pub(crate) fn metrics_refused(&mut self, font: Font) {
         self.unkept.fonts.refused(font);
+        self.unkept.listings.clear();
         self.fresh = Fresh::Stale;
     }
 
@@ -602,31 +625,21 @@ fn stand(
     (laid, slide, cut)
 }
 
-/// What a widget lists as it is laid out: its draws, by key, and their places and its hit's in the list, those listed
-/// where it stands and those listed over its anchor, a popup's own; and whether it blocks the pointer from what is
-/// within it.
-struct Listing {
-    drawn: Vec<(DrawKey, Content)>,
-    now: Vec<Slot>,
-    later: Vec<Slot>,
-    blocks: bool,
-}
-
 /// How a widget being listed stands with its screen's input: whether it has focus; whether a drag of the screen's that
 /// it takes is over it; whether it is the source of the drag under way; and whether a widget it is within blocks the
 /// pointer.
-#[derive(Clone, Copy)]
-struct Standing<'tree> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Standing {
     focused: Focused,
     lit: Lit,
-    dragged: Dragged<'tree>,
+    dragged: Dragged,
     covered: bool,
 }
 
-impl<'tree> Standing<'tree> {
+impl Standing {
     /// How the widget of `node` stands, its screen's focus `focus`, the target a drag of its own is over `lit`, where
     /// it stands with a drag `grip`, and within a widget that blocks the pointer or not, `covered`.
-    fn of(node: &Flat<'tree>, focus: &Focus, lit: Option<&KeyPath>, grip: &Grip, covered: bool) -> Self {
+    fn of(node: &Flat<'_>, focus: &Focus, lit: Option<&KeyPath>, grip: &Grip, covered: bool) -> Self {
         let focused = match focus {
             Focus::On(path) if *path == node.path => Focused::Yes,
             Focus::On(_) | Focus::Nowhere => Focused::No,
@@ -636,7 +649,9 @@ impl<'tree> Standing<'tree> {
             Some(_) | None => Lit::No,
         };
         let dragged = match grip {
-            Grip::Dragging { path, .. } if *path == node.path => node.node.drag().map_or(Dragged::Not, Dragged::From),
+            Grip::Dragging { path, .. } if *path == node.path => {
+                node.node.drag().map_or(Dragged::Not, |_| Dragged::Source)
+            }
             Grip::Dragging { .. } | Grip::Pressed { .. } | Grip::Loose => Dragged::Not,
         };
 
@@ -645,27 +660,26 @@ impl<'tree> Standing<'tree> {
 }
 
 /// Whether a widget being listed is the source of a drag under way.
-#[derive(Clone, Copy)]
-enum Dragged<'tree> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dragged {
     Not,
-    /// It is, and drags as this source says: its hit declares the drag's cursor.
-    From(&'tree DragSource),
+    /// It is, and drags as its markup's `drag` says: its hit declares the drag's cursor.
+    Source,
 }
 
-/// What the widget of `node`, laid at `laid`, its state `state`, lists, standing with its screen's input as `standing`
-/// says: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and a
-/// hit over its box when the pointer reaches it there and its surface is `live`, then the call of the child it places,
+/// What the widget of `node` lists, laid, stated, and standing as `reading` finds it, its draws, by key, written into
+/// `drawn`: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and
+/// a hit over its box when the pointer reaches it there and its surface is live, then the call of the child it places,
 /// when it is a child's slot, so the child draws over the slot's background and is reached before it, and over the
 /// call, where the child shows, a hit that hears presses alone. A popup's own drawing and hit are listed over its
 /// anchor, as it is the anchor's button.
 fn listed<'flat>(
     node: &'flat Flat<'flat>,
-    laid: &Laid,
-    state: &[u8],
-    standing: Standing<'_>,
-    live: bool,
+    reading: Reading<'_>,
     measuring: &mut Measuring<'flat>,
+    drawn: &mut Vec<(DrawKey, Content)>,
 ) -> Listing {
+    let Reading { laid, state, standing, live } = reading;
     let Standing { focused, lit, .. } = standing;
     measuring.at(&node.path, Asker::Drawing);
     let widget = node.node.widget();
@@ -690,9 +704,8 @@ fn listed<'flat>(
     } else {
         &mut beneath
     };
-    widget.draw(state, style, laid, &mut Draws::new(own, measuring, focused, lit));
+    widget.draw(state, style, &laid, &mut Draws::new(own, measuring, focused, lit));
 
-    let mut drawn = Vec::new();
     let mut now = Vec::new();
     let mut later = Vec::new();
     let mut number = 0;
@@ -719,15 +732,15 @@ fn listed<'flat>(
         into.push(Slot::Hit { path: node.path.clone(), rect, pointer });
     }
     if let Some(slot) = calling(widget) {
-        now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area: slot.area(laid) });
-        let cut = child::cut(laid);
+        now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area: slot.area(&laid) });
+        let cut = child::cut(&laid);
         let visible = !cut.is_empty();
         if visible {
             now.push(Slot::Child { path: node.path.clone(), rect: cut });
         }
     }
 
-    Listing { drawn, now, later, blocks }
+    Listing { now, later, blocks }
 }
 
 /// Settles `widget`, a scroll along `axis` at `path` laid at `laid`, at what it can now scroll, and clamps its offset to
@@ -761,7 +774,7 @@ fn fills(style: &Style) -> bool {
 /// its style fills its box, so a panel is solid to what is beneath it, unless a widget it is within blocks the pointer
 /// already, as a button's label is part of the button, and passed on with the default cursor when it takes drops, so a
 /// release is over it. The source of a drag under way declares the drag's cursor in place of its own.
-fn reach(node: &Node, state: &[u8], standing: Standing<'_>) -> Pointer {
+fn reach(node: &Node, state: &[u8], standing: Standing) -> Pointer {
     let pointer = node.widget().pointer(state);
     let drags = node.drag().is_some();
     let solid = fills(node.style()) && !standing.covered;
@@ -772,7 +785,7 @@ fn reach(node: &Node, state: &[u8], standing: Standing<'_>) -> Pointer {
         Pointer::Ignores if takes => Pointer::Passes(Cursor::Default),
         pointer => pointer,
     };
-    let Dragged::From(source) = standing.dragged else {
+    let (Dragged::Source, Some(source)) = (standing.dragged, node.drag()) else {
         return reached;
     };
     match reached {

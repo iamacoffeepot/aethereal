@@ -222,6 +222,9 @@ impl Relaid for Layouts {
         }
     }
 
+    /// What layout keeps holds while only drawing changed.
+    fn redrawn(&mut self, _: &[Segment]) {}
+
     fn entered(&mut self, path: &[Segment]) {
         self.holds = Holds::Not;
         self.nodes.retain(|kept, _| !kept.segments().starts_with(path));

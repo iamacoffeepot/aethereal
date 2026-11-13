@@ -166,6 +166,9 @@ impl Relaid for Texts {
         self.by.remove(path);
     }
 
+    /// What layout measured holds while only drawing changed, and what drawing measured is kept while each pass asks it.
+    fn redrawn(&mut self, _: &[Segment]) {}
+
     fn entered(&mut self, path: &[Segment]) {
         self.within(path);
     }
