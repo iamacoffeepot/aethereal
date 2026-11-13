@@ -12,16 +12,22 @@
 //! the rest, each piece as its own root, out of flow in the screen's box: as wide and tall as it asks, within the
 //! screen, from the screen's top left. Where it is placed against its anchor is the screen's, which knows where its
 //! anchor stands once every scroll around it has slid it (ADR-0056: Popups draw in one top layer per screen).
+//!
+//! A screen keeps what each layout found for the next ([`Layouts`]): the last boxes, handed back while its tree lays out
+//! as it did, and what Taffy keeps of each node, so a layout lays out again only the nodes whose layout changed and
+//! those that hold them, as Taffy's own tree does when a node is marked dirty.
 
 #[cfg(test)]
 mod tests;
 
-use crate::fonts::Measuring;
-use crate::style::{Parent, Space, Style, flow};
-use crate::tree::Flat;
+use crate::fonts::{Measuring, Pass};
+use crate::style::{Edges, Parent, Space, Style, flow};
+use crate::tree::{Flat, KeyPath, Relaid, Segment};
 use crate::widget::{Arrange, Axis, Lines, Offer, Offered, anchor};
 use aethereal_math::{Rect2, Vec2};
+use core::mem;
 use core::slice::Iter;
+use std::collections::BTreeMap;
 use taffy::{
     AvailableSpace, Cache, CacheTree, Dimension, Layout, LayoutContainingBlock, LayoutFlexboxContainer,
     LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, Position, RunMode, Size,
@@ -54,56 +60,271 @@ pub struct Laidout {
     pub pitches: Vec<(usize, Pitch)>,
 }
 
-/// Lays `flat`, a tree's nodes in tree order, out in a screen `size` pixels across and down at `scale` pixels to the
-/// logical pixel, measuring text with `measuring`, and then each node at a place among `tops` as a root of its own, out
-/// of flow in the screen's box, the content of an open popup: each node's boxes, in the same order, and each scroll's
-/// pitch. A node within a popup's content whose root is not among `tops` is laid out nowhere.
-pub fn lay_out(flat: &[Flat<'_>], tops: &[usize], measuring: &mut Measuring<'_>, size: Vec2, scale: f32) -> Laidout {
-    let mut parents = vec![Parent::Other; flat.len()];
-    for flat in flat {
-        let parent = Parent::of(flat.node.widget().arrange());
-        for child in &flat.children {
-            parents[*child] = parent;
+/// What a screen keeps of its layouts from one to the next (*settled by the library's layout-cost stage*): what Taffy
+/// kept of each node, by its key path, and the boxes of the last layout with what they were laid out at.
+///
+/// A layout whose tree lays out as the last one did, at the same size, scale, and open popups, is the last one: its
+/// boxes are handed back, and Taffy does not run. Otherwise Taffy runs, and a node whose layout is kept, whose own
+/// settings and whose children's laid out as they did, answers from what it kept, so only what changed and what holds
+/// it is laid out again. What tells it what changed is the comparison of each tree with the last ([`Relaid`]), and its
+/// own: a node whose style, as Taffy reads it, is not what it kept, its room or its parent's arrangement changed, is
+/// laid out again, with all that holds it; and every node kept is let go at another UI scale, which every measure
+/// reads.
+#[derive(Debug, Default)]
+pub struct Layouts {
+    /// What Taffy kept of each node, by its key path, as the last layout left it.
+    nodes: BTreeMap<KeyPath, Kept>,
+    /// The UI scale the nodes kept were laid out at.
+    scale: f32,
+    last: Last,
+}
+
+/// The boxes a screen's last layout gave it.
+#[derive(Debug, Default)]
+enum Last {
+    /// None that still hold: nothing was laid out, or the tree laid out otherwise since.
+    #[default]
+    Unlaid,
+    /// These boxes, laid out as `at` says, which hold while the tree lays out as it did.
+    Laid { laidout: Laidout, at: LaidAt },
+    /// These boxes, laid out while a font's metrics had not come: drawn nothing, and laid out again.
+    Waited(Laidout),
+}
+
+/// What a layout was laid out at beside its tree: the screen's size and UI scale, and the places of the open popups'
+/// content.
+#[derive(Debug, Clone, PartialEq)]
+struct LaidAt {
+    size: Vec2,
+    scale: f32,
+    tops: Vec<usize>,
+}
+
+/// What Taffy keeps of one node from one layout to the next: its place in tree order when it was kept, which Taffy
+/// names it by; how it flowed; Taffy's cache of what it laid out; where its parent laid it; and the boxes out of flow
+/// it holds, by their places.
+#[derive(Debug)]
+struct Kept {
+    at: usize,
+    flow: Flow,
+    cache: Cache,
+    layout: Layout,
+    hoisted: Vec<NodeId>,
+}
+
+/// What a node's style as Taffy reads it takes beside its own style and its widget's arrangement, which its tree's
+/// comparison tells of: what its parent is to it, the room it keeps, and where it is placed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Flow {
+    parent: Parent,
+    room: Edges<f32>,
+    placed: Placing,
+}
+
+/// Where a node is laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Placing {
+    /// It is the root, the screen's size, here.
+    Root(Vec2),
+    /// It is the content of an open popup, out of flow in the screen's box.
+    Top,
+    /// In its parent's box, as its parent lays it out, or nowhere, in a shut popup's content.
+    Held,
+}
+
+impl Kept {
+    /// A node at `at` that flows as `flow` says, laid out nowhere yet.
+    const fn new(at: usize, flow: Flow) -> Self {
+        Self { at, flow, cache: Cache::new(), layout: Layout::with_order(0), hoisted: Vec::new() }
+    }
+
+    /// It, at `at` in tree order: what it hoisted moves with it, as its subtree stands unchanged.
+    fn moved(mut self, at: usize) -> Self {
+        let moved = at != self.at;
+        if moved {
+            for hoisted in &mut self.hoisted {
+                *hoisted = NodeId::from(usize::from(*hoisted) + at - self.at);
+            }
+            self.at = at;
+        }
+
+        self
+    }
+}
+
+impl Layouts {
+    /// Lays `flat`, a tree's nodes in tree order, out in a screen `size` pixels across and down at `scale` pixels to
+    /// the logical pixel, measuring text with `measuring`, and then each node at a place among `tops` as a root of its
+    /// own, out of flow in the screen's box, the content of an open popup: each node's boxes, in the same order, and
+    /// each scroll's pitch. A node within a popup's content whose root is not among `tops` is laid out nowhere.
+    ///
+    /// The last layout's boxes when the tree lays out as it did, at the same size, scale, and tops: the pass then only
+    /// draws, as `measuring` is told.
+    pub fn lay_out<'flat>(
+        &mut self,
+        flat: &'flat [Flat<'flat>],
+        tops: &[usize],
+        measuring: &mut Measuring<'flat>,
+        size: Vec2,
+        scale: f32,
+    ) -> &Laidout {
+        let at = LaidAt { size, scale, tops: tops.to_vec() };
+        let current = matches!(&self.last, Last::Laid { at: laid, .. } if *laid == at);
+        if current {
+            measuring.begin(Pass::Drawing);
+        } else {
+            measuring.begin(Pass::Laying);
+            let laidout = self.laid(flat, tops, measuring, size, scale);
+            let waited = measuring.waited();
+            self.last = if waited {
+                self.nodes.clear();
+                Last::Waited(laidout)
+            } else {
+                Last::Laid { laidout, at }
+            };
+        }
+
+        match &self.last {
+            Last::Laid { laidout, .. } | Last::Waited(laidout) => laidout,
+            Last::Unlaid => &UNLAID,
         }
     }
-    let flowing: Vec<Vec<usize>> = flat.iter().map(|node| in_flow(node, flat)).collect();
-    let mut nodes: Vec<Laying<'_>> = Vec::with_capacity(flat.len());
-    for ((flat, parent), children) in flat.iter().zip(parents).zip(&flowing) {
-        let widget = flat.node.widget();
-        let arrange = widget.arrange();
-        let room = widget.room(flat.node.style(), measuring);
-        nodes.push(Laying {
-            arrange,
-            flat,
-            children: children.clone(),
-            style: flow(flat.node.style(), arrange, parent, room, scale),
-            cache: Cache::new(),
-            layout: Layout::with_order(0),
-            hoisted: Vec::new(),
-        });
+
+    /// Lays `flat` out with Taffy, as [`Self::lay_out`] says, from what was kept of each node that lays out as it did,
+    /// and keeps what Taffy kept of each.
+    fn laid<'flat>(
+        &mut self,
+        flat: &'flat [Flat<'flat>],
+        tops: &[usize],
+        measuring: &mut Measuring<'flat>,
+        size: Vec2,
+        scale: f32,
+    ) -> Laidout {
+        let rescaled = self.scale.to_bits() != scale.to_bits();
+        if rescaled {
+            self.nodes.clear();
+            self.scale = scale;
+        }
+        let mut parents = vec![Parent::Other; flat.len()];
+        for flat in flat {
+            let parent = Parent::of(flat.node.widget().arrange());
+            for child in &flat.children {
+                parents[*child] = parent;
+            }
+        }
+        let flowing: Vec<Vec<usize>> = flat.iter().map(|node| in_flow(node, flat)).collect();
+        let mut was = mem::take(&mut self.nodes);
+        let mut keys: Vec<KeyPath> = Vec::with_capacity(flat.len());
+        let mut stale = vec![false; flat.len()];
+        let mut nodes: Vec<Laying<'_>> = Vec::with_capacity(flat.len());
+        for (at, ((node, parent), children)) in flat.iter().zip(parents).zip(&flowing).enumerate() {
+            let widget = node.node.widget();
+            let arrange = widget.arrange();
+            measuring.at(&node.path);
+            let room = widget.room(node.node.style(), measuring);
+            let mut style = flow(node.node.style(), arrange, parent, room, scale);
+            let placed = match at {
+                0 => Placing::Root(size),
+                _ if tops.contains(&at) => Placing::Top,
+                _ => Placing::Held,
+            };
+            match placed {
+                Placing::Root(size) => {
+                    style.size = Size { width: Dimension::length(size.x), height: Dimension::length(size.y) };
+                }
+                Placing::Top => style.position = Position::Absolute,
+                Placing::Held => {}
+            }
+            let flowed = Flow { parent, room, placed };
+            let (key, kept, changed) = match was.remove_entry(&node.path) {
+                Some((key, kept)) => {
+                    let reflowed = kept.flow != flowed;
+                    let emptied = kept.cache.is_empty();
+                    (key, Kept { flow: flowed, ..kept.moved(at) }, reflowed || emptied)
+                }
+                None => (node.path.clone(), Kept::new(at, flowed), true),
+            };
+            stale[at] = changed;
+            keys.push(key);
+            nodes.push(Laying { arrange, flat: node, children: children.clone(), style, kept });
+        }
+        let reached = reached(&flowing, tops);
+        for (at, reached) in reached.iter().enumerate().rev() {
+            let holds = flowing[at].iter().any(|child| stale[*child]);
+            let unreached = !*reached;
+            let relaid = stale[at] || holds || unreached;
+            if relaid {
+                stale[at] = true;
+                let laying = &mut nodes[at].kept;
+                let _ = laying.cache.clear();
+                laying.layout = Layout::with_order(0);
+            }
+        }
+
+        let mut tree = Tree { nodes, measuring };
+        let space = Size { width: AvailableSpace::Definite(size.x), height: AvailableSpace::Definite(size.y) };
+        compute_root_layout(&mut tree, NodeId::from(0_usize), space);
+        for top in tops {
+            compute_root_layout(&mut tree, NodeId::from(*top), space);
+        }
+
+        let layouts: Vec<Layout> = tree.nodes.iter().map(|laying| laying.kept.layout).collect();
+        self.nodes = keys.into_iter().zip(tree.nodes).map(|(key, laying)| (key, laying.kept)).collect();
+
+        boxed(flat, tops, &flowing, &layouts, scale)
     }
-    if let Some(root) = nodes.first_mut() {
-        root.style.size = Size { width: Dimension::length(size.x), height: Dimension::length(size.y) };
-    }
-    for top in tops {
-        nodes[*top].style.position = Position::Absolute;
+}
+
+/// A node whose layout changed lets go of what Taffy kept of it and of every node holding it, and the last boxes no
+/// longer hold; a node new to the tree takes nothing kept at or within its path, which may be left from a tree before
+/// the last.
+impl Relaid for Layouts {
+    fn changed(&mut self, path: &[Segment]) {
+        self.last = Last::Unlaid;
+        for depth in 1..=path.len() {
+            if let Some(kept) = self.nodes.get_mut(&path[..depth]) {
+                let _ = kept.cache.clear();
+            }
+        }
     }
 
-    let mut tree = Tree { nodes, measuring };
-    let space = Size { width: AvailableSpace::Definite(size.x), height: AvailableSpace::Definite(size.y) };
-    compute_root_layout(&mut tree, NodeId::from(0_usize), space);
-    for top in tops {
-        compute_root_layout(&mut tree, NodeId::from(*top), space);
+    fn entered(&mut self, path: &[Segment]) {
+        self.last = Last::Unlaid;
+        self.nodes.retain(|kept, _| !kept.segments().starts_with(path));
+    }
+}
+
+/// The boxes a layout gives a tree's nodes before any is laid out: none.
+static UNLAID: Laidout = Laidout { boxes: Vec::new(), pitches: Vec::new() };
+
+/// Which of the nodes whose children laid out in their boxes are `flowing` are laid out: the root and each of `tops`,
+/// and every node within one laid out in its box.
+fn reached(flowing: &[Vec<usize>], tops: &[usize]) -> Vec<bool> {
+    let mut reached = vec![false; flowing.len()];
+    let mut stack: Vec<usize> = tops.to_vec();
+    stack.push(0);
+    while let Some(at) = stack.pop() {
+        let Some(node) = reached.get_mut(at) else {
+            continue;
+        };
+        *node = true;
+        stack.extend_from_slice(&flowing[at]);
     }
 
-    let layouts: Vec<Layout> = tree.nodes.iter().map(|laying| laying.layout).collect();
+    reached
+}
+
+/// Where each of `flat`, laid out as `layouts` with its children laid out in its box `flowing` and `tops` rooted on
+/// their own, stands at `scale`: its boxes, from the screen's top left, and each scroll's pitch, the items a window
+/// did not build counted in what it reaches.
+fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[Vec<usize>], layouts: &[Layout], scale: f32) -> Laidout {
     let mut locals: Vec<Vec2> = layouts.iter().map(|layout| Vec2::new(layout.location.x, layout.location.y)).collect();
     let mut pitches = Vec::new();
     for (at, node) in flat.iter().enumerate() {
         let Arrange::Scroll(axis) = node.node.widget().arrange() else {
             continue;
         };
-        let Some(pitch) = pitch(node, &layouts, &locals, &layouts[at], axis, scale) else {
+        let Some(pitch) = pitch(node, layouts, &locals, &layouts[at], axis, scale) else {
             continue;
         };
         if let Lines::Window { at: items, .. } = node.node.widget().lines() {
@@ -245,32 +466,30 @@ fn gap(style: &Style, axis: Axis, content: f32, scale: f32) -> f32 {
 }
 
 /// One node as Taffy lays it out: how it arranges its children, the node, the places of the children it lays out in its
-/// box, its style as Taffy reads it, and what Taffy keeps of it as it works.
+/// box, its style as Taffy reads it, and what Taffy keeps of it.
 struct Laying<'flat> {
     arrange: Arrange,
     flat: &'flat Flat<'flat>,
     children: Vec<usize>,
     style: taffy::Style,
-    cache: Cache,
-    layout: Layout,
-    hoisted: Vec<NodeId>,
+    kept: Kept,
 }
 
 /// A tree's nodes as Taffy walks them, by their places in tree order, with the fonts its leaves measure by.
-struct Tree<'flat, 'measuring, 'fonts> {
+struct Tree<'flat, 'measuring> {
     nodes: Vec<Laying<'flat>>,
-    measuring: &'measuring mut Measuring<'fonts>,
+    measuring: &'measuring mut Measuring<'flat>,
 }
 
-impl<'flat> Tree<'flat, '_, '_> {
+impl<'flat> Tree<'flat, '_> {
     /// The node Taffy names `id`.
     fn node(&self, id: NodeId) -> &Laying<'flat> {
         &self.nodes[usize::from(id)]
     }
 
-    /// The node Taffy names `id`, to write.
-    fn node_mut(&mut self, id: NodeId) -> &mut Laying<'flat> {
-        &mut self.nodes[usize::from(id)]
+    /// What Taffy keeps of the node it names `id`, to write.
+    fn kept(&mut self, id: NodeId) -> &mut Kept {
+        &mut self.nodes[usize::from(id)].kept
     }
 }
 
@@ -285,7 +504,7 @@ impl Iterator for Children<'_> {
     }
 }
 
-impl TraversePartialTree for Tree<'_, '_, '_> {
+impl TraversePartialTree for Tree<'_, '_> {
     type ChildIter<'a>
         = Children<'a>
     where
@@ -304,7 +523,7 @@ impl TraversePartialTree for Tree<'_, '_, '_> {
     }
 }
 
-impl LayoutPartialTree for Tree<'_, '_, '_> {
+impl LayoutPartialTree for Tree<'_, '_> {
     type CoreContainerStyle<'a>
         = &'a taffy::Style
     where
@@ -317,7 +536,7 @@ impl LayoutPartialTree for Tree<'_, '_, '_> {
     }
 
     fn set_unrounded_layout(&mut self, node: NodeId, layout: &Layout) {
-        self.node_mut(node).layout = *layout;
+        self.kept(node).layout = *layout;
     }
 
     fn compute_child_layout(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
@@ -329,6 +548,7 @@ impl LayoutPartialTree for Tree<'_, '_, '_> {
                 Arrange::Leaf => {
                     let Tree { nodes, measuring } = tree;
                     let laying = &nodes[usize::from(node)];
+                    measuring.at(&laying.flat.path);
                     let measured = |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
                         let offer = Offer {
                             width: offered(known.width, available.width),
@@ -361,7 +581,7 @@ fn offered(known: Option<f32>, available: AvailableSpace) -> Offered {
     }
 }
 
-impl LayoutContainingBlock for Tree<'_, '_, '_> {
+impl LayoutContainingBlock for Tree<'_, '_> {
     type OofItemStyle<'a>
         = &'a taffy::Style
     where
@@ -372,29 +592,29 @@ impl LayoutContainingBlock for Tree<'_, '_, '_> {
     }
 
     fn clear_hoisted_children(&mut self, node: NodeId) {
-        self.node_mut(node).hoisted.clear();
+        self.kept(node).hoisted.clear();
     }
 
     fn add_hoisted_children(&mut self, node: NodeId, hoisted: &[NodeId]) {
-        self.node_mut(node).hoisted.extend_from_slice(hoisted);
+        self.kept(node).hoisted.extend_from_slice(hoisted);
     }
 }
 
-impl CacheTree for Tree<'_, '_, '_> {
+impl CacheTree for Tree<'_, '_> {
     fn cache_get(&mut self, node: NodeId, inputs: &LayoutInput) -> Option<LayoutOutput> {
-        self.node_mut(node).cache.get(inputs)
+        self.kept(node).cache.get(inputs)
     }
 
     fn cache_store(&mut self, node: NodeId, inputs: &LayoutInput, output: LayoutOutput) {
-        self.node_mut(node).cache.store(inputs, output);
+        self.kept(node).cache.store(inputs, output);
     }
 
     fn cache_clear(&mut self, node: NodeId) {
-        self.node_mut(node).cache.clear();
+        let _ = self.kept(node).cache.clear();
     }
 }
 
-impl LayoutFlexboxContainer for Tree<'_, '_, '_> {
+impl LayoutFlexboxContainer for Tree<'_, '_> {
     type FlexboxContainerStyle<'a>
         = &'a taffy::Style
     where
@@ -414,7 +634,7 @@ impl LayoutFlexboxContainer for Tree<'_, '_, '_> {
     }
 }
 
-impl LayoutGridContainer for Tree<'_, '_, '_> {
+impl LayoutGridContainer for Tree<'_, '_> {
     type GridContainerStyle<'a>
         = &'a taffy::Style
     where

@@ -34,6 +34,11 @@ impl Widget for FrameChart {
         Arrange::Leaf
     }
 
+    /// Its height alone is laid out: what it shows slides every frame in the box it was given.
+    fn same_layout(&self, other: &Self) -> bool {
+        self.tall.to_bits() == other.tall.to_bits()
+    }
+
     fn measure(&self, _: &Style, _: &mut Measuring<'_>, _: Offer) -> Vec2 {
         Vec2::new(0.0, self.tall)
     }

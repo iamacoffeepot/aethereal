@@ -55,12 +55,11 @@ pub use scrolls::Rows;
 use crate::child::{self, calling};
 use crate::drag::DragSource;
 use crate::draw::{Content, layered};
-use crate::fonts::Fonts;
-use crate::fonts::Measuring;
-use crate::layout::{Boxed, Laidout, Pitch, lay_out};
+use crate::fonts::{Fonts, Measuring, Texts};
+use crate::layout::{Boxed, Laidout, Layouts, Pitch};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{Flat, KeyPath, Node, Tree};
+use crate::tree::{Difference, Flat, KeyPath, Node, Tree};
 use crate::unkept::Unkept;
 use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Lit, Quad, Sample, anchor};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
@@ -217,12 +216,15 @@ enum Fresh {
     Stale,
 }
 
-/// What a screen works out again rather than keep: the tree it last built, the fonts it knows, where its last layout
-/// put each widget, by key path, in tree order, and the pitch of each scroll's lines, by key path.
+/// What a screen works out again rather than keep: the tree it last built, the fonts it knows and what it measured of
+/// its texts, what its layouts keep for the next, where its last layout put each widget, by key path, in tree order,
+/// and the pitch of each scroll's lines, by key path.
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
     fonts: Fonts,
+    texts: Texts,
+    layouts: Layouts,
     placed: Vec<(KeyPath, Laid)>,
     pitches: Vec<(KeyPath, Pitch)>,
 }
@@ -344,9 +346,14 @@ impl Screen {
     /// for its delay, and one left shuts.
     pub fn prepare(&mut self, tree: Tree, hotkeys: &[&str]) -> Prepared {
         let mut orders = Orders::default();
-        let same = matches!(&self.unkept.last, Last::Built(last) if **last == tree);
+        let Worked { last, layouts, .. } = &mut *self.unkept;
+        let difference = match last {
+            Last::Built(last) => last.compare(&tree, layouts),
+            Last::Unbuilt => Difference::Layout,
+        };
+        let same = difference == Difference::Same;
         if !same {
-            self.unkept.last = Last::Built(Box::new(tree));
+            *last = Last::Built(Box::new(tree));
         }
         let moved = self.hover == Hover::Moved;
         let looks = moved || !same;
@@ -383,7 +390,7 @@ impl Screen {
             return Outcome::Waiting;
         }
         let lit = self.lit();
-        let Worked { last: Last::Built(tree), fonts, placed, pitches } = &mut *self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, texts, layouts, placed, pitches } = &mut *self.unkept else {
             return Outcome::Waiting;
         };
         let flattened = match tree.flat() {
@@ -401,9 +408,10 @@ impl Screen {
         let focus = self.table.focus().clone();
         let tops = popups::tops(&flat, &surfaces);
         let viewport = self.viewport;
-        let mut measuring = fonts.measuring(viewport.scale);
-        let Laidout { boxes, pitches: pitched } = lay_out(&flat, &tops, &mut measuring, viewport.size, viewport.scale);
-        *pitches = pitched.into_iter().map(|(at, pitch)| (flat[at].path.clone(), pitch)).collect();
+        let mut measuring = fonts.measuring(texts, viewport.scale);
+        let Laidout { boxes, pitches: pitched } =
+            layouts.lay_out(&flat, &tops, &mut measuring, viewport.size, viewport.scale);
+        *pitches = pitched.iter().map(|(at, pitch)| (flat[*at].path.clone(), *pitch)).collect();
 
         let ends = spans(&flat);
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
@@ -414,7 +422,7 @@ impl Screen {
         let mut clips = vec![viewport.rect(); flat.len()];
         let mut laid_out = Vec::with_capacity(flat.len());
         let mut told = Vec::new();
-        for (at, (node, boxed)) in flat.iter().zip(&boxes).enumerate() {
+        for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
             let (laid, slide, cut) = stand(&mut self.table, node, boxed, shifts[at], clips[at], viewport.scale);
@@ -428,7 +436,7 @@ impl Screen {
             }
             let opens = popper(node.node.widget()).filter(|popper| popper.open(&self.table, &node.path));
             if let Some(popper) = opens {
-                for (content, shift) in lift(&mut layers, &flat, &boxes, at, popper, laid.rect, viewport.rect()) {
+                for (content, shift) in lift(&mut layers, &flat, boxes, at, popper, laid.rect, viewport.rect()) {
                     shifts[content] = shift;
                     clips[content] = viewport.rect();
                 }
@@ -463,6 +471,7 @@ impl Screen {
         self.keys = keys::declared(&flat, &focus, hotkeys, open, self.taking);
         let typing = keys::typing(&flat, &focus);
 
+        measuring.sweep();
         let waited = measuring.waited();
         for font in measuring.into_unmet() {
             fonts.asked(font);
@@ -637,15 +646,16 @@ enum Dragged<'tree> {
 /// when it is a child's slot, so the child draws over the slot's background and is reached before it, and over the
 /// call, where the child shows, a hit that hears presses alone. A popup's own drawing and hit are listed over its
 /// anchor, as it is the anchor's button.
-fn listed(
-    node: &Flat<'_>,
+fn listed<'flat>(
+    node: &'flat Flat<'flat>,
     laid: &Laid,
     state: &[u8],
     standing: Standing<'_>,
     live: bool,
-    measuring: &mut Measuring<'_>,
+    measuring: &mut Measuring<'flat>,
 ) -> Listing {
     let Standing { focused, lit, .. } = standing;
+    measuring.at(&node.path);
     let widget = node.node.widget();
     let style = node.node.style();
     let over = popper(widget).is_some_and(Popper::over);

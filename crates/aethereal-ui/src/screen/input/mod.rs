@@ -402,7 +402,7 @@ impl Screen {
         heard: &mut Heard,
         take: impl FnOnce(&dyn Built, &mut Vec<u8>, &mut Input<'_, '_>) -> T,
     ) -> Option<T> {
-        let Worked { last: Last::Built(tree), fonts, placed, .. } = &*self.unkept else {
+        let Worked { last: Last::Built(tree), fonts, texts, placed, .. } = &mut *self.unkept else {
             return None;
         };
         let node = tree.find(path)?;
@@ -410,7 +410,8 @@ impl Screen {
         let widget = node.widget();
         let mut state = self.table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
         let before = state.clone();
-        let mut measuring = fonts.measuring(self.viewport.scale);
+        let mut measuring = fonts.measuring(texts, self.viewport.scale);
+        measuring.at(path);
         let mut input = Input::new(node.style(), *laid, &mut measuring, &mut heard.raised);
         let took = take(widget, &mut state, &mut input);
         if state != before {

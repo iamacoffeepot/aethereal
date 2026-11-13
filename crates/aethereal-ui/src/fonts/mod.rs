@@ -1,9 +1,14 @@
 //! The fonts a screen measures text by (ADR-0056: Layout is Taffy; ADR-0052): each font's metrics and its fallbacks',
 //! asked of the renderer once, the first time a build meets the font, and kept for good, as a font's metrics never
 //! change. A text is measured with them by the renderer's own [`measure`], so its measured box is the box it is drawn
-//! in. A text whose font's metrics have not come is not measured, and the layout that met it is not drawn: the next
-//! `Prepare` after they come lays it out.
+//! in, once for each wrap it is asked at while it stands unchanged ([`Texts`]). A text whose font's metrics have not
+//! come is not measured, and the layout that met it is not drawn: the next `Prepare` after they come lays it out.
 
+mod texts;
+
+pub use texts::{Pass, Texts};
+
+use crate::tree::KeyPath;
 use aethereal_render::font::Metrics;
 use aethereal_render::text::{Font, Measured, Run, Wrap, measure};
 
@@ -53,15 +58,19 @@ impl Fonts {
         }
     }
 
-    /// A measuring of text with these fonts, at `scale` pixels to the logical pixel.
-    pub const fn measuring(&self, scale: f32) -> Measuring<'_> {
-        Measuring { fonts: self, unmet: Vec::new(), waited: false, scale }
+    /// A measuring of text with these fonts, at `scale` pixels to the logical pixel, keeping what it measures for a
+    /// widget in `texts`.
+    pub const fn measuring<'fonts>(&'fonts self, texts: &'fonts mut Texts, scale: f32) -> Measuring<'fonts> {
+        Measuring { fonts: self, texts, whose: Whose::Unplaced, unmet: Vec::new(), waited: false, scale }
     }
 }
 
-/// Text measured with the fonts a screen knows, at its UI scale, noting each font met whose metrics have not come.
+/// Text measured with the fonts a screen knows, at its UI scale, for the widget being laid out or drawn, noting each
+/// font met whose metrics have not come.
 pub struct Measuring<'fonts> {
     fonts: &'fonts Fonts,
+    texts: &'fonts mut Texts,
+    whose: Whose<'fonts>,
     /// Each font met that was never asked for, in the order first met.
     unmet: Vec<Font>,
     /// Whether a text went unmeasured for want of its font's metrics.
@@ -76,6 +85,17 @@ impl Measuring<'_> {
         self.scale
     }
 
+
+    /// Begins a pass of the screen's that does as `pass` says.
+    pub(crate) fn begin(&mut self, pass: Pass) {
+        self.texts.begin(pass);
+    }
+
+    /// Lets go of the texts kept that the pass ending did not measure, as [`Texts::sweep`] says.
+    pub(crate) fn sweep(&mut self) {
+        self.texts.sweep();
+    }
+
     /// The box `runs` are laid out in, in `font` at `size` pixels to the em, their lines broken as `wrap` says, as the
     /// renderer lays them out (see [`measure`]).
     ///
@@ -85,7 +105,13 @@ impl Measuring<'_> {
     /// draws nothing of this layout; [`Unmeasured::Refused`] for a font whose metrics will not come.
     pub fn text(&mut self, font: Font, size: f32, runs: &[Run], wrap: Wrap) -> Result<Measured, Unmeasured> {
         match self.fonts.known(font) {
-            Some(Known::Read { own, fallbacks }) => Ok(measure(own, fallbacks, size, runs, wrap)),
+            Some(Known::Read { own, fallbacks }) => {
+                let measured = match self.whose {
+                    Whose::Widget(path) => self.texts.measure(path, Asked { font, size, runs, wrap }, own, fallbacks),
+                    Whose::Unplaced => measure(own, fallbacks, size, runs, wrap),
+                };
+                Ok(measured)
+            }
             Some(Known::Refused) => Err(Unmeasured::Refused),
             Some(Known::Asked) => {
                 self.waited = true;
@@ -110,6 +136,31 @@ impl Measuring<'_> {
     pub(crate) fn into_unmet(self) -> Vec<Font> {
         self.unmet
     }
+}
+
+impl<'fonts> Measuring<'fonts> {
+    /// Measures for the widget at `path` from here on, keeping what it measures under its path.
+    pub(crate) const fn at(&mut self, path: &'fonts KeyPath) {
+        self.whose = Whose::Widget(path);
+    }
+}
+
+/// Whose texts a measuring measures.
+#[derive(Debug, Clone, Copy)]
+enum Whose<'path> {
+    /// No widget's in particular: each is measured afresh, and nothing is kept.
+    Unplaced,
+    /// The widget's at this path: what it measures is kept under it, and measured once.
+    Widget(&'path KeyPath),
+}
+
+/// A text a widget asks the box of: `runs` in `font` at `size` pixels to the em, its lines broken as `wrap` says.
+#[derive(Debug, Clone, Copy)]
+struct Asked<'runs> {
+    font: Font,
+    size: f32,
+    runs: &'runs [Run],
+    wrap: Wrap,
 }
 
 /// Why a text was not measured.
