@@ -17,6 +17,11 @@
 //! by its list's origin, after its program places it, and cut to its list's clip; and the pointer reaches it there,
 //! as it was drawn (ADR-0055).
 //!
+//! A shift places the sender's own entries after it, up to the unshift that closes it, as a call places a child that
+//! inherits its caller's coordinates: moved to its origin and cut to its clip within the list's. What moves together,
+//! as what a scroll holds, is listed once in its own coordinates and moved by one entry, and nothing within it is
+//! written again as it moves.
+//!
 //! The keys follow the same sequence: an entry declares the keys its sender hears in a window, and the renderer sends
 //! each window the declarations its main frame's walk holds, the last called first, whenever they change. The window
 //! delivers each key, top-down, to the sender of each declaration whose keys hold it, until one blocks (ADR-0055).
@@ -71,6 +76,13 @@ pub enum Entry {
     /// modal's backdrop, an invisible handle, or the world's catch-all. A frame that ends on a texture has no pointer,
     /// and nothing there is reached or shows a cursor.
     Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer },
+    /// The entries after it, up to the [`Entry::Unshift`] that closes it, drawn in the sender's coordinates moved to
+    /// `origin` and cut to `clip`, in the sender's coordinates, within what the sender is cut to: placed as a call
+    /// places a child that inherits its caller's coordinates, and reached by the pointer there, each entry told of the
+    /// pointer from the shift's origin. Shifts nest, each from where the last still open moved the list.
+    Shift { origin: Vec2, clip: Clip },
+    /// Closes the last [`Entry::Shift`] still open: the entries after it are drawn where those before that shift were.
+    Unshift,
     /// The keys the sender hears in the window whose main frame is `frame`, at this place in the sequence: each key
     /// `keys` holds reaches it, after the declarations called after this one, and, when it `blocks`, none called
     /// before it. Focus is a declaration: a screen that takes the keys lists every key, blocking, while it wants them.
@@ -283,6 +295,8 @@ impl Entry {
             Self::Hit { frame, pass, rect, pointer } => {
                 Listed::Hit { frame: *frame, pass: *pass, rect: *rect, picks: picks(pointer)? }
             }
+            Self::Shift { origin, clip } => Listed::Shift { origin: *origin, clip: *clip },
+            Self::Unshift => Listed::Unshift,
             Self::Keys { frame, keys, blocks } => {
                 let actor = key_hearer.ok_or(EntryRefused::KeysUnheard)?;
                 Listed::Keys {
@@ -298,14 +312,16 @@ impl Entry {
 
 /// One entry of a list the renderer keeps: a placement of its sender's, by its id, drawn as the pointer reaches it, a
 /// dispatch of its sender's, by its id, a child its sender calls, by the child's id, in the area it places it, or a
-/// hit, hit as the pointer reaches it; or the keys its sender hears in a window's main frame, as the window is sent
-/// them.
+/// hit, hit as the pointer reaches it; a shift of the entries after it, to its origin and cut to its clip, or the
+/// unshift that closes one; or the keys its sender hears in a window's main frame, as the window is sent them.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Listed {
     Draw { placement: u64, picks: Picks },
     Run(u64),
     Call { child: ActorId, area: Area },
     Hit { frame: Frame, pass: PassName, rect: Rect2, picks: Picks },
+    Shift { origin: Vec2, clip: Clip },
+    Unshift,
     Keys { frame: Frame, entry: KeysEntry },
 }
 
@@ -360,6 +376,12 @@ pub(crate) enum EntryRefused {
     NotOwner,
     /// An earlier entry of the list names the same placement or dispatch, or calls the same child.
     Twice,
+    /// The entry closes a shift, and none is open.
+    Unshifted,
+    /// The entry shifts the list, and [`MOST_SHIFTS`] are open already.
+    Deep,
+    /// The entry shifts the list, and no entry after it closes the shift.
+    Unclosed,
     /// The pointer reaches the entry, and the list's sender does not handle the pointer's events.
     Unheard,
     /// The entry declares keys, and the list's sender does not handle the keys.
@@ -367,6 +389,9 @@ pub(crate) enum EntryRefused {
     /// The entry's cursor is an image that cannot be shown, for this reason.
     Cursor(CursorUnfit),
 }
+
+/// How many shifts a list may have open at once: far more than the scrolls a screen holds one within another.
+pub(crate) const MOST_SHIFTS: usize = 64;
 
 /// Who made what a list names, as its check looks it up: none when nothing of the sort is kept under the id.
 pub(crate) trait Listables {
@@ -408,15 +433,34 @@ impl Lists {
     /// fails is refused, and `by`'s last list stands.
     pub fn check(&mut self, list: Vec<Listed>, by: ActorId, kept: &impl Listables) -> Result<(), ListRefused> {
         let mut seen = HashSet::new();
+        let mut open: Vec<u32> = Vec::new();
         for (entry, at) in list.iter().zip(0..) {
             let refused = |why| ListRefused { at, why };
             entry.made_by(by, kept).map_err(refused)?;
+            match entry {
+                Listed::Shift { .. } if open.len() == MOST_SHIFTS => return Err(refused(EntryRefused::Deep)),
+                Listed::Shift { .. } => open.push(at),
+                Listed::Unshift => {
+                    let closed = open.pop().is_some();
+                    if !closed {
+                        return Err(refused(EntryRefused::Unshifted));
+                    }
+                }
+                Listed::Draw { .. }
+                | Listed::Run(_)
+                | Listed::Call { .. }
+                | Listed::Hit { .. }
+                | Listed::Keys { .. } => {}
+            }
             let Some(named) = entry.named() else {
                 continue;
             };
             if !seen.insert(named) {
                 return Err(refused(EntryRefused::Twice));
             }
+        }
+        if let Some(at) = open.pop() {
+            return Err(ListRefused { at, why: EntryRefused::Unclosed });
         }
         self.kept.insert(by, list);
 
@@ -441,7 +485,12 @@ impl Lists {
     pub fn all(&self) -> impl Iterator<Item = u64> {
         self.kept.values().flatten().filter_map(|entry| match entry {
             Listed::Draw { placement, .. } => Some(*placement),
-            Listed::Run(_) | Listed::Call { .. } | Listed::Hit { .. } | Listed::Keys { .. } => None,
+            Listed::Run(_)
+            | Listed::Call { .. }
+            | Listed::Hit { .. }
+            | Listed::Shift { .. }
+            | Listed::Unshift
+            | Listed::Keys { .. } => None,
         })
     }
 
@@ -458,9 +507,16 @@ impl Lists {
 pub(crate) struct Walked<'a> {
     kept: &'a HashMap<ActorId, Vec<Listed>>,
     roots: vec::IntoIter<ActorId>,
-    /// The lists being drawn, each beside where it is drawn, the one called last on top: a stack, so the
-    /// walk's depth costs no frames.
-    entered: Vec<(slice::Iter<'a, Listed>, Within)>,
+    /// The lists being drawn, the one called last on top: a stack, so the walk's depth costs no frames.
+    entered: Vec<Entered<'a>>,
+}
+
+/// A list being drawn: what is left of it, where its entries are drawn now, and where they were drawn before each
+/// shift still open, the last opened on top.
+struct Entered<'a> {
+    list: slice::Iter<'a, Listed>,
+    within: Within,
+    shifted: Vec<Within>,
 }
 
 /// One entry the walk reaches, drawn `within` where its list is.
@@ -479,7 +535,7 @@ impl Walked<'_> {
         };
         let shallow = self.entered.len() < ActorPath::MAX_DEPTH;
         if shallow {
-            self.entered.push((list.iter(), within));
+            self.entered.push(Entered { list: list.iter(), within, shifted: Vec::new() });
         }
     }
 }
@@ -487,16 +543,27 @@ impl Walked<'_> {
 impl<'a> Iterator for Walked<'a> {
     type Item = Walking<'a>;
 
+    /// The next entry that draws, runs, is hit, or declares keys: each call entered, and each shift and unshift taken
+    /// in where it stands, moving where the entries after it are drawn.
     fn next(&mut self) -> Option<Walking<'a>> {
         loop {
-            let Some((list, caller)) = self.entered.last_mut() else {
+            let Some(Entered { list, within, shifted }) = self.entered.last_mut() else {
                 let root = self.roots.next()?;
                 self.enter(root, Within::WINDOW);
                 continue;
             };
-            let caller = *caller;
+            let caller = *within;
             match list.next() {
                 Some(Listed::Call { child, area }) => self.enter(*child, caller.called(*area)),
+                Some(Listed::Shift { origin, clip }) => {
+                    shifted.push(caller);
+                    *within = caller.called(Area::Inherit { origin: *origin, clip: *clip });
+                }
+                Some(Listed::Unshift) => {
+                    if let Some(before) = shifted.pop() {
+                        *within = before;
+                    }
+                }
                 Some(entry @ (Listed::Draw { .. } | Listed::Run(_) | Listed::Hit { .. } | Listed::Keys { .. })) => {
                     return Some(Walking { entry, within: caller });
                 }
@@ -514,7 +581,7 @@ impl Listed {
         match *self {
             Self::Draw { placement, .. } => placement == id,
             Self::Run(dispatch) => dispatch == id,
-            Self::Call { .. } | Self::Hit { .. } | Self::Keys { .. } => false,
+            Self::Call { .. } | Self::Hit { .. } | Self::Shift { .. } | Self::Unshift | Self::Keys { .. } => false,
         }
     }
 
@@ -524,7 +591,7 @@ impl Listed {
             Self::Draw { placement, .. } => Some(Named::Placement(placement)),
             Self::Run(dispatch) => Some(Named::Dispatch(dispatch)),
             Self::Call { child, .. } => Some(Named::Child(child)),
-            Self::Hit { .. } | Self::Keys { .. } => None,
+            Self::Hit { .. } | Self::Shift { .. } | Self::Unshift | Self::Keys { .. } => None,
         }
     }
 
@@ -534,7 +601,9 @@ impl Listed {
         let (maker, unknown) = match *self {
             Self::Draw { placement, .. } => (kept.placement_maker(placement), EntryRefused::Placement),
             Self::Run(dispatch) => (kept.dispatch_maker(dispatch), EntryRefused::Dispatch),
-            Self::Call { .. } | Self::Hit { .. } | Self::Keys { .. } => return Ok(()),
+            Self::Call { .. } | Self::Hit { .. } | Self::Shift { .. } | Self::Unshift | Self::Keys { .. } => {
+                return Ok(());
+            }
         };
         match maker {
             Some(maker) if maker == by => Ok(()),

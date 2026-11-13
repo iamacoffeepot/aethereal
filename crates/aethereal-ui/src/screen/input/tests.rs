@@ -11,7 +11,7 @@ use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
 use crate::widget::{Arrange, Draws, Laid, Stateless, Widget};
-use crate::widgets::{Button, Column, Press, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
+use crate::widgets::{Button, Column, Press, Scroll, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
 use aethereal_data::ActorId;
 use aethereal_render::draw_list::{Entry, Pointer};
@@ -471,6 +471,29 @@ fn a_slider_held_while_a_widget_before_it_starts_drawing_still_hears_its_moves_a
     assert_ne!(renumbered, slider, "the button's tint renumbers the slider's hit");
     assert_eq!(moved, vec![Raised::Number(Ev::Slid, 10.0)]);
     assert_eq!(sliding, Some(Sliding { hovered: false, dragging: false }));
+}
+
+#[test]
+fn a_press_through_a_hit_within_a_slid_scroll_reaches_its_widget_where_it_stands() {
+    // Catches a press through an entry within the shift of what a scroll holds taken at the place the window tells, which
+    // is from the shift's origin, so a slider within a scroll slid across sets the value at a place its slide away.
+    let mut screen = screen();
+    let tree = || {
+        let held = vec![
+            Node::new(Segment::Place(0), Column, sized(60.0, 10.0), vec![]),
+            Node::new(Segment::Place(1), Slider::new(0.0, 0.0, 10.0, 1.0, Ev::Slid), sized(100.0, 10.0), vec![]),
+        ];
+        column(vec![Node::new(Segment::Place(0), Scroll::across(), sized(120.0, 20.0), held)])
+    };
+    laid(&mut screen, tree(), &[]);
+    let scroll = hit(&screen, &child(0));
+    point(&mut screen, scroll, PointerEvent::Wheel { x: 5.0, y: 5.0, delta_x: 20.0, delta_y: 0.0 });
+    laid(&mut screen, tree(), &[]);
+    let slider = hit(&screen, &child(0).child(Segment::Place(1)));
+
+    let pressed = raised(press(&mut screen, slider, 110.0, 5.0));
+
+    assert_eq!(pressed, vec![Raised::Number(Ev::Slid, 5.0)]);
 }
 
 /// A widget the pointer reaches that raises `Click(id)` for each move and release it hears.

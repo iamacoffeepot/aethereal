@@ -49,6 +49,8 @@ enum Entry {
     Run(DispatchId),                                          // a dispatch of the sender's, in the compute pass it joins
     Call { child: Callee, area: Area },                       // draw what this direct child of the sender draws, here, placed in area
     Hit { frame: Frame, pass: PassName, rect: Rect2, pointer: Pointer }, // drawn into that pass's picking stack only (see Input)
+    Shift { origin: Vec2, clip: Clip },                       // the sender's own entries after it, placed as an Inherit child, to its Unshift
+    Unshift,                                                  // closes the last Shift open
     Keys { frame: Frame, keys: KeySet, blocks: bool },        // the keys its sender hears in that frame's window (see Input)
 }
 enum Pointer { Blocks(Cursor), Passes(Cursor), Presses, Ignores }  // how the pointer reaches the entry, and what the window shows when it does
@@ -89,6 +91,7 @@ A program places what it draws by its own program, uniforms, and instances, in t
 - **The clip is a scissor for each draw:** the clip, in the surface's pixels, scaled to the pass's target as the target's scale scales the end (ADR-0048), taking each pixel whose middle is within it, and kept within the target. A draw whose clip covers no pixel is not issued.
 - **A hit is moved and cut on the CPU:** its rect, in its sender's coordinates, is moved by its list's origin and cut to its list's clip before the renderer tests the probes against it.
 - **What a child draws past its own surface-sized rect is drawn when its origin brings it in.** The shift is made before the GPU clips primitives, so a child moved up by a scroll view's offset shows what it draws below the surface's height.
+- **A shift places the sender's own entries as a call places a child** (*settled by the widget library's draw-cost stage*). `Entry::Shift { origin, clip }` moves every entry after it, up to the `Entry::Unshift` that closes it, as an `Inherit` call moves its child: the list's coordinates moved to `origin`, cut to `clip`, in the list's coordinates, within the list's clip; shifts nest, each from where the last still open stands. Draws, hits, and calls within it are drawn, tested, and placed there, and the pointer is told of an entry within it from the shift's origin, as of a child's. It is for what moves together within one actor's drawing, as what a scroll holds: listed once in its own coordinates, it moves by one entry, and nothing within it is written again. A list is refused whole for an unshift with no shift open, a shift no unshift closes, or more than 64 shifts open at once.
 - **The child is not told its size or its clip.** It draws in its own coordinates, and its parent decides where it lands and what of it shows. Telling a child the space it has is the widget library's.
 
 ### The root list is fixed at setup

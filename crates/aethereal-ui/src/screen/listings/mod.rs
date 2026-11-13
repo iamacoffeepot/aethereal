@@ -21,29 +21,32 @@ mod tests;
 use super::{Slot, Standing};
 use crate::tree::{KeyPath, Relaid, Segment};
 use crate::widget::Laid;
-use core::mem;
 use std::collections::BTreeMap;
 
-/// What each widget listed as its screen last laid it out, by its key path, with what its listing read.
+/// What each widget listed as its screen last laid it out, by its key path, with what its listing read; and the number
+/// of the layout listing now, counted from the screen's first.
 #[derive(Debug, Default)]
 pub(super) struct Listings {
     by: BTreeMap<KeyPath, Kept>,
+    pass: u64,
 }
 
 /// What one widget listed: its places in its screen's list, those listed where it stands and those listed over its
-/// anchor, and whether it blocks the pointer from what is within it; and what its listing read beside its tree's node.
+/// anchor, and whether it blocks the pointer from what is within it; what its listing read beside its tree's node; and
+/// the number of the layout that last listed it.
 #[derive(Debug)]
-pub(super) struct Kept {
+struct Kept {
     read: Read,
     now: Vec<Slot>,
     later: Vec<Slot>,
     blocks: bool,
+    pass: u64,
 }
 
 /// What a widget's listing reads beside its tree's node: where it is drawn, its state's bytes, how it stands with its
 /// screen's input, and whether its surface is live.
 #[derive(Debug)]
-pub(super) struct Read {
+struct Read {
     laid: Laid,
     state: Vec<u8>,
     standing: Standing,
@@ -88,6 +91,20 @@ impl Read {
     }
 }
 
+impl Kept {
+    /// What `listed` lists, read as `reading` found it, in the layout numbered `pass`.
+    fn of(reading: Reading<'_>, listed: &Listed, pass: u64) -> Self {
+        let Listed { now, later, blocks } = listed;
+
+        Self { read: Read::of(reading), now: now.clone(), later: later.clone(), blocks: *blocks, pass }
+    }
+
+    /// What it lists, again.
+    fn again(&self) -> Listed {
+        Listed { now: self.now.clone(), later: self.later.clone(), blocks: self.blocks }
+    }
+}
+
 /// The bits of each figure of `laid`.
 fn bits(laid: &Laid) -> [u32; 15] {
     let Laid { rect, content, clip, extent, scale } = *laid;
@@ -113,15 +130,42 @@ fn bits(laid: &Laid) -> [u32; 15] {
 }
 
 impl Listings {
-    /// A pass of a layout over what was kept: what each widget kept is taken out as it lists again.
-    pub(super) fn relist(&mut self) -> Relisting {
-        Relisting { was: mem::take(&mut self.by), now: BTreeMap::new() }
+    /// Begins a layout's pass over what was kept, numbered after the last.
+    pub(super) fn begin(&mut self) {
+        self.pass += 1;
     }
 
-    /// Keeps what `relisting`, a layout whose draws are sent, listed, for the next. What a layout whose draws are not
-    /// sent listed is never kept, and what it took out is let go.
-    pub(super) fn keep(&mut self, relisting: Relisting) {
-        self.by = relisting.now;
+    /// What the widget at `path` lists as its listing reads what `reading` finds: what it listed last, when it kept that
+    /// and read the same; otherwise what `list` lists. Either way kept for the next layout.
+    pub(super) fn list(&mut self, path: &KeyPath, reading: Reading<'_>, list: impl FnOnce() -> Listed) -> Listed {
+        let pass = self.pass;
+        match self.by.get_mut(path) {
+            Some(kept) if kept.read.is(reading) => {
+                kept.pass = pass;
+                kept.again()
+            }
+            Some(kept) => {
+                let listed = list();
+                *kept = Kept::of(reading, &listed, pass);
+                listed
+            }
+            None => {
+                let listed = list();
+                self.by.insert(path.clone(), Kept::of(reading, &listed, pass));
+                listed
+            }
+        }
+    }
+
+    /// Ends the layout's pass: what a widget it did not list kept is let go, and, when it `waited` for a font's metrics
+    /// and so sends no draws, everything is, as what it listed was never drawn.
+    pub(super) fn end(&mut self, waited: bool) {
+        let pass = self.pass;
+        if waited {
+            self.by.clear();
+            return;
+        }
+        self.by.retain(|_, kept| kept.pass == pass);
     }
 
     /// Lets go of what the widget at `path` kept, as its draws were not made.
@@ -137,36 +181,6 @@ impl Listings {
     /// Lets go of what the widget at `path`, and each within it, kept.
     fn within(&mut self, path: &[Segment]) {
         self.by.retain(|kept, _| !kept.segments().starts_with(path));
-    }
-}
-
-/// A layout's pass over what was kept: what the last listed, taken out as each widget lists again, and what this one
-/// listed.
-pub(super) struct Relisting {
-    was: BTreeMap<KeyPath, Kept>,
-    now: BTreeMap<KeyPath, Kept>,
-}
-
-impl Relisting {
-    /// What the widget at `path` lists as its listing reads what `reading` finds: what it listed last, when it kept that and read the
-    /// same; otherwise what `list` lists. Either way kept for the next.
-    pub(super) fn list(&mut self, path: &KeyPath, reading: Reading<'_>, list: impl FnOnce() -> Listed) -> Listed {
-        let kept = self.was.remove_entry(path);
-        let same = kept.as_ref().is_some_and(|(_, kept)| kept.read.is(reading));
-        match kept {
-            Some((key, kept)) if same => {
-                let again = Listed { now: kept.now.clone(), later: kept.later.clone(), blocks: kept.blocks };
-                self.now.insert(key, kept);
-                again
-            }
-            Some(_) | None => {
-                let listed = list();
-                let read = Read::of(reading);
-                let kept = Kept { read, now: listed.now.clone(), later: listed.later.clone(), blocks: listed.blocks };
-                self.now.insert(path.clone(), kept);
-                listed
-            }
-        }
     }
 }
 

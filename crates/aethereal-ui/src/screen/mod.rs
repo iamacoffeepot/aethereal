@@ -59,14 +59,14 @@ use crate::fonts::{Asker, Fonts, Measuring, Texts};
 use crate::layout::{Boxed, Laidout, Layouts, Pitch};
 use crate::style::Style;
 use crate::table::{Focus, Table};
-use crate::tree::{Difference, Flat, KeyPath, Node, Tree};
+use crate::tree::{Difference, Flat, KeyPath, Node, Segment, Tree};
 use crate::unkept::Unkept;
-use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Lit, Quad, Sample, anchor};
+use crate::widget::{Arrange, Axis, Built, Draws, Focused, Laid, Lit, Quad, Sample};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
-use aethereal_render::draw_list::{Area, Callee, Entry, Pointer};
+use aethereal_render::draw_list::{Area, Callee, Clip, Entry, Pointer};
 use aethereal_render::font::Metrics;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
@@ -152,6 +152,9 @@ pub struct Screen {
     listed: Vec<Entry>,
     /// What each entry of the list last sent is, which input through it reaches.
     listing: Vec<Listed>,
+    /// How far each entry of the list last sent is drawn from the screen's own coordinates, by the shifts of the
+    /// scrolls around it: what input through it is told of the pointer is moved back by it.
+    moved: Vec<Vec2>,
     /// The entries of its list a press reached that the window's capture still sends input through, each as it was
     /// when the press reached it: none while no button is down on any.
     held: Vec<Hold>,
@@ -187,6 +190,12 @@ enum Slot {
     /// A hit over `rect`, what the child placed in the slot at `path` is cut to, which hears presses into the child
     /// alone.
     Child { path: KeyPath, rect: Rect2 },
+    /// The slots after it, up to the `Unshift` that closes it, what a scroll holds: listed in the scroll's content's
+    /// coordinates, where its offset is not counted, and drawn moved to `origin`, its offset back, cut to `clip`, its
+    /// content box, both in the coordinates the scroll is listed in.
+    Shift { origin: Vec2, clip: Rect2 },
+    /// Closes the last `Shift` still open.
+    Unshift,
 }
 
 impl Slot {
@@ -194,7 +203,12 @@ impl Slot {
     fn draws(&self) -> Option<&DrawKey> {
         match self {
             Self::Draw(key) => Some(key),
-            Self::Hit { .. } | Self::Backdrop { .. } | Self::Call { .. } | Self::Child { .. } => None,
+            Self::Hit { .. }
+            | Self::Backdrop { .. }
+            | Self::Call { .. }
+            | Self::Child { .. }
+            | Self::Shift { .. }
+            | Self::Unshift => None,
         }
     }
 }
@@ -214,6 +228,9 @@ enum Listed {
     Call(KeyPath),
     /// The hit over the child placed in the slot at this path, which a press into the child reaches, and nothing else.
     Child(KeyPath),
+    /// A shift of what a scroll holds, or the unshift that closes one, which the pointer does not reach.
+    Shift,
+    Unshift,
 }
 
 /// Whether the last tree's layout holds until the tree changes.
@@ -325,6 +342,7 @@ impl Screen {
             taking: Taking::Declared,
             listed: Vec::new(),
             listing: Vec::new(),
+            moved: Vec::new(),
             held: Vec::new(),
             serial: 0,
             fresh: Fresh::Stale,
@@ -445,16 +463,25 @@ impl Screen {
         let mut covered = vec![false; flat.len()];
         let mut shifts = vec![Vec2::ZERO; flat.len()];
         let mut clips = vec![viewport.rect(); flat.len()];
+        let mut moved = vec![Vec2::ZERO; flat.len()];
+        let mut cuts = vec![viewport.rect(); flat.len()];
         let mut laid_out = Vec::with_capacity(flat.len());
         let mut told = Vec::new();
-        let mut relisting = listings.relist();
+        listings.begin();
         for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
-            let (laid, slide, cut) = stand(&mut self.table, node, boxed, shifts[at], clips[at], viewport.scale);
+            let (laid, holding) = stand(&mut self.table, node, boxed, shifts[at], clips[at], viewport.scale);
+            let drawing = Laid { clip: cuts[at], ..laid.relative_to(-moved[at]) };
+            let (slide, cut, region) = match holding {
+                Holding::Flows => (Vec2::ZERO, clips[at], cuts[at]),
+                Holding::Slides { slide, cut } => (slide, cut, scrolled(&drawing)),
+            };
             for child in &node.children {
                 shifts[*child] = shifts[at] + slide;
                 clips[*child] = cut;
+                moved[*child] = moved[at] + slide;
+                cuts[*child] = region;
             }
             if surface.stands == Stands::Hidden {
                 laid_out.push((node.path.clone(), laid));
@@ -465,31 +492,38 @@ impl Screen {
                 for (content, shift) in lift(&mut layers, &flat, boxes, at, popper, laid.rect, viewport.rect()) {
                     shifts[content] = shift;
                     clips[content] = viewport.rect();
+                    moved[content] = Vec2::ZERO;
+                    cuts[content] = viewport.rect();
                 }
             }
 
             let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, covered[at]);
             let state = self.table.bytes(&node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
-            let reading = Reading { laid, state, standing, live };
-            let mut list = || listed(node, reading, &mut measuring, &mut drawn);
+            let reading = Reading { laid: drawing, state, standing, live };
+            let mut list = || listed(node, reading, &laid, &mut measuring, &mut drawn);
             let listing = match calling(node.node.widget()) {
                 Some(slot) => {
                     told.push(Told::of(slot, &laid, viewport));
                     list()
                 }
-                None => relisting.list(&node.path, reading, list),
+                None => listings.list(&node.path, reading, list),
             };
             layers.list(surface.stands, listing.now);
+            if let Holding::Slides { slide, cut } = holding {
+                let shift =
+                    Slot::Shift { origin: -slide, clip: Rect2 { min: cut.min + moved[at], max: cut.max + moved[at] } };
+                layers.list(surface.stands, vec![shift]);
+                pending.push(Pending { until: ends[at], stands: surface.stands, slots: vec![Slot::Unshift] });
+            }
             let deferred = !listing.later.is_empty();
             if deferred {
                 let until = past_anchor(node, &flat, &ends, at);
                 pending.push(Pending { until, stands: surface.stands, slots: listing.later });
             }
             let covers = covered[at] || listing.blocks;
-            let first = anchor(&node.path);
             for child in &node.children {
-                let held = flat[*child].path == first;
+                let held = flat[*child].path.segments().last() == Some(&Segment::Place(0));
                 let lifted = opens.is_some() && !held;
                 covered[*child] = covers && !lifted;
             }
@@ -507,9 +541,7 @@ impl Screen {
             orders.ask_metrics(font);
         }
         texts.sweep();
-        if !waited {
-            listings.keep(relisting);
-        }
+        listings.end(waited);
         for allow in self.typing(typing) {
             orders.allow_ime(allow);
         }
@@ -562,6 +594,8 @@ impl Screen {
             entries.push(Entry::Keys { frame, keys: declared.keys.clone(), blocks: declared.blocks });
             listing.push(Listed::Keys(declared.role));
         }
+        let mut moved = vec![Vec2::ZERO; listing.len()];
+        let mut shifted = Shifted { at: Vec2::ZERO, before: Vec::new() };
         for slot in &self.order {
             match slot {
                 Slot::Draw(key) => {
@@ -586,7 +620,16 @@ impl Screen {
                     entries.push(Entry::Hit { frame, pass, rect: *rect, pointer: Pointer::Presses });
                     listing.push(Listed::Child(path.clone()));
                 }
+                Slot::Shift { origin, clip } => {
+                    entries.push(Entry::Shift { origin: *origin, clip: Clip::To(*clip) });
+                    listing.push(Listed::Shift);
+                }
+                Slot::Unshift => {
+                    entries.push(Entry::Unshift);
+                    listing.push(Listed::Unshift);
+                }
             }
+            moved.resize(listing.len(), shifted.slot(slot));
         }
         if entries == self.listed {
             return;
@@ -594,6 +637,7 @@ impl Screen {
         orders.list(entries.clone());
         self.listed = entries;
         self.listing = listing;
+        self.moved = moved;
         self.reached.retain(|path| self.listing.contains(&Listed::Hit(path.clone())));
     }
 
@@ -604,25 +648,68 @@ impl Screen {
 }
 
 /// Where `flat`, laid out as `boxed` at `scale`, stands once the scrolls around it have slid it by `shift` and cut it to
-/// `clip`; then how far it slides what is within it, and what it cuts it to: a scroll's offset, clamped in `table`, and
+/// `clip`; and what it does to what is within it: a scroll slides it by its offset, clamped in `table`, and cuts it to
 /// its content box.
-fn stand(
-    table: &mut Table,
-    flat: &Flat<'_>,
-    boxed: &Boxed,
-    shift: Vec2,
-    clip: Rect2,
-    scale: f32,
-) -> (Laid, Vec2, Rect2) {
+fn stand(table: &mut Table, flat: &Flat<'_>, boxed: &Boxed, shift: Vec2, clip: Rect2, scale: f32) -> (Laid, Holding) {
     let moved = |rect: Rect2| Rect2 { min: rect.min - shift, max: rect.max - shift };
     let laid = Laid { rect: moved(boxed.rect), content: moved(boxed.content), clip, extent: boxed.extent, scale };
     let widget = flat.node.widget();
-    let (slide, cut) = match widget.arrange() {
-        Arrange::Scroll(axis) => (fit(table, &flat.path, widget, &laid, axis), clip.intersection(laid.content)),
-        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => (Vec2::ZERO, clip),
+    let holding = match widget.arrange() {
+        Arrange::Scroll(axis) => {
+            Holding::Slides { slide: fit(table, &flat.path, widget, &laid, axis), cut: clip.intersection(laid.content) }
+        }
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => Holding::Flows,
     };
 
-    (laid, slide, cut)
+    (laid, holding)
+}
+
+/// What a node does to where what is within it stands, in the screen's pixels: nothing; or, as a scroll, slides it by
+/// `slide` and cuts it to `cut`, its content box within what it is cut to.
+#[derive(Debug, Clone, Copy)]
+enum Holding {
+    Flows,
+    Slides { slide: Vec2, cut: Rect2 },
+}
+
+/// What is within a scroll drawn at `drawing` is cut to, in its content's coordinates, where its offset is not counted:
+/// all it slides through, from its content box's top left as far as its children reach, or its content box where they
+/// reach less far. Its offset within what it can slide shows its content box within this, so its children are cut to
+/// its content box alone, by the shift its content is listed in.
+fn scrolled(drawing: &Laid) -> Rect2 {
+    let content = drawing.content;
+    let reach = drawing.extent.max(content.size());
+
+    Rect2::from_origin_size(content.min, reach)
+}
+
+/// Where the entries of a list being made are drawn from the screen's own coordinates, as the shifts open before each
+/// move them, and where they were before each shift still open, the last opened on top.
+#[derive(Debug)]
+struct Shifted {
+    at: Vec2,
+    before: Vec<Vec2>,
+}
+
+impl Shifted {
+    /// How far the entries `slot` lists are drawn from the screen's own coordinates, taking in the shift it opens or
+    /// closes: a shift and its unshift stand where the list around them does.
+    fn slot(&mut self, slot: &Slot) -> Vec2 {
+        let here = self.at;
+        match slot {
+            Slot::Shift { origin, .. } => {
+                self.before.push(here);
+                self.at = here + *origin;
+            }
+            Slot::Unshift => {
+                self.at = self.before.pop().unwrap_or(Vec2::ZERO);
+                return self.at;
+            }
+            Slot::Draw(_) | Slot::Hit { .. } | Slot::Backdrop { .. } | Slot::Call { .. } | Slot::Child { .. } => {}
+        }
+
+        here
+    }
 }
 
 /// How a widget being listed stands with its screen's input: whether it has focus; whether a drag of the screen's that
@@ -667,8 +754,8 @@ enum Dragged {
     Source,
 }
 
-/// What the widget of `node` lists, laid, stated, and standing as `reading` finds it, its draws, by key, written into
-/// `drawn`: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and
+/// What the widget of `node` lists, laid, stated, and standing as `reading` finds it, laid at `placed` in the screen's
+/// own coordinates, its draws, by key, written into `drawn`: the background and border its style fills beneath it, then its own drawing, measured with `measuring`; and
 /// a hit over its box when the pointer reaches it there and its surface is live, then the call of the child it places,
 /// when it is a child's slot, so the child draws over the slot's background and is reached before it, and over the
 /// call, where the child shows, a hit that hears presses alone. A popup's own drawing and hit are listed over its
@@ -676,6 +763,7 @@ enum Dragged {
 fn listed<'flat>(
     node: &'flat Flat<'flat>,
     reading: Reading<'_>,
+    placed: &Laid,
     measuring: &mut Measuring<'flat>,
     drawn: &mut Vec<(DrawKey, Content)>,
 ) -> Listing {
@@ -732,7 +820,8 @@ fn listed<'flat>(
         into.push(Slot::Hit { path: node.path.clone(), rect, pointer });
     }
     if let Some(slot) = calling(widget) {
-        now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area: slot.area(&laid) });
+        let area = slot.area(&laid, placed);
+        now.push(Slot::Call { path: node.path.clone(), callee: slot.callee().clone(), area });
         let cut = child::cut(&laid);
         let visible = !cut.is_empty();
         if visible {

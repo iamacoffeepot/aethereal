@@ -208,13 +208,13 @@ impl Calling {
         self.called.sized
     }
 
-    /// Where its child is placed, the slot laid at `laid` in the screen's pixels: at its content box, cut to the box
-    /// within what the slot is cut to, so the child is cut by every scroll around the slot.
-    pub fn area(&self, laid: &Laid) -> Area {
-        let clip = Clip::To(cut(laid));
+    /// Where its child is placed, the slot laid at `listed` in the coordinates its screen lists it in, and at `placed`
+    /// in the screen's own: at its content box, cut to the box within what the slot is cut to, so the child is cut by
+    /// every scroll around the slot; a child in the window's pixels is cut where the slot stands in the screen's.
+    pub fn area(&self, listed: &Laid, placed: &Laid) -> Area {
         match self.area {
-            CallArea::Inherit => Area::Inherit { origin: laid.content.min, clip },
-            CallArea::Absolute => Area::Absolute { clip },
+            CallArea::Inherit => Area::Inherit { origin: listed.content.min, clip: Clip::To(cut(listed)) },
+            CallArea::Absolute => Area::Absolute { clip: Clip::To(cut(placed)) },
         }
     }
 }
