@@ -21,8 +21,8 @@ pub enum Difference {
     Layout,
 }
 
-/// What hears which nodes of a tree lay out otherwise than the last tree's at their keys: what a screen keeps of its
-/// layouts, to let go of what no longer holds.
+/// What hears which nodes of a tree lay out otherwise than the last tree's at their keys, and which came and went: what
+/// a screen keeps of its layouts and its texts, to let go of what no longer holds.
 pub trait Relaid {
     /// The node at `path`, the root's segment first, lays out otherwise: its style, its widget's layout, or the keys of
     /// its children changed.
@@ -30,6 +30,27 @@ pub trait Relaid {
 
     /// The node at `path` is new to the tree, with all within it: the last tree had none there.
     fn entered(&mut self, path: &[Segment]);
+
+    /// The last tree's node at `path` is gone from the tree, with all within it.
+    fn left(&mut self, path: &[Segment]);
+}
+
+/// Two hearers hear alike.
+impl<One: Relaid, Other: Relaid> Relaid for (&mut One, &mut Other) {
+    fn changed(&mut self, path: &[Segment]) {
+        self.0.changed(path);
+        self.1.changed(path);
+    }
+
+    fn entered(&mut self, path: &[Segment]) {
+        self.0.entered(path);
+        self.1.entered(path);
+    }
+
+    fn left(&mut self, path: &[Segment]) {
+        self.0.left(path);
+        self.1.left(path);
+    }
 }
 
 /// A pair of nodes at one key path being compared, the last tree's and the new one's, and how deep they stand, the root
@@ -42,11 +63,12 @@ struct Pair<'old, 'new> {
 
 impl Tree {
     /// How `new` differs from this tree, the last one built, telling `relaid` each node of it that lays out otherwise
-    /// than this one's at its key and each new to it: walked with a stack of its own, so a tree's depth costs no
-    /// frames.
+    /// than this one's at its key, each new to it, and each of this one's gone from it: walked with a stack of its own,
+    /// so a tree's depth costs no frames.
     pub(crate) fn compare(&self, new: &Self, relaid: &mut impl Relaid) -> Difference {
         let rooted = self.root.segment == new.root.segment;
         if !rooted {
+            relaid.left(&[self.root.segment]);
             relaid.entered(&[new.root.segment]);
             return Difference::Layout;
         }
@@ -84,14 +106,18 @@ impl Tree {
                 olds.entry(child.segment).or_insert(child);
             }
             for child in &new.children {
-                match olds.get(&child.segment) {
-                    Some(old) => stack.push(Pair { old, new: child, depth }),
-                    None => {
-                        segments.push(child.segment);
-                        relaid.entered(&segments);
-                        segments.pop();
-                    }
-                }
+                let Some(old) = olds.remove(&child.segment) else {
+                    segments.push(child.segment);
+                    relaid.entered(&segments);
+                    segments.pop();
+                    continue;
+                };
+                stack.push(Pair { old, new: child, depth });
+            }
+            for gone in olds.into_keys() {
+                segments.push(gone);
+                relaid.left(&segments);
+                segments.pop();
             }
         }
 

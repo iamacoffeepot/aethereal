@@ -20,7 +20,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::fonts::{Measuring, Pass};
+use crate::fonts::{Asker, Measuring};
 use crate::style::{Edges, Parent, Space, Style, flow};
 use crate::tree::{Flat, KeyPath, Relaid, Segment};
 use crate::widget::{Arrange, Axis, Lines, Offer, Offered, anchor};
@@ -54,50 +54,61 @@ pub struct Pitch {
 }
 
 /// What a layout found: each node's boxes, in tree order, and the pitch of each scroll with a child, by its place.
-#[derive(Debug)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Laidout {
     pub boxes: Vec<Boxed>,
     pub pitches: Vec<(usize, Pitch)>,
 }
 
 /// What a screen keeps of its layouts from one to the next (*settled by the library's layout-cost stage*): what Taffy
-/// kept of each node, by its key path, and the boxes of the last layout with what they were laid out at.
+/// kept of each node, by its key path, and the boxes of the last layout, with whether they hold.
 ///
 /// A layout whose tree lays out as the last one did, at the same size, scale, and open popups, is the last one: its
 /// boxes are handed back, and Taffy does not run. Otherwise Taffy runs, and a node whose layout is kept, whose own
 /// settings and whose children's laid out as they did, answers from what it kept, so only what changed and what holds
 /// it is laid out again. What tells it what changed is the comparison of each tree with the last ([`Relaid`]), and its
-/// own: a node whose style, as Taffy reads it, is not what it kept, its room or its parent's arrangement changed, is
-/// laid out again, with all that holds it; and every node kept is let go at another UI scale, which every measure
-/// reads.
+/// own: a node whose style, as Taffy reads it, is not what it kept, as its room or its parent's arrangement changed, is
+/// laid out again, with all that holds it; and every node kept is let go at another UI scale, which every length and
+/// measure reads, and after a layout that met a font whose metrics had not come.
 #[derive(Debug, Default)]
 pub struct Layouts {
     /// What Taffy kept of each node, by its key path, as the last layout left it.
     nodes: BTreeMap<KeyPath, Kept>,
     /// The UI scale the nodes kept were laid out at.
     scale: f32,
-    last: Last,
+    /// The boxes the last layout gave.
+    laidout: Laidout,
+    holds: Holds,
 }
 
-/// The boxes a screen's last layout gave it.
+/// Whether the boxes a screen's last layout gave hold for the tree it lays out next.
 #[derive(Debug, Default)]
-enum Last {
-    /// None that still hold: nothing was laid out, or the tree laid out otherwise since.
+enum Holds {
+    /// They do not: nothing was laid out, the tree laid out otherwise since, or a font's metrics had not come.
     #[default]
-    Unlaid,
-    /// These boxes, laid out as `at` says, which hold while the tree lays out as it did.
-    Laid { laidout: Laidout, at: LaidAt },
-    /// These boxes, laid out while a font's metrics had not come: drawn nothing, and laid out again.
-    Waited(Laidout),
+    Not,
+    /// They do while the tree lays out as it did, at what this says.
+    At(LaidAt),
 }
 
 /// What a layout was laid out at beside its tree: the screen's size and UI scale, and the places of the open popups'
 /// content.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 struct LaidAt {
     size: Vec2,
     scale: f32,
     tops: Vec<usize>,
+}
+
+impl LaidAt {
+    /// Whether it is `size`, `scale`, and `tops`.
+    fn is(&self, size: Vec2, scale: f32, tops: &[usize]) -> bool {
+        let sized = self.size == size;
+        let scaled = self.scale.to_bits() == scale.to_bits();
+        let topped = self.tops == tops;
+
+        sized && scaled && topped
+    }
 }
 
 /// What Taffy keeps of one node from one layout to the next: its place in tree order when it was kept, which Taffy
@@ -158,8 +169,8 @@ impl Layouts {
     /// own, out of flow in the screen's box, the content of an open popup: each node's boxes, in the same order, and
     /// each scroll's pitch. A node within a popup's content whose root is not among `tops` is laid out nowhere.
     ///
-    /// The last layout's boxes when the tree lays out as it did, at the same size, scale, and tops: the pass then only
-    /// draws, as `measuring` is told.
+    /// The last layout's boxes when the tree lays out as it did, at the same size, scale, and tops, which it told
+    /// ([`Relaid`]).
     pub fn lay_out<'flat>(
         &mut self,
         flat: &'flat [Flat<'flat>],
@@ -168,26 +179,23 @@ impl Layouts {
         size: Vec2,
         scale: f32,
     ) -> &Laidout {
-        let at = LaidAt { size, scale, tops: tops.to_vec() };
-        let current = matches!(&self.last, Last::Laid { at: laid, .. } if *laid == at);
-        if current {
-            measuring.begin(Pass::Drawing);
+        let holds = match &self.holds {
+            Holds::At(at) => at.is(size, scale, tops),
+            Holds::Not => false,
+        };
+        if holds {
+            return &self.laidout;
+        }
+        self.laidout = self.laid(flat, tops, measuring, size, scale);
+        let waited = measuring.waited();
+        self.holds = if waited {
+            self.nodes.clear();
+            Holds::Not
         } else {
-            measuring.begin(Pass::Laying);
-            let laidout = self.laid(flat, tops, measuring, size, scale);
-            let waited = measuring.waited();
-            self.last = if waited {
-                self.nodes.clear();
-                Last::Waited(laidout)
-            } else {
-                Last::Laid { laidout, at }
-            };
-        }
+            Holds::At(LaidAt { size, scale, tops: tops.to_vec() })
+        };
 
-        match &self.last {
-            Last::Laid { laidout, .. } | Last::Waited(laidout) => laidout,
-            Last::Unlaid => &UNLAID,
-        }
+        &self.laidout
     }
 
     /// Lays `flat` out with Taffy, as [`Self::lay_out`] says, from what was kept of each node that lays out as it did,
@@ -215,12 +223,12 @@ impl Layouts {
         let flowing: Vec<Vec<usize>> = flat.iter().map(|node| in_flow(node, flat)).collect();
         let mut was = mem::take(&mut self.nodes);
         let mut keys: Vec<KeyPath> = Vec::with_capacity(flat.len());
-        let mut stale = vec![false; flat.len()];
+        let mut anew = vec![false; flat.len()];
         let mut nodes: Vec<Laying<'_>> = Vec::with_capacity(flat.len());
         for (at, ((node, parent), children)) in flat.iter().zip(parents).zip(&flowing).enumerate() {
             let widget = node.node.widget();
             let arrange = widget.arrange();
-            measuring.at(&node.path);
+            measuring.at(&node.path, Asker::Layout);
             let room = widget.room(node.node.style(), measuring);
             let mut style = flow(node.node.style(), arrange, parent, room, scale);
             let placed = match at {
@@ -244,17 +252,17 @@ impl Layouts {
                 }
                 None => (node.path.clone(), Kept::new(at, flowed), true),
             };
-            stale[at] = changed;
+            anew[at] = changed;
             keys.push(key);
             nodes.push(Laying { arrange, flat: node, children: children.clone(), style, kept });
         }
         let reached = reached(&flowing, tops);
         for (at, reached) in reached.iter().enumerate().rev() {
-            let holds = flowing[at].iter().any(|child| stale[*child]);
+            let holds = flowing[at].iter().any(|child| anew[*child]);
             let unreached = !*reached;
-            let relaid = stale[at] || holds || unreached;
+            let relaid = anew[at] || holds || unreached;
             if relaid {
-                stale[at] = true;
+                anew[at] = true;
                 let laying = &mut nodes[at].kept;
                 let _ = laying.cache.clear();
                 laying.layout = Layout::with_order(0);
@@ -277,10 +285,11 @@ impl Layouts {
 
 /// A node whose layout changed lets go of what Taffy kept of it and of every node holding it, and the last boxes no
 /// longer hold; a node new to the tree takes nothing kept at or within its path, which may be left from a tree before
-/// the last.
+/// the last, when a tree between was never laid out; and what Taffy kept of a node that left goes at the next layout,
+/// which keeps only what its tree holds.
 impl Relaid for Layouts {
     fn changed(&mut self, path: &[Segment]) {
-        self.last = Last::Unlaid;
+        self.holds = Holds::Not;
         for depth in 1..=path.len() {
             if let Some(kept) = self.nodes.get_mut(&path[..depth]) {
                 let _ = kept.cache.clear();
@@ -289,13 +298,14 @@ impl Relaid for Layouts {
     }
 
     fn entered(&mut self, path: &[Segment]) {
-        self.last = Last::Unlaid;
+        self.holds = Holds::Not;
         self.nodes.retain(|kept, _| !kept.segments().starts_with(path));
     }
-}
 
-/// The boxes a layout gives a tree's nodes before any is laid out: none.
-static UNLAID: Laidout = Laidout { boxes: Vec::new(), pitches: Vec::new() };
+    fn left(&mut self, _: &[Segment]) {
+        self.holds = Holds::Not;
+    }
+}
 
 /// Which of the nodes whose children laid out in their boxes are `flowing` are laid out: the root and each of `tops`,
 /// and every node within one laid out in its box.
@@ -548,7 +558,7 @@ impl LayoutPartialTree for Tree<'_, '_> {
                 Arrange::Leaf => {
                     let Tree { nodes, measuring } = tree;
                     let laying = &nodes[usize::from(node)];
-                    measuring.at(&laying.flat.path);
+                    measuring.at(&laying.flat.path, Asker::Layout);
                     let measured = |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
                         let offer = Offer {
                             width: offered(known.width, available.width),

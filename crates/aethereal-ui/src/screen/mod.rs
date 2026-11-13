@@ -55,7 +55,7 @@ pub use scrolls::Rows;
 use crate::child::{self, calling};
 use crate::drag::DragSource;
 use crate::draw::{Content, layered};
-use crate::fonts::{Fonts, Measuring, Texts};
+use crate::fonts::{Asker, Fonts, Measuring, Texts};
 use crate::layout::{Boxed, Laidout, Layouts, Pitch};
 use crate::style::Style;
 use crate::table::{Focus, Table};
@@ -229,6 +229,25 @@ struct Worked {
     pitches: Vec<(KeyPath, Pitch)>,
 }
 
+impl Worked {
+    /// Takes in `tree`, the tree the screen's view built, in place of the last unless it is the same: what its layouts
+    /// and texts keep is told what of it lays out otherwise ([`Relaid`](crate::tree::Relaid)). How it differs from the
+    /// last.
+    fn built(&mut self, tree: Tree) -> Difference {
+        let Self { last, layouts, texts, .. } = self;
+        let difference = match last {
+            Last::Built(last) => last.compare(&tree, &mut (layouts, texts)),
+            Last::Unbuilt => Difference::Layout,
+        };
+        let same = difference == Difference::Same;
+        if !same {
+            *last = Last::Built(Box::new(tree));
+        }
+
+        difference
+    }
+}
+
 /// The tree a screen last built.
 #[derive(Debug, Default)]
 enum Last {
@@ -346,15 +365,7 @@ impl Screen {
     /// for its delay, and one left shuts.
     pub fn prepare(&mut self, tree: Tree, hotkeys: &[&str]) -> Prepared {
         let mut orders = Orders::default();
-        let Worked { last, layouts, .. } = &mut *self.unkept;
-        let difference = match last {
-            Last::Built(last) => last.compare(&tree, layouts),
-            Last::Unbuilt => Difference::Layout,
-        };
-        let same = difference == Difference::Same;
-        if !same {
-            *last = Last::Built(Box::new(tree));
-        }
+        let same = self.unkept.built(tree) == Difference::Same;
         let moved = self.hover == Hover::Moved;
         let looks = moved || !same;
         if looks {
@@ -408,6 +419,7 @@ impl Screen {
         let focus = self.table.focus().clone();
         let tops = popups::tops(&flat, &surfaces);
         let viewport = self.viewport;
+        texts.begin(viewport.scale);
         let mut measuring = fonts.measuring(texts, viewport.scale);
         let Laidout { boxes, pitches: pitched } =
             layouts.lay_out(&flat, &tops, &mut measuring, viewport.size, viewport.scale);
@@ -471,12 +483,12 @@ impl Screen {
         self.keys = keys::declared(&flat, &focus, hotkeys, open, self.taking);
         let typing = keys::typing(&flat, &focus);
 
-        measuring.sweep();
         let waited = measuring.waited();
         for font in measuring.into_unmet() {
             fonts.asked(font);
             orders.ask_metrics(font);
         }
+        texts.sweep();
         for allow in self.typing(typing) {
             orders.allow_ime(allow);
         }
@@ -655,7 +667,7 @@ fn listed<'flat>(
     measuring: &mut Measuring<'flat>,
 ) -> Listing {
     let Standing { focused, lit, .. } = standing;
-    measuring.at(&node.path);
+    measuring.at(&node.path, Asker::Drawing);
     let widget = node.node.widget();
     let style = node.node.style();
     let over = popper(widget).is_some_and(Popper::over);

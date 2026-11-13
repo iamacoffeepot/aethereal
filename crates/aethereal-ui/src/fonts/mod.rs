@@ -6,7 +6,7 @@
 
 mod texts;
 
-pub use texts::{Pass, Texts};
+pub use texts::{Asker, Texts};
 
 use crate::tree::KeyPath;
 use aethereal_render::font::Metrics;
@@ -85,17 +85,6 @@ impl Measuring<'_> {
         self.scale
     }
 
-
-    /// Begins a pass of the screen's that does as `pass` says.
-    pub(crate) fn begin(&mut self, pass: Pass) {
-        self.texts.begin(pass);
-    }
-
-    /// Lets go of the texts kept that the pass ending did not measure, as [`Texts::sweep`] says.
-    pub(crate) fn sweep(&mut self) {
-        self.texts.sweep();
-    }
-
     /// The box `runs` are laid out in, in `font` at `size` pixels to the em, their lines broken as `wrap` says, as the
     /// renderer lays them out (see [`measure`]).
     ///
@@ -106,8 +95,9 @@ impl Measuring<'_> {
     pub fn text(&mut self, font: Font, size: f32, runs: &[Run], wrap: Wrap) -> Result<Measured, Unmeasured> {
         match self.fonts.known(font) {
             Some(Known::Read { own, fallbacks }) => {
+                let asked = Asked { font, size, runs, wrap };
                 let measured = match self.whose {
-                    Whose::Widget(path) => self.texts.measure(path, Asked { font, size, runs, wrap }, own, fallbacks),
+                    Whose::Widget { path, asker } => self.texts.measure(path, asked, asker, own, fallbacks),
                     Whose::Unplaced => measure(own, fallbacks, size, runs, wrap),
                 };
                 Ok(measured)
@@ -139,9 +129,9 @@ impl Measuring<'_> {
 }
 
 impl<'fonts> Measuring<'fonts> {
-    /// Measures for the widget at `path` from here on, keeping what it measures under its path.
-    pub(crate) const fn at(&mut self, path: &'fonts KeyPath) {
-        self.whose = Whose::Widget(path);
+    /// Measures for the widget at `path` from here on, as `asker` asks, keeping what it measures under its path.
+    pub(crate) const fn at(&mut self, path: &'fonts KeyPath, asker: Asker) {
+        self.whose = Whose::Widget { path, asker };
     }
 }
 
@@ -150,8 +140,8 @@ impl<'fonts> Measuring<'fonts> {
 enum Whose<'path> {
     /// No widget's in particular: each is measured afresh, and nothing is kept.
     Unplaced,
-    /// The widget's at this path: what it measures is kept under it, and measured once.
-    Widget(&'path KeyPath),
+    /// The widget's at `path`, as `asker` asks: what it measures is kept under its path, and measured once.
+    Widget { path: &'path KeyPath, asker: Asker },
 }
 
 /// A text a widget asks the box of: `runs` in `font` at `size` pixels to the em, its lines broken as `wrap` says.
