@@ -33,8 +33,23 @@ pub trait Controls: Actor {
     /// blocking, while no widget that types has its focus. Written beside `key`, whose `match` reads them.
     const HOTKEYS: &'static [&'static str] = &[];
 
+    /// The keys `key` takes before the focused widget hears them, by their places on the keyboard: a key that must
+    /// reach the screen whatever has its focus, as a console's toggle does while its line has focus, or its Tab, which
+    /// completes the line rather than moving focus. The text such a key types is dropped. Listing a key here declares
+    /// nothing: it reaches the screen as its list declares it, among [`Self::HOTKEYS`], or as every key while a widget
+    /// that types has focus.
+    const FIRST: &'static [&'static str] = &[];
+
+    /// Whether the screen takes every key of its window now, whatever has its focus: while it says so, its list
+    /// declares every key, blocking, so none reaches what is beneath it, as a console takes every key while it is open
+    /// though a press on its panel moved focus off its line. Each key then reaches the focus, if any, then the screen's
+    /// `key`. Asked at each `Prepare`; a screen that never takes every key leaves it.
+    fn takes_every_key(&self) -> bool {
+        false
+    }
+
     /// Takes in a key pressed that neither the focused widget nor the focus keys used: one of [`Self::HOTKEYS`], or,
-    /// while a widget that types has focus, any key it passed.
+    /// while a widget that types has focus, any key it passed; and each of [`Self::FIRST`], before the focus hears it.
     ///
     /// # Errors
     ///

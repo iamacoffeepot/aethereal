@@ -12,14 +12,11 @@
 //! Each layer is the same colour whatever the budget, so over or under is read from the bars' height against the
 //! budget's dashed line alone.
 
-use super::push;
 use super::scale::height_fraction;
+use super::{Fill, push};
 use crate::colour::{LICHEN, SAND, SLATE_TEAL};
 use crate::frames::Column;
 use aethereal_math::{Rect2, Vec2};
-
-/// How many records one column is drawn in: its slowest, median, and fastest bars.
-pub const RECORDS_PER_COLUMN: u32 = 3;
 
 /// Where one column is drawn: its left edge and width, before it is cut to the chart; the chart; and the budget it is
 /// scaled against.
@@ -42,13 +39,13 @@ impl Placed {
     }
 }
 
-/// Appends to `records` `column` drawn at `placed`, cut to the chart's left and right edges: its slowest bar in sand,
+/// Appends to `fills` `column` drawn at `placed`, cut to the chart's left and right edges: its slowest bar in sand,
 /// its median in lichen, and its fastest in slate-teal, in that order, so they are drawn back to front.
-pub fn column(records: &mut Vec<u8>, placed: Placed, column: Column) {
+pub fn column(fills: &mut Vec<Fill>, placed: Placed, column: Column) {
     let chart = placed.chart;
     let (from, to) = (placed.left.max(chart.min.x), (placed.left + placed.width).min(chart.max.x));
     let layers = [(column.slowest_nanos, SAND), (column.median_nanos, LICHEN), (column.fastest_nanos, SLATE_TEAL)];
     for (nanos, swatch) in layers {
-        push(records, placed.bar(from, to, nanos), swatch.opaque());
+        push(fills, placed.bar(from, to, nanos), swatch.opaque());
     }
 }

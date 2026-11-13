@@ -16,10 +16,10 @@
 
 use super::Stack;
 use crate::binned::Spanned;
-use crate::chart::{dashes, left_of, push};
+use crate::chart::{Fill, dashes, left_of, push};
 use crate::colour::{BONE, PASS_SWATCHES, STONE};
 use crate::frames::Slide;
-use crate::layout::{GUTTER_CHARACTERS, Layout};
+use crate::layout::{GUTTER_CHARACTERS, Scale};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::stats::FrameBudget;
@@ -76,6 +76,7 @@ impl GraphTop {
     }
 
     /// The top, in nanoseconds.
+    #[cfg(test)]
     pub const fn nanos(self) -> u64 {
         self.nanos
     }
@@ -101,19 +102,25 @@ fn millis(nanos: u64) -> String {
     format!("{whole}.{}", places.trim_end_matches('0'))
 }
 
-/// Appends to `records` the GPU's graph on `layout`, and answers the top it was drawn to: each of `columns` placed at
-/// `slide` as the frame chart's column of its span is, cut to the graph's left and right edges, its passes stacked
-/// from the foot in their order, each that took any time at least a pixel tall; and then the budget's dashed line,
-/// where it falls under the top.
-pub fn graph<I>(records: &mut Vec<u8>, layout: Layout, slide: Slide, budget: FrameBudget, columns: I) -> GraphTop
+/// Appends to `fills` the GPU's graph in `area` at `scale`, and answers the top it was drawn to: each of `columns`
+/// placed at `slide` as the frame chart's column of its span is, cut to the graph's left and right edges, its passes
+/// stacked from the foot in their order, each that took any time at least a pixel tall; and then the budget's dashed
+/// line, where it falls under the top.
+pub fn graph<I>(
+    fills: &mut Vec<Fill>,
+    area: Rect2,
+    scale: Scale,
+    slide: Slide,
+    budget: FrameBudget,
+    columns: I,
+) -> GraphTop
 where
     I: IntoIterator<Item = Spanned<Stack>>,
     I::IntoIter: Clone,
 {
     let columns = columns.into_iter();
     let top = GraphTop::of(columns.clone());
-    let area = layout.gpu_graph();
-    let width = layout.column_pixels();
+    let width = scale.column_pixels();
     // Nanoseconds of at most some minutes, which an f64 holds closely enough to draw; and a share of the graph from
     // nothing to one, which an f32 holds closely enough too.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
@@ -121,7 +128,7 @@ where
         |nanos: u64| ((nanos as f64 / top.nanos as f64).min(1.0) as f32).mul_add(-area.height(), area.max.y);
 
     for spanned in columns {
-        let left = left_of(layout, slide, spanned.span);
+        let left = left_of(area, scale, slide, spanned.span);
         let (from, to) = (left.max(area.min.x), (left + width).min(area.max.x));
         let shows = from < to;
         if !shows {
@@ -140,14 +147,14 @@ where
                 continue;
             }
             let segment = Rect2 { min: Vec2::new(from, upper), max: Vec2::new(to, bottom) };
-            push(records, segment, PASS_SWATCHES[index % PASS_SWATCHES.len()].opaque());
+            push(fills, segment, PASS_SWATCHES[index % PASS_SWATCHES.len()].opaque());
             bottom = upper;
         }
     }
 
     let under_top = budget.nanos() <= top.nanos;
     if under_top {
-        dashes(records, layout, height_of(budget.nanos()).round(), budget);
+        dashes(fills, area, scale, height_of(budget.nanos()).round(), budget);
     }
 
     top

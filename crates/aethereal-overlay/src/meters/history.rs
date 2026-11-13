@@ -1,27 +1,18 @@
 //! The last minute of the meters with no limit, process, guests, and GPU (ADR-0053: The three stops, Memory): each
 //! reading kept by the program's time it was read at and cut into columns over the same 60 seconds as the left
 //! column's, as many as the meter's graph holds, each the most of the readings in its span; drawn over a trough of
-//! faint stone, as the bars of the meters with a limit are, so a minute of nothing reads as a graph at nothing, and
+//! faint stone, as the bars of the meters with a limit are (`widget`), so a minute of nothing reads as a graph at nothing, and
 //! as the lines' rows are, a stone bar a column, linear from nothing to the most any column shown came to. A column no
 //! reading fell in carries the reading before it, for up to [`CARRIED_NANOS`], as the figures' reads, four times a
 //! second, are about a column apart and now and then miss one: a steady meter draws a steady line, and a pause in the
 //! readings longer than that, as while the overlay is hidden, stays a gap. Process and guests are read with the
 //! engine's figures, four times a second, and GPU from each frame's statistics: every kind's bytes, summed.
 
-use super::bars::TROUGH_OPACITY;
 use super::{EngineMemory, MemoryFigures, ProcessMemory};
 use crate::binned::{Accrue, Binned, Spanned};
-use crate::chart::{columns_across, push};
-use crate::colour::STONE;
 use crate::frames::Slide;
-use crate::layout::Layout;
-use crate::lines;
 use aethereal_data::Plain;
-use aethereal_math::Rect2;
 use aethereal_render::stats::{FrameStats, GpuMemory};
-
-/// How many meters keep a history: process, guests, and GPU.
-pub const HISTORIES: u32 = 3;
 
 /// The most columns a meter's graph is cut into, whatever the window's width: two thirds of the frame chart's most, as
 /// the right column is two thirds as wide as the left, and a graph narrower than the column.
@@ -65,17 +56,15 @@ impl History {
         self.binned.push(elapsed_nanos, reading);
     }
 
-    /// Appends to `records` the graph `area` on `layout`: its trough, and over it its columns, cut into as many columns
-    /// as fit across it, each placed at the slide `slide_of` gives for that count, as the left column's are at its own,
-    /// a column no reading fell in carrying the reading before it ([`carried`]).
-    pub fn graph(&mut self, records: &mut Vec<u8>, layout: Layout, area: Rect2, slide_of: impl Fn(u32) -> Slide) {
-        let count = columns_across(layout, area.width(), MOST_METER_COLUMNS);
+    /// Cuts the history into the columns of a graph of `count`, as the left column's are cut.
+    pub fn cut(&mut self, count: u32) {
         self.binned.cut(count);
-        push(records, area, STONE.at(TROUGH_OPACITY));
-        let slide = slide_of(count);
-        let columns = carried(self.binned.newest_first(), slide, count);
+    }
 
-        lines::row(records, layout, area, slide, &columns.into_iter());
+    /// The columns of the graph as it was last cut into `count`, placed at `slide`: a column no reading fell in
+    /// carrying the reading before it ([`carried`]).
+    pub fn columns(&self, slide: Slide, count: u32) -> Vec<Spanned<u64>> {
+        carried(self.binned.newest_first(), slide, count)
     }
 
     /// The newest reading: nothing while none has been taken in.
@@ -133,6 +122,13 @@ impl MeterHistories {
             ProcessMemory::Unknown => {}
         }
         self.guests.push(elapsed_nanos, *guest_bytes);
+    }
+
+    /// Cuts each history into the columns of a graph of `count`.
+    pub fn cut(&mut self, count: u32) {
+        for history in [&mut self.process, &mut self.guests, &mut self.gpu] {
+            history.cut(count);
+        }
     }
 
     /// The GPU's memory the meters' text shows: the newest frame's.

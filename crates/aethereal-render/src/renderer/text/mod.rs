@@ -168,6 +168,30 @@ impl Texts {
         })
     }
 
+    /// Whether the text `id` waits on a glyph still to come: one of its layout's not in the atlas, that has an outline to
+    /// generate and has not been found to fit nowhere. A text that has gone waits on nothing.
+    fn waits(&self, id: u64) -> bool {
+        let Some(text) = self.made.get(id) else {
+            return false;
+        };
+        let next = match &text.shown {
+            Shown::Waiting { next } | Shown::Rewriting { next, .. } => next,
+            Shown::Ready { .. } => return false,
+        };
+
+        next.glyphs.iter().any(|glyph| {
+            let Some(face) = text.typeface.face(glyph.font) else {
+                return false;
+            };
+            let key = GlyphKey { font: face.key, glyph: glyph.glyph };
+            let held = self.atlas.slot(key).is_some();
+            let unfit = self.unfit.contains(&key);
+            let drawn = face.font.outline(glyph.glyph).is_some();
+            let settled = held || unfit || !drawn;
+            !settled
+        })
+    }
+
     /// Each character `laid` lacked in every font that is not logged yet, to log, noted as logged.
     fn unlogged(&mut self, laid: &Laid) -> Vec<char> {
         laid.missing.iter().copied().filter(|character| self.logged.insert(*character)).collect()
@@ -630,7 +654,9 @@ impl Handles<ReadMetrics> for Renderer {
 }
 
 /// Lays the text out, logging each character no font has the first time, keeps it, and asks for the glyphs it waits
-/// on.
+/// on. It is answered once it can be drawn: at once when every glyph of it is in the atlas, and otherwise once the
+/// last it waits on is written in, so an asker that lists its text beside what else it draws shows them together
+/// rather than the text a frame or more after the rest (ADR-0052).
 impl Handles<CreateText> for Renderer {
     type Sends = (ToSender<TextMade>,);
 
@@ -645,9 +671,16 @@ impl Handles<CreateText> for Renderer {
         };
         let id = self.made(turn, |kept, id, maker| kept.text.made.keep(id, maker, made))?;
         log_missing(turn, &unlogged);
-        let wanted = turn.open(&mut self.kept)?.text.wanted();
+        let kept = turn.open(&mut self.kept)?;
+        let wanted = kept.text.wanted();
+        let waits = kept.text.waits(id);
         if let Some((job, generating)) = wanted {
             turn.run(&job, &generating)?;
+        }
+        if waits {
+            let held = turn.hold()?;
+            self.owed.texts.push((id, held));
+            return Ok(());
         }
         turn.reply(&TextMade::Made(TextId { id }))?;
 
@@ -725,8 +758,8 @@ impl Handles<MoveText> for Renderer {
     }
 }
 
-/// Writes the glyphs the job generated into the atlas, logging each that fitted nowhere; a job that failed lets its
-/// glyphs go, to be asked for again.
+/// Writes the glyphs the job generated into the atlas, logging each that fitted nowhere, and answers each new text
+/// that now waits on nothing; a job that failed lets its glyphs go, to be asked for again.
 impl Handles<Answer<GlyphsGenerated, Generating>> for Renderer {
     type Sends = ();
 
@@ -753,9 +786,16 @@ impl Handles<Answer<GlyphsGenerated, Generating>> for Renderer {
         self.watch.uploaded(pixels.len() / 3 * 4);
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
-        let unfit = turn.open(&mut self.kept)?.text.generated((&device, &queue), batch, &fields, &pixels);
+        let kept = turn.open(&mut self.kept)?;
+        let unfit = kept.text.generated((&device, &queue), batch, &fields, &pixels);
+        let (waiting, ready): (Vec<_>, Vec<_>) =
+            mem::take(&mut self.owed.texts).into_iter().partition(|(id, _)| kept.text.waits(*id));
+        self.owed.texts = waiting;
         for key in unfit {
             turn.log(Level::Warn, format_args!("glyph {key:?} is not drawn: the atlas is full"));
+        }
+        for (id, held) in ready {
+            turn.answer(held, &TextMade::Made(TextId { id }))?;
         }
 
         Ok(())

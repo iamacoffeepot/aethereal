@@ -101,6 +101,13 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         let _ = (state, offset);
     }
 
+    /// Settles where it stands, kept in `state`, as it is laid out able to slide `travel` pixels along its axis, before
+    /// the library clamps its offset: for a widget that arranges its children as a scroll, as one that keeps to its end
+    /// while it stands there slides to the end of what it now holds.
+    fn settle(&self, state: &mut Self::State, travel: f32) {
+        let _ = (state, travel);
+    }
+
     /// Whether its content shows in its screen's top layer, as `state` stands: for a widget that arranges its children
     /// as a popup opened by its own input, [`Opens::Pressed`].
     fn open(&self, state: &Self::State) -> bool {
@@ -306,6 +313,9 @@ pub trait Built: Debug + Send {
     fn offset(&self, state: &[u8]) -> f32;
     /// Slides its children to `offset`, its state read from and written back to `state`.
     fn scroll_to(&self, state: &mut Vec<u8>, offset: f32);
+    /// Settles where it stands as it is laid out able to slide `travel`, its state read from and written back to
+    /// `state`.
+    fn settle(&self, state: &mut Vec<u8>, travel: f32);
     /// Whether its content shows in its screen's top layer, its state read from `state`.
     fn open(&self, state: &[u8]) -> bool;
     /// Shuts its content, its state read from and written back to `state`.
@@ -384,6 +394,10 @@ impl<W: Widget> Built for W {
 
     fn scroll_to(&self, state: &mut Vec<u8>, offset: f32) {
         changed::<W, ()>(state, |state| Widget::scroll_to(self, state, offset));
+    }
+
+    fn settle(&self, state: &mut Vec<u8>, travel: f32) {
+        changed::<W, ()>(state, |state| Widget::settle(self, state, travel));
     }
 
     fn open(&self, state: &[u8]) -> bool {

@@ -8,10 +8,11 @@
 #![allow(clippy::print_stderr)]
 
 use super::{
-    FRAME_BYTES, PLACE, PROGRAM, SHADE, corner_layout, corners, frame_bytes, record, record_layout, triangles,
+    Binding, Content, FILL_BYTES, FILL_PROGRAM, FRAME_BYTES, PLACE, PROGRAM, RECORD_BYTES, SHADE, corner_layout,
+    corners, fill_layout, frame_bytes, layered, record, record_layout, triangles,
 };
 use crate::style::Edges;
-use crate::widget::{Quad, Sample, Slices};
+use crate::widget::{Piece, Quad, Sample, Slices};
 use aethereal_data::{Budget, from_bytes};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::VertexLayout;
@@ -391,4 +392,121 @@ fn on_a_gpu_a_nine_slice_keeps_its_corners_unscaled() {
     assert_eq!(colour(0, 6), "green", "the left band runs down the middle, on {adapter}");
     assert_eq!(colour(6, 6), "blue", "the middle stretches over the rest, on {adapter}");
     assert_eq!(colour(3, 3), "blue", "the middle starts past the bands, on {adapter}");
+}
+
+/// The fill program's pipeline on `device`, drawing into Rgba8 by alpha, binding the frame's size alone.
+fn fill_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
+    let uniform = wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: wgpu::BufferSize::new(u64::from(FRAME_BYTES)),
+    };
+    let own = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: uniform,
+            count: None,
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&own)],
+        immediate_size: 0,
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(FILL_PROGRAM)),
+    });
+    let (corner_stride, corner_attributes) = buffer_layout(&corner_layout());
+    let (fill_stride, fill_attributes) = buffer_layout(&fill_layout());
+    let buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: corner_stride,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &corner_attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: fill_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &fill_attributes,
+        }),
+    ];
+    let target = wgpu::ColorTargetState {
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        write_mask: wgpu::ColorWrites::ALL,
+    };
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some(PLACE),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(SHADE),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(target)],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// A plain fill over `quad`, cut to `clip`: solid, square, and borderless.
+fn plain(quad: Rect2, clip: Rect2) -> Quad {
+    Quad { sample: Sample::Solid, ..solid(quad, clip) }
+}
+
+#[test]
+fn the_fill_program_is_valid_and_reads_what_its_placements_give_it() {
+    // Catches fill WGSL the renderer would refuse, and a fill record layout that does not match what it reads, on
+    // every machine, as the library's program's test does.
+    let (device, _) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let _ = fill_pipeline(&device);
+
+    assert_eq!(pollster::block_on(scope.pop()).map(|error| error.to_string()), None);
+}
+
+#[test]
+fn a_run_of_plain_fills_writes_each_cut_to_its_clip_in_a_quarter_of_a_record() {
+    // Catches a run of plain fills, as a chart's hundreds of columns redrawn each frame, written in the library's whole
+    // record, four times the bytes a fill needs; a fill not cut to its clip, which the fill program does not cut; one
+    // the clip leaves nothing of still written; and a run holding a rounded quad drawn as fills, which squares it.
+    let clip = rect([0.0, 0.0], [10.0, 10.0]);
+    let fills = vec![
+        Piece::Quad(plain(rect([2.0, 2.0], [4.0, 4.0]), clip)),
+        Piece::Quad(plain(rect([8.0, 0.0], [12.0, 10.0]), clip)),
+        Piece::Quad(plain(rect([20.0, 0.0], [30.0, 10.0]), clip)),
+    ];
+    let rounded = Quad { radius: 2.0, ..plain(rect([0.0, 0.0], [4.0, 4.0]), clip) };
+    let mixed = vec![Piece::Quad(plain(rect([0.0, 0.0], [4.0, 4.0]), clip)), Piece::Quad(rounded)];
+
+    let filled = layered(fills);
+    let kept = layered(mixed);
+
+    let floats = |records: &[u8]| -> Vec<f32> {
+        records.chunks_exact(4).map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect()
+    };
+    let [Content::Quads { binding: Binding::Fill, records }] = filled.as_slice() else {
+        panic!("plain fills are one layer of fills: {filled:?}");
+    };
+    assert_eq!(records.len(), 2 * FILL_BYTES as usize, "the fill the clip leaves nothing of is not written");
+    let boxes: Vec<f32> = floats(records).chunks_exact(8).flat_map(|fill| fill[..4].to_vec()).collect();
+    assert_eq!(boxes, vec![2.0, 2.0, 4.0, 4.0, 8.0, 0.0, 10.0, 10.0]);
+    let [Content::Quads { binding: Binding::White, records }] = kept.as_slice() else {
+        panic!("a run holding a rounded quad stays the library's: {kept:?}");
+    };
+    assert_eq!(records.len(), 2 * RECORD_BYTES as usize);
 }

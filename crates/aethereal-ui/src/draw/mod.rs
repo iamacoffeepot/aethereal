@@ -3,6 +3,10 @@
 //! renderer's own (ADR-0052). A layer is kept by its widget's key and its place among the widget's layers, so a layout
 //! that changes it sends only what changed: a write of its records, a write or a move of its text.
 //!
+//! A run of solid quads that are all square and borderless, as a chart's columns and a panel's fill are, is drawn by
+//! the library's second program, [`FILL_PROGRAM`], from records a quarter the size: each its box, already cut to its
+//! clip, and its colour. A widget that redraws hundreds of quads each frame then writes 32 bytes for each, not 128.
+//!
 //! The program draws a unit square for each record: a box in the screen's pixels, turned into clip space by the size
 //! of the frame it draws in, filled with its colour or a texture it tints, rounded at its corners, with a border inside
 //! its edge, and cut to a clip of its own. The clip is compared with the position the program placed, in the screen's
@@ -12,7 +16,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::widget::{Piece, Quad, Sample};
+use crate::widget::{Piece, Quad, Sample, TextDraw};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::mesh::{Attribute, VertexFormat, VertexLayout};
@@ -104,14 +108,47 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 }
 ";
 
-/// The program's vertex stage's entry point.
+/// The program that draws a run of plain fills: the unit square's corner placed in its record's box, already cut to
+/// its clip, and turned into clip space by the frame's size in the uniform; then the record's colour, its edges eased
+/// over a pixel as the library's program eases a square quad's.
+pub const FILL_PROGRAM: &str = "
+@group(0) @binding(0) var<uniform> frame: vec4<f32>;
+
+struct Between {
+    @builtin(position) at: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) rect: vec4<f32>,
+    @location(2) @interpolate(flat) colour: vec4<f32>,
+}
+
+@vertex
+fn place(@location(0) corner: vec2<f32>, @location(1) rect: vec4<f32>, @location(2) colour: vec4<f32>) -> Between {
+    let pixel = mix(rect.xy, rect.zw, corner);
+    let placed = vec2(pixel.x / frame.x * 2.0 - 1.0, 1.0 - pixel.y / frame.y * 2.0);
+    return Between(vec4(placed, 0.0, 1.0), pixel, rect, colour);
+}
+
+@fragment
+fn shade(between: Between) -> @location(0) vec4<f32> {
+    let half = (between.rect.zw - between.rect.xy) * 0.5;
+    let corner = abs(between.local - between.rect.xy - half) - half;
+    let distance = length(max(corner, vec2(0.0))) + min(max(corner.x, corner.y), 0.0);
+    let covered = clamp(0.5 - distance, 0.0, 1.0);
+    return vec4(between.colour.rgb, between.colour.a * covered);
+}
+";
+
+/// The programs' vertex stage's entry point.
 pub const PLACE: &str = "place";
 
-/// The program's fragment stage's entry point.
+/// The programs' fragment stage's entry point.
 pub const SHADE: &str = "shade";
 
 /// How many bytes one record takes: eight vectors of four floats.
 pub const RECORD_BYTES: u32 = 128;
+
+/// How many bytes one fill's record takes: its box and its colour, four floats each.
+pub const FILL_BYTES: u32 = 32;
 
 /// How many bytes the program's uniform takes: the frame's width and height in pixels, and two floats it does not
 /// read.
@@ -145,6 +182,15 @@ pub fn record_layout() -> VertexLayout {
         .collect();
 
     VertexLayout { stride: RECORD_BYTES, attributes }
+}
+
+/// How a fill's record is laid out: its box, cut to its clip, then its colour.
+#[must_use]
+pub fn fill_layout() -> VertexLayout {
+    let rect = Attribute { location: 1, format: VertexFormat::Float32x4, offset: 0 };
+    let colour = Attribute { location: 2, format: VertexFormat::Float32x4, offset: 16 };
+
+    VertexLayout { stride: FILL_BYTES, attributes: vec![rect, colour] }
 }
 
 /// The program's uniform for a frame `width` by `height` pixels.
@@ -184,12 +230,55 @@ pub fn record(quad: &Quad) -> Vec<u8> {
     vectors.iter().flatten().flat_map(|value| value.to_le_bytes()).collect()
 }
 
-/// What a quad layer's placement binds as its texture: the library's white pixel, which a solid quad samples, or a
-/// texture an image names.
+/// The record of `quad`, a plain fill, as the fill program reads it: its box cut to its clip, and its colour; none when
+/// the clip leaves nothing of it.
+#[must_use]
+pub fn fill(quad: &Quad) -> Vec<u8> {
+    let cut = quad.rect.intersection(quad.clip);
+    if cut.is_empty() {
+        return Vec::new();
+    }
+    let vectors = [[cut.min.x, cut.min.y, cut.max.x, cut.max.y], quad.colour.channels()];
+
+    vectors.iter().flatten().flat_map(|value| value.to_le_bytes()).collect()
+}
+
+/// Whether `quad` is a plain fill: solid, square, and borderless, so its box, its clip, and its colour say all of it.
+fn is_plain(quad: &Quad) -> bool {
+    let solid = matches!(quad.sample, Sample::Solid);
+    let square = quad.radius <= 0.0;
+    let borderless = quad.border_width <= 0.0;
+
+    solid && square && borderless
+}
+
+/// What a quad layer's placement draws with: the fill program, binding the frame's size alone; or the library's
+/// program, binding as its texture the library's white pixel, which a solid quad samples, or a texture an image names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Binding {
+    Fill,
     White,
     Texture(TextureId),
+}
+
+impl Binding {
+    /// How many bytes one of its records takes.
+    #[must_use]
+    pub const fn record_bytes(self) -> u32 {
+        match self {
+            Self::Fill => FILL_BYTES,
+            Self::White | Self::Texture(_) => RECORD_BYTES,
+        }
+    }
+
+    /// How its records are laid out.
+    #[must_use]
+    pub fn layout(self) -> VertexLayout {
+        match self {
+            Self::Fill => fill_layout(),
+            Self::White | Self::Texture(_) => record_layout(),
+        }
+    }
 }
 
 /// What one layer of a widget's draws is: quads drawn by one placement, their records as the program reads them; or a
@@ -218,9 +307,10 @@ pub struct Placing {
 }
 
 /// A widget's draws, `pieces`, in its layers: each run of quads that sample one texture, a solid quad sampling the
-/// white pixel, in one layer, and each text in a layer of its own, in the order they were drawn.
+/// white pixel, in one layer, and each text in a layer of its own, in the order they were drawn. A run of solid quads
+/// that are all plain fills is drawn by the fill program.
 pub fn layered(pieces: Vec<Piece>) -> Vec<Content> {
-    let mut layers: Vec<Content> = Vec::new();
+    let mut runs: Vec<Gathered> = Vec::new();
     for piece in pieces {
         match piece {
             Piece::Quad(quad) => {
@@ -228,15 +318,41 @@ pub fn layered(pieces: Vec<Piece>) -> Vec<Content> {
                     Sample::Solid => Binding::White,
                     Sample::Texture { texture, .. } => Binding::Texture(texture),
                 };
-                let record = record(&quad);
-                match layers.last_mut() {
-                    Some(Content::Quads { binding: last, records }) if *last == binding => records.extend(record),
-                    Some(Content::Quads { .. } | Content::Text { .. }) | None => {
-                        layers.push(Content::Quads { binding, records: record });
+                match runs.last_mut() {
+                    Some(Gathered::Quads { binding: last, quads }) if *last == binding => quads.push(quad),
+                    Some(Gathered::Quads { .. } | Gathered::Text(_)) | None => {
+                        runs.push(Gathered::Quads { binding, quads: vec![quad] });
                     }
                 }
             }
-            Piece::Text(text) => {
+            Piece::Text(text) => runs.push(Gathered::Text(text)),
+        }
+    }
+
+    runs.into_iter().map(Gathered::content).collect()
+}
+
+/// A run of a widget's draws that one layer draws: quads of one binding, or a text.
+enum Gathered {
+    Quads { binding: Binding, quads: Vec<Quad> },
+    Text(TextDraw),
+}
+
+impl Gathered {
+    /// The layer that draws it: its quads' records, as fills when they are all plain fills; or its text.
+    fn content(self) -> Content {
+        match self {
+            Self::Quads { binding, quads } => {
+                let plain = quads.iter().all(is_plain);
+                let (binding, records) = if plain {
+                    (Binding::Fill, quads.iter().flat_map(fill).collect())
+                } else {
+                    (binding, quads.iter().flat_map(record).collect())
+                };
+
+                Content::Quads { binding, records }
+            }
+            Self::Text(text) => {
                 let shape = Shape {
                     font: text.font,
                     size: text.size,
@@ -245,10 +361,9 @@ pub fn layered(pieces: Vec<Piece>) -> Vec<Content> {
                     outline: text.outline,
                 };
                 let placing = Placing { at: text.at, clip: text.clip };
-                layers.push(Content::Text { shape, runs: text.runs, placing });
+
+                Content::Text { shape, runs: text.runs, placing }
             }
         }
     }
-
-    layers
 }

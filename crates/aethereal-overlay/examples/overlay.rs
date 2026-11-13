@@ -15,7 +15,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
-use aethereal_actor::{Render, Tick};
+use aethereal_actor::{Prepare, Render, Tick};
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
@@ -78,7 +78,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
     let window = WindowSettings { title: String::from(TITLE), size: [800, 600], mode: Mode::Windowed };
 
     Ok(Desktop::program()
-        .with_cycle::<(Tick, Render)>()
+        .with_cycle::<(Tick, Prepare, Render)>()
         .with_engine(engine)
         .root_with::<Windows>(WindowsSettings(vec![window]))
         .root::<Renderer>()

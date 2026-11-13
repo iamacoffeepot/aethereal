@@ -8,6 +8,9 @@
 //! typed never reaches the screen's hotkeys; a key it does not use, Tab or Escape or a function key, goes on to the
 //! focus keys and the screen. A press puts the caret under the pointer, and a drag from it selects.
 //!
+//! A text its screen sets that is not its own last edit, a line recalled or completed, puts its caret at the text's
+//! end.
+//!
 //! It draws its text on one line in its style's font, size, and colour, cut to its content box, and slid left so the
 //! caret stays in it; with focus, its selection beneath the text and its caret over it. What an input method is still
 //! composing is not shown: the window does not send it yet (ADR-0051: follow-on work).
@@ -46,14 +49,16 @@ pub struct TextInput<E> {
     pub submit: Raises<E>,
 }
 
-/// A text input's caret and the other end of its selection, byte offsets into its text, and whether a press on it is
-/// selecting as the pointer drags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
+/// A text input's caret and the other end of its selection, byte offsets into its text; whether a press on it is
+/// selecting as the pointer drags; and its text as it last edited it, which tells an edit of its own from a text its
+/// screen set.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Plain)]
 #[kind(name = "aether.ui.text_input")]
 pub struct Editing {
     pub caret: u32,
     pub anchor: u32,
     pub dragging: bool,
+    pub edited: String,
 }
 
 impl<E> TextInput<E> {
@@ -69,8 +74,14 @@ impl<E> TextInput<E> {
         Self { submit: Raises::Event(submit), ..self }
     }
 
-    /// Its text as `editing` stands in it.
+    /// Its text as `editing` stands in it: a text its screen set, not one it last edited, with the caret at its end, as
+    /// a line recalled from a history or completed is typed on from its end.
     fn line(&self, editing: &Editing) -> Line {
+        let own = editing.edited == self.text;
+        if !own {
+            return Line::new(&self.text, self.text.len(), self.text.len());
+        }
+
         Line::new(&self.text, offset(editing.caret), offset(editing.anchor))
     }
 }
@@ -85,10 +96,11 @@ fn kept(offset: usize) -> u32 {
     u32::try_from(offset).unwrap_or(u32::MAX)
 }
 
-/// Keeps `line`'s caret and anchor in `editing`.
+/// Keeps `line`'s caret, anchor, and text in `editing`.
 fn keep(line: &Line, editing: &mut Editing) {
     editing.caret = kept(line.caret);
     editing.anchor = kept(line.anchor);
+    editing.edited.clone_from(&line.text);
 }
 
 /// How a text input's text is set, as its style and its screen's scale say.

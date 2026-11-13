@@ -5,12 +5,9 @@
 //! actor holds bytes unsent, the trough is drawn empty.
 
 use super::Held;
-use crate::chart::push;
+use crate::chart::{Fill, push};
 use crate::colour::{BRICK, LICHEN, RUST, STONE, Swatch};
 use aethereal_math::{Rect2, Vec2};
-
-/// The most records the bars take: a trough and a fill for each of the two meters with a limit.
-pub const MOST_BAR_RECORDS: u32 = 4;
 
 /// How opaque a bar's trough, and a history's, is drawn, in stone: faint, as the fill or bars over it carry the
 /// reading.
@@ -21,10 +18,10 @@ const RUST_PERCENT: u64 = 75;
 const BRICK_PERCENT: u64 = 90;
 
 /// Appends the trough `trough` and, where `held` has a most and is not nothing, its fill.
-pub(super) fn bar(records: &mut Vec<u8>, trough: Rect2, held: Held) {
-    push(records, trough, STONE.at(TROUGH_OPACITY));
-    let fills = held.most > 0 && held.bytes > 0;
-    if !fills {
+pub(super) fn bar(fills: &mut Vec<Fill>, trough: Rect2, held: Held) {
+    push(fills, trough, STONE.at(TROUGH_OPACITY));
+    let filled = held.most > 0 && held.bytes > 0;
+    if !filled {
         return;
     }
     // Bytes far under an f64's exact range, and a share of the trough from nothing to one.
@@ -32,7 +29,7 @@ pub(super) fn bar(records: &mut Vec<u8>, trough: Rect2, held: Held) {
     let share = (held.bytes as f64 / held.most as f64).min(1.0) as f32;
     let width = (share * trough.width()).max(1.0);
     let fill = Rect2 { min: trough.min, max: Vec2::new(trough.min.x + width, trough.max.y) };
-    push(records, fill, fill_swatch(held).opaque());
+    push(fills, fill, fill_swatch(held).opaque());
 }
 
 /// The colour of `held`'s fill: lichen under 75% of its most, rust from 75%, and brick from 90%.

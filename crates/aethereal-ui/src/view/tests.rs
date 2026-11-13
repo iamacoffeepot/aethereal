@@ -5,7 +5,7 @@
 
 use crate::prelude::*;
 use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Stateless, Widget};
-use crate::widgets::Text;
+use crate::widgets::{Keeps, Text};
 use aethereal_actor::{Actor, Asks, Beginning, ChildOf, Ending, Fault, Path, Top, Turn};
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_render::Renderer;
@@ -260,7 +260,7 @@ fn by_hand() -> Tree {
         Tabs { titles: vec![String::from("Wares"), String::from("Sold")], selected: 1, change: ShopEvent::OpenTab };
     let sold = node(Segment::Place(1), Tab { title: String::from("Sold") }, vec![text(Segment::Place(0), "sold")]);
     let window = Lines::Window { count: 2, at: vec![0] };
-    let scroll = Scroll { axis: Axis::Column, lines: window.clone() };
+    let scroll = Scroll { axis: Axis::Column, lines: window.clone(), keeps: Keeps::Offset };
     let input =
         TextInput { text: String::from("pe"), change: ShopEvent::Search, submit: Raises::Event(ShopEvent::Buy) };
     let first = || text(Segment::Item(ItemKey::from(WareId(1))), "Apple");

@@ -114,12 +114,12 @@ pub(in crate::screen) fn over(entry: u32, x: f32, y: f32) -> Over {
 pub(in crate::screen) fn key_down(screen: &mut Screen, entry: u32, code: &str, key: &str) -> Heard {
     let event = KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
 
-    screen.keyed(Keyed { window: window(), entry, event })
+    screen.keyed(Keyed { window: window(), entry, event }, &[])
 }
 
 /// `text` typed through the entry `entry`.
 pub(in crate::screen) fn typed(screen: &mut Screen, entry: u32, text: &str) -> Heard {
-    screen.keyed(Keyed { window: window(), entry, event: KeyEvent::Text { text: String::from(text) } })
+    screen.keyed(Keyed { window: window(), entry, event: KeyEvent::Text { text: String::from(text) } }, &[])
 }
 
 /// What `heard` raised, as the tests' events.
@@ -304,6 +304,32 @@ fn a_focused_text_input_declares_every_key_blocking_and_gives_them_up_on_blur() 
 }
 
 #[test]
+fn a_screen_that_takes_every_key_declares_them_all_whatever_has_its_focus_and_gives_them_up_as_it_stops() {
+    // Catches a screen that takes every key only while its text input has focus, so a press elsewhere on it lets the
+    // window's keys reach the game until the screen focuses the input again; a change of whether it takes every key
+    // that waits for its tree to change before its list says so; and every key kept after it stops.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("gold")]);
+    laid(&mut screen, tree(), &["KeyI"]);
+
+    screen.take_keys(true);
+    let (_, taking) = laid(&mut screen, tree(), &["KeyI"]);
+    let declared = keys(&screen, Role::Screen);
+    let letter = key_down(&mut screen, declared, "KeyQ", "q");
+    screen.take_keys(false);
+    let (_, after) = laid(&mut screen, tree(), &["KeyI"]);
+
+    let every = Entry::Keys { frame: screen.target.frame, keys: KeySet::All, blocks: true };
+    let first = |orders: &[Order]| last_list(orders).and_then(|list| list.first().cloned());
+    assert_eq!(screen.table().focus(), &Focus::Nowhere);
+    assert_eq!(first(&taking), Some(every));
+    assert_eq!(left_over(&letter), vec!["KeyQ"], "a key none uses still reaches the screen");
+    let hotkeys =
+        Entry::Keys { frame: screen.target.frame, keys: KeySet::Of(vec![String::from("KeyI")]), blocks: true };
+    assert_eq!(first(&after), Some(hotkeys));
+}
+
+#[test]
 fn a_key_no_widget_uses_reaches_the_screen_and_a_typed_letter_does_not() {
     // Catches a key the focused text input passed being dropped, so a screen's F2 does nothing while it is typed in; a
     // letter typed into it reaching the screen's hotkeys too; and a hotkey that never reaches the screen without focus.
@@ -346,6 +372,57 @@ fn typed_text_goes_to_the_focused_input_and_replaces_its_selection() {
     assert_eq!(appended, vec![Raised::Text(Ev::Changed, String::from("golden"))]);
     assert_eq!(replaced, vec![Raised::Text(Ev::Changed, String::from("x"))]);
     assert_eq!(submitted, vec![Raised::Text(Ev::Submitted, String::from("gold"))]);
+}
+
+#[test]
+fn a_key_the_screen_takes_first_reaches_it_past_a_focused_input_and_types_nothing() {
+    // Catches a console's toggle typed into its own line, as a focused text input uses every key that types, so the
+    // console never closes; the text of a key the screen took typed into the input the screen focused as it took it,
+    // so the console opens with the toggle in its line; and an input the screen focuses of its own accord left without
+    // focus, so the keys typed at the open console reach the game.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("")]);
+    let first = ["Backquote"];
+    let down = |screen: &mut Screen, entry: u32, code: &str, key: &str| {
+        let event = KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
+        screen.keyed(Keyed { window: window(), entry, event }, &first)
+    };
+    laid(&mut screen, tree(), &first);
+    let declared = keys(&screen, Role::Screen);
+
+    let opened = down(&mut screen, declared, "Backquote", "`");
+    screen.focus(&child(0));
+    let toggle_typed = raised(typed(&mut screen, declared, "`"));
+    laid(&mut screen, tree(), &first);
+    let every = keys(&screen, Role::Screen);
+    let letter = down(&mut screen, every, "KeyM", "m");
+    let letter_typed = raised(typed(&mut screen, every, "m"));
+    let closed = down(&mut screen, every, "Backquote", "`");
+    let closing_typed = raised(typed(&mut screen, every, "`"));
+
+    assert_eq!(left_over(&opened), vec!["Backquote"]);
+    assert_eq!(toggle_typed, vec![]);
+    assert_eq!(screen.table().focus(), &Focus::On(child(0)));
+    assert_eq!(left_over(&letter), Vec::<&str>::new());
+    assert_eq!(letter_typed, vec![Raised::Text(Ev::Changed, String::from("m"))]);
+    assert_eq!(left_over(&closed), vec!["Backquote"]);
+    assert_eq!(closing_typed, vec![]);
+}
+
+#[test]
+fn a_text_its_screen_sets_puts_the_input_s_caret_at_its_end() {
+    // Catches a line recalled from a history, or completed, whose caret stays where it stood in the line before, so
+    // what is typed next lands in its middle or at its start.
+    let mut screen = screen_with_fonts();
+    laid(&mut screen, column(vec![text_input("")]), &[]);
+    screen.focus(&child(0));
+    laid(&mut screen, column(vec![text_input("")]), &[]);
+    let declared = keys(&screen, Role::Screen);
+
+    screen.rebuilt(column(vec![text_input("memory")]));
+    let appended = raised(typed(&mut screen, declared, "!"));
+
+    assert_eq!(appended, vec![Raised::Text(Ev::Changed, String::from("memory!"))]);
 }
 
 #[test]

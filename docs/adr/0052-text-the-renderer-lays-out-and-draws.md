@@ -63,7 +63,7 @@ WriteText { text: TextId, runs: Vec<Run> }     // no answer, as a write is not (
 - **A text is what is laid out, not where it is drawn.** It keeps its glyphs, their positions, and its lines, as a mesh keeps its vertices. Where it is drawn is its placement's. One text may be placed more than once.
 - **A run is a part of the text with one colour,** so a console line has a dim timestamp, a coloured level, and the message in one text. One font and one size for each text keep the layout simple; mixing them in one text is later work.
 - **`\n` breaks a line.** Other control characters are not drawn.
-- **A write lays the text out again.** Its placements draw the new text from the first `Render` at which all of the new text's glyphs are in the atlas. Until then they draw the text as it was, so a rewritten line never flickers or shows half its glyphs. A new text's placements draw nothing until all its glyphs are in the atlas.
+- **A write lays the text out again.** Its placements draw the new text from the first `Render` at which all of the new text's glyphs are in the atlas. Until then they draw the text as it was, so a rewritten line never flickers or shows half its glyphs. A new text's placements draw nothing until all its glyphs are in the atlas, so a new text is answered once it can be drawn: at once when its glyphs are all in the atlas, and otherwise once the last it waits on is written in. An asker that lists a text beside what else it draws then shows them together. A glyph that fits nowhere in the atlas, or has no outline, is not waited on. *Amended by ADR-0056's overlay stage: a new text was answered as it was made.*
 - **Refused as it is made:** a size outside 1 to 1024 pixels, an outline wider than the size allows, a font not made or released, and runs over 64 KB. A refused write is logged, and the text keeps what it had.
 - **A character no font has never refuses a text.** It draws the font's missing glyph, a box, and the renderer logs each such character once. People type anything, and one emoji must not refuse a chat line.
 - **Released as anything made is, by its maker,** with its placements.
@@ -144,7 +144,7 @@ struct Measured { width: f32, height: f32, lines: u32 }
 - **Text stays sharp at every size and under scaling,** and an outline costs nothing, so a damage number over the painted world is readable.
 - **The renderer grows a font reader and an MSDF generator.** They are pure functions, tested on their own, and the render root only keeps their results.
 - **MSDF is slightly softer than a glyph rasterised at its exact size at the smallest sizes,** around 12 to 14 pixels. Whether a console line reads well enough is judged on samples before this lands.
-- **A text whose glyphs are new appears a frame or so after it is made.** Text already on the screen never waits.
+- **A text whose glyphs are new is answered a frame or so after it is asked for.** Text already on the screen never waits.
 - **World text is a program's work for now:** it projects, and moves, each label.
 - **A program lays out around its text in its own turn,** measuring each text as the renderer will lay it out, from metrics it asked for once per font.
 - **A font's fallbacks are its maker's,** fixed and one level deep, so no actor changes another's text, and a measure is of the text the renderer draws.

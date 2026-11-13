@@ -1,21 +1,13 @@
-//! How the overlay's actor runs the console (ADR-0053: Commands are tools; ADR-0055): each key at the console's stop
-//! edits or enters the line, a command that names a tool is asked of the engine's tools root and its answer printed,
-//! the tools root's sheets are kept for the next, and marks pinned through the overlay's own tool are drawn and
-//! printed.
+//! How the overlay's actor runs the console's tools (ADR-0053: Commands are tools): a command that names a tool is asked
+//! of the engine's tools root and its answer printed, the tools root's sheets are kept for the next line, the overlay's
+//! own tools are offered, and marks pinned through them are kept to be stamped at the next `Tick`.
 
 use super::Overlay;
-use super::drawing::Heard;
-use super::texts::TextRole;
-use crate::console::{Command, Key};
+use crate::console::Command;
 use crate::tools::Marked;
-use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Path, Tells, Turn, path};
+use aethereal_actor::{Allows, Answer, Answered, Asks, Fault, Handles, Level, Path, Turn, path};
 use aethereal_data::Plain;
-use aethereal_render::Renderer;
-use aethereal_render::text::{MoveText, WriteText};
 use aethereal_tools::{CallTool, Called, Offered, Output, Sheets, Tools};
-
-/// The key that closes the console back to the band, by what it means.
-const CLOSE_KEY: &str = "Escape";
 
 /// A tool was called from the console's line: its name, so the call stops showing as running once it is answered,
 /// and what it answers with, so its answer is printed in its forms.
@@ -32,64 +24,60 @@ pub struct Calling {
 pub struct Offering;
 
 impl Overlay {
-    /// Takes in a key pressed at the console's stop: Escape closes it; any other edits the line, steps its history,
-    /// scrolls, completes, or enters it, a command that names a tool asked of the engine's tools root and shown as
-    /// running until it is answered.
-    pub(super) fn pressed(&mut self, key: &str, turn: &mut Turn<'_, Self, Heard>) -> Result<(), Fault> {
-        if key == CLOSE_KEY {
-            return self.close(turn);
-        }
-        let view = self.view();
-        let command = self.console.pressed(Key::of(key), view);
-        if let Command::Call { tool, revision, input, output } = command {
-            match turn.put(input) {
-                Ok(input) => {
-                    let calling = Calling { tool: tool.clone(), output };
-                    turn.to(path::<Tools>(())).ask(&CallTool { tool, revision, input }, &calling)?;
-                    self.console.called(&calling.tool);
-                    self.write_and_move(TextRole::Running, turn)?;
-                }
-                Err(refused) => self.console.refused(&format!("the input was not put: {refused:?}"), view),
+    /// Asks the engine's tools root for `command` when it names a tool, shown as running until it is answered; any
+    /// other command was printed as the console took it.
+    pub(super) fn call<S, I>(&mut self, command: Command, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    where
+        S: Allows<Asks<Path<Tools>, CallTool, Calling>, I>,
+    {
+        let Command::Call { tool, revision, input, output } = command else {
+            return Ok(());
+        };
+        match turn.put(input) {
+            Ok(input) => {
+                self.console.called(&tool);
+                let calling = Calling { tool: tool.clone(), output };
+                turn.to(path::<Tools>(())).ask(&CallTool { tool, revision, input }, &calling)?;
             }
+            Err(refused) => self.console.refused(&format!("the input was not put: {refused:?}"), self.columns()),
         }
 
-        self.write_console(turn)
+        Ok(())
     }
 }
 
 /// What the tools root holds, kept for the console's next line: sent as the overlay subscribes, and again after each
 /// change.
 impl Handles<Sheets> for Overlay {
-    type Sends = (Tells<Path<Renderer>, WriteText>,);
+    type Sends = ();
 
-    fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.console.hear(sheets);
 
-        self.write_text(TextRole::Prompt, turn)
+        Ok(())
     }
 }
 
 /// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
 /// refusal in brick. The call stops showing as running, whichever came.
 impl Handles<Answer<Called, Calling>> for Overlay {
-    type Sends = (Tells<Path<Renderer>, WriteText>, Tells<Path<Renderer>, MoveText>);
+    type Sends = ();
 
     fn handle(
         &mut self,
         (answered, Calling { tool, output }): (Answered<Called>, Calling),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
         self.console.settled(&tool);
-        self.write_and_move(TextRole::Running, turn)?;
-        let view = self.view();
+        let columns = self.columns();
         match answered {
-            Answered::Yes(Called::Output(bytes)) => self.console.answered(&output, turn.read(&bytes), view),
-            Answered::Yes(Called::Image { png, text }) => self.console.answered_image(turn.read(&png), &text, view),
-            Answered::Yes(Called::Refused(why)) => self.console.refused(&why, view),
-            Answered::No(why) => self.console.refused(&format!("the tools root did not answer: {why:?}"), view),
+            Answered::Yes(Called::Output(bytes)) => self.console.answered(&output, turn.read(&bytes), columns),
+            Answered::Yes(Called::Image { png, text }) => self.console.answered_image(turn.read(&png), &text, columns),
+            Answered::Yes(Called::Refused(why)) => self.console.refused(&why, columns),
+            Answered::No(why) => self.console.refused(&format!("the tools root did not answer: {why:?}"), columns),
         }
 
-        self.write_console(turn)
+        Ok(())
     }
 }
 

@@ -1,14 +1,16 @@
 //! The three lines beneath the GPU's graph (ADR-0053: The three stops): draws, triangles, and bytes uploaded, from each
 //! frame's statistics, kept over the frame chart's axis by the cycle each frame was drawn in and cut
 //! into its columns, each the most of its frames, so a spike in one frame is not averaged away; each drawn as a row of
-//! bars (`rows`), with its label and its latest value beside it in the gutter (`figures`).
+//! bars (`rows`) by the primitive that draws the three (`widget`), with its label and its latest value beside it in the gutter (`figures`).
 
 mod figures;
 mod rows;
 #[cfg(test)]
 mod tests;
+mod widget;
 
 pub use rows::{row, rows};
+pub use widget::{LineRows, LinesShown};
 
 use crate::binned::{Accrue, Binned, Spanned};
 use aethereal_data::Plain;
@@ -89,10 +91,13 @@ impl FrameLines {
         self.binned.push(elapsed_nanos, self.latest);
     }
 
-    /// The rows' columns for a chart of `count`, from the newest back, cut as the frame chart's are.
-    pub fn columns(&mut self, count: u32) -> impl Iterator<Item = Spanned<Values>> + Clone + '_ {
+    /// Cuts the rows into the columns of a chart of `count`, as the frame chart's are.
+    pub fn cut(&mut self, count: u32) {
         self.binned.cut(count);
+    }
 
+    /// The rows' columns as they were last cut, from the newest back.
+    pub fn columns(&self) -> impl Iterator<Item = Spanned<Values>> + Clone + '_ {
         self.binned.newest_first()
     }
 

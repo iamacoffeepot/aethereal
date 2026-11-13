@@ -8,6 +8,7 @@ use super::super::orders::Order;
 use super::super::tests::screen;
 use super::super::{Outcome, Screen};
 use super::MARGIN;
+use crate::input::{Held, Key};
 use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
@@ -32,6 +33,11 @@ fn row(key: u64) -> KeyPath {
 /// The view of a screen holding a scroll down, 100 pixels tall, over a list of a button for each of `keys`, a row 10
 /// pixels tall each, built as the markup's `items` builds it in a scroll: only the rows the screen says it shows.
 fn listed(screen: &Screen, keys: &[u64]) -> Tree {
+    listed_in(screen, keys, Scroll::down())
+}
+
+/// The view of [`listed`], its list in `scroll`.
+fn listed_in(screen: &Screen, keys: &[u64], scroll: Scroll) -> Tree {
     let mut rows = screen.rows(&list(), keys.len());
     for (at, key) in keys.iter().enumerate() {
         let key = ItemKey::new(*key);
@@ -42,7 +48,7 @@ fn listed(screen: &Screen, keys: &[u64]) -> Tree {
     }
     let (lines, built) = rows.finish();
     let style = Style { height: Length::Pixels(100.0), ..Style::default() };
-    let scroll = Node::new(Segment::Place(0), Scroll::down().list(lines), style, built);
+    let scroll = Node::new(Segment::Place(0), scroll.list(lines), style, built);
 
     Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![scroll]))
 }
@@ -269,4 +275,52 @@ fn the_wheel_slides_the_innermost_scroll_that_can_move_and_passes_outward_at_its
     }
 
     assert_eq!(seen, vec![(30.0, 0.0), (50.0, 0.0), (50.0, 30.0), (40.0, 30.0)]);
+}
+
+#[test]
+fn a_scroll_kept_to_its_end_shows_what_is_added_past_it_until_it_is_slid_back() {
+    // Catches a console's scrollback that stays where it stood as lines are printed beneath it, so the newest never
+    // shows; one that builds its window from where it stood, so the lines printed show a frame late as a gap; one that
+    // goes back to its end after the wheel slid it back, so a person reading what scrolled by is pulled away by each
+    // line printed; and one that never keeps to its end again once slid back down to it.
+    let mut screen = screen();
+    let at_end = |screen: &mut Screen, count: u64| {
+        let tree = listed_in(screen, &counted(count), Scroll::down().keeping_to_end());
+        let rows = built(&tree);
+        laid(screen, tree, &[]);
+        (offset(screen, &list()), rows)
+    };
+    at_end(&mut screen, 20);
+    let (first, _) = at_end(&mut screen, 20);
+
+    let (grown, rows) = at_end(&mut screen, 40);
+    let entry = hit(&screen, &list());
+    wheel(&mut screen, entry, -50.0);
+    let (slid_back, _) = at_end(&mut screen, 41);
+    wheel(&mut screen, entry, 1000.0);
+    at_end(&mut screen, 41);
+    let (kept_again, _) = at_end(&mut screen, 42);
+
+    assert_eq!(first, 100.0, "a scroll never laid out starts at its end");
+    assert_eq!(grown, 300.0);
+    assert!(rows.contains(&ItemKey::new(39)), "the newest row is built as it is added: {rows:?}");
+    assert_eq!(slid_back, 250.0);
+    assert_eq!(kept_again, 320.0);
+}
+
+#[test]
+fn a_key_handed_to_a_scroll_by_its_path_slides_it_though_it_has_no_focus() {
+    // Catches a key handed by path to the focused widget instead, or to nothing, so a console's Page Down moves its
+    // line's caret rather than its scrollback.
+    let mut screen = screen();
+    let list_keys = counted(1000);
+    frame(&mut screen, &list_keys);
+    frame(&mut screen, &list_keys);
+
+    let page =
+        Key { code: String::from("PageDown"), key: String::from("PageDown"), repeat: false, held: Held::default() };
+    screen.press_key(&list(), &page);
+
+    assert_eq!(screen.table().focus(), &Focus::Nowhere);
+    assert_eq!(offset(&screen, &list()), 100.0);
 }

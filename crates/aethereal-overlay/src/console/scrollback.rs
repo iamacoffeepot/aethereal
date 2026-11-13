@@ -1,5 +1,5 @@
 //! The console's scrollback (ADR-0053): what was printed, as rows no wider than the console, the last 2,000 of them,
-//! and how far the view is scrolled up from the newest.
+//! each numbered as it was printed, so the scroll that shows them keeps each row by its number while older ones leave.
 
 use crate::colour::Swatch;
 use aethereal_data::Plain;
@@ -22,9 +22,11 @@ impl Piece {
     }
 }
 
-/// One row as it is drawn: its pieces, left to right, no wider than the console was when it was printed.
+/// One row as it is drawn: its number, counted from the first row printed, and its pieces, left to right, no wider than
+/// the console was when it was printed.
 #[derive(Plain, Debug, Clone, Default, PartialEq, Eq)]
 pub struct Row {
+    pub number: u64,
     pub pieces: Vec<Piece>,
 }
 
@@ -44,15 +46,15 @@ impl Row {
             }
         }
 
-        Self { pieces }
+        Self { number: 0, pieces }
     }
 }
 
-/// The rows printed, oldest first, and how many rows up from the newest the view stands.
+/// The rows printed, oldest first, and the number the next is given.
 #[derive(Plain, Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scrollback {
     rows: VecDeque<Row>,
-    up: u32,
+    next: u64,
 }
 
 impl Scrollback {
@@ -70,76 +72,23 @@ impl Scrollback {
         }
     }
 
-    /// Adds `row` as the newest, the oldest leaving past [`MOST_ROWS`]. A view scrolled up stays on the rows it shows.
+    /// Adds `row` as the newest, numbered next, the oldest leaving past [`MOST_ROWS`].
     fn add(&mut self, row: Row) {
-        self.rows.push_back(row);
+        self.rows.push_back(Row { number: self.next, ..row });
+        self.next += 1;
         while self.rows.len() > MOST_ROWS {
             self.rows.pop_front();
-        }
-        let scrolled = self.up > 0;
-        if scrolled {
-            self.set_up((self.up() + 1).min(self.rows.len()));
         }
     }
 
     /// Lets go of every row.
     pub fn clear(&mut self) {
         self.rows.clear();
-        self.up = 0;
     }
 
-    /// Scrolls the view of `shown` rows up by a page, a row short of it so one row stays in view, as far as the
-    /// oldest row.
-    pub fn page_up(&mut self, shown: usize) {
-        let page = shown.saturating_sub(1).max(1);
-        let furthest = self.rows.len().saturating_sub(shown);
-        self.set_up((self.up() + page).min(furthest));
-    }
-
-    /// Scrolls the view of `shown` rows down by a page, as far as the newest row.
-    pub fn page_down(&mut self, shown: usize) {
-        let page = shown.saturating_sub(1).max(1);
-        self.set_up(self.up().saturating_sub(page));
-    }
-
-    /// Scrolls the view of `shown` rows down by `down_rows`, up when negative, held between the oldest row and the
-    /// newest, and answers whether it was held: the view stopped at an end.
-    pub fn scroll(&mut self, down_rows: i64, shown: usize) -> bool {
-        let furthest = i64::try_from(self.rows.len().saturating_sub(shown)).unwrap_or(i64::MAX);
-        let wanted = i64::try_from(self.up()).unwrap_or(i64::MAX).saturating_sub(down_rows);
-        let up = wanted.clamp(0, furthest);
-        self.set_up(usize::try_from(up).unwrap_or(0));
-
-        up != wanted
-    }
-
-    /// Scrolls the view to the newest row.
-    pub const fn scroll_to_newest(&mut self) {
-        self.up = 0;
-    }
-
-    /// The rows in a view of `shown` rows, oldest first: the newest `shown`, or those above them as far as the view
-    /// is scrolled up.
-    pub fn visible(&self, shown: usize) -> impl Iterator<Item = &Row> {
-        let end = self.rows.len().saturating_sub(self.up());
-        let start = end.saturating_sub(shown);
-
-        self.rows.range(start..end)
-    }
-
-    /// How many rows up from the newest the view stands.
-    pub const fn up(&self) -> usize {
-        self.up as usize
-    }
-
-    /// Puts the view `up` rows up from the newest: at most the rows kept, which a u32 counts.
-    fn set_up(&mut self, up: usize) {
-        self.up = u32::try_from(up).unwrap_or(u32::MAX);
-    }
-
-    /// How many rows are kept.
-    pub fn len(&self) -> usize {
-        self.rows.len()
+    /// Every row kept, oldest first.
+    pub fn rows(&self) -> impl ExactSizeIterator<Item = &Row> {
+        self.rows.iter()
     }
 }
 

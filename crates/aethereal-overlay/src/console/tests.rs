@@ -1,6 +1,6 @@
-//! The console's tests: the line edited and stepped through its history, a line turned into a call of a real tool,
-//! refusals printed in brick, tab completion of a tool, a flag, and a variant, the scrollback's bound, wrap, and view,
-//! the wheel's rows, and the band's count of warnings and errors.
+//! The console's tests: the line stepped through its history, a line turned into a call of a real tool, refusals
+//! printed in brick, tab completion of a tool, a flag, and a variant and its hint, the scrollback's bound and wrap, the
+//! band's count of warnings and errors, and the calls running.
 
 use super::scrollback::{MOST_ROWS, Scrollback, wrapped};
 use super::*;
@@ -11,8 +11,8 @@ use aethereal_data::from_bytes;
 use aethereal_tools::{LogLevel, LogsTool, ReadRecent, Tool};
 use core::error::Error;
 
-/// A console as wide and as tall as one at 1080.
-const VIEW: View = View { columns: 80, rows: 10 };
+/// How many characters wide a console's rows are at 1080.
+const COLUMNS: usize = 80;
 
 /// A console holding the engine's own log tools and the overlay's, as the tools root of revision 3 sends them.
 fn holding_tools() -> Console {
@@ -23,42 +23,23 @@ fn holding_tools() -> Console {
     console
 }
 
-/// The line as typed: the prompt's row without the prompt or a completion ahead of the cursor.
-fn typed(console: &Console) -> String {
-    console.prompt()[1].text.clone()
-}
-
-/// Each row in view, its text and the colour of its last piece.
+/// Each row kept, its text and the colour of its last piece.
 fn shown(console: &Console) -> Vec<(String, Swatch)> {
-    console.rows(VIEW).map(|row| (row.text(), row.pieces.last().map_or(BONE, |piece| piece.swatch))).collect()
+    console.rows().map(|row| (row.text(), row.pieces.last().map_or(BONE, |piece| piece.swatch))).collect()
 }
 
-/// Presses `key` at `console`, as the overlay hands it on.
-fn press(console: &mut Console, key: Key) -> Command {
-    console.pressed(Some(key), VIEW)
+/// Submits `line` at `console`, as its text input does with Enter.
+fn enter(console: &mut Console, line: &str) -> Command {
+    console.submitted(line, COLUMNS)
 }
 
-/// Typing inserts at the cursor, Backspace and Delete take the character either side of it, and Home, End, Left,
-/// and Right move it, so an edit at the wrong side of the cursor or a cursor that runs off the line is caught.
-#[test]
-fn the_line_is_edited_at_the_cursor() {
-    let mut console = holding_tools();
+/// Types `text` on at the end of `console`'s line, as its text input raises the edit, and completes it with the caret
+/// at its end, as Tab does.
+fn complete(console: &mut Console, text: &str) -> String {
+    console.edited(format!("{}{text}", console.line()));
+    console.complete(console.line().len(), COLUMNS);
 
-    console.typed("mrak");
-    press(&mut console, Key::Left);
-    press(&mut console, Key::Left);
-    press(&mut console, Key::Backspace);
-    console.typed("ar");
-    press(&mut console, Key::Delete);
-    press(&mut console, Key::Home);
-    press(&mut console, Key::Left);
-    console.typed("[");
-    press(&mut console, Key::End);
-    press(&mut console, Key::Right);
-    console.typed("]");
-
-    assert_eq!(typed(&console), "[mark]");
-    assert_eq!(console.cursor_column(), 2 + 6);
+    String::from(console.line())
 }
 
 /// Up steps back through the commands entered, newest first, and Down forward again, back to the line that was being
@@ -67,20 +48,19 @@ fn the_line_is_edited_at_the_cursor() {
 fn up_and_down_step_through_the_history() {
     let mut console = holding_tools();
     for command in ["help", "clear", "clear"] {
-        console.typed(command);
-        press(&mut console, Key::Enter);
+        enter(&mut console, command);
     }
-    console.typed("me");
+    console.edited(String::from("me"));
 
-    press(&mut console, Key::Up);
-    let newest = typed(&console);
-    press(&mut console, Key::Up);
-    let older = typed(&console);
-    press(&mut console, Key::Up);
-    let oldest_kept = typed(&console);
-    press(&mut console, Key::Down);
-    press(&mut console, Key::Down);
-    let draft = typed(&console);
+    console.older();
+    let newest = String::from(console.line());
+    console.older();
+    let older = String::from(console.line());
+    console.older();
+    let oldest_kept = String::from(console.line());
+    console.newer();
+    console.newer();
+    let draft = String::from(console.line());
 
     assert_eq!((newest.as_str(), older.as_str(), oldest_kept.as_str()), ("clear", "help", "help"));
     assert_eq!(draft, "me");
@@ -92,8 +72,7 @@ fn up_and_down_step_through_the_history() {
 fn a_line_becomes_a_call_of_its_tool() -> Result<(), Box<dyn Error>> {
     let mut console = holding_tools();
 
-    console.typed("read_recent --level warn --most 5");
-    let command = press(&mut console, Key::Enter);
+    let command = enter(&mut console, "read_recent --level warn --most 5");
 
     let Command::Call { tool, revision, input, .. } = command else {
         return Err(format!("{command:?} is not a call").into());
@@ -102,6 +81,7 @@ fn a_line_becomes_a_call_of_its_tool() -> Result<(), Box<dyn Error>> {
     assert_eq!((tool.as_str(), revision), ("read_recent", 3));
     assert_eq!(read, ReadRecent { since: None, level: Some(LogLevel::Warn), contains: None, most: Some(5) });
     assert_eq!(shown(&console), vec![(String::from("> read_recent --level warn --most 5"), LICHEN)]);
+    assert_eq!(console.line(), "", "the line is left for the next");
 
     Ok(())
 }
@@ -112,11 +92,9 @@ fn a_line_becomes_a_call_of_its_tool() -> Result<(), Box<dyn Error>> {
 fn refusals_print_in_brick() {
     let mut console = holding_tools();
 
-    console.typed("memroy");
-    let unknown = press(&mut console, Key::Enter);
-    console.typed("read_recent --level loud");
-    press(&mut console, Key::Enter);
-    console.refused("the tool did not answer in time", VIEW);
+    let unknown = enter(&mut console, "memroy");
+    enter(&mut console, "read_recent --level loud");
+    console.refused("the tool did not answer in time", COLUMNS);
 
     let rows = shown(&console);
     assert!(matches!(unknown, Command::Refused(_)), "{unknown:?}");
@@ -133,40 +111,35 @@ fn refusals_print_in_brick() {
 fn tab_completes_a_tool_a_flag_and_a_variant() {
     let mut console = holding_tools();
 
-    console.typed("read_r");
-    press(&mut console, Key::Tab);
-    let tool = typed(&console);
-    console.typed("--le");
-    press(&mut console, Key::Tab);
-    let flag = typed(&console);
-    console.typed("wa");
-    press(&mut console, Key::Tab);
-    let variant = typed(&console);
+    let tool = complete(&mut console, "read_r");
+    let flag = complete(&mut console, "--le");
+    let variant = complete(&mut console, "wa");
 
     assert_eq!(tool, "read_recent ");
     assert_eq!(flag, "read_recent --level ");
     assert_eq!(variant, "read_recent --level warn ");
 
     let mut several = holding_tools();
-    several.typed("m");
-    press(&mut several, Key::Tab);
-    assert_eq!(typed(&several), "m");
+    assert_eq!(complete(&mut several, "m"), "m");
     assert_eq!(shown(&several), vec![(String::from("mark  memory"), STONE)]);
 }
 
-/// The one word the word before the cursor completes to shows ahead of it in stone, and nothing does once the word
-/// is whole, so a hint that repeats what was typed, or shows for several matches, is caught.
+/// The one word the word before the caret completes to is what shows ahead of it, and nothing does once the word is
+/// whole or with the caret short of the line's end, so a hint that repeats what was typed, shows for several matches,
+/// or stands in the middle of the line is caught.
 #[test]
-fn a_completion_shows_ahead_of_the_cursor() {
+fn a_completion_shows_ahead_of_the_caret() {
     let mut console = holding_tools();
 
-    console.typed("mem");
-    let hinted = console.prompt();
-    console.typed("ory");
-    let whole = console.prompt();
+    console.edited(String::from("mem"));
+    let hinted = console.completion_ahead(3);
+    let short = console.completion_ahead(2);
+    console.edited(String::from("memory"));
+    let whole = console.completion_ahead(6);
 
-    assert_eq!(hinted.last(), Some(&Piece::new("ory", STONE)));
-    assert_eq!(whole.len(), 2);
+    assert_eq!(hinted, "ory");
+    assert_eq!(short, "");
+    assert_eq!(whole, "");
 }
 
 /// The scrollback keeps the newest 2,000 rows, and a line wider than the console wraps at a space past the middle
@@ -181,79 +154,14 @@ fn the_scrollback_keeps_two_thousand_rows_and_wraps_at_the_width() {
     let words = wrapped(&[Piece::new("the quick brown fox jumps", BONE)], 10);
     let unbroken = wrapped(&[Piece::new("abcdefghijklmnopqrstuvwxy", BONE)], 10);
 
-    assert_eq!(scrollback.len(), MOST_ROWS);
-    assert_eq!(scrollback.visible(MOST_ROWS).next().map(Row::text), Some(String::from("row 500")));
+    let first = scrollback.rows().next();
+    assert_eq!(scrollback.rows().len(), MOST_ROWS);
+    assert_eq!(first.map(Row::text), Some(String::from("row 500")));
+    assert_eq!(first.map(|row| row.number), Some(500), "a row keeps the number it was printed under");
     let words: Vec<String> = words.iter().map(Row::text).collect();
     assert_eq!(words, ["the quick", "brown fox", "jumps"]);
     let unbroken: Vec<String> = unbroken.iter().map(Row::text).collect();
     assert_eq!(unbroken, ["abcdefghij", "klmnopqrst", "uvwxy"]);
-}
-
-/// Page Up shows the page above, a row short of a whole page so one row stays in view, and no further than the
-/// oldest row; Page Down comes back; and a row printed while scrolled up leaves the view where it was, so a view that
-/// jumps, overshoots, or follows new rows while read is caught.
-#[test]
-fn the_view_follows_page_up_and_page_down() {
-    let mut scrollback = Scrollback::default();
-    for number in 0..25 {
-        scrollback.print(&format!("{number}"), BONE, 80);
-    }
-    let first_of = |scrollback: &Scrollback| scrollback.visible(10).next().map(Row::text);
-
-    let newest = first_of(&scrollback);
-    scrollback.page_up(10);
-    let page_up = first_of(&scrollback);
-    scrollback.print("25", BONE, 80);
-    let kept = first_of(&scrollback);
-    scrollback.page_up(10);
-    scrollback.page_up(10);
-    let oldest = first_of(&scrollback);
-    scrollback.page_down(10);
-    scrollback.page_down(10);
-    scrollback.page_down(10);
-    let back = first_of(&scrollback);
-
-    assert_eq!(newest.as_deref(), Some("15"));
-    assert_eq!(page_up.as_deref(), Some("6"));
-    assert_eq!(kept.as_deref(), Some("6"));
-    assert_eq!(oldest.as_deref(), Some("0"));
-    assert_eq!(back.as_deref(), Some("16"));
-}
-
-/// A notch of the wheel up shows three rows older; a trackpad's turns of a quarter notch each add up to the same three
-/// rows; a turn past either end stops there, and what it overshot is not owed back, so a wrong sign, a turn rounded to
-/// nothing at each step, a view past the oldest or newest row, or a reversal that lags is caught.
-#[test]
-fn the_wheel_scrolls_three_rows_a_notch_and_carries_a_part_row() {
-    let mut console = Console::default();
-    for number in 0..25 {
-        console.scrollback.print(&format!("{number}"), BONE, 80);
-    }
-    let first_of = |console: &Console| console.rows(VIEW).next().map(Row::text);
-    let notch = 40.0;
-
-    console.wheeled(-notch, notch, VIEW);
-    let notched = first_of(&console);
-    console.wheeled(-notch / 4.0, notch, VIEW);
-    let part = first_of(&console);
-    for _ in 0..3 {
-        console.wheeled(-notch / 4.0, notch, VIEW);
-    }
-    let parts = first_of(&console);
-    console.wheeled(-notch * 10.5, notch, VIEW);
-    let oldest = first_of(&console);
-    console.wheeled(notch, notch, VIEW);
-    let reversed = first_of(&console);
-    console.wheeled(notch * 100.0, notch, VIEW);
-    let newest = first_of(&console);
-
-    assert_eq!(notched.as_deref(), Some("12"));
-    assert_eq!(part.as_deref(), Some("12"), "a quarter notch is short of a row");
-    assert_eq!(parts.as_deref(), Some("9"));
-    assert_eq!(oldest.as_deref(), Some("0"));
-    assert_eq!(reversed.as_deref(), Some("3"));
-    assert_eq!(newest.as_deref(), Some("15"));
-    assert_eq!(console.scrolled(), Scrolled { kept: 25, up: 0 });
 }
 
 /// Warnings and errors are counted, in rust and brick, flush right in the gutter's line after `alerts`, and nothing

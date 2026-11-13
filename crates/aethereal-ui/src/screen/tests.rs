@@ -32,7 +32,7 @@ pub(super) fn id<T: Plain>(number: u64) -> T {
 /// A screen 200 by 100 pixels at a UI scale of 1, whose program is made.
 pub(super) fn screen() -> Screen {
     let mut screen = Screen::new(Target::of::<Interface>(Frame::Main(id(0))), Viewport::window(200, 100, 1.0));
-    screen.program = Program::Made(Made { mesh: id(1), program: id(2), uniforms: id(3), white: id(4) });
+    screen.program = Program::Made(Made { mesh: id(1), program: id(2), fills: id(5), uniforms: id(3), white: id(4) });
 
     screen
 }
@@ -226,4 +226,30 @@ fn the_list_draws_in_tree_order_whatever_order_the_renderer_answers_in() {
         .filter(|entry| matches!(entry, Entry::Draw { .. }))
         .collect();
     assert_eq!(drawn, vec![draw(under), draw(over)]);
+}
+
+#[test]
+fn a_draw_that_goes_is_released_only_once_a_list_without_it_is_sent() {
+    // Catches a draw released as the tree that drops it is laid out, while the list the renderer draws by still names
+    // it until the draws that replace it are made: the rows of a scroll that slides a page, or a label shown in place of
+    // another, draw nothing for a frame or more.
+    let mut screen = screen();
+    screen.metrics_read(Font::Mono, mono(), Vec::new());
+    let at = |place: u32, text: &str| {
+        let style = Style { font: Font::Mono, ..Style::default() };
+        let label = Node::new(Segment::Place(place), Text::new(text), style, Vec::new());
+        Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![label]))
+    };
+    let first = screen.prepare(at(0, "Gold"), &[]);
+    answered(&mut screen, &first.orders, false);
+
+    let second = screen.prepare(at(1, "Silver"), &[]);
+    let released_early = sent(&second.orders).iter().any(|order| matches!(order, Order::Release(_)));
+    let orders = answered(&mut screen, &second.orders, false);
+
+    assert!(!released_early, "the old label was released before its replacement was made: {:?}", second.orders);
+    let placed = orders.iter().position(|order| matches!(order, Order::PlaceText(..)));
+    let released = orders.iter().position(|order| matches!(order, Order::Release(_)));
+    let after = matches!((placed, released), (Some(placed), Some(released)) if placed < released);
+    assert!(after, "the old label is released once its replacement is placed and listed: {orders:?}");
 }
