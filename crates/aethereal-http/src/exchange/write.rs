@@ -1,6 +1,6 @@
 //! A response's head, written as the bytes an exchange sends its connection before the body (ADR-0035, ADR-0042).
 
-use super::parse::is_token;
+use crate::head::is_token;
 use crate::{Header, Status};
 
 /// What an exchange writes before it reads a body whose client waits to be told to send it.
