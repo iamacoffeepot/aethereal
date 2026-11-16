@@ -13,9 +13,9 @@ use aethereal_data::{Bound, Budget, FilePath, Plain, from_bytes, to_bytes};
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_sessions::{
-    Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Home, Index, Interrupt, Interrupted,
-    ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions,
-    SessionsListed, SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
+    Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt, Interrupted, ListSessions,
+    NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions, SessionsListed,
+    SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -198,17 +198,16 @@ struct Connection {
 }
 
 /// A Docker daemon faked on a Unix socket in a directory named for the test, removed when dropped, whose containers'
-/// output the test writes as Claude would. A container whose name ends `-home` gives a session's home to its user: it
-/// ends as soon as it is waited for.
+/// output the test writes as Claude would.
 struct Daemon {
     dir: PathBuf,
     listener: UnixListener,
     connections: Vec<Connection>,
     containers: BTreeMap<String, Container>,
-    /// The ids of the sessions' containers made, in the order made.
+    /// The ids of the containers made, in the order made.
     made: Vec<String>,
-    /// The ids of the containers made that give a home to its user, in the order made.
-    owners: Vec<String>,
+    /// The names of the containers made, in the order made.
+    names: Vec<String>,
     /// The bodies of the volumes made, by name.
     volumes: BTreeMap<String, String>,
     /// Every event, a JSON line each.
@@ -232,7 +231,7 @@ impl Daemon {
             connections: Vec::new(),
             containers: BTreeMap::new(),
             made: Vec::new(),
-            owners: Vec::new(),
+            names: Vec::new(),
             volumes: BTreeMap::new(),
             events: Vec::new(),
         }
@@ -341,14 +340,9 @@ impl Daemon {
             ("POST", ["containers", "create"]) => {
                 let name = query.strip_prefix("name=").unwrap_or_default().to_owned();
                 let body = String::from_utf8_lossy(body).into_owned();
-                let made = self.made.len() + self.owners.len() + 1;
-                let id = format!("{made:064x}");
-                let is_owner = name.ends_with("-home");
-                if is_owner {
-                    self.owners.push(id.clone());
-                } else {
-                    self.made.push(id.clone());
-                }
+                let id = format!("{:064x}", self.made.len() + 1);
+                self.made.push(id.clone());
+                self.names.push(name.clone());
                 let container = Container { name, body, running: false, output: Vec::new(), stdin: Vec::new() };
                 self.containers.insert(id.clone(), container);
                 respond(peer, "201 Created", &format!(r#"{{"Id":"{id}","Warnings":[]}}"#));
@@ -358,10 +352,6 @@ impl Daemon {
                 let name = body.split(r#""Name":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_default();
                 self.volumes.entry(name.to_owned()).or_insert_with(|| body.clone());
                 respond(peer, "201 Created", &format!(r#"{{"Name":"{name}"}}"#));
-            }
-            ("POST", ["containers", id, "wait"]) => {
-                self.stop(id);
-                respond(peer, "200 OK", r#"{"Error":null,"StatusCode":0}"#);
             }
             ("POST", ["containers", id, "start"]) => {
                 if let Some(container) = self.containers.get_mut(*id) {
@@ -698,6 +688,11 @@ fn a_transcript_numbers_every_line_in_order_and_keeps_a_turn_the_hub_did_not_sta
     let body = daemon.body(&id);
     assert!(!body.contains("evil") && !body.contains("/host"), "nothing of the name reaches the container: {body}");
     assert!(body.contains(r#""aethereal.session":"1""#), "{body}");
+    let prompt = format!(r#""--append-system-prompt","{}""#, SessionsSettings::default().prompt.replace('\n', "\\n"));
+    assert!(body.contains(&prompt), "the settings' prompt is appended: {body}");
+    let volumes: Vec<&String> = daemon.volumes.keys().collect();
+    assert_eq!(volumes, ["aethereal-cargo-test", "aethereal-session-test-1", "aethereal-session-test-1-target"]);
+    assert!(daemon.volumes.values().all(|volume| !volume.contains("evil")), "nothing of the name reaches a volume");
 
     let number = say(&mut harness, &mut daemon, session, "hello")?;
     let written = stdin(&mut harness, &mut daemon, &id, 1);
@@ -933,9 +928,9 @@ fn index(daemon: &Daemon) -> Vec<u32> {
 fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_with_the_same_numbers()
 -> Result<(), Unheard> {
     // Catches an index not written as a session is added, or not read back, so a restarted hub loses its sessions or
-    // numbers a new one over an old; a record or transcript read from the wrong file; a session's home given to its
-    // user at every start rather than once; and a home volume named apart from its session's, which no later
-    // container would find.
+    // numbers a new one over an old; a record or transcript read from the wrong file; a container run before a
+    // session's own, as the step that gave a home to its user once was; a session's volumes named apart from its
+    // session's, which no later container would find; and a cargo home made per session, not shared.
     let mut daemon = Daemon::new("index");
     let settings = daemon.sessions(4, 3600);
     let mut harness = hub(&daemon, settings.clone())?;
@@ -969,8 +964,18 @@ fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_wi
     until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1, 2, 3]);
 
     let volumes: Vec<&String> = daemon.volumes.keys().collect();
-    assert_eq!(volumes, ["aethereal-session-test-1", "aethereal-session-test-2", "aethereal-session-test-3"]);
-    assert_eq!(daemon.owners.len(), 3, "each home is given to its user once");
+    let expected = [
+        "aethereal-cargo-test",
+        "aethereal-session-test-1",
+        "aethereal-session-test-1-target",
+        "aethereal-session-test-2",
+        "aethereal-session-test-2-target",
+        "aethereal-session-test-3",
+        "aethereal-session-test-3-target",
+    ];
+    assert_eq!(volumes, expected, "each session's own volumes, and one cargo home they share");
+    let names = ["aethereal-session-test-1-1", "aethereal-session-test-2-1", "aethereal-session-test-3-1"];
+    assert_eq!(daemon.names, names, "every container made is a session's: no step runs as root before it");
     let body = daemon.body(&daemon.made(0));
     assert!(body.contains(r#""Type":"volume","Source":"aethereal-session-test-1""#), "{body}");
     assert!(daemon.volumes.values().all(|body| body.contains(r#""aethereal.test":"1""#)));
@@ -983,13 +988,8 @@ fn with_no_index_there_are_no_sessions_whatever_else_save_holds() -> Result<(), 
     // Catches a hub that finds its sessions by what lies in `Save` rather than by the index, which `Files` does not
     // list, and one that fails to start when there is no index, as on its first run.
     let mut daemon = Daemon::new("no-index");
-    let record = Record {
-        name: String::from("orphan"),
-        conversation: Conversation::Unbegun,
-        runs: 1,
-        home: Home::Owned,
-        kept: Standing::Stopped,
-    };
+    let record =
+        Record { name: String::from("orphan"), conversation: Conversation::Unbegun, runs: 1, kept: Standing::Stopped };
     let Ok(bytes) = to_bytes(&record) else {
         panic!("a record encodes");
     };
@@ -1258,7 +1258,7 @@ fn live(name: &str) -> String {
 }
 
 /// The live run's hub: `Files` in the run's directory `root`, this machine's daemon, and the sessions on Haiku, as the
-/// environment names their Claude binary, credential, and user, every container and volume labelled `label`.
+/// environment names their image, Claude binary, and credential, every container and volume labelled `label`.
 fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
     let files = FileRoots {
         assets: root.join("assets").display().to_string(),
@@ -1268,8 +1268,8 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
     };
     let settings = SessionsSettings {
         credential: live("CREDENTIAL"),
+        image: live("IMAGE"),
         claude: live("CLAUDE"),
-        user: live("USER"),
         model: String::from("haiku"),
         hub_url: String::new(),
         label: String::from(label),
@@ -1298,18 +1298,19 @@ fn holding(entries: &[Numbered], marker: &str) -> usize {
     held.count()
 }
 
-/// How many of `entries` are the results of a tool that printed `42written`, which the live run's first command
-/// prints only once its `touch` of the home has succeeded. Claude's own words may hold it too, so only a tool's result
-/// that is not an error counts.
+/// How many of `entries` are the results of a tool that printed cargo's version and `42written`, which the live run's
+/// first command prints only once its `touch` of the home, the target directory, and the cargo home has succeeded and
+/// cargo has run. Claude's own words may hold them too, so only a tool's result that is not an error counts.
 fn wrote_home(entries: &[Numbered]) -> usize {
     let wrote = entries.iter().filter(|numbered| match &numbered.entry {
         Entry::Claude(json) => {
             let text = json.as_str();
             let is_result = text.contains(r#""type":"tool_result""#);
             let printed = text.contains("42written");
+            let cargo_ran = text.contains("cargo 1.");
             let failed = text.contains(r#""is_error":true"#);
 
-            is_result && printed && !failed
+            is_result && printed && cargo_ran && !failed
         }
         _ => false,
     });
@@ -1337,11 +1338,12 @@ fn report_transcript(entries: &[Numbered]) {
 }
 
 #[test]
-#[ignore = "runs Claude Code in a container on this machine's Docker, on the owner's subscription: run by hand with --ignored, naming the run's directory, the Claude binary, the credential's file, and the container's user in AETHEREAL_SESSIONS_LIVE_ROOT, _CLAUDE, _CREDENTIAL, and _USER"]
+#[ignore = "runs Claude Code in a container on this machine's Docker, on the owner's subscription: run by hand with --ignored, naming the run's directory, the session image, the Claude binary, and the credential's file in AETHEREAL_SESSIONS_LIVE_ROOT, _IMAGE, _CLAUDE, and _CREDENTIAL"]
 fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard> {
     // Catches what a fake cannot: Claude Code reading the lines the hub writes, writing what the hub reads, taking the
-    // interrupt, the container made from the settings running at all, and its home, a volume Docker made root's,
-    // written by the session's user once the hub has given it to them.
+    // interrupt, the container made from the settings running at all, and its volumes, which Docker makes root's,
+    // written by the session's user, as the session image holds their directories owned by that user, with the
+    // image's cargo on the shared cargo home.
     let root = PathBuf::from(live("ROOT"));
     let label = format!("live-{}", process::id());
     let _cleanup = Cleanup { label: label.clone(), root: root.clone() };
@@ -1381,12 +1383,13 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
             });
         };
 
-    let text = "Run the shell command `touch ~/written && echo $((6 * 7))written`, then reply with the word ok.";
+    let text = "Run the shell command `touch ~/written \"$CARGO_TARGET_DIR/written\" \"$CARGO_HOME/written\" && cargo \
+                --version && echo $((6 * 7))written`, then reply with the word ok.";
     harness.tell(caller_ref, &Order::Say(Say { session, text: String::from(text) }))?;
     read_until(&mut harness, &mut entries, &|entries| holding(entries, r#""type":"result""#) >= 1);
     let wrote_home = wrote_home(&entries);
-    report("the session's user writes its home", &format!("{wrote_home} tool results hold what the touch printed"));
-    assert!(wrote_home >= 1, "the session's user wrote its home");
+    report("the session's user writes its volumes", &format!("{wrote_home} tool results hold what the touch printed"));
+    assert!(wrote_home >= 1, "the session's user wrote its home, its target, and the cargo home, and cargo ran");
     let answered: Vec<&str> = entries
         .iter()
         .filter_map(|numbered| match &numbered.entry {
@@ -1425,7 +1428,14 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
     assert!(!left.contains(r#""Id":""#), "no container of the session is left, the home's owner's among them");
     let kept = volumes(&label);
     report("volumes left with the run's label, removed as the run ends", &format!("{kept:?}"));
-    assert_eq!(kept, [format!("aethereal-session-{label}-1")], "the archive keeps the session's home alone");
+    let mut kept = kept;
+    kept.sort();
+    let volumes = [
+        format!("aethereal-cargo-{label}"),
+        format!("aethereal-session-{label}-1"),
+        format!("aethereal-session-{label}-1-target"),
+    ];
+    assert_eq!(kept, volumes, "the archive keeps the session's volumes and the shared cargo home");
     report_transcript(&entries);
 
     Ok(())

@@ -39,8 +39,9 @@ fn spec() -> ContainerSpec {
 fn a_spec_is_written_as_the_create_body_docker_documents() {
     // Tripwire: the body of `POST /containers/create` a spec writes. A member misnamed or misplaced is silently
     // ignored by Docker, so the container runs without the limit, the mount, or the open stdin the spec asked for;
-    // `Tty` must stay false, or the output is not framed and nothing demultiplexes it; and a volume's `NoCopy` must
-    // stay, or Docker gives an empty volume the owner of the directory the image has at its target, root's.
+    // `Tty` must stay false, or the output is not framed and nothing demultiplexes it; and a volume must not say
+    // `NoCopy`, or Docker leaves a new volume root's, rather than giving it the owner of the image's directory at its
+    // target, which is how a session's user owns its volumes.
     let body = spec().body();
     let expected = concat!(
         r#"{"Image":"aethereal-session:1","User":"1000:1000","WorkingDir":"/work/project","#,
@@ -49,8 +50,7 @@ fn a_spec_is_written_as_the_create_body_docker_documents() {
         r#""HostConfig":{"NetworkMode":"aethereal","NanoCpus":4000000000,"Memory":8589934592,"Mounts":["#,
         r#"{"Type":"bind","Source":"/srv/s/7/project","Target":"/work/project","ReadOnly":false},"#,
         r#"{"Type":"bind","Source":"/srv/bin/claude","Target":"/usr/bin/claude","ReadOnly":true},"#,
-        r#"{"Type":"volume","Source":"aethereal-session-7","Target":"/work/home","ReadOnly":false,"#,
-        r#""VolumeOptions":{"NoCopy":true}}]}}"#,
+        r#"{"Type":"volume","Source":"aethereal-session-7","Target":"/work/home","ReadOnly":false}]}}"#,
     );
     assert_eq!(body.as_deref(), Ok(expected));
 

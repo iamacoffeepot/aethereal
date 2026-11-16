@@ -14,8 +14,18 @@ pub const HUB_LABEL: &str = "aethereal.sessions";
 /// The label key that names a session's container's session, by its number.
 pub const SESSION_LABEL: &str = "aethereal.session";
 
-/// Where the session's home is inside its container.
+/// Where the session's home is inside its container, its working directory and its `HOME`.
 pub const HOME: &str = "/session/home";
+
+/// Where the session's cargo target directory is inside its container, its `CARGO_TARGET_DIR`.
+pub const TARGET: &str = "/session/target";
+
+/// Where the cargo home every session of the hub shares is inside each container, its `CARGO_HOME`.
+pub const CARGO: &str = "/session/cargo";
+
+/// What each session is told of where it is, appended to Claude Code's own system prompt: the default of
+/// [`SessionsSettings::prompt`], kept beside the session image's Dockerfile.
+const PROMPT: &str = include_str!("../../image/prompt.txt");
 
 /// Where the Claude Code binary is inside its container.
 pub const CLAUDE: &str = "/usr/local/bin/claude";
@@ -33,7 +43,10 @@ pub struct SessionsSettings {
     /// anywhere else.
     #[flag]
     pub credential: String,
-    /// The image each container runs.
+    /// The image each container runs: the session image, `crates/aethereal-sessions/image`, built on this machine. It
+    /// holds `/session/home`, `/session/target`, and `/session/cargo` owned by [`user`](Self::user), which Docker
+    /// copies into each new volume mounted there; an image without them leaves each volume root's, and the session
+    /// cannot write its home.
     #[flag]
     pub image: String,
     /// The Claude Code binary on this machine, bound read-only into each container: absolute.
@@ -42,8 +55,8 @@ pub struct SessionsSettings {
     /// The model each session runs, stated as print mode otherwise picks its own.
     #[flag]
     pub model: String,
-    /// The user each container's process runs as: a name the image knows, or `uid:gid`, which is given the session's
-    /// home before its first container.
+    /// The user each container's process runs as, `uid:gid`: the one the image was built for, which owns the
+    /// directories its volumes are mounted at.
     #[flag]
     pub user: String,
     /// The hub's MCP endpoint a session reaches the hub's tools at; empty for none.
@@ -62,6 +75,8 @@ pub struct SessionsSettings {
     pub idle_secs: u32,
     /// What the hub tells an idle session before it compacts it, `{minutes}` standing for its idle minutes.
     pub notice: String,
+    /// What each session is told of where it is, appended to Claude Code's system prompt.
+    pub prompt: String,
     /// The seconds the notice's turn, and then the compaction, are each given before the session is stopped anyway.
     #[flag]
     pub wind_down_secs: u32,
@@ -83,7 +98,7 @@ impl Default for SessionsSettings {
     fn default() -> Self {
         Self {
             credential: String::from("sessions/claude.env"),
-            image: String::from("rust:1.97-slim"),
+            image: String::from("aethereal-session"),
             claude: String::from("/usr/local/lib/claude-code/claude"),
             model: String::from("opus"),
             user: String::from("1000:1000"),
@@ -97,6 +112,7 @@ impl Default for SessionsSettings {
                  that, write down your loose threads: unfinished work, open questions, uncommitted changes, and what \
                  to pick up next.",
             ),
+            prompt: String::from(PROMPT.trim_end()),
             wind_down_secs: 10 * 60,
             millicpus: 4000,
             memory_bytes: 8 << 30,

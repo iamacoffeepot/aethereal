@@ -13,19 +13,7 @@ pub struct Record {
     pub conversation: Conversation,
     /// How many containers it has run in, each a run.
     pub runs: u32,
-    pub home: Home,
     pub kept: Standing,
-}
-
-/// Whether a session's home, its named volume, is the session's user's yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.home")]
-pub enum Home {
-    /// Its volume may not be made, or may still be root's, as Docker makes a new one: the next start makes it and gives
-    /// it to the session's user first.
-    Unowned,
-    /// Its volume is made and given to the session's user, once, and every later container of it writes there.
-    Owned,
 }
 
 /// The conversation Claude Code keeps for a session, in the session's home.
