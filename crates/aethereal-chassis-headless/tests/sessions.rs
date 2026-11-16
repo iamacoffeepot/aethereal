@@ -1158,13 +1158,18 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
     let mut harness = Harness::of(program)?;
     let session = open(&mut harness, &mut daemon, "ordered")?;
     let id = daemon.made(0);
+    let log = daemon.dir.join("writes.log");
     say(&mut harness, &mut daemon, session, "one")?;
+    // The first append finishes before the next line is said, so that line is a second append rather than one batched
+    // beside the first.
+    until(&mut harness, &mut daemon, |_, _| {
+        fs::read_to_string(&log).unwrap_or_default().contains("done sessions/1/transcript\n")
+    });
     say(&mut harness, &mut daemon, session, "two")?;
     answer_turn(&mut daemon, &id, "three");
     let file = daemon.saved("sessions/1/transcript");
     until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 6);
     let record = daemon.saved("sessions/1/record");
-    let log = daemon.dir.join("writes.log");
     until(&mut harness, &mut daemon, |_, _| fs::read_to_string(&log).unwrap_or_default().ends_with("record\n"));
 
     let written = fs::read_to_string(&log).unwrap_or_default();
@@ -1179,7 +1184,7 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
         }
     }
     let appends = written.lines().filter(|line| *line == "begun sessions/1/transcript").count();
-    assert!(appends >= 2, "the transcript was appended to more than once:\n{written}");
+    assert!(appends >= 2, "the transcript was appended to at least twice:\n{written}");
     assert!(record.exists());
 
     Ok(())
