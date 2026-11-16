@@ -231,6 +231,9 @@ impl Handles<Part<Reading>> for Link {
                 let due = within.due(turn.now());
                 self.call(turn, call, due, &CallTool { tool, revision, input })
             }
+            // The chat a trusted engine is shown is its overlay's to read (ADR-0057), and no overlay of this engine
+            // reads it yet, so it is passed over.
+            Down::Sessions { .. } | Down::Show { .. } | Down::Ask { .. } => Ok(()),
         }
     }
 }

@@ -3,13 +3,15 @@
 use crate::Token;
 use aethereal_actor::{Due, Time, Turn};
 use aethereal_data::{Budget, DecodeError, EncodeError, Plain, from_bytes, to_bytes};
+use aethereal_sessions::{Chat, Numbered, Tab};
 use aethereal_tools::{Called, ToolSheet};
 use core::time::Duration;
 
 /// The revision of the link this crate speaks. A change to [`Up`] or [`Down`] that an older side would misread is the
 /// next. `2` brought [`Down::Call`]'s `within`, the time a call has left (ADR-0041), which a side of `1` misreads. `3`
-/// brought [`Outcome::Image`] and each sheet's `Output` (ADR-0043), which a side of `2` misreads.
-pub const REVISION: u32 = 3;
+/// brought [`Outcome::Image`] and each sheet's `Output` (ADR-0043), which a side of `2` misreads. `4` brought the chat
+/// frames of trusted engines (ADR-0057), which a side of `3` misreads.
+pub const REVISION: u32 = 4;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
@@ -25,6 +27,44 @@ pub enum Up {
     Sheets { revision: u64, tools: Vec<ToolSheet> },
     /// What the hub's call `call` came to.
     Called { call: u64, called: Outcome },
+    /// A line the owner typed without `/`, to the session `session` (ADR-0057).
+    Say { session: u32, text: String },
+    /// A `/` command the owner ran here, with `session`'s tab open, and what it printed: noted in the session's
+    /// transcript, and folded into the head of the owner's next line to it.
+    Ran { session: u32, line: String, printed: String },
+    /// The owner's answer to the ask numbered `ask`.
+    Answer { ask: u64, allow: bool },
+    /// Stop the session's turn.
+    Interrupt { session: u32 },
+    /// A tab opened, to be shown every event of the session's transcript after `after`, then each as it comes.
+    Open { session: u32, after: u64 },
+    /// A tab closed.
+    Close { session: u32 },
+    /// A session made.
+    New { name: String },
+    /// A session ended.
+    Archive { session: u32 },
+}
+
+impl Up {
+    /// The chat this frame carries, or the frame itself when it is one of the link's tools (ADR-0057).
+    ///
+    /// # Errors
+    ///
+    /// The frame, when it carries no chat.
+    pub fn into_chat(self) -> Result<Chat, Self> {
+        match self {
+            Self::Say { session, text } => Ok(Chat::Say { session, text }),
+            Self::Ran { session, line, printed } => Ok(Chat::Ran { session, line, printed }),
+            Self::Answer { ask, allow } => Ok(Chat::Answer { ask, allow }),
+            Self::Interrupt { session } => Ok(Chat::Interrupt { session }),
+            Self::Open { session, after } => Ok(Chat::Open { session, after }),
+            Self::Close { session } => Ok(Chat::Close { session }),
+            Self::New { name } => Ok(Chat::New { name }),
+            Self::Archive { session } => Ok(Chat::Archive { session }),
+            tools @ (Self::Hello { .. } | Self::Sheets { .. } | Self::Called { .. }) => Err(tools),
+        }
+    }
 }
 
 /// What a call came to, its output's bytes inline: as a frame carries a [`Called`], since a frame crosses to another
@@ -70,6 +110,12 @@ pub enum Down {
     /// A call of `tool`, numbered by the hub, with `input` bytes of its input schema in the set of `revision`, the one
     /// the hub converted it with, and the time it has left (ADR-0041).
     Call { call: u64, revision: u64, tool: String, input: Vec<u8>, within: Within },
+    /// Every session's name and state, as tabs: sent whole as a trusted engine links, and on every change (ADR-0057).
+    Sessions { list: Vec<Tab> },
+    /// Events of `session`'s transcript, for a tab open: the backlog first, then each as it comes.
+    Show { session: u32, events: Vec<Numbered> },
+    /// Something in `session` waits for the owner's answer, numbered `ask`, and says `what`.
+    Ask { ask: u64, session: u32, what: String },
 }
 
 /// The time a call has left when the hub writes it (ADR-0041). Two engines' clocks are their own, so a deadline

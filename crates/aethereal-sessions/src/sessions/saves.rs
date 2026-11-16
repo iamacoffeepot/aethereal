@@ -98,6 +98,7 @@ impl Sessions {
     /// Sends the writes of what has changed, unless one runs: the index first when a session was added, then each
     /// changed session's new transcript frames and its record.
     pub(super) fn flush<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        self.show(turn)?;
         let is_writing = matches!(self.lane, Lane::Writing { .. });
         if is_writing {
             return Ok(());

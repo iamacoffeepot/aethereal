@@ -25,6 +25,9 @@ pub enum Heard {
     TaskStarted(String),
     /// `system` `task_notification`, or `task_updated` to a state it does not leave: the task of this id ended.
     TaskEnded(String),
+    /// `control_request` `can_use_tool`: Claude Code asks, by the request's id, whether it may use `tool` with
+    /// `input`, the JSON of the input it asked with, and waits for the answer (ADR-0057).
+    Asked { request: String, tool: String, input: String },
     /// Anything else.
     Other,
 }
@@ -43,6 +46,9 @@ pub fn read(line: &str) -> (Heard, Option<String>) {
     let subtype = text(&tree, root, "subtype");
     let task = text(&tree, root, "task_id").map(String::from);
     let is_done = text(&tree, root, "status").is_some_and(is_final);
+    if kind == Some("control_request") {
+        return (asked(&tree, root).unwrap_or(Heard::Other), session);
+    }
     let heard = match (kind, subtype, task) {
         (Some("result"), _, _) => Heard::Result,
         (Some("system"), Some("init"), _) => Heard::Init,
@@ -54,6 +60,31 @@ pub fn read(line: &str) -> (Heard, Option<String>) {
     };
 
     (heard, session)
+}
+
+/// What a control request of Claude Code's, `root`, asks the owner: none for a request that asks them nothing, as
+/// only `can_use_tool` does.
+fn asked(tree: &JsonTree<'_>, root: &JsonValue<'_>) -> Option<Heard> {
+    let request = text(tree, root, "request_id")?;
+    let JsonValue::Object(span) = root else {
+        return None;
+    };
+    let asking = tree.member(*span, "request")?;
+    let subtype = text(tree, asking, "subtype");
+    if subtype != Some("can_use_tool") {
+        return None;
+    }
+    let tool = text(tree, asking, "tool_name")?;
+    let JsonValue::Object(asked) = asking else {
+        return None;
+    };
+    let mut input = String::new();
+    match tree.member(*asked, "input") {
+        Some(value) => tree.write(value, &mut input),
+        None => input.push_str("{}"),
+    }
+
+    Some(Heard::Asked { request: String::from(request), tool: String::from(tool), input })
 }
 
 /// The text of the member `name` of `object`: none when it has none, or it is not text.

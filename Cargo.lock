@@ -177,6 +177,7 @@ dependencies = [
  "aethereal-actor",
  "aethereal-data",
  "aethereal-process",
+ "aethereal-sessions",
  "aethereal-store",
  "aethereal-substrate",
  "aethereal-tcp",
