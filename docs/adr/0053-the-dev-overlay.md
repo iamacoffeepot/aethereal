@@ -98,6 +98,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **A turn reads the rings since a step,** merged by step, oldest first: within one step, turns ran at once, so the step is the only order between two actors' entries, and none is made up. The read answers the step to read on from, and how many entries had left the rings before it.
 - **The logs tool gains this read,** `read_recent`, which needs no actor. The overlay reads it once a second while the console is open, and an agent reads it to see what the whole engine said without knowing which actor to ask.
 - **A line shows its time, its level, its actor, and its text.** Errors and warnings are shown in the band as well, as a count since the console was last opened, in the gutter beside the frame chart.
+- **Each row of the scrollback is selected and copied as a transcript's line is** (ADR-0056: Copy and paste): a press on it takes the focus from the line, a drag selects within it, and Control or Command with C copies its text, plain, whatever its colours. Its selection is drawn in `dim` beneath its text, which stands apart from the `sheet` and from the owner's lines on `raised` alike. While a row or a transcript's line holds a selection, or one is being dragged out, the line leaves the focus with it; the line takes it back at the next frame once nothing is selected, or at the next key that types, whose own character is not typed. A selection runs within one row.
 
 ### Key focus
 
@@ -158,7 +159,7 @@ The inks:
 | --------- | ----- | --------------------------------------------------------------------- |
 | `divider` | 0.360 | every rule and divider, opaque                                        |
 | `faint`   | 0.520 | hints: the completion ahead of the line                               |
-| `dim`     | 0.680 | labels, timestamps, info lines, tool output, a tab not open           |
+| `dim`     | 0.680 | labels, timestamps, info lines, tool output, a tab not open; a selection, faint beneath its text |
 | `text`    | 0.910 | text, Claude's replies, the open tab; the chart's budget line         |
 
 The themes, each a hue and the chroma of its surfaces and of its inks; `set_theme` switches them live, and the choice is the engine's own, as the console's height is, kept until the engine ends:

@@ -1,4 +1,6 @@
 use super::{Ink, Oklch, Palette, Surface, Theme, linear};
+use aethereal_render::text::Colour;
+use aethereal_ui::widgets::SELECTION_STRENGTH;
 
 /// A role's OKLCH comes out as the owner's palette sheet shows it, so a slipped coefficient, a hue in radians, or a
 /// channel left unclamped or unencoded is caught.
@@ -35,4 +37,38 @@ fn a_palette_answers_each_role_in_linear_light() {
     assert_eq!(palette.surface(Surface::Band).alpha, 0.85);
     assert_eq!(palette.ink(Ink::Error), Palette::new(Theme::Stone).ink(Ink::Error));
     assert_ne!(palette.ink(Ink::Dim), Palette::new(Theme::Stone).ink(Ink::Dim));
+}
+
+/// How far apart two colours stand at least for one to be seen on the other: the ratio of their luminances, each with
+/// the flare WCAG adds.
+const SEEN_CONTRAST: f32 = 1.5;
+
+/// The luminance of `colour`'s red, green, and blue, in linear light, with WCAG's flare.
+fn luminance(colour: Colour) -> f32 {
+    0.0722f32.mul_add(colour.blue, 0.2126f32.mul_add(colour.red, 0.7152 * colour.green)) + 0.05
+}
+
+/// `over` at `alpha` laid on `under`, in linear light, as the renderer blends.
+fn laid_on(over: Colour, alpha: f32, under: Colour) -> Colour {
+    let mix = |above: f32, below: f32| alpha.mul_add(above, (1.0 - alpha) * below);
+
+    Colour::opaque(mix(over.red, under.red), mix(over.green, under.green), mix(over.blue, under.blue))
+}
+
+/// The selection, faded as the widget library fades it, stands apart from the sheet and from the raised band of the
+/// owner's lines in every theme, so a selection is seen wherever a selectable line lies.
+#[test]
+fn a_selection_is_seen_on_every_surface_a_selectable_line_lies_on_in_every_theme() {
+    // Catches a selection drawn in an ink, or faded so far, that it all but vanishes on one of the surfaces, as a dark
+    // ink on the raised band would.
+    for theme in Theme::ALL {
+        let palette = Palette::new(theme);
+        for surface in [Surface::Sheet, Surface::Raised] {
+            let under = palette.surface(surface);
+            let selected = laid_on(palette.selection(), SELECTION_STRENGTH, under);
+            let contrast = luminance(selected) / luminance(under);
+
+            assert!(contrast >= SEEN_CONTRAST, "{theme:?} on {surface:?}: {contrast}");
+        }
+    }
 }

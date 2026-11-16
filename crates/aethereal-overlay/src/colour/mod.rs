@@ -124,7 +124,7 @@ pub enum Ink {
     Divider,
     /// Hints: the completion shown ahead of the line.
     Faint,
-    /// Labels, tool output, info lines, and a tab not open.
+    /// Labels, tool output, info lines, a tab not open, and a selection in the console's text, faint beneath it.
     Dim,
     /// Text, Claude's replies, and the chart's budget line.
     Text,
@@ -253,6 +253,14 @@ impl Palette {
     #[must_use]
     pub const fn faded(&self, ink: Ink, alpha: f32) -> Colour {
         Colour { alpha, ..self.ink(ink) }
+    }
+
+    /// The colour a selection in the console's text is drawn in, which the widget library fades beneath the text: the
+    /// dim ink, which stands apart from the sheet and the raised band of the owner's lines alike, and leaves every ink
+    /// drawn over it read.
+    #[must_use]
+    pub const fn selection(&self) -> Colour {
+        self.ink(Ink::Dim)
     }
 
     /// A run of `text` in `ink`.
