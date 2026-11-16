@@ -139,7 +139,7 @@ impl Handles<ShowTabs> for Overlay {
         let chat = self.chats.listed(shown.tabs);
         self.tell(turn, chat)?;
         if first {
-            Self::offer_words(turn)?;
+            self.offer_words(turn)?;
         }
 
         Ok(())
