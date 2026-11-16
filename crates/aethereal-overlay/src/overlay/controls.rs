@@ -7,7 +7,9 @@
 //! tab open (ADR-0057), Escape empties the line, or on an empty one stops the session's turn; the tabs, a subagent's
 //! fold, and an ask's answers are pressed; and the grip is dragged to size the console. Control and Tab open the next
 //! tab, and with Shift the one before, round from the last to the first; Alt and a digit, 1 to 9, the tab at that
-//! place, Alt-1 the console's own, while the digit alone types into the line.
+//! place, Alt-1 the console's own, while the digit alone types into the line. A press on a line of the scrollback or a
+//! transcript takes the focus from the line, so a drag selects it and Control or Command with C copies it; the line
+//! takes the focus back at the next `Tick` once nothing is selected, or at the next key that types.
 
 use super::Overlay;
 use super::chat::Reports;
@@ -18,7 +20,8 @@ use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
 use aethereal_render::Renderer;
 use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
-use aethereal_ui::{Controls, First, Jump, Key, KeyPath, View, take_in};
+use aethereal_ui::widgets::{Selectable, Selecting};
+use aethereal_ui::{Controls, First, Focus, Jump, Key, KeyPath, View, take_in};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
@@ -54,7 +57,7 @@ impl Controls for Overlay {
     ];
 
     /// The console takes every key of the window while it is open (ADR-0053), though a press on its panel moved focus
-    /// off its line until the next `Tick` gives it back.
+    /// off its line until the next `Tick` gives it back, or a key that types does, from a line holding a selection.
     fn takes_every_key(&self) -> bool {
         self.stop.console()
     }
@@ -63,6 +66,7 @@ impl Controls for Overlay {
         let console = self.stop.console();
         let switching = console && key.held.control;
         let choosing = console && key.held.alt;
+        let typing = console && key.types();
         match key.code.as_str() {
             STEP_KEY => self.step(turn),
             CLOSE_KEY if console => self.escape(turn),
@@ -85,6 +89,13 @@ impl Controls for Overlay {
             }
             "PageUp" | "PageDown" if console => self.scroll(&key, turn),
             digit if choosing => self.choose_by(turn, digit),
+            // A key that types reaches the screen only while the line does not have the focus, as a selectable line
+            // holding a selection keeps it from each `Tick`: the line takes it back, though not the key's text, which
+            // the library drops as its screen took the key.
+            _ if typing => {
+                self.ui.focus(&OverlayNode::Prompt.path());
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -188,6 +199,17 @@ impl Overlay {
         }
 
         Ok(())
+    }
+
+    /// Whether the widget with the screen's focus is a selectable line, of the scrollback or a transcript, holding a
+    /// selection or having one dragged out.
+    pub(super) fn selecting(&self) -> bool {
+        let table = self.ui.table();
+        let Focus::On(path) = table.focus() else {
+            return false;
+        };
+
+        table.state::<Selectable>(path).is_some_and(Selecting::selects)
     }
 
     /// Closes the console back to the band, the line's focus going with it, so the window's keys reach the program

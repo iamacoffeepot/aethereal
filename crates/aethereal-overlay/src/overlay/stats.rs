@@ -112,7 +112,8 @@ impl Overlay {
 /// out again when they are due and the memory kept in the meters' histories, and the engine's log read when it is due.
 /// The first looks for the engine's link and listens to it, every root of the program having begun. While the console
 /// is open its line is given its screen's focus back, should a press have taken it elsewhere, so the console goes on
-/// taking every key. Heard only while the overlay is shown.
+/// typing into it; but not from a selectable line holding a selection, or having one dragged out, so the selection
+/// shows and the copy chord reaches it. Heard only while the overlay is shown.
 impl Handles<On<Tick>> for Overlay {
     type Sends = (ToType<Link, Listen>,);
 
@@ -150,7 +151,11 @@ impl Handles<On<Tick>> for Overlay {
             self.read_logs(turn);
         }
 
-        if self.stop.console() {
+        // A selectable line holding a selection keeps the focus, so its selection shows and the copy reaches it.
+        let console = self.stop.console();
+        let selecting = self.selecting();
+        let returns = console && !selecting;
+        if returns {
             self.ui.focus(&OverlayNode::Prompt.path());
         }
 

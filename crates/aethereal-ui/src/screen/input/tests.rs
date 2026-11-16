@@ -16,7 +16,7 @@ use aethereal_actor::{ProtocolRef, SeatNumber, Seated, Time};
 use aethereal_data::ActorId;
 use aethereal_math::Vec2;
 use aethereal_render::draw_list::{Entry, Pointer};
-use aethereal_render::text::{Colour, Font};
+use aethereal_render::text::{Colour, Font, Run};
 use aethereal_window::WindowId;
 use aethereal_window::{AllowIme, Button as Pressed, Cursor, KeyEvent, KeySet, Keyed, Over, Pointed, PointerEvent};
 
@@ -715,7 +715,14 @@ fn a_selectable_text_takes_the_focus_on_a_press_and_tab_passes_it() {
     // Catches a selectable text that cannot hold the focus, so the copy chord never reaches it; and one Tab stops at,
     // so tabbing through a transcript visits every message before the field to type in.
     let mut screen = screen_with_fonts();
-    let read = || Node::new(Segment::Place(0), Selectable::new("read me"), sized(100.0, 20.0), vec![]);
+    let read = || {
+        Node::new(
+            Segment::Place(0),
+            Selectable { runs: vec![Run::new("read me", Colour::WHITE)] },
+            sized(100.0, 20.0),
+            vec![],
+        )
+    };
     let typed = || Node::new(Segment::Place(1), TextInput::new("", Ev::Changed), sized(100.0, 20.0), vec![]);
     let tree = || column(vec![read(), typed()]);
     laid(&mut screen, tree(), &["Tab"]);

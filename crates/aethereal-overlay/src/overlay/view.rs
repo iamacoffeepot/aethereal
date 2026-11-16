@@ -40,7 +40,7 @@ use crate::layout::{
 };
 use crate::lines::{LineRows, LinesShown};
 use crate::meters::{self, Meter, MeterDrawn, MeterGraph};
-use crate::widgets::{Grip, Hint, Printed, Shape, StatusIcon, TabButton, Tint, runs_of};
+use crate::widgets::{Grip, Hint, Shape, StatusIcon, TabButton, Tint, runs_of};
 use aethereal_actor::{Asks, Fault, Level, Path, Tells, ToType, Turn};
 use aethereal_link::Link;
 use aethereal_render::Renderer;
@@ -50,7 +50,7 @@ use aethereal_sessions::{Chat, engine_words};
 use aethereal_tools::{CallTool, Tools};
 use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
-use aethereal_ui::widgets::{DELAY, Flow, Link as RunLink, Rich};
+use aethereal_ui::widgets::{DELAY, Flow, Rich};
 use core::f64::consts::TAU;
 
 /// `left`, `right`, `top`, and `bottom` logical pixels of padding.
@@ -224,7 +224,8 @@ aethereal_ui::style! {
     /// One row of a transcript, across it, at least a line of text tall, which the scroll windows its rows by; its
     /// background and padding its own, the owner's lines set apart from Claude's on the raised band.
     pub entry { width: Length::Share(1.0), min_height: Length::Pixels(TEXT_PIXELS) }
-    /// A line of a transcript, which its reader can select and copy: the mono face, its colour its own.
+    /// A line its reader can select and copy, a transcript's or the scrollback's: the mono face, its colour the
+    /// selection's, set where it is used, as its runs carry their own.
     pub said: mono {}
     /// One of the owner's lines: its tag, then its text.
     pub turn { width: Length::Share(1.0) }
@@ -324,24 +325,24 @@ aethereal_ui::view! { Overlay, ui,
                     Row {
                         FrameChart { name: chart, style: graph, shown: self.chart(), tall: self.chart_tall(), palette: self.palette }
                         Column { style: gutter,
-                            Printed { style: mono, runs: self.median_runs() }
-                            Printed { style: mono, runs: self.alerts_runs() }
+                            Rich { .., style: mono, runs: self.median_runs(), flow: Flow::Unbroken }
+                            Rich { .., style: mono, runs: self.alerts_runs(), flow: Flow::Unbroken }
                         }
                     }
-                    Printed { style: figures, runs: self.figures_runs() }
+                    Rich { .., style: figures, runs: self.figures_runs(), flow: Flow::Unbroken }
                     Tint { style: rule_across { colour: self.ink(Ink::Divider) } }
                     Row { show: self.gpu_timed(),
                         GpuGraph { style: graph, shown: self.gpu_graph(), tall: self.gpu_tall(), palette: self.palette }
                         Column { style: gutter,
-                            Printed { style: mono, runs: self.gpu_top_runs() }
+                            Rich { .., style: mono, runs: self.gpu_top_runs(), flow: Flow::Unbroken }
                         }
                     }
-                    Printed { style: figures, runs: self.gpu_figures_runs() }
+                    Rich { .., style: figures, runs: self.gpu_figures_runs(), flow: Flow::Unbroken }
                     Tint { style: rule_across { colour: self.ink(Ink::Divider) } }
                     Row {
                         LineRows { style: graph, shown: self.line_rows(), palette: self.palette }
                         Column { style: gutter,
-                            Printed { style: mono, runs: self.lines_runs() }
+                            Rich { .., style: mono, runs: self.lines_runs(), flow: Flow::Unbroken }
                         }
                     }
                 }
@@ -349,7 +350,7 @@ aethereal_ui::view! { Overlay, ui,
                 Column { style: right, items: self.meters() as meter key meter.number,
                     Row { style: meter_row,
                         MeterGraph { name: meter_graph, style: meter_graph, drawn: meter.drawn, palette: self.palette }
-                        Printed { style: meter_gutter, runs: meter.runs }
+                        Rich { .., style: meter_gutter, runs: meter.runs, flow: Flow::Unbroken }
                     }
                 }
             }
@@ -366,14 +367,7 @@ aethereal_ui::view! { Overlay, ui,
                 keeps: Keeps::End,
                 items: self.rows() as row key row.number(),
                 Column { style: printed_row { background: self.printed_shade(row), padding: sides(row) },
-                    Rich {
-                        name: printed,
-                        style: mono,
-                        runs: self.printed_runs(row),
-                        links: self.unlinked(),
-                        flow: Flow::Wraps,
-                        link: self.unraised(),
-                    }
+                    Selectable { name: printed, style: said { colour: self.selection() }, runs: self.printed_runs(row) }
                 }
             }
             Scroll { ..,
@@ -383,16 +377,26 @@ aethereal_ui::view! { Overlay, ui,
                 keeps: Keeps::End,
                 items: self.chats.rows() as row key row.key,
                 Column { style: entry { background: self.entry_shade(row), padding: inset(row) },
-                    Selectable { show: row.is_line(), style: said { colour: self.entry_colour(row) }, text: row.text() }
+                    Selectable {
+                        show: row.is_line(),
+                        style: said { colour: self.selection() },
+                        runs: self.entry_runs(row),
+                    }
                     Row { show: row.is_turn(), style: turn,
-                        Printed { show: row.is_other_turn(), style: tag, runs: self.tag_runs(row) }
+                        Rich {
+                            ..,
+                            show: row.is_other_turn(),
+                            style: tag,
+                            runs: self.tag_runs(row),
+                            flow: Flow::Unbroken,
+                        }
                         Tooltip { show: row.is_own_turn(), side: Side::Above, delay: DELAY,
-                            Printed { style: tag, runs: self.tag_runs(row) }
+                            Rich { .., style: tag, runs: self.tag_runs(row), flow: Flow::Unbroken }
                             Column { style: own_tip { background: self.surface(Surface::Raised) },
                                 Text { style: mono { colour: self.ink(Ink::Text) }, "{self.local_tip()}" }
                             }
                         }
-                        Selectable { style: turn_text { colour: self.entry_colour(row) }, text: row.text() }
+                        Selectable { style: turn_text { colour: self.selection() }, runs: self.entry_runs(row) }
                     }
                     Row { show: row.is_divider(), style: divided,
                         Tint { style: divider_line { colour: self.faded(Ink::Mark, MARK_LINE_OPACITY) } }
@@ -436,7 +440,7 @@ aethereal_ui::view! { Overlay, ui,
                     }
                     Hint { style: mono, runs: self.hint_runs() }
                 }
-                Printed { style: mono, runs: self.running_runs() }
+                Rich { .., style: mono, runs: self.running_runs(), flow: Flow::Unbroken }
             }
             Tint { style: tab_strip_rule { colour: self.ink(Ink::Divider) }, show: self.chats.is_listed() }
             Row {
@@ -566,16 +570,9 @@ impl Overlay {
         row.runs(&self.palette)
     }
 
-    /// The links of a scrollback's row: none, as nothing printed there leads anywhere.
-    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
-    pub(super) fn unlinked(&self) -> Vec<RunLink> {
-        Vec::new()
-    }
-
-    /// What a scrollback's row raises as a link is pressed: nothing, as it has none.
-    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
-    pub(super) const fn unraised(&self) -> Raises<OverlayEvent> {
-        Raises::Nothing
+    /// The colour a selection in the console's text is drawn in, before the library fades it beneath the text.
+    pub(super) const fn selection(&self) -> Colour {
+        self.palette.selection()
     }
 
     /// What the transcript's row `row` is filled with.
@@ -583,9 +580,9 @@ impl Overlay {
         self.shaded(row.shade())
     }
 
-    /// The colour of the transcript's row `row`'s text.
-    pub(super) const fn entry_colour(&self, row: &TranscriptRow) -> Colour {
-        self.palette.ink(row.ink())
+    /// The transcript's row `row`'s text, in its ink.
+    pub(super) fn entry_runs(&self, row: &TranscriptRow) -> Vec<Run> {
+        vec![self.palette.run(&row.text(), row.ink())]
     }
 
     /// The runs of the tag of the transcript's row `row`.

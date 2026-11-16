@@ -1,6 +1,11 @@
 //! `Rich`: a text of runs in colours of their own, in its style's font and size, wrapped to the width it is given or
-//! left unbroken, some of its runs links (ADR-0056: Markdown). It measures, sizes, and draws as [`Text`](super::Text)
-//! does, from its runs rather than one string in its style's colour.
+//! left unbroken, some of its runs links (ADR-0056: Markdown, Stock widgets). It measures, sizes, and draws as
+//! [`Text`](super::Text) does, from its runs rather than one string in its style's colour. It is the library's one text
+//! of several colours: a reply's paragraph, a gutter of figures, a console's tag, and, read and copied, a
+//! [`Selectable`](super::Selectable)'s runs.
+//!
+//! One with no links raises nothing, so its event type is the unit, `Rich<()>`, and its `Default` is that one: markup
+//! writes `Rich { .., runs: …, flow: Flow::Unbroken }` and leaves its links, and the event they would raise, out.
 //!
 //! A run that is a link shows the hand while the pointer is over it, and a press and a release of the main button both
 //! on it raise `link` with its target. Which run the pointer is over is found by laying the text out as it was drawn,
@@ -60,6 +65,15 @@ pub enum AtLink {
     #[default]
     Nothing,
     Run(u32),
+}
+
+/// A text of no runs that wraps and has no links, so it raises nothing: what markup's `..` leaves a `Rich` at. It is
+/// the one `Default`, for the unit as its event type, so a `Rich` whose markup writes no event has a type rustc settles
+/// on; one with links is written whole, its event the screen's.
+impl Default for Rich<()> {
+    fn default() -> Self {
+        Self { runs: Vec::new(), links: Vec::new(), flow: Flow::Wraps, link: Raises::Nothing }
+    }
 }
 
 impl<E: Event> Raising for Rich<E> {

@@ -1,13 +1,14 @@
-//! `Selectable`: where a press lands in its text as drawn, what a double and a triple click select, and what it copies.
+//! `Selectable`: where a press lands in its text as drawn, what a double and a triple click select, what it copies, and
+//! how a text of several colours draws beneath and over its selection.
 
-use super::{Selectable, Selecting};
+use super::{SELECTION_STRENGTH, Selectable, Selecting};
 use crate::fonts::{Fonts, Texts};
 use crate::input::{Clip, Held, Input, Key, Pointing};
 use crate::style::Style;
-use crate::widget::{Laid, Span, Widget};
+use crate::widget::{Draws, Focused, Laid, Lit, Piece, Span, Widget};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::font::Font as FontFile;
-use aethereal_render::text::{Align, Font, Wrap};
+use aethereal_render::text::{Align, Colour, Font, Run, Wrap};
 use aethereal_window::Button;
 
 /// The renderer's own monospace font, so each character is as wide as the next.
@@ -27,27 +28,51 @@ fn cell(fonts: &Fonts) -> (f32, f32) {
     (carets.lines[0].stops[1].x, carets.line_height)
 }
 
-/// Presses on `text` styled `style`, laid in a box 400 by 200, at each of `presses`: where, and how many in a row; then
-/// presses Control with C. What it selected and what it asked the clipboard.
-fn pressed(text: &str, style: &Style, presses: &[(Vec2, u32)]) -> (Selecting, Vec<Clip>) {
+/// The box the tests lay their text in: 400 by 200 at the top left.
+fn laid() -> Laid {
+    let rect = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 200.0));
+
+    Laid { rect, content: rect, clip: rect, extent: Vec2::ZERO, bar: Span::WHOLE, scale: 1.0 }
+}
+
+/// `text`, in one run of white.
+fn plain(text: &str) -> Selectable {
+    Selectable { runs: vec![Run::new(text, Colour::WHITE)] }
+}
+
+/// Puts `pointings` to `selectable` styled `style`, laid in [`laid`]'s box, then presses Control with C. What it
+/// selected and what it asked the clipboard.
+fn pointed(selectable: &Selectable, style: &Style, pointings: &[Pointing]) -> (Selecting, Vec<Clip>) {
     let fonts = fonts();
     let mut texts = Texts::default();
     let mut measuring = fonts.measuring(&mut texts, 1.0);
-    let rect = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 200.0));
-    let laid = Laid { rect, content: rect, clip: rect, extent: Vec2::ZERO, bar: Span::WHOLE, scale: 1.0 };
-    let selectable = Selectable::new(text);
     let mut selecting = Selecting::default();
     let (mut raised, mut clips) = (Vec::new(), Vec::new());
-    let mut input = Input::new(style, laid, &mut measuring, (&mut raised, &mut clips));
-    for &(at, presses) in presses {
-        selectable.pointed(&mut selecting, Pointing::Down { at, button: Button::Main, presses }, &mut input);
-        selectable.pointed(&mut selecting, Pointing::Up { at, button: Button::Main, over: true }, &mut input);
+    let mut input = Input::new(style, laid(), &mut measuring, (&mut raised, &mut clips));
+    for &pointing in pointings {
+        selectable.pointed(&mut selecting, pointing, &mut input);
     }
     let held = Held { control: true, ..Held::default() };
     let copy = Key { code: String::from("KeyC"), key: String::from("c"), repeat: false, held };
     selectable.key(&mut selecting, &copy, &mut input);
 
     (selecting, clips)
+}
+
+/// Presses on `text` styled `style` at each of `presses`, where and how many in a row, then copies: what it selected
+/// and what it asked the clipboard.
+fn pressed(text: &str, style: &Style, presses: &[(Vec2, u32)]) -> (Selecting, Vec<Clip>) {
+    let pointings: Vec<Pointing> = presses
+        .iter()
+        .flat_map(|&(at, presses)| {
+            [
+                Pointing::Down { at, button: Button::Main, presses },
+                Pointing::Up { at, button: Button::Main, over: true },
+            ]
+        })
+        .collect();
+
+    pointed(&plain(text), style, &pointings)
 }
 
 /// The monospace style, aligned as `align` says.
@@ -80,6 +105,41 @@ fn a_triple_click_selects_the_line_between_breaks() {
 
     assert_eq!((selecting.anchor, selecting.caret), (8, 13));
     assert_eq!(clips, vec![Clip::Copy(String::from("three"))]);
+}
+
+#[test]
+fn a_drag_across_runs_of_several_colours_copies_their_plain_text_and_draws_each_run_in_its_own_over_the_selection() {
+    // Catches a selection's offsets counted in one run rather than the runs joined, so a drag past the first run's end
+    // selects or copies the wrong characters; runs drawn in the style's one colour, or merged, losing their own; and a
+    // selection drawn over its text, hiding it, or not at all while the text has its screen's focus.
+    let fonts = fonts();
+    let (width, height) = cell(&fonts);
+    let (red, green) = (Colour::opaque(1.0, 0.0, 0.0), Colour::opaque(0.0, 1.0, 0.0));
+    let runs = vec![Run::new("local", red), Run::new(" > ", green), Run::new("memory", Colour::WHITE)];
+    let selectable = Selectable { runs: runs.clone() };
+    let highlight = Colour::opaque(0.2, 0.4, 0.8);
+    let style = Style { colour: highlight, ..style(Align::Left) };
+    let (start, end) = (Vec2::new(0.0, height / 2.0), Vec2::new(width * 9.0, height / 2.0));
+    let drag = [
+        Pointing::Down { at: start, button: Button::Main, presses: 1 },
+        Pointing::Moved { at: end },
+        Pointing::Up { at: end, button: Button::Main, over: true },
+    ];
+
+    let (selecting, clips) = pointed(&selectable, &style, &drag);
+    let mut texts = Texts::default();
+    let mut measuring = fonts.measuring(&mut texts, 1.0);
+    let mut pieces = Vec::new();
+    let mut draws = Draws::new(&mut pieces, &mut measuring, Focused::Yes, Lit::No);
+    Widget::draw(&selectable, &selecting, &style, &laid(), &mut draws);
+
+    assert_eq!(clips, vec![Clip::Copy(String::from("local > m"))]);
+    let [Piece::Quad(selection), Piece::Text(written)] = pieces.as_slice() else {
+        panic!("its selection, then its text: {pieces:?}");
+    };
+    assert_eq!(selection.colour, Colour { alpha: SELECTION_STRENGTH, ..highlight });
+    assert!(width.mul_add(-9.0, selection.rect.max.x).abs() < 0.01, "the selection ends after `m`: {selection:?}");
+    assert_eq!(written.runs, runs);
 }
 
 /// The fonts a cell is measured in: the monospace one alone.

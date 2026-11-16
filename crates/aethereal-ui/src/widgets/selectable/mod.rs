@@ -1,43 +1,57 @@
-//! `Selectable`: a [`Text`] its reader can select and copy (ADR-0056: Copy and paste), as a transcript's messages are.
-//! It measures and draws as a `Text` of its string does, in the same box, and over that a press puts a caret, a drag
-//! selects, a double click selects a word and a triple click the line between breaks, and Control or Command with C
-//! copies the selection, with A selects the whole. Its selection shows while it has its screen's focus, which a press
-//! gives it so the keys reach it; Tab passes it, as it is read, not filled in.
+//! `Selectable`: a text in runs of colours of their own that its reader can select and copy (ADR-0056: Copy and paste),
+//! as a transcript's messages and a console's rows are. It measures and draws as a [`Rich`] of its runs that wraps
+//! does, in the same box, and over that a press puts a caret, a drag selects, a double click selects a word and a
+//! triple click the line between breaks, and Control or Command with C copies the selection, with A selects the whole.
+//! Its selection is drawn beneath its text in its style's colour, faint, as its runs carry their own; it shows while it
+//! has its screen's focus, which a press gives it so the keys reach it; Tab passes it, as it is read, not filled in.
+//! What it selects and copies is its runs' text, joined: their colours are only how it is drawn.
 //!
 //! Selection runs within one `Selectable`: a press in another starts that one's.
 
 #[cfg(test)]
 mod tests;
 
-use super::text::{Text, Width, rim};
+use super::rich::{Reading, Rich};
+use super::text::{Width, fitted, rim};
 use super::text_input::edit::{Edit, Selecting as Moving};
 use crate::fonts::{Measuring, Unmeasured};
 use crate::input::{Hears, Input, Key, Pointing, Used};
 use crate::style::Style;
-use crate::widget::{Arrange, Draws, Laid, Offer, Quad, Sample, Stateless, Widget};
+use crate::widget::{Arrange, Draws, Laid, Offer, Quad, Sample, Widget};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::draw_list::Pointer;
-use aethereal_render::text::{Align, CaretLine, Carets, Colour, Wrap};
+use aethereal_render::text::{Align, CaretLine, Carets, Colour, Run, Wrap};
 use aethereal_window::{Button, Cursor};
 
-/// How strong its selection is, of its style's colour's alpha.
-const SELECTION_STRENGTH: f32 = 0.3;
+/// How strong its selection is, of its style's colour's alpha: what a screen choosing that colour reckons with, so its
+/// selection is seen on what it lies on.
+pub const SELECTION_STRENGTH: f32 = 0.3;
 
-/// A string, drawn as a [`Text`] of it is, that its reader can select and copy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Runs of text in colours of their own, drawn as a [`Rich`] of them that wraps is, that its reader can select and
+/// copy.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Selectable {
-    pub text: String,
+    pub runs: Vec<Run>,
 }
 
-/// A selectable text's caret and the other end of its selection, byte offsets into its text, and whether a press on it
-/// is selecting as the pointer drags.
+/// A selectable text's caret and the other end of its selection, byte offsets into its runs' text joined, and whether a
+/// press on it is selecting as the pointer drags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
 #[kind(name = "aether.ui.selecting")]
 pub struct Selecting {
     pub caret: u32,
     pub anchor: u32,
     pub dragging: bool,
+}
+
+impl Selecting {
+    /// Whether its reader has a selection standing in its text or is making one with a drag: what a screen that gives
+    /// its focus elsewhere of its own accord leaves be, so the selection shows and the copy reaches it.
+    #[must_use]
+    pub const fn selects(self) -> bool {
+        self.dragging || self.caret != self.anchor
+    }
 }
 
 /// Its text as drawn in its content box: its lines, where the first starts, and the width its lines are set within.
@@ -72,25 +86,25 @@ impl Shown {
 }
 
 impl Selectable {
-    /// The string `text`.
-    #[must_use]
-    pub fn new(text: &str) -> Self {
-        Self { text: String::from(text) }
+    /// It as the rich text it draws as: its runs, wrapping, with no links.
+    fn rich(&self) -> Rich<()> {
+        Rich { runs: self.runs.clone(), ..Rich::default() }
     }
 
-    /// It as the plain text it draws as.
-    fn plain(&self) -> Text {
-        Text::new(&self.text)
+    /// Its runs' text, joined: what its selection's offsets count and its copy writes.
+    fn text(&self) -> String {
+        self.runs.iter().map(|run| run.text.as_str()).collect()
     }
 
     /// Its text as `selecting` stands in it.
     fn edit(&self, selecting: Selecting) -> Edit {
         let at = |kept: u32| usize::try_from(kept).unwrap_or(usize::MAX);
 
-        Edit::new(&self.text, at(selecting.caret), at(selecting.anchor))
+        Edit::new(&self.text(), at(selecting.caret), at(selecting.anchor))
     }
 
-    /// Its text as drawn in `content` styled `style` at `scale`: laid out as `Text` lays it out, wrapped where it wraps.
+    /// Its text as drawn in `content` styled `style` at `scale`: laid out as `Rich` lays it out, wrapped where it
+    /// wraps.
     fn shown(
         &self,
         style: &Style,
@@ -99,7 +113,7 @@ impl Selectable {
     ) -> Result<Shown, Unmeasured> {
         let pad = rim(style, scale);
         let width = pad.mul_add(-2.0, content.width());
-        let (measured, wrap) = self.plain().fitted(style, measuring, Width::Within(width))?;
+        let (measured, wrap) = fitted(&self.runs, style, measuring, Width::Within(width))?;
         let within = match wrap {
             Wrap::None => measured.width,
             Wrap::At { width } => width,
@@ -109,7 +123,7 @@ impl Selectable {
             Align::Centre => (width - within) / 2.0,
             Align::Right => width - within,
         };
-        let carets = measuring.carets(style.font, style.font_size * scale, &self.text, wrap)?;
+        let carets = measuring.carets(style.font, style.font_size * scale, &self.text(), wrap)?;
 
         Ok(Shown { carets, origin: content.min + Vec2::new(pad + shift, pad), within, align: style.text_align })
     }
@@ -129,14 +143,15 @@ impl Widget for Selectable {
     }
 
     fn measure(&self, style: &Style, measuring: &mut Measuring<'_>, offer: Offer) -> Vec2 {
-        Widget::measure(&self.plain(), style, measuring, offer)
+        Widget::measure(&self.rich(), style, measuring, offer)
     }
 
     fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
-        Widget::least(&self.plain(), style, measuring)
+        Widget::least(&self.rich(), style, measuring)
     }
 
-    /// Its selection beneath its text, while it has focus, then its text as `Text` draws it.
+    /// Its selection beneath its text in its style's colour, faint, while it has focus, then its runs as `Rich` draws
+    /// them.
     fn draw(&self, selecting: &Selecting, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let edit = self.edit(*selecting);
         let lit = draws.focused() && edit.selects();
@@ -170,7 +185,7 @@ impl Widget for Selectable {
                 });
             }
         }
-        Widget::draw(&self.plain(), &Stateless, style, laid, draws);
+        Widget::draw(&self.rich(), &Reading::default(), style, laid, draws);
     }
 
     fn pointer(&self, _: &Selecting) -> Pointer {
