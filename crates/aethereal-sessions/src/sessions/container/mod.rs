@@ -7,7 +7,7 @@ mod tests;
 
 use super::record::Conversation;
 use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
-use crate::{Access, Bind, ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
+use crate::{ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
 use aethereal_data::write_json_string;
 
 /// What a session's container is made for: the session, its run, the conversation it carries on, and the credential's
@@ -108,7 +108,6 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
     let mut variables: Vec<Variable> =
         places.map(|(name, value)| Variable { name: String::from(name), value: String::from(value) }).to_vec();
     variables.extend(env);
-    let binds = vec![Bind { source: settings.claude.clone(), target: String::from(CLAUDE), access: Access::ReadOnly }];
     let volumes =
         shelves(settings, session)?.map(|shelf| Volume { name: shelf.name, target: String::from(shelf.target) });
 
@@ -119,7 +118,8 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
         working_dir: String::from(HOME),
         command: command(settings, conversation),
         env: variables,
-        binds,
+        // Claude Code is in the image, so nothing of the machine is bound in.
+        binds: Vec::new(),
         volumes: Vec::from(volumes),
         network: Network::Host,
         millicpus: settings.millicpus,

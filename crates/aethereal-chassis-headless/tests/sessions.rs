@@ -246,7 +246,6 @@ impl Daemon {
     fn sessions(&self, most_running: u32, idle_secs: u32) -> SessionsSettings {
         SessionsSettings {
             credential: self.dir.join("claude.env").display().to_string(),
-            claude: String::from("/opt/claude"),
             label: String::from("test"),
             labels: vec![String::from("aethereal.test=1")],
             most_running,
@@ -1258,7 +1257,7 @@ fn live(name: &str) -> String {
 }
 
 /// The live run's hub: `Files` in the run's directory `root`, this machine's daemon, and the sessions on Haiku, as the
-/// environment names their image, Claude binary, and credential, every container and volume labelled `label`.
+/// environment names their image and credential, every container and volume labelled `label`.
 fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
     let files = FileRoots {
         assets: root.join("assets").display().to_string(),
@@ -1269,7 +1268,6 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
     let settings = SessionsSettings {
         credential: live("CREDENTIAL"),
         image: live("IMAGE"),
-        claude: live("CLAUDE"),
         model: String::from("haiku"),
         hub_url: String::new(),
         label: String::from(label),
@@ -1338,7 +1336,7 @@ fn report_transcript(entries: &[Numbered]) {
 }
 
 #[test]
-#[ignore = "runs Claude Code in a container on this machine's Docker, on the owner's subscription: run by hand with --ignored, naming the run's directory, the session image, the Claude binary, and the credential's file in AETHEREAL_SESSIONS_LIVE_ROOT, _IMAGE, _CLAUDE, and _CREDENTIAL"]
+#[ignore = "runs Claude Code in a container on this machine's Docker, on the owner's subscription: run by hand with --ignored, naming the run's directory, the session image, and the credential's file in AETHEREAL_SESSIONS_LIVE_ROOT, _IMAGE, and _CREDENTIAL"]
 fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard> {
     // Catches what a fake cannot: Claude Code reading the lines the hub writes, writing what the hub reads, taking the
     // interrupt, the container made from the settings running at all, and its volumes, which Docker makes root's,

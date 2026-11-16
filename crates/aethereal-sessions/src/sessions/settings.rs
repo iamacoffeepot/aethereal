@@ -27,8 +27,8 @@ pub const CARGO: &str = "/session/cargo";
 /// [`SessionsSettings::prompt`], kept beside the session image's Dockerfile.
 const PROMPT: &str = include_str!("../../image/prompt.txt");
 
-/// Where the Claude Code binary is inside its container.
-pub const CLAUDE: &str = "/usr/local/bin/claude";
+/// Where the Claude Code binary is inside its container: where the session image's package installs it.
+pub const CLAUDE: &str = "/usr/bin/claude";
 
 /// The sessions capability's section, `sessions`: what each session's container is made of, and its limits (ADR-0057).
 /// Every field of a container comes from here or from the session's number, never from what a caller asked. Where the
@@ -43,15 +43,12 @@ pub struct SessionsSettings {
     /// anywhere else.
     #[flag]
     pub credential: String,
-    /// The image each container runs: the session image, `crates/aethereal-sessions/image`, built on this machine. It
-    /// holds `/session/home`, `/session/target`, and `/session/cargo` owned by [`user`](Self::user), which Docker
-    /// copies into each new volume mounted there; an image without them leaves each volume root's, and the session
-    /// cannot write its home.
+    /// The image each container runs: a session image `cargo xtask create-session-image` made on this machine, by
+    /// the tag it printed, which holds Claude Code. It holds `/session/home`, `/session/target`, and `/session/cargo`
+    /// owned by [`user`](Self::user), which Docker copies into each new volume mounted there; an image without them
+    /// leaves each volume root's, and the session cannot write its home.
     #[flag]
     pub image: String,
-    /// The Claude Code binary on this machine, bound read-only into each container: absolute.
-    #[flag]
-    pub claude: String,
     /// The model each session runs, stated as print mode otherwise picks its own.
     #[flag]
     pub model: String,
@@ -99,7 +96,6 @@ impl Default for SessionsSettings {
         Self {
             credential: String::from("sessions/claude.env"),
             image: String::from("aethereal-session"),
-            claude: String::from("/usr/local/lib/claude-code/claude"),
             model: String::from("opus"),
             user: String::from("1000:1000"),
             hub_url: String::from("http://127.0.0.1:8890/mcp"),
