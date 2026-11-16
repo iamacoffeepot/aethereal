@@ -6,7 +6,7 @@ mod tests;
 
 use super::{Label, Unwritable};
 use aethereal_data::{Plain, write_json_string};
-use core::fmt::Write as _;
+use core::fmt::{self, Write as _};
 
 /// What a container is made from: its name, image, user, working directory, command, environment, binds, network,
 /// limits, labels, and stdin, each stated by its maker.
@@ -40,12 +40,19 @@ pub struct ContainerSpec {
     pub stdin: Stdin,
 }
 
-/// One environment variable: a name, which holds no `=`, and its value.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// One environment variable: a name, which holds no `=`, and its value. A value may be a secret, such as a session's
+/// credential, so it is never printed: its `Debug` names the variable and how long its value is.
+#[derive(Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.docker.variable")]
 pub struct Variable {
     pub name: String,
     pub value: String,
+}
+
+impl fmt::Debug for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Variable").field("name", &self.name).field("value_bytes", &self.value.len()).finish()
+    }
 }
 
 /// A directory of this machine a container sees: `source`, which must already exist, at `target` inside it.
@@ -112,7 +119,7 @@ impl ContainerSpec {
     ///
     /// The variable whose name is empty or holds `=`, which Docker would split elsewhere, and the label whose key is
     /// empty.
-    pub(super) fn body(&self) -> Result<String, Unwritable> {
+    pub(crate) fn body(&self) -> Result<String, Unwritable> {
         let open = self.stdin == Stdin::Kept;
         let mut body = String::from("{\"Image\":");
         write_json_string(&self.image, &mut body);

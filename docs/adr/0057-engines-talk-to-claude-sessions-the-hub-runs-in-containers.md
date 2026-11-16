@@ -39,25 +39,35 @@ What a probe on the build host established, with Claude Code 2.1.310 in a contai
 **The hub runs each open Claude session in a Docker container of its own, made only from the hub's config and reached through Docker's Engine API over its Unix socket. A new capability, `Sessions`, holds the sessions, writes the owner's lines to a session's stdin, reads its events from its stdout, and keeps each session's events as one numbered transcript. Trusted engines, the ones the owner starts, gain chat frames on the link: they list every session as a tab, open one to read its transcript from any point, type to it, interrupt it, and answer what it asks. Untrusted engines, the ones a session spawns, keep the link as it is. The dev overlay's drop-down console becomes the chat: a line goes to Claude, and a line starting with `/` runs the engine's own tool, as it does today.**
 
 ```
-console line ──> Up::Say ──> hub: Engine(37) tags it ──> Session ──> queued while a turn runs
+console line ──> Up::Say ──> hub: Engine(37) tags it ──> Session: numbered transcript
                                                             └──> attach stream (stdin) ──> claude -p in the container
-claude -p ──> stdout events ──> Session: numbered transcript ──> Down::Show to every engine with the tab open
+claude -p ──> stdout events ──> logs, followed ──> Session: numbered transcript ──> Down::Show to every engine with the tab open
 claude -p ──> hub MCP (its session's route) ──> check_in, spawn_engine, call_tool on its work engines
 console /line ──> the engine's own tool, now ──> Up::Ran ──> transcript, folded into the next Say
 ```
 
 ### A session is a container
 
-- **One container per open session.** It runs `claude -p --input-format stream-json --output-format stream-json --verbose --model <model> --resume <id>` and lives while the session is open: a long build or a background subagent keeps running between turns.
-- **The container is built only from the capability's config.** Its image, its mounts, its limits, its network, and its label all come from `Sessions`' settings and the session's id. Nothing is passed through from a tool call, a frame, or Claude, so no one can ask for another image or another mount. Access to the socket is access to the build host, and this rule is what keeps it the hub's.
+- **One container per open session.** It runs `claude -p --input-format stream-json --output-format stream-json --verbose --model <model> --dangerously-skip-permissions`, with `--resume <id>` once Claude has named its conversation, and lives while the session is open: a long build or a background subagent keeps running between turns. The id is read from the `session_id` Claude's events carry, and is passed on only when it is a UUID.
+- **Each container of a session is a run,** numbered from 1 and named for the hub's label, the session, and the run. A session stopped and resumed runs in a new container on the same home, which is how `--resume` finds the conversation.
+- **The container is built only from the capability's config.** Its image, its mounts, its limits, its network, and its labels all come from `Sessions`' settings and the session's number and run. Nothing is passed through from a tool call, a frame, or Claude, so no one can ask for another image or another mount: a session's name is only shown, and Claude's conversation id is passed on only as a UUID. Access to the socket is access to the build host, and this rule is what keeps it the hub's.
+- **Every container carries two labels:** `aethereal.sessions`, whose value names the hub, which a list and the events are filtered by, and `aethereal.session`, the session's number. The settings may add more, as a test's runs add `aethereal.test=1`.
 - **What a container holds:**
   - its own clone of the project, its own cargo target directory, and its own home, each a directory under the sessions root on the build host, bind-mounted. A bind is written as one of `HostConfig.Mounts`, its source and target apart, so no path is split at a colon, and Docker refuses a source that is missing rather than making it, so the capability makes each directory before the container;
   - the shared cargo registry and the build host's cargo lock, mounted;
-  - the credential, from a file the capability's settings name, given as the container's environment; it never appears in an argument or a log;
-  - the Claude Code binary, from the build host, read-only.
+  - the credential, from a file of `KEY=VALUE` lines the capability's settings name, read as each container is made and given as its environment. The Engine API has no environment file, so the value is in the create's body; it never appears in an argument, a log, or a record, and a variable's `Debug` names it without its value;
+  - the Claude Code binary, from the build host, read-only, at `/usr/local/bin/claude`.
+- **The first image is a stock Rust image with the build host's Claude Code bound in,** and each session's home at `/session/home`, its `HOME`. The project's image, its clone, its target directory, and the shared cargo mounts come with the session image (see Order of work).
 - **Permission checks are skipped inside the container** (`--dangerously-skip-permissions`). The container is the sandbox: it holds no git credential and no key of the owner's, so what Claude does in it stays in it until something the hub serves takes it out.
 - **The model is always stated,** from the settings, as print mode otherwise picks its own.
-- **Limits are the hub's.** Each container is capped by CPU and memory (`HostConfig.NanoCpus`, `Memory`), and at most a set number of sessions run at once across the hub; a session past it is refused with an error that names the limit and the sessions running. Stopped sessions do not count. A session nobody has open, with no turn running, is stopped after an idle time, and the next line resumes it. Defaults: 4 CPUs and 8 GiB each, 4 running, 30 minutes idle.
+- **Limits are the hub's.** Each container is capped by CPU and memory (`HostConfig.NanoCpus`, `Memory`), and at most a set number of sessions run at once across the hub; a new session, or a line that would resume a stopped one, past it is refused with an error that names the limit and the sessions running. Stopped and archived sessions do not count. Defaults: 4 CPUs and 8 GiB each, 4 running, 30 minutes idle.
+- **An idle session is wound down, then stopped.** A session with no turn running and no background task of its running (`task_started` until its `task_notification`) is idle; once it has been idle for the idle time:
+  1. if it has had a turn since its last `compact_boundary`, the hub writes it a notice, a user's line tagged in the transcript as the hub's, whose text is a setting: it has been idle for that many minutes, it will be compacted next, and it should write down its loose threads, unfinished work, open questions, uncommitted changes, and what to pick up next. The hub waits for that turn's `result`;
+  2. it writes `/compact`, also the hub's, and waits for its `result`;
+  3. it stops the container and removes it, keeping the session's home.
+
+  Each wait has a deadline, a setting; past it, the transcript notes which step was overdue and the container is stopped anyway. A line said during steps 1 and 2 makes the session active again: the rest is cancelled, and the session is not stopped. A session with nothing new since its last compaction goes straight to step 3. The next line said to a stopped session resumes it in a new container, with `--resume`.
+- **Archiving a session** stops and removes its container and keeps its transcript and home on disk; an archived session never runs again.
 - **A session's builds reach the store through the mount.** Its target directory is a path on the hub's machine, so `check_in` takes a built engine from it as it takes any path, and `spawn_engine` runs it.
 
 ### The hub reaches Docker through its Unix socket
@@ -66,20 +76,22 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
   - `POST /containers/create`, `/start`, `/stop`, `/kill`, `DELETE /containers/{id}`, and `GET /containers/{id}/json` to make, end, and inspect a session's container;
   - `GET /containers/json`, filtered by the label every session container carries, to count what runs;
   - `POST /containers/{id}/attach`, upgraded, for stdin and stdout;
-  - `GET /containers/{id}/logs?since=` to catch up after the hub was away;
+  - `GET /containers/{id}/logs?follow=1` for stdout and stderr, from the container's start;
   - `GET /events` to learn at once that a container died.
 - **Three things are built for it, each in the crate it belongs to:**
   - **a Unix transport** beside `Tcp`, a stream connection to a socket path;
   - **an HTTP/1.1 client in `aethereal-http`:** requests with `Content-Length` bodies, responses with `Content-Length` or chunked bodies, and an upgrade that hands the connection back as a raw stream. It is written for the subset Docker speaks, not taken from a crate;
   - **a Docker client in the sessions capability's crate, `aethereal-sessions`:** a root, `Docker`, asked at its typed path. It answers typed requests (`Create` from a `ContainerSpec`, `Start`, `Stop`, `Kill`, `Remove`, `Inspect`, `List` by a label) and serves typed streams (`Attaching`, whose first part is the container's stdin and each later part its output; `Logging` from a time on; `Watching` the start, die, and OOM events of the containers that carry a label), each paced by its asker's credit, with the 8-byte stream frames of an attach and of logs taken apart into stdout and stderr. No request, path, or JSON of its asker's reaches Docker: a container is made only from a `ContainerSpec`, and named only by its id as Docker gives one, never by a name or a path. Each request goes on a connection of its own, which the client hangs up once its reply is read, as `Http`'s client takes one request at a time and an attach or the events hold theirs for hours. Every path names API version 1.44, so a daemon answers in the shapes the client reads. Its errors are named cases: not found (`404`), a conflict (`409`), another status, a socket missing or with nothing listening, and a malformed reply.
 - **The container's stdin and stdout belong to Docker, not to the hub.** A hub that restarts loses no turn: the container keeps working, and the hub re-attaches and reads what it missed from the logs.
+- **A session's output is read from its logs, followed from its container's start, and its stdin written through its attach.** The transcript knows how many bytes of the latest container's stdout and stderr it holds, so a logs stream opened again, after the hub restarted or a stream ended while the container runs, skips them and records each line once, with none missed between an attach and a catch-up. What the attach carries of the output is let go. A container's logs ending, or its attach, asks Docker for its state: one still running is followed again, and one that is not has ended.
+- **Every ask of Docker carries a deadline,** a setting, past which the capability takes it as unanswered (ADR-0041); a stop's deadline adds its grace.
 
 ### Sessions belong to the hub
 
 - **A session is a task, not an engine.** Every trusted engine sees every session, and a session is used from whichever engine the owner is at. Several tabs are several tasks.
 - **When an engine closes,** only its open tabs end. A turn running carries on, a line already sent is still delivered, and a question waiting for an answer stays waiting until an engine opens the session and answers it.
-- **The capability keeps the list:** each session's id, name, state, and directories. It is kept on disk, so a hub that starts again knows its sessions and resumes each by id.
-- **The transcript is the hub's own record,** not Claude Code's session file, which is Claude Code's format and may change. The hub keeps every event, numbered in order within its session.
+- **The capability keeps the list:** each session's number, name, conversation id, runs, and where it stood, as a record beside its transcript and its home, in a directory of its own under the sessions root. A hub that starts again reads them, and then finds their containers: it follows Docker's events for its label before it lists the containers that carry it, so nothing that happens to one falls between the two; it re-attaches to each container a record says may run that still does, notes each that does not as lost, and reports each carrying its label that it has no record of, never removing it. Asks that come while it does wait for it.
+- **The transcript is the hub's own record,** not Claude Code's session file, which is Claude Code's format and may change. The hub keeps every event, numbered in order within its session from 1, and appended to the session's file as it comes, so a read after a restart goes on from the same numbers: each line of the container's stdout, as Claude's event when it is JSON; each line of its stderr; each line written to it, tagged with who said it, a caller of the hub's tools or the hub itself, and later the engine; each interrupt; and what the hub did with the container. A turn Claude starts by itself, as a background subagent finishes, is recorded as any other.
 
 ### The link carries chat for trusted engines
 
@@ -108,7 +120,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 ### Trusted and untrusted engines
 
 - **An engine the owner starts is trusted.** An engine a session spawns or mints a token for is untrusted. The hub decides when the engine links, from who asked for its token or its spawn, and records it on the engine's `Engine` actor. The engine never says what it is.
-- **Each session reaches the hub's tools by a route of its own,** so the hub tells a session's `mint_token` and `spawn_engine` from the owner's.
+- **Each session reaches the hub's tools by a route of its own,** so the hub tells a session's `mint_token` and `spawn_engine` from the owner's. The route is a second MCP port, bound where containers reach it and named only to sessions, on which every call bears a token the hub mints for its session and gives its container in its environment, as it gives the credential: the token names the session, and a call with none or another is refused. The owner's port stays on the loopback, which a container on a network of its own does not reach. Until the route is served, alongside the trusted engines, a container joins the host's network and reaches the owner's port, and nothing tells a session's calls apart.
 - **An untrusted engine keeps the link as it is:** it lists its tools and answers the hub's calls, which is everything a session needs to test it. Every chat frame from it is dropped and logged, and none is sent to it. Its overlay shows no chat.
 - **Why:** a work engine runs code a session has just written, its link included. A half-made build that sent a line every frame, resent an old `Answer`, or let one session's text reach another as if typed, would act on real sessions. Only the hub's check holds against code the engine runs.
 
@@ -118,7 +130,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 - **A line goes to Claude, and a line starting with `/` runs here.** A `/` line runs the engine's own tool at once, during a turn or not, as ADR-0053 reads it, and never waits on Claude. The engine sends it as `Ran`, which goes into the transcript without starting a turn, and the hub folds every `Ran` since the owner's last line into the head of their next one, so Claude knows what was done.
 - **Claude Code's own commands are passed through.** A short list of `/` words, `/compact` among them, belongs to the session and is sent as a line.
 - **Esc interrupts.** With the prompt line empty, Esc, or `/stop`, sends `Interrupt`, and the hub writes the interrupt control request to the session's stdin. With text in the prompt line, Esc clears it.
-- **Lines sent during a turn wait in the hub,** shown as queued, and go in when the turn's `result` comes. The owner can change or drop a queued line until then.
+- **Lines sent during a turn go in at once,** and Claude Code queues them itself, answering an interrupt with what it still holds (`still_queued`). The transcript records each where it was said, so it reads in the order the owner typed.
 - **A turn may start with no line,** when a background subagent finishes. The hub records it as any turn, and the tab shows it working.
 - **Compaction shows, and loses nothing.** A `compact_boundary` event becomes a divider in the transcript with its token counts, and the tab shows the session busy while `status` is compacting. The transcript keeps every event before it.
 - **Subagents fold.** Events carrying `parent_tool_use_id` are shown under the tool call that started their subagent, closed until opened.
@@ -136,6 +148,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 - **Each session is told where it is:** the capability appends a short prompt saying it runs in a container, what `[37]` means, that the hub's tools are how it spawns and tests engines, and that it never changes the owner's own engine or its window.
 - **Order of work:**
   - A, the hub: the Unix transport; the HTTP client; the Docker client; `Sessions` and its tools; the session image and prompt.
+  - The sessions' own route to the hub's tools comes with the trusted engines, in B.
   - B, the engine: the library's draw stage; text editing and the clipboard; markdown and images; the link's chat frames and trusted engines (after `Sessions`); the overlay's chat (last).
 
 ## Open questions

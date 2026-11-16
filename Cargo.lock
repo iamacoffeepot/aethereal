@@ -272,6 +272,7 @@ dependencies = [
  "aethereal-http",
  "aethereal-substrate",
  "aethereal-tcp",
+ "aethereal-tools",
 ]
 
 [[package]]

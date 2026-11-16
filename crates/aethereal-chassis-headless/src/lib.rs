@@ -10,6 +10,7 @@
 //! plan says (ADR-0011).
 
 mod clock;
+mod errands;
 mod files;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod guest;
@@ -22,6 +23,7 @@ mod program;
 mod rehearsal;
 mod resident;
 mod running;
+mod sessions;
 mod store;
 mod tcp;
 #[cfg(test)]
@@ -46,6 +48,7 @@ pub use processes::ProcessGroups;
 pub use program::{RunningSettings, Serving};
 pub use resident::resident;
 pub use running::{Exit, Timer};
+pub use sessions::SessionsDirectory;
 pub use store::StoreDirectory;
 pub use tcp::Dialers;
 
