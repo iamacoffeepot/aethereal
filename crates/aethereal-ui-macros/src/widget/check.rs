@@ -93,4 +93,10 @@ impl Names for Declared<'_> {
                        time it is built";
         Err(syn::Error::new(span, message))
     }
+
+    fn name(&self, name: &Ident) -> syn::Result<()> {
+        let message = "a node is named in a screen's view: a composite is placed at many paths, so one of its own nodes \
+                       has none; name the composite where the view places it";
+        Err(syn::Error::new(name.span(), message))
+    }
 }

@@ -5,7 +5,7 @@
 //! Each refusal is an error at the token that caused it; every one found is reported, not only the first.
 
 use super::reference::{Head, Reference};
-use super::{Call, Dropping, Element, Kind, Look, Memo, Outside, Repeat, Rest, Shown};
+use super::{Call, Dropping, Element, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown};
 use crate::style;
 use proc_macro2::Span;
 use syn::Ident;
@@ -23,6 +23,9 @@ pub trait Names {
 
     /// Refuses `memo`, written at `span`, where this macro cannot keep a composite.
     fn memo(&self, span: Span) -> syn::Result<()>;
+
+    /// Refuses `name`, a node's name, where this macro cannot name a node.
+    fn name(&self, name: &Ident) -> syn::Result<()>;
 }
 
 /// The names in scope where a reference is read: the locals each `as` around it made, and a composite's params.
@@ -111,6 +114,9 @@ fn element(element: &Element, names: &impl Names, scope: &Scope, found: &mut Fou
             scope.with(local)
         }
     };
+    if let Naming::Named(name) = &element.naming {
+        found.keep(names.name(name));
+    }
     match &element.kind {
         Kind::Child(_) => slot(element, names, &own, found),
         Kind::Widget(_) => widget(element, names, &own, found),

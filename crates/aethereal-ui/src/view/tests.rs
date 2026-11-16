@@ -1,7 +1,8 @@
 //! A screen written in markup builds the tree its expansion is written to build: the same tree written by hand, node
 //! for node, so a wrong place among siblings, a wrong key, a wrong event variant or its arguments, a composite built
 //! wrong, a hidden element counted out of its siblings' places, an optional event left unset, or a list's rows asked
-//! wrong, in a `Scroll` or in a program's own primitive that windows its items, fails it.
+//! wrong, in a `Scroll` or in a program's own primitive that windows its items, fails it. A node the markup names is
+//! found in that tree at the path its name gives.
 
 use crate::prelude::*;
 use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Stateless, Widget};
@@ -101,6 +102,7 @@ aethereal_ui::view! { Shop, ui,
         Text { style: title, "Wares: {self.wares.len()}" }
         Grid { style: cells { columns: 3 }, items: self.wares as ware key ware.id,
             WareSlot {
+                name: slot,
                 ware: ware,
                 click => self.select(ware.id),
                 drag: ware.id,
@@ -112,15 +114,15 @@ aethereal_ui::view! { Shop, ui,
             Text { "{ware.name}" }
         }
         Text { show: self.open, "{{open}}" }
-        TextInput { text: self.query, most_lines: 1, enter: Enter::Submits, change => self.search(), submit => self.buy() }
+        TextInput { name: query, text: self.query, most_lines: 1, enter: Enter::Submits, change => self.search(), submit => self.buy() }
         Toggle { on: self.muted, change => self.mute() }
         Slider { value: self.volume, min: 0.0, max: 1.0, step: 0.25, change => self.set_volume() }
         Tabs { selected: self.tab, change => self.open_tab(),
             Tab { title: "Wares", Text { "wares" } }
-            Tab { title: "Sold", Text { "sold" } }
+            Tab { title: "Sold", Text { name: sold, "sold" } }
         }
         Scroll { .., items: self.wares as ware key ware.id,
-            Text { "{ware.name}" }
+            Text { name: row, "{ware.name}" }
         }
         Reel { .., items: self.wares as ware key ware.id,
             Text { "{ware.name}" }
@@ -283,4 +285,21 @@ fn a_view_in_markup_builds_the_tree_written_by_hand() {
     let shop = shop(unlaid());
 
     assert_eq!(View::view(&shop), by_hand());
+}
+
+#[test]
+fn a_name_finds_the_node_its_markup_names_wherever_it_stands() {
+    // Catches a name's path counted apart from where the view builds its node: a hidden sibling before it counted out
+    // of its place, an item's key left out or put at another depth, a tab's panel at another place, or a windowed
+    // list's row found by its place rather than its key.
+    let tree = View::view(&shop(unlaid()));
+    let (apple, pear) = (WareId(1), WareId(2));
+    let input = TextInput::new("pe", ShopEvent::Search).submit(ShopEvent::Buy);
+    let found = |named: ShopNode| tree.find(&named.path());
+
+    assert_eq!(found(ShopNode::Query), Some(&node(Segment::Place(4), input, vec![])));
+    assert_eq!(found(ShopNode::Slot(ItemKey::from(pear))), Some(&slot(pear, "Pear", 5)));
+    assert_eq!(found(ShopNode::Sold), Some(&text(Segment::Place(0), "sold")));
+    assert_eq!(found(ShopNode::Row(ItemKey::from(apple))), Some(&text(Segment::Item(ItemKey::from(apple)), "Apple")));
+    assert_eq!(found(ShopNode::Row(ItemKey::from(pear))), None, "a row the scroll did not build is not in the tree");
 }

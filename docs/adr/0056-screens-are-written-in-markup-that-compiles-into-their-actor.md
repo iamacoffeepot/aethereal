@@ -96,6 +96,7 @@ impl Inventory {
 - **A screen's markup is one call of `aethereal_ui::view!` in the screen's own `.rs` file:** the screen's type, the field that holds its library, as `screen!(Inventory, ui)` names it, then the root of its tree. Its styles and its methods sit in the same file or beside it, as ordinary Rust.
 - **An element is written `TypeName { settings, children, text }`, and its name is the widget's Rust type name, exactly:** `ItemSlot { … }` is `ItemSlot`, so a search finds the type and every use. Element names are capitalized because types are. That is the shape of Dioxus's `rsx!`.
 - **A lowercase element is a markup keyword, not a type.** One is left, `child` (see Child actors), so a reader tells a widget from a keyword on sight.
+- **`name: prompt` names a node for the screen's own code**, which finds it by that name, never by counting places in the markup (see Named nodes).
 - **A `name: value` pair is one of the widget's settings, and a `name => call` pair one of its events,** each in snake_case as its Rust field is. A literal value is parsed by the setting's type: `6`, `"Equip"`, `true`. Settings and events are separated by commas, as a struct's fields are, and come before children and text.
 - **A nested element is a child, and children are both layout order and draw order.** A later child draws over an earlier one.
 - **A string literal is the widget's text,** and may hold references, as a `format!` string does: `"Gold: {self.gold}"`.
@@ -303,6 +304,29 @@ impl<E: Event> Widget for Button<E> {
 - **A click is a press and a release of the main button on the same widget:** the release's `over` (ADR-0055) names the hit it was over, so a press dragged off and released elsewhere clicks nothing. Moves and the release reach a widget wherever the pointer goes while its press is held, as the window's capture sends them, so a slider dragged past its end still sets its end.
 - **Captured input goes to the widget the press reached, kept by the screen**: beside its focus, the screen keeps what each entry a press reached was until every button on it is up, so a move or release the capture sends through it reaches that widget though a widget before it began or stopped drawing and renumbered it, and reaches nothing once that widget's key has left the tree.
 
+### Named nodes
+
+```rust
+aethereal_ui::view! { Console, ui,
+    Column {
+        Scroll { .., name: scrollback, items: self.rows() as row key row.number,
+            Text { name: printed, "{row.text}" }
+        }
+        TextInput { name: prompt, text: self.line(), change => self.edit() }
+    }
+}
+
+self.ui.focus(&ConsoleNode::Prompt.path());
+self.ui.jump(&ConsoleNode::Scrollback.path(), Jump::End);
+let row = self.ui.laid(&ConsoleNode::Printed(ItemKey::from(number)).path());
+```
+
+- **A screen's code reaches its own widgets by name, never by a path counted from the markup.** A screen that gives a widget focus, hands it a key, sends a scroll to its end, reads where the last layout put it, or reads its state, names the widget in its markup, `name: prompt`, and passes the path its name gives to `Screen::focus`, `press_key`, `jump`, `laid`, or `Table::state`. A path counted by hand, `Place(0), Place(1), Place(5)`, names whatever stands there after the markup is edited, silently; a name moves with its widget.
+- **A name is a variant of the screen's node enum,** `{Screen}Node`, which `view!` writes beside its event enum when the markup names any node: `name: prompt` is `ConsoleNode::Prompt`, and its `path()` is the key path the view builds it at. The macro keeps each named node's path as it writes the node out, from the same places and keys it builds it with, so the two never differ. A name misspelled in the screen's code is a build error, as a misspelled reference in the markup is, and nothing is looked up at runtime: `path()` builds the path the macro wrote, as a hand-written one was built, at no cost per frame beyond it.
+- **A name under a list's items is the node in each item, told apart by the item's key**: its variant holds the `ItemKey` of each item it stands within, outermost first, `ConsoleNode::Printed(ItemKey::from(number))`. A list that windows its items builds only some, so the path of an item not built is in no tree, and `laid` and `state` answer nothing there, as for any widget not shown.
+- **A name is one node's.** Two nodes given one name, or two names that are one variant, as `meter_graph` and `meterGraph`, are refused by the macro at the second, so the screen's code never reaches one of two by chance.
+- **A name is given in a screen's view, never within a composite.** A composite is built wherever a view places it, at as many paths as it is placed, so a node of its own has no one path; `widget!` refuses a name, and the view names the composite where it places it.
+
 ### Layout is Taffy
 
 - **Layout is flexbox and CSS grid, computed by the Taffy crate.** There is no document flow, float, or inline layout.
@@ -325,7 +349,7 @@ impl<E: Event> Widget for Button<E> {
 - **A screen can take every key while it is in a state that needs it, whatever has its focus**. `Controls::takes_every_key(&self) -> bool`, `false` unless the screen says otherwise, is asked at each `Prepare`; while it answers `true`, the library declares every key, blocking, as it does for a focused `TextInput`, and a change of its answer lays the screen out though its tree is the same. Each key then goes to the focus, if any, then to the screen's `key`. A console says so while it is open, so a press on its panel that moves focus off its line lets no key through to the game.
 - **`Controls::FIRST` lists keys the screen's `key` takes before its focused widget hears them**. The order for one of them is the screen's `key` alone; every other key keeps the order above, the focus, the widgets around it, the focus keys, then the screen. So a console's backtick closes it though its focused line would type it, and its Tab completes and its Escape closes rather than moving or clearing focus. Listing a key there declares nothing: it reaches the screen as its list declares it.
 - **Typed text follows its key**. The text a key types (ADR-0051) goes where its key went: to the focused widget, or nowhere when the screen's own `key` took the key, so the backtick that opens a console and focuses its line is not typed into the line.
-- **A screen moves its focus and hands keys on of its own accord**. `Screen::focus(path)` gives focus to the widget at `path` when it can hold it, as a press on it would, as a console gives its line focus as it opens. `Screen::press_key(path, key)` hands a key to the widget at `path` as though it had focus, and answers what it raised for the screen's handler to take in, as a console hands Page Up to its scrollback while its line has focus.
+- **A screen moves its focus and hands keys on of its own accord**, each to a widget its markup names (see Named nodes). `Screen::focus(path)` gives focus to the widget at `path` when it can hold it, as a press on it would, as a console gives its line focus as it opens. `Screen::press_key(path, key)` hands a key to the widget at `path` as though it had focus, and answers what it raised for the screen's handler to take in, as a console hands Page Up to its scrollback while its line has focus. A screen sends a scroll to its end with `Screen::jump(path, Jump::End)`, as a console does its scrollback when a line is entered, never with a key it makes up.
 - **The modifiers are watched, not taken**. A key event carries no modifiers (ADR-0024), so beside a set short of every key the library declares Shift, Control, Alt, and Meta in a second entry that does not block, and keeps which are down. Shift-Tab and a text input's Shift-arrow read them, and the game still hears Shift.
 - **A focused text input uses every key that types text,** a key whose meaning is one character with neither Control nor Meta held, as its text comes after it (ADR-0051); so a letter typed into it never reaches the screen's hotkeys, and a key it passes, F2 or Tab, still does.
 - **The library allows the window's input method while a widget that types has focus, and stops it after** (ADR-0051: `AllowIme`), each asked only as it changes, from the turn of input that moved focus, or from the `Prepare` that found the focused key gone. So the screen's input handlers send that ask besides the screen's own, which `sends![…]` adds.
@@ -477,7 +501,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 - **A press on a `TextInput` puts its caret, a drag selects, a double click selects the word, and a triple click the line between breaks.**
 - **What the input method composes shows at the caret, underlined, until it closes,** as the input's own state (ADR-0051: `Composing`), drawn into its text without being part of it.
 - **A `TextInput` keeps no history of its edits, so it has no undo:** its text is the screen's, set by its view, and an undo would need its own record of edits beside it.
-- **A `TextInput` whose text its screen sets puts its caret at the end**. Its state keeps the text as it last edited it, `Editing::edited`, beside its caret; a text that differs was set by the screen, a line recalled from a history or completed, so typing goes on from its end rather than from where the caret stood in the old text.
+- **A `TextInput` whose text its screen sets puts its caret at the end**. Its state keeps the text as it last edited it, `Editing::edited`, beside its caret; a text that differs was set by the screen, a line recalled from a history or completed, so typing goes on from its end rather than from where the caret stood in the old text. A screen reads the caret by the same rule, `Editing::caret_in(text)` on the state it reads at its input's name, as a console completes the word before it.
 - **`Tabs` takes the open tab as a param and raises `change` with the tab chosen, counted from zero, as `Raised::Index`:** which tab is open is game state, so it never opens one itself. It is one stop of the focus, its ring on the open header, and the arrows choose the tab beside the open one, Home and End the first and the last. Its headers are its own drawing, in its room above its panel.
 
 ```rust
@@ -533,8 +557,8 @@ markdown ──> Document (read again only from its last blocks as it grows) ─
 ### Expanded by a macro, never read at runtime
 
 - **Each screen's markup is in its own `.rs` file, in `view!`; each composite is in a `widget!`, and each set of styles in a `style!`**. There is no build script, no `include!`, no output directory, and no `.xml` file.
-- **`view!` emits the screen's event enum, one `impl View`, and the call of `screen!`.** `style!` emits one function for each style, and `widget!` the composite's type.
-- **The macro reports what it checks itself with `compile_error!` at the offending token:** malformed markup, a reference outside the subset, and, within a `widget!`, which sees its own declarations, a name the composite does not declare. A setting a screen gives a composite that the composite does not declare is rustc's error, an unknown field of the composite's type, since `view!` cannot see into a `widget!`.
+- **`view!` emits the screen's event enum, its node enum when its markup names a node, one `impl View`, and the call of `screen!`.** `style!` emits one function for each style, and `widget!` the composite's type.
+- **The macro reports what it checks itself with `compile_error!` at the offending token:** malformed markup, a reference outside the subset, a node's name given twice or within a `widget!`, and, within a `widget!`, which sees its own declarations, a name the composite does not declare. A setting a screen gives a composite that the composite does not declare is rustc's error, an unknown field of the composite's type, since `view!` cannot see into a `widget!`.
 - **Generated code carries the spans of the markup's tokens,** so a rustc error on it points at the markup that wrote it. Names the macro cannot see, such as Rust primitives, styles, and the screen's methods, are checked by rustc that way.
 - **One limit: an error inside a text's `{…}` marks the whole string literal,** since stable Rust cannot point inside a literal.
 - **No markup, style, or name is read, parsed, or looked up at runtime.** A misspelled reference is a build error, never a blank label in a running game.
@@ -597,6 +621,8 @@ markdown ──> Document (read again only from its last blocks as it grows) ─
 - **Composites with their own state:** changing it would need logic in markup.
 - **Keeping a subtree by inputs its author names,** `keep: (message.id, message.edited)`: a forgotten input leaves the subtree silently stale, as marking changes by hand does. `memo` compares everything the markup writes into the composite, so what decides a subtree is unchanged is its inputs being equal.
 - **Keeping every composite without markup:** a composite would need its params to be `PartialEq` to be placed at all, so existing screens and composites would stop building, and a screen would pay the comparison for composites that change at every view.
+- **Nodes named by strings and looked up at runtime,** `name: "prompt"` and `Screen::find("prompt")`: a misspelled name is a missing widget in a running game rather than a build error, two nodes given one name are found only as the tree is built, and each lookup walks an index the screen keeps beside its tree and rebuilds as it changes. The macro already knows each node's path as it writes it, so the name is a variant and its path is written out, with no index at all.
+- **Paths counted by hand from the markup,** `KeyPath::of(&[Place(0), Place(1), Place(5)])`: any edit to the markup before the widget moves it, and the path then names another widget, or none, with nothing to say so.
 - **An actor for each widget:** a mailbox, a turn, and a copy of its data for every row, and a click spread across several turns.
 - **Child actors placed only in absolute window pixels:** every move would cascade down the subtree as mail, a turn per level, so children would trail their parents. Each call states its mode instead (ADR-0055).
 - **Drag payloads carried by the window:** the window would need to know every payload kind. Reporting what is under the pointer is enough, and the actors use mail.

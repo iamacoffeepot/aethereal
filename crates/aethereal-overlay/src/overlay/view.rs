@@ -53,46 +53,6 @@ use aethereal_ui::prelude::*;
 use aethereal_ui::widgets::{DELAY, Flow, Link as RunLink, Rich};
 use core::f64::consts::TAU;
 
-/// The overlay's root, the window, and the console's column within it, as the markup places them.
-const CONSOLE: [Segment; 2] = [Segment::Place(0), Segment::Place(1)];
-
-/// The band's row of its two columns, as the markup places it: in the window, the stack first in it, second in that.
-const BAND: [Segment; 3] = [Segment::Place(0), Segment::Place(0), Segment::Place(1)];
-
-/// The path of the frame chart: in the band's left column, its first, in the row first in it, first.
-pub fn chart_path() -> KeyPath {
-    KeyPath::of(&[BAND[0], BAND[1], BAND[2], Segment::Place(0), Segment::Place(0), Segment::Place(0)])
-}
-
-/// The path of the first meter's graph, every meter's as wide: in the band's right column, its third, the meter's
-/// row, keyed by its number, first.
-pub fn meter_graph_path() -> KeyPath {
-    let first = Segment::Item(ItemKey::from(Meter::ALL[0].index()));
-
-    KeyPath::of(&[BAND[0], BAND[1], BAND[2], Segment::Place(2), first, Segment::Place(0)])
-}
-
-/// The path of the scroll the scrollback's rows are in: the console's second child.
-pub fn scrollback_path() -> KeyPath {
-    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(1)])
-}
-
-/// The path of the scroll a session's transcript is in: the console's third child.
-pub fn transcript_path() -> KeyPath {
-    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(2)])
-}
-
-/// The path of the line's text input: in the prompt's strip, the console's sixth child, in the stack second in it,
-/// first.
-pub fn prompt_path() -> KeyPath {
-    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(5), Segment::Place(1), Segment::Place(0)])
-}
-
-/// The path of the prompt's mark, one line of the console's text: in the prompt's strip, first.
-pub(super) fn sign_path() -> KeyPath {
-    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(5), Segment::Place(0)])
-}
-
 /// `left`, `right`, `top`, and `bottom` logical pixels of padding.
 fn padded(left: f32, right: f32, top: f32, bottom: f32) -> Edges<Space> {
     Edges {
@@ -362,7 +322,7 @@ aethereal_ui::view! { Overlay, ui,
             Row { style: band,
                 Column { style: left,
                     Row {
-                        FrameChart { style: graph, shown: self.chart(), tall: self.chart_tall(), palette: self.palette }
+                        FrameChart { name: chart, style: graph, shown: self.chart(), tall: self.chart_tall(), palette: self.palette }
                         Column { style: gutter,
                             Printed { style: mono, runs: self.median_runs() }
                             Printed { style: mono, runs: self.alerts_runs() }
@@ -388,7 +348,7 @@ aethereal_ui::view! { Overlay, ui,
                 Tint { style: rule_down { colour: self.ink(Ink::Divider) } }
                 Column { style: right, items: self.meters() as meter key meter.number,
                     Row { style: meter_row,
-                        MeterGraph { style: meter_graph, drawn: meter.drawn, palette: self.palette }
+                        MeterGraph { name: meter_graph, style: meter_graph, drawn: meter.drawn, palette: self.palette }
                         Printed { style: meter_gutter, runs: meter.runs }
                     }
                 }
@@ -400,12 +360,14 @@ aethereal_ui::view! { Overlay, ui,
                 change => self.resize(),
             }
             Scroll { ..,
+                name: scrollback,
                 style: scrollback { background: self.surface(Surface::Sheet), colour: self.ink(Ink::Dim) },
                 show: self.shows_scrollback(),
                 keeps: Keeps::End,
                 items: self.rows() as row key row.number(),
                 Column { style: printed_row { background: self.printed_shade(row), padding: sides(row) },
                     Rich {
+                        name: printed,
                         style: mono,
                         runs: self.printed_runs(row),
                         links: self.unlinked(),
@@ -415,6 +377,7 @@ aethereal_ui::view! { Overlay, ui,
                 }
             }
             Scroll { ..,
+                name: transcript,
                 style: transcript { background: self.surface(Surface::Sheet), colour: self.ink(Ink::Dim) },
                 show: self.shows_transcript(),
                 keeps: Keeps::End,
@@ -460,9 +423,10 @@ aethereal_ui::view! { Overlay, ui,
             }
             Tint { style: prompt_rule { colour: self.ink(Ink::Divider) } }
             Row { style: prompt_strip { background: self.surface(Surface::Inset) },
-                Text { style: sign { colour: self.ink(Ink::Input) }, ">" }
+                Text { name: sign, style: sign { colour: self.ink(Ink::Input) }, ">" }
                 Stack { style: line,
                     TextInput {
+                        name: prompt,
                         style: typed { colour: self.ink(Ink::Input) },
                         text: self.line(),
                         most_lines: PROMPT_LINES,
@@ -870,8 +834,8 @@ impl Overlay {
     /// more than any view of it holds, so the newest row stands at the view's foot from the first frame; after a resize
     /// or a drag of the grip, the view's height before it, a frame behind.
     fn scrollback_lines(&self) -> usize {
-        let view = self.ui.laid(&scrollback_path()).map(|laid| laid.content.height());
-        let line = self.ui.laid(&sign_path()).map(|laid| laid.content.height());
+        let view = self.ui.laid(&OverlayNode::Scrollback.path()).map(|laid| laid.content.height());
+        let line = self.ui.laid(&OverlayNode::Sign.path()).map(|laid| laid.content.height());
         let fit = match (view, line) {
             (Some(view), Some(line)) if line > 0.0 => (view / line).floor(),
             _ => self.ui.viewport().size.y,
@@ -891,14 +855,9 @@ impl Overlay {
     /// Where the line's caret stands, a byte offset into it: at its end while its text input has not edited the line
     /// as it stands, as a line recalled or completed puts it there.
     pub(super) fn caret(&self) -> usize {
-        let line = self.console.line();
-        let editing = self.ui.table().state::<TextInput<OverlayEvent>>(&prompt_path()).unwrap_or_default();
-        let own = editing.edited == line;
-        if !own {
-            return line.len();
-        }
+        let editing = self.ui.table().state::<TextInput<OverlayEvent>>(&OverlayNode::Prompt.path());
 
-        usize::try_from(editing.caret).unwrap_or(usize::MAX)
+        editing.unwrap_or_default().caret_in(self.console.line())
     }
 
     /// The completion of the word before the caret, faint, set after the line as typed, which is drawn clear, so the

@@ -5,17 +5,17 @@
 //! and each frame's statistics and the GPU's time over its passes. Nothing here draws: the band and the console show
 //! what is kept at the screen's next `Prepare`.
 
-use super::view::{chart_path, meter_graph_path, prompt_path};
+use super::view::OverlayNode;
 use super::{FIGURES_EVERY_NANOS, LOGS_EVERY_NANOS, Overlay};
 use crate::console::Logged;
 use crate::gpu::{GpuFigures, GpuTiming};
 use crate::layout::Scale;
-use crate::meters::{EngineMemory, MOST_METER_COLUMNS};
+use crate::meters::{EngineMemory, MOST_METER_COLUMNS, Meter};
 use aethereal_actor::{Fault, Handles, Level, On, Tick, ToType, Turn};
 use aethereal_data::Plain;
 use aethereal_link::{Link, Listen};
 use aethereal_render::stats::{FrameDrawing, FrameStats, GpuTimes};
-use aethereal_ui::{KeyPath, Screen, Viewport};
+use aethereal_ui::{ItemKey, KeyPath, Screen, Viewport};
 use aethereal_window::Event;
 
 /// The most columns the charts of the band's left column are cut into, whatever the window's width.
@@ -33,16 +33,17 @@ impl Columns {
     /// screen first lays it out, when it holds nothing to draw.
     pub const FIRST: Self = Self { chart: 1, meters: 1 };
 
-    /// As many columns as the boxes `ui` last laid the frame chart and a meter's graph out in hold: each as it was
-    /// where the last layout laid no such box out, as while the band was hidden.
+    /// As many columns as the boxes `ui` last laid the frame chart and the first meter's graph out in hold, every
+    /// meter's graph as wide: each as it was where the last layout laid no such box out, as while the band was hidden.
     fn laid(self, ui: &Screen) -> Self {
         let across = |path: KeyPath, most: u32, kept: u32| {
             ui.laid(&path).map_or(kept, |laid| Scale(laid.scale).columns_across(laid.content.width(), most))
         };
+        let meter = OverlayNode::MeterGraph(ItemKey::from(Meter::ALL[0].index()));
 
         Self {
-            chart: across(chart_path(), MOST_COLUMNS, self.chart),
-            meters: across(meter_graph_path(), MOST_METER_COLUMNS, self.meters),
+            chart: across(OverlayNode::Chart.path(), MOST_COLUMNS, self.chart),
+            meters: across(meter.path(), MOST_METER_COLUMNS, self.meters),
         }
     }
 }
@@ -150,7 +151,7 @@ impl Handles<On<Tick>> for Overlay {
         }
 
         if self.stop.console() {
-            self.ui.focus(&prompt_path());
+            self.ui.focus(&OverlayNode::Prompt.path());
         }
 
         Ok(())

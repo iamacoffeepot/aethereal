@@ -22,7 +22,7 @@
 use super::View;
 use super::check::{Taking, Variant};
 use crate::events;
-use crate::markup::{Emitter, Owner, variant};
+use crate::markup::{Emitter, Named, Owner, variant};
 use crate::spans;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
@@ -51,7 +51,9 @@ pub fn view(view: &View, variants: &[Variant]) -> TokenStream {
     } else {
         quote!()
     };
-    let tree = Emitter::new(Owner::Screen { events: &events, field }).root(root);
+    let emitter = Emitter::new(Owner::Screen { events: &events, field });
+    let tree = emitter.root(root);
+    let nodes = nodes(screen, &emitter.into_named());
     let documented =
         format!("The events of `{screen}`'s markup, one for each method they call, as its `view!` wrote it.");
 
@@ -83,7 +85,60 @@ pub fn view(view: &View, variants: &[Variant]) -> TokenStream {
             }
         }
 
+        #nodes
+
         ::aethereal_ui::screen!(#screen, #field);
+    }
+}
+
+/// The node enum of `screen`, whose markup names `named`: a variant for each, holding the key of each item it stands
+/// within, outermost first, and the key path the view builds it at; nothing when the markup names no node.
+fn nodes(screen: &syn::Ident, named: &[Named]) -> TokenStream {
+    if named.is_empty() {
+        return TokenStream::new();
+    }
+    let nodes = format_ident!("{screen}Node", span = screen.span());
+    let definitions = named.iter().map(|Named { name, keys, .. }| {
+        let variant = variant(name);
+        let documented = format!("The node `{screen}`'s markup names `{name}`.");
+        let types = keys.iter().map(|_| quote!(::aethereal_ui::ItemKey));
+        if keys.is_empty() {
+            quote!(#[doc = #documented] #variant)
+        } else {
+            quote!(#[doc = #documented] #variant(#(#types),*))
+        }
+    });
+    let arms = named.iter().map(|Named { name, path, keys }| {
+        let variant = variant(name);
+        let pattern = if keys.is_empty() {
+            quote!(Self::#variant)
+        } else {
+            quote!(Self::#variant(#(#keys),*))
+        };
+        quote!(#pattern => ::aethereal_ui::KeyPath::of(&[#(#path),*]),)
+    });
+    let documented = format!(
+        "The nodes `{screen}`'s markup names, each the variant of its name, holding the key of each item it stands \
+         within, outermost first, as its `view!` wrote it."
+    );
+
+    quote! {
+        #[doc = #documented]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum #nodes {
+            #(#definitions,)*
+        }
+
+        impl #nodes {
+            /// Its key path in the tree the view builds: where the screen lays it out, keeps its state, and gives it
+            /// focus, while it is shown.
+            #[must_use]
+            pub fn path(self) -> ::aethereal_ui::KeyPath {
+                match self {
+                    #(#arms)*
+                }
+            }
+        }
     }
 }
 
