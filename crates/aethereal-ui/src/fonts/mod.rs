@@ -10,7 +10,7 @@ pub use texts::{Asker, Texts};
 
 use crate::tree::KeyPath;
 use aethereal_render::font::Metrics;
-use aethereal_render::text::{Align, Font, Laid, Measured, Run, Wrap, lay_out, measure};
+use aethereal_render::text::{Align, Carets, Font, Laid, Measured, Run, Wrap, carets, lay_out, measure};
 
 /// What a screen knows of each font it has met.
 #[derive(Debug, Default)]
@@ -101,6 +101,19 @@ impl Measuring<'_> {
         };
 
         Ok(measured)
+    }
+
+    /// Where a caret stands in `text`, in `font` at `size` pixels to the em, its lines broken as `wrap` says, as the
+    /// renderer lays it out (see [`carets`]): for a widget that edits or selects its text. Laid out anew each time, as
+    /// only input and drawing ask it, and nothing is kept.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::text`]'s, for want of the font's metrics.
+    pub fn carets(&mut self, font: Font, size: f32, text: &str, wrap: Wrap) -> Result<Carets, Unmeasured> {
+        let (own, fallbacks) = self.metrics(font)?;
+
+        Ok(carets(own, fallbacks, size, text, wrap))
     }
 
     /// How tall one line of any text in `font` at `size` pixels to the em is, as [`Self::text`] measures each of its

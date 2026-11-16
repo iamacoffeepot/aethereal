@@ -296,9 +296,6 @@ fn refusal(why: &Refusal) -> String {
         }
         Refusal::NotRunning => String::from("the session's container does not run, so no turn runs"),
         Refusal::Busy => String::from("the session is starting or stopping: ask again once it is not"),
-        Refusal::Unowned { code } => {
-            format!("the session's home could not be given to its user: the step that does it ended with {code}")
-        }
         Refusal::NoCredential => String::from("the hub could not read the credential's file as KEY=VALUE lines"),
         Refusal::Docker(error) => format!("Docker: {error:?}"),
     }

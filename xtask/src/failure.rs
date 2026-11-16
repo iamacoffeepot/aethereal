@@ -21,6 +21,12 @@ impl Failure {
         Self { code: 1, message: message.to_string() }
     }
 
+    /// What is printed for it.
+    #[cfg(test)]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     /// Prints why the command stopped, and hands back the code to exit with.
     pub fn report(self) -> ExitCode {
         eprintln!("{}", self.message);

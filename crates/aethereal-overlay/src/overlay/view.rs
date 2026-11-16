@@ -70,6 +70,10 @@ fn spaced(top: f32, bottom: f32) -> Edges<Length> {
     }
 }
 
+/// The most lines the console's line grows to as it is typed, past which it slides through them: Enter runs it, and
+/// Shift-Enter breaks it.
+const PROMPT_LINES: u32 = 6;
+
 /// How opaque the lines between the panels are drawn, in stone: faint, so they part the panels without drawing the eye.
 const DIVIDER_OPACITY: f32 = 0.28;
 
@@ -196,7 +200,14 @@ aethereal_ui::view! { Overlay, ui,
             Row { style: prompt_strip,
                 Text { style: sign, ">" }
                 Stack { style: line,
-                    TextInput { style: typed, text: self.line(), change => self.edit(), submit => self.enter() }
+                    TextInput {
+                        style: typed,
+                        text: self.line(),
+                        most_lines: PROMPT_LINES,
+                        enter: Enter::Submits,
+                        change => self.edit(),
+                        submit => self.enter(),
+                    }
                     Printed { style: mono, runs: self.hint_runs() }
                 }
                 Printed { style: mono, runs: self.running_runs() }
@@ -385,10 +396,15 @@ impl Overlay {
     }
 
     /// The completion of the word before the caret, in stone, set after the line as typed, which is drawn clear, so the
-    /// completion stands just ahead of the line in the mono face.
+    /// completion stands just ahead of the line in the mono face: none once the line runs onto a second line, where the
+    /// line wraps as its text input lays it out and the hint would not.
     pub(super) fn hint_runs(&self) -> Vec<Run> {
         let ahead = self.console.completion_ahead(self.caret());
-        if ahead.is_empty() {
+        let line = self.console.line();
+        let broken = line.contains('\n');
+        let wraps = line.chars().count() + ahead.chars().count() >= self.columns();
+        let hidden = ahead.is_empty() || broken || wraps;
+        if hidden {
             return runs_of(Vec::new());
         }
 

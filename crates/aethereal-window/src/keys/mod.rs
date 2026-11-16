@@ -94,6 +94,8 @@ pub enum KeyEvent {
     KeyUp { code: String, key: String },
     /// Text typed, as [`Event::Text`] says: sent where the key that typed it was.
     Text { text: String },
+    /// What the input method is composing, as [`Event::Composing`] says: sent where typed text goes.
+    Composing { text: String, caret: u32 },
 }
 
 /// The most keys a window keeps a record of as down. Far more than a keyboard has, it bounds what performed keys that
@@ -140,6 +142,9 @@ impl KeyCascade {
                 (reached, KeyEvent::KeyUp { code: code.clone(), key: key.clone() })
             }
             Event::Text { text } => (self.typing.clone(), KeyEvent::Text { text: text.clone() }),
+            Event::Composing { text, caret } => {
+                (self.typing.clone(), KeyEvent::Composing { text: text.clone(), caret: *caret })
+            }
             Event::FocusLost => {
                 self.down.clear();
                 return Vec::new();

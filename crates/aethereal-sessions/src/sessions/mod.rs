@@ -9,7 +9,7 @@ macro_rules! acts {
     ($($answer:ty)?) => {
         (
             super::M0, super::M1, super::M2, super::M3, super::M4, super::M5, super::M6, super::M7, super::M8,
-            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15, super::M16,
+            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15,
             $($answer,)?
         )
     };
@@ -20,7 +20,6 @@ mod asks;
 mod container;
 mod credential;
 mod heard;
-mod home;
 mod idle;
 mod lifecycle;
 mod loading;
@@ -31,6 +30,7 @@ mod session;
 mod settings;
 mod streams;
 mod transcript;
+mod volumes;
 
 pub use asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
@@ -38,14 +38,14 @@ pub use asks::{
 };
 pub use credential::{Credential, Credentialed, Crediting, NoCredential, ReadCredential};
 pub use heard::Heard;
-pub use home::Homing;
-pub use record::{Conversation, Home, Record, Standing};
+pub use record::{Conversation, Record, Standing};
 pub use saves::{Index, Keeping, Loading};
-pub use settings::{CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, Unlabelled};
+pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
 pub use transcript::{Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
+pub use volumes::Homing;
 
 use crate::{
-    Attaching, ContainerId, Create, CreateVolume, Docker, Inspect, List, Logging, Remove, Start, Stop, Wait, Watching,
+    Attaching, ContainerId, Create, CreateVolume, Docker, Inspect, List, Logging, Remove, Start, Stop, Watching,
 };
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, More, Number, Open, Part, Path,
@@ -76,8 +76,7 @@ pub struct Asking {
     pub run: u32,
 }
 
-/// What the capability keeps for a start, a stop, or a removal of a session's container, or of the container that
-/// gives its home to its user.
+/// What the capability keeps for a start, a stop, or a removal of a session's container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.acting")]
 pub struct Acting {
@@ -93,10 +92,6 @@ pub enum Act {
     Start,
     Stop,
     Remove,
-    /// The start of the container that gives the session's home to its user.
-    Own,
-    /// The removal of that container, once it has ended.
-    Disown,
 }
 
 /// What the capability keeps for the list it reconciles its sessions by, as it begins.
@@ -155,12 +150,11 @@ type M10 = Asks<Streamed<Watching>, Open<Watching>, Number>;
 type M11 = ToAny<Streamed<Watching>, More>;
 type M12 = Asks<Writing, Write, Typing>;
 type M13 = Asks<Path<Docker>, CreateVolume, Homing>;
-type M14 = Asks<Path<Docker>, Wait, Homing>;
-type M15 = Asks<Path<Files>, ReadFile, Loading>;
-type M16 = Asks<Path<Files>, WriteFile, Keeping>;
+type M14 = Asks<Path<Files>, ReadFile, Loading>;
+type M15 = Asks<Path<Files>, WriteFile, Keeping>;
 
 /// The sends of a turn that handles no ask.
-type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16);
+type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15);
 
 /// A turn's sends that list everything [`Acts`] does, at the same places: what the capability's helpers act through,
 /// whichever answer the turn's ask is answered with.
@@ -181,7 +175,6 @@ trait Does:
     + Allows<M13, At<13>>
     + Allows<M14, At<14>>
     + Allows<M15, At<15>>
-    + Allows<M16, At<16>>
 {
 }
 
@@ -202,7 +195,6 @@ impl<S> Does for S where
         + Allows<M13, At<13>>
         + Allows<M14, At<14>>
         + Allows<M15, At<15>>
-        + Allows<M16, At<16>>
 {
 }
 
@@ -277,7 +269,6 @@ impl Actor for Sessions {
         Answer<FileWritten, Keeping>,
         Answer<Credentialed, Crediting>,
         Answer<crate::VolumeCreated, Homing>,
-        Answer<crate::Waited, Homing>,
         Answer<aethereal_actor::Slept, Resting>,
         Answer<crate::Created, Asking>,
         Answer<crate::Acted, Acting>,
@@ -291,11 +282,11 @@ impl Actor for Sessions {
         Answer<crate::EventsDone, Number>,
         Answer<aethereal_tcp::Wrote, Typing>,
     );
-    type BeginSends = (M15,);
+    type BeginSends = (M14,);
     type EndSends = ();
 
     /// Reads the index of its sessions through `Files`.
-    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self, (M15,)>) -> Result<Self, Fault> {
+    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self, (M14,)>) -> Result<Self, Fault> {
         let index = ReadFile { namespace: Namespace::Save, path: saves::INDEX };
         turn.to(aethereal_actor::path::<Files>(())).ask(&index, &Loading::Index)?;
 

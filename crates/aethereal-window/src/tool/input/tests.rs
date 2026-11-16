@@ -86,6 +86,7 @@ fn heard(turned: &Turned) -> Option<Event> {
         KeyEvent::KeyDown { code, key, repeat } => Event::KeyDown { code, key, repeat },
         KeyEvent::KeyUp { code, key } => Event::KeyUp { code, key },
         KeyEvent::Text { text } => Event::Text { text },
+        KeyEvent::Composing { text, caret } => Event::Composing { text, caret },
     };
 
     Some(event)

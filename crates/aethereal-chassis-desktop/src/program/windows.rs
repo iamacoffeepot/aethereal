@@ -1,11 +1,14 @@
 //! The window root bootstrapped on the desktop: the windows its settings list, opened on the screen as the program is
 //! set up (ADR-0024, ADR-0029).
 
+use crate::clipboard::SystemClipboard;
 use crate::running::Desktop;
+use aethereal_actor::Service;
 use aethereal_data::Plain;
 use aethereal_data::config::Field;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
-use aethereal_window::{InitialWindows, Mode, Opening, Windows};
+use aethereal_window::{Clipboard, InitialWindows, Mode, Opening, Windows};
+use std::sync::Arc;
 
 /// The window root's settings on the desktop, its section, `windows`: the windows opened as the program is set up, in
 /// order, at least one, the renderer opening the GPU on the first (ADR-0028).
@@ -50,8 +53,8 @@ impl Default for WindowsSettings {
 
 /// Opens each window the settings list on the screen, in order, each shown in its mode, as the window capability's
 /// windows `0`, `1`, …, begins the window root with them, its close buttons closing them, and gives the desktop its
-/// end, which opens and closes the windows the root asks for while the program runs, and sets their modes (ADR-0027).
-/// Provides the windows opened.
+/// end, which opens and closes the windows the root asks for while the program runs, and sets their modes (ADR-0027);
+/// and serves its jobs the system clipboard (ADR-0024: The clipboard). Provides the windows opened.
 impl Bootstrap<Desktop> for Windows {
     const SECTION: &'static str = "windows";
     type Settings = WindowsSettings;
@@ -76,6 +79,7 @@ impl Bootstrap<Desktop> for Windows {
         let (config, hosting) = opening.config();
         cx.begin(&(), config)?;
         cx.serve(hosting);
+        cx.serve(Service::<dyn Clipboard>::of(Arc::new(SystemClipboard::new())));
 
         Ok((InitialWindows::new(first, opened.collect()),))
     }

@@ -29,8 +29,10 @@ pub enum Pointing {
     Left,
     /// The pointer moved, to `at`: over it, or anywhere while a press on it is held.
     Moved { at: Vec2 },
-    /// A button went down over it, at `at`: every move and the release come to it until every button is up.
-    Down { at: Vec2, button: Button },
+    /// A button went down over it, at `at`: every move and the release come to it until every button is up. `presses`
+    /// counts the presses of the main button in a row on it, each soon after and near the one before, from 1: 2 is a
+    /// double click, 3 a triple; any other button's press counts 1.
+    Down { at: Vec2, button: Button, presses: u32 },
     /// A button came up, at `at`, after a press on it; `over` when what the pointer reaches at the release is this
     /// widget, as a click needs.
     Up { at: Vec2, button: Button, over: bool },
@@ -55,16 +57,30 @@ impl Key {
         let mut characters = self.key.chars();
         let one = characters.next().is_some() && characters.next().is_none();
 
-        one && !self.held.command
+        one && !self.held.command()
     }
 }
 
-/// The modifiers held, as the screen saw their keys go down and come up: Shift, and Control or Meta, the key a
-/// command is chorded with on either kind of keyboard.
+/// The modifiers held, as the screen saw their keys go down and come up: Shift, Control, Alt (Option on a Mac), and
+/// Meta (Command on a Mac).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each modifier is held or not apart from the others, as on a keyboard"
+)]
 pub struct Held {
     pub shift: bool,
-    pub command: bool,
+    pub control: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+impl Held {
+    /// Whether the key a command is chorded with is held, on either kind of keyboard: Control, or Meta.
+    #[must_use]
+    pub const fn command(self) -> bool {
+        self.control || self.meta
+    }
 }
 
 /// What a widget hears while it has its screen's focus: the keys at these places on the keyboard, declared with the
@@ -94,25 +110,38 @@ pub enum Used {
     Passed,
 }
 
+/// What a widget asks of its screen's clipboard (ADR-0056: Copy and paste).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Clip {
+    /// Write this text to it.
+    Copy(String),
+    /// Write this text to it, cut from the widget's selection, which goes once it is written.
+    Cut(String),
+    /// Read it, and type what it holds into the widget that asked, at its caret as it stands once the read is answered.
+    Paste,
+}
+
 /// What a widget is given as input reaches it: its style; where layout put it, in its own coordinates, its border box
-/// from `0, 0`; the fonts its text measures by; and where the events it raises go.
+/// from `0, 0`; the fonts its text measures by; where the events it raises go; and where what it asks of the clipboard
+/// goes.
 pub struct Input<'input, 'fonts> {
     style: &'input Style,
     laid: Laid,
     measuring: &'input mut Measuring<'fonts>,
     raised: &'input mut Vec<Raised<Erased>>,
+    clips: &'input mut Vec<Clip>,
 }
 
 impl<'input, 'fonts> Input<'input, 'fonts> {
     /// Input to a widget styled `style`, laid at `laid` in its screen's pixels, measuring with `measuring`, raising into
-    /// `raised`.
+    /// `raised`, and asking the clipboard into `clips`.
     pub(crate) fn new(
         style: &'input Style,
         laid: Laid,
         measuring: &'input mut Measuring<'fonts>,
-        raised: &'input mut Vec<Raised<Erased>>,
+        (raised, clips): (&'input mut Vec<Raised<Erased>>, &'input mut Vec<Clip>),
     ) -> Self {
-        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised }
+        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised, clips }
     }
 
     /// Its style, resolved from the style its markup names.
@@ -135,5 +164,23 @@ impl<'input, 'fonts> Input<'input, 'fonts> {
     /// Raises `raised`, which calls its screen's method once the input is taken in.
     pub fn raise<E: Event>(&mut self, raised: Raised<E>) {
         self.raised.push(raised.erase());
+    }
+
+    /// Writes `text` to the host's clipboard, once the input is taken in.
+    pub fn copy(&mut self, text: String) {
+        self.clips.push(Clip::Copy(text));
+    }
+
+    /// Writes `text`, the widget's selection, to the host's clipboard once the input is taken in, and once it is written
+    /// types nothing over the widget's selection as it stands then, while it still has its screen's focus: so a write
+    /// the host refuses cuts nothing.
+    pub fn cut(&mut self, text: String) {
+        self.clips.push(Clip::Cut(text));
+    }
+
+    /// Reads the host's clipboard once the input is taken in: what it holds is typed into this widget, at its caret as
+    /// it stands when the read is answered, while it still has its screen's focus.
+    pub fn paste(&mut self) {
+        self.clips.push(Clip::Paste);
     }
 }

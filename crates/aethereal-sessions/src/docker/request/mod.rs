@@ -6,7 +6,7 @@ mod tests;
 use super::spec::{labels, strings};
 use super::{
     Attach, ContainerId, Create, CreateVolume, Events, Inspect, Kill, List, Logs, Remove, Start, Stop, Until,
-    Unwritable, Wait,
+    Unwritable,
 };
 use aethereal_data::{Plain, write_json_string};
 use aethereal_http::Method;
@@ -87,13 +87,6 @@ impl Inspect {
     /// `GET /containers/{id}/json`.
     pub(super) fn call(&self) -> Result<Call, Unwritable> {
         Ok(Call::new(Method::Get, &container(&self.container, "/json")?, String::new(), Body::Empty))
-    }
-}
-
-impl Wait {
-    /// `POST /containers/{id}/wait`, answered once the container no longer runs.
-    pub(super) fn call(&self) -> Result<Call, Unwritable> {
-        Ok(Call::new(Method::Post, &container(&self.container, "/wait")?, String::new(), Body::Empty))
     }
 }
 

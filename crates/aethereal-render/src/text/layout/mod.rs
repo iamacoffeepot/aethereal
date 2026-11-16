@@ -48,10 +48,10 @@ pub enum Which {
 /// One shaped glyph as it is set: the font and glyph that draw it, how far it moves the pen in pixels, and the
 /// character it draws.
 #[derive(Debug, Clone, Copy)]
-struct Set {
+pub(super) struct Set {
     font: Which,
     glyph: GlyphId,
-    advance: f32,
+    pub(super) advance: f32,
     character: char,
 }
 
@@ -72,10 +72,10 @@ enum Break {
 /// A line as it is drawn: which of the set glyphs are on it, how far along its hard line it starts, and how wide its
 /// glyphs are, trailing spaces left out.
 #[derive(Debug, Clone)]
-struct Broken {
-    glyphs: Range<usize>,
-    offset: f32,
-    width: f32,
+pub(super) struct Broken {
+    pub(super) glyphs: Range<usize>,
+    pub(super) offset: f32,
+    pub(super) width: f32,
 }
 
 /// Lays `runs` out in the font of the metrics `own` at `size` pixels to the em, a character it lacks looked for in the
@@ -91,14 +91,7 @@ pub fn lay_out<M: AsRef<Metrics>>(
     let shaped = own.shape(&text);
     let scale = own.pixels_per_unit(size);
     let mut missing = Vec::new();
-    let sets: Vec<Set> = shaped
-        .glyphs
-        .iter()
-        .map(|glyph| {
-            let character = text.get(glyph.source..).and_then(|rest| rest.chars().next()).unwrap_or('\u{fffd}');
-            set(own, fallbacks, (character, glyph.glyph), size, &mut missing)
-        })
-        .collect();
+    let sets = sets(own, fallbacks, size, (&text, &shaped), &mut missing);
     let starts = pens(&shaped, &sets, scale);
     let broken: Vec<Broken> =
         shaped.lines.iter().flat_map(|line| broken(&starts, &sets, line.glyphs.clone(), wrap)).collect();
@@ -138,6 +131,24 @@ pub fn lay_out<M: AsRef<Metrics>>(
     Laid { glyphs, missing, lines, width: widest }
 }
 
+/// How each glyph `own` shaped of `text` is set, as [`set`] says, each character no font has noted in `missing`.
+pub(super) fn sets<M: AsRef<Metrics>>(
+    own: &Metrics,
+    fallbacks: &[M],
+    size: f32,
+    (text, shaped): (&str, &Shaped),
+    missing: &mut Vec<char>,
+) -> Vec<Set> {
+    shaped
+        .glyphs
+        .iter()
+        .map(|glyph| {
+            let character = text.get(glyph.source..).and_then(|rest| rest.chars().next()).unwrap_or('\u{fffd}');
+            set(own, fallbacks, (character, glyph.glyph), size, missing)
+        })
+        .collect()
+}
+
 /// How `character`, which `own` shaped as `shaped`, is set: in `own` when it has the character; else in the first of
 /// `fallbacks` that has it; else as `own`'s missing glyph, noted in `missing` the first time.
 fn set<M: AsRef<Metrics>>(
@@ -171,7 +182,7 @@ fn set<M: AsRef<Metrics>>(
 
 /// Where each glyph's pen is along its hard line, in pixels: two neighbours both of the text's own font as it shaped
 /// them, kerned, and a glyph of a fallback, or before one, by its own advance.
-fn pens(shaped: &Shaped, sets: &[Set], scale: f32) -> Vec<f32> {
+pub(super) fn pens(shaped: &Shaped, sets: &[Set], scale: f32) -> Vec<f32> {
     let mut starts = vec![0.0; sets.len()];
     for line in &shaped.lines {
         let mut pen = 0.0;
@@ -195,7 +206,7 @@ fn pens(shaped: &Shaped, sets: &[Set], scale: f32) -> Vec<f32> {
 
 /// The lines the hard line of the set glyphs `glyphs` is drawn as: itself, or, when it wraps at `wrap`, broken after
 /// the last space before each glyph that would end past the width. A word wider than the width is left whole.
-fn broken(starts: &[f32], sets: &[Set], glyphs: Range<usize>, wrap: Wrap) -> Vec<Broken> {
+pub(super) fn broken(starts: &[f32], sets: &[Set], glyphs: Range<usize>, wrap: Wrap) -> Vec<Broken> {
     let mut lines = Vec::new();
     let mut first = glyphs.start;
     if let Wrap::At { width } = wrap {

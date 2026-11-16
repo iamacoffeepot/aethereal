@@ -175,6 +175,12 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         false
     }
 
+    /// Whether Tab reaches it, of the widgets that can hold focus: each one by default, and not a text read rather than
+    /// filled in, which takes focus on a press only so its keys reach it.
+    fn tabbable(&self) -> bool {
+        self.focusable()
+    }
+
     /// What it hears while it has its screen's focus.
     fn hears(&self) -> Hears {
         Hears::Keys(&[])
@@ -196,6 +202,12 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
     /// committed (ADR-0051).
     fn typed(&self, state: &mut Self::State, text: &str, input: &mut Input<'_, '_>) {
         let _ = (state, text, input);
+    }
+
+    /// Takes in what the window's input method is composing while it has its screen's focus, `text` with its caret at
+    /// the byte `caret`, not yet committed: an empty text when the composition closed (ADR-0051).
+    fn composing(&self, state: &mut Self::State, text: &str, caret: u32, input: &mut Input<'_, '_>) {
+        let _ = (state, text, caret, input);
     }
 }
 
@@ -357,6 +369,9 @@ pub trait Built: Debug + Send {
     fn pointer(&self, state: &[u8]) -> Pointer;
     /// Whether it can hold its screen's focus.
     fn focusable(&self) -> bool;
+
+    /// Whether Tab reaches it.
+    fn tabbable(&self) -> bool;
     /// What it hears while it has its screen's focus.
     fn hears(&self) -> Hears;
     /// Takes in what the pointer did at it, its state read from and written back to `state`.
@@ -365,6 +380,9 @@ pub trait Built: Debug + Send {
     fn key(&self, state: &mut Vec<u8>, key: &Key, input: &mut Input<'_, '_>) -> Used;
     /// Takes in typed text, its state read from and written back to `state`.
     fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>);
+
+    /// Takes in what the input method is composing, its state read from and written back to `state`.
+    fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>);
 }
 
 /// `W`'s state read from `state`, the bytes its table keeps: one that does not read, which only a table not kept by
@@ -468,6 +486,10 @@ impl<W: Widget> Built for W {
         Widget::focusable(self)
     }
 
+    fn tabbable(&self) -> bool {
+        Widget::tabbable(self)
+    }
+
     fn hears(&self) -> Hears {
         Widget::hears(self)
     }
@@ -482,5 +504,9 @@ impl<W: Widget> Built for W {
 
     fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>) {
         changed::<W, ()>(state, |state| Widget::typed(self, state, text, input));
+    }
+
+    fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>) {
+        changed::<W, ()>(state, |state| Widget::composing(self, state, text, caret, input));
     }
 }
