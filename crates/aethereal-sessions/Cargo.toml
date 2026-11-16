@@ -14,6 +14,8 @@ tools = ["dep:aethereal-tools"]
 aethereal-actor = { path = "../aethereal-actor" }
 # Docker's requests and replies are JSON, written and read with the workspace's own JSON (ADR-0007).
 aethereal-data = { path = "../aethereal-data", features = ["json"] }
+# The sessions' records and transcripts are kept in `Files`' `Save` namespace, asked as any actor asks it.
+aethereal-files = { path = "../aethereal-files" }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tcp = { path = "../aethereal-tcp" }

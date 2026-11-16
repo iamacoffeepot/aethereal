@@ -115,6 +115,51 @@ pub enum ContainerState {
     },
 }
 
+/// Asked of the client: wait until the container no longer runs, and answer how its process ended.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.docker.wait")]
+pub struct Wait {
+    pub container: ContainerId,
+}
+
+/// What a wait came to.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.docker.waited")]
+pub enum Waited {
+    /// The container's process ended with `code`.
+    Exited {
+        code: i64,
+    },
+    Failed(DockerError),
+}
+
+/// A named volume, by a name its maker built: 2 to 255 of ASCII letters, digits, `_`, `.`, and `-`, the first a letter
+/// or a digit, as Docker names one. A request names a volume only by such a name, which never spells a path, so it
+/// names one volume Docker keeps and never a directory of this machine.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Plain)]
+#[kind(name = "aether.docker.volume_name")]
+pub struct VolumeName {
+    name: String,
+}
+
+/// Asked of the client: make the named volume `name`, carrying `labels`. One that is there already is answered made,
+/// and keeps what it holds and the labels it was made with.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.docker.create_volume")]
+pub struct CreateVolume {
+    pub name: VolumeName,
+    pub labels: Vec<Label>,
+}
+
+/// What a volume's create came to.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.docker.volume_created")]
+pub enum VolumeCreated {
+    /// Docker made the volume, or has it already.
+    Made,
+    Failed(DockerError),
+}
+
 /// Asked of the client: every container that carries `label`, running or not.
 #[derive(Debug, Plain)]
 #[kind(name = "aether.docker.list")]
@@ -192,6 +237,8 @@ pub enum Unwritable {
     Label { key: String },
     /// A container's id is not one Docker gave: it would not name one container in a request's path.
     Container,
+    /// A volume's name is not one Docker takes: it could name a directory of this machine.
+    Volume,
 }
 
 /// Asked whole, it answers once Docker has.
@@ -221,6 +268,53 @@ impl Carries<Inspect> for Docker {
 
 impl Carries<List> for Docker {
     type Answers = (Listed,);
+}
+
+impl Carries<Wait> for Docker {
+    type Answers = (Waited,);
+}
+
+impl Carries<CreateVolume> for Docker {
+    type Answers = (VolumeCreated,);
+}
+
+/// The most bytes of a volume's name.
+const MOST_VOLUME_BYTES: usize = 255;
+
+impl VolumeName {
+    /// The name `name` writes, when it is one Docker takes.
+    #[must_use]
+    pub fn read(name: &str) -> Option<Self> {
+        let is_name = Self::is_name(name);
+
+        is_name.then(|| Self { name: String::from(name) })
+    }
+
+    /// Whether `name` is one Docker takes for a volume, and so never a path.
+    fn is_name(name: &str) -> bool {
+        let is_sized = (2..=MOST_VOLUME_BYTES).contains(&name.len());
+        let begins = name.bytes().next().is_some_and(|first| first.is_ascii_alphanumeric());
+        let is_spelled = name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'));
+
+        is_sized && begins && is_spelled
+    }
+
+    /// The name as a request writes it, when it still is one Docker takes: one read back from bytes may hold anything,
+    /// and is refused.
+    pub(super) fn written(&self) -> Result<&str, Unwritable> {
+        let is_name = Self::is_name(&self.name);
+        if !is_name {
+            return Err(Unwritable::Volume);
+        }
+
+        Ok(&self.name)
+    }
+
+    /// The name, as its maker built it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
 }
 
 /// The most hex digits of an id Docker gives.

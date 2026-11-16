@@ -10,8 +10,8 @@ use std::iter;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    DomException, File, FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDirectoryOptions,
-    FileSystemGetFileOptions, FileSystemWritableFileStream, Response,
+    DomException, File, FileSystemCreateWritableOptions, FileSystemDirectoryHandle, FileSystemFileHandle,
+    FileSystemGetDirectoryOptions, FileSystemGetFileOptions, FileSystemWritableFileStream, Response,
 };
 
 /// The directory of the origin private file system the program's saves are in, so each namespace written there has a
@@ -41,7 +41,7 @@ impl Default for FileUrls {
 
 /// The browser's storage (ADR-0032, ADR-0039, ADR-0054): each asset and module fetched from beneath its URL, the
 /// modules listed from the [`Manifest`] beneath theirs, and each save read and written in the origin private file
-/// system, whose writable stream replaces a file whole as it is closed. Each is a promise the page's event loop drives.
+/// system, whose writable stream replaces a file whole as it is closed, or, keeping its data, appends to it. Each is a promise the page's event loop drives.
 /// A page served beside its assets and its code, an artifact among them, reads them with no setting.
 pub struct Fetching {
     /// The URL of the program's assets, with no `/` at its end.
@@ -78,6 +78,13 @@ impl Storage for Fetching {
         match namespace {
             Namespace::Assets | Namespace::Code => Box::pin(future::ready(Err(Unwritten::ReadOnly))),
             Namespace::Save => Box::pin(write_saved(path, bytes)),
+        }
+    }
+
+    fn append<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        match namespace {
+            Namespace::Assets | Namespace::Code => Box::pin(future::ready(Err(Unwritten::ReadOnly))),
+            Namespace::Save => Box::pin(append_saved(path, bytes)),
         }
     }
 
@@ -230,6 +237,39 @@ async fn write_saved(path: &FilePath, bytes: Vec<u8>) -> Result<(), Unwritten> {
         return Err(Unwritten::Failed);
     }
     JsFuture::from(stream.close()).await.map_err(|error| Unwritten::from(refused(&error)))?;
+
+    Ok(())
+}
+
+/// Appends `bytes` after what the save at `path` holds, making it and the directories it names when they are missing.
+/// The writable stream keeps the file's data, is moved to its end, and lands what it wrote as it is closed; one that
+/// could not be written is aborted, and the file is left as it was.
+async fn append_saved(path: &FilePath, bytes: Vec<u8>) -> Result<(), Unwritten> {
+    let (directory, name) = directory_of(path, true).await?;
+    let options = FileSystemGetFileOptions::new();
+    options.set_create(true);
+    let handle: FileSystemFileHandle = resolved(directory.get_file_handle_with_options(name, &options)).await?;
+    let file: File = resolved(handle.get_file()).await?;
+    let keeping = FileSystemCreateWritableOptions::new();
+    keeping.set_keep_existing_data(true);
+    let stream: FileSystemWritableFileStream = resolved(handle.create_writable_with_options(&keeping)).await?;
+    let seeking = stream.seek_with_f64(file.size()).map_err(|error| refused(&error))?;
+    landed(&stream, seeking).await?;
+    let writing = stream.write_with_u8_array(&bytes).map_err(|error| refused(&error))?;
+    landed(&stream, writing).await?;
+    JsFuture::from(stream.close()).await.map_err(|error| Unwritten::from(refused(&error)))?;
+
+    Ok(())
+}
+
+/// Waits for `step`, a promise of `stream`'s; one that fails aborts the stream, which leaves its file as it was.
+async fn landed(stream: &FileSystemWritableFileStream, step: Promise) -> Result<(), Unwritten> {
+    let done = JsFuture::from(step).await;
+    if done.is_err() {
+        // What the abort answers changes nothing of the file.
+        let _ = JsFuture::from(stream.abort()).await;
+        return Err(Unwritten::Failed);
+    }
 
     Ok(())
 }

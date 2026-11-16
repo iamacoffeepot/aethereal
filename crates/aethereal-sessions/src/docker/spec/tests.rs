@@ -1,4 +1,9 @@
-use crate::{Access, Bind, ContainerSpec, Create, Label, Network, Stdin, Unwritable, Variable};
+use crate::{Access, Bind, ContainerSpec, Create, Label, Network, Stdin, Unwritable, Variable, Volume, VolumeName};
+
+/// The volume named `name`, which Docker takes.
+fn volume(name: &str) -> VolumeName {
+    VolumeName::read(name).unwrap_or_else(|| panic!("the test's volume is named as Docker takes one"))
+}
 
 /// A session's container, as a capability's config would state one.
 fn spec() -> ContainerSpec {
@@ -21,6 +26,7 @@ fn spec() -> ContainerSpec {
                 access: Access::ReadOnly,
             },
         ],
+        volumes: vec![Volume { name: volume("aethereal-session-7"), target: String::from("/work/home") }],
         network: Network::Named(String::from("aethereal")),
         millicpus: 4000,
         memory_bytes: 8 << 30,
@@ -33,7 +39,8 @@ fn spec() -> ContainerSpec {
 fn a_spec_is_written_as_the_create_body_docker_documents() {
     // Tripwire: the body of `POST /containers/create` a spec writes. A member misnamed or misplaced is silently
     // ignored by Docker, so the container runs without the limit, the mount, or the open stdin the spec asked for;
-    // `Tty` must stay false, or the output is not framed and nothing demultiplexes it.
+    // `Tty` must stay false, or the output is not framed and nothing demultiplexes it; and a volume's `NoCopy` must
+    // stay, or Docker gives an empty volume the owner of the directory the image has at its target, root's.
     let body = spec().body();
     let expected = concat!(
         r#"{"Image":"aethereal-session:1","User":"1000:1000","WorkingDir":"/work/project","#,
@@ -41,7 +48,9 @@ fn a_spec_is_written_as_the_create_body_docker_documents() {
         r#""OpenStdin":true,"StdinOnce":false,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":false,"#,
         r#""HostConfig":{"NetworkMode":"aethereal","NanoCpus":4000000000,"Memory":8589934592,"Mounts":["#,
         r#"{"Type":"bind","Source":"/srv/s/7/project","Target":"/work/project","ReadOnly":false},"#,
-        r#"{"Type":"bind","Source":"/srv/bin/claude","Target":"/usr/bin/claude","ReadOnly":true}]}}"#,
+        r#"{"Type":"bind","Source":"/srv/bin/claude","Target":"/usr/bin/claude","ReadOnly":true},"#,
+        r#"{"Type":"volume","Source":"aethereal-session-7","Target":"/work/home","ReadOnly":false,"#,
+        r#""VolumeOptions":{"NoCopy":true}}]}}"#,
     );
     assert_eq!(body.as_deref(), Ok(expected));
 
@@ -55,4 +64,15 @@ fn a_variable_docker_would_split_elsewhere_is_refused_before_anything_is_sent() 
     let mut split = spec();
     split.env.push(Variable { name: String::from("A=B"), value: String::from("C") });
     assert_eq!(split.body(), Err(Unwritable::Variable { name: String::from("A=B") }));
+}
+
+#[test]
+fn a_volume_is_named_only_by_a_name_docker_takes_never_a_path() {
+    // Catches a volume's name that spells a path read as a name, which Docker's mount would take as a directory of
+    // this machine, and a name past what Docker takes, refused only once the create reaches it.
+    for path in ["/etc", "./home", "../x", "a/b", "-x", "a", ""] {
+        assert_eq!(VolumeName::read(path), None, "{path:?} names no volume");
+    }
+    assert!(VolumeName::read("aethereal-session-hub-7").is_some());
+    assert_eq!(VolumeName::read(&"v".repeat(256)), None);
 }

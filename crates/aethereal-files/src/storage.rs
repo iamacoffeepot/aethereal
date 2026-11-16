@@ -139,6 +139,12 @@ pub trait Storage: Send + Sync {
     /// is refused [`Unwritten::ReadOnly`].
     fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a>;
 
+    /// Appends `bytes` after what the file at `path` in `namespace` holds, making it, and the directories its path
+    /// names, when it is missing, and syncs it before it answers. It is not all or nothing: a crash can leave part of
+    /// `bytes` at the file's end. Two appends to one file asked at once may land in either order. A namespace that is
+    /// not written is refused [`Unwritten::ReadOnly`].
+    fn append<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a>;
+
     /// Lists the files of `namespace` its listing holds ([`Namespace::listing`]): natively, of the files directly in
     /// its directory; in a browser, of the paths its [`Manifest`](crate::Manifest) names. A namespace that is not
     /// listed is refused [`Unlisted::NotListed`].

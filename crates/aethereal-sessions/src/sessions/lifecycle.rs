@@ -1,9 +1,10 @@
-//! A session's container through its life (ADR-0057): its directories made and the credential read, made from the
-//! settings, started, attached and followed, and stopped and removed once it is idle, archived, or has ended.
+//! A session's container through its life (ADR-0057): its home made its user's when it is not yet and the credential
+//! read, made from the settings, started, attached and followed, and stopped and removed once it is idle, archived, or
+//! has ended.
 
 use super::asks::{Archived, Opened, Refusal};
-use super::container::{Made, spec};
-use super::disk::{Prepare, Prepared, Preparing};
+use super::container::{Made, Unmade, spec};
+use super::credential::{Credentialed, Crediting, ReadCredential};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
@@ -12,17 +13,22 @@ use super::transcript::{Ended, Entry, Note, Turning};
 use super::{Act, Acting, Acts, Asking, Does, Feed, Sessions};
 use crate::{
     Acted, Attach, ContainerId, ContainerState, Create, Created, DockerError, Inspect, Inspected, Logs, Remove, Start,
-    Stop, Until,
+    Stop, Until, Unwritable,
 };
 use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Turn, path};
 use core::mem;
 use std::collections::BTreeSet;
 
 impl Sessions {
-    /// Starts a container of `session` for its run `run`, which its life is already `Starting` for: its directories
-    /// first.
+    /// Starts a container of `session` for its run `run`, which its life is already `Starting` for at its first step:
+    /// its home made its user's first when it is not yet, and the credential read.
     pub(super) fn start<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, run: u32) -> Result<(), Fault> {
-        turn.run(&Prepare { session }, &Preparing { session, run })?;
+        let is_housing = self.is_at(session, run, |step| matches!(step, Step::Housing));
+        if is_housing {
+            self.house(turn, session, run)?;
+        } else {
+            turn.run(&ReadCredential, &Crediting { session, run })?;
+        }
         self.dirty(session);
 
         Ok(())
@@ -145,7 +151,7 @@ impl Sessions {
 
     /// The start of `session`'s run `run` failed, as `why` says: the session is stopped, and each who waits on it
     /// answered.
-    fn unstarted<S: Does>(
+    pub(super) fn unstarted<S: Does>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
         session: u32,
@@ -167,7 +173,7 @@ impl Sessions {
     }
 
     /// Whether `session` is starting its run `run` at `step`.
-    fn is_at(&self, session: u32, run: u32, at: fn(&Step) -> bool) -> bool {
+    pub(super) fn is_at(&self, session: u32, run: u32, at: fn(&Step) -> bool) -> bool {
         let Some(held) = self.held.get(&session) else {
             return false;
         };
@@ -176,36 +182,37 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<Prepared, Preparing>> for Sessions {
+impl Handles<Answer<Credentialed, Crediting>> for Sessions {
     type Sends = Acts;
 
-    /// The session's directories are made and the credential read: Docker is asked to make its container.
+    /// The credential is read: Docker is asked to make the session's container.
     fn handle(
         &mut self,
-        (answered, Preparing { session, run }): (Answered<Prepared>, Preparing),
+        (answered, Crediting { session, run }): (Answered<Credentialed>, Crediting),
         turn: &mut Turn<'_, Self, Acts>,
     ) -> Result<(), Fault> {
-        let is_preparing = self.is_at(session, run, |step| matches!(step, Step::Preparing));
-        if !is_preparing {
+        let is_crediting = self.is_at(session, run, |step| matches!(step, Step::Crediting));
+        if !is_crediting {
             return Ok(());
         }
-        let (home, env) = match answered {
-            Answered::Yes(Prepared::Ready { home, env }) => (home, env),
-            Answered::Yes(Prepared::NoCredential) => return self.unstarted(turn, session, run, &Refusal::NoCredential),
-            Answered::Yes(Prepared::Unmade) | Answered::No(_) => {
-                return self.unstarted(turn, session, run, &Refusal::Disk);
-            }
+        let Answered::Yes(Credentialed::Read(env)) = answered else {
+            return self.unstarted(turn, session, run, &Refusal::NoCredential);
         };
         let conversation = self.held.get(&session).map_or(Conversation::Unbegun, |held| held.conversation.clone());
-        let made = Made { session, run, conversation: &conversation, home, env };
-        let Ok(spec) = spec(&self.settings, made) else {
-            return self.unstarted(turn, session, run, &Refusal::Docker(DockerError::Malformed));
+        let made = Made { session, run, conversation: &conversation, env };
+        let spec = match spec(&self.settings, made) {
+            Ok(spec) => spec,
+            Err(Unmade::Unlabelled(_)) => {
+                return self.unstarted(turn, session, run, &Refusal::Docker(DockerError::Malformed));
+            }
+            Err(Unmade::Unnamed) => {
+                let why = Refusal::Docker(DockerError::Unwritable(Unwritable::Volume));
+                return self.unstarted(turn, session, run, &why);
+            }
         };
         let due = self.due(turn, 0);
         turn.to(path::<crate::Docker>(())).within(due).ask(&Create { spec }, &Asking { session, run })?;
-        if let Some(Life::Starting { step, .. }) = self.held.get_mut(&session).map(|held| &mut held.life) {
-            *step = Step::Creating;
-        }
+        self.step_to(session, Step::Creating);
 
         self.flush(turn)
     }
@@ -214,12 +221,18 @@ impl Handles<Answer<Prepared, Preparing>> for Sessions {
 impl Handles<Answer<Created, Asking>> for Sessions {
     type Sends = Acts;
 
-    /// Docker made the container: it is recorded, and started. One made for a start given up on is removed.
+    /// Docker made the container: it is recorded, and started. One made for a start given up on is removed. One made
+    /// to give the session's home to its user is that step's.
     fn handle(
         &mut self,
         (answered, Asking { session, run }): (Answered<Created>, Asking),
         turn: &mut Turn<'_, Self, Acts>,
     ) -> Result<(), Fault> {
+        let is_owning = self.is_at(session, run, |step| matches!(step, Step::Owning));
+        if is_owning {
+            self.owner_made(turn, session, run, answered)?;
+            return self.flush(turn);
+        }
         let is_creating = self.is_at(session, run, |step| matches!(step, Step::Creating));
         let container = match answered {
             Answered::Yes(Created::Made(container)) => container,
@@ -234,9 +247,7 @@ impl Handles<Answer<Created, Asking>> for Sessions {
         let due = self.due(turn, 0);
         let start = Start { container: container.clone() };
         turn.to(path::<crate::Docker>(())).within(due).ask(&start, &Acting { session, run, act: Act::Start })?;
-        if let Some(Life::Starting { step, .. }) = self.held.get_mut(&session).map(|held| &mut held.life) {
-            *step = Step::Launching { container };
-        }
+        self.step_to(session, Step::Launching { container });
         self.dirty(session);
 
         self.flush(turn)
@@ -260,6 +271,8 @@ impl Handles<Answer<Acted, Acting>> for Sessions {
             Act::Start => self.started(turn, session, run, acted)?,
             Act::Stop => self.stopped(turn, session, run, &acted)?,
             Act::Remove => self.removed(turn, session, run, acted)?,
+            Act::Own => self.owner_started(turn, session, run, acted)?,
+            Act::Disown => Self::disowned(turn, session, &acted),
         }
 
         self.flush(turn)
@@ -394,7 +407,7 @@ impl Sessions {
         };
         held.runs += 1;
         let run = held.runs;
-        held.life = Life::Starting { run, step: Step::Preparing, opening: Vec::new(), lines };
+        held.life = Life::Starting { run, step: Step::first(held.home), opening: Vec::new(), lines };
 
         self.start(turn, session, run)
     }

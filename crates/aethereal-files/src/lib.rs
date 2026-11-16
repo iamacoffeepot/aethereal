@@ -30,4 +30,4 @@ pub use read::{FileRead, ReadFile};
 pub use storage::{Listing, Namespace, Read, Reading, Storage, Unlisted, Unread, Unwritten, Writing};
 #[cfg(feature = "tools")]
 pub use tool::{Calling, FileContents, ReadTool, ReadToolConfig, TextFile, WriteTool, WriteToolConfig};
-pub use write::{FileWritten, WriteFile};
+pub use write::{FileWritten, WriteFile, Writes};

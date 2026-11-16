@@ -10,7 +10,8 @@
 //! `--link-most-calls`, and `--link-most-bytes` for the engines' link, and `--store-most-bytes` for the store. Any
 //! field is also set by its section and name, `--set engines.most_engines=8`, and by the environment,
 //! `AETHEREAL_HUB_LINK_PORT=8892`. The sessions are set in the section `sessions`, such as `--set
-//! sessions.root=/srv/sessions`, and Docker's socket in `docker`.
+//! sessions.credential=/srv/claude.env`, and Docker's socket in `docker`. The sessions keep their records and
+//! transcripts through `Files`, in the directory `--save` names, and each session's home is a volume Docker keeps.
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example link_hub -- --mcp-port 8890 --link-port 8892
 //! --root store`. The store is kept in the directory `--root` names. Then check an engine's binary in, such as the
@@ -19,6 +20,7 @@
 
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
+use aethereal_files::Files;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{EngineTools, Engines, EnginesSettings};
 use aethereal_mcp::{Mcp, McpSettings};
@@ -42,6 +44,7 @@ fn main() {
         .root_with::<Engines>(engines)
         .root::<Store>()
         .root::<Processes>()
+        .root::<Files>()
         .root::<Docker>()
         .root::<Sessions>()
         .root::<Toolbox<(EngineTools, StoreTools, LogsTool, SessionsTools), Mcp>>()

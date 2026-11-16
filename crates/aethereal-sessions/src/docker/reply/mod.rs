@@ -5,7 +5,10 @@
 mod tests;
 
 use super::json::{boolean, elements, field, integer, members, text, tree};
-use super::{Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase};
+use super::{
+    Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase, VolumeCreated,
+    Waited,
+};
 use aethereal_data::{JsonTree, JsonValue};
 use core::str;
 
@@ -56,6 +59,25 @@ pub(super) fn inspected(status: u16, body: &[u8]) -> Inspected {
     let state = read(body, |tree| field(tree, tree.root(), "State").and_then(|state| container_state(tree, state)));
 
     state.map_or(Inspected::Failed(DockerError::Malformed), Inspected::State)
+}
+
+/// What a wait came to: `200` with the code the container's process ended with.
+pub(super) fn waited(status: u16, body: &[u8]) -> Waited {
+    if status != 200 {
+        return Waited::Failed(error(status, body));
+    }
+    let code = read(body, |tree| field(tree, tree.root(), "StatusCode").and_then(integer));
+
+    code.map_or(Waited::Failed(DockerError::Malformed), |code| Waited::Exited { code })
+}
+
+/// What a volume's create came to: `201`, whether Docker made it or had it already.
+pub(super) fn volume_created(status: u16, body: &[u8]) -> VolumeCreated {
+    if status != 201 {
+        return VolumeCreated::Failed(error(status, body));
+    }
+
+    VolumeCreated::Made
 }
 
 /// What a list came to: `200` with an array of the containers found.

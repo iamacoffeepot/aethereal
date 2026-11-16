@@ -2,15 +2,16 @@
 //! containers the hub's sessions run in.
 //!
 //! An actor asks it at its typed path, `path::<Docker>(())`, to [`Create`] a container from a [`ContainerSpec`], to
-//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, or to [`List`] the containers that carry
-//! a label, and is answered once Docker has. It opens an [`Attaching`] stream to a container's stdin and output, a
-//! [`Logging`] stream of what a container wrote from a time on, or a [`Watching`] stream of the events of the
-//! containers that carry a label. Each request goes on a connection of its own, which `Http` dials to the socket and
+//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, to [`Wait`] until it no longer runs, to
+//! [`List`] the containers that carry a label, or to [`CreateVolume`] a named volume, and is answered once Docker has.
+//! It opens an [`Attaching`] stream to a container's stdin and output, a [`Logging`] stream of what a container wrote
+//! from a time on, or a [`Watching`] stream of the events of the containers that carry a label. Each request goes on a connection of its own, which `Http` dials to the socket and
 //! the client shuts once its reply is read, so a stream that runs for hours holds up nothing else.
 //!
 //! **Nothing is passed through.** Every request is one of these, written by the client from typed fields, and no
 //! request, path, query, or JSON from its asker reaches Docker: only a [`ContainerSpec`] makes a container, and a
-//! container is named only by its id, as Docker gives one, never by a name or a path. Access to Docker's socket is
+//! container is named only by its id, as Docker gives one, never by a name or a path; a volume only by a name Docker
+//! takes, which never spells a path. Access to Docker's socket is
 //! access to this machine, so what a container is made of must come from the hub's own config, and the hub reaches the
 //! socket only through this client (ADR-0057).
 //!
@@ -37,12 +38,12 @@ mod streams;
 mod whole;
 
 pub use asks::{
-    Acted, ContainerId, ContainerState, Create, Created, DockerError, Inspect, Inspected, Kill, Label, List, Listed,
-    Listing, Phase, Remove, Start, Stop, Unwritable,
+    Acted, ContainerId, ContainerState, Create, CreateVolume, Created, DockerError, Inspect, Inspected, Kill, Label,
+    List, Listed, Listing, Phase, Remove, Start, Stop, Unwritable, VolumeCreated, VolumeName, Wait, Waited,
 };
 pub use request::API_VERSION;
 pub use settings::{DockerConfig, DockerSettings, SocketUnaddressable};
-pub use spec::{Access, Bind, ContainerSpec, Network, Stdin, Variable};
+pub use spec::{Access, Bind, ContainerSpec, Network, Stdin, Variable, Volume};
 pub use streams::{
     Attach, Attached, Attaching, Detached, Event, Events, EventsDone, Logging, Logs, LogsDone, Output, Std, Until,
     Watching,
@@ -168,6 +169,8 @@ impl Actor for Docker {
         Remove,
         Inspect,
         List,
+        Wait,
+        CreateVolume,
         Open<Attaching>,
         Open<Logging>,
         Open<Watching>,

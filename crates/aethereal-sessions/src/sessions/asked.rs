@@ -5,6 +5,7 @@ use super::asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed, NewSession, Opened, ReadTranscript, Refusal, Said,
     Say, Transcribed,
 };
+use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker};
 use super::{Does, Phase, Sessions};
@@ -90,7 +91,9 @@ impl Sessions {
     /// Answers `waiting`, or holds it until the capability has found its sessions' containers.
     pub(super) fn take<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, waiting: Waiting) -> Result<(), Fault> {
         match &mut self.phase {
-            Phase::Loading { waiting: held } | Phase::Listing { waiting: held, .. } => {
+            Phase::Indexing { waiting: held }
+            | Phase::Reading { waiting: held, .. }
+            | Phase::Listing { waiting: held, .. } => {
                 held.push(waiting);
                 return Ok(());
             }
@@ -122,6 +125,7 @@ impl Sessions {
         }
         let session = self.held.keys().next_back().map_or(1, |last| last + 1);
         self.held.insert(session, Session::new(name, held));
+        self.indexed = Indexed::Changed;
 
         self.start(turn, session, 1)
     }

@@ -475,6 +475,7 @@ fn spec(name: &str, label: &Label) -> ContainerSpec {
         command: vec![String::from("cat")],
         env: Vec::new(),
         binds: Vec::new(),
+        volumes: Vec::new(),
         network: Network::Isolated,
         millicpus: 500,
         memory_bytes: 64 << 20,

@@ -48,7 +48,7 @@ pub use processes::ProcessGroups;
 pub use program::{RunningSettings, Serving};
 pub use resident::resident;
 pub use running::{Exit, Timer};
-pub use sessions::SessionsDirectory;
+pub use sessions::CredentialFile;
 pub use store::StoreDirectory;
 pub use tcp::Dialers;
 

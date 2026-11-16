@@ -1,18 +1,21 @@
 //! The sessions capability on the native host (ADR-0057): a Docker daemon faked by a Unix socket whose containers run
-//! a Claude the test speaks for, and, run by hand, the build host's own daemon and Claude Code.
+//! a Claude the test speaks for, the sessions' files kept through `Files` in the test's directory, and, run by hand,
+//! the build host's own daemon and Claude Code.
 #![cfg(unix)]
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn, path,
 };
-use aethereal_chassis_headless::Headless;
+use aethereal_actor::{Service, Spares};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
-use aethereal_data::{Bound, Plain};
+use aethereal_chassis_headless::{Directories, FileRoots, Headless};
+use aethereal_data::{Bound, Budget, FilePath, Plain, from_bytes, to_bytes};
+use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_sessions::{
-    Archive, Archived, Docker, DockerSettings, Ended, Entry, Interrupt, Interrupted, ListSessions, NewSession, Note,
-    Numbered, Opened, ReadTranscript, Refusal, Said, Say, Sessions, SessionsListed, SessionsSettings, Speaker, State,
-    Transcribed, Transcript,
+    Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Home, Index, Interrupt, Interrupted,
+    ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions,
+    SessionsListed, SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -21,10 +24,15 @@ use core::fmt::Write as _;
 use core::mem;
 use core::time::Duration;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::{env, fs, process};
+use std::path::{Path as FsPath, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll, Waker};
+use std::{env, fs, process, thread};
 
 /// The session id Claude names its conversation by in these tests.
 const CONVERSATION: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
@@ -190,14 +198,19 @@ struct Connection {
 }
 
 /// A Docker daemon faked on a Unix socket in a directory named for the test, removed when dropped, whose containers'
-/// output the test writes as Claude would.
+/// output the test writes as Claude would. A container whose name ends `-home` gives a session's home to its user: it
+/// ends as soon as it is waited for.
 struct Daemon {
     dir: PathBuf,
     listener: UnixListener,
     connections: Vec<Connection>,
     containers: BTreeMap<String, Container>,
-    /// The ids of the containers made, in the order made.
+    /// The ids of the sessions' containers made, in the order made.
     made: Vec<String>,
+    /// The ids of the containers made that give a home to its user, in the order made.
+    owners: Vec<String>,
+    /// The bodies of the volumes made, by name.
+    volumes: BTreeMap<String, String>,
     /// Every event, a JSON line each.
     events: Vec<String>,
 }
@@ -219,6 +232,8 @@ impl Daemon {
             connections: Vec::new(),
             containers: BTreeMap::new(),
             made: Vec::new(),
+            owners: Vec::new(),
+            volumes: BTreeMap::new(),
             events: Vec::new(),
         }
     }
@@ -231,7 +246,6 @@ impl Daemon {
     /// and `idle_secs` say.
     fn sessions(&self, most_running: u32, idle_secs: u32) -> SessionsSettings {
         SessionsSettings {
-            root: self.dir.join("sessions").display().to_string(),
             credential: self.dir.join("claude.env").display().to_string(),
             claude: String::from("/opt/claude"),
             label: String::from("test"),
@@ -240,6 +254,18 @@ impl Daemon {
             idle_secs,
             ..SessionsSettings::default()
         }
+    }
+
+    /// `Files`' settings: each namespace a directory in the test's.
+    fn files(&self) -> FileRoots {
+        let directory = |name: &str| self.dir.join(name).display().to_string();
+
+        FileRoots { assets: directory("assets"), save: directory("save"), code: directory("code"), readers: 2 }
+    }
+
+    /// Where the file at `path` in `Files`' `Save` is on the disk.
+    fn saved(&self, path: &str) -> PathBuf {
+        self.dir.join("save").join(path)
     }
 
     /// Accepts what dials, reads what came, answers each request whole, and writes each stream what it has to.
@@ -314,12 +340,28 @@ impl Daemon {
         match (method, parts.as_slice()) {
             ("POST", ["containers", "create"]) => {
                 let name = query.strip_prefix("name=").unwrap_or_default().to_owned();
-                let id = format!("{:064x}", self.made.len() + 1);
                 let body = String::from_utf8_lossy(body).into_owned();
+                let made = self.made.len() + self.owners.len() + 1;
+                let id = format!("{made:064x}");
+                let is_owner = name.ends_with("-home");
+                if is_owner {
+                    self.owners.push(id.clone());
+                } else {
+                    self.made.push(id.clone());
+                }
                 let container = Container { name, body, running: false, output: Vec::new(), stdin: Vec::new() };
                 self.containers.insert(id.clone(), container);
-                self.made.push(id.clone());
                 respond(peer, "201 Created", &format!(r#"{{"Id":"{id}","Warnings":[]}}"#));
+            }
+            ("POST", ["volumes", "create"]) => {
+                let body = String::from_utf8_lossy(body).into_owned();
+                let name = body.split(r#""Name":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_default();
+                self.volumes.entry(name.to_owned()).or_insert_with(|| body.clone());
+                respond(peer, "201 Created", &format!(r#"{{"Name":"{name}"}}"#));
+            }
+            ("POST", ["containers", id, "wait"]) => {
+                self.stop(id);
+                respond(peer, "200 OK", r#"{"Error":null,"StatusCode":0}"#);
             }
             ("POST", ["containers", id, "start"]) => {
                 if let Some(container) = self.containers.get_mut(*id) {
@@ -477,22 +519,26 @@ fn chunk_of(bytes: &[u8]) -> Vec<u8> {
     [format!("{:x}\r\n", bytes.len()).as_bytes(), bytes, b"\r\n"].concat()
 }
 
-/// A hub of `Tcp`, `Http`, the Docker client on the fake's socket, the sessions as `sessions` say, and the caller.
+/// A hub of `Tcp`, `Http`, `Files` in the test's directory, the Docker client on the fake's socket, the sessions as
+/// `sessions` say, and the caller.
 fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>, Unheard> {
-    let http = HttpSettings::default();
-    let engine = EngineSettings {
-        read_limit: http.most_read_bytes().try_into().unwrap_or(u32::MAX),
-        ..EngineSettings::default()
-    };
     let program = Headless::program()
-        .with_engine(engine)
+        .with_engine(engine())
         .root::<Tcp>()
-        .root_with::<Http>(http)
+        .root_with::<Http>(HttpSettings::default())
+        .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
         .root::<Caller>();
 
     Harness::of(program)
+}
+
+/// The engine's settings for a hub: it reads whatever `Http` reads whole.
+fn engine() -> EngineSettings {
+    let read_limit = HttpSettings::default().most_read_bytes().try_into().unwrap_or(u32::MAX);
+
+    EngineSettings { read_limit, ..EngineSettings::default() }
 }
 
 /// Steps the hub and the fake daemon until `done` holds of them, or the wait is spent.
@@ -827,7 +873,7 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     say(&mut harness, &mut daemon, session, "hello")?;
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
-    let file = PathBuf::from(&settings.root).join("1").join("transcript");
+    let file = daemon.saved("sessions/1/transcript");
     until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 5);
     drop(harness);
     daemon.connections.clear();
@@ -859,6 +905,286 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     Ok(())
 }
 
+/// Every session listed, by number, with its name and state.
+fn listed(harness: &mut Harness<Headless>, daemon: &mut Daemon) -> Result<Vec<(u32, String, State)>, Unheard> {
+    let before = caller(harness)?.listed.len();
+    order(harness, &Order::List)?;
+    until(harness, daemon, |caller, _| caller.listed.len() > before);
+    let listed = caller(harness)?.listed.last().cloned().map(|listed| listed.sessions).unwrap_or_default();
+
+    Ok(listed.into_iter().map(|session| (session.session, session.name, session.state)).collect())
+}
+
+/// Where the record of `session` says it stood, once it is there.
+fn kept(daemon: &Daemon, session: u32) -> Option<Standing> {
+    let bytes = fs::read(daemon.saved(&format!("sessions/{session}/record"))).ok()?;
+
+    from_bytes::<Record>(&bytes, &mut Budget::new(4096)).ok().map(|record| record.kept)
+}
+
+/// The sessions' index as `Files` keeps it, once it is there.
+fn index(daemon: &Daemon) -> Vec<u32> {
+    let bytes = fs::read(daemon.saved("sessions/index")).unwrap_or_default();
+
+    from_bytes::<Index>(&bytes, &mut Budget::new(4096)).map(|index| index.sessions).unwrap_or_default()
+}
+
+#[test]
+fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_with_the_same_numbers()
+-> Result<(), Unheard> {
+    // Catches an index not written as a session is added, or not read back, so a restarted hub loses its sessions or
+    // numbers a new one over an old; a record or transcript read from the wrong file; a session's home given to its
+    // user at every start rather than once; and a home volume named apart from its session's, which no later
+    // container would find.
+    let mut daemon = Daemon::new("index");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let first = open(&mut harness, &mut daemon, "first")?;
+    let second = open(&mut harness, &mut daemon, "second")?;
+    order(&mut harness, &Order::Archive(Archive { session: second }))?;
+    until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
+    say(&mut harness, &mut daemon, first, "hello")?;
+    until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1, 2]);
+    until(&mut harness, &mut daemon, |_, daemon| kept(daemon, second) == Some(Standing::Archived));
+    let file = daemon.saved("sessions/1/transcript");
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 2);
+    drop(harness);
+    daemon.connections.clear();
+
+    let mut harness = hub(&daemon, settings)?;
+    // A list is answered at once, before the sessions are read back: it is asked again until they are.
+    let mut sessions = Vec::new();
+    waiting::until(BUDGET, || {
+        sessions = listed(&mut harness, &mut daemon).unwrap_or_default();
+
+        sessions.len() == 2
+    });
+    let names: Vec<(u32, String)> = sessions.iter().map(|(number, name, _)| (*number, name.clone())).collect();
+    assert_eq!(names, [(1, String::from("first")), (2, String::from("second"))]);
+    assert_eq!(sessions[1].2, State::Archived);
+    let number = say(&mut harness, &mut daemon, first, "again")?;
+    assert_eq!(number, 3, "the transcript goes on from its last number");
+    let third = open(&mut harness, &mut daemon, "third")?;
+    assert_eq!(third, 3, "a new session is numbered after every one read back");
+    until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1, 2, 3]);
+
+    let volumes: Vec<&String> = daemon.volumes.keys().collect();
+    assert_eq!(volumes, ["aethereal-session-test-1", "aethereal-session-test-2", "aethereal-session-test-3"]);
+    assert_eq!(daemon.owners.len(), 3, "each home is given to its user once");
+    let body = daemon.body(&daemon.made(0));
+    assert!(body.contains(r#""Type":"volume","Source":"aethereal-session-test-1""#), "{body}");
+    assert!(daemon.volumes.values().all(|body| body.contains(r#""aethereal.test":"1""#)));
+
+    Ok(())
+}
+
+#[test]
+fn with_no_index_there_are_no_sessions_whatever_else_save_holds() -> Result<(), Unheard> {
+    // Catches a hub that finds its sessions by what lies in `Save` rather than by the index, which `Files` does not
+    // list, and one that fails to start when there is no index, as on its first run.
+    let mut daemon = Daemon::new("no-index");
+    let record = Record {
+        name: String::from("orphan"),
+        conversation: Conversation::Unbegun,
+        runs: 1,
+        home: Home::Owned,
+        kept: Standing::Stopped,
+    };
+    let Ok(bytes) = to_bytes(&record) else {
+        panic!("a record encodes");
+    };
+    let orphan = daemon.saved("sessions/1/record");
+    let written = orphan.parent().map(fs::create_dir_all).transpose().and_then(|_| fs::write(&orphan, bytes));
+    assert!(written.is_ok(), "the test writes a record no index lists");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+
+    // A new session is answered only once the sessions are read back, so the list after it shows what was read.
+    let session = open(&mut harness, &mut daemon, "fresh")?;
+    assert_eq!(session, 1);
+    let names: Vec<String> = listed(&mut harness, &mut daemon)?.into_iter().map(|(_, name, _)| name).collect();
+    assert_eq!(names, ["fresh"], "no session is read without the index");
+    until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1]);
+
+    Ok(())
+}
+
+/// What a write of `Files`' did, as the recording storage logs it.
+fn logged(log: &FsPath, line: &str) {
+    let opened = OpenOptions::new().create(true).append(true).open(log);
+    let written = opened.and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
+    assert!(written.is_ok(), "the recording storage logs to its file");
+}
+
+/// The host's storage, recording every write and append it is asked as it begins and as it is answered, each append
+/// answered only some time after it has landed, so a writer that does not wait for it sends the next meanwhile.
+struct Recording {
+    directories: Directories,
+    log: PathBuf,
+}
+
+impl Storage for Recording {
+    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath, lent: Spares) -> Reading<'a> {
+        self.directories.read(namespace, path, lent)
+    }
+
+    fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        logged(&self.log, &format!("begun {path}"));
+        let writing = self.directories.write(namespace, path, bytes);
+
+        Box::pin(async move {
+            let written = writing.await;
+            logged(&self.log, &format!("done {path}"));
+            written
+        })
+    }
+
+    fn append<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        logged(&self.log, &format!("begun {path}"));
+        let appending = self.directories.append(namespace, path, bytes);
+
+        Box::pin(async move {
+            let appended = appending.await;
+            Later::by(Duration::from_millis(50)).await;
+            logged(&self.log, &format!("done {path}"));
+            appended
+        })
+    }
+
+    fn list(&self, namespace: Namespace) -> Listing<'_> {
+        self.directories.list(namespace)
+    }
+}
+
+/// A wait of some time, on a thread of its own that wakes whoever polls it.
+struct Later {
+    shared: Arc<Mutex<Wakes>>,
+}
+
+/// Where a wait stands, as its thread and its poller both see it.
+enum Wakes {
+    Waiting,
+    Polled(Waker),
+    Passed,
+}
+
+impl Later {
+    /// A wait of `time`, begun now.
+    fn by(time: Duration) -> Self {
+        let shared = Arc::new(Mutex::new(Wakes::Waiting));
+        let passing = Arc::clone(&shared);
+        #[allow(clippy::disallowed_methods)] // The test's storage holds its answer back on a thread of its own.
+        thread::spawn(move || {
+            thread::sleep(time);
+            let was = mem::replace(&mut *passing.lock().unwrap_or_else(PoisonError::into_inner), Wakes::Passed);
+            if let Wakes::Polled(waker) = was {
+                waker.wake();
+            }
+        });
+
+        Self { shared }
+    }
+}
+
+impl Future for Later {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let mut wakes = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let has_passed = matches!(*wakes, Wakes::Passed);
+        if has_passed {
+            return Poll::Ready(());
+        }
+        *wakes = Wakes::Polled(context.waker().clone());
+
+        Poll::Pending
+    }
+}
+
+/// A root that serves the recording storage in place of the one `Files` served, as it is listed after it.
+#[derive(Bound)]
+#[kind(name = "aether.test.sessions.recorder")]
+struct Recorder;
+
+impl ChildOf for Recorder {
+    type Parent = Top;
+}
+
+impl Actor for Recorder {
+    type Config = Unset;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Recorder {
+    const SECTION: &'static str = "recorder";
+    type Settings = FileRoots;
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        let log = PathBuf::from(&roots.save).with_file_name("writes.log");
+        let recording = Recording { directories: Directories::new(&roots), log };
+        cx.serve(Service::<dyn Storage>::of(Arc::new(recording)));
+        cx.begin(&(), Unset)
+    }
+}
+
+#[test]
+fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_runs_at_a_time() -> Result<(), Unheard>
+{
+    // Catches the record's write sent beside the transcript's append, which `Files` may land first, so a crash leaves
+    // a record ahead of its transcript; and two appends to one transcript in flight at once, which may land out of
+    // order.
+    let mut daemon = Daemon::new("order");
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Http>(HttpSettings::default())
+        .root_with::<Files>(daemon.files())
+        .root_with::<Recorder>(daemon.files())
+        .root_with::<Docker>(daemon.docker())
+        .root_with::<Sessions>(daemon.sessions(4, 3600))
+        .root::<Caller>();
+    let mut harness = Harness::of(program)?;
+    let session = open(&mut harness, &mut daemon, "ordered")?;
+    let id = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "one")?;
+    say(&mut harness, &mut daemon, session, "two")?;
+    answer_turn(&mut daemon, &id, "three");
+    let file = daemon.saved("sessions/1/transcript");
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 6);
+    let record = daemon.saved("sessions/1/record");
+    let log = daemon.dir.join("writes.log");
+    until(&mut harness, &mut daemon, |_, _| fs::read_to_string(&log).unwrap_or_default().ends_with("record\n"));
+
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    let mut running = 0_u32;
+    for line in written.lines() {
+        let is_begun = line.starts_with("begun");
+        if is_begun {
+            assert_eq!(running, 0, "nothing else runs as `{line}` begins:\n{written}");
+            running += 1;
+        } else {
+            running = running.saturating_sub(1);
+        }
+    }
+    let appends = written.lines().filter(|line| *line == "begun sessions/1/transcript").count();
+    assert!(appends >= 2, "the transcript was appended to more than once:\n{written}");
+    assert!(record.exists());
+
+    Ok(())
+}
+
 /// How long the live run waits on Claude: a container's start and a model's turn take far longer than the fake's.
 const LIVE_BUDGET: Duration = Duration::from_mins(4);
 
@@ -868,8 +1194,9 @@ fn report(step: &str, found: &str) {
     eprintln!("{step}: {found}");
 }
 
-/// Removes every container that carries the live run's label, and the run's directory, with requests of its own
-/// written by hand on Docker's socket, whatever became of the run: nothing the run made outlives it.
+/// Removes every container and then every volume that carries the live run's label, and the run's directory, with
+/// requests of its own written by hand on Docker's socket, whatever became of the run: nothing the run made outlives
+/// it, the home an archive keeps among it.
 struct Cleanup {
     label: String,
     root: PathBuf,
@@ -877,23 +1204,35 @@ struct Cleanup {
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let listed = raw(&listing(&self.label));
+        let listed = raw(&listing("containers/json?all=1&", &self.label));
         for id in listed.split(r#""Id":""#).skip(1).filter_map(|rest| rest.get(..64)) {
             raw(&format!("DELETE /v1.44/containers/{id}?force=1&v=1"));
+        }
+        for name in volumes(&self.label) {
+            raw(&format!("DELETE /v1.44/volumes/{name}"));
         }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-/// The request that lists every container carrying the live run's `label`.
-fn listing(label: &str) -> String {
+/// The request that lists from `endpoint`, a path and the start of a query, everything carrying the live run's
+/// `label`.
+fn listing(endpoint: &str, label: &str) -> String {
     let filters = format!(r#"{{"label":["aethereal.sessions={label}"]}}"#);
     let encoded = filters.bytes().fold(String::new(), |mut encoded, byte| {
         let _ = write!(encoded, "%{byte:02X}");
         encoded
     });
 
-    format!("GET /v1.44/containers/json?all=1&filters={encoded}")
+    format!("GET /v1.44/{endpoint}filters={encoded}")
+}
+
+/// The names of the volumes carrying the live run's `label`.
+fn volumes(label: &str) -> Vec<String> {
+    let listed = raw(&listing("volumes?", label));
+    let names = listed.split(r#""Name":""#).skip(1).filter_map(|rest| rest.split('"').next());
+
+    names.map(String::from).collect()
 }
 
 /// What Docker answers `request`, a method and a target, on its own socket.
@@ -908,6 +1247,42 @@ fn raw(request: &str) -> String {
     String::from_utf8_lossy(&answer).into_owned()
 }
 
+/// The live run's setting `name`, from the environment.
+fn live(name: &str) -> String {
+    env::var(format!("AETHEREAL_SESSIONS_LIVE_{name}")).unwrap_or_default()
+}
+
+/// The live run's hub: `Files` in the run's directory `root`, this machine's daemon, and the sessions on Haiku, as the
+/// environment names their Claude binary, credential, and user, every container and volume labelled `label`.
+fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
+    let files = FileRoots {
+        assets: root.join("assets").display().to_string(),
+        save: root.join("save").display().to_string(),
+        code: root.join("code").display().to_string(),
+        readers: 2,
+    };
+    let settings = SessionsSettings {
+        credential: live("CREDENTIAL"),
+        claude: live("CLAUDE"),
+        user: live("USER"),
+        model: String::from("haiku"),
+        hub_url: String::new(),
+        label: String::from(label),
+        labels: vec![String::from("aethereal.test=1")],
+        ..SessionsSettings::default()
+    };
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Http>(HttpSettings::default())
+        .root_with::<Files>(files)
+        .root_with::<Docker>(DockerSettings::default())
+        .root_with::<Sessions>(settings)
+        .root::<Caller>();
+
+    Harness::of(program)
+}
+
 /// How many of `entries` are Claude's events whose text holds `marker`.
 fn holding(entries: &[Numbered], marker: &str) -> usize {
     let held = entries.iter().filter(|numbered| match &numbered.entry {
@@ -916,6 +1291,25 @@ fn holding(entries: &[Numbered], marker: &str) -> usize {
     });
 
     held.count()
+}
+
+/// How many of `entries` are the results of a tool that printed `42written`, which the live run's first command
+/// prints only once its `touch` of the home has succeeded. Claude's own words may hold it too, so only a tool's result
+/// that is not an error counts.
+fn wrote_home(entries: &[Numbered]) -> usize {
+    let wrote = entries.iter().filter(|numbered| match &numbered.entry {
+        Entry::Claude(json) => {
+            let text = json.as_str();
+            let is_result = text.contains(r#""type":"tool_result""#);
+            let printed = text.contains("42written");
+            let failed = text.contains(r#""is_error":true"#);
+
+            is_result && printed && !failed
+        }
+        _ => false,
+    });
+
+    wrote.count()
 }
 
 /// Reports each entry of `entries`: Claude's events by their type and subtype, the others whole.
@@ -941,36 +1335,12 @@ fn report_transcript(entries: &[Numbered]) {
 #[ignore = "runs Claude Code in a container on this machine's Docker, on the owner's subscription: run by hand with --ignored, naming the run's directory, the Claude binary, the credential's file, and the container's user in AETHEREAL_SESSIONS_LIVE_ROOT, _CLAUDE, _CREDENTIAL, and _USER"]
 fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard> {
     // Catches what a fake cannot: Claude Code reading the lines the hub writes, writing what the hub reads, taking the
-    // interrupt, and the container made from the settings running at all.
-    let variable = |name: &str| env::var(format!("AETHEREAL_SESSIONS_LIVE_{name}")).unwrap_or_default();
-    let root = PathBuf::from(variable("ROOT"));
+    // interrupt, the container made from the settings running at all, and its home, a volume Docker made root's,
+    // written by the session's user once the hub has given it to them.
+    let root = PathBuf::from(live("ROOT"));
     let label = format!("live-{}", process::id());
     let _cleanup = Cleanup { label: label.clone(), root: root.clone() };
-    let settings = SessionsSettings {
-        root: root.display().to_string(),
-        credential: variable("CREDENTIAL"),
-        claude: variable("CLAUDE"),
-        user: variable("USER"),
-        model: String::from("haiku"),
-        hub_url: String::new(),
-        label: label.clone(),
-        labels: vec![String::from("aethereal.test=1")],
-        ..SessionsSettings::default()
-    };
-    let docker = DockerSettings::default();
-    let http = HttpSettings::default();
-    let engine = EngineSettings {
-        read_limit: http.most_read_bytes().try_into().unwrap_or(u32::MAX),
-        ..EngineSettings::default()
-    };
-    let program = Headless::program()
-        .with_engine(engine)
-        .root::<Tcp>()
-        .root_with::<Http>(http)
-        .root_with::<Docker>(docker)
-        .root_with::<Sessions>(settings)
-        .root::<Caller>();
-    let mut harness = Harness::of(program)?;
+    let mut harness = live_hub(&root, &label)?;
     let caller_ref = harness.root::<Caller>();
     let wait = |harness: &mut Harness<Headless>, done: &mut dyn FnMut(&Caller) -> bool| {
         waiting::until(LIVE_BUDGET, || {
@@ -1006,8 +1376,12 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
             });
         };
 
-    harness.tell(caller_ref, &Order::Say(Say { session, text: String::from("Reply with the word ok.") }))?;
+    let text = "Run the shell command `touch ~/written && echo $((6 * 7))written`, then reply with the word ok.";
+    harness.tell(caller_ref, &Order::Say(Say { session, text: String::from(text) }))?;
     read_until(&mut harness, &mut entries, &|entries| holding(entries, r#""type":"result""#) >= 1);
+    let wrote_home = wrote_home(&entries);
+    report("the session's user writes its home", &format!("{wrote_home} tool results hold what the touch printed"));
+    assert!(wrote_home >= 1, "the session's user wrote its home");
     let answered: Vec<&str> = entries
         .iter()
         .filter_map(|numbered| match &numbered.entry {
@@ -1040,10 +1414,13 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
     harness.tell(caller_ref, &Order::Archive(Archive { session }))?;
     wait(&mut harness, &mut |caller| !caller.archived.is_empty());
     report("session_archive", &format!("{:?}", caller(&mut harness)?.archived));
-    let left = raw(&listing(&label));
+    let left = raw(&listing("containers/json?all=1&", &label));
     let containers = left.rsplit("\r\n\r\n").next().unwrap_or_default().trim().to_owned();
     report("containers left with the run's label", &containers);
-    assert!(!left.contains(r#""Id":""#), "no container of the session is left");
+    assert!(!left.contains(r#""Id":""#), "no container of the session is left, the home's owner's among them");
+    let kept = volumes(&label);
+    report("volumes left with the run's label, removed as the run ends", &format!("{kept:?}"));
+    assert_eq!(kept, [format!("aethereal-session-{label}-1")], "the archive keeps the session's home alone");
     report_transcript(&entries);
 
     Ok(())

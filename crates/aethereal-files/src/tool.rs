@@ -1,6 +1,6 @@
 //! The file capability's tools (ADR-0037, ADR-0039).
 
-use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
+use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile, Writes};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
@@ -252,7 +252,7 @@ impl Handles<Call> for WriteTool {
         let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
-        let write = WriteFile { namespace: text.namespace, path: text.path, bytes };
+        let write = WriteFile { namespace: text.namespace, path: text.path, bytes, how: Writes::Whole };
         turn.to(path::<Files>(())).ask(&write, &Calling { number })?;
         self.calls.insert(number, held);
 
