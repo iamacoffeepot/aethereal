@@ -1,9 +1,11 @@
 //! The console's chat, as its state: what the hub shows it, built into rows, and what the owner does, come to the chat
 //! the link is told. Claude's events are written as Claude Code 2.1 writes them, cut to the members the console reads.
 
-use super::{Chats, Ink, Look, Open, Row, Typed, Which, typed};
+use super::read::Container;
+use super::transcript::Compaction;
+use super::{Chats, Icon, Look, Open, Row, Status, Tone, Typed, Which, typed};
 use aethereal_data::{Budget, Json};
-use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
+use aethereal_sessions::{Chat, Ended, Entry, Note, Numbered, ShowAsk, Speaker, State, Tab};
 
 /// A session's tab, `session`, named so, in `state`, with `asking` asks waiting.
 fn tab(session: u32, state: State, asking: u32) -> Tab {
@@ -26,7 +28,7 @@ fn said(number: u64, engine: u32, text: &str) -> Numbered {
 fn texts(rows: &[&Row]) -> Vec<String> {
     rows.iter()
         .map(|row| match &row.look {
-            Look::Line { text, .. } | Look::Fold { text, .. } => text.clone(),
+            Look::Line { text, .. } | Look::Fold { text, .. } | Look::Divider { text } => text.clone(),
             Look::Turn { tag, text, .. } => format!("{tag} > {text}"),
             Look::Reply { .. } => String::from("<reply>"),
         })
@@ -77,22 +79,19 @@ fn a_subagents_events_fold_under_the_call_that_started_it_closed_until_opened() 
 }
 
 #[test]
-fn a_compaction_is_a_divider_with_its_tokens_and_the_tab_is_busy_while_it_runs() {
+fn a_compaction_is_a_divider_with_its_tokens_and_the_tab_is_marked_compacting_while_it_runs() {
     // Catches a compaction left out of the transcript or shown without its counts, and a tab that shows the session
-    // idle while it compacts, or busy once it has.
+    // idle while it compacts, or compacting once it has.
     let mut chats = opened();
     chats.shown(1, &[claude(1, r#"{"type":"system","subtype":"status","status":"compacting"}"#)]);
 
-    assert_eq!(chats.titles()[1].name, "s1 *");
+    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Compacting));
 
     let boundary = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":52000,"post_tokens":3100}}"#;
     chats.shown(1, &[claude(2, boundary)]);
 
-    assert_eq!(chats.titles()[1].name, "s1");
-    assert_eq!(
-        texts(&chats.rows()).last().map(String::as_str),
-        Some("--- compacted (manual, 52000 -> 3100 tokens) ---")
-    );
+    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Idle));
+    assert_eq!(texts(&chats.rows()).last().map(String::as_str), Some("compacted · 52k → 3k tokens"));
 }
 
 #[test]
@@ -104,7 +103,7 @@ fn a_turn_that_begins_with_no_line_says_so_and_one_begun_by_a_line_does_not() {
     let done = r#"{"type":"result","subtype":"success","is_error":false}"#;
     chats.shown(1, &[said(1, 4, "go"), claude(2, init), claude(3, done), claude(4, init), claude(5, done)]);
 
-    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > go", "· done", "· a turn began by itself", "· done"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe > go", "· done", "· a turn began by itself", "· done"]);
 }
 
 #[test]
@@ -119,19 +118,19 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
     assert_eq!(sent, [Chat::Say { session: 1, text: String::from("what do you see?") }]);
 
     chats.shown(1, &[said(2, 12, "something else"), said(3, 37, "what do you see?")]);
-    let inks: Vec<Ink> = chats
+    let tones: Vec<Tone> = chats
         .rows()
         .iter()
         .map(|row| match row.look {
-            Look::Line { ink, .. } | Look::Turn { ink, .. } => ink,
-            Look::Reply { .. } | Look::Fold { .. } => Ink::Faint,
+            Look::Line { tone, .. } | Look::Turn { tone, .. } => tone,
+            Look::Reply { .. } | Look::Fold { .. } | Look::Divider { .. } => Tone::Faint,
         })
         .collect();
 
-    assert_eq!(inks, [Ink::Other, Ink::Other, Ink::Own]);
+    assert_eq!(tones, [Tone::Other, Tone::Other, Tone::Own]);
     assert_eq!(
         texts(&chats.rows()),
-        ["wary-owl:12 > from another engine", "wary-owl:12 > something else", "local > what do you see?"]
+        ["wary-owl > from another engine", "wary-owl > something else", "local > what do you see?"]
     );
 }
 
@@ -247,7 +246,7 @@ fn events_shown_twice_or_out_of_order_are_held_once_in_order() {
     chats.shown(1, &[said(3, 4, "c"), said(1, 4, "a")]);
     chats.shown(1, &[said(1, 4, "a"), said(2, 4, "b"), said(3, 4, "c")]);
 
-    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > a", "mellow-snipe:4 > b", "mellow-snipe:4 > c"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe > a", "mellow-snipe > b", "mellow-snipe > c"]);
 }
 
 #[test]
@@ -263,4 +262,49 @@ fn an_ask_waits_until_answered_here_or_its_session_waits_on_none() {
     let _ = chats.listed(vec![tab(1, State::Working, 0)]);
 
     assert!(chats.asks().is_empty());
+}
+
+#[test]
+fn a_session_s_status_is_its_ask_first_then_a_compaction_then_its_state() {
+    // Catches an ask hidden behind a running turn or a compaction, a compaction the transcript shows hidden behind the
+    // hub's state, a background task shown idle, and a session the hub wound down shown lost, or one whose container
+    // went by itself shown merely stopped.
+    let status = Status::of;
+    let (idle, compacting) = (Compaction::Idle, Compaction::Compacting);
+
+    assert_eq!(status(State::Working, 1, compacting, Container::Gone), Status::Waiting);
+    assert_eq!(status(State::Stopped, 2, idle, Container::Gone), Status::Waiting);
+    assert_eq!(status(State::Working, 0, compacting, Container::Started), Status::Compacting);
+    assert_eq!(status(State::Noticed, 0, idle, Container::Started), Status::Compacting);
+    assert_eq!(status(State::Starting, 0, idle, Container::Unsaid), Status::Starting);
+    assert_eq!(status(State::Waiting, 0, idle, Container::Started), Status::Working);
+    assert_eq!(status(State::Idle, 0, idle, Container::Started), Status::Idle);
+    assert_eq!(status(State::Stopped, 0, idle, Container::WoundDown), Status::Stopped);
+    assert_eq!(status(State::Stopped, 0, idle, Container::Unsaid), Status::Stopped);
+    assert_eq!(status(State::Stopped, 0, idle, Container::Gone), Status::Lost);
+}
+
+#[test]
+fn a_tab_is_marked_lost_by_the_hub_s_last_word_of_its_container_and_the_console_s_own_is_unmarked() {
+    // Catches a stop the hub noted as lost read as wound down, an old loss outliving the run started after it, an
+    // output line taken for a word of the container, and the console's own tab given a status.
+    let note = |number: u64, note: Note| Numbered { number, entry: Entry::Hub(note) };
+    let mut chats = Chats::default();
+    let _ = chats.listed(vec![tab(1, State::Stopped, 0)]);
+    chats.shown(1, &[note(1, Note::Stopped { run: 1, why: Ended::Lost })]);
+
+    assert_eq!(chats.titles()[0].icon, Icon::Unmarked);
+    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Lost));
+
+    let output = Numbered { number: 4, entry: Entry::Stdout { text: String::from("bye"), bytes: 4 } };
+    chats.shown(
+        1,
+        &[
+            note(2, Note::Started { run: 2, resumed: true }),
+            note(3, Note::Stopped { run: 2, why: Ended::Idle }),
+            output,
+        ],
+    );
+
+    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Stopped));
 }

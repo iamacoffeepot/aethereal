@@ -10,17 +10,17 @@
 //! panel and lines, which the pointer passes through.
 //!
 //! The band's left column holds the frame chart: sixty seconds of each cycle's time, newest at the right, each column
-//! three opaque bars to the slowest, the median, and the fastest of its cycles, sand, lichen, and slate-teal, back to
+//! three opaque bars to the slowest, the median, and the fastest of its cycles, each in its own ink, back to
 //! front, on a scale logarithmic in a cycle's time from a quarter of the budget the renderer's frame statistics bring to
-//! thirty-two of it, the budget a bright dashed line, with the median, p90, p99, and the longest beneath it, and an
-//! ochre tick at each mark. Beneath it on the same axis, each column under the frame chart's of the same span, the GPU's
-//! graph stacks each frame's passes by label, each at its median over the column's frames, slate blue, muted violet,
-//! and mauve in the order they were first heard, with each pass's median and how busy the GPU was beneath it; and three
-//! rows of thin stone bars, each column the most of its frames, draw the draws, triangles, and bytes uploaded, each
+//! thirty-two of it, the budget a bright dashed line, with the median, p90, p99, and the longest beneath it, and a
+//! tick in the mark's ink at each mark. Beneath it on the same axis, each column under the frame chart's of the same span, the GPU's
+//! graph stacks each frame's passes by label, each at its median over the column's frames, its three pass inks
+//! in the order they were first heard, with each pass's median and how busy the GPU was beneath it; and three
+//! rows of thin dim bars, each column the most of its frames, draw the draws, triangles, and bytes uploaded, each
 //! row's label and newest value in a gutter at its right. Beside the frame chart, its gutter counts the warnings and
 //! errors logged since the console was last opened. The band's right column meters the engine's memory, one row each
 //! for the process, the blobs, the backlog, the guests, and the GPU, with a bar against its limit for the blobs and the
-//! backlog, lichen, then rust from 75% and brick from 90%. Faint lines part the band's two columns, and the left
+//! backlog, lichen, then the warning's ink from 75% and the error's from 90%. Faint lines part the band's two columns, and the left
 //! column's three sections.
 //!
 //! The console's line is the library's text input, which has the screen's focus while the console is open, so the

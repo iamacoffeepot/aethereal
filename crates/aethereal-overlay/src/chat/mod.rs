@@ -4,8 +4,8 @@
 //! tell the link, and what it shows is laid out by the overlay's screen.
 //!
 //! ```text
-//! ShowTabs ──> the tabs: "console", a break, then each session not archived, a light divider between them, a mark on
-//!              one working or waiting on the owner; a session made here opened once it lists
+//! ShowTabs ──> the tabs: "console", a break, then each session not archived, a light divider between them, each
+//!              session's marked with its status (`status`); a session made here opened once it lists
 //! ShowEvents ──> the session's transcript, its rows built again;  a line of this engine's echoed ──> its own id
 //! ShowAsk ──> kept until answered here, or its session waits on none
 //! a tab chosen, by a press, by its place, or the next or the one before ──> Close the one open, Open the chosen from
@@ -21,21 +21,24 @@
 
 mod prompt;
 mod read;
+mod status;
 #[cfg(test)]
 mod tests;
 mod transcript;
 
 pub use prompt::{Typed, typed};
+pub use status::{Icon, Status};
 #[cfg(test)]
-use transcript::Ink;
+use transcript::Tone;
 pub use transcript::{Look, Mine, Row};
 
-use crate::colour::{BONE, CONSOLE_OPACITY, SLATE_DARKER, STONE};
+use crate::colour::{Ink, Palette, Surface};
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
 use aethereal_ui::markdown::Blocks;
 use core::iter;
+use read::Container;
 use std::collections::BTreeMap;
 use transcript::{Compaction, Transcript};
 
@@ -70,14 +73,15 @@ struct Sent {
     text: String,
 }
 
-/// A tab as the console shows it: its place, the console's own first, its title, whether it is open, and what parts it
-/// from the tab before it.
+/// A tab as the console shows it: its place, the console's own first, its title, whether it is open, what parts it
+/// from the tab before it, and the icon before its title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Title {
     pub place: u32,
     pub name: String,
     pub open: bool,
     pub parting: Parting,
+    pub icon: Icon,
 }
 
 /// What parts a tab from the one before it: the console's own tab is the engine's, and each session's is Claude's, so
@@ -109,22 +113,20 @@ impl Parting {
 }
 
 impl Title {
-    /// Its colour: bone while open, and stone otherwise.
-    pub fn colour(&self) -> Colour {
-        let swatch = if self.open {
-            BONE
+    /// Its ink: the text's while open, and dim otherwise.
+    pub const fn ink(&self) -> Ink {
+        if self.open {
+            Ink::Text
         } else {
-            STONE
-        };
-
-        swatch.opaque()
+            Ink::Dim
+        }
     }
 
-    /// What it is drawn on: the prompt's slate while open, so it reads as of a piece with the prompt above it, and
-    /// nothing otherwise, over the tabs' own darker strip.
-    pub fn background(&self) -> Colour {
+    /// What it is drawn on in `palette`: the prompt's inset while open, so it reads as of a piece with the prompt above
+    /// it, and nothing otherwise, over the tabs' own deepest strip.
+    pub const fn background(&self, palette: &Palette) -> Colour {
         if self.open {
-            SLATE_DARKER.at(CONSOLE_OPACITY)
+            palette.surface(Surface::Inset)
         } else {
             Colour::CLEAR
         }
@@ -166,6 +168,14 @@ pub enum Which {
     Named(String),
 }
 
+impl Which {
+    /// The session a word's input names, `named` as its command line read it: the one so named, or with none named the
+    /// one whose tab is open.
+    pub fn of(named: Option<String>) -> Self {
+        named.map_or(Self::Open, Self::Named)
+    }
+}
+
 impl Default for Chats {
     fn default() -> Self {
         Self {
@@ -184,6 +194,11 @@ impl Chats {
     /// Whether the hub has listed the sessions, so the console shows the chat.
     pub const fn is_listed(&self) -> bool {
         matches!(self.listed, Listed::Tabs(_))
+    }
+
+    /// Whose this engine is, as far as it has learned from the transcripts.
+    pub const fn mine(&self) -> Mine {
+        self.mine
     }
 
     /// Which tab is open.
@@ -429,29 +444,30 @@ impl Chats {
         }
     }
 
-    /// Each tab, the console's own first, each session's titled with its name and its marks: `*` while it works,
-    /// compacts included, and `?` while it waits on the owner.
+    /// Each tab, the console's own first, unmarked, then each session's titled with its name and marked with its
+    /// status: as the hub lists it, its asks, and what the engine holds of its transcript, a compaction running or its
+    /// container gone.
     pub fn titles(&self) -> Vec<Title> {
         let sessions = self.live().into_iter().map(|tab| {
-            let compacting = self.transcripts.get(&tab.session).map(Transcript::compaction);
-            let working = is_working(tab.state) || compacting == Some(Compaction::Compacting);
-            let asking = tab.asking > 0;
-            let mut title = tab.name.clone();
-            if working {
-                title.push_str(" *");
-            }
-            if asking {
-                title.push_str(" ?");
-            }
-            title
+            let transcript = self.transcripts.get(&tab.session);
+            let compaction = transcript.map_or(Compaction::Idle, Transcript::compaction);
+            let container = transcript.map_or(Container::Unsaid, Transcript::container);
+            let status = Status::of(tab.state, tab.asking, compaction, container);
+            (tab.name.clone(), Icon::Marked(status))
         });
 
         let selected = self.selected();
 
-        iter::once(String::from(CONSOLE_TITLE))
+        iter::once((String::from(CONSOLE_TITLE), Icon::Unmarked))
             .chain(sessions)
             .zip(0..)
-            .map(|(title, place)| Title { place, name: title, open: place == selected, parting: Parting::at(place) })
+            .map(|((name, icon), place)| Title {
+                place,
+                name,
+                open: place == selected,
+                parting: Parting::at(place),
+                icon,
+            })
             .collect()
     }
 
@@ -498,16 +514,5 @@ impl Chats {
     /// How many sessions wait on the owner: what the band shows.
     pub fn waiting(&self) -> usize {
         self.live().iter().filter(|tab| tab.asking > 0).count()
-    }
-}
-
-/// Whether a session in `state` is busy: making its container, running a turn or a background task, being told or
-/// compacted as it winds down, or stopping.
-const fn is_working(state: State) -> bool {
-    match state {
-        State::Starting | State::Working | State::Waiting | State::Noticed | State::Compacting | State::Stopping => {
-            true
-        }
-        State::Idle | State::Stopped | State::Archived => false,
     }
 }

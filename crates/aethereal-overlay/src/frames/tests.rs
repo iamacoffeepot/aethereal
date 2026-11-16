@@ -79,7 +79,7 @@ fn cycles_older_than_the_window_are_let_go() {
 fn the_gutter_says_the_chart_s_median() {
     let figures = times([4_200_000, 4_200_000, 16_700_000]).figures();
 
-    let line: String = figures.gutter_runs().iter().map(|run| run.text.as_str()).collect();
+    let line: String = figures.gutter_pieces().iter().map(|run| run.text.as_str()).collect();
 
     assert_eq!(line, "frame         4.2 ms");
 }

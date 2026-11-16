@@ -1,12 +1,12 @@
-//! The gutter beside the lines' rows (ADR-0053: The three stops): each line's label in stone and its newest value in
-//! bone, one line of text a row, the values set flush right so their digits line up in the mono face; counts written
+//! The gutter beside the lines' rows (ADR-0053: The three stops): each line's label dim and its newest value in
+//! the text's ink, one line of text a row, the values set flush right so their digits line up in the mono face; counts written
 //! in thousands and millions past ten thousand, and bytes in KiB, MiB, and GiB as the `memory` tool shows them.
 
 use super::{FrameLines, Line};
-use crate::colour::{BONE, STONE};
+use crate::colour::Ink;
+use crate::console::Piece;
 use crate::layout::{GUTTER_CHARACTERS, GUTTER_LABEL_CHARACTERS};
 use crate::tools::bytes_shown;
-use aethereal_render::text::Run;
 
 /// How many characters a value is given, flush right: the gutter's after its label's.
 const VALUE_CHARACTERS: usize = GUTTER_CHARACTERS - GUTTER_LABEL_CHARACTERS;
@@ -35,7 +35,7 @@ impl Line {
 
 impl FrameLines {
     /// The runs of the gutter's text: a line of it for each row, its label and its newest value.
-    pub fn runs(&self) -> Vec<Run> {
+    pub fn pieces(&self) -> Vec<Piece> {
         let latest = self.latest();
         let mut runs = Vec::with_capacity(Line::ALL.len() * 2);
         for (index, line) in Line::ALL.into_iter().enumerate() {
@@ -45,8 +45,8 @@ impl FrameLines {
                 "\n"
             };
             let written = line.written(latest.of_line(line));
-            runs.push(Run::new(&format!("{parted}{:<GUTTER_LABEL_CHARACTERS$}", line.label()), STONE.opaque()));
-            runs.push(Run::new(&format!("{written:>VALUE_CHARACTERS$}"), BONE.opaque()));
+            runs.push(Piece::new(&format!("{parted}{:<GUTTER_LABEL_CHARACTERS$}", line.label()), Ink::Dim));
+            runs.push(Piece::new(&format!("{written:>VALUE_CHARACTERS$}"), Ink::Text));
         }
 
         runs

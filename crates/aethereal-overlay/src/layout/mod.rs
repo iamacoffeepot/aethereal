@@ -79,17 +79,35 @@ pub const HANDLE_WIDTH_PIXELS: f32 = 28.0;
 /// How tall the grip's handle is, in logical pixels.
 pub const HANDLE_PIXELS: f32 = 3.0;
 
-/// The space above and below the tabs inside their strip, in logical pixels.
-pub const TAB_STRIP_PADDING_PIXELS: f32 = 5.0;
+/// The space above and below a tab's title inside the tab, in logical pixels; [`TAB_SIDE_PIXELS`] stand either side.
+/// The tabs fill their strip's height, which has no padding of its own, so this is the strip's space above and below
+/// too.
+pub const TAB_PADDING_PIXELS: f32 = 7.0;
 
-/// The space above and below a tab's title inside the tab, in logical pixels; [`PADDING_PIXELS`] stand either side.
-pub const TAB_PADDING_PIXELS: f32 = 3.0;
+/// The space either side of a tab's title, and of its status icon before it, inside the tab, in logical pixels: room
+/// enough that each tab reads as a button of its own.
+pub const TAB_SIDE_PIXELS: f32 = 18.0;
 
-/// How thick the line along the open tab's top is, in logical pixels: over the tab's own space above its title, so an
-/// open tab stands as tall as the others.
+/// The space between two tabs, and either side of the line that parts them, in logical pixels.
+pub const TAB_GAP_PIXELS: f32 = 4.0;
+
+/// How wide and tall the slot of a session tab's status icon is, in logical pixels: fixed, whatever the icon, so the
+/// title after it never moves as the session's status changes.
+pub const TAB_ICON_PIXELS: f32 = 8.0;
+
+/// The space between a session tab's status icon and its title, in logical pixels.
+pub const TAB_ICON_GAP_PIXELS: f32 = 7.0;
+
+/// How far in from either side of the open tab the line along its bottom edge stops, in logical pixels, so the lines of
+/// two tabs side by side never read as one.
+pub const TAB_ACCENT_INSET_PIXELS: f32 = 10.0;
+
+/// How thick the line along the open tab's bottom edge is, in logical pixels: over the tab's own space beneath its
+/// title, so an open tab stands as tall as the others.
 pub const TAB_ACCENT_PIXELS: f32 = 2.0;
 
-/// How tall the divider between two sessions' tabs is, in logical pixels.
+/// How tall the divider between two sessions' tabs is, in logical pixels: shorter than the strip, so it stands in from
+/// its top and its foot.
 pub const TAB_DIVIDER_PIXELS: f32 = 12.0;
 
 /// How tall the break between the console's own tab and the sessions' is, in logical pixels: taller than a divider

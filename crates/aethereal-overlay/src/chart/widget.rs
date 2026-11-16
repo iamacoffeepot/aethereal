@@ -3,6 +3,7 @@
 //! laid it out at, as tall as the window's share it is given and as wide as its row leaves it.
 
 use super::{Fill, marks, records};
+use crate::colour::Palette;
 use crate::frames::{Column, Slide};
 use crate::layout::Scale;
 use crate::widgets::paint;
@@ -20,11 +21,12 @@ pub struct ChartShown {
     pub marks: Vec<u64>,
 }
 
-/// The frame chart: `shown`, `tall` pixels tall.
+/// The frame chart: `shown`, `tall` pixels tall, in `palette`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameChart {
     pub shown: ChartShown,
     pub tall: f32,
+    pub palette: Palette,
 }
 
 impl Widget for FrameChart {
@@ -47,8 +49,8 @@ impl Widget for FrameChart {
         let ChartShown { columns, slide, budget, marks: times } = &self.shown;
         let scale = Scale(laid.scale);
         let mut fills: Vec<Fill> = Vec::new();
-        records(&mut fills, laid.content, scale, columns.iter().copied(), *slide, *budget);
-        marks(&mut fills, laid.content, scale, *slide, times.iter().copied());
+        records(&mut fills, &self.palette, laid.content, scale, columns.iter().copied(), *slide, *budget);
+        marks(&mut fills, &self.palette, laid.content, scale, *slide, times.iter().copied());
 
         paint(draws, fills, laid.clip);
     }

@@ -10,20 +10,20 @@
 //! ```text
 //!   ███           the tallest stack, reaching the top        gpu       top 0.1 ms
 //!   ███  - - - -  the budget, only when under the top
-//!   ███  ██       a second pass, muted violet
-//!   ███  ██       the first pass heard, slate blue, at the foot
+//!   ███  ██       a second pass, `Ink::Pass2`
+//!   ███  ██       the first pass heard, `Ink::Pass1`, at the foot
 //! ```
 
 use super::Stack;
 use crate::binned::Spanned;
 use crate::chart::{Fill, dashes, left_of, push};
-use crate::colour::{BONE, PASS_SWATCHES, STONE};
+use crate::colour::{Ink, PASSES, Palette};
+use crate::console::Piece;
 use crate::frames::Slide;
 use crate::layout::{GUTTER_CHARACTERS, Scale};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::stats::FrameBudget;
-use aethereal_render::text::Run;
 
 /// The least the graph's top is: ten microseconds, so an idle GPU's noise is not drawn the graph's full height.
 const FLOOR_NANOS: u64 = 10_000;
@@ -81,13 +81,13 @@ impl GraphTop {
         self.nanos
     }
 
-    /// The runs of the gutter's line beside the graph: its label in stone, and its top in bone, flush right as the
+    /// The runs of the gutter's line beside the graph: its label dim, and its top in the text's ink, flush right as the
     /// rows' values are: `gpu       top 0.1 ms`.
-    pub fn runs(self) -> Vec<Run> {
+    pub fn pieces(self) -> Vec<Piece> {
         let width = GUTTER_CHARACTERS - LABEL.len();
         let value = format!("top {} ms", millis(self.nanos));
 
-        vec![Run::new(LABEL, STONE.opaque()), Run::new(&format!("{value:>width$}"), BONE.opaque())]
+        vec![Piece::new(LABEL, Ink::Dim), Piece::new(&format!("{value:>width$}"), Ink::Text)]
     }
 }
 
@@ -108,6 +108,7 @@ fn millis(nanos: u64) -> String {
 /// line, where it falls under the top.
 pub fn graph<I>(
     fills: &mut Vec<Fill>,
+    palette: &Palette,
     area: Rect2,
     scale: Scale,
     slide: Slide,
@@ -147,14 +148,14 @@ where
                 continue;
             }
             let segment = Rect2 { min: Vec2::new(from, upper), max: Vec2::new(to, bottom) };
-            push(fills, segment, PASS_SWATCHES[index % PASS_SWATCHES.len()].opaque());
+            push(fills, segment, palette.ink(PASSES[index % PASSES.len()]));
             bottom = upper;
         }
     }
 
     let under_top = budget.nanos() <= top.nanos;
     if under_top {
-        dashes(fills, area, scale, height_of(budget.nanos()).round(), budget);
+        dashes(fills, palette, area, scale, height_of(budget.nanos()).round(), budget);
     }
 
     top
