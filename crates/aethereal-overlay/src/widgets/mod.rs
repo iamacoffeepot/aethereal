@@ -38,10 +38,7 @@ impl Widget for Printed {
     /// font's metrics come.
     fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
         let size = style.font_size * measuring.scale();
-        let measured = measuring.text(style.font, size, &self.runs, Wrap::None);
-        // A text's lines are at most some tens of thousands, which an f32 holds exactly.
-        #[allow(clippy::cast_precision_loss)]
-        let line = measured.map_or(0.0, |measured| measured.height / measured.lines.max(1) as f32);
+        let line = measuring.line(style.font, size).unwrap_or(0.0);
 
         Vec2::new(0.0, line)
     }

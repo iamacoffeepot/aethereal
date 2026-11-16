@@ -21,9 +21,11 @@ use crate::widget::{Anchor, Axis, Keeps, Span, Stand};
 const AT_END: f32 = 0.5;
 
 /// How far from the content's origin a scroll's base may stand before its window is placed afresh at the origin: far
-/// enough that it is met once in thousands of rows, and near enough that an `f32` there still counts a hundredth of a
-/// pixel, so a row and the shift sliding it are drawn where they should be.
-pub const REBASE: f32 = 65_536.0;
+/// enough that it is met once in hundreds of rows, and near enough that an `f32` there counts a five-hundredth of a
+/// pixel, so the few roundings that place a row built in both layouts keep it well within [`STILL`] of where it stood,
+/// and a row and the shift sliding it are drawn where they should be. Past twice as far, a row is placed a part of a
+/// pixel past `STILL` from where it stood on many a layout, and drawn anew.
+pub const REBASE: f32 = 16_384.0;
 
 /// How near, in pixels, where a child built in two layouts stands now is to where it stood for it to keep where it
 /// stood to the bit: the window's two layouts sum its children in another order, which moves a child by a part of a
@@ -138,9 +140,15 @@ impl Window {
     pub fn rebase(&mut self, was: Option<&Self>, stand: Stand) {
         self.base = was.map_or(0.0, |was| self.based(was, stand));
         let base = self.base;
+        let olds = was.map_or(&[][..], |was| was.items.as_slice());
+        let mut from = 0;
         for lined in &mut self.items {
             let now = base + lined.start;
-            let stood = was.and_then(|was| was.items.iter().find(|old| old.key == lined.key)).map(|old| old.placed);
+            let found = keyed(olds, lined.key, from);
+            if let Some(at) = found {
+                from = at + 1;
+            }
+            let stood = found.map(|at| olds[at].placed);
             lined.placed = match stood {
                 Some(stood) if (stood - now).abs() < STILL => stood,
                 Some(_) | None => now,
@@ -325,6 +333,16 @@ impl Window {
 
         self.start_at(item)
     }
+}
+
+/// The place among `items` of the one keyed `key`, looked for from `from` on and then before it: the children two
+/// layouts built in order, so the next child built in both is looked for where the last was found, and found at once.
+fn keyed(items: &[Lined], key: Segment, from: usize) -> Option<usize> {
+    let from = from.min(items.len());
+    let (before, after) = items.split_at(from);
+    let on = after.iter().position(|lined| lined.key == key).map(|at| from + at);
+
+    on.or_else(|| before.iter().position(|lined| lined.key == key))
 }
 
 /// `count` items, as a length is counted.

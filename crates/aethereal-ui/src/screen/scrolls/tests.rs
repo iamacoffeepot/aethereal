@@ -8,8 +8,9 @@ use super::super::orders::Order;
 use super::super::tests::screen;
 use super::super::{Outcome, Screen, Viewport};
 use super::MARGIN;
+use super::window::{Window, Windowing};
 use crate::input::{Held, Key};
-use crate::style::{Distribute, Length, Style};
+use crate::style::{Border, Distribute, Edges, Gap, Length, Space, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Shape, Tree};
 use crate::widget::{Anchor, Jump, Keeps, Laid, Stand};
@@ -184,6 +185,77 @@ fn a_list_in_a_scroll_builds_at_most_the_rows_that_can_show_whatever_their_lengt
         assert!(rows.len() <= most, "turn {turn}: {} rows built: {rows:?}", rows.len());
         assert!(fills(&screen, &rows), "turn {turn}: the view is filled: {rows:?}");
         wheel(&mut screen, entry, 30.0);
+    }
+}
+
+#[test]
+fn a_rows_padding_border_and_margins_count_in_its_least_length_and_no_scroll_shows_a_gap() {
+    // Catches a least length that leaves out a row's padding, border, or margins, or a wrapper's padding within it, so
+    // the window builds more rows than can show; and one that counts more than every row is sure to take, a side twice
+    // or a margin that is not there, so a run of the shortest rows leaves the view part empty at some scroll.
+    let mut screen = screen();
+    let spaced = |top: f32, bottom: f32| Edges {
+        top: Space::Pixels(top),
+        bottom: Space::Pixels(bottom),
+        ..Edges::all(Space::Pixels(5.0))
+    };
+    let lengths = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 40.0, 2.0, 7.0, 130.0];
+    let length = |key: u64| lengths[usize::try_from(key).unwrap_or(0) % lengths.len()];
+    let list_keys = counted(300);
+    let view = |screen: &Screen| {
+        let scroll = Scroll::down();
+        let mut rows = screen.rows(&list(), &scroll, list_keys.len(), |at| ItemKey::new(list_keys[at]));
+        for at in rows.places() {
+            let key = list_keys[at];
+            let filled = Style { height: Length::Pixels(length(key)), ..Style::default() };
+            let inner = Node::new(Segment::Place(0), Column, filled, vec![]);
+            let wrapper = Node::new(
+                Segment::Place(0),
+                Column,
+                Style { padding: spaced(1.0, 1.0), ..Style::default() },
+                vec![inner],
+            );
+            let style = Style {
+                padding: spaced(3.0, 1.0),
+                border: Border { width: 1.0, colour: Colour::CLEAR },
+                margin: Edges { top: Length::Pixels(2.0), bottom: Length::Pixels(1.0), ..Edges::all(Length::Auto) },
+                ..Style::default()
+            };
+            rows.push(at, Node::new(Segment::Item(ItemKey::new(key)), Column, style, vec![wrapper]));
+        }
+        let (lines, built) = rows.finish();
+        let style = Style { gap: Gap { rows: Space::Pixels(1.0), columns: Space::Pixels(0.0) }, ..tall() };
+        let scroll = Node::new(Segment::Place(0), scroll.list(lines), style, built);
+
+        Tree::new(Node::new(Segment::Place(0), Column, Style::default(), vec![scroll]))
+    };
+    let tree = view(&screen);
+    shown(&mut screen, tree);
+    let tree = view(&screen);
+    shown(&mut screen, tree);
+    let windowing = screen.unkept.windows.iter().find(|window| *window.path() == list()).map(Window::windowing);
+
+    // The shortest row: 2 pixels, 1 of its wrapper's padding each side, 3 and 1 of its own padding, 1 of border each
+    // side, 2 and 1 of margin; 13 in all, and the gap of 1 after it. A view of 100 shows at most ceil(100 / 14) + 1.
+    assert_eq!(windowing, Some(Windowing::Bounded { least: 14.0 }));
+    let most = usize::try_from(9 + 2 * MARGIN).unwrap_or(usize::MAX);
+    let entry = hit(&screen, &list());
+    for turn in 0..120 {
+        let tree = view(&screen);
+        let (_, rows, _) = shown(&mut screen, tree);
+        assert!(rows.len() <= most, "turn {turn}: {} rows built: {rows:?}", rows.len());
+        // Each row stands 4 pixels past the one before, its margins and the gap between; the first 2 past the start.
+        let mut reached = -2.0;
+        for key in &rows {
+            let rect = placed(&screen, &list().child(Segment::Item(*key))).rect;
+            let gap = rect.min.y > reached + 4.0 + 0.01;
+            let in_view = rect.min.y < VIEW;
+            let shows_gap = gap && in_view;
+            assert!(!shows_gap, "turn {turn}: a gap before row {key:?} at {}: {rows:?}", rect.min.y);
+            reached = rect.max.y.max(reached);
+        }
+        assert!(reached >= VIEW - 0.01, "turn {turn}: the rows built reach the view's end: {rows:?}");
+        wheel(&mut screen, entry, 9.0);
     }
 }
 

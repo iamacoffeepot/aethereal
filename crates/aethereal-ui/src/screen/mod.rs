@@ -759,11 +759,11 @@ fn placed(flat: &[Flat<'_>], at: usize, window: &Window, placements: &[Placement
         let flowing = match flat[node].node.widget().arrange() {
             Arrange::Popup(_) => {
                 let anchor = anchor(flat[node].path);
-                children.iter().filter(|child| *flat[**child].path == anchor).copied().collect()
+                children.iter().position(|child| *flat[*child].path == anchor).map_or(&[][..], |at| &children[at..=at])
             }
-            Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => children.to_vec(),
+            Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => children,
         };
-        stack.extend(flowing.into_iter().map(|child| (child, placements[child], rect.min)));
+        stack.extend(flowing.iter().map(|child| (*child, placements[*child], rect.min)));
     }
 }
 
