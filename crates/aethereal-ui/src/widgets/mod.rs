@@ -1,11 +1,12 @@
 //! The stock widgets (ADR-0056: Stock widgets): the containers `Row`, `Column`, `Grid`, and `Stack`; the content
-//! `Text`, `Rich`, `Image`, and `Bar`; and the interaction `Button`, `Scroll`, `TextInput`, `Selectable`, `Toggle`, `Slider`, `Tabs` with
+//! `Text`, `Rich`, `Image`, `Picture`, and `Bar`; and the interaction `Button`, `Scroll`, `TextInput`, `Selectable`, `Toggle`, `Slider`, `Tabs` with
 //! its `Tab`, and `Popup` and `Tooltip`, whose content draws in their screen's top layer. Each is a primitive written as a program's own would be, and a screen brings them in with the prelude.
 
 mod bar;
 mod button;
 mod containers;
 mod image;
+mod picture;
 mod popup;
 mod press;
 mod rich;
@@ -23,6 +24,7 @@ pub use bar::{Bar, Fill};
 pub use button::Button;
 pub use containers::{Column, Grid, Row, Stack};
 pub use image::{Image, Region, Texture};
+pub use picture::Picture;
 pub use popup::{Opened, Popped, Popup};
 pub use press::Press;
 pub use rich::{AtLink, Flow, Link, Reading, Rich};

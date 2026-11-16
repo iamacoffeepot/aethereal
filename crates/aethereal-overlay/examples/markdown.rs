@@ -1,6 +1,7 @@
 //! A reply of Claude's in markdown, streamed into a window a few characters a frame and drawn as widgets (ADR-0056:
 //! Markdown): every construct a reply uses, each block a `MarkdownBlock` kept by `memo` as the overlay's chat keeps
-//! them. A press on a link logs its target; nothing is opened.
+//! them. A press on a link logs its target; nothing is opened. The reply's image names a PNG, which the example decodes
+//! once, as it begins, and hands the reply's blocks as the picture of that source.
 //!
 //! `cargo run --release -p aethereal-overlay --example markdown`. With `REPLY_SHOT` naming a file, once the reply
 //! has streamed in, the window's frame is read back and written there as a PPM, which any image tool converts.
@@ -18,9 +19,10 @@ use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::Interface;
-use aethereal_render::readback::{Pixels, ReadBack, Readable};
+use aethereal_render::readback::{Pixels as Read, ReadBack, Readable};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_ui::markdown::{Document, MarkdownBlock, Prose};
+use aethereal_ui::markdown::{Document, Images, MarkdownBlock, Prose};
+use aethereal_ui::pixels::Pixels;
 use aethereal_ui::prelude::*;
 use aethereal_window::{self as window, Event, InitialWindows, Mode, Window, WindowId, Windows};
 use core::error::Error;
@@ -40,6 +42,9 @@ const CHARACTERS_PER_FRAME: usize = 24;
 
 /// How many frames after the reply has come its frame is read back.
 const SETTLE_FRAMES: u32 = 30;
+
+/// The picture the reply's image names, as its bytes would arrive.
+const PIPELINE: &[u8] = include_bytes!("shared/pipeline.png");
 
 /// A reply that uses every construct.
 const REPLY: &str = r#"# Markdown in the overlay
@@ -79,7 +84,7 @@ fn main() {
 
 That is every construct."#;
 
-/// The example's screen: its window, its library, the reply as it has streamed in so far, how far it has, how many
+/// The example's screen: its window, its library, the reply as it has streamed in so far, the pictures of its images, how far it has, how many
 /// frames have passed since it came whole, and how many links were pressed.
 #[derive(Bound)]
 #[kind(name = "aether.example.markdown")]
@@ -87,6 +92,7 @@ pub struct Reply {
     window: WindowId,
     ui: Screen,
     document: Document,
+    images: Images,
     streamed: u32,
     settled: u32,
     pressed: u32,
@@ -133,7 +139,7 @@ aethereal_ui::style! {
 aethereal_ui::view! { Reply, ui,
     Scroll { .., style: page,
         Column { style: reply, items: self.document.blocks() as block key block.index,
-            MarkdownBlock { memo, block: block, prose: self.prose(), link => self.open() }
+            MarkdownBlock { memo, block: block, prose: self.prose(), images: self.images, link => self.open() }
         }
     }
 }
@@ -170,7 +176,7 @@ impl ChildOf for Reply {
 impl Actor for Reply {
     type Config = ReplyConfig;
     type Key = ();
-    type Handles = aethereal_ui::handles![Event, On<Tick>, Answer<Pixels, Shooting>];
+    type Handles = aethereal_ui::handles![Event, On<Tick>, Answer<Read, Shooting>];
     type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Shaping>);
     type EndSends = ();
 
@@ -180,7 +186,23 @@ impl Actor for Reply {
         let target = Target::of::<Interface>(Frame::Main(config.window));
         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
 
-        Ok(Self { window: config.window, ui, document: Document::default(), streamed: 0, settled: 0, pressed: 0 })
+        let images = match Pixels::decode(PIPELINE) {
+            Ok(pixels) => Images::new(vec![(String::from("pipeline.png"), pixels)]),
+            Err(undecoded) => {
+                turn.log(Level::Error, format_args!("the reply's picture was not decoded: {undecoded:?}"));
+                Images::default()
+            }
+        };
+
+        Ok(Self {
+            window: config.window,
+            ui,
+            document: Document::default(),
+            images,
+            streamed: 0,
+            settled: 0,
+            pressed: 0,
+        })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -226,16 +248,16 @@ impl Handles<On<Tick>> for Reply {
     }
 }
 
-impl Handles<Answer<Pixels, Shooting>> for Reply {
+impl Handles<Answer<Read, Shooting>> for Reply {
     type Sends = ();
 
     /// Writes the frame read back as a PPM to the file named: its red, green, and blue, row by row from the top.
     fn handle(
         &mut self,
-        (answered, Shooting): (Answered<Pixels>, Shooting),
+        (answered, Shooting): (Answered<Read>, Shooting),
         turn: &mut Turn<'_, Self, ()>,
     ) -> Result<(), Fault> {
-        let (Answered::Yes(Pixels::Read { width, height, pixels, .. }), Some(file)) = (answered, shot()) else {
+        let (Answered::Yes(Read::Read { width, height, pixels, .. }), Some(file)) = (answered, shot()) else {
             turn.log(Level::Error, "the frame was not read back");
             return Ok(());
         };

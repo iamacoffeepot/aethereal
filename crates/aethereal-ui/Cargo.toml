@@ -22,6 +22,11 @@ aethereal-window = { path = "../aethereal-window" }
 # pinned exactly, with only what flex and grid need (ADR-0056: Layout is Taffy).
 # Markdown read into blocks (ADR-0056: Markdown): CommonMark with GFM's tables and strikethrough, by a pull parser
 # that forbids unsafe code without its SIMD feature (MIT): pinned exactly, without its HTML writer or command line.
+# A picture's PNG or JPEG decoded to its pixels once, as its bytes arrive (ADR-0056: Pictures): the PNG decoder the
+# renderer already pins (MIT OR Apache-2.0), and a JPEG decoder without its SIMD paths, so it is plain Rust on every host
+# (MIT OR Apache-2.0 OR Zlib).
+png = { version = "=0.18.1" }
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 taffy = { version = "=0.15.1", default-features = false, features = ["std", "flexbox", "grid"] }
 

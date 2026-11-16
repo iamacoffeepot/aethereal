@@ -44,6 +44,7 @@ mod keys;
 mod layers;
 mod listings;
 mod orders;
+mod pictures;
 mod popups;
 mod program;
 mod scrolls;
@@ -57,6 +58,7 @@ pub use drags::Landing;
 pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
 pub use orders::{Orders, Sends};
+pub use pictures::{Picturing, Texturing};
 pub use popups::Tipping;
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
 pub use scrolls::Rows;
@@ -90,6 +92,7 @@ use input::{Hold, Presses, Typed};
 use keys::{Declared, Ime, Modifiers, Role, Taking};
 use layers::Layer;
 use listings::{Listed as Listing, Listings, Reading};
+use pictures::{Making, Pictures};
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
 use program::Program;
 use scrolls::{Window, Windowing};
@@ -185,6 +188,7 @@ pub struct Screen {
     hover: Hover,
     /// The size the last layout told each child it places, or found it was told before.
     told: Vec<Told>,
+    pictures: Pictures,
     grip: Grip,
     /// The last press of the main button, which the next may follow in a row.
     presses: Presses,
@@ -407,6 +411,7 @@ impl Screen {
             hovers: 0,
             hover: Hover::Settled,
             told: Vec::new(),
+            pictures: Pictures::default(),
             grip: Grip::Loose,
             presses: Presses::Unpressed,
             sent: Sent::Stale,
@@ -511,6 +516,7 @@ impl Screen {
             return Outcome::Refused;
         };
         let flat = flattened.nodes.as_slice();
+        let (making, showing) = self.pictures.ask(flat, &mut self.serial, orders);
         let surfaces = popups::stood(flat, &mut self.table);
         let focus = self.table.focus().clone();
         let tops = popups::tops(flat, &surfaces);
@@ -580,7 +586,9 @@ impl Screen {
         declare(&mut self.keys, &mut self.sent, keys::declared(flat, &focus, hotkeys, open, self.taking));
         let typing = keys::typing(flat, &focus);
 
-        let waited = measuring.waited();
+        // A layout that met a picture still being made draws nothing, as one that met a font's metrics still coming.
+        let pictures_waited = making == Making::Under;
+        let waited = measuring.waited() || pictures_waited;
         for font in measuring.into_unmet() {
             fonts.asked(font);
             orders.ask_metrics(font);
@@ -593,6 +601,7 @@ impl Screen {
         if waited {
             return Outcome::Waiting;
         }
+        self.pictures.unshown(&showing);
         self.draw(drawn, layers.order(), orders);
         self.tell(told, orders);
 
@@ -629,6 +638,7 @@ impl Screen {
         for retired in self.retired.drain(..) {
             retired.release(orders);
         }
+        self.pictures.release(orders);
     }
 
     /// Sends the list the screen draws by when it is not the list last sent: the keys it declares, then each draw the

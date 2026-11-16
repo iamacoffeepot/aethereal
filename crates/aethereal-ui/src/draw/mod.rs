@@ -16,6 +16,7 @@
 #[cfg(test)]
 mod tests;
 
+use crate::pixels::PictureId;
 use crate::widget::{Piece, Quad, Sample, TextDraw};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
@@ -209,7 +210,7 @@ pub fn record(quad: &Quad, records: &mut Vec<u8>) {
     let Quad { rect, clip, colour, border_width, border_colour, radius, sample } = *quad;
     let (uv, inset, slice_uv) = match sample {
         Sample::Solid => (Rect2 { min: Vec2::ZERO, max: Vec2::new(1.0, 1.0) }, [0.0; 4], [0.0; 4]),
-        Sample::Texture { uv, slices, .. } => {
+        Sample::Texture { uv, slices, .. } | Sample::Picture { uv, slices, .. } => {
             let inset = [slices.inset.left, slices.inset.top, slices.inset.right, slices.inset.bottom];
             let slice_uv = [slices.uv.left, slices.uv.top, slices.uv.right, slices.uv.bottom];
             (uv, inset, slice_uv)
@@ -263,12 +264,14 @@ fn is_plain(quad: &Quad) -> bool {
 }
 
 /// What a quad layer's placement draws with: the fill program, binding the frame's size alone; or the library's
-/// program, binding as its texture the library's white pixel, which a solid quad samples, or a texture an image names.
+/// program, binding as its texture the library's white pixel, which a solid quad samples, a texture an image names, or
+/// the texture the screen made of a picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Binding {
     Fill,
     White,
     Texture(TextureId),
+    Picture(PictureId),
 }
 
 impl Binding {
@@ -277,7 +280,7 @@ impl Binding {
     pub const fn record_bytes(self) -> u32 {
         match self {
             Self::Fill => FILL_BYTES,
-            Self::White | Self::Texture(_) => RECORD_BYTES,
+            Self::White | Self::Texture(_) | Self::Picture(_) => RECORD_BYTES,
         }
     }
 
@@ -286,7 +289,7 @@ impl Binding {
     pub fn layout(self) -> VertexLayout {
         match self {
             Self::Fill => fill_layout(),
-            Self::White | Self::Texture(_) => record_layout(),
+            Self::White | Self::Texture(_) | Self::Picture(_) => record_layout(),
         }
     }
 }
@@ -329,6 +332,7 @@ pub fn layered(pieces: &mut Vec<Piece>) -> Vec<Content> {
                 let binding = match quad.sample {
                     Sample::Solid => Binding::White,
                     Sample::Texture { texture, .. } => Binding::Texture(texture),
+                    Sample::Picture { picture, .. } => Binding::Picture(picture),
                 };
                 let at = quads.len();
                 quads.push(quad);

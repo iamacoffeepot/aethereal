@@ -5,6 +5,7 @@
 //! anew, is let go, and what it made released.
 
 use super::orders::Orders;
+use super::pictures::Pictures;
 use super::program::Made;
 use super::{Screen, Sent, Slot, Target};
 use crate::draw::{Binding, Content, Placing as Placed};
@@ -326,8 +327,11 @@ impl Screen {
         };
         let stage = Stage::Placing { serial, instances, capacity: *capacity, written: written.clone() };
         layer.stage = stage;
-        let place =
-            Place { mesh: made.mesh, instances: Drawn::Records(instances), joins: vec![joined(target, made, binding)] };
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Records(instances),
+            joins: vec![joined(target, made, binding, &self.pictures)],
+        };
         orders.ask_place(place, Placing { key, serial, instances });
 
         orders
@@ -430,8 +434,9 @@ impl Screen {
 
 /// The one pass a layer of quads joins: the screen's, drawn with the fill program, binding the frame's size; or with
 /// the library's program, binding the frame's size, the texture its quads sample, and a sampler that blends texels
-/// and reads the edge past it.
-fn joined(target: Target, made: Made, binding: Binding) -> Join {
+/// and reads the edge past it. A picture's quads sample the texture made of it, kept in `pictures`, or the white pixel
+/// when its texture was refused.
+fn joined(target: Target, made: Made, binding: Binding, pictures: &Pictures) -> Join {
     let frame = Bind { group: 0, binding: 0, to: Resource::Uniforms(made.uniforms) };
     let sampling = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
     let sampled = |texture| {
@@ -446,6 +451,7 @@ fn joined(target: Target, made: Made, binding: Binding) -> Join {
         Binding::Fill => (made.fills, vec![frame]),
         Binding::White => sampled(made.white),
         Binding::Texture(texture) => sampled(texture),
+        Binding::Picture(picture) => sampled(pictures.texture(picture).unwrap_or(made.white)),
     };
 
     Join { frame: target.frame, pass: target.pass, program, bindings }

@@ -17,7 +17,9 @@
 //!   empty box its style sizes.
 //! - A link is drawn in the link colour, and a press and release on it raises the composite's `link` with its target.
 //!   Nothing is opened: the caller decides.
-//! - An image is its alt text, in the placeholder colour.
+//! - An image on a line of its own is a [`Picture`](crate::widgets::Picture) of the pixels the caller decoded for its
+//!   source ([`Images`]), or its alt text, in the image colour, until it has them; one within a line of text is its
+//!   alt text.
 //!
 //! A reply grows token by token, so each block before its last stays the same shared value as it streams, and a block
 //! kept by `memo`, or compared equal in the screen's tree, is neither laid out nor drawn again.
@@ -31,10 +33,14 @@ mod tests;
 pub use document::Document;
 pub use parse::MOST_NESTING;
 
+use build::Kit;
+
 use crate::input::{Event, Raises, Raising};
-use crate::style::{Border, Edges, Gap, Length, Space, Style};
+use crate::pixels::Pixels;
+use crate::style::{Alignment, Border, Edges, Gap, Length, SelfAlign, Space, Style};
 use crate::tree::{Composite, Element, ItemKey, Node, Segment};
 use crate::widgets::Column;
+use aethereal_data::{Bare, Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
 use aethereal_render::text::{Colour, Font};
 use core::ops::Deref;
 use core::slice::Iter;
@@ -168,6 +174,58 @@ pub enum Leads {
     To(u32),
 }
 
+/// The pictures a caller decoded for the images a document names, each by its source as the markdown writes it:
+/// shared, so a block compares them with the last at once. An image whose source has none shows its alt text. The
+/// library never fetches a source: [`Document::images`] lists them for the caller to fetch and decode.
+#[derive(Debug, Clone, Default)]
+pub struct Images(Arc<Vec<(String, Pixels)>>);
+
+impl Images {
+    /// The pictures `pictures`, each by its source.
+    #[must_use]
+    pub fn new(pictures: Vec<(String, Pixels)>) -> Self {
+        Self(Arc::new(pictures))
+    }
+
+    /// The picture of the image whose source is `source`, if the caller decoded one.
+    #[must_use]
+    pub fn get(&self, source: &str) -> Option<&Pixels> {
+        self.0.iter().find(|(named, _)| named == source).map(|(_, pixels)| pixels)
+    }
+}
+
+/// Pictures are written as their sources and pixels, so a screen that holds them keeps them across a move onto new
+/// code (ADR-0054).
+impl Schema for Images {
+    const SHAPE: Shape = <Vec<(String, Pixels)> as Schema>::SHAPE;
+}
+
+impl Plain for Images where Vec<(String, Pixels)>: Encode<Bare> + Decode<Bare> {}
+
+impl<B: Boundary> Encode<B> for Images
+where
+    Vec<(String, Pixels)>: Encode<B>,
+{
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        self.0.to_vec().encode(out)
+    }
+}
+
+impl<B: Boundary> Decode<B> for Images
+where
+    Vec<(String, Pixels)>: Decode<B>,
+{
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        Vec::decode(input).map(Self::new)
+    }
+}
+
+impl PartialEq for Images {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
 /// The style set markdown is built with, shared, so a block compares its style set with the last at once.
 #[derive(Debug, Clone, Default)]
 pub struct Prose(Arc<Inks>);
@@ -221,6 +279,8 @@ pub struct Inks {
     pub cell: Style,
     /// A rule's box: it draws its background.
     pub rule: Style,
+    /// A picture an image shows, which the caller decoded: its box.
+    pub picture: Style,
     /// The colour of each look of a span, and of a link.
     pub emphasis: Colour,
     pub strong: Colour,
@@ -297,6 +357,7 @@ impl Default for Inks {
                 background: Colour::opaque(0.35, 0.33, 0.30),
                 ..Style::default()
             },
+            picture: Style { align_self: SelfAlign::Own(Alignment::Start), ..Style::default() },
             emphasis: Colour::opaque(0.93, 0.80, 0.55),
             strong: Colour::opaque(1.0, 0.97, 0.88),
             strike: Colour::opaque(0.50, 0.48, 0.45),
@@ -314,6 +375,7 @@ impl Default for Inks {
 pub struct Markdown<E> {
     pub blocks: Blocks,
     pub prose: Prose,
+    pub images: Images,
     pub link: Raises<E>,
 }
 
@@ -323,6 +385,7 @@ pub struct Markdown<E> {
 pub struct MarkdownBlock<E> {
     pub block: Block,
     pub prose: Prose,
+    pub images: Images,
     pub link: Raises<E>,
 }
 
@@ -345,7 +408,7 @@ impl<E: Event> Element for Markdown<E> {
         let inks = self.prose.inks();
         let blocks = self.blocks.iter().map(|block| {
             let key = Segment::Item(ItemKey::from(block.index));
-            build::block(&block.body, key, inks, self.link)
+            build::block(&block.body, key, Kit { inks, images: &self.images, link: self.link })
         });
 
         Node::new(segment, Column, style, blocks.collect())
@@ -354,7 +417,9 @@ impl<E: Event> Element for Markdown<E> {
 
 impl<E: Event> Element for MarkdownBlock<E> {
     fn node(self, segment: Segment, _: Vec<Node>) -> Node {
-        build::block(&self.block.body, segment, self.prose.inks(), self.link)
+        let kit = Kit { inks: self.prose.inks(), images: &self.images, link: self.link };
+
+        build::block(&self.block.body, segment, kit)
     }
 
     /// The block, its outermost box styled `style` in place of its own.

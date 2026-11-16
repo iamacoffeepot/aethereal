@@ -6,13 +6,22 @@
 //!      └─> a box of blocks (a list, its item, a quote) ──> pushed, its children made in turn ──> popped into its node
 //! ```
 
-use super::{Body, Inks, Inline, Leads, Look, Numbering};
+use super::{Body, Images, Inks, Inline, Leads, Look, Numbering};
 use crate::input::{Event, Raises};
 use crate::style::{Style, Track};
 use crate::tree::{Node, Segment};
 use crate::widget::Axis;
-use crate::widgets::{Column, Flow, Grid, Link, Rich, Row, Scroll};
+use crate::widgets::{Column, Flow, Grid, Link, Picture, Rich, Row, Scroll};
 use aethereal_render::text::{Colour, Run};
+
+/// What blocks are built with: the style set, the pictures the caller decoded for images by their sources, and the
+/// event a link raises.
+#[derive(Debug, Clone, Copy)]
+pub struct Kit<'kit, E> {
+    pub inks: &'kit Inks,
+    pub images: &'kit Images,
+    pub link: Raises<E>,
+}
 
 /// What is still to make in a box: a block, a list's item with its marker, or a column of blocks styled as its box
 /// says.
@@ -58,8 +67,8 @@ enum Made<'body> {
 }
 
 /// The node of `body` at `segment`, styled by `inks`, its links raising `link`.
-pub fn block<E: Event>(body: &Body, segment: Segment, inks: &Inks, link: Raises<E>) -> Node {
-    let mut open = match make(Unit::Block(body), segment, inks, link) {
+pub fn block<E: Event>(body: &Body, segment: Segment, kit: Kit<'_, E>) -> Node {
+    let mut open = match make(Unit::Block(body), segment, kit) {
         Made::Leaf(node) => return node,
         Made::Box(open) => vec![open],
     };
@@ -68,7 +77,7 @@ pub fn block<E: Event>(body: &Body, segment: Segment, inks: &Inks, link: Raises<
             return Node::new(segment, Column, Style::default(), Vec::new());
         };
         if let Some((segment, unit)) = top.unmade.pop() {
-            match make(unit, segment, inks, link) {
+            match make(unit, segment, kit) {
                 Made::Leaf(node) => top.made.push(node),
                 Made::Box(child) => open.push(child),
             }
@@ -86,9 +95,10 @@ pub fn block<E: Event>(body: &Body, segment: Segment, inks: &Inks, link: Raises<
 }
 
 /// What `unit` at `segment` makes: a leaf's node, or a box with its children to make.
-fn make<'body, E: Event>(unit: Unit<'body>, segment: Segment, inks: &'body Inks, link: Raises<E>) -> Made<'body> {
+fn make<'body, E: Event>(unit: Unit<'body>, segment: Segment, kit: Kit<'body, E>) -> Made<'body> {
+    let Kit { inks, link, .. } = kit;
     match unit {
-        Unit::Block(body) => made(body, segment, inks, link),
+        Unit::Block(body) => made(body, segment, kit),
         Unit::Item { marker, numbering, blocks } => {
             let marker = match numbering {
                 Numbering::Bullets => String::from("\u{2022}"),
@@ -111,7 +121,8 @@ fn make<'body, E: Event>(unit: Unit<'body>, segment: Segment, inks: &'body Inks,
 }
 
 /// What the block `body` at `segment` makes.
-fn made<'body, E: Event>(body: &'body Body, segment: Segment, inks: &'body Inks, link: Raises<E>) -> Made<'body> {
+fn made<'body, E: Event>(body: &'body Body, segment: Segment, kit: Kit<'body, E>) -> Made<'body> {
+    let Kit { inks, images, link } = kit;
     let node = match body {
         Body::Paragraph(inline) => rich(inline, segment, &inks.paragraph, inks, link),
         Body::Heading { level, text } => {
@@ -127,15 +138,10 @@ fn made<'body, E: Event>(body: &'body Body, segment: Segment, inks: &'body Inks,
         }
         Body::Table { head, rows } => table(head, rows, segment, inks, link),
         Body::Rule => Node::new(segment, Column, inks.rule.clone(), Vec::new()),
-        Body::Image { alt, .. } => {
-            let alt = if alt.is_empty() {
-                "image"
-            } else {
-                alt
-            };
-            let alt = text(vec![Run::new(alt, inks.image)], Vec::new(), Flow::Wraps, link);
-            Node::new(segment, alt, inks.paragraph.clone(), Vec::new())
-        }
+        Body::Image { alt, source } => images.get(source).map_or_else(
+            || placeholder(alt, segment, inks, link),
+            |pixels| Node::new(segment, Picture { pixels: pixels.clone() }, inks.picture.clone(), Vec::new()),
+        ),
         Body::List { numbering, items } => {
             let first = match numbering {
                 Numbering::Bullets => 0,
@@ -166,6 +172,18 @@ fn made<'body, E: Event>(body: &'body Body, segment: Segment, inks: &'body Inks,
     };
 
     Made::Leaf(node)
+}
+
+/// The alt text `alt` of an image at `segment` whose picture the caller has not decoded, in the image colour.
+fn placeholder<E: Event>(alt: &str, segment: Segment, inks: &Inks, link: Raises<E>) -> Node {
+    let alt = if alt.is_empty() {
+        "image"
+    } else {
+        alt
+    };
+    let alt = text(vec![Run::new(alt, inks.image)], Vec::new(), Flow::Wraps, link);
+
+    Node::new(segment, alt, inks.paragraph.clone(), Vec::new())
 }
 
 /// A column at `segment` styled `style` of `blocks`, each by its place.

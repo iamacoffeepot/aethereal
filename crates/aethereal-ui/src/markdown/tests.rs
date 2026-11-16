@@ -1,13 +1,14 @@
 //! Markdown read and built: the shape each construct builds, a reply that grows keeping its finished blocks in the
 //! tree comparison, nesting past the cap read as text, and arbitrary markdown never panicking.
 
-use super::{Block, Body, Document, Inks, Look, MOST_NESTING, Markdown, MarkdownBlock, Prose};
+use super::{Block, Body, Document, Images, Inks, Look, MOST_NESTING, Markdown, MarkdownBlock, Prose};
 use crate::fonts::Texts;
 use crate::input::Raises;
+use crate::pixels::Pixels;
 use crate::style::{Style, Track};
 use crate::tree::{Element, ItemKey, KeyPath, Look as Styled, Memos, Node, Segment, Shape, Tree};
 use crate::widget::Axis;
-use crate::widgets::{Column, Flow, Grid, Link, Rich, Row, Scroll};
+use crate::widgets::{Column, Flow, Grid, Link, Picture, Rich, Row, Scroll};
 use aethereal_render::text::Font;
 
 /// The tests' screen event: a link pressed.
@@ -19,7 +20,12 @@ enum Ev {
 /// The tree of `source` built whole, styled by the default style set.
 fn built(source: &str) -> Tree {
     let document = Document::new(source);
-    let markdown = Markdown { blocks: document.blocks(), prose: Prose::default(), link: Raises::Event(Ev::Open) };
+    let markdown = Markdown {
+        blocks: document.blocks(),
+        prose: Prose::default(),
+        images: Images::default(),
+        link: Raises::Event(Ev::Open),
+    };
 
     Tree::new(markdown.node(Segment::Place(0), Vec::new()))
 }
@@ -32,6 +38,7 @@ fn name(node: &Node) -> String {
         return format!("Rich({text})");
     }
     let names = [
+        widget.is::<Picture>().then_some("Picture"),
         widget.is::<Column>().then_some("Column"),
         widget.is::<Row>().then_some("Row"),
         widget.is::<Grid>().then_some("Grid"),
@@ -337,7 +344,12 @@ fn transcript(document: &Document) -> Tree {
     let prose = Prose::default();
     let all = document.blocks();
     let blocks = all.iter().map(|block| {
-        let built = MarkdownBlock { block: block.clone(), prose: prose.clone(), link: Raises::Event(Ev::Open) };
+        let built = MarkdownBlock {
+            block: block.clone(),
+            prose: prose.clone(),
+            images: Images::default(),
+            link: Raises::Event(Ev::Open),
+        };
         built.node(Segment::Item(block.index.into()), Vec::new())
     });
 
@@ -379,7 +391,12 @@ fn a_block_that_stands_is_kept_by_memo_and_the_one_that_grew_is_built() {
     let mut memos = Memos::default();
     let node = |memos: &Memos, block: &Block| {
         let path = [Segment::Place(0), Segment::Item(block.index.into())];
-        let built = || MarkdownBlock { block: block.clone(), prose: prose.clone(), link: Raises::Event(Ev::Open) };
+        let built = || MarkdownBlock {
+            block: block.clone(),
+            prose: prose.clone(),
+            images: Images::default(),
+            link: Raises::Event(Ev::Open),
+        };
         memos.node(&path, Styled::Own, built, |kept| kept.block == *block && kept.prose == prose)
     };
     let mut first = Tree::new(Node::new(
@@ -406,4 +423,22 @@ fn an_image_inside_a_line_of_text_shows_its_alt_text_in_the_line() {
     };
     let looks: Vec<(&str, Look)> = inline.spans.iter().map(|span| (span.text.as_str(), span.look)).collect();
     assert_eq!(looks, vec![("before ", Look::Plain), ("icon", Look::Image), (" after", Look::Plain)]);
+}
+
+#[test]
+fn an_image_whose_picture_the_caller_decoded_shows_it_and_the_rest_keep_their_alt_text() {
+    // Catches the caller's pictures ignored, a picture shown for another image's source, and an image within a quote
+    // left out of the sources the caller is told to fetch.
+    let document = Document::new("![one](one.png)\n\n![two](two.png)\n\n> ![three](three.png)\n");
+    let Ok(pixels) = Pixels::new(2, 1, vec![0; 8]) else {
+        panic!("the pixels are four bytes a pixel");
+    };
+    let images = Images::new(vec![(String::from("two.png"), pixels)]);
+    let markdown =
+        Markdown { blocks: document.blocks(), prose: Prose::default(), images, link: Raises::Event(Ev::Open) };
+
+    let tree = Tree::new(markdown.node(Segment::Place(0), Vec::new()));
+
+    assert_eq!(document.images(), vec!["one.png", "two.png", "three.png"]);
+    assert_eq!(shape(&tree), "Column[Rich(one) Picture Row[Column Column[Rich(three)]]]");
 }

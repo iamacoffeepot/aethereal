@@ -8,7 +8,7 @@ use super::tests::screen;
 use super::{Screen, Viewport};
 use crate::Look;
 use crate::input::Raises;
-use crate::markdown::{Document, Inks, Markdown, MarkdownBlock, Prose};
+use crate::markdown::{Document, Images, Inks, Markdown, MarkdownBlock, Prose};
 use crate::tree::{Element, ItemKey, Node, Segment, Tree};
 use crate::widgets::Column;
 use aethereal_render::font::Font as FontFile;
@@ -71,7 +71,12 @@ fn kept(screen: &Screen, document: &Document, prose: &Prose) -> Tree {
     let all = document.blocks();
     let blocks = all.iter().map(|block| {
         let path = [Segment::Place(0), Segment::Item(ItemKey::from(block.index))];
-        let built = || MarkdownBlock { block: block.clone(), prose: prose.clone(), link: Raises::Event(Ev::Open) };
+        let built = || MarkdownBlock {
+            block: block.clone(),
+            prose: prose.clone(),
+            images: Images::default(),
+            link: Raises::Event(Ev::Open),
+        };
         screen.memo(&path, Look::Own, built, |kept| kept.block == *block && kept.prose == *prose)
     });
 
@@ -80,7 +85,12 @@ fn kept(screen: &Screen, document: &Document, prose: &Prose) -> Tree {
 
 /// The view of `document` built whole.
 fn whole(document: &Document, prose: &Prose) -> Tree {
-    let markdown = Markdown { blocks: document.blocks(), prose: prose.clone(), link: Raises::Event(Ev::Open) };
+    let markdown = Markdown {
+        blocks: document.blocks(),
+        prose: prose.clone(),
+        images: Images::default(),
+        link: Raises::Event(Ev::Open),
+    };
 
     Tree::new(markdown.node(Segment::Place(0), Vec::new()))
 }

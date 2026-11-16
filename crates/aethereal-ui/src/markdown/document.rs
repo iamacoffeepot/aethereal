@@ -57,6 +57,29 @@ impl Document {
         self.blocks.clone()
     }
 
+    /// The sources of its images on lines of their own, in order, each once: what a caller fetches and decodes, then
+    /// hands back as [`Images`](super::Images). Walked with a stack.
+    #[must_use]
+    pub fn images(&self) -> Vec<String> {
+        let mut sources: Vec<String> = Vec::new();
+        let mut stack: Vec<&Body> = self.blocks.iter().rev().map(|block| &*block.body).collect();
+        while let Some(body) = stack.pop() {
+            match body {
+                Body::Image { source, .. } if !sources.contains(source) => sources.push(source.clone()),
+                Body::Quote(blocks) => stack.extend(blocks.iter().rev()),
+                Body::List { items, .. } => stack.extend(items.iter().rev().flat_map(|item| item.iter().rev())),
+                Body::Image { .. }
+                | Body::Paragraph(_)
+                | Body::Heading { .. }
+                | Body::Code { .. }
+                | Body::Table { .. }
+                | Body::Rule => {}
+            }
+        }
+
+        sources
+    }
+
     /// Sets its markdown to `source`: what extends its markdown is added to it as [`Self::push_str`] adds it, and
     /// anything else is read whole.
     pub fn set(&mut self, source: &str) {

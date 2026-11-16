@@ -10,12 +10,13 @@ use super::super::{Outcome, Screen, Viewport};
 use super::MARGIN;
 use super::window::{Window, Windowing};
 use crate::input::{Held, Key, Raises};
-use crate::markdown::{Document, Inks, Markdown, Prose};
+use crate::markdown::{Document, Images, Inks, Markdown, Prose};
+use crate::pixels::Pixels;
 use crate::style::{Border, Distribute, Edges, Gap, Length, Space, Style};
 use crate::table::Focus;
 use crate::tree::{Element, ItemKey, KeyPath, Node, Segment, Shape, Tree};
 use crate::widget::{Anchor, Jump, Keeps, Laid, Stand};
-use crate::widgets::{Button, Column, Scroll};
+use crate::widgets::{Button, Column, Picture, Scroll};
 use aethereal_actor::Level;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Colour, Font};
@@ -643,8 +644,9 @@ fn a_key_handed_to_a_scroll_by_its_path_slides_it_though_it_has_no_focus() {
 }
 
 /// The view of a screen holding a scroll down, [`VIEW`] pixels tall, over a list of `count` replies, each the markdown
-/// `reply` built whole, in the monospace font, with no padding of its own: the replies the screen says can show.
-fn replies(screen: &Screen, count: u64, reply: &str) -> Tree {
+/// `reply` built whole, in the monospace font, with no padding of its own, its images' pictures `images`: the replies the
+/// screen says can show.
+fn replies(screen: &Screen, count: u64, reply: &str, images: &Images) -> Tree {
     let prose = Prose::new(Inks {
         document: Style::default(),
         paragraph: Style { font: Font::Mono, ..Inks::default().paragraph },
@@ -654,7 +656,12 @@ fn replies(screen: &Screen, count: u64, reply: &str) -> Tree {
     let scroll = Scroll::down();
     let mut rows = screen.rows(&list(), &scroll, usize::try_from(count).unwrap_or(0), ItemKey::from);
     for at in rows.places() {
-        let markdown = Markdown::<Ev> { blocks: blocks.clone(), prose: prose.clone(), link: Raises::Nothing };
+        let markdown = Markdown::<Ev> {
+            blocks: blocks.clone(),
+            prose: prose.clone(),
+            images: images.clone(),
+            link: Raises::Nothing,
+        };
         let key = Segment::Item(ItemKey::from(at));
         rows.push(at, markdown.node(key, Vec::new()));
     }
@@ -666,22 +673,32 @@ fn replies(screen: &Screen, count: u64, reply: &str) -> Tree {
 
 #[test]
 fn a_list_of_replies_each_only_a_rule_or_only_an_image_still_windows() {
+    let Ok(wide) = Pixels::new(400, 40, vec![0; 400 * 40 * 4]) else {
+        panic!("the pixels are four bytes a pixel");
+    };
+    let pictured = Images::new(vec![(String::from("wide.png"), wide)]);
     // Catches a reply whose blocks hold no line of text measured as sure to take nothing, which leaves the transcript
     // unbounded, so it builds every reply.
     let mono = mono();
     // A line's height is some thousands of font units, which an f32 holds exactly.
     #[allow(clippy::cast_precision_loss)]
     let line = mono.line_metrics().line_height() as f32 * mono.pixels_per_unit(Inks::default().paragraph.font_size);
-    for (reply, least) in [("---", 9.0), ("![a picture](picture.png)", line)] {
+    let cases = [
+        ("---", Images::default(), 9.0),
+        ("![a picture](picture.png)", Images::default(), line),
+        ("![a picture](wide.png)", pictured, Picture::LEAST),
+    ];
+    for (reply, images, least) in cases {
         let mut screen = screen();
         screen.metrics_read(Font::Mono, mono.clone(), Vec::new());
         for _ in 0..2 {
-            let tree = replies(&screen, 1000, reply);
+            let tree = replies(&screen, 1000, reply, &images);
             shown(&mut screen, tree);
         }
         let windowing = screen.unkept.windows.iter().find(|window| *window.path() == list()).map(Window::windowing);
 
-        // A rule is 1 pixel and 4 of margin each side; an image's alt text one line.
+        // A rule is 1 pixel and 4 of margin each side; an image's alt text one line; a picture its least, whatever the
+        // width shrinks it to.
         assert_eq!(windowing, Some(Windowing::Bounded { least }), "{reply}");
     }
 }
