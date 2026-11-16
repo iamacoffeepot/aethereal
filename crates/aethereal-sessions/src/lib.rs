@@ -3,7 +3,9 @@
 //! Its root is [`Sessions`], which holds the hub's sessions: it runs each in a container made by [`Docker`] only from
 //! its settings and the session's number, writes lines to its stdin, reads its output into a numbered transcript kept
 //! through `Files`, winds down and stops a session that is idle, and resumes it when it is spoken to. The host serves it
-//! one thing of its own, the read of the credential's file ([`Credential`]). Behind the `tools` feature,
+//! one thing of its own, the read of the credential's file ([`Credential`]), beside the host's randomness and the
+//! store's stockroom, which each session's container is readied from: the bearer of its route to the hub's tools,
+//! which `Mcp` is told of, and its drop box (ADR-0057). Behind the `tools` feature,
 //! `SessionsTools` is the hub's six tools for it: `session_new`, `session_say`, `session_read`, `session_list`,
 //! `session_interrupt`, and `session_archive`.
 //!
