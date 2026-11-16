@@ -123,7 +123,7 @@ impl Handles<WriteFile> for Files {
         }
         let held = turn.hold()?;
         let number = self.number();
-        turn.run(&Save::new(write.namespace, write.path, write.bytes), &Saving { number })?;
+        turn.run(&Save::new(write.namespace, write.path, write.bytes, write.how), &Saving { number })?;
         self.writing.insert(number, held);
 
         Ok(())

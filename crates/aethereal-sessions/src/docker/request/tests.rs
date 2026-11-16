@@ -1,4 +1,4 @@
-use crate::{ContainerId, Events, Label, List, Logs, Until, Unwritable};
+use crate::{ContainerId, CreateVolume, Events, Label, List, Logs, Until, Unwritable, VolumeName};
 
 #[test]
 fn a_list_and_the_events_are_filtered_by_their_label_and_every_filter_is_percent_encoded() {
@@ -36,4 +36,17 @@ fn logs_are_asked_from_their_time_to_the_nanosecond() {
     let logs = Logs { container, since_nanos: 1_763_020_800_000_000_042, until: Until::Stopped };
     let query = logs.call().map(|call| call.query);
     assert_eq!(query, Ok(String::from("stdout=1&stderr=1&since=1763020800.000000042&follow=1")));
+}
+
+#[test]
+fn a_volume_is_created_by_its_name_with_its_labels() {
+    // Tripwire: the body of `POST /volumes/create`. A member misnamed is ignored by Docker, which then names the
+    // volume itself, so no session finds its home again, or makes it with no labels, so nothing finds it by them.
+    let Some(name) = VolumeName::read("aethereal-session-hub-7") else {
+        panic!("the name is one Docker takes");
+    };
+    let labels = vec![Label { key: String::from("aethereal.session"), value: String::from("7") }];
+    let call = CreateVolume { name, labels }.call().map(|call| (call.path, call.body));
+    let body = String::from(r#"{"Name":"aethereal-session-hub-7","Labels":{"aethereal.session":"7"}}"#);
+    assert_eq!(call, Ok((String::from("/v1.44/volumes/create"), super::Body::Json(body))));
 }

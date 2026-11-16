@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod tests;
 
-use super::{Label, Unwritable};
+use super::{Label, Unwritable, VolumeName};
 use aethereal_data::{Plain, write_json_string};
-use core::fmt::Write as _;
+use core::fmt::{self, Write as _};
 
 /// What a container is made from: its name, image, user, working directory, command, environment, binds, network,
 /// limits, labels, and stdin, each stated by its maker.
@@ -30,6 +30,8 @@ pub struct ContainerSpec {
     pub env: Vec<Variable>,
     /// Directories of this machine it sees, each at a path of its own.
     pub binds: Vec<Bind>,
+    /// Named volumes it sees, each at a path of its own.
+    pub volumes: Vec<Volume>,
     pub network: Network,
     /// The most CPU time it takes, in thousandths of one CPU: 4000 caps it at four CPUs' worth.
     pub millicpus: u32,
@@ -40,12 +42,19 @@ pub struct ContainerSpec {
     pub stdin: Stdin,
 }
 
-/// One environment variable: a name, which holds no `=`, and its value.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+/// One environment variable: a name, which holds no `=`, and its value. A value may be a secret, such as a session's
+/// credential, so it is never printed: its `Debug` names the variable and how long its value is.
+#[derive(Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.docker.variable")]
 pub struct Variable {
     pub name: String,
     pub value: String,
+}
+
+impl fmt::Debug for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Variable").field("name", &self.name).field("value_bytes", &self.value.len()).finish()
+    }
 }
 
 /// A directory of this machine a container sees: `source`, which must already exist, at `target` inside it.
@@ -59,6 +68,17 @@ pub struct Bind {
     pub source: String,
     pub target: String,
     pub access: Access,
+}
+
+/// A named volume a container sees, read and written: `name` at `target` inside it. Docker keeps where it is, so no
+/// path of this machine is named. Nothing of the image is ever copied into it: left to itself, Docker fills an empty
+/// volume from the image as a container is made, the owner of the directory at `target` too, which a working directory
+/// there makes root's, so a volume given to another user would be root's again by its next container.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.docker.volume")]
+pub struct Volume {
+    pub name: VolumeName,
+    pub target: String,
 }
 
 /// Whether a container may write to what it is bound.
@@ -110,9 +130,9 @@ impl ContainerSpec {
     ///
     /// # Errors
     ///
-    /// The variable whose name is empty or holds `=`, which Docker would split elsewhere, and the label whose key is
-    /// empty.
-    pub(super) fn body(&self) -> Result<String, Unwritable> {
+    /// The variable whose name is empty or holds `=`, which Docker would split elsewhere, the label whose key is
+    /// empty, and the volume whose name is not one Docker takes.
+    pub(crate) fn body(&self) -> Result<String, Unwritable> {
         let open = self.stdin == Stdin::Kept;
         let mut body = String::from("{\"Image\":");
         write_json_string(&self.image, &mut body);
@@ -142,6 +162,13 @@ impl ContainerSpec {
                 body.push(',');
             }
             bind.write(&mut body);
+        }
+        for (place, volume) in self.volumes.iter().enumerate() {
+            let follows = place > 0 || !self.binds.is_empty();
+            if follows {
+                body.push(',');
+            }
+            volume.write(&mut body)?;
         }
         body.push_str("]}}");
 
@@ -173,6 +200,23 @@ impl Bind {
     }
 }
 
+impl Volume {
+    /// Appends the volume as one of `HostConfig.Mounts`.
+    ///
+    /// # Errors
+    ///
+    /// Its name is not one Docker takes.
+    fn write(&self, out: &mut String) -> Result<(), Unwritable> {
+        out.push_str("{\"Type\":\"volume\",\"Source\":");
+        write_json_string(self.name.written()?, out);
+        out.push_str(",\"Target\":");
+        write_json_string(&self.target, out);
+        out.push_str(",\"ReadOnly\":false,\"VolumeOptions\":{\"NoCopy\":true}}");
+
+        Ok(())
+    }
+}
+
 /// Appends `items` as a JSON array of strings.
 pub(super) fn strings<'s>(items: impl Iterator<Item = &'s str>, out: &mut String) {
     out.push('[');
@@ -190,7 +234,7 @@ pub(super) fn strings<'s>(items: impl Iterator<Item = &'s str>, out: &mut String
 /// # Errors
 ///
 /// The label whose key is empty.
-fn labels(labels: &[Label], out: &mut String) -> Result<(), Unwritable> {
+pub(super) fn labels(labels: &[Label], out: &mut String) -> Result<(), Unwritable> {
     out.push('{');
     for (place, label) in labels.iter().enumerate() {
         if label.key.is_empty() {

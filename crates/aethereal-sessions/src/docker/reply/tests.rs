@@ -1,5 +1,7 @@
-use super::{acted, created, inspected, listed};
-use crate::{Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase};
+use super::{acted, created, inspected, listed, waited};
+use crate::{
+    Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase, Waited,
+};
 
 /// An id as Docker writes one.
 const ID: &str = "4f9a0c1e2b3d4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90";
@@ -75,4 +77,14 @@ fn a_list_is_read_as_each_container_its_name_phase_and_labels() {
     );
     let unreadable = format!(r#"[{{"Id":"{ID}","Names":["/a"],"State":"running","Labels":{{}}}},{{"Id":"short"}}]"#);
     assert_eq!(listed(200, unreadable.as_bytes()), Listed::Failed(DockerError::Malformed));
+}
+
+#[test]
+fn a_wait_is_read_as_the_code_its_container_s_process_ended_with() {
+    // Catches the code read from another member or taken as 0 when it is missing, so a step that failed reads as one
+    // that did not, and a container gone answered as anything but not found.
+    assert_eq!(waited(200, br#"{"Error":null,"StatusCode":1}"#), Waited::Exited { code: 1 });
+    assert_eq!(waited(200, br#"{"Error":null}"#), Waited::Failed(DockerError::Malformed));
+    let gone = waited(404, br#"{"message":"No such container: x"}"#);
+    assert_eq!(gone, Waited::Failed(DockerError::NotFound { message: String::from("No such container: x") }));
 }

@@ -15,7 +15,7 @@ use aethereal_actor::{
     Path, ProtocolRef, ToSender, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_files::{FileWritten, Files, Namespace, WriteFile};
+use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
 use aethereal_pace::{Advance, Advanced, Pace, PaceSet, Pacer, SetPace, Unadvanced};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
@@ -531,7 +531,7 @@ impl Handles<Answer<ClipFinished, Filing>> for RecordTool {
         };
         let (frames, frames_per_second) = (recording.asked.frames, recording.asked.rate());
         *step = Step::Writing(Recorded { file: file.clone(), frames, frames_per_second, width, height });
-        let write = WriteFile { namespace: Namespace::Save, path: file, bytes: mp4 };
+        let write = WriteFile { namespace: Namespace::Save, path: file, bytes: mp4, how: Writes::Whole };
         turn.to(path::<Files>(())).ask(&write, &Filing { clip })?;
 
         Ok(())

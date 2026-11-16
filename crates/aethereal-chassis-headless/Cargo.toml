@@ -17,6 +17,7 @@ aethereal-files = { path = "../aethereal-files" }
 aethereal-link = { path = "../aethereal-link" }
 aethereal-pace = { path = "../aethereal-pace" }
 aethereal-process = { path = "../aethereal-process" }
+aethereal-sessions = { path = "../aethereal-sessions" }
 aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tcp = { path = "../aethereal-tcp" }
@@ -47,9 +48,14 @@ aethereal-http = { path = "../aethereal-http" }
 aethereal-library = { path = "../aethereal-library", features = ["tools"] }
 aethereal-link = { path = "../aethereal-link", features = ["tools"] }
 aethereal-mcp = { path = "../aethereal-mcp" }
-aethereal-sessions = { path = "../aethereal-sessions" }
+aethereal-sessions = { path = "../aethereal-sessions", features = ["tools"] }
 aethereal-store = { path = "../aethereal-store", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
+
+# Its test reads the hub's own composition: every section and flag it lists.
+[[example]]
+name = "link_hub"
+test = true
 
 [lints]
 workspace = true

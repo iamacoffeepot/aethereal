@@ -3,8 +3,11 @@
 #[cfg(test)]
 mod tests;
 
-use super::spec::strings;
-use super::{Attach, ContainerId, Create, Events, Inspect, Kill, List, Logs, Remove, Start, Stop, Until, Unwritable};
+use super::spec::{labels, strings};
+use super::{
+    Attach, ContainerId, Create, CreateVolume, Events, Inspect, Kill, List, Logs, Remove, Start, Stop, Until,
+    Unwritable, Wait,
+};
 use aethereal_data::{Plain, write_json_string};
 use aethereal_http::Method;
 use core::fmt::Write as _;
@@ -84,6 +87,26 @@ impl Inspect {
     /// `GET /containers/{id}/json`.
     pub(super) fn call(&self) -> Result<Call, Unwritable> {
         Ok(Call::new(Method::Get, &container(&self.container, "/json")?, String::new(), Body::Empty))
+    }
+}
+
+impl Wait {
+    /// `POST /containers/{id}/wait`, answered once the container no longer runs.
+    pub(super) fn call(&self) -> Result<Call, Unwritable> {
+        Ok(Call::new(Method::Post, &container(&self.container, "/wait")?, String::new(), Body::Empty))
+    }
+}
+
+impl CreateVolume {
+    /// `POST /volumes/create`, with the volume's name and labels.
+    pub(super) fn call(&self) -> Result<Call, Unwritable> {
+        let mut body = String::from("{\"Name\":");
+        write_json_string(self.name.written()?, &mut body);
+        body.push_str(",\"Labels\":");
+        labels(&self.labels, &mut body)?;
+        body.push('}');
+
+        Ok(Call::new(Method::Post, "/volumes/create", String::new(), Body::Json(body)))
     }
 }
 
