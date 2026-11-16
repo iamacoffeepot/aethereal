@@ -1,6 +1,7 @@
 //! `Scroll`: a box that shows part of what it holds and slides through the rest (ADR-0056: Stock widgets). Its children
-//! run one after another along its axis, never shrunk to fit, cut to its content box, and slid by its offset, which is
-//! its own state, kept by its key; the library clamps it to what it can scroll as it lays the screen out.
+//! run one after another along its axis, never shrunk to fit, cut to its content box, and slid to where it stands,
+//! which is its own state, kept by its key: an item, by its key, and how far into it its view starts, or its end
+//! ([`Stand`]). The library settles it against what it holds as it lays the screen out.
 //!
 //! The wheel slides it while the pointer is over it or what it holds, unless a scroll within it can still move that
 //! way. It keeps room along its far side for its bar, where a thumb as long as the share of what it holds it shows
@@ -9,14 +10,15 @@
 //! middle there and drags it. With focus, or with a widget within it focused, Page Up and Page Down slide it a box's
 //! length, and Home and End to its ends.
 //!
-//! Given `items`, it builds only the items it shows, as it declares ([`Widget::WINDOWS`]): its lines are
-//! [`Lines::Window`], made by [`Rows`](crate::Rows) as the view asks the screen which items to build.
+//! Given `items`, it builds only the items that can show, as it declares ([`Widget::WINDOWS`]): its lines are
+//! [`Lines::Window`], made by [`Rows`](crate::Rows) as the view asks the screen which items to build, and its bar is
+//! by item.
 
 use super::press::ring;
 use crate::fonts::Measuring;
 use crate::input::{Hears, Input, Key, Pointing, Used};
 use crate::style::{Edges, Style};
-use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Quad, Sample, Widget};
+use crate::widget::{Arrange, Axis, Draws, Keeps, Laid, Lines, Quad, Sample, Stand, Widget};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::draw_list::Pointer;
@@ -48,30 +50,13 @@ pub struct Scroll {
     pub keeps: Keeps,
 }
 
-/// Where a scroll keeps to as what it holds grows or shrinks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Keeps {
-    /// Its offset from its start, so what it shows stays put as more is added past it.
-    #[default]
-    Offset,
-    /// Its end, while it stands there: what is added past its end slides into view, as a console's scrollback or a
-    /// chat's does; slid back from its end, it keeps its offset, and slid to its end again, keeps to it. One never laid
-    /// out starts at its end.
-    End,
-}
-
-/// How far a scroll has slid what it holds, in pixels; whether a press on its bar drags its thumb; and how far it could
-/// slide as it was last laid out, which tells whether it stood at its end.
+/// Where a scroll stands among what it holds, and whether a press on its bar drags its thumb.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Plain)]
 #[kind(name = "aether.ui.scroll")]
 pub struct Scrolling {
-    pub offset: f32,
+    pub stand: Stand,
     pub drag: Drag,
-    pub travel: f32,
 }
-
-/// How near its end, in pixels, a scroll stands at it: a part of a pixel, as an offset clamped to its end is its end.
-const AT_END: f32 = 0.5;
 
 /// Whether a press drags a scroll's thumb.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Plain)]
@@ -114,8 +99,8 @@ impl Scroll {
         Self { lines, ..self }
     }
 
-    /// Its bar, laid at `laid` and styled `style`, with its thumb where `offset` puts it.
-    fn bar(&self, offset: f32, style: &Style, laid: &Laid) -> Bar {
+    /// Its bar, laid at `laid` and styled `style`, with its thumb where the view stands within what it holds.
+    fn bar(&self, style: &Style, laid: &Laid) -> Bar {
         let axis = self.axis;
         let edge = style.border.width * laid.scale;
         let room = BAR * laid.scale;
@@ -131,18 +116,12 @@ impl Scroll {
             },
         };
         let long = axis.along(track.size());
-        let travel = laid.travel(axis);
-        let shown = axis.along(view.size());
-        let whole = shown + travel;
-        let share = if whole > 0.0 {
-            shown / whole
-        } else {
-            1.0
-        };
-        let thumb_length = (long * share).max(LEAST_THUMB * laid.scale).min(long);
+        let shown = laid.bar.shown.clamp(0.0, 1.0);
+        let thumb_length = (long * shown).max(LEAST_THUMB * laid.scale).min(long);
         let slack = long - thumb_length;
-        let along = if travel > 0.0 {
-            offset / travel * slack
+        let rest = 1.0 - shown;
+        let along = if rest > 0.0 {
+            (laid.bar.start / rest).clamp(0.0, 1.0) * slack
         } else {
             0.0
         };
@@ -153,30 +132,35 @@ impl Scroll {
         };
         let thumb = Rect2::from_origin_size(start, thumb_size);
 
-        Bar { axis, track, thumb, slack, travel }
+        Bar { axis, track, thumb, slack, rest }
     }
 }
 
-/// A scroll's bar: its track along its far side, its thumb, how far the thumb can move along the track, and how far
-/// the scroll can slide.
+/// A scroll's bar: its track along its far side, its thumb, how far the thumb can move along the track, and the share
+/// of what the scroll holds that it does not show.
 struct Bar {
     axis: Axis,
     track: Rect2,
     thumb: Rect2,
     slack: f32,
-    travel: f32,
+    rest: f32,
 }
 
 impl Bar {
-    /// The offset that puts the thumb's start `start` pixels along the axis, in the coordinates of its track.
-    fn offset_at(&self, start: f32) -> f32 {
+    /// Where the scroll stands with the thumb's start `start` pixels along the axis, in the coordinates of its track:
+    /// that share of what it holds before its view, or its end with the thumb at the track's end.
+    fn stand_at(&self, start: f32, stand: Stand) -> Stand {
         let moves = self.slack > 0.0;
         if !moves {
-            return 0.0;
+            return stand;
         }
-        let along = (start - self.axis.along(self.track.min)) / self.slack;
+        let along = ((start - self.axis.along(self.track.min)) / self.slack).clamp(0.0, 1.0);
+        let ends = along >= 1.0;
+        if ends {
+            return stand.ended();
+        }
 
-        along.clamp(0.0, 1.0) * self.travel
+        Stand::Share(along * self.rest)
     }
 }
 
@@ -206,29 +190,22 @@ impl Widget for Scroll {
         self.list(lines)
     }
 
-    fn offset(&self, scrolling: &Scrolling) -> f32 {
-        scrolling.offset
+    fn keeps(&self) -> Keeps {
+        self.keeps
     }
 
-    fn scroll_to(&self, scrolling: &mut Scrolling, offset: f32) {
-        scrolling.offset = offset;
+    fn stand(&self, scrolling: &Scrolling) -> Stand {
+        scrolling.stand
     }
 
-    /// Kept to its end, it slides to the end of what it now holds while it stood at the end of what it held; either way
-    /// it keeps how far it can now slide.
-    fn settle(&self, scrolling: &mut Scrolling, travel: f32) {
-        let stood_at_end = scrolling.offset >= scrolling.travel - AT_END;
-        let follows = self.keeps == Keeps::End && stood_at_end;
-        if follows {
-            scrolling.offset = travel;
-        }
-        scrolling.travel = travel;
+    fn stand_at(&self, scrolling: &mut Scrolling, stand: Stand) {
+        scrolling.stand = stand;
     }
 
     /// Its bar, faint, and its thumb over it, while it holds more than it shows; and its focus ring.
     fn draw(&self, scrolling: &Scrolling, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
-        let bar = self.bar(scrolling.offset, style, laid);
-        let scrolls = bar.travel > 0.0;
+        let bar = self.bar(style, laid);
+        let scrolls = bar.rest > 0.0;
         if scrolls {
             let strength = match scrolling.drag {
                 Drag::Idle => THUMB_STRENGTH,
@@ -270,7 +247,7 @@ impl Widget for Scroll {
     }
 
     fn pointed(&self, scrolling: &mut Scrolling, pointing: Pointing, input: &mut Input<'_, '_>) {
-        let bar = self.bar(scrolling.offset, input.style(), input.laid());
+        let bar = self.bar(input.style(), input.laid());
         let axis = self.axis;
         match (pointing, scrolling.drag) {
             (Pointing::Down { at, button: Button::Main }, _) if bar.track.contains_point(at) => {
@@ -281,9 +258,11 @@ impl Widget for Scroll {
                     axis.along(bar.thumb.size()) / 2.0
                 };
                 scrolling.drag = Drag::Thumb { grip };
-                scrolling.offset = bar.offset_at(axis.along(at) - grip);
+                scrolling.stand = bar.stand_at(axis.along(at) - grip, scrolling.stand);
             }
-            (Pointing::Moved { at }, Drag::Thumb { grip }) => scrolling.offset = bar.offset_at(axis.along(at) - grip),
+            (Pointing::Moved { at }, Drag::Thumb { grip }) => {
+                scrolling.stand = bar.stand_at(axis.along(at) - grip, scrolling.stand);
+            }
             (Pointing::Up { button: Button::Main, .. }, _) => scrolling.drag = Drag::Idle,
             (
                 Pointing::Entered
@@ -296,19 +275,17 @@ impl Widget for Scroll {
         }
     }
 
-    /// Page Up and Page Down slide it a content box's length back and on, Home to its start and End to its end.
+    /// Page Up and Page Down slide it a content box's length back and on, from where its last layout settled it; Home
+    /// to its first item and End to its end.
     fn key(&self, scrolling: &mut Scrolling, key: &Key, input: &mut Input<'_, '_>) -> Used {
-        let laid = input.laid();
-        let page = self.axis.along(laid.content.size());
-        let travel = laid.travel(self.axis);
-        let to = match key.code.as_str() {
-            "PageDown" => scrolling.offset + page,
-            "PageUp" => scrolling.offset - page,
-            "Home" => 0.0,
-            "End" => travel,
+        let page = self.axis.along(input.laid().content.size());
+        scrolling.stand = match key.code.as_str() {
+            "PageDown" => scrolling.stand.slid(page),
+            "PageUp" => scrolling.stand.slid(-page),
+            "Home" => Stand::Item(0),
+            "End" => scrolling.stand.ended(),
             _ => return Used::Passed,
         };
-        scrolling.offset = to.clamp(0.0, travel);
 
         Used::Used
     }

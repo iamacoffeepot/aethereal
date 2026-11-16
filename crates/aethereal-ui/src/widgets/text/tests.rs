@@ -5,7 +5,7 @@ use crate::fonts::{Fonts, Texts};
 use crate::layout::Layouts;
 use crate::style::{Alignment, Length, Style};
 use crate::tree::{Node, Segment, Shape, Tree};
-use crate::widget::{Draws, Focused, Laid, Lit, Piece, Stateless, TextDraw, Widget};
+use crate::widget::{Draws, Focused, Laid, Lit, Piece, Span, Stateless, TextDraw, Widget};
 use crate::widgets::Column;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::font::{Font as FontFile, Metrics};
@@ -42,8 +42,14 @@ fn drawn(column: Style, text: &str, style: &Style) -> (Rect2, TextDraw) {
 
     let laid_box = boxes[2];
     let screen = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 300.0));
-    let laid =
-        Laid { rect: laid_box.rect, content: laid_box.content, clip: screen, extent: laid_box.extent, scale: 1.0 };
+    let laid = Laid {
+        rect: laid_box.rect,
+        content: laid_box.content,
+        clip: screen,
+        extent: laid_box.extent,
+        bar: Span::WHOLE,
+        scale: 1.0,
+    };
     let mut pieces = Vec::new();
     let mut into = Draws::new(&mut pieces, &mut measuring, Focused::No, Lit::No);
     let Some(text) = flattened.nodes[2].node.widget().as_any().downcast_ref::<Text>() else {

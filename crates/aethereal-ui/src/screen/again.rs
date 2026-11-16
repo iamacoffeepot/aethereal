@@ -195,8 +195,7 @@ fn laid_board() -> Board {
     board
 }
 
-/// What a screen shows, and what it sent of it: the tree it holds, where it laid each widget out, the pitch of each
-/// scroll, its draws by key and their order with its hits, what each entry of the list it last sent is, each entry but
+/// What a screen shows, and what it sent of it: the tree it holds, where it laid each widget out, its draws by key and their order with its hits, what each entry of the list it last sent is, each entry but
 /// a draw as it was sent, and its widget table.
 #[derive(Debug, PartialEq)]
 struct Seen {

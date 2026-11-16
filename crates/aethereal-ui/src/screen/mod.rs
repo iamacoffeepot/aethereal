@@ -18,7 +18,8 @@
 //! after the keys the screen declares; and the library keeps what each entry of the list it sent is, so input through
 //! an entry reaches the widget that listed it (ADR-0056: Widget state is kept by key; Focus and keys). What a scroll
 //! holds is listed within a shift that slides it by the offset its state keeps, clamped to what it can scroll as it is
-//! laid out, and cuts it to its content box; a list in a scroll builds only the items its window shows, as [`Screen::rows`] says. The content of each
+//! laid out, and cuts it to its content box; a list in a scroll builds only the items that can show, as
+//! [`Screen::rows`] says. The content of each
 //! open popup is listed after everything else, in its own layer of the screen's top layer, in tree order: placed against
 //! its anchor and cut by nothing around it, behind a hit that blocks the rest of the screen when it is modal. A child
 //! actor the screen places in a slot is called where the slot's content box is, at the slot's place in the list, and is
@@ -59,14 +60,14 @@ pub use scrolls::Rows;
 use crate::child::{self, calling};
 use crate::draw::{Content, layered};
 use crate::fonts::{Asker, Fonts, Measuring, Texts};
-use crate::layout::{Laidout, Layouts, Pitch};
+use crate::layout::{Boxed, Laidout, Layouts, Placement};
 use crate::style::Style;
 use crate::table::{Focus, Table};
 use crate::tree::{
     Composite, Difference, Flat, Flattened, KeyPath, Look, Memos, Node, Segment, Shape, Tree, TreeRefused,
 };
 use crate::unkept::Unkept;
-use crate::widget::{Draws, Focused, Laid, Lit, Piece, Quad, Sample};
+use crate::widget::{Arrange, Draws, Focused, Laid, Lit, Piece, Quad, Sample, anchor};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -77,8 +78,9 @@ use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
 use aethereal_window::Cursor;
-use around::{Around, Holding, Stood};
+use around::{Around, Holding, Slid, Stood};
 use children::Told;
+use core::mem::discriminant;
 use drags::Grip;
 use input::{Hold, Typed};
 use keys::{Declared, Ime, Modifiers, Role, Taking};
@@ -86,6 +88,7 @@ use layers::Layer;
 use listings::{Listed as Listing, Listings, Reading};
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
 use program::Program;
+use scrolls::{Window, Windowing};
 
 /// Where a screen draws: the pass of the frame each of its draws joins, a window's interface pass for a screen over
 /// what the program drew.
@@ -263,7 +266,7 @@ enum Fresh {
 
 /// What a screen works out again rather than keep: the tree it last built, the fonts it knows and what it measured of
 /// its texts, what its layouts keep for the next, what each widget last listed, where its last layout put each widget,
-/// by key path, in tree order, and the pitch of each scroll's lines, by key path.
+/// by key path, in tree order, and what it found of each scroll, in tree order.
 #[derive(Debug, Default)]
 struct Worked {
     last: Last,
@@ -285,7 +288,7 @@ struct Worked {
     /// draws hundreds of quads grows nothing to gather them.
     pieces: Vec<Piece>,
     placed: Vec<(KeyPath, Laid)>,
-    pitches: Vec<(KeyPath, Pitch)>,
+    windows: Vec<Window>,
 }
 
 impl Worked {
@@ -479,8 +482,8 @@ impl Screen {
     /// with a hit over each widget the pointer reaches and the keys it declares, `hotkeys` its own; the fonts it met and
     /// has not asked for are asked for, and a layout that met a font whose metrics have not come draws nothing. Focus
     /// on a widget that has gone, or is hidden in a shut popup, is cleared, and the window's input method stopped with
-    /// it. Each scroll's offset is clamped to what it can scroll, what is within it slid by it and cut to its content
-    /// box; an item whose key a sibling before it has is left out, and logged. A popup whose anchor has gone shuts; the
+    /// it. Each scroll is settled where it stands among what it holds, what is within it slid there and cut to its
+    /// content box; an item whose key a sibling before it has is left out, and logged. A popup whose anchor has gone shuts; the
     /// content of each open one is listed in its own layer over the rest, placed against its anchor and cut by nothing
     /// around it, and a popup's own draws and hit are listed over its anchor's. A child placed in a slot shown is called
     /// there, and told its size when it changed. The source of a drag under way lists its hit with the drag's cursor,
@@ -492,7 +495,7 @@ impl Screen {
         }
         let lit = self.lit();
         let builds = (self.unkept.builds, self.unkept.relaid);
-        let Worked { last: Last::Built(tree), shape, fonts, texts, layouts, listings, pieces, placed, pitches, .. } =
+        let Worked { last: Last::Built(tree), shape, fonts, texts, layouts, listings, pieces, placed, windows, .. } =
             &mut *self.unkept
         else {
             return Outcome::Waiting;
@@ -507,11 +510,14 @@ impl Screen {
         let viewport = self.viewport;
         texts.begin(viewport.scale);
         let mut measuring = fonts.measuring(texts, viewport.scale);
-        let Laidout { boxes, pitches: pitched } =
+        let Laidout { boxes, placements } =
             layouts.lay_out(&flattened, &tops, &mut measuring, (viewport.size, viewport.scale), builds);
-        *pitches = pitched.iter().map(|(at, pitch)| (flat[*at].path.clone(), *pitch)).collect();
-
         let ends = spans(flat);
+        let parents = parents(flat);
+        let found = scrolls::windows(flat, boxes, (&ends, &parents), &mut measuring, viewport.scale);
+        let (boxes, slids) = scrolled(&mut self.table, (flat, placements), found, (boxes.clone(), windows), orders);
+        let boxes = boxes.as_slice();
+
         let mut drawn: Vec<(DrawKey, Content)> = Vec::new();
         let mut layers = Layers::default();
         let mut pending: Vec<Pending> = Vec::new();
@@ -522,7 +528,7 @@ impl Screen {
         for (at, (node, boxed)) in flat.iter().zip(boxes).enumerate() {
             layers.settle(&mut pending, at);
             let surface = surfaces[at];
-            let Stood { laid, drawing, holding } = around.stand(&mut self.table, node, at, boxed, viewport.scale);
+            let Stood { laid, drawing, holding } = around.stand(node, at, boxed, (slids[at], viewport.scale));
             if surface.stands == Stands::Hidden {
                 laid_out.push((node.path.clone(), laid));
                 continue;
@@ -679,6 +685,110 @@ impl Screen {
     fn layer(&self, key: &DrawKey) -> Option<&Layer> {
         self.layers.binary_search_by(|layer| layer.key().cmp(key)).ok().map(|at| &self.layers[at])
     }
+}
+
+/// The place in tree order of the parent of each of `flat`, the root its own.
+fn parents(flat: &[Flat<'_>]) -> Vec<usize> {
+    let mut parents = vec![0; flat.len()];
+    for (at, node) in flat.iter().enumerate() {
+        for child in node.children {
+            parents[*child] = at;
+        }
+    }
+
+    parents
+}
+
+/// Settles each scroll of `flat`, placed in their parents as `placements` says, in `table` as `found`, what the layout
+/// found of each by its place, says, `windows` what the layout before found, which `found` then takes the place of;
+/// logging into `orders` each that starts to build every item: `boxes`, the layout's, with each scroll's children
+/// where it keeps them in what it holds, and how far each node slides what it holds, by its place.
+fn scrolled(
+    table: &mut Table,
+    (flat, placements): (&[Flat<'_>], &[Placement]),
+    mut found: Vec<(usize, Window)>,
+    (mut boxes, windows): (Vec<Boxed>, &mut Vec<Window>),
+    orders: &mut Orders,
+) -> (Vec<Boxed>, Vec<Slid>) {
+    let mut slids = vec![Slid::NONE; flat.len()];
+    for (at, window) in &mut found {
+        let was = windows.iter().find(|kept| kept.path() == window.path());
+        slids[*at] = settle(table, &flat[*at], window, was);
+        warn(window, was.map(Window::windowing), orders);
+        placed(flat, *at, window, placements, &mut boxes);
+    }
+    *windows = found.into_iter().map(|(_, window)| window).collect();
+
+    (boxes, slids)
+}
+
+/// Settles the scroll of `node` in `table` as `window`, what its layout found of it, says, `was` what the layout
+/// before found: where its first child built stands in its content, kept in `window`; where it stands, kept by its
+/// key; and how far it slides what it holds and where its bar shows its view.
+fn settle(table: &mut Table, node: &Flat<'_>, window: &mut Window, was: Option<&Window>) -> Slid {
+    let widget = node.node.widget();
+    let kept = table.bytes(node.path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
+    let stood = widget.stand(&kept);
+    window.rebase(was, stood);
+    let (stand, offset) = window.settle(stood, widget.keeps());
+    let mut state = kept.clone();
+    widget.stand_at(&mut state, stand);
+    let changed = state != kept;
+    if changed {
+        table.write(node.path, widget.state_kind(), state);
+    }
+
+    Slid { offset: window.slid(offset), bar: window.bar(offset) }
+}
+
+/// Places in `boxes` what the scroll at `at` among `flat` holds in its flow where `window` keeps each child it built in
+/// what it holds, each node placed in its parent as `placements` says, worked out as the layout works a box out, so a
+/// child that stands where it stood has the boxes it had to the bit: a popup's content, laid out on its own, is left
+/// where it is.
+fn placed(flat: &[Flat<'_>], at: usize, window: &Window, placements: &[Placement], boxes: &mut [Boxed]) {
+    let origin = boxes[at].rect.min;
+    let mut stack: Vec<(usize, Placement, Vec2)> = Vec::new();
+    for (child, place) in flat[at].children.iter().zip(window.placed()) {
+        stack.push((*child, placements[*child].along(window.axis(), place, &placements[at]), origin));
+    }
+    while let Some((node, placement, parent)) = stack.pop() {
+        let (rect, content) = placement.boxes(parent);
+        boxes[node].rect = rect;
+        boxes[node].content = content;
+        let children = flat[node].children;
+        let flowing = match flat[node].node.widget().arrange() {
+            Arrange::Popup(_) => {
+                let anchor = anchor(flat[node].path);
+                children.iter().position(|child| *flat[*child].path == anchor).map_or(&[][..], |at| &children[at..=at])
+            }
+            Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => children,
+        };
+        stack.extend(flowing.iter().map(|child| (*child, placements[*child], rect.min)));
+    }
+}
+
+/// Logs into `orders`, as it starts to, a scroll that builds every item of a list it holds, as `window` says, where
+/// `was` is how the layout before found it: one whose list fails a condition of windowing, and one whose list is held
+/// by a plain child, which only the scroll's own `items` window.
+fn warn(window: &Window, was: Option<Windowing>, orders: &mut Orders) {
+    let same = was.is_some_and(|was| discriminant(&was) == discriminant(&window.windowing()));
+    if same {
+        return;
+    }
+    let path = window.path();
+    let why = match window.windowing() {
+        Windowing::Wraps => format!(
+            "the scroll at {path:?} holds a list within a plain child, so it builds every item: give the scroll the \
+             list's `items` to build only those that can show"
+        ),
+        Windowing::Every(failed) => {
+            format!(
+                "the scroll at {path:?} builds every item of its list, as it fails a condition of windowing: {failed:?}"
+            )
+        }
+        Windowing::Whole | Windowing::Unmeasured | Windowing::Bounded { .. } => return,
+    };
+    orders.log(Level::Warn, why);
 }
 
 /// Keeps `keys` as the keys a screen declares, in place of `kept`: its list is made again, as `sent` says, when they

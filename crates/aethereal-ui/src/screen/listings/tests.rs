@@ -147,11 +147,13 @@ fn drawing(screen: &Screen) -> Drawing {
     Drawing { order: screen.order.clone(), layers }
 }
 
-/// What a screen that kept nothing draws of `page`, sized and holding the state `screen` holds.
+/// What a screen that kept nothing draws of `page`, sized and holding the state `screen` holds, its scrolls' windows
+/// standing where `screen` placed them in what they hold.
 fn fresh(screen: &Screen, page: &Page) -> Drawing {
     let mut fresh = ready();
     let _ = fresh.resize(screen.viewport);
     fresh.table = screen.table.clone();
+    fresh.unkept.windows = screen.unkept.windows.clone();
     laid(&mut fresh, page.tree(), &[]);
 
     drawing(&fresh)

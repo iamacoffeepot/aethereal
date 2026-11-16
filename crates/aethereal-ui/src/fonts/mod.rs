@@ -93,15 +93,49 @@ impl Measuring<'_> {
     /// [`Unmeasured::Waiting`] while the font's metrics have not come, noting the font, so the screen asks for them and
     /// draws nothing of this layout; [`Unmeasured::Refused`] for a font whose metrics will not come.
     pub fn text(&mut self, font: Font, size: f32, runs: &[Run], wrap: Wrap) -> Result<Measured, Unmeasured> {
-        match self.fonts.known(font) {
-            Some(Known::Read { own, fallbacks }) => {
-                let asked = Asked { font, size, runs, wrap };
-                let measured = match self.whose {
-                    Whose::Widget { path, asker } => self.texts.measure(path, asked, asker, own, fallbacks),
-                    Whose::Unplaced => measure(own, fallbacks, size, runs, wrap),
-                };
-                Ok(measured)
-            }
+        let (own, fallbacks) = self.metrics(font)?;
+        let asked = Asked { font, size, runs, wrap };
+        let measured = match self.whose {
+            Whose::Widget { path, asker } => self.texts.measure(path, asked, asker, own, fallbacks),
+            Whose::Unplaced => measure(own, fallbacks, size, runs, wrap),
+        };
+
+        Ok(measured)
+    }
+
+    /// How tall one line of any text in `font` at `size` pixels to the em is, as [`Self::text`] measures each of its
+    /// lines: its own font's line height, which its fallbacks do not change. Nothing is measured or kept.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::text`]'s, for want of the font's metrics.
+    pub fn line(&mut self, font: Font, size: f32) -> Result<f32, Unmeasured> {
+        let (own, _) = self.metrics(font)?;
+        // A line's height is some thousands of font units, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let line = own.line_metrics().line_height() as f32 * own.pixels_per_unit(size);
+
+        Ok(line)
+    }
+
+    /// Whether a text went unmeasured for want of its font's metrics, so what was laid out is not drawn.
+    pub(crate) const fn waited(&self) -> bool {
+        self.waited
+    }
+
+    /// Each font met that was never asked for, in the order first met.
+    pub(crate) fn into_unmet(self) -> Vec<Font> {
+        self.unmet
+    }
+}
+
+impl<'fonts> Measuring<'fonts> {
+    /// The metrics of `font` and of its fallbacks, in the order they are tried: noting a font met whose metrics have
+    /// not come, or were never asked for.
+    fn metrics(&mut self, font: Font) -> Result<(&'fonts Metrics, &'fonts [Metrics]), Unmeasured> {
+        let fonts: &'fonts Fonts = self.fonts;
+        match fonts.known(font) {
+            Some(Known::Read { own, fallbacks }) => Ok((own, fallbacks)),
             Some(Known::Refused) => Err(Unmeasured::Refused),
             Some(Known::Asked) => {
                 self.waited = true;
@@ -117,18 +151,6 @@ impl Measuring<'_> {
         }
     }
 
-    /// Whether a text went unmeasured for want of its font's metrics, so what was laid out is not drawn.
-    pub(crate) const fn waited(&self) -> bool {
-        self.waited
-    }
-
-    /// Each font met that was never asked for, in the order first met.
-    pub(crate) fn into_unmet(self) -> Vec<Font> {
-        self.unmet
-    }
-}
-
-impl<'fonts> Measuring<'fonts> {
     /// Measures for the widget at `path` from here on, as `asker` asks, keeping what it measures under its path.
     pub(crate) const fn at(&mut self, path: &'fonts KeyPath, asker: Asker) {
         self.whose = Whose::Widget { path, asker };

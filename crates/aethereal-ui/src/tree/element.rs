@@ -2,19 +2,19 @@
 //! composite, the tree its `widget!` writes from its params. A screen's `view!` writes every element through it, so it
 //! never needs to know which kind a type is, and rewriting a composite as a primitive changes no screen that places it.
 //!
-//! An element given `items` asks its type whether it windows them, builds only the rows its screen says it shows, as
+//! An element given `items` asks its type whether it windows them, builds only the items its screen says can show, as
 //! [`Widget::WINDOWS`] declares, so a program's own scrolling primitive is windowed as `Scroll` is:
 //!
 //! ```text
 //! Scroll { .., items: self.wares as ware key ware.id, … }
 //!     ──> let widget = Scroll { ..Default::default() };
-//!         if windows(&widget) { (widget.window(lines), the rows the screen says it shows) }   // folded: Scroll windows
+//!         if windows(&widget) { (widget.window(lines), the items the screen says can show) }   // folded: Scroll windows
 //!         else { (widget, every item) }
 //! ```
 
 use super::{Node, Segment};
 use crate::style::Style;
-use crate::widget::{Lines, Widget};
+use crate::widget::{Keeps, Lines, Widget};
 
 /// An element of a view's markup: a widget, or a composite that builds its own tree.
 pub trait Element {
@@ -27,6 +27,12 @@ pub trait Element {
 
     /// Its node at `segment`, styled `style`, over `children`: a composite's root styled where it is placed.
     fn styled(self, segment: Segment, style: Style, children: Vec<Node>) -> Node;
+
+    /// Where it keeps to as what it holds grows or shrinks, which its screen reads to choose the items it builds before
+    /// it was laid out: a primitive's [`Widget::keeps`]. A composite, which never windows, keeps the item at its view's start.
+    fn keeps(&self) -> Keeps {
+        Keeps::Offset
+    }
 
     /// It, its children the items of a list at `lines`, as its screen answered the window: a primitive's
     /// [`Widget::window`]. A composite, which never windows, is unchanged.
@@ -51,6 +57,10 @@ impl<W: Widget> Element for W {
 
     fn styled(self, segment: Segment, style: Style, children: Vec<Node>) -> Node {
         Node::new(segment, self, style, children)
+    }
+
+    fn keeps(&self) -> Keeps {
+        Widget::keeps(self)
     }
 
     fn window(self, lines: Lines) -> Self {

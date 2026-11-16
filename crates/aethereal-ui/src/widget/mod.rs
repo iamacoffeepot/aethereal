@@ -14,10 +14,12 @@
 
 mod draws;
 mod layer;
+mod stand;
 
 pub use draws::{Draws, Quad, Sample, Slices, TextDraw};
 pub use draws::{Focused, Lit, Piece};
 pub use layer::{Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
+pub use stand::{Anchor, Jump, Keeps, Span, Stand};
 
 use crate::fonts::Measuring;
 use crate::input::{Hears, Input, Key, Pointing, Used};
@@ -68,6 +70,15 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         Vec2::ZERO
     }
 
+    /// The least size its content can have along each axis, in pixels, whatever it holds: a text's one line, as tall
+    /// as its font's line at its size. A list's scroll reads it of every leaf of each item it builds, to know how few
+    /// items fill its view (ADR-0056: Lists and conditions are settings). By default none.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        let _ = (style, measuring);
+
+        Vec2::ZERO
+    }
+
     /// The room it keeps on each side for what it draws of its own, in pixels: inside its border and outside its
     /// padding, so its children are laid out within it, as a scroll keeps room for its bar and tabs for their headers.
     fn room(&self, style: &Style, measuring: &mut Measuring<'_>) -> Edges<f32> {
@@ -82,10 +93,10 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         &WHOLE
     }
 
-    /// Whether it windows the items markup's `items` gives it: builds only the rows its screen says it shows, asked by
-    /// its key path ([`Screen::rows`](crate::Screen::rows)), and takes the lines they stand at in [`Self::window`]. A
-    /// widget that arranges its children as a scroll and answers [`Self::lines`] declares it, as `Scroll` does; every
-    /// other widget builds every item.
+    /// Whether it windows the items markup's `items` gives it: builds only the items its screen says can show, asked by
+    /// its key path ([`Screen::rows`](crate::Screen::rows)), and takes their places in [`Self::window`]. A widget that
+    /// arranges its children as a scroll and answers [`Self::lines`] declares it, as `Scroll` does; every other widget
+    /// builds every item.
     const WINDOWS: bool = false;
 
     /// It, its children the items of a list at `lines`, as its screen answered the window: what markup's `items` gives a
@@ -100,25 +111,22 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         self
     }
 
-    /// How far it has slid its children along its axis, in pixels, as `state` stands: for a widget that arranges
-    /// them as a scroll.
-    fn offset(&self, state: &Self::State) -> f32 {
+    /// Where it keeps to as what it holds grows or shrinks: for a widget that arranges its children as a scroll.
+    fn keeps(&self) -> Keeps {
+        Keeps::Offset
+    }
+
+    /// Where it stands among what it holds, as `state` stands: for a widget that arranges its children as a scroll.
+    fn stand(&self, state: &Self::State) -> Stand {
         let _ = state;
 
-        0.0
+        Stand::Unplaced
     }
 
-    /// Slides its children to `offset` pixels along its axis, kept in `state`: the library calls it with an offset
-    /// within what can be scrolled, as layout clamps it, the wheel turns it, and focus moved by Tab is shown.
-    fn scroll_to(&self, state: &mut Self::State, offset: f32) {
-        let _ = (state, offset);
-    }
-
-    /// Settles where it stands, kept in `state`, as it is laid out able to slide `travel` pixels along its axis, before
-    /// the library clamps its offset: for a widget that arranges its children as a scroll, as one that keeps to its end
-    /// while it stands there slides to the end of what it now holds.
-    fn settle(&self, state: &mut Self::State, travel: f32) {
-        let _ = (state, travel);
+    /// Keeps `stand` in `state` as where it stands: the library calls it as it settles the scroll at each layout, the
+    /// wheel slides it, and focus moved by Tab is shown.
+    fn stand_at(&self, state: &mut Self::State, stand: Stand) {
+        let _ = (state, stand);
     }
 
     /// Whether its content shows in its screen's top layer, as `state` stands: for a widget that arranges its children
@@ -200,8 +208,9 @@ pub enum Arrange {
     Grid,
     /// Each over the one before, in one cell its size.
     Stack,
-    /// One after another along an axis, as `Flex` but never shrunk to fit, cut to its content box, and slid along it by
-    /// its offset: placed where its [`Lines`] say when it built only some of a list.
+    /// One after another along an axis, as `Flex` but never shrunk to fit, cut to its content box, and slid along it to
+    /// where it [stands](Stand): when it built only some of a list, those it built, one after another, as its
+    /// [`Lines`] say.
     Scroll(Axis),
     /// It has no children, and measures its own content.
     Leaf,
@@ -242,8 +251,8 @@ impl Axis {
 pub enum Lines {
     /// Its children are all it scrolls through, laid out one after another.
     Whole,
-    /// Its children are the items of a list of `count` at the places `at`, in order: one line each, the lines of the
-    /// list each as long as the first built, so the items it did not build still take their room.
+    /// Its children are the items of a list of `count` at the places `at`, in order: those its screen said can show,
+    /// laid one after another, each as long as it lays out; the items it did not build take no room.
     Window { count: u32, at: Vec<u32> },
 }
 
@@ -281,8 +290,11 @@ pub struct Laid {
     /// What its drawing is cut to: its screen's box, within every ancestor that cuts its children.
     pub clip: Rect2,
     /// How far its children reach from its content box's top left, across and down, before it slides them: what a
-    /// scroll scrolls through, the items of its list it did not build counted.
+    /// scroll scrolls through of the children it built.
     pub extent: Vec2,
+    /// Where a scroll's view stands within the whole it holds, as its bar shows it: [`Span::WHOLE`] for any other
+    /// widget.
+    pub bar: Span,
     /// How many pixels a logical pixel is.
     pub scale: f32,
 }
@@ -294,12 +306,6 @@ impl Laid {
         let moved = |rect: Rect2| Rect2 { min: rect.min - origin, max: rect.max - origin };
 
         Self { rect: moved(self.rect), content: moved(self.content), clip: moved(self.clip), ..self }
-    }
-
-    /// How far its children can slide along `axis`: how far they reach past its content box, or none.
-    #[must_use]
-    pub fn travel(&self, axis: Axis) -> f32 {
-        (axis.along(self.extent) - axis.along(self.content.size())).max(0.0)
     }
 }
 
@@ -320,17 +326,18 @@ pub trait Built: Debug + Send {
     fn arrange(&self) -> Arrange;
     /// The size of its content within `offer`.
     fn measure(&self, style: &Style, measuring: &mut Measuring<'_>, offer: Offer) -> Vec2;
+    /// The least size its content can have.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2;
     /// The room it keeps for its own drawing.
     fn room(&self, style: &Style, measuring: &mut Measuring<'_>) -> Edges<f32>;
     /// Which items of a list its children are.
     fn lines(&self) -> &Lines;
-    /// How far it has slid its children, its state read from `state`.
-    fn offset(&self, state: &[u8]) -> f32;
-    /// Slides its children to `offset`, its state read from and written back to `state`.
-    fn scroll_to(&self, state: &mut Vec<u8>, offset: f32);
-    /// Settles where it stands as it is laid out able to slide `travel`, its state read from and written back to
-    /// `state`.
-    fn settle(&self, state: &mut Vec<u8>, travel: f32);
+    /// Where it keeps to as what it holds changes.
+    fn keeps(&self) -> Keeps;
+    /// Where it stands among what it holds, its state read from `state`.
+    fn stand(&self, state: &[u8]) -> Stand;
+    /// Keeps `stand` as where it stands, its state read from and written back to `state`.
+    fn stand_at(&self, state: &mut Vec<u8>, stand: Stand);
     /// Whether its content shows in its screen's top layer, its state read from `state`.
     fn open(&self, state: &[u8]) -> bool;
     /// Shuts its content, its state read from and written back to `state`.
@@ -399,6 +406,10 @@ impl<W: Widget> Built for W {
         Widget::measure(self, style, measuring, offer)
     }
 
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        Widget::least(self, style, measuring)
+    }
+
     fn room(&self, style: &Style, measuring: &mut Measuring<'_>) -> Edges<f32> {
         Widget::room(self, style, measuring)
     }
@@ -407,16 +418,16 @@ impl<W: Widget> Built for W {
         Widget::lines(self)
     }
 
-    fn offset(&self, state: &[u8]) -> f32 {
-        Widget::offset(self, &read::<W>(state))
+    fn keeps(&self) -> Keeps {
+        Widget::keeps(self)
     }
 
-    fn scroll_to(&self, state: &mut Vec<u8>, offset: f32) {
-        changed::<W, ()>(state, |state| Widget::scroll_to(self, state, offset));
+    fn stand(&self, state: &[u8]) -> Stand {
+        Widget::stand(self, &read::<W>(state))
     }
 
-    fn settle(&self, state: &mut Vec<u8>, travel: f32) {
-        changed::<W, ()>(state, |state| Widget::settle(self, state, travel));
+    fn stand_at(&self, state: &mut Vec<u8>, stand: Stand) {
+        changed::<W, ()>(state, |state| Widget::stand_at(self, state, stand));
     }
 
     fn open(&self, state: &[u8]) -> bool {

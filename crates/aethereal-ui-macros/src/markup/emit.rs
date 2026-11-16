@@ -20,9 +20,10 @@
 //!
 //! An element with `items` asks its type whether it windows them (`Element::WINDOWS`, which a primitive declares as
 //! `Widget::WINDOWS`), so the choice is the type's, never its name's. In a screen both ways are written, and the
-//! compiler folds the one the type's constant leaves out: a type that windows asks its screen which rows to build by
-//! its own key path, written here from its place in the markup and the keys of the items around it, and takes the
-//! lines they stand at; any other builds every item. A composite has no screen to ask, so it builds every item, and
+//! compiler folds the one the type's constant leaves out: a type that windows asks its screen which items to build by
+//! its own key path, written here from its place in the markup and the keys of the items around it, and builds only
+//! those, each by its place, so the list is indexed (`len` and `[usize]`, as a `Vec`, a slice, or a `VecDeque` is) and
+//! never walked whole; any other builds every item. A composite has no screen to ask, so it builds every item, and
 //! one whose type windows them is refused as the composite is built.
 //!
 //! ```text
@@ -30,7 +31,8 @@
 //!     ──> let (widget, items) = {
 //!             let widget = Scroll { ..Default::default() };
 //!             if windows(&widget) {
-//!                 let (lines, rows) = { self.ui.rows(&KeyPath::of(&[…]), len) … rows.finish() };
+//!                 let (lines, rows) = { self.ui.rows(&KeyPath::of(&[…]), &widget, len, key of item at) …
+//!                                       for at in rows.places() { push(at, item at) } … rows.finish() };
 //!                 (Element::window(widget, lines), rows)
 //!             } else {
 //!                 (widget, { every item })
@@ -403,8 +405,8 @@ impl<'markup> Emitter<'markup> {
         Built { before: TokenStream::new(), extra: Vec::new(), children: every, listed }
     }
 
-    /// The rows of a screen's list whose type windows them: only those its screen says it shows, asked by the list's
-    /// own key path, and the lines they stand at, `(Lines, Vec<Node>)`.
+    /// The rows of a screen's list whose type windows them: only those its screen says can show, asked by the list's
+    /// own key path and the widget, `windowed`, and each built by its place in the list, `(Lines, Vec<Node>)`.
     fn rows(
         &self,
         element: &Element,
@@ -413,8 +415,8 @@ impl<'markup> Emitter<'markup> {
         field: &Ident,
         (list, local, key): Items<'_>,
     ) -> TokenStream {
-        let [path, source, rows, at] =
-            ["path", "source", "rows", "at"].map(|name| format_ident!("{name}", span = spans::hidden()));
+        let [path, source, rows, at, windowed] =
+            ["path", "source", "rows", "at", "windowed"].map(|name| format_ident!("{name}", span = spans::hidden()));
         let keyed = key_of(place);
         let within = scope.with(local);
         let template = place.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
@@ -424,12 +426,14 @@ impl<'markup> Emitter<'markup> {
         quote!({
             let #path = ::aethereal_ui::KeyPath::of(&[#(#segments),*]);
             let #source = &#list;
-            let mut #rows = self.#field.rows(&#path, #source.len());
-            for (#at, #local) in ::core::iter::IntoIterator::into_iter(#source).enumerate() {
+            let mut #rows = self.#field.rows(&#path, &#windowed, #source.len(), |#at: usize| {
+                let #local = &#source[#at];
+                ::aethereal_ui::ItemKey::from(#key)
+            });
+            for #at in #rows.places() {
+                let #local = &#source[#at];
                 let #keyed = ::aethereal_ui::ItemKey::from(#key);
-                if #rows.builds(#at, #keyed) {
-                    #push
-                }
+                #push
             }
             #rows.finish()
         })

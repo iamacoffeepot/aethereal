@@ -1,5 +1,5 @@
-//! What each widget listed as its screen last laid it out, kept to list again (ADR-0056: Draws are kept by widget key;
-//! *settled by the library's draw-cost stage*): a widget that would draw what it drew lists its draws' places and its
+//! What each widget listed as its screen last laid it out, kept to list again (ADR-0056: Draws are kept by widget
+//! key): a widget that would draw what it drew lists its draws' places and its
 //! hit again, and neither draws nor writes anything, as its draws stand kept by its key.
 //!
 //! A widget draws what it drew when all its listing reads is what it read. Its settings, its style, and what its markup
@@ -135,8 +135,8 @@ impl Read {
 }
 
 /// The bits of each figure of `laid`.
-fn bits(laid: &Laid) -> [u32; 15] {
-    let Laid { rect, content, clip, extent, scale } = *laid;
+fn bits(laid: &Laid) -> [u32; 17] {
+    let Laid { rect, content, clip, extent, bar, scale } = *laid;
 
     [
         rect.min.x,
@@ -153,6 +153,8 @@ fn bits(laid: &Laid) -> [u32; 15] {
         clip.max.y,
         extent.x,
         extent.y,
+        bar.start,
+        bar.shown,
         scale,
     ]
     .map(f32::to_bits)

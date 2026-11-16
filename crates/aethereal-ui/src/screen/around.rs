@@ -1,7 +1,7 @@
 //! Where each widget of a screen's tree stands as a layout lists it, handed on from its parent in tree order: where the
 //! scrolls around it slid it and what they cut it to, in the screen's own coordinates, as input and popups find it;
 //! where it is drawn and what it is cut to in the coordinates it is listed in; and whether a widget around it blocks
-//! the pointer (ADR-0056: Lists and conditions are settings; *settled by the library's draw-cost stage*).
+//! the pointer (ADR-0056: Lists and conditions are settings).
 //!
 //! What a scroll holds is listed within a shift ([`Slot::Shift`]), in the scroll's content's coordinates, where its
 //! offset is not counted: the shift moves it back by the offset and cuts it to the scroll's content box, so a row that
@@ -16,19 +16,20 @@
 
 use super::Slot;
 use crate::layout::Boxed;
-use crate::table::Table;
-use crate::tree::{Flat, KeyPath, Segment};
-use crate::widget::{Arrange, Axis, Built, Laid};
+use crate::tree::{Flat, Segment};
+use crate::widget::{Arrange, Laid, Span};
 use aethereal_math::{Rect2, Vec2};
 
 /// Where each node of a tree being listed stands, as its parent hands it on in tree order: how far the scrolls around
 /// it slid it, and what they cut it to, in the screen's own coordinates; how far the coordinates it is listed in are
-/// from the screen's, and what it is cut to in them; and whether a widget around it blocks the pointer.
+/// from the screen's, and what it is cut to in them; how far it is drawn from where it was laid out, which only an open
+/// popup's content is; and whether a widget around it blocks the pointer.
 pub(super) struct Around {
     shifts: Vec<Vec2>,
     clips: Vec<Rect2>,
     moved: Vec<Vec2>,
     cuts: Vec<Rect2>,
+    lifted: Vec<Vec2>,
     covered: Vec<bool>,
 }
 
@@ -38,6 +39,19 @@ pub(super) struct Stood {
     pub laid: Laid,
     pub drawing: Laid,
     pub holding: Holding,
+}
+
+/// How far a scroll slides what it holds along its axis, in pixels, as its screen settled it at a layout, and where its
+/// view stands within what it holds, as its bar shows it: none, and the whole, for any other widget.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Slid {
+    pub offset: f32,
+    pub bar: Span,
+}
+
+impl Slid {
+    /// What a widget that is not a scroll slides: nothing.
+    pub(super) const NONE: Self = Self { offset: 0.0, bar: Span::WHOLE };
 }
 
 /// What a node does to where what is within it stands, in the screen's own coordinates: nothing; or, as a scroll,
@@ -57,26 +71,29 @@ impl Around {
             clips: vec![screen; count],
             moved: vec![Vec2::ZERO; count],
             cuts: vec![screen; count],
+            lifted: vec![Vec2::ZERO; count],
             covered: vec![false; count],
         }
     }
 
-    /// Where `flat`, at `at` in tree order, laid out as `boxed` at `scale`, stands, a scroll's offset settled and
-    /// clamped in `table`; its children handed on where they stand within it.
-    pub(super) fn stand(&mut self, table: &mut Table, flat: &Flat<'_>, at: usize, boxed: &Boxed, scale: f32) -> Stood {
+    /// Where `flat`, at `at` in tree order, laid out as `boxed` at `scale`, stands, a scroll sliding what it holds as
+    /// `slid` says; its children handed on where they stand within it.
+    pub(super) fn stand(&mut self, flat: &Flat<'_>, at: usize, boxed: &Boxed, (slid, scale): (Slid, f32)) -> Stood {
         let shift = self.shifts[at];
         let moved = |rect: Rect2| Rect2 { min: rect.min - shift, max: rect.max - shift };
         let clip = self.clips[at];
-        let laid = Laid { rect: moved(boxed.rect), content: moved(boxed.content), clip, extent: boxed.extent, scale };
-        let widget = flat.node.widget();
-        let holding = match widget.arrange() {
+        let content = moved(boxed.content);
+        let rect = moved(boxed.rect);
+        let laid = Laid { rect, content, clip, extent: boxed.extent, bar: slid.bar, scale };
+        let holding = match flat.node.widget().arrange() {
             Arrange::Scroll(axis) => {
-                let slide = fit(table, flat.path, widget, &laid, axis);
-                Holding::Slides { slide, cut: clip.intersection(laid.content) }
+                Holding::Slides { slide: axis.vector(slid.offset), cut: clip.intersection(content) }
             }
             Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Leaf | Arrange::Popup(_) => Holding::Flows,
         };
-        let drawing = Laid { clip: self.cuts[at], ..laid.relative_to(-self.moved[at]) };
+        let lifted = self.lifted[at];
+        let drawn = |rect: Rect2| Rect2 { min: rect.min - lifted, max: rect.max - lifted };
+        let drawing = Laid { rect: drawn(boxed.rect), content: drawn(boxed.content), clip: self.cuts[at], ..laid };
         let (slide, cut, region) = match holding {
             Holding::Flows => (Vec2::ZERO, clip, self.cuts[at]),
             Holding::Slides { slide, cut } => (slide, cut, scrolled(&drawing)),
@@ -86,6 +103,7 @@ impl Around {
             self.clips[*child] = cut;
             self.moved[*child] = self.moved[at] + slide;
             self.cuts[*child] = region;
+            self.lifted[*child] = lifted;
         }
 
         Stood { laid, drawing, holding }
@@ -98,6 +116,7 @@ impl Around {
         self.clips[content] = screen;
         self.moved[content] = Vec2::ZERO;
         self.cuts[content] = screen;
+        self.lifted[content] = shift;
     }
 
     /// The shift what the scroll at `at` holds is listed within, the scroll sliding it by `slide` and cutting it to
@@ -128,35 +147,15 @@ impl Around {
 }
 
 /// What is within a scroll drawn at `drawing` is cut to, in its content's coordinates, where its offset is not counted:
-/// all it may slide through, from its content box's top left on as far as a screen could hold. Its children reach no
-/// further than its extent, and the shift its content is listed in cuts them to its content box, so this cuts nothing
-/// that shows; it reads neither its extent nor its offset, so a row stays drawn as it was while what the scroll holds
-/// grows past it, as a log or a transcript does with each line added.
+/// all it may slide through, as far each way from its content box's top left as its base may move its window, and as
+/// a screen could hold past that. The shift its content is listed in cuts its children to its content box, so this
+/// cuts nothing that shows; it reads neither its extent nor where it stands, so a row stays drawn as it was while what
+/// the scroll holds grows past it, as a log or a transcript does with each line added, and as the window moves past
+/// other rows.
 fn scrolled(drawing: &Laid) -> Rect2 {
-    Rect2::from_origin_size(drawing.content.min, Vec2::splat(UNCUT))
+    Rect2 { min: drawing.content.min - Vec2::splat(UNCUT), max: drawing.content.min + Vec2::splat(UNCUT) }
 }
 
-/// How far what a scroll holds may reach past its content box's top left, in pixels: past any screen, and a whole
-/// number an `f32` holds exactly.
+/// How far what a scroll holds may reach each way from its content box's top left, in pixels: past any window's base
+/// and any screen, and a whole number an `f32` holds exactly.
 const UNCUT: f32 = 16_777_216.0;
-
-/// Settles `widget`, a scroll along `axis` at `path` laid at `laid`, at what it can now scroll, and clamps its offset to
-/// it, keeping what changed of its state in `table`, and answers how far it slides what is within it.
-fn fit(table: &mut Table, path: &KeyPath, widget: &dyn Built, laid: &Laid, axis: Axis) -> Vec2 {
-    let kept = table.bytes(path).map_or_else(|| widget.first_state(), <[u8]>::to_vec);
-    let mut state = kept.clone();
-    let travel = laid.travel(axis);
-    widget.settle(&mut state, travel);
-    let offset = widget.offset(&state);
-    let fitted = offset.clamp(0.0, travel);
-    let clamped = fitted.to_bits() != offset.to_bits();
-    if clamped {
-        widget.scroll_to(&mut state, fitted);
-    }
-    let changed = state != kept;
-    if changed {
-        table.write(path, widget.state_kind(), state);
-    }
-
-    axis.vector(fitted)
-}

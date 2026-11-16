@@ -34,6 +34,15 @@ impl Widget for Printed {
         measured.map_or(Vec2::ZERO, |measured| Vec2::new(measured.width, measured.height))
     }
 
+    /// One line, as tall as its font's line at its size, which even a row printed with nothing has: nothing before its
+    /// font's metrics come.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        let size = style.font_size * measuring.scale();
+        let line = measuring.line(style.font, size).unwrap_or(0.0);
+
+        Vec2::new(0.0, line)
+    }
+
     fn draw(&self, _: &Stateless, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         draws.text(TextDraw {
             at: laid.content.min,

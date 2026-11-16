@@ -110,6 +110,17 @@ impl Widget for Text {
         Vec2::new(measured.width + pad, measured.height + pad)
     }
 
+    /// One line of it, as tall as its font's line at its size, within its rim: nothing before its font's metrics come.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        let scale = measuring.scale();
+        let pad = rim(style, scale) * 2.0;
+        let Ok(line) = measuring.line(style.font, style.font_size * scale) else {
+            return Vec2::ZERO;
+        };
+
+        Vec2::new(0.0, line + pad)
+    }
+
     fn draw(&self, _: &Stateless, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let pad = rim(style, laid.scale);
         let width = pad.mul_add(-2.0, laid.content.width());
