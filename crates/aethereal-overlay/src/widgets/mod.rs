@@ -2,12 +2,18 @@
 //! in pieces of their own colours, as the gutters, the figures, and the scrollback's rows are, which the library's
 //! `Text`, in its style's one colour, does not draw; and [`Tint`], a box filled with its style's colour that the pointer passes
 //! through, as the band's panel and the lines that part its sections are, where a style's background would block the
-//! pointer from the program beneath; and [`Grip`], the line between the band and the console, which a drag moves. Each is laid out by the library and draws into the box it was given; the charts'
-//! primitives stand beside their own drawing (`chart`, `gpu`, `lines`, `meters`), and paint what it fills ([`paint`]).
+//! pointer from the program beneath; and [`Grip`], the line between the band and the console, which a drag moves; and
+//! [`TabButton`], a session tab, and [`StatusIcon`], the shape before its title that marks the session's status. Each
+//! is laid out by the library and draws into the box it was given; the charts' primitives stand beside their own
+//! drawing (`chart`, `gpu`, `lines`, `meters`), and paint what it fills ([`paint`]).
 
 mod grip;
+mod icon;
+mod tab;
 
 pub use grip::Grip;
+pub use icon::{Shape, StatusIcon};
+pub use tab::TabButton;
 
 use crate::chart::Fill;
 use crate::colour::{Ink, Palette};

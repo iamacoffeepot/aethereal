@@ -11,7 +11,9 @@
 //! console's text. Every colour is a role of the overlay's palette, tinted by its theme (`colour`): each panel of the
 //! console is a surface of the ladder, the sheet a step lighter than the band for the scrollback and the transcript,
 //! raised again for the owner's lines, inset for the prompt, the grip, and the open tab, and deepest for the tabs'
-//! strip; and every rule and divider is the one divider ink.
+//! strip, a closed tab shaded a step lighter while the pointer is over it; and every rule and divider is the one
+//! divider ink. Each session's tab marks its status with a small shape before its title, which pulses while its
+//! container comes up or a turn runs.
 //!
 //! ```text
 //! Column (the window)
@@ -20,24 +22,24 @@
 //! │  ├─ Tint (the line between the columns)
 //! │  └─ Column: a Row (MeterGraph, gutter) for each meter
 //! └─ Column, at the console's stop (a third of the window): Grip (the seam), Scroll (the rows) or Scroll (a
-//!    transcript), asks, rule, Row (> line…, running), rule, Row (the tabs: console ‖ session | session)
+//!    transcript), asks, rule, Row (> line…, running), rule, Row (the tabs: console ‖ ◦ session | • session)
 //! ```
 
 use super::{Calling, Overlay};
 use crate::chart::{ChartShown, FrameChart};
-use crate::chat::{Open, Parting, Row as TranscriptRow, Title};
+use crate::chat::{Icon, Open, Parting, Row as TranscriptRow, Status, Title};
 use crate::colour::{Ink, Palette, Surface};
 use crate::console::{Piece, Row as PrintedRow, Shade};
 use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
     DIVIDER_PIXELS, GAP_PIXELS, GRIP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
-    STRIP_PADDING_PIXELS, TAB_ACCENT_PIXELS, TAB_BREAK_PIXELS, TAB_DIVIDER_PIXELS, TAB_PADDING_PIXELS, TEXT_PIXELS,
-    advance_pixels, gutter_pixels, meter_gutter_pixels,
+    STRIP_PADDING_PIXELS, TAB_BREAK_PIXELS, TAB_DIVIDER_PIXELS, TAB_GAP_PIXELS, TAB_ICON_GAP_PIXELS, TAB_ICON_PIXELS,
+    TAB_PADDING_PIXELS, TAB_SIDE_PIXELS, TEXT_PIXELS, advance_pixels, gutter_pixels, meter_gutter_pixels,
 };
 use crate::lines::{LineRows, LinesShown};
 use crate::meters::{self, MOST_METER_COLUMNS, Meter, MeterDrawn, MeterGraph};
 use crate::overlay::stats::MOST_COLUMNS;
-use crate::widgets::{Grip, Printed, Tint, runs_of};
+use crate::widgets::{Grip, Printed, Shape, StatusIcon, TabButton, Tint, runs_of};
 use aethereal_actor::{Asks, Fault, Level, Path, Tells, ToType, Turn};
 use aethereal_link::Link;
 use aethereal_render::Renderer;
@@ -47,6 +49,7 @@ use aethereal_sessions::Chat;
 use aethereal_tools::{CallTool, Tools};
 use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
+use core::f64::consts::TAU;
 
 /// The overlay's root, the window, and the console's column within it, as the markup places them.
 const CONSOLE: [Segment; 2] = [Segment::Place(0), Segment::Place(1)];
@@ -118,6 +121,51 @@ fn inset(row: &TranscriptRow) -> Edges<Space> {
     }
 }
 
+/// The padding inside a scrollback's row: either side of one of the owner's lines, as a transcript's turn is inset, so
+/// its text stands clear of its shade's edge, and none around any other. A line the owner entered is printed as one
+/// row for each line it wraps to, so none is padded above or below, which would part its rows.
+fn sides(row: &Shown<'_>) -> Edges<Space> {
+    match row.shade() {
+        Shade::Raised => padded(GAP_PIXELS, GAP_PIXELS, 0.0, 0.0),
+        Shade::Sheet => padded(0.0, 0.0, 0.0, 0.0),
+    }
+}
+
+/// How long a status icon's pulse takes, from its brightest round to its brightest again, in nanoseconds.
+const PULSE_NANOS: u64 = 1_400_000_000;
+
+/// How opaque a pulsing status icon is at its faintest: still seen, so the tab never looks unmarked.
+const PULSE_FAINTEST: f32 = 0.3;
+
+/// How opaque a pulsing status icon is at `nanos` of the program's time: from opaque down to its faintest and back,
+/// smoothly, once each pulse.
+fn pulse(nanos: u64) -> f32 {
+    // Nanoseconds within one pulse, under two seconds, which an f64 holds exactly enough to draw by.
+    #[allow(clippy::cast_precision_loss)]
+    let phase = (nanos % PULSE_NANOS) as f64 / PULSE_NANOS as f64;
+    // A share from nothing to one, which an f32 holds.
+    #[allow(clippy::cast_possible_truncation)]
+    let lit = 0.5f64.mul_add((phase * TAU).cos(), 0.5) as f32;
+
+    (1.0 - PULSE_FAINTEST).mul_add(lit, PULSE_FAINTEST)
+}
+
+impl Status {
+    /// The shape it is drawn as, and in which ink: a ring coming up, idle, or compacting, half filled while it
+    /// compacts; a dot while a turn runs, or an ask waits; a dash stopped; and a square lost.
+    const fn drawn(self) -> (Shape, Ink) {
+        match self {
+            Self::Starting => (Shape::Ring, Ink::Lichen),
+            Self::Idle => (Shape::Ring, Ink::Dim),
+            Self::Working => (Shape::Dot, Ink::Lichen),
+            Self::Compacting => (Shape::HalfRing, Ink::Lichen),
+            Self::Waiting => (Shape::Dot, Ink::Mark),
+            Self::Stopped => (Shape::Dash, Ink::Faint),
+            Self::Lost => (Shape::Square, Ink::Error),
+        }
+    }
+}
+
 impl Parting {
     /// How tall the line before the tab is: taller for the break than for a light divider.
     fn height(self) -> Length {
@@ -127,11 +175,14 @@ impl Parting {
         }
     }
 
-    /// The space either side of the line: room either side of the break, and none beside a light divider, whose
-    /// tabs' own padding parts it from their titles.
+    /// The space either side of the line beyond the gap between it and its tabs: room either side of the break, so it
+    /// stands the padding from each, and none beside a light divider, whose tabs' own padding parts it from their
+    /// titles.
     fn margin(self) -> Edges<Length> {
+        let beside = PADDING_PIXELS - TAB_GAP_PIXELS;
+
         match self {
-            Self::Break => margined(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0),
+            Self::Break => margined(beside, beside, 0.0, 0.0),
             Self::First | Self::Light => margined(0.0, 0.0, 0.0, 0.0),
         }
     }
@@ -227,25 +278,37 @@ aethereal_ui::style! {
     /// An ask's answer, pressed.
     pub answer { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0) }
     /// The session tabs beneath the prompt's strip, nearest the scene: a surface of their own, the deepest of the
-    /// console's, so the prompt and the tabs never merge. It has no padding above or below, so the tabs fill its height.
-    pub tab_strip { padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0), align_items: Alignment::Stretch }
+    /// console's, so the prompt and the tabs never merge. It has no padding above or below, so the tabs fill its height,
+    /// and a small gap between its tabs.
+    pub tab_strip {
+        padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0),
+        align_items: Alignment::Stretch,
+        gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(TAB_GAP_PIXELS) },
+    }
     /// The hairline along the tabs' strip's top, parting it from the prompt.
     pub tab_strip_rule { height: Length::Pixels(DIVIDER_PIXELS) }
-    /// A tab and what parts it from the one before, the full height of the strip.
-    pub tab_item { align_items: Alignment::Stretch }
+    /// A tab and what parts it from the one before, the full height of the strip, the gap between them as between
+    /// two tabs.
+    pub tab_item {
+        align_items: Alignment::Stretch,
+        gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(TAB_GAP_PIXELS) },
+    }
     /// What parts a tab from the one before: a line, its height and space as its parting says, centred against the
     /// tabs' titles, so it stands in from the strip's top and foot.
     pub tab_rule { width: Length::Pixels(DIVIDER_PIXELS), align_self: SelfAlign::Own(Alignment::Center), shrink: 0.0 }
-    /// A tab, pressed to open it: its title and, while it is open, the line along its bottom edge laid over each other.
+    /// A tab, pressed to open it: its label, and, drawn by the tab, the shade the pointer over it casts and the open
+    /// tab's line along its bottom edge.
     pub tab_button {}
-    /// The line along the open tab's bottom edge: lichen, laid over the space beneath the tab's title.
-    pub tab_accent {
-        width: Length::Share(1.0),
-        height: Length::Pixels(TAB_ACCENT_PIXELS),
-        align_self: SelfAlign::Own(Alignment::End),
+    /// A tab's label, inside the tab's padding, which fills the strip's height: a session's status icon, then its title.
+    pub tab_label {
+        padding: padded(TAB_SIDE_PIXELS, TAB_SIDE_PIXELS, TAB_PADDING_PIXELS, TAB_PADDING_PIXELS),
+        align_items: Alignment::Center,
+        gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(TAB_ICON_GAP_PIXELS) },
     }
-    /// A tab's title, inside the tab's padding, which fills the strip's height.
-    pub tab_text: mono { padding: padded(PADDING_PIXELS, PADDING_PIXELS, TAB_PADDING_PIXELS, TAB_PADDING_PIXELS) }
+    /// A session's status icon: a fixed slot, so its title never moves as the icon changes.
+    pub tab_icon { width: Length::Pixels(TAB_ICON_PIXELS), height: Length::Pixels(TAB_ICON_PIXELS), shrink: 0.0 }
+    /// A tab's title.
+    pub tab_text: mono {}
     /// The line between the scrollback and the prompt's strip.
     pub prompt_rule { height: Length::Pixels(DIVIDER_PIXELS) }
     /// The prompt's strip: a line of text tall inside its padding, an inset well a step darker than the band.
@@ -310,7 +373,7 @@ aethereal_ui::view! { Overlay, ui,
                 show: self.shows_scrollback(),
                 keeps: Keeps::End,
                 items: self.rows() as row key row.number(),
-                Column { style: printed_row { background: self.printed_shade(row) },
+                Column { style: printed_row { background: self.printed_shade(row), padding: sides(row) },
                     Printed { style: mono, runs: self.printed_runs(row) }
                 }
             }
@@ -382,9 +445,20 @@ aethereal_ui::view! { Overlay, ui,
                             colour: self.ink(Ink::Divider),
                         },
                     }
-                    Button { style: tab_button { background: self.tab_background(tab) }, click => self.choose(tab.place),
-                        Text { style: tab_text { colour: self.tab_colour(tab) }, "{tab.name}" }
-                        Tint { style: tab_accent { colour: self.ink(Ink::Lichen) }, show: tab.open }
+                    TabButton {
+                        style: tab_button { background: self.tab_background(tab) },
+                        open: tab.open,
+                        palette: self.palette,
+                        click => self.choose(tab.place),
+                        Row { style: tab_label,
+                            StatusIcon {
+                                style: tab_icon,
+                                show: tab.icon.marks(),
+                                shape: self.tab_shape(tab),
+                                colour: self.tab_icon_colour(tab),
+                            }
+                            Text { style: tab_text { colour: self.tab_colour(tab) }, "{tab.name}" }
+                        }
                     }
                 }
             }
@@ -506,6 +580,29 @@ impl Overlay {
     /// The colour of the tab `tab`'s title.
     pub(super) const fn tab_colour(&self, tab: &Title) -> Colour {
         self.palette.ink(tab.ink())
+    }
+
+    /// The shape of the tab `tab`'s status icon: blank for the console's own tab.
+    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
+    pub(super) const fn tab_shape(&self, tab: &Title) -> Shape {
+        match tab.icon {
+            Icon::Marked(status) => status.drawn().0,
+            Icon::Unmarked => Shape::Blank,
+        }
+    }
+
+    /// The colour of the tab `tab`'s status icon now: its ink, at the opacity of the pulse at the program's time when
+    /// its status pulses; clear for the console's own tab, which shows none.
+    pub(super) fn tab_icon_colour(&self, tab: &Title) -> Colour {
+        let Icon::Marked(status) = tab.icon else {
+            return Colour::CLEAR;
+        };
+        let ink = status.drawn().1;
+        if status.pulses() {
+            return self.faded(ink, pulse(self.now_nanos));
+        }
+
+        self.ink(ink)
     }
 
     /// `pieces` as a text's runs, each in its ink of the overlay's palette.

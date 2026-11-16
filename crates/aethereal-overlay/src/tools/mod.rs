@@ -10,6 +10,8 @@ mod tests;
 mod theme;
 mod words;
 
+#[cfg(test)]
+pub use theme::Choice;
 pub use theme::{ChooseTheme, SET_THEME, chosen, theme_sheet};
 pub use words::{
     ARCHIVE_SESSION, ArchiveSession, CHAT_WORDS, NEW_SESSION, NewSession, STOP_SESSION, StopSession, chat_sheets,

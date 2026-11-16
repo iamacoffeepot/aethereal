@@ -127,6 +127,8 @@ pub struct Overlay {
     linking: Linking,
     /// The share of the window's height the console takes, as its grip was last dragged: the engine's own, never sent.
     console_share: f32,
+    /// The program's time as the latest `Tick` told it, which the session tabs' status icons pulse by.
+    now_nanos: u64,
     /// The colours the overlay draws in, of the theme `set_theme` last named, lichen grey until it names one: the
     /// engine's own, as the console's height is, never sent and not kept past the engine's end.
     palette: Palette,
@@ -199,6 +201,7 @@ impl Actor for Overlay {
             chats: Chats::default(),
             linking: Linking::Unlooked,
             console_share: CONSOLE_SHARE,
+            now_nanos: 0,
             palette: Palette::default(),
         })
     }

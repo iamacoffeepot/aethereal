@@ -15,9 +15,24 @@ pub const SET_THEME: &str = "set_theme";
 #[kind(name = "aether.overlay.choose_theme")]
 pub struct ChooseTheme {
     /// The theme: `lichen`, lichen grey, the first; `slate`, blue-grey; or `stone`, warm stone. Left out, the themes
-    /// are listed and nothing changes.
+    /// are listed and nothing changes. An `Option` only because the command line reads a flag that may be left out as
+    /// one; it is read once, as a [`Choice`], by [`Self::choice`].
     #[flag(position)]
-    pub theme: Option<Theme>,
+    theme: Option<Theme>,
+}
+
+/// What a call of `set_theme` asks for: the themes listed, the palette kept; or the palette switched to a theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    List,
+    Switch(Theme),
+}
+
+impl ChooseTheme {
+    /// What it asks for.
+    pub fn choice(self) -> Choice {
+        self.theme.map_or(Choice::List, Choice::Switch)
+    }
 }
 
 /// The themes, and the one the overlay is drawn in now.
@@ -48,9 +63,13 @@ pub fn theme_sheet() -> ToolSheet {
     ToolSheet::of::<ChooseTheme>(SET_THEME, theme, Output::Value(SchemaNodes::of(&ThemesShown::SHAPE)))
 }
 
-/// `palette` after `choose`: a new one of the theme it names, or the same with none named; and what the tool answers.
-pub fn chosen(palette: &Palette, choose: &ChooseTheme) -> (Palette, ThemesShown) {
-    let palette = choose.theme.map_or(*palette, Palette::new);
+/// `palette` after `choice`: a new one of the theme it switches to, or the same when it lists them; and what the tool
+/// answers.
+pub fn chosen(palette: &Palette, choice: Choice) -> (Palette, ThemesShown) {
+    let palette = match choice {
+        Choice::Switch(theme) => Palette::new(theme),
+        Choice::List => *palette,
+    };
 
     (palette, ThemesShown::of(palette.theme()))
 }

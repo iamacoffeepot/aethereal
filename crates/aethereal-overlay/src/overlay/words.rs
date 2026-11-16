@@ -7,7 +7,6 @@
 
 use super::Overlay;
 use super::console::Offering;
-use crate::chat::Which;
 use crate::tools::{
     ARCHIVE_SESSION, ArchiveSession, ChooseTheme, NEW_SESSION, NewSession, SET_THEME, STOP_SESSION, StopSession,
     chat_sheets, chosen, theme_sheet,
@@ -49,10 +48,8 @@ impl Overlay {
     fn word(&mut self, call: &Call, input: &[u8]) -> Result<Chat, String> {
         match call.tool.as_str() {
             NEW_SESSION => read::<NewSession>(input).map(|new| self.chats.make(new.name)),
-            STOP_SESSION => read::<StopSession>(input).and_then(|stop| self.chats.stop(&which(stop.session))),
-            ARCHIVE_SESSION => {
-                read::<ArchiveSession>(input).and_then(|archive| self.chats.archive(&which(archive.session)))
-            }
+            STOP_SESSION => read::<StopSession>(input).and_then(|stop| self.chats.stop(&stop.which())),
+            ARCHIVE_SESSION => read::<ArchiveSession>(input).and_then(|archive| self.chats.archive(&archive.which())),
             other => Err(format!("the overlay has no tool named `{other}`")),
         }
     }
@@ -68,7 +65,7 @@ impl Handles<Call> for Overlay {
         if call.tool == SET_THEME {
             let called = match read::<ChooseTheme>(turn.read(&call.input)) {
                 Ok(choose) => {
-                    let (palette, shown) = chosen(&self.palette, &choose);
+                    let (palette, shown) = chosen(&self.palette, choose.choice());
                     self.palette = palette;
                     Called::output(turn, to_bytes(&shown)?)
                 }
@@ -98,9 +95,4 @@ impl Handles<Call> for Overlay {
 /// The input `bytes` as a `K`, or why they are not one.
 fn read<K: Plain>(bytes: &[u8]) -> Result<K, String> {
     from_bytes::<K>(bytes, &mut Budget::new(INPUT_BYTES)).map_err(|fault| format!("the input: {fault}"))
-}
-
-/// The session a word's input names: the one so named, or with none named the one whose tab is open.
-fn which(session: Option<String>) -> Which {
-    session.map_or(Which::Open, Which::Named)
 }

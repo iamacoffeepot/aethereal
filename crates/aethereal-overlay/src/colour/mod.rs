@@ -77,6 +77,8 @@ impl Theme {
 pub enum Surface {
     /// The tabs' strip.
     Deepest,
+    /// A closed tab with the pointer over it: halfway from the strip to the open tab.
+    Hover,
     /// The prompt's well, the grip's well, and the open tab.
     Inset,
     /// The band's panel, drawn at 85% so the program shows behind it.
@@ -89,12 +91,13 @@ pub enum Surface {
 
 impl Surface {
     /// Every surface, in the order the palette holds them.
-    const ALL: [Self; 5] = [Self::Deepest, Self::Inset, Self::Band, Self::Sheet, Self::Raised];
+    const ALL: [Self; 6] = [Self::Deepest, Self::Hover, Self::Inset, Self::Band, Self::Sheet, Self::Raised];
 
     /// Its lightness.
     const fn lightness(self) -> f64 {
         match self {
             Self::Deepest => 0.160,
+            Self::Hover => 0.174,
             Self::Inset => 0.188,
             Self::Band => 0.207,
             Self::Sheet => 0.255,
@@ -108,7 +111,7 @@ impl Surface {
     const fn opacity(self) -> f32 {
         match self {
             Self::Band => 0.85,
-            Self::Deepest | Self::Inset | Self::Sheet | Self::Raised => 0.96,
+            Self::Deepest | Self::Hover | Self::Inset | Self::Sheet | Self::Raised => 0.96,
         }
     }
 }
@@ -206,7 +209,7 @@ impl Ink {
 #[derive(Plain, Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     theme: Theme,
-    surfaces: [Colour; 5],
+    surfaces: [Colour; 6],
     inks: [Colour; 17],
 }
 

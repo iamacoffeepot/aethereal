@@ -121,15 +121,16 @@ impl Console {
     }
 
     /// Echoes `entered` as the owner's line, as a session's transcript shows one typed here: on the raised band, its
-    /// tag, `local`, in the label's ink, and the prompt mark and its text in lichen, each of its lines wrapped at
-    /// `columns`.
+    /// tag, `local`, in the label's ink, and the prompt mark and its text in lichen, each of its lines wrapped a
+    /// character short of `columns`, as the band's inset either side takes that room.
     fn echo(&mut self, entered: &str, columns: usize) {
+        let width = columns.saturating_sub(1).max(1);
         let mut lines = entered.split('\n');
         let first = lines.next().unwrap_or_default();
         let tagged = [Piece::new(LOCAL, Ink::Label), Piece::new(&format!("{PROMPT_MARK} {first}"), Ink::Lichen)];
-        self.scrollback.push(&tagged, Shade::Raised, columns);
+        self.scrollback.push(&tagged, Shade::Raised, width);
         for line in lines {
-            self.scrollback.push(&[Piece::new(line, Ink::Lichen)], Shade::Raised, columns);
+            self.scrollback.push(&[Piece::new(line, Ink::Lichen)], Shade::Raised, width);
         }
     }
 

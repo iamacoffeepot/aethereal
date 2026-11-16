@@ -3,6 +3,7 @@
 //! trusts offers them. Being tools, they run from any tab of the console, `help` lists them, and Tab completes them, as
 //! every other command.
 
+use crate::chat::Which;
 use aethereal_data::config::Flagged;
 use aethereal_data::{Plain, Schema, SchemaNodes};
 use aethereal_tools::{Done, Output, ToolSheet};
@@ -32,18 +33,34 @@ pub struct NewSession {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.overlay.stop_session")]
 pub struct StopSession {
-    /// The session's name, as its tab shows it: the one whose tab is open when left out.
+    /// The session's name, as its tab shows it: the one whose tab is open when left out. An `Option` only because the
+    /// command line reads a flag that may be left out as one; it is read once, as [`Which`], by [`Self::which`].
     #[flag(position)]
-    pub session: Option<String>,
+    session: Option<String>,
+}
+
+impl StopSession {
+    /// The session it names.
+    pub fn which(self) -> Which {
+        Which::of(self.session)
+    }
 }
 
 /// Archives a session: its tab leaves every engine's console, and its transcript is kept.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.overlay.archive_session")]
 pub struct ArchiveSession {
-    /// The session's name, as its tab shows it: the one whose tab is open when left out.
+    /// The session's name, as its tab shows it: the one whose tab is open when left out. An `Option` only because the
+    /// command line reads a flag that may be left out as one; it is read once, as [`Which`], by [`Self::which`].
     #[flag(position)]
-    pub session: Option<String>,
+    session: Option<String>,
+}
+
+impl ArchiveSession {
+    /// The session it names.
+    pub fn which(self) -> Which {
+        Which::of(self.session)
+    }
 }
 
 /// The sheets of the chat's words.
