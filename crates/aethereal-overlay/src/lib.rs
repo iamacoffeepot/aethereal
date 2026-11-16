@@ -36,7 +36,7 @@
 //! its transcript shows in place of the scrollback, a line goes to the session, and a `/` line runs here and is noted
 //! in it. Escape on an empty line stops the session's turn, and on a line typed empties it. The chat's words, `new`,
 //! `stop`, and `archive`, are the engine's tools, which the overlay serves once the hub shows it the chat; Control-Tab
-//! and Alt with a digit change tabs; and the grip, a firm seam between the band and the console, sets how tall the
+//! and Alt with a digit change tabs; and the grip, the seam between the band and the console, sets how tall the
 //! console is. An engine the hub shows no chat keeps the console as it was.
 
 mod binned;

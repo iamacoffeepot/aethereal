@@ -49,8 +49,8 @@ pub const CONSOLE_SHARE: f32 = 1.0 / 3.0;
 pub const LEAST_CONSOLE_SHARE: f32 = 0.15;
 pub const MOST_CONSOLE_SHARE: f32 = 0.85;
 
-/// How tall the console's grip is, the line between the band and the console, in logical pixels: the line drawn across
-/// its middle, and room above and below it to take hold of.
+/// How tall the console's grip is, the seam between the band and the console, in logical pixels: its shadow along its
+/// top, its handle in its middle, and room around them to take hold of.
 pub const GRIP_PIXELS: f32 = 7.0;
 
 /// The share of the window's width the band's left column takes: the chart's column. The right column, the memory
@@ -67,13 +67,34 @@ pub const GAP_PIXELS: f32 = 4.0;
 /// The space above and below the prompt's line inside its strip, in logical pixels.
 pub const STRIP_PADDING_PIXELS: f32 = 6.0;
 
-/// How thick the lines between the scrollback and the prompt's strip, between the band's two columns, between the left
-/// column's sections, and between the sessions' tabs are, in logical pixels.
+/// How thick the lines between the scrollback and the prompt's strip, between the prompt's strip and the tabs', between
+/// the band's two columns, between the left column's sections, and between the tabs are, and the grip's shadow, in
+/// logical pixels.
 pub const DIVIDER_PIXELS: f32 = 1.0;
 
-/// How thick the seam between the band and the console is, drawn across the middle of its grip, in logical pixels:
-/// twice a divider, so the console's edge is the firmest line the overlay draws.
-pub const SEAM_PIXELS: f32 = 2.0;
+/// How wide the grip's handle is, centred across it, in logical pixels: a mark to take hold of, while the whole grip
+/// takes the drag.
+pub const HANDLE_WIDTH_PIXELS: f32 = 28.0;
+
+/// How tall the grip's handle is, in logical pixels.
+pub const HANDLE_PIXELS: f32 = 3.0;
+
+/// The space above and below the tabs inside their strip, in logical pixels.
+pub const TAB_STRIP_PADDING_PIXELS: f32 = 5.0;
+
+/// The space above and below a tab's title inside the tab, in logical pixels; [`PADDING_PIXELS`] stand either side.
+pub const TAB_PADDING_PIXELS: f32 = 3.0;
+
+/// How thick the line along the open tab's top is, in logical pixels: over the tab's own space above its title, so an
+/// open tab stands as tall as the others.
+pub const TAB_ACCENT_PIXELS: f32 = 2.0;
+
+/// How tall the divider between two sessions' tabs is, in logical pixels.
+pub const TAB_DIVIDER_PIXELS: f32 = 12.0;
+
+/// How tall the break between the console's own tab and the sessions' is, in logical pixels: taller than a divider
+/// between sessions, with [`PADDING_PIXELS`] of space either side, so the engine's tab stands apart from Claude's.
+pub const TAB_BREAK_PIXELS: f32 = 18.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
 pub const TEXT_PIXELS: f32 = 14.0;

@@ -29,7 +29,7 @@ pub use prompt::{Typed, typed};
 use transcript::Ink;
 pub use transcript::{Look, Mine, Row};
 
-use crate::colour::{BONE, CONSOLE_OPACITY, SLATE_LIGHTER, STONE};
+use crate::colour::{BONE, CONSOLE_OPACITY, SLATE_DARKER, STONE};
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
@@ -119,10 +119,11 @@ impl Title {
         swatch.opaque()
     }
 
-    /// What it is drawn on: slate while open, and nothing otherwise.
+    /// What it is drawn on: the prompt's slate while open, so it reads as of a piece with the prompt above it, and
+    /// nothing otherwise, over the tabs' own darker strip.
     pub fn background(&self) -> Colour {
         if self.open {
-            SLATE_LIGHTER.at(CONSOLE_OPACITY)
+            SLATE_DARKER.at(CONSOLE_OPACITY)
         } else {
             Colour::CLEAR
         }

@@ -20,17 +20,23 @@ pub const SLATE_LIGHTER: Swatch = Swatch::hex(0x20_25_2a);
 /// stand apart from Claude's as a prompt's lines do in a terminal: `#2a3036`.
 pub const SLATE_RAISED: Swatch = Swatch::hex(0x2a_30_36);
 
-/// The prompt's strip, a step darker than the band's slate, a well the line is typed into: `#111417`.
+/// The prompt's strip, a step darker than the band's slate, a well the line is typed into; the grip's well; and the
+/// open tab, which reads as of a piece with the prompt above it: `#111417`.
 pub const SLATE_DARKER: Swatch = Swatch::hex(0x11_14_17);
+
+/// The tabs' strip beneath the prompt, a step darker than the prompt's well, so the tabs stand on a surface of their own
+/// and the open tab, in the prompt's slate, rises out of it: `#0c0e10`.
+pub const SLATE_DEEPEST: Swatch = Swatch::hex(0x0c_0e_10);
 
 /// Text, and the chart's dashed budget line: `#e4e0d6`.
 pub const BONE: Swatch = Swatch::hex(0xe4_e0_d6);
 
-/// Labels, the chart's faint line at twice the budget, a log line's step and actor, and an info line: `#8d918f`.
+/// Labels, the chart's faint line at twice the budget, a log line's step and actor, an info line, the console's
+/// dividers, the grip's handle, and a tab not open: `#8d918f`.
 pub const STONE: Swatch = Swatch::hex(0x8d_91_8f);
 
-/// Healthy lines and fills, the chart's median bar, the middle of a column's three, and the command typed at the
-/// console: `#9dbfb0`.
+/// Healthy lines and fills, the chart's median bar, the middle of a column's three, the command typed at the console,
+/// and the line along the open tab's top: `#9dbfb0`.
 pub const LICHEN: Swatch = Swatch::hex(0x9d_bf_b0);
 
 /// The chart's slowest bar, the tallest of a column's three, at the back: `#6b5f4c`.

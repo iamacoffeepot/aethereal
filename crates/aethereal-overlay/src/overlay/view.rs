@@ -7,7 +7,10 @@
 //! completion of the word before its caret shown ahead of it, and what is running at its right end. Its panels fill
 //! their boxes, so the console blocks the pointer from the program beneath, and the wheel over it scrolls it. The band
 //! is a see-through HUD over the scene and the console a sheet laid over it: the console's panels are nearly opaque, and
-//! a firm seam, the grip, parts the two, so the band's graphs never read as the console's text.
+//! the grip, a seam whose shadow the sheet casts on the band, parts the two, so the band's graphs never read as the
+//! console's text. Each panel of the console has its own slate: a step lighter than the band for the transcript, lighter
+//! again for the owner's turns, a step darker for the prompt, and darkest for the tabs beneath it; and every divider in
+//! it is one faint ink of stone.
 //!
 //! ```text
 //! Column (the window)
@@ -16,20 +19,22 @@
 //! │  ├─ Tint (the line between the columns)
 //! │  └─ Column: a Row (MeterGraph, gutter) for each meter
 //! └─ Column, at the console's stop (a third of the window): Grip (the seam), Scroll (the rows) or Scroll (a
-//!    transcript), asks, rule, Row (> line…, running), Row (the tabs: console ‖ session | session)
+//!    transcript), asks, rule, Row (> line…, running), rule, Row (the tabs: console ‖ session | session)
 //! ```
 
 use super::{Calling, Overlay};
 use crate::chart::{ChartShown, FrameChart};
 use crate::chat::{Open, Parting, Row as TranscriptRow};
 use crate::colour::{
-    BONE, CONSOLE_OPACITY, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch,
+    BONE, CONSOLE_OPACITY, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_DEEPEST, SLATE_LIGHTER, STONE,
+    Swatch,
 };
 use crate::console::{Piece, Row as PrintedRow};
 use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
     DIVIDER_PIXELS, GAP_PIXELS, GRIP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
-    STRIP_PADDING_PIXELS, TEXT_PIXELS, advance_pixels, gutter_pixels, meter_gutter_pixels,
+    STRIP_PADDING_PIXELS, TAB_ACCENT_PIXELS, TAB_BREAK_PIXELS, TAB_DIVIDER_PIXELS, TAB_PADDING_PIXELS,
+    TAB_STRIP_PADDING_PIXELS, TEXT_PIXELS, advance_pixels, gutter_pixels, meter_gutter_pixels,
 };
 use crate::lines::{LineRows, LinesShown};
 use crate::meters::{self, MOST_METER_COLUMNS, Meter, MeterDrawn, MeterGraph};
@@ -88,16 +93,17 @@ fn spaced(top: f32, bottom: f32) -> Edges<Length> {
 /// Shift-Enter breaks it.
 const PROMPT_LINES: u32 = 6;
 
-/// How opaque the lines between the panels are drawn, in stone: faint, so they part the panels without drawing the eye.
+/// How opaque the lines between the band's sections are drawn, in stone: faint, so they part them without drawing the
+/// eye.
 const DIVIDER_OPACITY: f32 = 0.28;
 
-/// How opaque the seam between the band and the console is drawn, in stone: firm, so the console's edge is never lost
-/// against the band's graphs above it.
-const SEAM_OPACITY: f32 = 0.7;
+/// How opaque the console's one divider ink is, in stone: every line in the console, above the prompt, above the tabs,
+/// and between the tabs, so they part its panels and its tabs alike without drawing the eye, and a break differs from
+/// a light divider by its height and its space alone.
+const INK_OPACITY: f32 = 0.22;
 
-/// How opaque the break between the console's own tab and the sessions' is drawn, in stone: firmer than the light
-/// dividers between sessions.
-const BREAK_OPACITY: f32 = 0.6;
+/// How opaque the grip's handle is drawn, in stone: a mark that says the seam is taken hold of, quieter than the text.
+const HANDLE_OPACITY: f32 = 0.35;
 
 /// The band's panel's colour, at its opacity.
 fn panel(swatch: Swatch) -> Colour {
@@ -130,27 +136,19 @@ fn inset(row: &TranscriptRow) -> Edges<Space> {
 }
 
 impl Parting {
-    /// How wide the line before the tab is: two lines' width for the break, one for a light divider.
-    fn width(self) -> Length {
+    /// How tall the line before the tab is: taller for the break than for a light divider.
+    fn height(self) -> Length {
         match self {
-            Self::Break => Length::Pixels(DIVIDER_PIXELS * 2.0),
-            Self::First | Self::Light => Length::Pixels(DIVIDER_PIXELS),
+            Self::Break => Length::Pixels(TAB_BREAK_PIXELS),
+            Self::First | Self::Light => Length::Pixels(TAB_DIVIDER_PIXELS),
         }
     }
 
-    /// The line's colour: firm stone for the break, and faint for a light divider.
-    fn colour(self) -> Colour {
-        match self {
-            Self::Break => STONE.at(BREAK_OPACITY),
-            Self::First | Self::Light => STONE.at(DIVIDER_OPACITY),
-        }
-    }
-
-    /// The space either side of the line: a narrow breather either side of the break, and none beside a light
-    /// divider, whose tabs' own padding parts it from their titles.
+    /// The space either side of the line: room either side of the break, and none beside a light divider, whose
+    /// tabs' own padding parts it from their titles.
     fn margin(self) -> Edges<Length> {
         match self {
-            Self::Break => margined(GAP_PIXELS, GAP_PIXELS, 0.0, 0.0),
+            Self::Break => margined(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0),
             Self::First | Self::Light => margined(0.0, 0.0, 0.0, 0.0),
         }
     }
@@ -175,8 +173,10 @@ aethereal_ui::style! {
     pub figures: mono { margin: spaced(GAP_PIXELS, 0.0) }
     /// The band's panel: slate, so the program shows behind it.
     pub band_panel { colour: panel(SLATE) }
-    /// A line between the panels and the sections: faint stone, so it parts them without drawing the eye.
+    /// A line between the band's sections: faint stone, so it parts them without drawing the eye.
     pub rule { colour: STONE.at(DIVIDER_OPACITY) }
+    /// A line in the console: its one divider ink, so its panels and its tabs are parted alike.
+    pub ink { colour: STONE.at(INK_OPACITY) }
     /// The line between two sections of the left column, centred in the section's space between them.
     pub rule_across: rule {
         height: Length::Pixels(DIVIDER_PIXELS),
@@ -200,9 +200,10 @@ aethereal_ui::style! {
     }
     /// The console's panel, beneath the band: its height is the overlay's, set by dragging its grip.
     pub console {}
-    /// The seam between the band and the console, a grip a few pixels tall for dragging: a firm stone line across a
-    /// dark well, so the console's edge reads at a glance against the band's graphs.
-    pub grip { height: Length::Pixels(GRIP_PIXELS), background: sheet(SLATE_DARKER), colour: STONE.at(SEAM_OPACITY) }
+    /// The seam between the band and the console, a grip a few pixels tall for dragging over its whole width: a well
+    /// of the prompt's slate under the shadow the console's sheet casts on the band, with a short stone handle centred
+    /// in it to say it is taken hold of.
+    pub grip { height: Length::Pixels(GRIP_PIXELS), background: sheet(SLATE_DARKER), colour: STONE.at(HANDLE_OPACITY) }
     /// The scrollback: the rest of the console above the prompt's strip, a step lighter than the band, its rows inside
     /// its padding and its bar, faint stone, at its right edge.
     pub scrollback {
@@ -239,19 +240,33 @@ aethereal_ui::style! {
     pub asked: mono { colour: OCHRE.opaque(), grow: 1.0 }
     /// An ask's answer, pressed.
     pub answer { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0), background: sheet(SLATE_LIGHTER) }
-    /// The session tabs beneath the prompt's strip, nearest the scene.
-    pub tab_strip { background: sheet(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, GAP_PIXELS) }
+    /// The session tabs beneath the prompt's strip, nearest the scene: a surface of their own, darkest of the console's,
+    /// so the prompt and the tabs never merge, the tabs centred down it with even space above and below.
+    pub tab_strip {
+        background: sheet(SLATE_DEEPEST),
+        padding: padded(PADDING_PIXELS, PADDING_PIXELS, TAB_STRIP_PADDING_PIXELS, TAB_STRIP_PADDING_PIXELS),
+        align_items: Alignment::Center,
+    }
+    /// The line along the tabs' strip's top, in the divider ink over the strip's slate, parting it from the prompt.
+    pub tab_strip_rule: ink { height: Length::Pixels(DIVIDER_PIXELS), background: sheet(SLATE_DEEPEST) }
     /// A tab and what parts it from the one before, centred down the strip.
     pub tab_item { align_items: Alignment::Center }
-    /// What parts a tab from the one before: its width, colour, and space as its parting says, a line of text tall and
+    /// What parts a tab from the one before: a line in the divider ink, its height and space as its parting says,
     /// centred against the tabs' titles.
-    pub tab_rule { height: Length::Pixels(TEXT_PIXELS), align_self: SelfAlign::Own(Alignment::Center), shrink: 0.0 }
-    /// A tab, pressed to open it.
-    pub tab_button { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0) }
-    /// A tab's title.
-    pub tab_text: mono {}
-    /// The line between the scrollback and the prompt's strip, over the strip's tint.
-    pub prompt_rule: rule { height: Length::Pixels(DIVIDER_PIXELS), background: sheet(SLATE_DARKER) }
+    pub tab_rule: ink { width: Length::Pixels(DIVIDER_PIXELS), align_self: SelfAlign::Own(Alignment::Center), shrink: 0.0 }
+    /// A tab, pressed to open it: its title and, while it is open, the line along its top laid over each other.
+    pub tab_button {}
+    /// The line along the open tab's top: lichen, as the typed line is, laid over the space above the tab's title.
+    pub tab_accent {
+        width: Length::Share(1.0),
+        height: Length::Pixels(TAB_ACCENT_PIXELS),
+        align_self: SelfAlign::Own(Alignment::Start),
+        colour: LICHEN.opaque(),
+    }
+    /// A tab's title, inside the tab's padding: stone, or bone while open.
+    pub tab_text: mono { padding: padded(PADDING_PIXELS, PADDING_PIXELS, TAB_PADDING_PIXELS, TAB_PADDING_PIXELS) }
+    /// The line between the scrollback and the prompt's strip, in the divider ink over the strip's slate.
+    pub prompt_rule: ink { height: Length::Pixels(DIVIDER_PIXELS), background: sheet(SLATE_DARKER) }
     /// The prompt's strip: a line of text tall inside its padding, a step darker than the band.
     pub prompt_strip {
         background: sheet(SLATE_DARKER),
@@ -350,14 +365,16 @@ aethereal_ui::view! { Overlay, ui,
                 }
                 Printed { style: mono, runs: self.running_runs() }
             }
+            Tint { style: tab_strip_rule, show: self.chats.is_listed() }
             Row { style: tab_strip, show: self.chats.is_listed(), items: self.chats.titles() as tab key tab.place,
                 Row { style: tab_item,
                     Tint {
                         show: tab.parting.parts(),
-                        style: tab_rule { width: tab.parting.width(), colour: tab.parting.colour(), margin: tab.parting.margin() },
+                        style: tab_rule { height: tab.parting.height(), margin: tab.parting.margin() },
                     }
                     Button { style: tab_button { background: tab.background() }, click => self.choose(tab.place),
                         Text { style: tab_text { colour: tab.colour() }, "{tab.name}" }
+                        Tint { style: tab_accent, show: tab.open }
                     }
                 }
             }
