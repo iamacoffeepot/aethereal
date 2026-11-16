@@ -63,7 +63,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
+      - uses: runs-on/action@13fbb6a39310a0dac9ab4716da2c4e74a3326dfc # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
@@ -80,7 +80,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
+      - uses: runs-on/action@13fbb6a39310a0dac9ab4716da2c4e74a3326dfc # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
@@ -89,7 +89,7 @@ jobs:
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           key: nasm
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-nextest@0.9.146
       # nextest, then the doctests, which it does not run; nextest reads its profile from `NEXTEST_PROFILE`.
@@ -105,7 +105,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
     steps:
-      - uses: runs-on/action@284bff869d4a825f778ac7c38e50f1e31ef198fd # v2
+      - uses: runs-on/action@13fbb6a39310a0dac9ab4716da2c4e74a3326dfc # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
