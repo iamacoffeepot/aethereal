@@ -1,0 +1,5 @@
+error: a node is named in a screen's view: a composite is placed at many paths, so one of its own nodes has none; name the composite where the view places it
+ --> tests/refusals/composite_name.rs:5:26
+  |
+5 |     Column { Bar { name: fill, fraction: level, .. } }
+  |                          ^^^^

@@ -11,14 +11,14 @@
 
 use super::Overlay;
 use super::chat::Reports;
-use super::view::{OverlaySends, prompt_path, scrollback_path, transcript_path};
+use super::view::{OverlayNode, OverlaySends};
 use crate::chat::Open;
 use crate::layout::{LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE};
 use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
 use aethereal_render::Renderer;
 use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
-use aethereal_ui::{Controls, First, Held, Key, View, take_in};
+use aethereal_ui::{Controls, First, Jump, Key, KeyPath, View, take_in};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
@@ -108,8 +108,7 @@ impl Overlay {
             Open::Console => (self.console.submitted(&line), Reports::Here),
             Open::Session(session) => self.chatted(turn, session, &line)?,
         };
-        let end = Key { code: String::from("End"), key: String::from("End"), repeat: false, held: Held::default() };
-        self.scroll(&end, turn)?;
+        self.ui.jump(&self.scroll_shown(), Jump::End);
 
         self.call(command, reports, turn)
     }
@@ -130,14 +129,19 @@ impl Overlay {
         self.tell(turn, interrupt)
     }
 
-    /// Hands `key` to the scroll shown, the scrollback's or the open session's transcript's, which slides by it,
-    /// though the line has the screen's focus.
-    fn scroll(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
-        let path = match self.chats.open() {
-            Open::Console => scrollback_path(),
-            Open::Session(_) => transcript_path(),
+    /// The path of the scroll shown: the scrollback's, or the open session's transcript's.
+    fn scroll_shown(&self) -> KeyPath {
+        let shown = match self.chats.open() {
+            Open::Console => OverlayNode::Scrollback,
+            Open::Session(_) => OverlayNode::Transcript,
         };
-        let heard = self.ui.press_key(&path, key);
+
+        shown.path()
+    }
+
+    /// Hands `key` to the scroll shown, which slides by it, though the line has the screen's focus.
+    fn scroll(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+        let heard = self.ui.press_key(&self.scroll_shown(), key);
         take_in(self, heard, turn)?;
 
         Ok(())
@@ -180,7 +184,7 @@ impl Overlay {
             self.alerts.clear();
             let tree = View::view(self);
             self.ui.rebuilt(tree);
-            self.ui.focus(&prompt_path());
+            self.ui.focus(&OverlayNode::Prompt.path());
         }
 
         Ok(())

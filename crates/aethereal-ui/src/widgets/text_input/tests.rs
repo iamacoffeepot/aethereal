@@ -330,3 +330,13 @@ fn drawn(typing: &Typing) -> String {
 
     texts.collect()
 }
+
+#[test]
+fn the_caret_read_of_a_text_its_screen_set_stands_at_the_text_s_end() {
+    // Catches a screen reading its input's caret where it stood in its own last edit after the screen set another
+    // text, as a console completing a recalled line at an offset into the line it replaced.
+    let editing = Editing { caret: 2, anchor: 2, edited: String::from("memory"), ..Editing::default() };
+
+    assert_eq!(editing.caret_in("memory"), 2);
+    assert_eq!(editing.caret_in("set_theme"), "set_theme".len());
+}

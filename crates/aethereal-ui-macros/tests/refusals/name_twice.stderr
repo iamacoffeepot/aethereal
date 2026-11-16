@@ -1,0 +1,5 @@
+error: `gold` names a node already: a name finds one node
+ --> tests/refusals/name_twice.rs:6:26
+  |
+6 |             Text { name: gold, "{coin.value}" }
+  |                          ^^^^

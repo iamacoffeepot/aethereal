@@ -6,10 +6,10 @@
 //!                      └──emit (Owner: a screen's view or a composite's tree)──> Node, built by the runtime's own calls
 //! ```
 //!
-//! A lowercase name is a keyword: the element `child`, and the settings `style`, `show`, `items`, and `drag`, and the
-//! events `drop` and `drop_outside`, which belong to the node rather than the widget; and `memo`, written alone among
-//! the settings, which keeps a composite while what the markup writes into it stands. Every other name is a field of
-//! the widget's type.
+//! A lowercase name is a keyword: the element `child`, and the settings `style`, `show`, `items`, `drag`, and `name`,
+//! and the events `drop` and `drop_outside`, which belong to the node rather than the widget; and `memo`, written alone
+//! among the settings, which keeps a composite while what the markup writes into it stands. Every other name is a field
+//! of the widget's type.
 
 mod check;
 mod emit;
@@ -18,7 +18,7 @@ mod reference;
 mod text;
 
 pub use check::{Names, Scope, check};
-pub use emit::{Emitter, Owner, variant};
+pub use emit::{Emitter, Named, Owner, variant};
 pub use reference::Head;
 
 use crate::style::Property;
@@ -37,6 +37,7 @@ pub struct Element {
     /// Its `name => call` events that are fields of its widget, in order.
     pub events: Vec<Event>,
     pub look: Look,
+    pub naming: Naming,
     pub shown: Shown,
     pub repeat: Repeat,
     pub drag: Drag,
@@ -94,6 +95,13 @@ pub enum Look {
     Named(Path),
     /// A style function, extended for this element alone: `style: grid { columns: 6 }`.
     Extended(Path, Vec<Property>),
+}
+
+/// Whether a screen's code finds an element by a name.
+pub enum Naming {
+    Unnamed,
+    /// It is, by this name: `name: prompt`, the variant `Prompt` of the screen's node enum.
+    Named(Ident),
 }
 
 /// When an element is in the tree.
@@ -158,6 +166,7 @@ impl Element {
             fields: Vec::new(),
             events: Vec::new(),
             look: Look::Unstyled,
+            naming: Naming::Unnamed,
             shown: Shown::Always,
             repeat: Repeat::Once,
             drag: Drag::Fixed,

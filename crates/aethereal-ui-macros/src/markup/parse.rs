@@ -9,7 +9,9 @@
 
 use super::reference::{Reference, SUBSET};
 use super::text::Text;
-use super::{Call, Drag, Dropping, Element, Event, Field, Kind, Look, Memo, Outside, Repeat, Rest, Shown, Value};
+use super::{
+    Call, Drag, Dropping, Element, Event, Field, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown, Value,
+};
 use crate::style::Property;
 use proc_macro2::Span;
 use syn::parse::{Parse, ParseStream};
@@ -186,6 +188,14 @@ fn set(input: ParseStream<'_>, name: Ident, element: &mut Element) -> syn::Resul
             }
             element.drag = Drag::Carries(input.parse()?);
         }
+        "name" => {
+            let unset = matches!(element.naming, Naming::Unnamed);
+            if !unset {
+                return Err(twice());
+            }
+            let named = input.parse().map_err(|error| syn::Error::new(error.span(), NAME))?;
+            element.naming = Naming::Named(named);
+        }
         _ => element.fields.push(Field { name, value: input.parse()? }),
     }
 
@@ -282,6 +292,9 @@ fn shown(input: ParseStream<'_>) -> syn::Result<Shown> {
 
     Ok(Shown::Bound(reference, input.parse()?))
 }
+
+/// What a `name` setting names.
+const NAME: &str = "`name` names its node for the screen's code with a word: `name: prompt`";
 
 /// What an `items` setting names.
 const ITEMS: &str =

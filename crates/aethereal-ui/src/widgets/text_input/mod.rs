@@ -92,6 +92,25 @@ pub struct Editing {
     pub composing: Composing,
 }
 
+impl Editing {
+    /// Whether `text`, the text its input shows, is its own last edit, not one its screen set since.
+    fn edits(&self, text: &str) -> bool {
+        self.edited == text
+    }
+
+    /// Where its caret stands in `text`, the text its input shows, a byte offset: where it put it in its own last
+    /// edit, and at the end of a text its screen set since, as the input types on from there. What a screen reads of
+    /// its input's caret, as a console completes the word before it.
+    #[must_use]
+    pub fn caret_in(&self, text: &str) -> usize {
+        if !self.edits(text) {
+            return text.len();
+        }
+
+        offset(self.caret)
+    }
+}
+
 /// Where along a line a move up or down puts the caret.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Plain)]
 pub enum Along {
@@ -155,7 +174,7 @@ impl<E> TextInput<E> {
     /// Its text as `editing` stands in it: a text its screen set, not one it last edited, with the caret at its end, as
     /// a line recalled from a history or completed is typed on from its end.
     fn edit(&self, editing: &Editing) -> Edit {
-        if editing.edited != self.text {
+        if !editing.edits(&self.text) {
             return Edit::new(&self.text, self.text.len(), self.text.len());
         }
 

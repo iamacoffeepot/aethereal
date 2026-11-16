@@ -1,10 +1,10 @@
 //! What a screen's markup may name, and the events it compiles into: one variant of its event enum for each method its
-//! events call, holding the arguments each copies.
+//! events call, holding the arguments each copies; and the names it gives its nodes, each one node's.
 //!
 //! A method called by two events is one variant, so every call of it copies as many arguments, and is a widget's event
 //! or a drop alike: a drop's method takes the payload after them, and a widget's event's the value its widget hands.
 
-use crate::markup::{Call, Dropping, Element, Head, Names, Outside, Scope};
+use crate::markup::{Call, Dropping, Element, Head, Names, Naming, Outside, Scope, variant};
 use syn::Ident;
 
 /// What a screen's markup names: `self`, its locals, and Rust items, and its events call its methods.
@@ -30,6 +30,10 @@ impl Names for Screen {
     }
 
     fn memo(&self, _: proc_macro2::Span) -> syn::Result<()> {
+        Ok(())
+    }
+
+    fn name(&self, _: &Ident) -> syn::Result<()> {
         Ok(())
     }
 }
@@ -83,6 +87,30 @@ pub fn variants(root: &Element) -> syn::Result<Vec<Variant>> {
     }
 
     Ok(variants)
+}
+
+/// Refuses a name given to two nodes of the markup whose root is `root`, or to two whose variants of the node enum are
+/// one, as `meter_graph` and `meterGraph` are: a name finds one node, never one of two by chance.
+///
+/// # Errors
+///
+/// The second node given a name, at its name.
+pub fn names(root: &Element) -> syn::Result<()> {
+    let mut given: Vec<Ident> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(element) = stack.pop() {
+        if let Naming::Named(name) = &element.naming {
+            let named = variant(name);
+            if given.contains(&named) {
+                let message = format!("`{name}` names a node already: a name finds one node");
+                return Err(syn::Error::new(name.span(), message));
+            }
+            given.push(named);
+        }
+        stack.extend(element.children.iter().rev());
+    }
+
+    Ok(())
 }
 
 impl Variant {

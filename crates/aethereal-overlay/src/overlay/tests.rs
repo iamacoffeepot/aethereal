@@ -3,12 +3,13 @@
 //! the window delivers them. What it did is read from its state.
 
 use super::stats::{Columns, MOST_COLUMNS};
+use super::view::OverlayNode;
 use super::{Overlay, OverlayConfig};
 use crate::chat::Open;
 use crate::colour::{Palette, Theme};
 use crate::console::Shade;
 use crate::layout::Scale;
-use crate::meters::MOST_METER_COLUMNS;
+use crate::meters::{MOST_METER_COLUMNS, Meter};
 use crate::stop::Stop;
 use crate::tools::{ChooseTheme, NewSession, OverlayTools};
 use aethereal_actor::{Answered, Prepare, Render, Requests, Tick};
@@ -23,7 +24,7 @@ use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use aethereal_substrate::{Engine, Feed};
 use aethereal_tools::{Call, Called, Caller, Tool, Tools, ToolsSettings};
 use aethereal_ui::widgets::Scroll;
-use aethereal_ui::{ItemKey, Segment, Stand};
+use aethereal_ui::{ItemKey, Stand};
 use aethereal_window::{Hosting, KeyEvent, Keyed, Mode, Opening, Surface, WindowFeed, WindowId, Windows};
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -159,7 +160,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
 /// Where the console's scrollback stands, as its screen's table keeps it.
 fn scrollback(harness: &mut Harness<Bench>) -> Result<Stand, Unheard> {
     let overlay = harness.root::<Overlay>();
-    let state = harness.state(overlay)?.ui.table().state::<Scroll>(&super::view::scrollback_path());
+    let state = harness.state(overlay)?.ui.table().state::<Scroll>(&OverlayNode::Scrollback.path());
 
     Ok(state.unwrap_or_default().stand)
 }
@@ -343,10 +344,11 @@ fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_lai
     let Some(echo) = echo else {
         panic!("the line entered is echoed");
     };
-    let row = super::view::scrollback_path().child(Segment::Item(ItemKey::from(echo))).child(Segment::Place(0));
-    let laid = |path| state.ui.laid(&path).expect("laid out");
-    let (row, view, line) = (laid(row), laid(super::view::scrollback_path()), laid(super::view::sign_path()));
-    let (chart, meter) = (laid(super::view::chart_path()), laid(super::view::meter_graph_path()));
+    let laid = |named: OverlayNode| state.ui.laid(&named.path()).expect("laid out");
+    let row = laid(OverlayNode::Printed(ItemKey::from(echo)));
+    let (view, line) = (laid(OverlayNode::Scrollback), laid(OverlayNode::Sign));
+    let (chart, meter) =
+        (laid(OverlayNode::Chart), laid(OverlayNode::MeterGraph(ItemKey::from(Meter::ALL[0].index()))));
     let across =
         |box_laid: aethereal_ui::Laid, most| Scale(box_laid.scale).columns_across(box_laid.content.width(), most);
 

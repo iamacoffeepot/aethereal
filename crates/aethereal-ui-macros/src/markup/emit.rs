@@ -41,15 +41,20 @@
 //!         Element::node(widget, Segment::Place(2), items)
 //! ```
 //!
+//! An element the markup names, `name: prompt`, is kept as it is written out, with the segments of its path and the
+//! locals of the keys of the items it stands within, so the screen's node enum names the path this expansion builds
+//! it at, never one counted again apart from it.
+//!
 //! Each event is set through `Into`, so a field the widget must raise, `E`, and one it may, `Raises<E>`, are written
 //! alike, and the widget is named as raising the screen's event type, or a composite's `E`, through `raising`, which
 //! tells a generic widget the type `Into` converts to.
 
 use super::check::Scope;
 use super::reference::{Head, Reference};
-use super::{Call, Drag, Dropping, Element, Kind, Look, Memo, Outside, Repeat, Rest, Shown, Value};
+use super::{Call, Drag, Dropping, Element, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown, Value};
 use crate::spans;
 use crate::style;
+use core::cell::RefCell;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Ident, Path};
@@ -62,15 +67,28 @@ pub enum Owner<'markup> {
     Composite,
 }
 
-/// Writes out markup as `owner`'s.
+/// Writes out markup as `owner`'s, keeping each node it names as it writes it.
 pub struct Emitter<'markup> {
     owner: Owner<'markup>,
+    /// Each named node written, in markup order: filled as the expansion is written, which reads the emitter shared
+    /// through its many `&self` steps, so a cell rather than a value threaded through every one of them.
+    named: RefCell<Vec<Named>>,
 }
 
-/// Where a node stands: its segment among its siblings, and the segments from the root to it, the root's first.
+/// A node the markup names: its name, the segments from the root to it, and the locals of the keys of the items it
+/// stands within, which its segments read, outermost first.
+pub struct Named {
+    pub name: Ident,
+    pub path: Vec<TokenStream>,
+    pub keys: Vec<Ident>,
+}
+
+/// Where a node stands: its segment among its siblings, the segments from the root to it, the root's first, and the
+/// locals of the keys of the items it stands within, outermost first.
 struct Place {
     segment: TokenStream,
     path: Vec<TokenStream>,
+    keys: Vec<Ident>,
 }
 
 /// The style a node is built with.
@@ -94,20 +112,33 @@ impl Place {
         let mut path = self.path.clone();
         path.push(segment.clone());
 
-        Self { segment, path }
+        Self { segment, path, keys: self.keys.clone() }
+    }
+
+    /// The place of an item within this one, told apart by the key in the local `keyed`.
+    fn item(&self, keyed: &Ident) -> Self {
+        let mut item = self.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
+        item.keys.push(keyed.clone());
+
+        item
     }
 }
 
 impl<'markup> Emitter<'markup> {
     /// Writes out markup as `owner`'s.
     pub const fn new(owner: Owner<'markup>) -> Self {
-        Self { owner }
+        Self { owner, named: RefCell::new(Vec::new()) }
+    }
+
+    /// The nodes the markup it wrote names, each once, in markup order.
+    pub fn into_named(self) -> Vec<Named> {
+        self.named.into_inner()
     }
 
     /// The node of a screen's root, at `Segment::Place(0)`.
     pub fn root(&self, root: &Element) -> TokenStream {
         let segment = quote!(::aethereal_ui::Segment::Place(0));
-        let place = Place { path: vec![segment.clone()], segment };
+        let place = Place { path: vec![segment.clone()], segment, keys: Vec::new() };
 
         self.node(root, &place, &Scope::default(), &Styling::Own, &Appended::Nothing)
     }
@@ -122,7 +153,7 @@ impl<'markup> Emitter<'markup> {
         style: &Ident,
         appended: &Ident,
     ) -> TokenStream {
-        let place = Place { segment: quote!(#segment), path: Vec::new() };
+        let place = Place { segment: quote!(#segment), path: Vec::new(), keys: Vec::new() };
 
         self.node(root, &place, scope, &Styling::Given(quote!(#style)), &Appended::After(quote!(#appended)))
     }
@@ -139,7 +170,7 @@ impl<'markup> Emitter<'markup> {
         }
     }
 
-    /// The node of `element` at `place`, read in `scope`.
+    /// The node of `element` at `place`, read in `scope`, kept by its name when the markup names it.
     fn node(
         &self,
         element: &Element,
@@ -148,9 +179,21 @@ impl<'markup> Emitter<'markup> {
         styling: &Styling,
         appended: &Appended,
     ) -> TokenStream {
+        if let Naming::Named(name) = &element.naming {
+            self.name(name, place);
+        }
         match &element.kind {
             Kind::Child(keyword) => Self::slot(element, keyword, place, scope),
             Kind::Widget(path) => self.widget(element, path, place, scope, styling, appended),
+        }
+    }
+
+    /// Keeps the node named `name` at `place`, once: a windowed list writes its template twice, at the one place.
+    fn name(&self, name: &Ident, place: &Place) {
+        let mut named = self.named.borrow_mut();
+        let kept = named.iter().any(|node| node.name == *name);
+        if !kept {
+            named.push(Named { name: name.clone(), path: place.path.clone(), keys: place.keys.clone() });
         }
     }
 
@@ -385,7 +428,7 @@ impl<'markup> Emitter<'markup> {
         let children = format_ident!("children", span = spans::hidden());
         let keyed = key_of(place);
         let within = scope.with(local);
-        let template = place.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
+        let template = place.item(&keyed);
         let push = self.template(element, &template, &within, |node| quote!(#children.push(#node);));
         let every = quote!({
             let mut #children = ::std::vec::Vec::new();
@@ -419,7 +462,7 @@ impl<'markup> Emitter<'markup> {
             ["path", "source", "rows", "at", "windowed"].map(|name| format_ident!("{name}", span = spans::hidden()));
         let keyed = key_of(place);
         let within = scope.with(local);
-        let template = place.within(quote!(::aethereal_ui::Segment::Item(#keyed)));
+        let template = place.item(&keyed);
         let push = self.template(element, &template, &within, |node| quote!(#rows.push(#at, #node);));
         let segments = &place.path;
 
