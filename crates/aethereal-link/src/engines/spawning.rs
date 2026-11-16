@@ -1,10 +1,10 @@
 //! What `Engines` is asked of the engines it spawns and terminates, and how it keeps each spawn (ADR-0040).
 
 use super::{Came, Engine, Engines, Linked, Minting, Port, Runs, Spawned, SpawnedConfig, Standing, Waiting};
-use crate::Token;
 use crate::engines::ExitedEngine;
 use crate::engines::randomness::Draw;
 use crate::engines::tokens::Purpose;
+use crate::{Token, Trust};
 use aethereal_actor::{ActorRef, Fault, Handles, Held, Level, ToSender, ToType, Turn};
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Stop};
@@ -162,10 +162,11 @@ impl Handles<Exited> for Engines {
     /// How one of its spawns' programs exited, as the spawn ends: kept, with its binary, among the last `most_exited`,
     /// and the spawn let go of at once, its token with it. From any other actor, it is passed over.
     fn handle(&mut self, exited: Exited, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let Some(binary) = self.spawn_ended(turn.sender().id()) else {
+        let Some((binary, by)) = self.spawn_ended(turn.sender().id()) else {
             return Ok(());
         };
-        self.exited.push(ExitedEngine { binary, status: exited.status, stderr: exited.stderr });
+        let trust = Trust::from(by);
+        self.exited.push(ExitedEngine { binary, status: exited.status, stderr: exited.stderr, trust });
         let most = usize::try_from(self.settings.most_exited).unwrap_or(usize::MAX);
         let over = self.exited.len().saturating_sub(most);
         self.exited.drain(..over);
@@ -250,15 +251,15 @@ impl Engines {
     }
 
     /// Lets go of the spawn whose actor is `gone`, if it is one, as it ends: its token is let go of, and a request for
-    /// it still held is dropped, which the engine answers as unanswered. The binary it was asked for, or none when
-    /// `gone` is no spawn, or one let go of already.
-    pub(super) fn spawn_ended(&mut self, gone: ActorId) -> Option<Binary> {
+    /// it still held is dropped, which the engine answers as unanswered. The binary it was asked for and who asked, or
+    /// none when `gone` is no spawn, or one let go of already.
+    pub(super) fn spawn_ended(&mut self, gone: ActorId) -> Option<(Binary, Caller)> {
         let (spawn, _) = self.spawn_of(gone)?;
-        let Spawning { binary, token, request, .. } = self.spawns.remove(&spawn)?;
+        let Spawning { binary, token, by, request, .. } = self.spawns.remove(&spawn)?;
         self.tokens.forget(token);
         drop(request);
 
-        Some(binary)
+        Some((binary, by))
     }
 
     /// A token drawn for a spawn of `by`'s: spawned at once when the root listens, or kept waiting for its port.

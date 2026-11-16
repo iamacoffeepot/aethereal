@@ -11,18 +11,18 @@ pub use kinds::{
 };
 
 use crate::{
-    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintFor, MintToken, Minted,
-    Outcome, Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated,
+    CallEngine, DescribeEngine, Described, Engine, EngineList, EngineTrust, Engines, ListEngines, MintFor, MintToken,
+    Minted, Outcome, Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated, TrustOf,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
 use aethereal_process::ExitStatus;
-use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling, first_sentence};
+use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling, first_sentence};
 use std::collections::BTreeMap;
 
 /// The tool that lists engines.
@@ -56,8 +56,11 @@ pub struct EngineToolsConfig;
 /// Where a call held is: which ask it waits on, and what its answer needs.
 #[derive(Bound)]
 enum Pending {
-    /// `list_engines`: `Engines` is asked for its list.
-    Listing { held: Held<Called> },
+    /// `list_engines`: `Engines` is asked for its list, shown as `caller` reaches it.
+    Listing { held: Held<Called>, caller: Caller },
+    /// A session's call of one engine: `Engines` is asked the engine's trust, and the engine is reached only when
+    /// `caller` reaches it.
+    Checking { held: Held<Called>, caller: Caller, reaching: Reaching },
     /// `describe_engine`: the engine is asked for its tools, to show them as `show` says.
     Describing { held: Held<Called>, engine: u32, show: ToolsShown },
     /// `call_tool`: the engine is asked for its tools, to find `tool` and convert `input` by its input schema.
@@ -76,7 +79,8 @@ impl Pending {
     /// The call held, whatever ask it waits on.
     fn into_held(self) -> Held<Called> {
         match self {
-            Self::Listing { held }
+            Self::Listing { held, .. }
+            | Self::Checking { held, .. }
             | Self::Describing { held, .. }
             | Self::Finding { held, .. }
             | Self::Calling { held, .. }
@@ -90,11 +94,28 @@ impl Pending {
 /// What a call asks for, read from its input.
 enum Order {
     List,
-    Describe(DescribeTools),
-    Call(EngineCall),
+    Reach(Reaching),
     Mint,
     Spawn(SpawnEngine),
+}
+
+/// What a call asks of one engine, named by its id, which a session may ask only of an engine it started (ADR-0057).
+#[derive(Bound)]
+enum Reaching {
+    Describe(DescribeTools),
+    Call(EngineCall),
     Terminate(TerminateEngine),
+}
+
+impl Reaching {
+    /// The engine it names.
+    const fn engine(&self) -> u32 {
+        match self {
+            Self::Describe(DescribeTools { engine, .. })
+            | Self::Call(EngineCall { engine, .. })
+            | Self::Terminate(TerminateEngine { engine }) => *engine,
+        }
+    }
 }
 
 /// A call of an engine's tool, ready to ask: the set it was converted with, the input's bytes, and what its sheet says
@@ -123,6 +144,12 @@ struct Converted {
 ///
 /// `describe_engine` does not show the set's revision. The agent never passes one: `call_tool` reads the engine's
 /// latest set when it is called, and converts by it.
+///
+/// A session reaches only the engines it started (ADR-0057). Its `list_engines` is shown only those, linked and ended;
+/// before its `describe_engine`, `call_tool`, or `terminate_engine` reaches an engine, `Engines` is asked the engine's
+/// [`TrustOf`], and an engine the session did not start, the owner's or another session's, is refused as one not linked
+/// is, so a refusal does not tell a session which engines the owner runs. What is checked is what is reached: an id is
+/// never given twice, and an engine's trust is fixed as it links. The owner's calls reach every engine, unasked.
 #[derive(Bound)]
 #[kind(name = "aether.link.engine_tools")]
 pub struct EngineTools {
@@ -141,6 +168,7 @@ impl Actor for EngineTools {
     type Handles = (
         Call,
         Answer<EngineList, Asking>,
+        Answer<EngineTrust, Asking>,
         Answer<Described, Asking>,
         Answer<Called, Asking>,
         Answer<Minted, Asking>,
@@ -169,7 +197,8 @@ impl Tool for EngineTools {
                  one started by hand. Also lists the last engines the hub spawned that have ended (at most \
                  `most_exited`, 8 unless set), each with its binary, exit status, and its stderr: its first 1 KiB \
                  and its last 512 bytes, cut at lines, with a line saying how many lines and bytes were left out \
-                 between them, and every line past 200 characters cut with `…`.",
+                 between them, and every line past 200 characters cut with `…`. A session is shown only the engines \
+                 it started.",
                 Output::Value(SchemaNodes::of(&EngineList::SHAPE)),
             ),
             ToolSheet::of::<DescribeTools>(
@@ -177,14 +206,15 @@ impl Tool for EngineTools {
                 "Describes an engine's tools. Ask with `\"show\": \"Names\"` first, or leave `show` out, for every \
                  tool's name and the first sentence of what it does; then with `\"show\": {\"Sheets\": [...]}`, naming \
                  the tools you will call, for each one's full description and its input and output as JSON Schema. A \
-                 name the engine has no tool of is refused.",
+                 name the engine has no tool of is refused, and so is an engine a session did not start.",
                 Output::Value(SchemaNodes::of(&EngineDescription::SHAPE)),
             ),
             ToolSheet::of::<EngineCall>(
                 CALL_TOOL,
                 "Calls an engine's tool and answers its output. The input is of the tool's input schema, and the \
                  answer is its output, or the image and text it answers when its output is `\"image\"`. Describe the \
-                 engine again when a call is refused because its tools changed.",
+                 engine again when a call is refused because its tools changed. A session may call only the engines \
+                 it started.",
                 Output::ValueOrImage(SchemaNodes::of(&EngineAnswer::SHAPE)),
             ),
             ToolSheet::json::<MintToken>(
@@ -205,7 +235,8 @@ impl Tool for EngineTools {
             ToolSheet::of::<TerminateEngine>(
                 TERMINATE_ENGINE,
                 "Terminates an engine. A spawned engine's process is stopped, and an engine started by hand has its \
-                 link shut, so it ends. Refused if no engine of that id is linked.",
+                 link shut, so it ends. Refused if no engine of that id is linked, or when a session did not start \
+                 it.",
                 Output::Value(SchemaNodes::of(&Done::SHAPE)),
             ),
         ]
@@ -219,6 +250,7 @@ impl Tool for EngineTools {
 impl Handles<Call> for EngineTools {
     type Sends = (
         Asks<Path<Engines>, ListEngines, Asking>,
+        Asks<Path<Engines>, TrustOf, Asking>,
         Asks<Path<Engine>, DescribeEngine, Asking>,
         Asks<Path<Engines>, MintFor, Asking>,
         Asks<Path<Engines>, SpawnFor, Asking>,
@@ -227,7 +259,8 @@ impl Handles<Call> for EngineTools {
     );
 
     /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
-    /// spawn is asked for the call's caller, which decides whether the engine is trusted (ADR-0057).
+    /// spawn is asked for the call's caller, which decides whether the engine is trusted, and a session's call of one
+    /// engine first asks `Engines` that engine's trust (ADR-0057).
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
@@ -240,31 +273,23 @@ impl Handles<Call> for EngineTools {
         let held = turn.hold()?;
         let asking = Asking { number: self.next };
         self.next += 1;
-        let pending = match order {
-            Order::List => {
+        let pending = match (order, call.caller) {
+            (Order::List, caller) => {
                 turn.to(path::<Engines>(())).ask(&ListEngines, &asking)?;
-                Pending::Listing { held }
+                Pending::Listing { held, caller }
             }
-            Order::Describe(DescribeTools { engine, show }) => {
-                turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
-                let show = show.unwrap_or(ToolsShown::Names);
-                Pending::Describing { held, engine, show }
+            (Order::Reach(reaching), Caller::Owner) => reach(turn, held, asking, reaching)?,
+            (Order::Reach(reaching), caller @ Caller::Session { .. }) => {
+                turn.to(path::<Engines>(())).ask(&TrustOf { engine: reaching.engine() }, &asking)?;
+                Pending::Checking { held, caller, reaching }
             }
-            Order::Call(EngineCall { engine, tool, input }) => {
-                turn.to(path::<Engine>(u64::from(engine))).ask(&DescribeEngine, &asking)?;
-                Pending::Finding { held, engine, tool, input }
-            }
-            Order::Mint => {
+            (Order::Mint, _) => {
                 turn.to(path::<Engines>(())).ask(&MintFor { by: call.caller }, &asking)?;
                 Pending::Minting { held }
             }
-            Order::Spawn(spawn) => {
+            (Order::Spawn(spawn), _) => {
                 turn.to(path::<Engines>(())).ask(&SpawnFor { spawn, by: call.caller }, &asking)?;
                 Pending::Spawning { held }
-            }
-            Order::Terminate(terminate) => {
-                turn.to(path::<Engines>(())).ask(&terminate, &asking)?;
-                Pending::Terminating { held, engine: terminate.engine }
             }
         };
         self.calls.insert(asking.number, pending);
@@ -285,10 +310,52 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
             return Ok(());
         };
         let (held, called) = match (pending, answered) {
-            (Pending::Listing { held }, Answered::Yes(list)) => (held, listed(&list)?),
-            (Pending::Listing { held }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (Pending::Listing { held, caller }, Answered::Yes(list)) => (held, listed(&list.reachable_by(caller))?),
+            (Pending::Listing { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
             (
-                other @ (Pending::Describing { .. }
+                other @ (Pending::Checking { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<EngineTrust, Asking>> for EngineTools {
+    type Sends = (Asks<Path<Engine>, DescribeEngine, Asking>, Asks<Path<Engines>, TerminateEngine, Asking>);
+
+    /// The trust of the engine a session's call names: the engine is reached when the session started it, and the
+    /// call is refused otherwise, the same whether the engine is another's or not linked at all.
+    fn handle(
+        &mut self,
+        (answered, asking): (Answered<EngineTrust>, Asking),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&asking.number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Checking { held, caller, reaching }, Answered::Yes(EngineTrust::Linked { trust }))
+                if trust.reachable_by(caller) =>
+            {
+                let pending = reach(turn, held, asking, reaching)?;
+                self.calls.insert(asking.number, pending);
+                return Ok(());
+            }
+            (Pending::Checking { held, reaching, .. }, Answered::Yes(_)) => (held, unreached(reaching.engine())),
+            (Pending::Checking { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Describing { .. }
                 | Pending::Finding { .. }
                 | Pending::Calling { .. }
                 | Pending::Minting { .. }
@@ -335,6 +402,7 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
                 Err(refusal) => (held, refusal),
             },
             other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
             | Pending::Calling { .. }
             | Pending::Minting { .. }
             | Pending::Spawning { .. }
@@ -362,6 +430,7 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
         let (held, called) = match pending {
             Pending::Calling { held, tool, output } => (held, output_of(turn, answered, &tool, &output)?),
             other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
             | Pending::Describing { .. }
             | Pending::Finding { .. }
             | Pending::Minting { .. }
@@ -392,6 +461,7 @@ impl Handles<Answer<Minted, Asking>> for EngineTools {
             (Pending::Minting { held }, Answered::No(_)) => (held, refused("`Engines` minted no token")),
             (
                 other @ (Pending::Listing { .. }
+                | Pending::Checking { .. }
                 | Pending::Describing { .. }
                 | Pending::Finding { .. }
                 | Pending::Calling { .. }
@@ -422,6 +492,7 @@ impl Handles<Answer<Spawn, Asking>> for EngineTools {
         let (held, called) = match pending {
             Pending::Spawning { held } => (held, spawned(answered)?),
             other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
             | Pending::Describing { .. }
             | Pending::Finding { .. }
             | Pending::Calling { .. }
@@ -457,6 +528,7 @@ impl Handles<Answer<Terminated, Asking>> for EngineTools {
             (Pending::Terminating { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
             (
                 other @ (Pending::Listing { .. }
+                | Pending::Checking { .. }
                 | Pending::Describing { .. }
                 | Pending::Finding { .. }
                 | Pending::Calling { .. }
@@ -477,6 +549,46 @@ fn lost() -> Outcome {
     refused("the hub's tools lost track of this call")
 }
 
+/// The refusal of a session's call of engine `engine`, which it did not start: the same whether the engine is the
+/// owner's, another session's, or not linked, so it tells the session nothing of engines it cannot reach.
+fn unreached(engine: u32) -> Outcome {
+    refused(format!(
+        "engine {engine} is not one this session started: a session reaches only the engines it started, which \
+         `list_engines` lists"
+    ))
+}
+
+/// Asks what `reaching` asks of its engine, for the call `held`, as the ask `asking`: its tools, of the engine itself,
+/// or its end, of `Engines`. What the call then waits on.
+fn reach<S, ID, IT>(
+    turn: &mut Turn<'_, EngineTools, S>,
+    held: Held<Called>,
+    asking: Asking,
+    reaching: Reaching,
+) -> Result<Pending, Fault>
+where
+    S: Allows<Asks<Path<Engine>, DescribeEngine, Asking>, ID>
+        + Allows<Asks<Path<Engines>, TerminateEngine, Asking>, IT>,
+{
+    let pending = match reaching {
+        Reaching::Describe(DescribeTools { engine, show }) => {
+            turn.to(path::<Engine>(u64::from(engine))).ask::<_, _, ID>(&DescribeEngine, &asking)?;
+            let show = show.unwrap_or(ToolsShown::Names);
+            Pending::Describing { held, engine, show }
+        }
+        Reaching::Call(EngineCall { engine, tool, input }) => {
+            turn.to(path::<Engine>(u64::from(engine))).ask::<_, _, ID>(&DescribeEngine, &asking)?;
+            Pending::Finding { held, engine, tool, input }
+        }
+        Reaching::Terminate(terminate) => {
+            turn.to(path::<Engines>(())).ask::<_, _, IT>(&terminate, &asking)?;
+            Pending::Terminating { held, engine: terminate.engine }
+        }
+    };
+
+    Ok(pending)
+}
+
 /// A refusal saying `why`.
 fn refused(why: impl Into<String>) -> Outcome {
     Outcome::Refused(why.into())
@@ -488,11 +600,11 @@ fn order(tool: &str, input: &[u8]) -> Result<Order, Outcome> {
     let budget = &mut Budget::new(WALK_BYTES);
     let read = match tool {
         LIST_ENGINES => from_bytes::<ListEngines>(input, budget).map(|_| Order::List),
-        DESCRIBE_ENGINE => from_bytes(input, budget).map(Order::Describe),
-        CALL_TOOL => from_bytes::<EngineCall>(input, budget).map(Order::Call),
+        DESCRIBE_ENGINE => from_bytes(input, budget).map(|describe| Order::Reach(Reaching::Describe(describe))),
+        CALL_TOOL => from_bytes::<EngineCall>(input, budget).map(|call| Order::Reach(Reaching::Call(call))),
         MINT_TOKEN => from_bytes::<MintToken>(input, budget).map(|_| Order::Mint),
         SPAWN_ENGINE => from_bytes(input, budget).map(Order::Spawn),
-        TERMINATE_ENGINE => from_bytes(input, budget).map(Order::Terminate),
+        TERMINATE_ENGINE => from_bytes(input, budget).map(|terminate| Order::Reach(Reaching::Terminate(terminate))),
         other => return Err(refused(format!("there is no tool `{other}` here"))),
     };
 
