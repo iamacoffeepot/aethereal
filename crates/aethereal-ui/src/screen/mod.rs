@@ -48,6 +48,7 @@ mod pictures;
 mod popups;
 mod program;
 mod scrolls;
+mod selection;
 #[cfg(test)]
 mod streaming;
 #[cfg(test)]
@@ -73,7 +74,7 @@ use crate::tree::{
     Composite, Difference, Flat, Flattened, KeyPath, Look, Memos, Node, Segment, Shape, Tree, TreeRefused,
 };
 use crate::unkept::Unkept;
-use crate::widget::{Arrange, Draws, Focused, Laid, Lit, Piece, Quad, Sample, anchor};
+use crate::widget::{Arrange, Draws, Focused, Laid, Lit, Piece, Quad, Sample, Selected, anchor};
 use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -96,6 +97,7 @@ use pictures::{Making, Pictures};
 use popups::{Hover, Layers, Pending, Popper, Stands, Touch, lift, past_anchor, popper, spans};
 use program::Program;
 use scrolls::{Window, Windowing};
+use selection::Building;
 
 /// Where a screen draws: the pass of the frame each of its draws joins, a window's interface pass for a screen over
 /// what the program drew.
@@ -146,7 +148,8 @@ impl Viewport {
 /// while a button is down on it, whether what it last laid out is current, the modifiers held, where the text the last
 /// key typed goes, what it last asked of its window's input method, what its tooltips wait on: the hits the pointer
 /// reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked at; the size it
-/// last told each child it places; where it stands with a drag; and its last press, which the next may follow in a row.
+/// last told each child it places; where it stands with a drag; its last press, which the next may follow in a row; and
+/// whether its view is being built to copy its selection.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -192,6 +195,7 @@ pub struct Screen {
     grip: Grip,
     /// The last press of the main button, which the next may follow in a row.
     presses: Presses,
+    building: Building,
     /// Whether the list last sent may no longer be the one to send: its order, its keys, or a draw in it changed since.
     sent: Sent,
     unkept: Unkept<Worked>,
@@ -414,6 +418,7 @@ impl Screen {
             pictures: Pictures::default(),
             grip: Grip::Loose,
             presses: Presses::Unpressed,
+            building: Building::Shown,
             sent: Sent::Stale,
             unkept: Unkept::default(),
         }
@@ -486,6 +491,7 @@ impl Screen {
         if looks {
             self.hover(&mut orders);
         }
+        self.follow_drag();
         let stale = self.fresh == Fresh::Stale;
         let unchanged = same && !stale;
         if unchanged {
@@ -496,6 +502,7 @@ impl Screen {
             Outcome::Laid | Outcome::Refused | Outcome::Unchanged => Fresh::Current,
             Outcome::Waiting => Fresh::Waiting,
         };
+        self.redrag();
 
         Prepared { outcome, orders }
     }
@@ -528,7 +535,7 @@ impl Screen {
         let flat = flattened.nodes.as_slice();
         let (making, showing) = self.pictures.ask(flat, &mut self.serial, orders);
         let surfaces = popups::stood(flat, &mut self.table);
-        let focus = self.table.focus().clone();
+        let (focus, selected) = (self.table.focus().clone(), selection::parts(flat, self.table.selection()));
         let tops = popups::tops(flat, &surfaces);
         let viewport = self.viewport;
         texts.begin(viewport.scale);
@@ -563,7 +570,7 @@ impl Screen {
                 }
             }
 
-            let standing = Standing::of(node, &focus, lit.as_ref(), &self.grip, around.covered(at));
+            let standing = Standing::of(node, (&focus, selected[at]), lit.as_ref(), &self.grip, around.covered(at));
             let state = self.table.bytes_at(at, node.path).unwrap_or_default();
             let live = surface.touch == Touch::Live;
             let reading = Reading { laid: drawing, state, standing, live };
@@ -874,21 +881,29 @@ impl Shifted {
     }
 }
 
-/// How a widget being listed stands with its screen's input: whether it has focus; whether a drag of the screen's that
-/// it takes is over it; whether it is the source of the drag under way; and whether a widget it is within blocks the
-/// pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a widget being listed stands with its screen's input: whether it has focus; what part of its text its screen's
+/// selection holds; whether a drag of the screen's that it takes is over it; whether it is the source of the drag under
+/// way; and whether a widget it is within blocks the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Standing {
     focused: Focused,
+    selected: Selected,
     lit: Lit,
     dragged: Dragged,
     covered: bool,
 }
 
 impl Standing {
-    /// How the widget of `node` stands, its screen's focus `focus`, the target a drag of its own is over `lit`, where
-    /// it stands with a drag `grip`, and within a widget that blocks the pointer or not, `covered`.
-    fn of(node: &Flat<'_>, focus: &Focus, lit: Option<&KeyPath>, grip: &Grip, covered: bool) -> Self {
+    /// How the widget of `node` stands, its screen's focus `focus` and the part of its text its selection holds
+    /// `selected`, the target a drag of its own is over `lit`, where it stands with a drag `grip`, and within a widget
+    /// that blocks the pointer or not, `covered`.
+    fn of(
+        node: &Flat<'_>,
+        (focus, selected): (&Focus, Selected),
+        lit: Option<&KeyPath>,
+        grip: &Grip,
+        covered: bool,
+    ) -> Self {
         let focused = match focus {
             Focus::On(path) if path == node.path => Focused::Yes,
             Focus::On(_) | Focus::Nowhere => Focused::No,
@@ -904,7 +919,7 @@ impl Standing {
             Grip::Dragging { .. } | Grip::Pressed { .. } | Grip::Loose => Dragged::Not,
         };
 
-        Self { focused, lit, dragged, covered }
+        Self { focused, selected, lit, dragged, covered }
     }
 }
 
@@ -930,7 +945,7 @@ fn listed<'flat>(
     drawn: &mut Vec<(DrawKey, Content)>,
 ) -> Listing {
     let Reading { laid, state, standing, live } = reading;
-    let Standing { focused, lit, .. } = standing;
+    let Standing { focused, selected, lit, .. } = standing;
     measuring.at(node.path, Asker::Drawing);
     let widget = node.node.widget();
     let style = node.node.style();
@@ -948,7 +963,7 @@ fn listed<'flat>(
         });
     }
     let beneath = pieces.len();
-    widget.draw(state, style, &laid, &mut Draws::new(pieces, measuring, focused, lit));
+    widget.draw(state, style, &laid, &mut Draws::new(pieces, measuring, focused, lit).selecting(selected));
     let mut above = if over {
         pieces.split_off(beneath)
     } else {

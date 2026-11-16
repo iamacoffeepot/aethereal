@@ -140,7 +140,8 @@ where
     A: View + Handles<Answer<Pasted, Pasting>> + Handles<Answer<Copied, Copying>>,
     <A as Controls>::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
 {
-    let Heard { mut raised, keys, imes, away, clips, lines } = heard;
+    // A copy of the selection is taken in before, where the view is built again to copy it (`screen!`).
+    let Heard { mut raised, keys, imes, away, clips, lines, copies: _ } = heard;
     for (level, line) in lines {
         turn.log(level, line);
     }

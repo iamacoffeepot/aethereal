@@ -32,17 +32,18 @@ use super::clipboard::{self, Clipping};
 use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
+use super::selection::Copies;
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
 use crate::fonts::Asker;
-use crate::input::{Erased, First, Hears, Input, Key, Pointing, Raised, Used};
-use crate::table::Focus;
+use crate::input::{Erased, First, Hears, Input, Key, Pointing, Raised, Selecting, Used};
+use crate::table::{Focus, Selection};
 use crate::tree::{KeyPath, Node, Shape, Tree};
 use crate::widget::Built;
 use aethereal_actor::{Answered, Level, Time};
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::Vec2;
 use aethereal_render::draw_list::{Entry, Pointer};
-use aethereal_window::{AllowIme, Button, ImeAllowed, KeyEvent, Keyed, Over, Pointed, PointerEvent};
+use aethereal_window::{AllowIme, Button, Cursor, ImeAllowed, KeyEvent, Keyed, Over, Pointed, PointerEvent};
 
 /// The window's input method was asked to compose, or to stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -51,7 +52,8 @@ pub struct ImeAsked;
 
 /// What a turn of input leaves for the screen's handler: the events its widgets raised, for the screen's methods; the
 /// keys that neither its focus nor its focus keys used, for its `key`; what to ask of its window's input method; the
-/// drags dropped on other actors, to mail; what to ask of the clipboard; and the lines to log.
+/// drags dropped on other actors, to mail; what to ask of the clipboard; whether to copy the screen's selection, which
+/// the handler builds the view again for; and the lines to log.
 #[derive(Debug, Default)]
 pub struct Heard {
     pub(crate) raised: Vec<Raised<Erased>>,
@@ -59,7 +61,23 @@ pub struct Heard {
     pub(crate) imes: Vec<AllowIme>,
     pub(crate) away: Vec<Away>,
     pub(crate) clips: Vec<Clipping>,
+    pub(crate) copies: Copies,
     pub(crate) lines: Vec<(Level, String)>,
+}
+
+impl Heard {
+    /// Whether the turn asked for the screen's selection to be copied: the handler builds the view again with every row
+    /// the selection runs through ([`Screen::building_selection`]) and hands it to [`Screen::copy_selection`].
+    #[must_use]
+    pub fn copies_selection(&self) -> bool {
+        self.copies == Copies::Selection
+    }
+
+    /// Asks the clipboard to hold `text`, the screen's selection as copied.
+    pub(crate) fn copy(&mut self, text: String) {
+        self.copies = Copies::Nothing;
+        self.clips.push(Clipping::Copy(text));
+    }
 }
 
 /// Where the text a key types goes, as it comes after the key (ADR-0051): to the focused widget, or nowhere, when the
@@ -168,9 +186,13 @@ impl Screen {
             }
             PointerEvent::PointerMoved { x, y } => {
                 self.drag_to(&path, Vec2::new(x, y));
+                self.drag_select(Vec2::new(x, y));
                 Ended::Press
             }
-            PointerEvent::PointerUp { button: Button::Main, .. } => self.let_go(&path),
+            PointerEvent::PointerUp { button: Button::Main, .. } => {
+                self.let_select();
+                self.let_go(&path)
+            }
             PointerEvent::PointerUp { .. } | PointerEvent::Wheel { .. } => Ended::Press,
         };
         let dragged = matches!(ended, Ended::Drag(_));
@@ -199,17 +221,10 @@ impl Screen {
                 return heard;
             }
         };
-        let pressed = matches!(pointing, Pointing::Down { button: Button::Main, .. });
-        let passes = matches!(self.listed.get(place(entry)), Some(Entry::Hit { pointer: Pointer::Passes(_), .. }));
-        let focuses = pressed && !passes;
-        if focuses {
-            let focusable = self.widget(&path).is_some_and(Built::focusable);
-            let focus = if focusable {
-                Focus::On(path.clone())
-            } else {
-                Focus::Nowhere
-            };
-            self.refocus(focus, &mut heard);
+        if let (Pointing::Down { button: Button::Main, presses, .. }, PointerEvent::PointerDown { x, y, .. }) =
+            (pointing, event)
+        {
+            self.press_main(&path, entry, (Vec2::new(x, y), presses), &mut heard);
         }
         let before = heard.raised.len();
         self.input(&path, &mut heard, |widget, state, input| widget.pointed(state, pointing, input));
@@ -223,6 +238,27 @@ impl Screen {
         heard
     }
 
+    /// Takes in a press of the main button through the hit numbered `entry` over the widget at `path`, at `at` in the
+    /// screen's pixels, the `presses`th in a row: unless the hit passes the pointer on to what is beneath it, it focuses
+    /// the widget when it can hold focus, and clears focus when it cannot, and starts or clears the selection there,
+    /// reaching the widget as a panel when its hit blocks the pointer with the default cursor.
+    fn press_main(&mut self, path: &KeyPath, entry: u32, (at, presses): (Vec2, u32), heard: &mut Heard) {
+        let hit = self.listed.get(place(entry));
+        let passes = matches!(hit, Some(Entry::Hit { pointer: Pointer::Passes(_), .. }));
+        let panel = matches!(hit, Some(Entry::Hit { pointer: Pointer::Blocks(Cursor::Default), .. }));
+        if passes {
+            return;
+        }
+        let focusable = self.widget(path).is_some_and(Built::focusable);
+        let focus = if focusable {
+            Focus::On(path.clone())
+        } else {
+            Focus::Nowhere
+        };
+        self.refocus(focus, heard);
+        self.press_select(path, at, (presses, panel), heard);
+    }
+
     /// Takes in a press of `button` into the child placed in the slot at `slot`, as a press on the screen that reaches
     /// no widget that holds focus: the main button clears focus, stopping the window's input method, and any button
     /// shuts each open popup it lands outside of. The child hears the press itself, so the screen raises nothing.
@@ -230,6 +266,8 @@ impl Screen {
         self.pressed_in(&Pressing::At(slot));
         if button == Button::Main {
             self.refocus(Focus::Nowhere, heard);
+            self.table.select(Selection::Nothing);
+            self.fresh = Fresh::Stale;
         }
     }
 
@@ -413,7 +451,7 @@ impl Screen {
     }
 
     /// The widget at `path` in the last tree built, if it has one there.
-    fn widget(&self, path: &KeyPath) -> Option<&dyn Built> {
+    pub(super) fn widget(&self, path: &KeyPath) -> Option<&dyn Built> {
         let Last::Built(tree) = &self.unkept.last else {
             return None;
         };
@@ -457,13 +495,21 @@ impl Screen {
         let before = state.clone();
         let mut measuring = fonts.measuring(texts, self.viewport.scale);
         measuring.at(path, Asker::Drawing);
-        let mut clips = Vec::new();
-        let mut input = Input::new(node.style(), *laid, &mut measuring, (&mut heard.raised, &mut clips));
+        let (mut clips, mut selecting) = (Vec::new(), Vec::new());
+        let mut input =
+            Input::new(node.style(), *laid, &mut measuring, (&mut heard.raised, &mut clips, &mut selecting));
         let took = take(widget, &mut state, &mut input);
         heard.clips.extend(clipboard::clippings(clips, path));
         if state != before {
             self.table.write(path, widget.state_kind(), state);
             self.fresh = Fresh::Stale;
+        }
+        for asked in selecting {
+            match asked {
+                Selecting::All => self.select_all(path),
+                Selecting::Copy if self.table.selection().selects() => heard.copies = Copies::Selection,
+                Selecting::Copy => {}
+            }
         }
 
         Some(took)
