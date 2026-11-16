@@ -3,6 +3,7 @@
 //! what changed (ADR-0056: Draws are kept by widget key).
 
 use crate::fonts::Measuring;
+use crate::pixels::PictureId;
 use crate::style::Edges;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Colour, Font, Outline, Run, Wrap};
@@ -100,6 +101,9 @@ pub enum Sample {
     Solid,
     /// The part `uv` of `texture`, from 0 to 1 across and down, its edges kept as `slices` says, tinted by its colour.
     Texture { texture: TextureId, uv: Rect2, slices: Slices },
+    /// The part `uv` of the texture its screen makes of the picture `picture`, as `Texture` samples its texture: what
+    /// a [`Picture`](crate::widgets::Picture) draws.
+    Picture { picture: PictureId, uv: Rect2, slices: Slices },
 }
 
 /// How a sampled quad keeps the edges of what it samples: each side's band, `inset` pixels of the quad drawn from

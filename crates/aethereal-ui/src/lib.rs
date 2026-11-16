@@ -131,6 +131,7 @@ mod fonts;
 mod input;
 mod layout;
 pub mod markdown;
+pub mod pixels;
 mod screen;
 mod style;
 mod table;
@@ -148,8 +149,9 @@ pub use drag::{
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising};
 pub use screen::{
-    DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared,
-    Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
+    DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Picturing, Placing,
+    Prepared, Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Texturing, Tipping, Uniforming,
+    Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
 pub use table::{Focus, Table};
@@ -166,8 +168,8 @@ pub use widget::{
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Keeps, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text,
-        TextInput, Texture, Toggle, Tooltip,
+        Bar, Button, Column, Fill, Grid, Image, Keeps, Picture, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs,
+        Text, TextInput, Texture, Toggle, Tooltip,
     };
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
@@ -208,7 +210,7 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::Meshed, $crate::Meshing>,
             $crate::__private::Answer<$crate::__private::Programmed, $crate::Programming>,
             $crate::__private::Answer<$crate::__private::Uniformed, $crate::Uniforming>,
-            $crate::__private::Answer<$crate::__private::Textured, $crate::Whitening>,
+            $crate::__private::Answer<$crate::__private::Textured, $crate::Texturing>,
             $crate::__private::Answer<$crate::__private::FontMetrics, $crate::MetricsAsked>,
             $crate::__private::Answer<$crate::__private::Instanced, $crate::Instancing>,
             $crate::__private::Answer<$crate::__private::Placed, $crate::Placing>,
@@ -317,7 +319,7 @@ macro_rules! screen {
         $crate::screen!(@answer $screen, $field, Meshed, Meshing, meshed);
         $crate::screen!(@answer $screen, $field, Programmed, Programming, programmed);
         $crate::screen!(@answer $screen, $field, Uniformed, Uniforming, uniformed);
-        $crate::screen!(@answer $screen, $field, Textured, Whitening, whitened);
+        $crate::screen!(@answer $screen, $field, Textured, Texturing, textured);
         $crate::screen!(@answer $screen, $field, Instanced, Instancing, instanced);
         $crate::screen!(@answer $screen, $field, Placed, Placing, placed);
         $crate::screen!(@answer $screen, $field, TextMade, Texting, text_made);
