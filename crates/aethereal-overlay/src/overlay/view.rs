@@ -37,7 +37,7 @@ use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, Unsubscrib
 use aethereal_render::text::{Colour, Font, Run};
 use aethereal_sessions::Chat;
 use aethereal_tools::{CallTool, Tools};
-use aethereal_ui::markdown::{Images, MarkdownBlock, Prose};
+use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
 
 /// The overlay's root, the window, and the console's column within it, as the markup places them.
@@ -351,10 +351,24 @@ impl Overlay {
         !self.chats.asks().is_empty()
     }
 
-    /// The style set Claude's markdown is built with: the library's, which reads on the console's panel.
+    /// The style set Claude's markdown is built with: the library's, with every text in the console's own face,
+    /// IBM Plex Mono, and its body at the console's size, so a reply reads as every other line of the console does.
     #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
     pub(super) fn prose(&self) -> Prose {
-        Prose::default()
+        let inks = Inks::default();
+        let body = |style: Style| Style { font: Font::Mono, font_size: TEXT_PIXELS, ..style };
+        let heading = |style: Style| Style { font: Font::Mono, ..style };
+        let [first, second, third] = inks.headings;
+
+        Prose::new(Inks {
+            paragraph: body(inks.paragraph),
+            headings: [heading(first), heading(second), heading(third)],
+            code: body(inks.code),
+            marker: body(inks.marker),
+            head_cell: body(inks.head_cell),
+            cell: body(inks.cell),
+            ..inks
+        })
     }
 
     /// The pictures of Claude's markdown's images: none, as the overlay fetches no image a reply names.
