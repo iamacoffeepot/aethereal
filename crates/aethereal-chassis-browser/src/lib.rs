@@ -45,6 +45,8 @@
 
 mod canvas;
 #[cfg(target_arch = "wasm32")]
+mod clipboard;
+#[cfg(target_arch = "wasm32")]
 mod clock;
 pub mod controls;
 #[cfg(target_arch = "wasm32")]

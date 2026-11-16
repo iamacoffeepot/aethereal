@@ -175,6 +175,12 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
         false
     }
 
+    /// Whether Tab reaches it, of the widgets that can hold focus: each one by default, and not a text read rather than
+    /// filled in, which takes focus on a press only so its keys reach it.
+    fn tabbable(&self) -> bool {
+        self.focusable()
+    }
+
     /// What it hears while it has its screen's focus.
     fn hears(&self) -> Hears {
         Hears::Keys(&[])
@@ -363,6 +369,9 @@ pub trait Built: Debug + Send {
     fn pointer(&self, state: &[u8]) -> Pointer;
     /// Whether it can hold its screen's focus.
     fn focusable(&self) -> bool;
+
+    /// Whether Tab reaches it.
+    fn tabbable(&self) -> bool;
     /// What it hears while it has its screen's focus.
     fn hears(&self) -> Hears;
     /// Takes in what the pointer did at it, its state read from and written back to `state`.
@@ -475,6 +484,10 @@ impl<W: Widget> Built for W {
 
     fn focusable(&self) -> bool {
         Widget::focusable(self)
+    }
+
+    fn tabbable(&self) -> bool {
+        Widget::tabbable(self)
     }
 
     fn hears(&self) -> Hears {

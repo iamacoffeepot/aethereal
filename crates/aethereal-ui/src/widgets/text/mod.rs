@@ -35,7 +35,7 @@ impl Text {
 
     /// Its box, as `measuring` lays it out at its style's size within `width` pixels, `None` for as wide as it wants,
     /// with the wrap it is made with to be drawn in that box.
-    fn fitted(
+    pub(super) fn fitted(
         &self,
         style: &Style,
         measuring: &mut Measuring<'_>,
@@ -72,7 +72,7 @@ impl Text {
 
 /// The width a text is laid out within.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Width {
+pub(super) enum Width {
     /// As wide as it wants: its lines broken only where it breaks them.
     Unbounded,
     /// As narrow as it goes: its widest word.
@@ -82,7 +82,7 @@ enum Width {
 }
 
 /// How wide a text's rim is, in pixels at `scale`: none for a text with no rim.
-fn rim(style: &Style, scale: f32) -> f32 {
+pub(super) fn rim(style: &Style, scale: f32) -> f32 {
     match style.outline {
         Outline::None => 0.0,
         Outline::Of { width, .. } => width * scale,

@@ -37,6 +37,7 @@
 mod again;
 mod around;
 mod children;
+mod clipboard;
 mod drags;
 mod input;
 mod keys;
@@ -49,6 +50,7 @@ mod scrolls;
 #[cfg(test)]
 mod tests;
 
+pub use clipboard::{Clipping, Copying, Pasting};
 pub use drags::Landing;
 pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};

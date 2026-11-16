@@ -294,17 +294,17 @@ fn topmost<'flat>(
     topmost
 }
 
-/// Which of `flat` Tab reaches, `surfaces` where each stands and `table` keeping the popups' states: each focusable
-/// widget shown and live, and, while a modal popup is open, only those within the topmost's content.
+/// Which of `flat` Tab reaches, `surfaces` where each stands and `table` keeping the popups' states: each widget Tab
+/// reaches shown and live, and, while a modal popup is open, only those within the topmost's content.
 pub(super) fn tabbable(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -> Vec<bool> {
     let modal = topmost(flat, surfaces, table, |modal| modal).map(|(at, _)| &flat[at].path);
     flat.iter()
         .zip(surfaces)
         .map(|(node, surface)| {
-            let focusable = node.node.widget().focusable();
+            let tabbable = node.node.widget().tabbable();
             let ringed = modal.is_none_or(|modal| contains(modal, node.path));
 
-            focusable && surface.reaches() && ringed
+            tabbable && surface.reaches() && ringed
         })
         .collect()
 }

@@ -16,7 +16,9 @@
 //! - Home and End, or Command with Left and Right, move to the start and end of the line as drawn; Control with Home
 //!   and End, or Command with Up and Down, to the start and end of the text;
 //! - Shift with any move takes the selection with it; Control or Command with A selects the whole;
-//! - Backspace and Delete delete a character, and a word with Control or Option.
+//! - Backspace and Delete delete a character, and a word with Control or Option;
+//! - Control or Command with C copies the selection, with X cuts it, and with V pastes what the clipboard holds at the
+//!   caret as it stands once the clipboard answers (ADR-0056: Copy and paste).
 //!
 //! A key that types text is used, so a letter typed never reaches the screen's hotkeys; a key it does not use, Tab or
 //! Escape or a function key, goes on to the focus keys and the screen. A press puts the caret under the pointer and a
@@ -25,7 +27,7 @@
 //! A text its screen sets that is not its own last edit, a line recalled or completed, puts its caret at the text's
 //! end. Undoing an edit is left out: the input keeps no history of its edits to step back through.
 
-mod edit;
+pub(super) mod edit;
 mod shown;
 #[cfg(test)]
 mod tests;
@@ -423,6 +425,17 @@ impl<E: Event> Widget for TextInput<E> {
         editing.along = Along::Caret;
         match key.code.as_str() {
             "KeyA" if held.command() => edit.all(),
+            "KeyC" if held.command() => {
+                if edit.selects() {
+                    input.copy(String::from(edit.selection()));
+                }
+            }
+            "KeyX" if held.command() => {
+                if edit.selects() {
+                    input.cut(String::from(edit.selection()));
+                }
+            }
+            "KeyV" if held.command() => input.paste(),
             "Backspace" => {
                 let to = if by_word {
                     edit.word_back(caret)

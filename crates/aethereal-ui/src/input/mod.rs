@@ -110,25 +110,38 @@ pub enum Used {
     Passed,
 }
 
+/// What a widget asks of its screen's clipboard (ADR-0056: Copy and paste).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Clip {
+    /// Write this text to it.
+    Copy(String),
+    /// Write this text to it, cut from the widget's selection, which goes once it is written.
+    Cut(String),
+    /// Read it, and type what it holds into the widget that asked, at its caret as it stands once the read is answered.
+    Paste,
+}
+
 /// What a widget is given as input reaches it: its style; where layout put it, in its own coordinates, its border box
-/// from `0, 0`; the fonts its text measures by; and where the events it raises go.
+/// from `0, 0`; the fonts its text measures by; where the events it raises go; and where what it asks of the clipboard
+/// goes.
 pub struct Input<'input, 'fonts> {
     style: &'input Style,
     laid: Laid,
     measuring: &'input mut Measuring<'fonts>,
     raised: &'input mut Vec<Raised<Erased>>,
+    clips: &'input mut Vec<Clip>,
 }
 
 impl<'input, 'fonts> Input<'input, 'fonts> {
     /// Input to a widget styled `style`, laid at `laid` in its screen's pixels, measuring with `measuring`, raising into
-    /// `raised`.
+    /// `raised`, and asking the clipboard into `clips`.
     pub(crate) fn new(
         style: &'input Style,
         laid: Laid,
         measuring: &'input mut Measuring<'fonts>,
-        raised: &'input mut Vec<Raised<Erased>>,
+        (raised, clips): (&'input mut Vec<Raised<Erased>>, &'input mut Vec<Clip>),
     ) -> Self {
-        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised }
+        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised, clips }
     }
 
     /// Its style, resolved from the style its markup names.
@@ -151,5 +164,23 @@ impl<'input, 'fonts> Input<'input, 'fonts> {
     /// Raises `raised`, which calls its screen's method once the input is taken in.
     pub fn raise<E: Event>(&mut self, raised: Raised<E>) {
         self.raised.push(raised.erase());
+    }
+
+    /// Writes `text` to the host's clipboard, once the input is taken in.
+    pub fn copy(&mut self, text: String) {
+        self.clips.push(Clip::Copy(text));
+    }
+
+    /// Writes `text`, the widget's selection, to the host's clipboard once the input is taken in, and once it is written
+    /// types nothing over the widget's selection as it stands then, while it still has its screen's focus: so a write
+    /// the host refuses cuts nothing.
+    pub fn cut(&mut self, text: String) {
+        self.clips.push(Clip::Cut(text));
+    }
+
+    /// Reads the host's clipboard once the input is taken in: what it holds is typed into this widget, at its caret as
+    /// it stands when the read is answered, while it still has its screen's focus.
+    pub fn paste(&mut self) {
+        self.clips.push(Clip::Paste);
     }
 }
