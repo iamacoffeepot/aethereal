@@ -12,7 +12,8 @@
 //! taken the token its `Hello` brought. It spawns engines from the hub's store too, a [`Spawned`] beneath itself for
 //! each, which launches its binary from the `Store` and starts it through `Processes`, so a hub that spawns lists
 //! both. The hub's tools ask `Engines` to [`ListEngines`], to [`MintFor`], to [`SpawnFor`], or to
-//! [`TerminateEngine`], and ask an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`].
+//! [`TerminateEngine`], and ask an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`]. For a
+//! session, they first ask `Engines` for the engine's [`TrustOf`], and reach only an engine that session started.
 //!
 //! Each token and spawn is asked for by a caller of the hub's tools, the owner or a session, and the engine that links
 //! with it is [`Trust`]ed only when the owner asked (ADR-0057). `Engines` decides it as the engine's token is taken,
@@ -69,10 +70,10 @@ mod tools;
 mod trust;
 
 pub use engines::{
-    Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
-    EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintFor, MintToken, Minted, Minting,
-    Origin, Patience, Runs, Sent, Shown, Spawn, SpawnEngine, SpawnFor, Spawned, SpawnedConfig, TakeToken,
-    TerminateEngine, Terminated, TokenFor, Unlistened, Vouching,
+    Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing,
+    EngineTrust, Engines, EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintFor, MintToken,
+    Minted, Minting, Origin, Patience, Runs, Sent, Shown, Spawn, SpawnEngine, SpawnFor, Spawned, SpawnedConfig,
+    TakeToken, TerminateEngine, Terminated, TokenFor, TrustOf, Unlistened, Vouching,
 };
 pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
 pub use limits::{BlobBytesTooLow, ReadLimitTooLow};

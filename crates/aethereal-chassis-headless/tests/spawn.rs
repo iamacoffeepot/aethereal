@@ -411,7 +411,8 @@ fn a_program_that_exits_before_it_links_answers_exited_and_its_token_goes_with_i
 
     let status = ExitStatus::Code(3);
     assert_eq!(spawned, Spawn::Exited { status, stderr: String::from(GAVE_UP) });
-    assert_eq!(list.exited, vec![ExitedEngine { binary: spawnee(), status, stderr: String::from(GAVE_UP) }]);
+    let stderr = String::from(GAVE_UP);
+    assert_eq!(list.exited, vec![ExitedEngine { binary: spawnee(), status, stderr, trust: Trust::Trusted }]);
     assert_eq!(down, Down::Refused(Refusal::Token));
     assert!(closed, "the hub hangs up once its refusal is sent");
 

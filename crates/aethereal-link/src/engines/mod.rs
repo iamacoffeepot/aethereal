@@ -10,7 +10,8 @@ mod spawning;
 mod tokens;
 
 pub use asks::{
-    CallEngine, DescribeEngine, Described, EngineList, EngineListing, ExitedEngine, ListEngines, Origin, Shown,
+    CallEngine, DescribeEngine, Described, EngineList, EngineListing, EngineTrust, ExitedEngine, ListEngines, Origin,
+    Shown, TrustOf,
 };
 pub use engine::{Engine, EngineConfig, Lapsing, Sent, Vouching};
 
@@ -206,6 +207,11 @@ impl Carries<TakeToken> for Engines {
     type Answers = (TokenFor,);
 }
 
+/// Asked at its typed path, it answers at once.
+impl Carries<TrustOf> for Engines {
+    type Answers = (EngineTrust,);
+}
+
 /// Asked at its typed path, it answers once the engine has linked, or what came of it before.
 impl Carries<SpawnFor> for Engines {
     type Answers = (Spawn,);
@@ -226,6 +232,7 @@ impl Actor for Engines {
         Ended,
         Shown,
         ListEngines,
+        TrustOf,
         MintFor,
         Answer<Drawn, Minting>,
         TakeToken,
@@ -381,6 +388,19 @@ impl Handles<ListEngines> for Engines {
     }
 }
 
+impl Handles<TrustOf> for Engines {
+    type Sends = (ToSender<EngineTrust>,);
+
+    /// The trust of the engine linked under the id asked, decided as its token was taken: an engine whose token has
+    /// not been taken is not linked.
+    fn handle(&mut self, asked: TrustOf, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let trust = self.linked.get(&asked.engine).map_or(EngineTrust::NotLinked, Linked::trust);
+        turn.reply(&trust)?;
+
+        Ok(())
+    }
+}
+
 impl Handles<MintFor> for Engines {
     type Sends = (ToSender<Minted>,);
 
@@ -498,5 +518,13 @@ impl Linked {
         };
 
         Some(EngineListing { engine, name: name.clone(), tools: *tools, origin: came.origin(), trust: came.trust() })
+    }
+
+    /// Its trust, once its token is taken.
+    fn trust(&self) -> EngineTrust {
+        match &self.standing {
+            Standing::Linked { came, .. } => EngineTrust::Linked { trust: came.trust() },
+            Standing::Unproven => EngineTrust::NotLinked,
+        }
     }
 }
