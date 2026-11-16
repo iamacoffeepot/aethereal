@@ -253,10 +253,21 @@ impl Default for Transcript {
 }
 
 impl Entry {
-    /// Whether it is a line an owner said: a caller's of the hub's tools, or one typed at an engine.
-    const fn is_owner_s_line(&self) -> bool {
-        matches!(self, Self::Said { by: Speaker::Caller | Speaker::Engine { .. }, .. })
+    /// Whether it is a line an owner said: a caller's of the hub's tools, or one typed at an engine, that is not one of
+    /// Claude Code's own commands, which folds nothing in.
+    fn is_owner_s_line(&self) -> bool {
+        match self {
+            Self::Said { by: Speaker::Caller | Speaker::Engine { .. }, text } => !is_command(text),
+            _ => false,
+        }
     }
+}
+
+/// Whether `text` is one of Claude Code's own commands, `/compact` and the like: a line that starts with `/`, which
+/// Claude Code reads as its command only when it is the whole message, untagged (ADR-0057: The console is the chat).
+#[must_use]
+pub fn is_command(text: &str) -> bool {
+    text.starts_with('/')
 }
 
 impl Numbered {

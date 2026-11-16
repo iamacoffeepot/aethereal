@@ -9,10 +9,16 @@ description = "The dev overlay: one root any program lists, which draws how the 
 # It reads the window, the renderer, and the tools, so no capability's crate can hold it (ADR-0053: Where it lives).
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
-aethereal-data = { path = "../aethereal-data" }
+# A session's events are Claude Code's stream-json, read with the workspace's own JSON (ADR-0057).
+aethereal-data = { path = "../aethereal-data", features = ["json"] }
+# The console is the chat of an engine its hub trusts: it listens to the engine's link, and tells it what the owner
+# does (ADR-0057: The console is the chat).
+aethereal-link = { path = "../aethereal-link" }
 # Its charts are drawn in the math crate's boxes, as the widget library lays them out.
 aethereal-math = { path = "../aethereal-math" }
 aethereal-render = { path = "../aethereal-render" }
+# The chat's vocabulary, the tabs, a transcript's numbered entries, and the asks, is the sessions capability's.
+aethereal-sessions = { path = "../aethereal-sessions" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 # The console's commands are the engine's tools: it reads their sheets, calls them through the tools root, and prints
 # their answers (ADR-0053: Commands are tools).

@@ -2,18 +2,24 @@
 //! after each change, asks the engine's tools for each call the hub sends, and ends its program when the link ends
 //! (ADR-0038, ADR-0040, ADR-0053).
 
+mod chat;
 mod settings;
 
+pub use chat::{Listen, Listening};
 pub use settings::{LinkConfig, LinkSettings, NoToken};
+
+use chat::Shown;
 
 use crate::frames::{self, Written};
 use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ending, Fault, Handles, Level, More,
-    Number, Open, Part, Path, Streamed, Streams, Taken, Tells, ToAny, ToType, Top, Turn, Unanswered, path,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Level,
+    More, Number, Open, Part, Path, Streamed, Streams, Subscribers, Taken, Tells, ToAny, ToType, Top, Turn, Unanswered,
+    path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
+use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Connect, Connected, Dialed, Framing, HungUp, Read, Reading, Shut, Tcp, Write, Writing, Wrote};
 use aethereal_tools::{CallTool, Called, Sheets, Subscribe, Tools};
@@ -88,6 +94,10 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// Mail it cannot read never fails it (ADR-0017): a tool's answer past the engine's `read_limit` is written back
 /// refused. It will not start where a frame could be such mail, which would be dropped unread, and a program sets
 /// `read_limit` above what its tools answer, so that each is served.
+///
+/// A trusted engine's link carries chat too (ADR-0057): the sessions, events, and asks the hub shows the engine are
+/// handed to each actor that [`Listen`]s, the dev overlay's console among them, and the sessions' [`Chat`] an actor
+/// tells it is written up as its frame.
 #[derive(Bound)]
 #[kind(name = "aether.link")]
 pub struct Link {
@@ -98,6 +108,10 @@ pub struct Link {
     /// Each call of the open connection asked of `Tools`, by the root's own number, with the hub's number for it.
     calls: BTreeMap<u64, u64>,
     next: u64,
+    /// What the hub has shown the engine of the chat, handed to a listener as it comes.
+    shown: Shown,
+    /// The actors shown the chat.
+    listeners: Subscribers<Listening>,
 }
 
 impl ChildOf for Link {
@@ -130,6 +144,9 @@ impl Actor for Link {
         Answer<HungUp, Number>,
         Answer<Wrote, Sending>,
         Answer<Called, Calling>,
+        Listen,
+        Chat,
+        Ended,
     );
     type BeginSends = (Tells<Path<Tools>, Subscribe>, Asks<Path<Tcp>, Connect, Connecting>);
     type EndSends = ();
@@ -146,6 +163,8 @@ impl Actor for Link {
             reading: Streams::new(READING_WINDOW),
             calls: BTreeMap::new(),
             next: 0,
+            shown: Shown::Nothing,
+            listeners: Subscribers::new(),
         })
     }
 
@@ -196,10 +215,13 @@ impl Handles<Part<Reading>> for Link {
         Asks<Writing, Write, Sending>,
         Asks<Path<Tools>, CallTool, Calling>,
         ToType<Dialed, Shut>,
+        ToAny<Listening, ShowTabs>,
+        ToAny<Listening, ShowEvents>,
+        ToAny<Listening, ShowAsk>,
     );
 
-    /// A frame from the hub: a call, asked of the engine's tools, or a refusal, which ends the link, as a frame that does not
-    /// read does.
+    /// A frame from the hub: a call, asked of the engine's tools; the chat it shows a trusted engine, handed to each
+    /// listener; or a refusal, which ends the link, as a frame that does not read does.
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
@@ -231,9 +253,9 @@ impl Handles<Part<Reading>> for Link {
                 let due = within.due(turn.now());
                 self.call(turn, call, due, &CallTool { tool, revision, input })
             }
-            // The chat a trusted engine is shown is its overlay's to read (ADR-0057), and no overlay of this engine
-            // reads it yet, so it is passed over.
-            Down::Sessions { .. } | Down::Show { .. } | Down::Ask { .. } => Ok(()),
+            Down::Sessions { list } => self.tabs(turn, list),
+            Down::Show { session, events } => self.events(turn, &ShowEvents { session, events }),
+            Down::Ask { ask, session, what } => self.ask(turn, ShowAsk { ask, session, what }),
         }
     }
 }

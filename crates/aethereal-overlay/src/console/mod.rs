@@ -80,12 +80,29 @@ impl Console {
         self.line = line;
     }
 
+    /// Empties the line, as Escape does with a session's tab open.
+    pub fn clear_line(&mut self) {
+        self.line.clear();
+    }
+
+    /// Keeps `typed` in the history, and empties the line: what entering a line does, whatever it comes to.
+    pub fn kept(&mut self, typed: &str) {
+        self.line.clear();
+        self.history.keep(typed);
+    }
+
     /// Enters `entered`, the line as its text input submitted it: it is kept in the history and echoed in lichen, the
     /// line is left empty, and what its command comes to is printed, or answered for the overlay to call. Rows are
     /// wrapped at `columns` characters.
     pub fn submitted(&mut self, entered: &str, columns: usize) -> Command {
-        self.line.clear();
-        self.history.keep(entered);
+        self.kept(entered);
+
+        self.ran(entered, columns)
+    }
+
+    /// Runs `entered` as [`Self::submitted`] does, keeping nothing in the history: a `/` command typed with a session's
+    /// tab open runs without its `/`, and its caller keeps it with it.
+    pub fn ran(&mut self, entered: &str, columns: usize) -> Command {
         self.scrollback.print(&format!("{PROMPT}{entered}"), LICHEN, columns);
 
         let command = command::command(entered, &self.sheets, columns);
@@ -160,25 +177,37 @@ impl Console {
     }
 
     /// Prints the value a tool answered, `bytes` of `output`'s schema, in the forms its flags read, its rows wrapped
-    /// at `columns`; an answer that prints as nothing prints nothing.
-    pub fn answered(&mut self, output: &Output, bytes: &[u8], columns: usize) {
+    /// at `columns`; an answer that prints as nothing prints nothing. Answers what it printed.
+    pub fn answered(&mut self, output: &Output, bytes: &[u8], columns: usize) -> String {
         let schema: &SchemaNodes = match output {
             Output::Value(schema) | Output::ValueOrImage(schema) => schema,
             Output::Image => {
-                self.scrollback.print(&format!("an answer of {} bytes", bytes.len()), BONE, columns);
-                return;
+                let printed = format!("an answer of {} bytes", bytes.len());
+                self.scrollback.print(&printed, BONE, columns);
+                return printed;
             }
         };
         match print_value(schema, bytes, &mut Budget::new(MOST_PRINT_BYTES)) {
-            Ok(text) if text.is_empty() => {}
-            Ok(text) => self.scrollback.print(&text, BONE, columns),
-            Err(error) => self.refused(&format!("the answer did not read: {error}"), columns),
+            Ok(text) => {
+                if !text.is_empty() {
+                    self.scrollback.print(&text, BONE, columns);
+                }
+                text
+            }
+            Err(error) => {
+                let why = format!("the answer did not read: {error}");
+                self.refused(&why, columns);
+                why
+            }
         }
     }
 
-    /// Prints the image a tool answered, as one line.
-    pub fn answered_image(&mut self, png: &[u8], text: &str, columns: usize) {
-        self.scrollback.print(&print_image(png, text), BONE, columns);
+    /// Prints the image a tool answered, as one line, and answers it.
+    pub fn answered_image(&mut self, png: &[u8], text: &str, columns: usize) -> String {
+        let printed = print_image(png, text);
+        self.scrollback.print(&printed, BONE, columns);
+
+        printed
     }
 
     /// Prints why a tool, or the console, did not do what was asked, in brick.

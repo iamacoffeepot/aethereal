@@ -8,7 +8,7 @@ use super::asks::{
 use super::chat::Chat;
 use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
-use super::transcript::{Ended, Entry, Speaker};
+use super::transcript::{Ended, Entry, Speaker, is_command};
 use super::{Does, Phase, Sessions};
 use aethereal_actor::{Fault, Handles, Held, Level, ToSender, Turn};
 use aethereal_data::Bound;
@@ -277,8 +277,12 @@ impl Sessions {
 
 /// What is written to the session `held` of `text`, said by `by`: each `/` command an owner ran since the last line an
 /// owner said, and what it printed, then the line, each tagged `[engine]` with the engine it came from (ADR-0057). A
-/// line of the hub's own folds nothing in.
+/// line of the hub's own folds nothing in, and one of Claude Code's own commands, `/compact` and the like, is written
+/// alone and untagged, as Claude Code reads a command only so; the commands run before it fold into the next line.
 fn written(held: &Session, by: Speaker, text: &str) -> String {
+    if is_command(text) {
+        return String::from(text);
+    }
     let mut written = String::new();
     if by != Speaker::Hub {
         for ran in held.transcript.ran_since_said() {

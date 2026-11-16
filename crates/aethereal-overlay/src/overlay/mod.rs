@@ -8,8 +8,10 @@
 //! Prepare ──> view (`view`): the band's primitives and the console's widgets ──> the library lays out and draws
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
+//! first shown ──> Listen to the link ──> ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the link (ADR-0057)
 //! ```
 
+mod chat;
 mod console;
 mod controls;
 mod stats;
@@ -19,9 +21,11 @@ mod view;
 
 pub use console::{Calling, Offering};
 
+use crate::chat::Chats;
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
 use crate::gpu::{GpuFigures, GpuTiming};
+use crate::layout::CONSOLE_SHARE;
 use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
@@ -35,10 +39,12 @@ use aethereal_render::Renderer;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
+use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Shaping, Target, Viewport};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
+use chat::Linking;
 
 /// How often the figures beneath the chart, and the engine's memory for the meters, are worked out again while the
 /// overlay is shown: four times a second. The library writes a text again only when what it shows changes.
@@ -110,6 +116,12 @@ pub struct Overlay {
     logs_since: u64,
     /// The program's time from which the log is next read.
     logs_due_nanos: u64,
+    /// The chat the engine's link shows it, which the console shows once the hub lists the sessions (ADR-0057).
+    chats: Chats,
+    /// The engine's link, once looked for.
+    linking: Linking,
+    /// The share of the window's height the console takes, as its grip was last dragged: the engine's own, never sent.
+    console_share: f32,
 }
 
 impl ChildOf for Overlay {
@@ -128,6 +140,9 @@ impl Actor for Overlay {
         Answer<Called, Calling>,
         Answer<Offered, Offering>,
         Marked,
+        ShowTabs,
+        ShowEvents,
+        ShowAsk,
     ];
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,
@@ -171,6 +186,9 @@ impl Actor for Overlay {
             histories: MeterHistories::default(),
             logs_since: 0,
             logs_due_nanos: 0,
+            chats: Chats::default(),
+            linking: Linking::Unlooked,
+            console_share: CONSOLE_SHARE,
         })
     }
 

@@ -18,22 +18,26 @@
 
 use super::{Calling, Overlay};
 use crate::chart::{ChartShown, FrameChart};
-use crate::colour::{BONE, LICHEN, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch};
-use crate::console::Row as PrintedRow;
+use crate::chat::Open;
+use crate::colour::{BONE, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch};
+use crate::console::{Piece, Row as PrintedRow};
 use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
-    CONSOLE_SHARE, DIVIDER_PIXELS, GAP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
+    DIVIDER_PIXELS, GAP_PIXELS, GRIP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
     STRIP_PADDING_PIXELS, TEXT_PIXELS, advance_pixels, gutter_pixels, meter_gutter_pixels,
 };
 use crate::lines::{LineRows, LinesShown};
 use crate::meters::{self, MOST_METER_COLUMNS, Meter, MeterDrawn, MeterGraph};
 use crate::overlay::stats::MOST_COLUMNS;
-use crate::widgets::{Printed, Tint, runs_of};
-use aethereal_actor::{Asks, Path, Tells};
+use crate::widgets::{Grip, Printed, Tint, runs_of};
+use aethereal_actor::{Asks, Fault, Level, Path, Tells, ToType, Turn};
+use aethereal_link::Link;
 use aethereal_render::Renderer;
 use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
 use aethereal_render::text::{Colour, Font, Run};
+use aethereal_sessions::Chat;
 use aethereal_tools::{CallTool, Tools};
+use aethereal_ui::markdown::{Images, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
 
 /// The overlay's root, the window, and the console's column within it, as the markup places them.
@@ -44,10 +48,15 @@ pub fn scrollback_path() -> KeyPath {
     KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(1)])
 }
 
-/// The path of the line's text input: in the prompt's strip, the console's fourth child, in the stack second in it,
+/// The path of the scroll a session's transcript is in: the console's third child.
+pub fn transcript_path() -> KeyPath {
+    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(2)])
+}
+
+/// The path of the line's text input: in the prompt's strip, the console's sixth child, in the stack second in it,
 /// first.
 pub fn prompt_path() -> KeyPath {
-    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(3), Segment::Place(1), Segment::Place(0)])
+    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(5), Segment::Place(1), Segment::Place(0)])
 }
 
 /// `left`, `right`, `top`, and `bottom` logical pixels of padding.
@@ -124,10 +133,10 @@ aethereal_ui::style! {
         shrink: 0.0,
         padding: padded(advance_pixels(), 0.0, 0.0, 0.0),
     }
-    /// The console's panel: a third of the window, beneath the band.
-    pub console { height: Length::Share(CONSOLE_SHARE) }
-    /// The line between the band and the console, over the scrollback's tint.
-    pub band_rule: rule { height: Length::Pixels(DIVIDER_PIXELS), background: panel(SLATE_LIGHTER) }
+    /// The console's panel, beneath the band: its height is the overlay's, set by dragging its grip.
+    pub console {}
+    /// The line between the band and the console, over the scrollback's tint, a grip a few pixels tall for dragging.
+    pub grip: rule { height: Length::Pixels(GRIP_PIXELS), background: panel(SLATE_LIGHTER) }
     /// The scrollback: the rest of the console above the prompt's strip, a step lighter than the band, its rows inside
     /// its padding and its bar, faint stone, at its right edge.
     pub scrollback {
@@ -136,6 +145,32 @@ aethereal_ui::style! {
         padding: padded(PADDING_PIXELS, PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS),
         colour: STONE.opaque(),
     }
+    /// A session's transcript: as the scrollback is, its rows a small gap apart.
+    pub transcript: scrollback { gap: Gap { rows: Space::Pixels(GAP_PIXELS), columns: Space::Pixels(0.0) } }
+    /// One row of a transcript, across it, at least a line of text tall, which the scroll windows its rows by.
+    pub entry { width: Length::Share(1.0), min_height: Length::Pixels(TEXT_PIXELS) }
+    /// A line of a transcript, which its reader can select and copy: the mono face, its colour its own.
+    pub said: mono {}
+    /// The fold of a subagent's events, pressed to open or close it.
+    pub fold { align_self: SelfAlign::Own(Alignment::Start) }
+    /// The fold's text: stone.
+    pub folded: mono { colour: STONE.opaque() }
+    /// Claude's text, as markdown.
+    pub reply { width: Length::Share(1.0) }
+    /// The asks of the open session that wait on the owner, above the prompt's strip.
+    pub asks { background: panel(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS, GAP_PIXELS) }
+    /// One ask, its answers at its end.
+    pub ask_row { align_items: Alignment::Center, gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(SECTION_PIXELS) } }
+    /// What an ask says: ochre, as wide as the row leaves it.
+    pub asked: mono { colour: OCHRE.opaque(), grow: 1.0 }
+    /// An ask's answer, pressed.
+    pub answer { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0), background: panel(SLATE_LIGHTER) }
+    /// The session tabs beneath the prompt's strip, nearest the scene.
+    pub tab_strip { background: panel(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, GAP_PIXELS) }
+    /// A tab, pressed to open it.
+    pub tab_button { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0) }
+    /// A tab's title.
+    pub tab_text: mono {}
     /// The line between the scrollback and the prompt's strip, over the strip's tint.
     pub prompt_rule: rule { height: Length::Pixels(DIVIDER_PIXELS), background: panel(SLATE_DARKER) }
     /// The prompt's strip: a line of text tall inside its padding, a step darker than the band.
@@ -191,10 +226,30 @@ aethereal_ui::view! { Overlay, ui,
                 }
             }
         }
-        Column { style: console, show: self.shows_console(),
-            Tint { style: band_rule }
-            Scroll { .., style: scrollback, keeps: Keeps::End, items: self.rows() as row key row.number(),
+        Column { style: console { height: Length::Share(self.console_share) }, show: self.shows_console(),
+            Grip { style: grip, change => self.resize() }
+            Scroll { .., style: scrollback, show: self.shows_scrollback(), keeps: Keeps::End,
+                items: self.rows() as row key row.number(),
                 Printed { style: mono, runs: row.runs() }
+            }
+            Scroll { .., style: transcript, show: self.shows_transcript(), keeps: Keeps::End,
+                items: self.chats.rows() as row key row.key,
+                Column { style: entry,
+                    Selectable { show: row.is_line(), style: said { colour: row.colour() }, text: row.text() }
+                    Button { show: row.is_fold(), style: fold, click => self.fold(row.key),
+                        Text { style: folded, "{row.text()}" }
+                    }
+                    Column { style: reply, items: self.chats.reply(row) as block key block.index,
+                        MarkdownBlock { memo, block: block, prose: self.prose(), images: self.images(), link => self.follow() }
+                    }
+                }
+            }
+            Column { style: asks, show: self.asking(), items: self.chats.asks() as ask key ask.ask,
+                Row { style: ask_row,
+                    Text { style: asked, "session {ask.session} asks: {ask.what}" }
+                    Button { style: answer, click => self.allow(ask.ask), Text { style: mono, "allow" } }
+                    Button { style: answer, click => self.deny(ask.ask), Text { style: mono, "deny" } }
+                }
             }
             Tint { style: prompt_rule }
             Row { style: prompt_strip,
@@ -212,6 +267,11 @@ aethereal_ui::view! { Overlay, ui,
                 }
                 Printed { style: mono, runs: self.running_runs() }
             }
+            Row { style: tab_strip, show: self.chats.is_listed(), items: self.chats.titles() as tab key tab.place,
+                Button { style: tab_button { background: tab.background() }, click => self.choose(tab.place),
+                    Text { style: tab_text { colour: tab.colour() }, "{tab.name}" }
+                }
+            }
         }
     }
 }
@@ -224,6 +284,7 @@ pub type OverlaySends = aethereal_ui::sends![
     Tells<Path<Renderer>, SubscribeGpuTimes>,
     Tells<Path<Renderer>, UnsubscribeGpuTimes>,
     Asks<Path<Tools>, CallTool, Calling>,
+    ToType<Link, Chat>,
 ];
 
 /// A row of the scrollback as its scroll shows it: one printed, or a blank one above the first while the rows printed
@@ -274,6 +335,34 @@ impl Overlay {
         self.stop.console()
     }
 
+    /// Whether the console shows the engine's own scrollback: with its own tab open, as it always is before the hub
+    /// lists the sessions.
+    pub(super) const fn shows_scrollback(&self) -> bool {
+        matches!(self.chats.open(), Open::Console)
+    }
+
+    /// Whether the console shows a session's transcript.
+    pub(super) const fn shows_transcript(&self) -> bool {
+        matches!(self.chats.open(), Open::Session(_))
+    }
+
+    /// Whether the open session has asks that wait on the owner.
+    pub(super) fn asking(&self) -> bool {
+        !self.chats.asks().is_empty()
+    }
+
+    /// The style set Claude's markdown is built with: the library's, which reads on the console's panel.
+    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
+    pub(super) fn prose(&self) -> Prose {
+        Prose::default()
+    }
+
+    /// The pictures of Claude's markdown's images: none, as the overlay fetches no image a reply names.
+    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
+    pub(super) fn images(&self) -> Images {
+        Images::default()
+    }
+
     /// How tall the frame chart stands on the window now.
     pub(super) fn chart_tall(&self) -> f32 {
         self.layout().chart_pixels_tall()
@@ -301,9 +390,16 @@ impl Overlay {
         self.figures.gutter_runs()
     }
 
-    /// The gutter's line beneath the median: the warnings and errors since the console was last opened.
+    /// The gutter's line beneath the median: the warnings and errors since the console was last opened, and how many
+    /// sessions wait on the owner, in ochre, when any does (ADR-0057).
     pub(super) fn alerts_runs(&self) -> Vec<Run> {
-        runs_of(self.alerts.pieces())
+        let mut pieces = self.alerts.pieces();
+        let waiting = self.chats.waiting();
+        if waiting > 0 {
+            pieces.push(Piece::new(&format!(" {waiting}?"), OCHRE));
+        }
+
+        runs_of(pieces)
     }
 
     /// The figures beneath the frame chart.
@@ -371,7 +467,7 @@ impl Overlay {
     /// The scrollback's rows, oldest first, after as many blank ones as the view has rows the printed ones do not fill.
     pub(super) fn rows(&self) -> Vec<Shown<'_>> {
         let printed = self.console.rows();
-        let blank = self.layout().scrollback_rows().saturating_sub(printed.len());
+        let blank = self.layout().scrollback_rows(self.console_share).saturating_sub(printed.len());
         let blanks = (0..blank).rev().map(|back| Shown::Blank(u64::MAX - u64::try_from(back).unwrap_or(u64::MAX)));
 
         blanks.chain(printed.map(Shown::Printed)).collect()
@@ -414,5 +510,48 @@ impl Overlay {
     /// What is running, at the prompt's right end.
     pub(super) fn running_runs(&self) -> Vec<Run> {
         runs_of(self.console.running())
+    }
+}
+
+/// What the chat's widgets raise (ADR-0057).
+#[aethereal_ui::events]
+impl Overlay {
+    /// Opens the tab at `place`, the console's own first.
+    pub(super) fn choose(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, place: u32) -> Result<(), Fault> {
+        let chat = self.chats.choose(place);
+
+        self.tell(turn, chat)
+    }
+
+    /// Opens or closes the subagent's fold the open transcript's row keyed `key` is.
+    #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
+    pub(super) fn fold(&mut self, _: &mut Turn<'_, Self, OverlaySends>, key: u64) -> Result<(), Fault> {
+        self.chats.fold(key);
+
+        Ok(())
+    }
+
+    /// Lets the ask numbered `ask` go ahead.
+    pub(super) fn allow(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, ask: u64) -> Result<(), Fault> {
+        let answer = self.chats.answer(ask, true);
+
+        self.tell(turn, vec![answer])
+    }
+
+    /// Refuses the ask numbered `ask`.
+    pub(super) fn deny(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, ask: u64) -> Result<(), Fault> {
+        let answer = self.chats.answer(ask, false);
+
+        self.tell(turn, vec![answer])
+    }
+
+    /// A link in Claude's markdown pressed: logged, as the overlay opens nothing.
+    #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
+    #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
+    #[allow(clippy::unused_self, reason = "an event's method is called on its screen")]
+    pub(super) fn follow(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, target: String) -> Result<(), Fault> {
+        turn.log(Level::Info, format_args!("a link was pressed: {target}"));
+
+        Ok(())
     }
 }

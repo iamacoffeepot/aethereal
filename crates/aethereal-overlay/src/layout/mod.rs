@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! the band:    padding │ left column, 60%: chart │ gutter          │ rule │ right column: meter graph │ gutter │ padding
-//! the console: a third of the window: rule, scrollback (its bar at its right edge), rule, the prompt's strip
+//! the console: a third of the window, or as dragged: grip, scrollback or transcript, asks, rule, prompt, tabs
 //! ```
 
 use aethereal_math::Vec2;
@@ -42,8 +42,16 @@ pub const SECTION_PIXELS: f32 = 8.0;
 /// How far a row's bars stand in from its top and foot, in logical pixels, so the rows read apart.
 const ROW_INSET_PIXELS: f32 = 3.0;
 
-/// The share of the window's height the console's panel takes, beneath the band.
+/// The share of the window's height the console's panel takes, beneath the band, until its grip is dragged.
 pub const CONSOLE_SHARE: f32 = 1.0 / 3.0;
+
+/// The least and the most share of the window's height the console's panel is dragged to.
+pub const LEAST_CONSOLE_SHARE: f32 = 0.15;
+pub const MOST_CONSOLE_SHARE: f32 = 0.85;
+
+/// How tall the console's grip is, the line between the band and the console, in logical pixels: the line drawn across
+/// its middle, and room above and below it to take hold of.
+pub const GRIP_PIXELS: f32 = 7.0;
 
 /// The share of the window's width the band's left column takes: the chart's column. The right column, the memory
 /// meters', takes the rest.
@@ -244,13 +252,13 @@ impl Layout {
         columns
     }
 
-    /// How many rows of the scrollback are in view: as many lines as fit the console's third of the window less its
-    /// two lines, the prompt's strip, and the scrollback's padding above and gap below, at least one.
+    /// How many rows of the scrollback are in view: as many lines as fit the console's `share` of the window less its
+    /// grip and line, the prompt's strip, and the scrollback's padding above and gap below, at least one.
     #[must_use]
-    pub fn scrollback_rows(self) -> usize {
+    pub fn scrollback_rows(self, share: f32) -> usize {
         let line = self.scale.line_pixels_tall();
-        let console = (self.size.y * CONSOLE_SHARE).round();
-        let strip = STRIP_PADDING_PIXELS.mul_add(2.0, DIVIDER_PIXELS * 2.0).mul_add(self.scale.0, line);
+        let console = (self.size.y * share).round();
+        let strip = STRIP_PADDING_PIXELS.mul_add(2.0, GRIP_PIXELS + DIVIDER_PIXELS).mul_add(self.scale.0, line);
         let padding = (PADDING_PIXELS + GAP_PIXELS) * self.scale.0;
         let fit = ((console - strip - padding) / line).floor();
         // A count of lines down a window is some tens, which a usize holds; a negative room fits none.

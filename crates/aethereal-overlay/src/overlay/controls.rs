@@ -3,11 +3,16 @@
 //! takes every key of the window, whatever has its focus, and the line's text input has the focus, so the backtick,
 //! Escape, and Tab come to the overlay before the line hears them, as the console's own: the backtick steps on, Escape
 //! closes the console, and Tab completes the word before the caret. Up and Down, which the line passes, step its history, and Page
-//! Up and Page Down are handed to the scrollback's scroll. The line's edits keep its text, and Enter runs it.
+//! Up and Page Down are handed to the scroll shown. The line's edits keep its text, and Enter runs it. With a session's
+//! tab open (ADR-0057), Escape empties the line, or on an empty one stops the session's turn; the tabs, a subagent's
+//! fold, and an ask's answers are pressed; and the grip is dragged to size the console.
 
 use super::Overlay;
-use super::view::{OverlaySends, prompt_path, scrollback_path};
+use super::chat::Reports;
+use super::view::{OverlaySends, prompt_path, scrollback_path, transcript_path};
+use crate::chat::Open;
 use crate::layout::Layout;
+use crate::layout::{LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE};
 use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
 use aethereal_render::Renderer;
@@ -40,10 +45,7 @@ impl Controls for Overlay {
         let console = self.stop.console();
         match key.code.as_str() {
             STEP_KEY => self.step(turn),
-            CLOSE_KEY if console => {
-                self.close();
-                Ok(())
-            }
+            CLOSE_KEY if console => self.escape(turn),
             COMPLETE_KEY if console => {
                 let (caret, columns) = (self.caret(), self.columns());
                 self.console.complete(caret, columns);
@@ -72,20 +74,45 @@ impl Overlay {
         Ok(())
     }
 
-    /// Runs the line its text input submitted: echoed into the scrollback, which goes to its newest row, and a command
-    /// that names a tool asked of the engine's tools root.
+    /// Runs the line its text input submitted: with the console's own tab open, echoed into the scrollback, and a
+    /// command that names a tool asked of the engine's tools root; with a session's open, said to it, or run here and
+    /// noted in it (ADR-0057). The scroll shown goes to its newest row.
     #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
     pub(super) fn enter(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
-        let command = self.console.submitted(&line, self.columns());
+        let (command, reports) = match self.chats.open() {
+            Open::Console => (self.console.submitted(&line, self.columns()), Reports::Here),
+            Open::Session(session) => self.chatted(turn, session, &line)?,
+        };
         let end = Key { code: String::from("End"), key: String::from("End"), repeat: false, held: Held::default() };
         self.scroll(&end, turn)?;
 
-        self.call(command, turn)
+        self.call(command, reports, turn)
     }
 
-    /// Hands `key` to the scrollback's scroll, which slides by it, though the line has the screen's focus.
+    /// Escape: with the console's own tab open, closes the console; with a session's, empties the line typed, or with
+    /// none typed stops the session's turn.
+    fn escape(&mut self, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+        if self.chats.open() == Open::Console {
+            self.close();
+            return Ok(());
+        }
+        if !self.console.line().is_empty() {
+            self.console.clear_line();
+            return Ok(());
+        }
+        let interrupt = self.chats.interrupt();
+
+        self.tell(turn, interrupt)
+    }
+
+    /// Hands `key` to the scroll shown, the scrollback's or the open session's transcript's, which slides by it,
+    /// though the line has the screen's focus.
     fn scroll(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
-        let heard = self.ui.press_key(&scrollback_path(), key);
+        let path = match self.chats.open() {
+            Open::Console => scrollback_path(),
+            Open::Session(_) => transcript_path(),
+        };
+        let heard = self.ui.press_key(&path, key);
         take_in(self, heard, turn)?;
 
         Ok(())
@@ -128,6 +155,19 @@ impl Overlay {
     /// again.
     const fn close(&mut self) {
         self.stop = Stop::Band;
+    }
+
+    /// The console's grip dragged `by` logical pixels down: the console taller by as much, within its least and most
+    /// share of the window.
+    #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
+    pub(super) fn resize(&mut self, _: &mut Turn<'_, Self, OverlaySends>, by: f32) -> Result<(), Fault> {
+        let viewport = self.ui.viewport();
+        let tall = viewport.size.y / viewport.scale;
+        if tall > 0.0 {
+            self.console_share = (self.console_share + by / tall).clamp(LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE);
+        }
+
+        Ok(())
     }
 
     /// How many characters wide the console's rows are on the window as it is now.

@@ -5,7 +5,9 @@
 //! tools at its typed path, `path::<Tools>(())`, as it would `Mcp` in a hub (ADR-0053). [`Link`] subscribes to it,
 //! hands its hub each set it hears, and asks it for each call the hub sends. It dials its hub once, as it begins, with
 //! the [`Token`] its hub minted for it, its required setting `--hub-token`, and ends its program when the link ends:
-//! no engine outlives its link.
+//! no engine outlives its link. A trusted engine's link carries chat as well (ADR-0057): an actor of the engine, the
+//! dev overlay's console, [`Listen`]s to what the hub shows it of the sessions, and tells `Link` the sessions' `Chat`
+//! its owner did, which it writes up.
 //!
 //! In a hub, [`Engines`] listens for engines, mints the tokens they link with, and keeps an [`Engine`] beneath itself
 //! for each one linked, keyed by its id. A token is good for one `Hello`: an engine is listed only once `Engines` has
@@ -76,7 +78,7 @@ pub use engines::{
 };
 pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
 pub use limits::{BlobBytesTooLow, ReadLimitTooLow};
-pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, NoToken, Sending};
+pub use link::{Calling, Connecting, Link, LinkConfig, LinkSettings, Listen, Listening, NoToken, Sending};
 pub use token::Token;
 #[cfg(feature = "tools")]
 pub use tools::{
