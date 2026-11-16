@@ -76,7 +76,7 @@ impl Handles<Sheets> for Overlay {
 }
 
 /// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
-/// refusal in brick, and reported to the session whose tab was open as it was typed. The call stops showing as running,
+/// refusal in the error's ink, and reported to the session whose tab was open as it was typed. The call stops showing as running,
 /// whichever came.
 impl Handles<Answer<Called, Calling>> for Overlay {
     type Sends = (ToType<Link, Chat>,);
@@ -126,7 +126,7 @@ impl Handles<Answer<Offered, Offering>> for Overlay {
 }
 
 /// A mark, kept to be pinned at the next `Tick`'s time: its tick is drawn on the chart from then, and it is printed
-/// in ochre then.
+/// in the mark's ink then.
 impl Handles<Marked> for Overlay {
     type Sends = ();
 

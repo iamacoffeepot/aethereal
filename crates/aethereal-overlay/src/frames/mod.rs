@@ -16,12 +16,12 @@ mod bins;
 #[cfg(test)]
 mod tests;
 
-use crate::colour::{BONE, STONE};
+use crate::colour::Ink;
+use crate::console::Piece;
 use crate::layout::GUTTER_CHARACTERS;
 use aethereal_actor::Tick;
 use aethereal_data::Plain;
 use aethereal_render::stats::{FrameDrawing, FrameStats};
-use aethereal_render::text::Run;
 use bins::Bins;
 use core::mem;
 use std::collections::VecDeque;
@@ -230,11 +230,11 @@ impl Figures {
         self.median
     }
 
-    /// The runs of the text that shows them: `med 16.7  p90 16.9  p99 17.4  max 33.1 ms`, each label in stone and
-    /// each figure in bone.
-    pub fn runs(self) -> Vec<Run> {
-        let label = |text: &str| Run::new(text, STONE.opaque());
-        let figure = |nanos: u64| Run::new(&millis(nanos), BONE.opaque());
+    /// The runs of the text that shows them: `med 16.7  p90 16.9  p99 17.4  max 33.1 ms`, each label dim and
+    /// each figure in the text's ink.
+    pub fn pieces(self) -> Vec<Piece> {
+        let label = |text: &str| Piece::new(text, Ink::Dim);
+        let figure = |nanos: u64| Piece::new(&millis(nanos), Ink::Text);
 
         vec![
             label("med "),
@@ -249,12 +249,12 @@ impl Figures {
         ]
     }
 
-    /// The runs of the gutter's line beside the chart: its label in stone, and the median in bone, flush right as the
+    /// The runs of the gutter's line beside the chart: its label dim, and the median in the text's ink, flush right as the
     /// GPU graph's top and the rows' values are: `frame        16.7 ms`.
-    pub fn gutter_runs(self) -> Vec<Run> {
+    pub fn gutter_pieces(self) -> Vec<Piece> {
         let width = GUTTER_CHARACTERS - GUTTER_LABEL.len();
         let value = format!("{} ms", millis(self.median));
 
-        vec![Run::new(GUTTER_LABEL, STONE.opaque()), Run::new(&format!("{value:>width$}"), BONE.opaque())]
+        vec![Piece::new(GUTTER_LABEL, Ink::Dim), Piece::new(&format!("{value:>width$}"), Ink::Text)]
     }
 }

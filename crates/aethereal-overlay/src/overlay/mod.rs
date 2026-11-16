@@ -1,7 +1,8 @@
 //! The overlay's actor (ADR-0053): a root on the program's first window, and a screen of the widget library (ADR-0056),
 //! which lays out and draws its band and console in its own draw list in the window's interface pass, declares the keys
 //! it hears, and takes in what its list reaches. It subscribes to its window for its size, and to the engine's tools
-//! root for the tools the console calls; as it begins it spawns the worker of its own tools and offers them.
+//! root for the tools the console calls; as it begins it spawns the worker of its own tools and offers them, and offers
+//! `set_theme`, which it serves itself.
 //!
 //! ```text
 //! Tick, FrameStats, GpuTimes, the engine's figures and log ──> the band's and the console's state
@@ -10,6 +11,7 @@
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
 //! first shown ──> Listen to the link ──> ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the link (ADR-0057)
 //! first listed ──> Offer the chat's words, served by the overlay ──> Call ──> Chat to the link, Called
+//! begun ──> Offer `set_theme`, served by the overlay ──> Call ──> the palette of the theme named, Called
 //! ```
 
 mod chat;
@@ -24,6 +26,7 @@ mod words;
 pub use console::{Calling, Offering};
 
 use crate::chat::Chats;
+use crate::colour::Palette;
 use crate::console::{Alerts, Console};
 use crate::frames::{Figures, FrameTimes};
 use crate::gpu::{GpuFigures, GpuTiming};
@@ -124,6 +127,9 @@ pub struct Overlay {
     linking: Linking,
     /// The share of the window's height the console takes, as its grip was last dragged: the engine's own, never sent.
     console_share: f32,
+    /// The colours the overlay draws in, of the theme `set_theme` last named, lichen grey until it names one: the
+    /// engine's own, as the console's height is, never sent and not kept past the engine's end.
+    palette: Palette,
 }
 
 impl ChildOf for Overlay {
@@ -171,6 +177,7 @@ impl Actor for Overlay {
                 turn.log(Level::Error, format_args!("the overlay's tools were not spawned: {refused:?}"));
             }
         }
+        Self::offer_theme(turn)?;
 
         Ok(Self {
             stop: Stop::Hidden,
@@ -192,6 +199,7 @@ impl Actor for Overlay {
             chats: Chats::default(),
             linking: Linking::Unlooked,
             console_share: CONSOLE_SHARE,
+            palette: Palette::default(),
         })
     }
 

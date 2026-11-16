@@ -3,9 +3,9 @@
 //! in front of the taller one behind it.
 //!
 //! ```text
-//!   ███    slowest: sand, the tallest, at the back
-//!   ███    median: lichen, in the middle
-//!   ███    fastest: slate-teal, the shortest, in front
+//!   ███    slowest: `Ink::Slow`, the tallest, at the back
+//!   ███    median: `Ink::Median`, in the middle
+//!   ███    fastest: `Ink::Fast`, the shortest, in front
 //!   ███
 //! ```
 //!
@@ -14,7 +14,7 @@
 
 use super::scale::height_fraction;
 use super::{Fill, push};
-use crate::colour::{LICHEN, SAND, SLATE_TEAL};
+use crate::colour::{Ink, Palette};
 use crate::frames::Column;
 use aethereal_math::{Rect2, Vec2};
 
@@ -39,13 +39,14 @@ impl Placed {
     }
 }
 
-/// Appends to `fills` `column` drawn at `placed`, cut to the chart's left and right edges: its slowest bar in sand,
-/// its median in lichen, and its fastest in slate-teal, in that order, so they are drawn back to front.
-pub fn column(fills: &mut Vec<Fill>, placed: Placed, column: Column) {
+/// Appends to `fills` `column` drawn at `placed`, cut to the chart's left and right edges: its slowest bar, its
+/// median, and its fastest, each in its own ink of `palette`, in that order, so they are drawn back to front.
+pub fn column(fills: &mut Vec<Fill>, palette: &Palette, placed: Placed, column: Column) {
     let chart = placed.chart;
     let (from, to) = (placed.left.max(chart.min.x), (placed.left + placed.width).min(chart.max.x));
-    let layers = [(column.slowest_nanos, SAND), (column.median_nanos, LICHEN), (column.fastest_nanos, SLATE_TEAL)];
-    for (nanos, swatch) in layers {
-        push(fills, placed.bar(from, to, nanos), swatch.opaque());
+    let layers =
+        [(column.slowest_nanos, Ink::Slow), (column.median_nanos, Ink::Median), (column.fastest_nanos, Ink::Fast)];
+    for (nanos, ink) in layers {
+        push(fills, placed.bar(from, to, nanos), palette.ink(ink));
     }
 }

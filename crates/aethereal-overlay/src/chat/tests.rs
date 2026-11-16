@@ -1,7 +1,7 @@
 //! The console's chat, as its state: what the hub shows it, built into rows, and what the owner does, come to the chat
 //! the link is told. Claude's events are written as Claude Code 2.1 writes them, cut to the members the console reads.
 
-use super::{Chats, Ink, Look, Open, Row, Typed, Which, typed};
+use super::{Chats, Look, Open, Row, Tone, Typed, Which, typed};
 use aethereal_data::{Budget, Json};
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
 
@@ -26,7 +26,7 @@ fn said(number: u64, engine: u32, text: &str) -> Numbered {
 fn texts(rows: &[&Row]) -> Vec<String> {
     rows.iter()
         .map(|row| match &row.look {
-            Look::Line { text, .. } | Look::Fold { text, .. } => text.clone(),
+            Look::Line { text, .. } | Look::Fold { text, .. } | Look::Divider { text } => text.clone(),
             Look::Turn { tag, text, .. } => format!("{tag} > {text}"),
             Look::Reply { .. } => String::from("<reply>"),
         })
@@ -89,10 +89,7 @@ fn a_compaction_is_a_divider_with_its_tokens_and_the_tab_is_busy_while_it_runs()
     chats.shown(1, &[claude(2, boundary)]);
 
     assert_eq!(chats.titles()[1].name, "s1");
-    assert_eq!(
-        texts(&chats.rows()).last().map(String::as_str),
-        Some("--- compacted (manual, 52000 -> 3100 tokens) ---")
-    );
+    assert_eq!(texts(&chats.rows()).last().map(String::as_str), Some("compacted · 52k → 3k tokens"));
 }
 
 #[test]
@@ -119,16 +116,16 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
     assert_eq!(sent, [Chat::Say { session: 1, text: String::from("what do you see?") }]);
 
     chats.shown(1, &[said(2, 12, "something else"), said(3, 37, "what do you see?")]);
-    let inks: Vec<Ink> = chats
+    let tones: Vec<Tone> = chats
         .rows()
         .iter()
         .map(|row| match row.look {
-            Look::Line { ink, .. } | Look::Turn { ink, .. } => ink,
-            Look::Reply { .. } | Look::Fold { .. } => Ink::Faint,
+            Look::Line { tone, .. } | Look::Turn { tone, .. } => tone,
+            Look::Reply { .. } | Look::Fold { .. } | Look::Divider { .. } => Tone::Faint,
         })
         .collect();
 
-    assert_eq!(inks, [Ink::Other, Ink::Other, Ink::Own]);
+    assert_eq!(tones, [Tone::Other, Tone::Other, Tone::Own]);
     assert_eq!(
         texts(&chats.rows()),
         ["wary-owl:12 > from another engine", "wary-owl:12 > something else", "local > what do you see?"]

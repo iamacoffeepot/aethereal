@@ -79,17 +79,16 @@ pub const HANDLE_WIDTH_PIXELS: f32 = 28.0;
 /// How tall the grip's handle is, in logical pixels.
 pub const HANDLE_PIXELS: f32 = 3.0;
 
-/// The space above and below the tabs inside their strip, in logical pixels.
-pub const TAB_STRIP_PADDING_PIXELS: f32 = 5.0;
+/// The space above and below a tab's title inside the tab, in logical pixels; [`PADDING_PIXELS`] stand either side. The
+/// tabs fill their strip's height, which has no padding of its own, so this is the strip's space above and below too.
+pub const TAB_PADDING_PIXELS: f32 = 7.0;
 
-/// The space above and below a tab's title inside the tab, in logical pixels; [`PADDING_PIXELS`] stand either side.
-pub const TAB_PADDING_PIXELS: f32 = 3.0;
-
-/// How thick the line along the open tab's top is, in logical pixels: over the tab's own space above its title, so an
-/// open tab stands as tall as the others.
+/// How thick the line along the open tab's bottom edge is, in logical pixels: over the tab's own space beneath its
+/// title, so an open tab stands as tall as the others.
 pub const TAB_ACCENT_PIXELS: f32 = 2.0;
 
-/// How tall the divider between two sessions' tabs is, in logical pixels.
+/// How tall the divider between two sessions' tabs is, in logical pixels: shorter than the strip, so it stands in from
+/// its top and its foot.
 pub const TAB_DIVIDER_PIXELS: f32 = 12.0;
 
 /// How tall the break between the console's own tab and the sessions' is, in logical pixels: taller than a divider

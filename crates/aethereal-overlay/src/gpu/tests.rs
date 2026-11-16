@@ -1,6 +1,6 @@
 use super::{GpuFigures, GraphTop, PassTimes, graph};
 use crate::chart::tests::{Record, read};
-use crate::colour::{BONE, MAUVE, MUTED_VIOLET, SLATE_BLUE, STONE, Swatch};
+use crate::colour::{Ink, PASSES, Palette};
 use crate::frames::Slide;
 use crate::layout::{GUTTER_CHARACTERS, Scale};
 use aethereal_math::{Rect2, Vec2};
@@ -50,7 +50,7 @@ fn drawn(main: u64, overlay: u64, spike: u64, budget: FrameBudget) -> (Vec<Recor
     let slide = Slide { newest: 1, through: 0.5, span_nanos: 1_000 * MILLI };
     let mut fills = Vec::new();
 
-    let top = graph(&mut fills, AREA, Scale(1.0), slide, budget, cut(&mut times, 60));
+    let top = graph(&mut fills, &Palette::default(), AREA, Scale(1.0), slide, budget, cut(&mut times, 60));
 
     (read(&fills), top)
 }
@@ -68,11 +68,14 @@ fn a_column_stacks_each_pass_s_median_in_the_order_first_heard() {
     let near = |a: f32, b: f32| (a - b).abs() < 0.01;
     assert_eq!(top.nanos(), 10 * MILLI);
     let [spike, main, overlay] = [&drawn[0], &drawn[1], &drawn[2]];
-    assert_eq!((spike.colour, spike.area[1], spike.area[3]), (SLATE_BLUE.opaque(), area.min.y, area.height()));
-    assert_eq!(main.colour, SLATE_BLUE.opaque());
+    assert_eq!(
+        (spike.colour, spike.area[1], spike.area[3]),
+        (Palette::default().ink(Ink::Pass1), area.min.y, area.height())
+    );
+    assert_eq!(main.colour, Palette::default().ink(Ink::Pass1));
     let main_tall = tall(area, 4 * MILLI, top.nanos());
     assert!(near(main.area[1] + main.area[3], area.max.y) && near(main.area[3], main_tall), "{main:?}");
-    assert_eq!(overlay.colour, MUTED_VIOLET.opaque());
+    assert_eq!(overlay.colour, Palette::default().ink(Ink::Pass2));
     assert!(near(overlay.area[1] + overlay.area[3], main.area[1]), "{overlay:?} does not stand on {main:?}");
     assert!(near(overlay.area[3], tall(area, MILLI, top.nanos())), "{overlay:?} is not a millisecond tall");
 }
@@ -117,9 +120,9 @@ fn the_budget_is_dashed_only_under_the_top() {
 
     let dash = &under[3];
     let budget_y = area.max.y - tall(area, 4_170_000, top.nanos());
-    assert_eq!(dash.colour, BONE.at(0.7));
+    assert_eq!(dash.colour, Palette::default().faded(Ink::Text, 0.7));
     assert!((dash.area[1] - budget_y).abs() <= 1.0, "{dash:?} is not where 4.17 ms falls");
-    let dashed = over.iter().any(|record| record.colour == BONE.at(0.7));
+    let dashed = over.iter().any(|record| record.colour == Palette::default().faded(Ink::Text, 0.7));
     assert!(!dashed, "a budget over the top was dashed");
 }
 
@@ -131,13 +134,13 @@ fn a_pass_too_short_for_a_pixel_still_stands_one() {
     let (drawn, _) = drawn(6 * MILLI, 1_000, 6 * MILLI, LIMIT);
 
     let [main, overlay] = [&drawn[1], &drawn[2]];
-    assert_eq!(overlay.colour, MUTED_VIOLET.opaque());
+    assert_eq!(overlay.colour, Palette::default().ink(Ink::Pass2));
     assert!((overlay.area[3] - 1.0).abs() < 0.01, "{overlay:?} is not a pixel tall");
     assert!((overlay.area[1] + overlay.area[3] - main.area[1]).abs() < 0.01, "{overlay:?} does not stand on {main:?}");
     assert_eq!(drawn.len(), 3, "the spike's column drew a pass it did not run");
 }
 
-/// The gutter's line beside the graph is `gpu` in stone and its top in milliseconds in bone, flush right in the
+/// The gutter's line beside the graph is `gpu` dim and its top in milliseconds in the text's ink, flush right in the
 /// gutter as the rows' values are, with as many places as the top needs. So a top written in the wrong unit, with
 /// trailing zeros, or out of line with the rows' values, is caught.
 #[test]
@@ -151,12 +154,12 @@ fn the_gutter_says_the_graph_s_top() {
         let mut times = PassTimes::default();
         times.take(100 * MILLI, [(MAIN, top_nanos)]);
 
-        let runs = GraphTop::of(cut(&mut times, 60)).runs();
+        let runs = GraphTop::of(cut(&mut times, 60)).pieces();
 
         let written: String = runs.iter().map(|run| run.text.as_str()).collect();
         assert_eq!(written, line);
         assert_eq!(written.len(), GUTTER_CHARACTERS);
-        assert_eq!([runs[0].colour, runs[1].colour], [STONE.opaque(), BONE.opaque()]);
+        assert_eq!([runs[0].ink, runs[1].ink], [Ink::Dim, Ink::Text]);
     }
 }
 
@@ -184,7 +187,7 @@ fn the_figures_are_the_legend_and_the_busy_share_counts_every_pass() {
 
     let figures: GpuFigures = times.figures(20 * MILLI);
 
-    let runs = figures.runs();
+    let runs = figures.pieces();
     let texts: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
     assert_eq!(
         texts,
@@ -199,7 +202,7 @@ fn the_figures_are_the_legend_and_the_busy_share_counts_every_pass() {
             "50%"
         ]
     );
-    let legend: Vec<_> = runs[..6].iter().map(|run| run.colour).collect();
-    let swatches = [SLATE_BLUE, MUTED_VIOLET, MAUVE].map(Swatch::opaque);
+    let legend: Vec<Ink> = runs[..6].iter().map(|run| run.ink).collect();
+    let swatches = PASSES;
     assert_eq!(legend, [swatches, swatches].concat());
 }

@@ -27,10 +27,10 @@ mod transcript;
 
 pub use prompt::{Typed, typed};
 #[cfg(test)]
-use transcript::Ink;
+use transcript::Tone;
 pub use transcript::{Look, Mine, Row};
 
-use crate::colour::{BONE, CONSOLE_OPACITY, SLATE_DARKER, STONE};
+use crate::colour::{Ink, Palette, Surface};
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
@@ -109,22 +109,20 @@ impl Parting {
 }
 
 impl Title {
-    /// Its colour: bone while open, and stone otherwise.
-    pub fn colour(&self) -> Colour {
-        let swatch = if self.open {
-            BONE
+    /// Its ink: the text's while open, and dim otherwise.
+    pub const fn ink(&self) -> Ink {
+        if self.open {
+            Ink::Text
         } else {
-            STONE
-        };
-
-        swatch.opaque()
+            Ink::Dim
+        }
     }
 
-    /// What it is drawn on: the prompt's slate while open, so it reads as of a piece with the prompt above it, and
-    /// nothing otherwise, over the tabs' own darker strip.
-    pub fn background(&self) -> Colour {
+    /// What it is drawn on in `palette`: the prompt's inset while open, so it reads as of a piece with the prompt above
+    /// it, and nothing otherwise, over the tabs' own deepest strip.
+    pub const fn background(&self, palette: &Palette) -> Colour {
         if self.open {
-            SLATE_DARKER.at(CONSOLE_OPACITY)
+            palette.surface(Surface::Inset)
         } else {
             Colour::CLEAR
         }

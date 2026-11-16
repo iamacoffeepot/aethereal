@@ -3,7 +3,7 @@
 //! counted for the band.
 
 use super::scrollback::Piece;
-use crate::colour::{BRICK, RUST, STONE, Swatch};
+use crate::colour::Ink;
 use crate::layout::GUTTER_CHARACTERS;
 use aethereal_actor::{ActorName, Entry, Level};
 use aethereal_data::Plain;
@@ -49,26 +49,26 @@ impl Logged {
         Self { step, level, actor, text }
     }
 
-    /// The row's pieces: the step and the actor in stone, the level padded, and the level and the text in its colour.
+    /// The row's pieces: the step and the actor dim, the level padded, and the level and the text in its ink.
     pub fn pieces(&self) -> Vec<Piece> {
-        let swatch = colour_of(self.level);
+        let ink = ink_of(self.level);
         let level = format!("{:<LEVEL_WIDTH$}", name_of(self.level));
 
         vec![
-            Piece::new(&format!("{:>STEP_WIDTH$}  ", self.step), STONE),
-            Piece::new(&level, swatch),
-            Piece::new(&format!("  {}  ", self.actor), STONE),
-            Piece::new(&self.text, swatch),
+            Piece::new(&format!("{:>STEP_WIDTH$}  ", self.step), Ink::Dim),
+            Piece::new(&level, ink),
+            Piece::new(&format!("  {}  ", self.actor), Ink::Dim),
+            Piece::new(&self.text, ink),
         ]
     }
 }
 
-/// The colour a line of `level` is printed in: info and debug stone, a warning rust, and an error brick.
-const fn colour_of(level: Level) -> Swatch {
+/// The ink a line of `level` is printed in: info and debug dim, a warning the warning's, and an error the error's.
+const fn ink_of(level: Level) -> Ink {
     match level {
-        Level::Debug | Level::Info => STONE,
-        Level::Warn => RUST,
-        Level::Error => BRICK,
+        Level::Debug | Level::Info => Ink::Dim,
+        Level::Warn => Ink::Warn,
+        Level::Error => Ink::Error,
     }
 }
 
@@ -105,27 +105,27 @@ impl Alerts {
         *self = Self { warnings: 0, errors: 0 };
     }
 
-    /// The gutter's line of the counts: `alerts` in stone, then each count that is not zero flush right as the rows'
-    /// values are, `! N` in rust for warnings and `× N` in brick for errors, as IBM Plex Mono has no `⚠` or `✕`; and
-    /// `no alerts` in stone when both are zero, so the line is never blank.
+    /// The gutter's line of the counts: `alerts` dim, then each count that is not zero flush right as the rows'
+    /// values are, `! N` in the warning's ink and `× N` in the error's, as IBM Plex Mono has no `⚠` or `✕`; and
+    /// `no alerts` dim when both are zero, so the line is never blank.
     pub fn pieces(self) -> Vec<Piece> {
         let mut counts = Vec::new();
         if self.warnings > 0 {
-            counts.push(Piece::new(&format!("! {}", self.warnings), RUST));
+            counts.push(Piece::new(&format!("! {}", self.warnings), Ink::Warn));
         }
         let both = self.warnings > 0 && self.errors > 0;
         if both {
-            counts.push(Piece::new("  ", STONE));
+            counts.push(Piece::new("  ", Ink::Dim));
         }
         if self.errors > 0 {
-            counts.push(Piece::new(&format!("× {}", self.errors), BRICK));
+            counts.push(Piece::new(&format!("× {}", self.errors), Ink::Error));
         }
         if counts.is_empty() {
-            return vec![Piece::new("no alerts", STONE)];
+            return vec![Piece::new("no alerts", Ink::Dim)];
         }
         let written: usize = counts.iter().map(|piece| piece.text.chars().count()).sum();
         let pad = GUTTER_CHARACTERS.saturating_sub(ALERTS_LABEL.len() + written);
-        let mut pieces = vec![Piece::new(ALERTS_LABEL, STONE), Piece::new(&" ".repeat(pad), STONE)];
+        let mut pieces = vec![Piece::new(ALERTS_LABEL, Ink::Dim), Piece::new(&" ".repeat(pad), Ink::Dim)];
         pieces.extend(counts);
 
         pieces

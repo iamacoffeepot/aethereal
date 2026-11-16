@@ -1,6 +1,6 @@
 use super::scale::height_fraction;
 use super::{Fill, marks, records};
-use crate::colour::{BONE, LICHEN, OCHRE, SAND, SLATE_TEAL, STONE};
+use crate::colour::{Ink, Palette};
 use crate::frames::{Column, Slide};
 use crate::layout::Scale;
 use aethereal_math::{Rect2, Vec2};
@@ -75,11 +75,12 @@ fn layers_keep_their_colours_whatever_the_budget_and_are_held_to_the_chart() {
     let slide = Slide { newest: 2, through: 0.5, span_nanos: 1_000_000_000 };
     let mut fills = Vec::new();
 
-    records(&mut fills, CHART, SCALE, columns, slide, LIMIT);
+    records(&mut fills, &Palette::default(), CHART, SCALE, columns, slide, LIMIT);
 
     let band = read(&fills);
     let shaded: Vec<Colour> = band[BEFORE_COLUMNS..][..9].iter().map(|record| record.colour).collect();
-    let layers = [SAND.opaque(), LICHEN.opaque(), SLATE_TEAL.opaque()];
+    let layers =
+        [Palette::default().ink(Ink::Slow), Palette::default().ink(Ink::Median), Palette::default().ink(Ink::Fast)];
     assert_eq!(shaded, [layers, layers, layers].concat());
     let spike = band[BEFORE_COLUMNS + 6].area;
     assert_eq!((spike[1], spike[3]), (CHART.min.y, CHART.height()));
@@ -89,7 +90,7 @@ fn layers_keep_their_colours_whatever_the_budget_and_are_held_to_the_chart() {
 /// line at twice the budget, before the budget line's dashes.
 fn bars(columns: &[Column], slide: Slide) -> Vec<[f32; 4]> {
     let mut fills = Vec::new();
-    records(&mut fills, CHART, SCALE, columns.iter().copied(), slide, LIMIT);
+    records(&mut fills, &Palette::default(), CHART, SCALE, columns.iter().copied(), slide, LIMIT);
 
     read(&fills)[BEFORE_COLUMNS..][..columns.len() * 3].iter().step_by(3).map(|record| record.area).collect()
 }
@@ -118,22 +119,22 @@ fn columns_slide_left_through_their_span() {
     assert!(oldest_late[2] < oldest_early[2], "{oldest_late:?} does not slide off the left edge past {oldest_early:?}");
 }
 
-/// A budget that is a reference is drawn in a lighter dash than a limit, bone at half a limit's opacity and sparser, at
+/// A budget that is a reference is drawn in a lighter dash than a limit, the text's ink at half a limit's opacity and sparser, at
 /// the same height, so a budget the frames are not held to does not read as one they are.
 #[test]
 fn a_reference_budget_is_drawn_lighter_than_a_limit_at_the_same_height() {
     let slide = Slide { newest: 0, through: 0.0, span_nanos: 1_000_000_000 };
     let line = |budget| {
         let mut fills = Vec::new();
-        records(&mut fills, CHART, SCALE, [], slide, budget);
+        records(&mut fills, &Palette::default(), CHART, SCALE, [], slide, budget);
         read(&fills)[BEFORE_COLUMNS..].to_vec()
     };
 
     let limit = line(LIMIT);
     let reference = line(FrameBudget::Reference { nanos: BUDGET });
 
-    assert!(limit.iter().all(|dash| dash.colour == BONE.at(0.7)));
-    assert!(reference.iter().all(|dash| dash.colour == BONE.at(0.35)));
+    assert!(limit.iter().all(|dash| dash.colour == Palette::default().faded(Ink::Text, 0.7)));
+    assert!(reference.iter().all(|dash| dash.colour == Palette::default().faded(Ink::Text, 0.35)));
     assert_eq!(limit[0].area[1], reference[0].area[1]);
     assert!(reference[0].area[2] < limit[0].area[2], "a reference's dashes are shorter");
 }
@@ -150,11 +151,11 @@ fn a_mark_s_tick_stands_at_its_time() {
     let mark = 297 * span_nanos + span_nanos * 3 / 4;
     let mut fills = Vec::new();
 
-    marks(&mut fills, CHART, SCALE, slide, [mark, 0]);
+    marks(&mut fills, &Palette::default(), CHART, SCALE, slide, [mark, 0]);
 
     let ticks = read(&fills);
     assert_eq!(ticks.len(), 1, "a mark older than the chart is drawn");
-    assert_eq!(ticks[0].colour, OCHRE.opaque());
+    assert_eq!(ticks[0].colour, Palette::default().ink(Ink::Mark));
     assert_eq!(ticks[0].area[0], pitch.mul_add(-2.5, chart.max.x));
     assert_eq!((ticks[0].area[1], ticks[0].area[3]), (chart.min.y, chart.height()));
 }
@@ -163,13 +164,13 @@ fn a_mark_s_tick_stands_at_its_time() {
 fn drawn_with(column: Column) -> Vec<Record> {
     let slide = Slide { newest: 6, through: 0.0, span_nanos: 1_000_000_000 };
     let mut fills = Vec::new();
-    records(&mut fills, CHART, SCALE, [Column { span: 5, ..column }], slide, LIMIT);
+    records(&mut fills, &Palette::default(), CHART, SCALE, [Column { span: 5, ..column }], slide, LIMIT);
 
     read(&fills)
 }
 
 /// On the log scale a column's three bars each stand the column's width from the chart's foot, back to front: its
-/// slowest in sand, its median in lichen, and its fastest in slate-teal; the faint line at twice the budget stands
+/// slowest in `Ink::Slow`, its median in `Ink::Median`, and its fastest in `Ink::Fast`; the faint line at twice the budget stands
 /// three sevenths up and the budget's dashes two, so a bar drawn on a linear scale, from the wrong cycle, narrower than
 /// the column, or out of order, which hides a shorter bar behind a taller one, is caught.
 #[test]
@@ -185,16 +186,22 @@ fn a_column_stands_its_three_bars_back_to_front_on_the_log_scale() {
 
     let ours = &drawn[BEFORE_COLUMNS..][..3];
     let colours: Vec<Colour> = ours.iter().map(|record| record.colour).collect();
-    assert_eq!(colours, vec![SAND.opaque(), LICHEN.opaque(), SLATE_TEAL.opaque()]);
+    assert_eq!(
+        colours,
+        vec![Palette::default().ink(Ink::Slow), Palette::default().ink(Ink::Median), Palette::default().ink(Ink::Fast)]
+    );
     let left = chart.max.x - SCALE.column_pitch();
     for (bar, sevenths) in ours.iter().map(|record| record.area).zip([4.0, 2.0, 1.0]) {
         assert_eq!((bar[0], bar[2]), (left, width));
         assert!(near(bar[1], at(sevenths)) && near(bar[1] + bar[3], chart.max.y), "{bar:?} is not {sevenths}/7 up");
     }
     let twice = &drawn[BEFORE_COLUMNS - 1];
-    assert_eq!((twice.colour, twice.area[0], twice.area[2]), (STONE.at(0.15), chart.min.x, chart.width()));
+    assert_eq!(
+        (twice.colour, twice.area[0], twice.area[2]),
+        (Palette::default().faded(Ink::Dim, 0.15), chart.min.x, chart.width())
+    );
     assert!(near(twice.area[1], at(3.0)), "{twice:?} is not three sevenths up");
     let dash = &drawn[BEFORE_COLUMNS + 3];
-    assert_eq!(dash.colour, BONE.at(0.7));
+    assert_eq!(dash.colour, Palette::default().faded(Ink::Text, 0.7));
     assert!(near(dash.area[1], at(2.0)), "{dash:?} is not two sevenths up");
 }

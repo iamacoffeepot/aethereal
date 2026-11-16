@@ -5,6 +5,7 @@
 use super::{Stack, graph};
 use crate::binned::Spanned;
 use crate::chart::Fill;
+use crate::colour::Palette;
 use crate::frames::Slide;
 use crate::layout::Scale;
 use crate::widgets::paint;
@@ -20,11 +21,12 @@ pub struct GpuShown {
     pub budget: FrameBudget,
 }
 
-/// The GPU's graph: `shown`, `tall` pixels tall.
+/// The GPU's graph: `shown`, `tall` pixels tall, in `palette`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuGraph {
     pub shown: GpuShown,
     pub tall: f32,
+    pub palette: Palette,
 }
 
 impl Widget for GpuGraph {
@@ -46,7 +48,7 @@ impl Widget for GpuGraph {
     fn draw(&self, _: &Stateless, _: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let GpuShown { columns, slide, budget } = &self.shown;
         let mut fills: Vec<Fill> = Vec::new();
-        graph(&mut fills, laid.content, Scale(laid.scale), *slide, *budget, columns.iter().copied());
+        graph(&mut fills, &self.palette, laid.content, Scale(laid.scale), *slide, *budget, columns.iter().copied());
 
         paint(draws, fills, laid.clip);
     }

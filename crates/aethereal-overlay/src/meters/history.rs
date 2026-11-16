@@ -1,8 +1,8 @@
 //! The last minute of the meters with no limit, process, guests, and GPU (ADR-0053: The three stops, Memory): each
 //! reading kept by the program's time it was read at and cut into columns over the same 60 seconds as the left
 //! column's, as many as the meter's graph holds, each the most of the readings in its span; drawn over a trough of
-//! faint stone, as the bars of the meters with a limit are (`widget`), so a minute of nothing reads as a graph at nothing, and
-//! as the lines' rows are, a stone bar a column, linear from nothing to the most any column shown came to. A column no
+//! faint dim, as the bars of the meters with a limit are (`widget`), so a minute of nothing reads as a graph at nothing, and
+//! as the lines' rows are, a dim bar a column, linear from nothing to the most any column shown came to. A column no
 //! reading fell in carries the reading before it, for up to [`CARRIED_NANOS`], as the figures' reads, four times a
 //! second, are about a column apart and now and then miss one: a steady meter draws a steady line, and a pause in the
 //! readings longer than that, as while the overlay is hidden, stays a gap. Process and guests are read with the

@@ -1,17 +1,17 @@
 //! How the lines' rows are drawn (ADR-0053: The three stops): each line a row beneath the GPU's graph, over the same
-//! columns, each column a thin stone bar from the row's foot to the most its frames came to, on a scale linear from
+//! columns, each column a thin dim bar from the row's foot to the most its frames came to, on a scale linear from
 //! nothing to the most any column shown came to, so the row's tallest bar is the most of the window. The memory meters
 //! with no limit draw their minute of history the same way (`row`), each in its own row of the right column.
 
 use super::{Line, Values};
 use crate::binned::Spanned;
 use crate::chart::{Fill, left_from, push};
-use crate::colour::STONE;
+use crate::colour::{Ink, Palette};
 use crate::frames::Slide;
 use crate::layout::Scale;
 use aethereal_math::{Rect2, Vec2};
 
-/// How opaque a row's bars are drawn, in stone: quieter than the graphs above, as the rows are a glance.
+/// How opaque a row's bars are drawn, dim: quieter than the graphs above, as the rows are a glance.
 const BAR_OPACITY: f32 = 0.6;
 
 /// Appends to `fills` each line's row in `area` at `scale`, a third of its height each from the top, over `columns`
@@ -19,6 +19,7 @@ const BAR_OPACITY: f32 = 0.6;
 /// and foot.
 pub fn rows(
     fills: &mut Vec<Fill>,
+    palette: &Palette,
     area: Rect2,
     scale: Scale,
     slide: Slide,
@@ -33,7 +34,7 @@ pub fn rows(
             columns.clone().map(move |spanned| Spanned { span: spanned.span, column: spanned.column.of_line(line) });
         let top = f32::from(index).mul_add(tall, area.min.y);
         let row = Rect2 { min: Vec2::new(area.min.x, top + inset), max: Vec2::new(area.max.x, top + tall - inset) };
-        self::row(fills, row, scale, slide, &values);
+        self::row(fills, palette, row, scale, slide, &values);
     }
 }
 
@@ -43,6 +44,7 @@ pub fn rows(
 /// draws nothing.
 pub fn row(
     fills: &mut Vec<Fill>,
+    palette: &Palette,
     area: Rect2,
     scale: Scale,
     slide: Slide,
@@ -63,6 +65,6 @@ pub fn row(
         let share = (value as f64 / most as f64) as f32;
         let tall = (share * area.height()).max(1.0);
         let bar = Rect2 { min: Vec2::new(from, area.max.y - tall), max: Vec2::new(to, area.max.y) };
-        push(fills, bar, STONE.at(BAR_OPACITY));
+        push(fills, bar, palette.faded(Ink::Dim, BAR_OPACITY));
     }
 }

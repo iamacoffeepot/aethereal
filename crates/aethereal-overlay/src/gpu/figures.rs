@@ -2,9 +2,9 @@
 //! pass's colour so the line doubles as the graph's legend, and the share of a frame the GPU was busy, its median frame
 //! against the frame chart's median cycle.
 
-use crate::colour::{BONE, PASS_SWATCHES, STONE};
+use crate::colour::{Ink, PASSES};
+use crate::console::Piece;
 use aethereal_data::Plain;
-use aethereal_render::text::Run;
 
 /// What a pass's figure is shown to: a hundredth of a millisecond, as a pass takes a fraction of one.
 const SHOWN_NANOS: u64 = 10_000;
@@ -46,12 +46,12 @@ impl GpuFigures {
     }
 
     /// The runs of the text that shows them: `main 2.31  overlay 0.12 ms  gpu busy 14%`, each pass's label and figure
-    /// in its pass's colour, and the rest in stone and bone. Before any frame is timed, that none has been.
-    pub fn runs(&self) -> Vec<Run> {
+    /// in its pass's colour, and the rest dim and in the text's ink. Before any frame is timed, that none has been.
+    pub fn pieces(&self) -> Vec<Piece> {
         if self.passes.is_empty() {
-            return vec![Run::new("gpu  no frame timed yet", STONE.opaque())];
+            return vec![Piece::new("gpu  no frame timed yet", Ink::Dim)];
         }
-        let mut runs: Vec<Run> = self
+        let mut runs: Vec<Piece> = self
             .passes
             .iter()
             .enumerate()
@@ -61,16 +61,16 @@ impl GpuFigures {
                 } else {
                     "  "
                 };
-                let swatch = PASS_SWATCHES[index % PASS_SWATCHES.len()];
-                Run::new(&format!("{gap}{} {}", pass.label, millis(pass.median_nanos)), swatch.opaque())
+                let ink = PASSES[index % PASSES.len()];
+                Piece::new(&format!("{gap}{} {}", pass.label, millis(pass.median_nanos)), ink)
             })
             .collect();
         let busy = match self.busy {
             Busy::Unknown => String::from("-"),
             Busy::Share { percent } => format!("{percent}%"),
         };
-        runs.push(Run::new(" ms  gpu busy ", STONE.opaque()));
-        runs.push(Run::new(&busy, BONE.opaque()));
+        runs.push(Piece::new(" ms  gpu busy ", Ink::Dim));
+        runs.push(Piece::new(&busy, Ink::Text));
 
         runs
     }
@@ -84,6 +84,6 @@ fn millis(nanos: u64) -> String {
 }
 
 /// The one line the graph's place shows on a device without timestamps.
-pub fn unsupported() -> Vec<Run> {
-    vec![Run::new("GPU timing not supported on this device", STONE.opaque())]
+pub fn unsupported() -> Vec<Piece> {
+    vec![Piece::new("GPU timing not supported on this device", Ink::Dim)]
 }

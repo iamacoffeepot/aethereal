@@ -10,7 +10,7 @@ mod grip;
 pub use grip::Grip;
 
 use crate::chart::Fill;
-use crate::colour::BONE;
+use crate::colour::{Ink, Palette};
 use crate::console::Piece;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Outline, Run, Wrap};
@@ -93,16 +93,16 @@ pub fn paint(draws: &mut Draws<'_, '_>, fills: impl IntoIterator<Item = Fill>, c
     }
 }
 
-/// `pieces` as a text's runs, each piece's colour opaque: a piece of no text left out, and a space for none at all, as
-/// a text holds something.
-pub fn runs_of(pieces: impl IntoIterator<Item = Piece>) -> Vec<Run> {
+/// `pieces` as a text's runs, each piece in its ink of `palette`, opaque: a piece of no text left out, and a space for
+/// none at all, as a text holds something.
+pub fn runs_of(palette: &Palette, pieces: impl IntoIterator<Item = Piece>) -> Vec<Run> {
     let mut runs: Vec<Run> = pieces
         .into_iter()
         .filter(|piece| !piece.text.is_empty())
-        .map(|piece| Run::new(&piece.text, piece.swatch.opaque()))
+        .map(|piece| palette.run(&piece.text, piece.ink))
         .collect();
     if runs.is_empty() {
-        runs.push(Run::new(" ", BONE.opaque()));
+        runs.push(palette.run(" ", Ink::Text));
     }
 
     runs

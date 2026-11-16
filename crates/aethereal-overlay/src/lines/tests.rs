@@ -1,7 +1,7 @@
 use super::figures::count;
 use super::{FrameLines, rows};
 use crate::chart::tests::read;
-use crate::colour::STONE;
+use crate::colour::{Ink, Palette};
 use crate::frames::Slide;
 use crate::layout::Scale;
 use aethereal_math::{Rect2, Vec2};
@@ -38,7 +38,7 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
     let mut fills = Vec::new();
     lines.cut(60);
 
-    rows(&mut fills, AREA, Scale(1.0), slide, &lines.columns());
+    rows(&mut fills, &Palette::default(), AREA, Scale(1.0), slide, &lines.columns());
 
     let drawn = read(&fills);
     let (draws_row, uploaded_row) = (row(0), row(2));
@@ -46,7 +46,7 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
     let expected = [draws_row.height() / 2.0, draws_row.height(), uploaded_row.height(), uploaded_row.height()];
     let near = heights.len() == expected.len() && heights.iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.01);
     assert!(near, "{heights:?} are not {expected:?}");
-    assert!(drawn.iter().all(|record| record.colour == STONE.at(0.6)));
+    assert!(drawn.iter().all(|record| record.colour == Palette::default().faded(Ink::Dim, 0.6)));
     assert!(
         (drawn[0].area[1] + drawn[0].area[3] - draws_row.max.y).abs() < 0.01,
         "{:?} is off the row's foot",
@@ -57,7 +57,7 @@ fn a_row_s_columns_are_the_most_of_their_frames_against_the_most_shown() {
         "{:?} is off the row's foot",
         drawn[3]
     );
-    let runs = lines.runs();
+    let runs = lines.pieces();
     assert_eq!(runs.last().map(|run| run.text.trim()), Some("15 B"));
 }
 

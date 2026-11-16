@@ -5,6 +5,7 @@
 use super::{Values, rows};
 use crate::binned::Spanned;
 use crate::chart::Fill;
+use crate::colour::Palette;
 use crate::frames::Slide;
 use crate::layout::Scale;
 use crate::widgets::paint;
@@ -17,10 +18,11 @@ pub struct LinesShown {
     pub slide: Slide,
 }
 
-/// The lines' rows: `shown`, as tall as the box they stretch to.
+/// The lines' rows: `shown`, as tall as the box they stretch to, in `palette`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineRows {
     pub shown: LinesShown,
+    pub palette: Palette,
 }
 
 impl Widget for LineRows {
@@ -38,7 +40,7 @@ impl Widget for LineRows {
     fn draw(&self, _: &Stateless, _: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let LinesShown { columns, slide } = &self.shown;
         let mut fills: Vec<Fill> = Vec::new();
-        rows(&mut fills, laid.content, Scale(laid.scale), *slide, &columns.iter().copied());
+        rows(&mut fills, &self.palette, laid.content, Scale(laid.scale), *slide, &columns.iter().copied());
 
         paint(draws, fills, laid.clip);
     }

@@ -30,26 +30,26 @@ Called::Output ── schema ── Form, printed ──> scrollback
 ### The three stops
 
 - **Hidden:** nothing is drawn, and the overlay listens only for the backtick.
-- **The band:** a strip across the top of the window, as tall as its left column's three sections need, about a quarter of the window at 1080, in two columns parted by a faint stone line, a logical pixel thick, at the lines between the band and the console's opacity, down the band's content from the frame chart's top to the rows' foot, centred between the gutter's text and the meters'. Two more such lines part the left column's three sections, the frame chart and its figures, the GPU's graph and its figures, and the rows, across the column from the frame chart's left to the gutter's end, each centred in the space between one section's figures and the next; no line parts a graph from its gutter, which is its label.
+- **The band:** a strip across the top of the window, as tall as its left column's three sections need, about a quarter of the window at 1080, in two columns parted by a line in the `divider` ink, a logical pixel thick, at the lines between the band and the console's opacity, down the band's content from the frame chart's top to the rows' foot, centred between the gutter's text and the meters'. Two more such lines part the left column's three sections, the frame chart and its figures, the GPU's graph and its figures, and the rows, across the column from the frame chart's left to the gutter's end, each centred in the space between one section's figures and the next; no line parts a graph from its gutter, which is its label.
   - **Left, one 60-second axis, newest at the right, so a spike reads straight down:**
     - the frame chart: each cycle's `delta_nanos`, with the budget as a dashed line, and the median, p90, p99, and the most over the 60 seconds beneath it;
-      - each column, a fixed span of time, is three opaque bars the column's width, each from the chart's foot, drawn back to front: its slowest cycle in sand, the tallest, at the back; its median in lichen; and its fastest in slate-teal, the shortest, in front;
-      - each bar's colour is fixed by its layer, whatever the budget: over or under is read from the bars' height against the budget line, dashed bone at 70%, which carries the judging;
-      - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a faint stone line marks twice the budget;
-      - the gutter beside the chart, level with its top, says its median, as the GPU graph's gutter says its top: `frame`, and flush right `4.2 ms`; the line beneath it counts the warnings and errors since the console was last opened, `alerts` and flush right `! N` in rust and `× N` in brick, or `no alerts` in stone when there are none, so the line is never blank;
+      - each column, a fixed span of time, is three opaque bars the column's width, each from the chart's foot, drawn back to front: its slowest cycle in `slow`, the tallest, at the back; its median in `median`; and its fastest in `fast`, the shortest, in front;
+      - each bar's colour is fixed by its layer, whatever the budget: over or under is read from the bars' height against the budget line, dashed in `text` at 70%, which carries the judging;
+      - the vertical scale is logarithmic and relative to the budget: a quarter of the budget at the foot, 32 budgets at the top, so the budget stands 2/7 of the way up and every doubling is another 1/7, whatever the budget is; a line in the `divider` ink marks twice the budget;
+      - the gutter beside the chart, level with its top, says its median, as the GPU graph's gutter says its top: `frame`, and flush right `4.2 ms`; the line beneath it counts the warnings and errors since the console was last opened, `alerts` and flush right `! N` in `warn` and `× N` in `error`, or `no alerts` in `dim` when there are none, so the line is never blank;
     - GPU time per frame, stacked by named pass, with the share of the frame the GPU was busy:
       - a graph two thirds the frame chart's height, its columns the frame chart's, the same span at the same place, each a stack of the frame's passes from the foot in the order their labels were first heard, each pass at its median over the column's frames, so the stack is a typical frame;
       - its scale is linear, as stacked times are summed, and ranged to what is drawn, as GPU profilers such as Tracy and PIX range theirs: nothing at the foot, and at the top the tallest stack in the 60 seconds rounded up to 1, 2, or 5 × 10ⁿ nanoseconds, no less than 10 microseconds so an idle GPU's noise is not drawn full height. The top moves only between those steps, which keeps it from flickering as the window slides. A pass that took any time stands at least a pixel tall, and a stack over the top is cut there. A budget-relative scale would leave a fast GPU's frame under a pixel at a high refresh rate: 0.08 ms against 4.17 ms at 240 Hz;
-      - the budget is the frame chart's dashed bone line only where it falls at or under the top; over it, the graph has no budget line, as `gpu busy` already tells the frame's share;
+      - the budget is the frame chart's dashed line only where it falls at or under the top; over it, the graph has no budget line, as `gpu busy` already tells the frame's share;
       - the gutter beside the graph says its top, as the rows' gutter says their values: `gpu`, and flush right `top 0.1 ms`;
       - beneath it, one line: each pass's label, without the renderer's `aether.render.` prefix, and its median over the 60 seconds, each in its pass's colour, so the line is the legend; and `gpu busy`, the GPU's median frame over the frame chart's median cycle;
-      - on a device without timestamps, the graph's place holds one stone line, `GPU timing not supported on this device`, and nothing else;
-    - one line each for draws, triangles, and bytes uploaded: each a thin row of stone bars over the same columns, each column the most of its frames, linear from nothing to the most shown, with its label and newest value in a gutter at the column's right, bytes in KiB, MiB, and GiB. The graphs above end at the gutter too, so every column stands under the frame chart's. GPU memory is not a row here: it is a memory meter, in the right column, with its own minute of history.
+      - on a device without timestamps, the graph's place holds one `dim` line, `GPU timing not supported on this device`, and nothing else;
+    - one line each for draws, triangles, and bytes uploaded: each a thin row of `dim` bars over the same columns, each column the most of its frames, linear from nothing to the most shown, with its label and newest value in a gutter at the column's right, bytes in KiB, MiB, and GiB. The graphs above end at the gutter too, so every column stands under the frame chart's. GPU memory is not a row here: it is a memory meter, in the right column, with its own minute of history.
   - **Right:** the memory meters, a row each, the five sharing the column's height evenly: the first's top level with the frame chart's, the last's foot level with the left column's last row, so no block of the column is empty; the band's height is the left column's, and the right column grows and shrinks with it. Each row's text is clipped to the column, so a narrow window cuts it rather than letting it run into the left column's gutter:
-    - in order: process, blobs, backlog, guests, GPU (see Memory); each row laid out as the left column's rows are, a graph and a gutter at its right: the gutter the same twenty characters as the left column's, ending at the band's right padding, one line of Mono text centred down the row, the label in stone in its first ten characters and the value set flush right in bone in the rest, so the labels start at one edge and the values' digits end at another; a value that is no figure in stone, `unknown` where the chassis reads no figure, `none`, `no guests` where none runs;
+    - in order: process, blobs, backlog, guests, GPU (see Memory); each row laid out as the left column's rows are, a graph and a gutter at its right: the gutter the same twenty characters as the left column's, ending at the band's right padding, one line of Mono text centred down the row, the label in `dim` in its first ten characters and the value set flush right in `text` in the rest, so the labels start at one edge and the values' digits end at another; a value that is no figure in `dim`, `unknown` where the chassis reads no figure, `none`, `no guests` where none runs;
     - left of the gutter, a character's space from it, the meter's graph or bar, from the column's left, every meter's between the same two edges so the graphs stand aligned with each other, as tall as the row less a little padding, `███████░░░░░░░░░░░░░░░ blobs      412.0 MiB`;
-    - process, guests, and GPU have no limit, so they draw their last minute: over the same 60 seconds as the left column, as many columns as the graph's width holds, the newest at its right, each column the most of the readings in its span, drawn as the left column's rows are, stone bars linear from nothing to the most shown, over a trough of faint stone as the bars' are, so a minute of nothing, as `no guests`, still reads as a graph; a column no reading fell in carries the reading before it for up to a second, as the four-a-second reads are about a column apart and now and then skip one, so a steady meter draws a steady line, while a longer pause, as while the overlay is hidden, stays a gap;
-    - blobs and backlog have a limit, so they draw a bar against it: a trough of faint stone the graph's width and height, and a fill from its left, its share of the trough the bytes' share of their most, lichen under 75%, rust from 75%, brick from 90%; with no most, as when no actor holds bytes unsent, an empty trough and `none`;
+    - process, guests, and GPU have no limit, so they draw their last minute: over the same 60 seconds as the left column, as many columns as the graph's width holds, the newest at its right, each column the most of the readings in its span, drawn as the left column's rows are, `dim` bars linear from nothing to the most shown, over a trough of faint `dim` as the bars' are, so a minute of nothing, as `no guests`, still reads as a graph; a column no reading fell in carries the reading before it for up to a second, as the four-a-second reads are about a column apart and now and then skip one, so a steady meter draws a steady line, while a longer pause, as while the overlay is hidden, stays a gap;
+    - blobs and backlog have a limit, so they draw a bar against it: a trough of faint `dim` the graph's width and height, and a fill from its left, its share of the trough the bytes' share of their most, `lichen` under 75%, `warn` from 75%, `error` from 90%; with no most, as when no actor holds bytes unsent, an empty trough and `none`;
     - a meter with a limit writes the bytes it holds alone, as its bar shows their share of the limit, so every value fits the gutter and nothing is cut as a value changes; the backlog's actor is not in the band, which has no room for it in a fixed gutter: the `memory` tool names it;
     - the engine's figures are read at the figures' pace, four times a second, each reading of process and guests kept in its meter's history, and the GPU meter from each frame's statistics, every kind of its memory summed, each frame kept in its history and the newest shown as the figures are read; a text is written again only when what it shows changes;
     - the column ends after the meters: the GPU adapter, its backend, and its driver do not change while the program runs, so the band does not keep them in view; `render_stats` answers them, called from the console or by an agent (see Frame statistics).
@@ -81,7 +81,7 @@ Called::Output ── schema ── Form, printed ──> scrollback
 - **A field that is not an `Option` must be given.** There are no defaults beyond `Option`: a default kept only in the console would make the console's tool differ from the agent's.
 - **A tool with no flags** takes its input as one JSON word: `present {"window":"main"}`. JSON is also the escape hatch for any field whose `Form` is JSON.
 - **`help <tool>`** prints the tool's description and each flag with its field's doc comment. **Tab** completes tool names, flag names, and a variant's name.
-- **The overlay's own commands are tools it offers:** `mark <text>`, which pins a mark at this moment on the band's axis and in the scrollback, and `memory`, which prints `EngineStats`' largest guests and longest backlogs (see Memory). An agent may call them as well, so an agent's mark shows on the owner's screen.
+- **The overlay's own commands are tools it offers:** `mark <text>`, which pins a mark at this moment on the band's axis and in the scrollback; `memory`, which prints `EngineStats`' largest guests and longest backlogs (see Memory), and `set_theme <theme>`, which tints the overlay's greys by a theme of the palette and, named none, lists them (see Colours); the overlay serves `set_theme` itself, in every engine, trusted or not, as it changes only how that engine's overlay looks. An agent may call them as well, so an agent's mark shows on the owner's screen.
 
 ### Answers are printed as they would be typed
 
@@ -138,24 +138,56 @@ Called::Output ── schema ── Form, printed ──> scrollback
 
 ### Colours
 
-The overlay's colours are slate and earth. Healthy is one cool colour; only warm colours mean trouble.
+The overlay's colours are one ladder of greys and a few accents, each written in OKLCH (lightness, chroma, hue) and turned into sRGB once, as the overlay begins and as its theme changes, never as a frame is drawn. Healthy is one cool colour; only warm colours mean trouble. A widget names a colour by its role, a surface or an ink, never by its look or a hex.
 
-| Name   | Colour    | For                                                                    |
-| ------ | --------- | ---------------------------------------------------------------------- |
-| slate  | `#15181b` | the panels, at 85% opacity, so the game shows behind them             |
-| bone   | `#e4e0d6` | text; the chart's budget line                                         |
-| stone  | `#8d918f` | labels, timestamps, info lines                                        |
-| lichen | `#9dbfb0` | the typed command, healthy lines and meters; the chart's median bar   |
-| sand   | `#6b5f4c` | the chart's slowest bar                                                |
-| slate-teal | `#3f5a57` | the chart's fastest bar                                            |
-| slate blue | `#6f8aa6` | the GPU graph's first pass in each three, and its figure          |
-| muted violet | `#8a7ca8` | the GPU graph's second pass in each three, and its figure       |
-| mauve  | `#a88aa0` | the GPU graph's third pass in each three, and its figure               |
-| ochre  | `#d9b86c` | marks                                                                  |
-| rust   | `#d08a4c` | warnings; a meter past 75%                                             |
-| brick  | `#cc5f52` | errors; a meter past 90%                                               |
+The greys share one hue and a low chroma, set by the theme; their lightness is fixed by role. The surfaces, darkest first:
 
-The GPU's passes are told apart by slate blue, muted violet, and mauve, cycling in the order their labels were first heard; none is lichen, sand, or slate-teal, which keep their one meaning each in the frame chart. Every text is `Font::Mono`, so figures line up.
+| Surface   | L     | For                                                                   |
+| --------- | ----- | --------------------------------------------------------------------- |
+| `deepest` | 0.160 | the tabs' strip                                                       |
+| `inset`   | 0.188 | the prompt's well, the grip's well, and the open tab                  |
+| `band`    | 0.207 | the band's panel, at 85% opacity, so the game shows behind it         |
+| `sheet`   | 0.255 | the scrollback and the transcript, at 96%, as every console panel is  |
+| `raised`  | 0.300 | the owner's sent lines                                                |
+
+The inks:
+
+| Ink       | L     | For                                                                   |
+| --------- | ----- | --------------------------------------------------------------------- |
+| `divider` | 0.360 | every rule and divider, opaque                                        |
+| `faint`   | 0.520 | hints: the completion ahead of the line                               |
+| `dim`     | 0.680 | labels, timestamps, info lines, tool output, a tab not open           |
+| `text`    | 0.910 | text, Claude's replies, the open tab; the chart's budget line         |
+
+The themes, each a hue and the chroma of its surfaces and of its inks; `set_theme` switches them live, and the choice is the engine's own, as the console's height is, kept until the engine ends:
+
+| Theme                  | Hue | Surface C | Ink C |
+| ---------------------- | --- | --------- | ----- |
+| `lichen`, lichen grey (the first) | 185 | 0.011 | 0.010 |
+| `slate`                | 250 | 0.012     | 0.010 |
+| `stone`, warm stone    | 80  | 0.010     | 0.014 |
+
+The accents are the same in every theme:
+
+| Accent   | L, C, H              | For                                                                 |
+| -------- | -------------------- | ------------------------------------------------------------------- |
+| `pass1`  | 0.650, 0.060, 250    | the GPU graph's first pass in each three, and its figure            |
+| `pass2`  | 0.650, 0.060, 300    | the GPU graph's second pass in each three, and its figure           |
+| `pass3`  | 0.650, 0.060, 340    | the GPU graph's third pass in each three, and its figure            |
+| `fast`   | 0.450, 0.035, 188    | the chart's fastest bar                                             |
+| `median` | 0.775, 0.045, 167    | the chart's median bar; code in Claude's replies                    |
+| `slow`   | 0.500, 0.035, 80     | the chart's slowest bar                                             |
+| `lichen` | 0.775, 0.045, 167    | healthy lines and meters; the owner's sent lines; the open tab's underline |
+| `input`  | 0.880, 0.055, 167    | the line being typed: its sign, its text, and its caret             |
+| `label`  | 0.650, 0.060, 250    | the engine's tag on the owner's sent lines                          |
+| `link`   | 0.740, 0.070, 245    | a link in Claude's replies                                          |
+| `mark`   | 0.800, 0.100, 87     | marks; a session waiting on the owner; an ask; a compaction         |
+| `warn`   | 0.700, 0.115, 60     | warnings; a meter past 75%                                          |
+| `error`  | 0.630, 0.140, 29     | errors and refusals; a meter past 90%                               |
+
+The GPU's passes share one lightness and chroma, so they are told apart by hue alone, cycling in the order their labels were first heard; none is a bar of the frame chart, whose three keep their one meaning each. The frame chart's three keep their lightness apart on purpose, so the median stays brightest. Mark, warn, and error climb in chroma and fall in lightness as trouble grows. Every text is `Font::Mono`, so figures line up.
+
+The owner's sent lines read the same in the console's own tab and a session's: `lichen` text on the `raised` band, the tag (`local`, or another engine's name, dimmed) in `label`. The open tab is on `inset`, the tabs filling the strip's height, with a 2-pixel `lichen` underline along its bottom edge; the dividers between tabs stand in from the strip's top and foot. A compaction is a divider across the transcript, its label centred, `compacted · 182k → 31k tokens`, in `mark`, with a thin line either side in `mark` at 35%.
 
 ### Where it lives
 

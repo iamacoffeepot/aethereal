@@ -1,10 +1,10 @@
 //! The console's tests: the line stepped through its history, a line turned into a call of a real tool, refusals
-//! printed in brick, tab completion of a tool, a flag, and a variant and its hint, the scrollback's bound and wrap, the
+//! printed in the error's ink, tab completion of a tool, a flag, and a variant and its hint, the scrollback's bound and wrap, the
 //! band's count of warnings and errors, and the calls running.
 
 use super::scrollback::{MOST_ROWS, Scrollback, wrapped};
 use super::*;
-use crate::colour::{BRICK, RUST, Swatch};
+use crate::colour::Ink;
 use crate::tools::OverlayTools;
 use aethereal_actor::Level;
 use aethereal_data::from_bytes;
@@ -23,9 +23,9 @@ fn holding_tools() -> Console {
     console
 }
 
-/// Each row kept, its text and the colour of its last piece.
-fn shown(console: &Console) -> Vec<(String, Swatch)> {
-    console.rows().map(|row| (row.text(), row.pieces.last().map_or(BONE, |piece| piece.swatch))).collect()
+/// Each row kept, its text and the ink of its last piece.
+fn shown(console: &Console) -> Vec<(String, Ink)> {
+    console.rows().map(|row| (row.text(), row.pieces.last().map_or(Ink::Text, |piece| piece.ink))).collect()
 }
 
 /// Submits `line` at `console`, as its text input does with Enter.
@@ -80,16 +80,18 @@ fn a_line_becomes_a_call_of_its_tool() -> Result<(), Box<dyn Error>> {
     let read: ReadRecent = from_bytes(&input, &mut Budget::new(1024))?;
     assert_eq!((tool.as_str(), revision), ("read_recent", 3));
     assert_eq!(read, ReadRecent { since: None, level: Some(LogLevel::Warn), contains: None, most: Some(5) });
-    assert_eq!(shown(&console), vec![(String::from("> read_recent --level warn --most 5"), LICHEN)]);
+    assert_eq!(shown(&console), vec![(String::from("local > read_recent --level warn --most 5"), Ink::Lichen)]);
     assert_eq!(console.line(), "", "the line is left for the next");
 
     Ok(())
 }
 
-/// A tool the engine does not hold, a line its flags do not read, and a tool's refusal each print in brick after the
-/// command's echo in lichen, an unknown tool with the nearest names, so a refusal that reads as an answer is caught.
+/// A tool the engine does not hold, a line its flags do not read, and a tool's refusal each print in the error's ink
+/// after the command's echo, the owner's line on the raised band, its tag in the label's ink and its text in lichen;
+/// an unknown tool with the nearest names. So a refusal that reads as an answer, or an echo that reads as one, is
+/// caught.
 #[test]
-fn refusals_print_in_brick() {
+fn refusals_print_in_the_error_s_ink_after_the_owner_s_line() {
     let mut console = holding_tools();
 
     let unknown = enter(&mut console, "memroy");
@@ -98,10 +100,12 @@ fn refusals_print_in_brick() {
 
     let rows = shown(&console);
     assert!(matches!(unknown, Command::Refused(_)), "{unknown:?}");
-    assert_eq!(rows[0], (String::from("> memroy"), LICHEN));
-    assert_eq!(rows[1].1, BRICK);
+    let echo = console.rows().next();
+    assert_eq!(rows[0], (String::from("local > memroy"), Ink::Lichen));
+    assert_eq!(echo.map(|row| (row.shade, row.pieces[0].ink)), Some((Shade::Raised, Ink::Label)));
+    assert_eq!(rows[1].1, Ink::Error);
     assert!(rows[1].0.contains("`memory`"), "{:?} does not name the nearest tool", rows[1].0);
-    assert_eq!((rows[2].1, rows[3].1, rows[4].1), (LICHEN, BRICK, BRICK));
+    assert_eq!((rows[2].1, rows[3].1, rows[4].1), (Ink::Lichen, Ink::Error, Ink::Error));
 }
 
 /// Tab completes the first word as a tool's name, a word that starts with `-` as one of the tool's flags, and the
@@ -121,7 +125,7 @@ fn tab_completes_a_tool_a_flag_and_a_variant() {
 
     let mut several = holding_tools();
     assert_eq!(complete(&mut several, "m"), "m");
-    assert_eq!(shown(&several), vec![(String::from("mark  memory"), STONE)]);
+    assert_eq!(shown(&several), vec![(String::from("mark  memory"), Ink::Dim)]);
 }
 
 /// The one word the word before the caret completes to is what shows ahead of it, and nothing does once the word is
@@ -148,11 +152,11 @@ fn a_completion_shows_ahead_of_the_caret() {
 fn the_scrollback_keeps_two_thousand_rows_and_wraps_at_the_width() {
     let mut scrollback = Scrollback::default();
     for number in 0..2_500 {
-        scrollback.print(&format!("row {number}"), BONE, 80);
+        scrollback.print(&format!("row {number}"), Ink::Text, 80);
     }
 
-    let words = wrapped(&[Piece::new("the quick brown fox jumps", BONE)], 10);
-    let unbroken = wrapped(&[Piece::new("abcdefghijklmnopqrstuvwxy", BONE)], 10);
+    let words = wrapped(&[Piece::new("the quick brown fox jumps", Ink::Text)], Shade::Sheet, 10);
+    let unbroken = wrapped(&[Piece::new("abcdefghijklmnopqrstuvwxy", Ink::Text)], Shade::Sheet, 10);
 
     let first = scrollback.rows().next();
     assert_eq!(scrollback.rows().len(), MOST_ROWS);
@@ -164,7 +168,7 @@ fn the_scrollback_keeps_two_thousand_rows_and_wraps_at_the_width() {
     assert_eq!(unbroken, ["abcdefghij", "klmnopqrst", "uvwxy"]);
 }
 
-/// Warnings and errors are counted, in rust and brick, flush right in the gutter's line after `alerts`, and nothing
+/// Warnings and errors are counted, in the warning's and the error's inks, flush right in the gutter's line after `alerts`, and nothing
 /// else is; and clearing forgets them, leaving `no alerts` rather than a blank line, so a count of the wrong level, one
 /// the console's opening does not clear, counts out of line with the gutter's values, or a blank line, is caught.
 #[test]
@@ -180,8 +184,8 @@ fn warnings_and_errors_are_counted_until_cleared() {
 
     let line: String = counted.iter().map(|piece| piece.text.as_str()).collect();
     assert_eq!(line, "alerts      ! 2  × 1");
-    assert_eq!(counted[2..], [Piece::new("! 2", RUST), Piece::new("  ", STONE), Piece::new("× 1", BRICK)]);
-    assert_eq!(cleared, vec![Piece::new("no alerts", STONE)]);
+    assert_eq!(counted[2..], [Piece::new("! 2", Ink::Warn), Piece::new("  ", Ink::Dim), Piece::new("× 1", Ink::Error)]);
+    assert_eq!(cleared, vec![Piece::new("no alerts", Ink::Dim)]);
 }
 
 /// A call is shown running from when it is asked until it settles, one by its tool's name and several by their count,

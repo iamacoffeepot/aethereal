@@ -135,7 +135,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
     assert_eq!(state.stop, Stop::Console);
     assert_eq!(typed_line, "memory");
     assert_eq!(state.console.line(), "", "the line is left for the next");
-    assert!(rows.iter().any(|row| row == "> memory"), "the line is echoed: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local > memory"), "the line is echoed: {rows:?}");
     let answered = rows.iter().any(|row| row.starts_with("process: "));
     assert!(answered, "the answer is printed: {rows:?}");
 
@@ -244,8 +244,8 @@ fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_kee
     let rows: Vec<String> = state.console.rows().map(super::super::console::Row::text).collect();
     assert_eq!(state.chats.open(), Open::Session(1));
     assert_eq!(state.chats.rows().len(), 2, "the line and the reply are rows");
-    assert!(!rows.iter().any(|row| row == "> hello"), "a line said is not run here: {rows:?}");
-    assert!(rows.iter().any(|row| row == "> memory"), "a `/` line runs here: {rows:?}");
+    assert!(!rows.iter().any(|row| row == "local > hello"), "a line said is not run here: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local > memory"), "a `/` line runs here: {rows:?}");
     assert_eq!(emptied, "", "Escape empties the line typed");
     assert_eq!(state.stop, Stop::Console, "Escape keeps the console open with a session's tab open");
 
