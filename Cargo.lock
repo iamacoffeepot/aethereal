@@ -217,6 +217,7 @@ dependencies = [
  "aethereal-math",
  "aethereal-pace",
  "aethereal-render",
+ "aethereal-sessions",
  "aethereal-substrate",
  "aethereal-tcp",
  "aethereal-tools",

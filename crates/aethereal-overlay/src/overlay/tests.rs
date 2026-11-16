@@ -3,13 +3,16 @@
 //! the window delivers them. What it did is read from its state.
 
 use super::{Overlay, OverlayConfig};
+use crate::chat::Open;
 use crate::stop::Stop;
 use aethereal_actor::{Prepare, Render, Requests, Tick};
+use aethereal_data::{Budget, Json};
 use aethereal_render::mapping::{Mapped, Mapping};
 use aethereal_render::shape::ColourFormat;
 use aethereal_render::stats::FrameBudget;
 use aethereal_render::surface::{Front, Fronting, Present, Surfaced, WindowFormat};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
+use aethereal_sessions::{Entry, Numbered, ShowEvents, ShowTabs, Speaker, State, Tab};
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use aethereal_substrate::{Engine, Feed};
 use aethereal_tools::{Tools, ToolsSettings};
@@ -132,7 +135,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
     assert_eq!(state.stop, Stop::Console);
     assert_eq!(typed_line, "memory");
     assert_eq!(state.console.line(), "", "the line is left for the next");
-    assert!(rows.iter().any(|row| row == "> memory"), "the line is echoed: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local > memory"), "the line is echoed: {rows:?}");
     let answered = rows.iter().any(|row| row.starts_with("process: "));
     assert!(answered, "the answer is printed: {rows:?}");
 
@@ -195,6 +198,118 @@ fn the_scrollback_keeps_to_its_end_as_rows_are_printed_and_pages_back_and_down_t
     assert!(matches!(kept_to_end, Stand::End { .. }), "{kept_to_end:?}");
     assert!(matches!(paged, Stand::At(_)), "{paged:?}");
     assert!(matches!(paged_down, Stand::End { .. }), "paged down to its end, it keeps to it again: {paged_down:?}");
+
+    Ok(())
+}
+
+#[test]
+fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_keeps_the_console() -> Result<(), Unheard>
+{
+    // Catches a console that shows no chat once the hub lists the sessions, a line typed at a session's tab run as one
+    // of the engine's tools, a `/` line not run here, a transcript that does not build in the console's view, and
+    // Escape that closes the console rather than emptying the line or stopping the turn.
+    let (mut harness, held) = program()?;
+    let on = held.window.window();
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    let overlay = harness.root::<Overlay>();
+    let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![tab] })?;
+    let reply = Json::parse(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"A **reply**."}]},"parent_tool_use_id":null}"#,
+        &mut Budget::new(1 << 12),
+    )
+    .expect("the reply is JSON");
+    let said = Entry::Said { by: Speaker::Engine { engine: 4 }, text: String::from("hi") };
+    let events = vec![Numbered { number: 1, entry: said }, Numbered { number: 2, entry: Entry::Claude(reply) }];
+    harness.tell(overlay, &ShowEvents { session: 1, events })?;
+    run(&mut harness, 3);
+
+    key(&mut harness, on, typed("hello"))?;
+    key(&mut harness, on, down("Enter", "Enter"))?;
+    key(&mut harness, on, typed("/memory"))?;
+    key(&mut harness, on, down("Enter", "Enter"))?;
+    run(&mut harness, 3);
+    key(&mut harness, on, typed("half"))?;
+    key(&mut harness, on, down("Escape", "Escape"))?;
+    let emptied = String::from(harness.state(overlay)?.console.line());
+    key(&mut harness, on, down("Escape", "Escape"))?;
+    run(&mut harness, 3);
+
+    let state = harness.state(overlay)?;
+    let rows: Vec<String> = state.console.rows().map(super::super::console::Row::text).collect();
+    assert_eq!(state.chats.open(), Open::Session(1));
+    assert_eq!(state.chats.rows().len(), 2, "the line and the reply are rows");
+    assert!(!rows.iter().any(|row| row == "local > hello"), "a line said is not run here: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local > memory"), "a `/` line runs here: {rows:?}");
+    assert_eq!(emptied, "", "Escape empties the line typed");
+    assert_eq!(state.stop, Stop::Console, "Escape keeps the console open with a session's tab open");
+
+    Ok(())
+}
+
+/// The key at `code`, meaning `key`, let up.
+fn up(code: &str, key: &str) -> KeyEvent {
+    KeyEvent::KeyUp { code: String::from(code), key: String::from(key) }
+}
+
+/// Types `line` at the open console and enters it, its answer settled.
+fn entered(harness: &mut Harness<Bench>, on: WindowId, line: &str) -> Result<(), Unheard> {
+    key(harness, on, down("KeyN", "n"))?;
+    key(harness, on, typed(line))?;
+    key(harness, on, down("Enter", "Enter"))?;
+    run(harness, 3);
+
+    Ok(())
+}
+
+#[test]
+fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made_opens_as_it_lists()
+-> Result<(), Unheard> {
+    // Catches the chat's words served by an engine the hub has not shown the chat; words that are not the engine's
+    // tools, so the console's own tab cannot run them; Alt-1 that does not open the console's own tab, or types into
+    // the line; and a session made at the console left closed once it lists.
+    let (mut harness, held) = program()?;
+    let on = held.window.window();
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    let overlay = harness.root::<Overlay>();
+    let unknown = |harness: &mut Harness<Bench>| -> Result<usize, Unheard> {
+        let rows =
+            harness.state(overlay)?.console.rows().filter(|row| row.text().contains("no tool is named `new_session`"));
+        Ok(rows.count())
+    };
+
+    entered(&mut harness, on, "new_session work")?;
+    let untrusted = unknown(&mut harness)?;
+    let old = Tab { session: 1, name: String::from("old"), state: State::Idle, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![old.clone()] })?;
+    run(&mut harness, 3);
+    key(&mut harness, on, down("AltLeft", "Alt"))?;
+    key(&mut harness, on, down("Digit1", "1"))?;
+    key(&mut harness, on, typed("1"))?;
+    key(&mut harness, on, up("AltLeft", "Alt"))?;
+    let chosen = harness.state(overlay)?.chats.open();
+    let line = String::from(harness.state(overlay)?.console.line());
+    entered(&mut harness, on, "new_session work")?;
+    let trusted = unknown(&mut harness)?;
+    let made = Tab { session: 2, name: String::from("work"), state: State::Starting, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![old, made] })?;
+    run(&mut harness, 3);
+
+    assert_eq!(untrusted, 1, "an engine the hub shows no chat has no `new_session`");
+    assert_eq!(chosen, Open::Console, "Alt-1 opens the console's own tab");
+    assert_eq!(line, "", "Alt-1 types nothing into the line");
+    assert_eq!(trusted, 1, "once the hub lists the sessions, `new_session` is a tool the console's own tab runs");
+    assert_eq!(harness.state(overlay)?.chats.open(), Open::Session(2), "the session made opens as it lists");
 
     Ok(())
 }

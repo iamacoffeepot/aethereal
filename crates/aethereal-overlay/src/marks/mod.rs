@@ -1,5 +1,5 @@
 //! Marks (ADR-0053: The overlay's own commands): moments pinned by the `mark` tool, by a person at the console or an
-//! agent, each drawn as an ochre tick on the frame chart at its time, sliding left with the columns until it is older
+//! agent, each drawn as a tick in the mark's ink on the frame chart at its time, sliding left with the columns until it is older
 //! than the chart's sixty seconds. A mark is told to the overlay between cycles, so it waits for the next `Tick` to
 //! be stamped with the program's time: the overlay hears no `Tick` while it is hidden, and its newest cycle may be long
 //! past.

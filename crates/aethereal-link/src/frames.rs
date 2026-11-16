@@ -67,6 +67,22 @@ impl Up {
     }
 }
 
+/// The frame that carries `chat` up (ADR-0057).
+impl From<Chat> for Up {
+    fn from(chat: Chat) -> Self {
+        match chat {
+            Chat::Say { session, text } => Self::Say { session, text },
+            Chat::Ran { session, line, printed } => Self::Ran { session, line, printed },
+            Chat::Answer { ask, allow } => Self::Answer { ask, allow },
+            Chat::Interrupt { session } => Self::Interrupt { session },
+            Chat::Open { session, after } => Self::Open { session, after },
+            Chat::Close { session } => Self::Close { session },
+            Chat::New { name } => Self::New { name },
+            Chat::Archive { session } => Self::Archive { session },
+        }
+    }
+}
+
 /// What a call came to, its output's bytes inline: as a frame carries a [`Called`], since a frame crosses to another
 /// engine, where a blob does not (ADR-0042), and as the hub's tools build one before its output is put.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]

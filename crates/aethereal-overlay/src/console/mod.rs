@@ -24,9 +24,9 @@ mod tests;
 
 pub use command::Command;
 pub use logs::{Alerts, Logged};
-pub use scrollback::{Piece, Row};
+pub use scrollback::{Piece, Row, Shade};
 
-use crate::colour::{BONE, BRICK, LICHEN, OCHRE, STONE};
+use crate::colour::Ink;
 use aethereal_data::{Budget, Plain, SchemaNodes};
 use aethereal_tools::{Output, Sheets, print_image, print_value};
 use completion::Completion;
@@ -34,8 +34,12 @@ use history::History;
 use running::Running;
 use scrollback::Scrollback;
 
-/// What the line typed is shown after: the prompt, in lichen.
-const PROMPT: &str = "> ";
+/// The prompt mark after an owner's line's tag: who typed it, then this, then what they typed.
+pub const PROMPT_MARK: &str = " >";
+
+/// What an engine calls itself as it tags the owner's lines: those typed at it. In a transcript, every other engine is
+/// called by its name.
+pub const LOCAL: &str = "local";
 
 /// The most bytes printing an answer may take: an answer is read whole into text.
 const MOST_PRINT_BYTES: usize = 4 << 20;
@@ -80,23 +84,54 @@ impl Console {
         self.line = line;
     }
 
-    /// Enters `entered`, the line as its text input submitted it: it is kept in the history and echoed in lichen, the
-    /// line is left empty, and what its command comes to is printed, or answered for the overlay to call. Rows are
+    /// Empties the line, as Escape does with a session's tab open.
+    pub fn clear_line(&mut self) {
+        self.line.clear();
+    }
+
+    /// Keeps `typed` in the history, and empties the line: what entering a line does, whatever it comes to.
+    pub fn kept(&mut self, typed: &str) {
+        self.line.clear();
+        self.history.keep(typed);
+    }
+
+    /// Enters `entered`, the line as its text input submitted it: it is kept in the history and echoed as the owner's
+    /// line, the line is left empty, and what its command comes to is printed, or answered for the overlay to call. Rows are
     /// wrapped at `columns` characters.
     pub fn submitted(&mut self, entered: &str, columns: usize) -> Command {
-        self.line.clear();
-        self.history.keep(entered);
-        self.scrollback.print(&format!("{PROMPT}{entered}"), LICHEN, columns);
+        self.kept(entered);
+
+        self.ran(entered, columns)
+    }
+
+    /// Runs `entered` as [`Self::submitted`] does, keeping nothing in the history: a `/` command typed with a session's
+    /// tab open runs without its `/`, and its caller keeps it with it.
+    pub fn ran(&mut self, entered: &str, columns: usize) -> Command {
+        self.echo(entered, columns);
 
         let command = command::command(entered, &self.sheets, columns);
         match &command {
             Command::Blank | Command::Call { .. } => {}
-            Command::Shown(text) => self.scrollback.print(text, BONE, columns),
+            Command::Shown(text) => self.scrollback.print(text, Ink::Text, columns),
             Command::Clear => self.scrollback.clear(),
-            Command::Refused(why) => self.scrollback.print(why, BRICK, columns),
+            Command::Refused(why) => self.scrollback.print(why, Ink::Error, columns),
         }
 
         command
+    }
+
+    /// Echoes `entered` as the owner's line, as a session's transcript shows one typed here: on the raised band, its
+    /// tag, `local`, in the label's ink, and the prompt mark and its text in lichen, each of its lines wrapped a
+    /// character short of `columns`, as the band's inset either side takes that room.
+    fn echo(&mut self, entered: &str, columns: usize) {
+        let width = columns.saturating_sub(1).max(1);
+        let mut lines = entered.split('\n');
+        let first = lines.next().unwrap_or_default();
+        let tagged = [Piece::new(LOCAL, Ink::Label), Piece::new(&format!("{PROMPT_MARK} {first}"), Ink::Lichen)];
+        self.scrollback.push(&tagged, Shade::Raised, width);
+        for line in lines {
+            self.scrollback.push(&[Piece::new(line, Ink::Lichen)], Shade::Raised, width);
+        }
     }
 
     /// Puts the command one older than the one recalled in place of the line, keeping the line as it stood to come back
@@ -131,7 +166,7 @@ impl Console {
                 (from, spaced)
             }
             Completion::Several { from, common, matches } => {
-                self.scrollback.print(&matches.join("  "), STONE, columns);
+                self.scrollback.print(&matches.join("  "), Ink::Dim, columns);
                 (from, common)
             }
         };
@@ -160,45 +195,57 @@ impl Console {
     }
 
     /// Prints the value a tool answered, `bytes` of `output`'s schema, in the forms its flags read, its rows wrapped
-    /// at `columns`; an answer that prints as nothing prints nothing.
-    pub fn answered(&mut self, output: &Output, bytes: &[u8], columns: usize) {
+    /// at `columns`; an answer that prints as nothing prints nothing. Answers what it printed.
+    pub fn answered(&mut self, output: &Output, bytes: &[u8], columns: usize) -> String {
         let schema: &SchemaNodes = match output {
             Output::Value(schema) | Output::ValueOrImage(schema) => schema,
             Output::Image => {
-                self.scrollback.print(&format!("an answer of {} bytes", bytes.len()), BONE, columns);
-                return;
+                let printed = format!("an answer of {} bytes", bytes.len());
+                self.scrollback.print(&printed, Ink::Text, columns);
+                return printed;
             }
         };
         match print_value(schema, bytes, &mut Budget::new(MOST_PRINT_BYTES)) {
-            Ok(text) if text.is_empty() => {}
-            Ok(text) => self.scrollback.print(&text, BONE, columns),
-            Err(error) => self.refused(&format!("the answer did not read: {error}"), columns),
+            Ok(text) => {
+                if !text.is_empty() {
+                    self.scrollback.print(&text, Ink::Text, columns);
+                }
+                text
+            }
+            Err(error) => {
+                let why = format!("the answer did not read: {error}");
+                self.refused(&why, columns);
+                why
+            }
         }
     }
 
-    /// Prints the image a tool answered, as one line.
-    pub fn answered_image(&mut self, png: &[u8], text: &str, columns: usize) {
-        self.scrollback.print(&print_image(png, text), BONE, columns);
+    /// Prints the image a tool answered, as one line, and answers it.
+    pub fn answered_image(&mut self, png: &[u8], text: &str, columns: usize) -> String {
+        let printed = print_image(png, text);
+        self.scrollback.print(&printed, Ink::Text, columns);
+
+        printed
     }
 
-    /// Prints why a tool, or the console, did not do what was asked, in brick.
+    /// Prints why a tool, or the console, did not do what was asked, in the error's ink.
     pub fn refused(&mut self, why: &str, columns: usize) {
-        self.scrollback.print(why, BRICK, columns);
+        self.scrollback.print(why, Ink::Error, columns);
     }
 
-    /// Prints a mark, `text` pinned `at_seconds` into the program, in ochre.
+    /// Prints a mark, `text` pinned `at_seconds` into the program, in the mark's ink.
     pub fn marked(&mut self, text: &str, at_seconds: f64, columns: usize) {
-        self.scrollback.print(&format!("mark at {at_seconds:.1} s: {text}"), OCHRE, columns);
+        self.scrollback.print(&format!("mark at {at_seconds:.1} s: {text}"), Ink::Mark, columns);
     }
 
     /// Prints an entry of the engine's log.
     pub fn logged(&mut self, logged: &Logged, columns: usize) {
-        self.scrollback.push(&logged.pieces(), columns);
+        self.scrollback.push(&logged.pieces(), Shade::Sheet, columns);
     }
 
-    /// Prints that `left` entries had left the engine's log before they were read, in stone.
+    /// Prints that `left` entries had left the engine's log before they were read, dim.
     pub fn missed(&mut self, left: u64, columns: usize) {
-        self.scrollback.print(&format!("{left} log entries left the log before they were read"), STONE, columns);
+        self.scrollback.print(&format!("{left} log entries left the log before they were read"), Ink::Dim, columns);
     }
 
     /// Every row kept, oldest first.
@@ -216,9 +263,9 @@ impl Console {
         self.running.settled(tool);
     }
 
-    /// What is running, in stone, shown at the prompt's right end: nothing while no call is under way.
+    /// What is running, dim, shown at the prompt's right end: nothing while no call is under way.
     pub fn running(&self) -> Vec<Piece> {
-        vec![Piece::new(&self.running.shown(), STONE)]
+        vec![Piece::new(&self.running.shown(), Ink::Dim)]
     }
 }
 

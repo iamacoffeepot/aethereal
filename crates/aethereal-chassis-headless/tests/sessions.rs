@@ -950,7 +950,14 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
     let file = daemon.saved("sessions/1/transcript");
-    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 5);
+    // A record is written after the append before it, so a hub whose writes are slow can hold every entry on disk while
+    // its record still says the session was starting: the hub is stopped only once both say the container runs.
+    until(&mut harness, &mut daemon, |_, daemon| {
+        let transcribed = Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 5;
+        let recorded = matches!(kept(daemon, session), Some(Standing::Running { .. }));
+
+        transcribed && recorded
+    });
     drop(harness);
     daemon.connections.clear();
 

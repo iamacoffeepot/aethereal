@@ -2,11 +2,21 @@
 //! in pieces of their own colours, as the gutters, the figures, and the scrollback's rows are, which the library's
 //! `Text`, in its style's one colour, does not draw; and [`Tint`], a box filled with its style's colour that the pointer passes
 //! through, as the band's panel and the lines that part its sections are, where a style's background would block the
-//! pointer from the program beneath. Each is laid out by the library and draws into the box it was given; the charts'
-//! primitives stand beside their own drawing (`chart`, `gpu`, `lines`, `meters`), and paint what it fills ([`paint`]).
+//! pointer from the program beneath; and [`Grip`], the line between the band and the console, which a drag moves; and
+//! [`TabButton`], a session tab, and [`StatusIcon`], the shape before its title that marks the session's status. Each
+//! is laid out by the library and draws into the box it was given; the charts' primitives stand beside their own
+//! drawing (`chart`, `gpu`, `lines`, `meters`), and paint what it fills ([`paint`]).
+
+mod grip;
+mod icon;
+mod tab;
+
+pub use grip::Grip;
+pub use icon::{Shape, StatusIcon};
+pub use tab::TabButton;
 
 use crate::chart::Fill;
-use crate::colour::BONE;
+use crate::colour::{Ink, Palette};
 use crate::console::Piece;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Outline, Run, Wrap};
@@ -89,16 +99,16 @@ pub fn paint(draws: &mut Draws<'_, '_>, fills: impl IntoIterator<Item = Fill>, c
     }
 }
 
-/// `pieces` as a text's runs, each piece's colour opaque: a piece of no text left out, and a space for none at all, as
-/// a text holds something.
-pub fn runs_of(pieces: impl IntoIterator<Item = Piece>) -> Vec<Run> {
+/// `pieces` as a text's runs, each piece in its ink of `palette`, opaque: a piece of no text left out, and a space for
+/// none at all, as a text holds something.
+pub fn runs_of(palette: &Palette, pieces: impl IntoIterator<Item = Piece>) -> Vec<Run> {
     let mut runs: Vec<Run> = pieces
         .into_iter()
         .filter(|piece| !piece.text.is_empty())
-        .map(|piece| Run::new(&piece.text, piece.swatch.opaque()))
+        .map(|piece| palette.run(&piece.text, piece.ink))
         .collect();
     if runs.is_empty() {
-        runs.push(Run::new(" ", BONE.opaque()));
+        runs.push(palette.run(" ", Ink::Text));
     }
 
     runs

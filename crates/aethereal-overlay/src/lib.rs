@@ -10,17 +10,17 @@
 //! panel and lines, which the pointer passes through.
 //!
 //! The band's left column holds the frame chart: sixty seconds of each cycle's time, newest at the right, each column
-//! three opaque bars to the slowest, the median, and the fastest of its cycles, sand, lichen, and slate-teal, back to
+//! three opaque bars to the slowest, the median, and the fastest of its cycles, each in its own ink, back to
 //! front, on a scale logarithmic in a cycle's time from a quarter of the budget the renderer's frame statistics bring to
-//! thirty-two of it, the budget a bright dashed line, with the median, p90, p99, and the longest beneath it, and an
-//! ochre tick at each mark. Beneath it on the same axis, each column under the frame chart's of the same span, the GPU's
-//! graph stacks each frame's passes by label, each at its median over the column's frames, slate blue, muted violet,
-//! and mauve in the order they were first heard, with each pass's median and how busy the GPU was beneath it; and three
-//! rows of thin stone bars, each column the most of its frames, draw the draws, triangles, and bytes uploaded, each
+//! thirty-two of it, the budget a bright dashed line, with the median, p90, p99, and the longest beneath it, and a
+//! tick in the mark's ink at each mark. Beneath it on the same axis, each column under the frame chart's of the same span, the GPU's
+//! graph stacks each frame's passes by label, each at its median over the column's frames, its three pass inks
+//! in the order they were first heard, with each pass's median and how busy the GPU was beneath it; and three
+//! rows of thin dim bars, each column the most of its frames, draw the draws, triangles, and bytes uploaded, each
 //! row's label and newest value in a gutter at its right. Beside the frame chart, its gutter counts the warnings and
 //! errors logged since the console was last opened. The band's right column meters the engine's memory, one row each
 //! for the process, the blobs, the backlog, the guests, and the GPU, with a bar against its limit for the blobs and the
-//! backlog, lichen, then rust from 75% and brick from 90%. Faint lines part the band's two columns, and the left
+//! backlog, lichen, then the warning's ink from 75% and the error's from 90%. Faint lines part the band's two columns, and the left
 //! column's three sections.
 //!
 //! The console's line is the library's text input, which has the screen's focus while the console is open, so the
@@ -30,9 +30,18 @@
 //! prints their answers as they would be typed, with the engine's recent log beneath them as it comes; what it has
 //! called and not yet heard from shows at the prompt's right end. The overlay offers two tools of its own, `mark` and
 //! `memory`, which an agent may call too.
+//!
+//! In an engine its hub trusts, the console is the chat with Claude's sessions (ADR-0057): the overlay listens to the
+//! engine's link, the sessions show as tabs beneath the prompt, the console's own first, and with a session's tab open
+//! its transcript shows in place of the scrollback, a line goes to the session, and a `/` line runs here and is noted
+//! in it. Escape on an empty line stops the session's turn, and on a line typed empties it. The chat's words,
+//! `new_session`, `stop_session`, and `archive_session`, are the engine's tools, which the overlay serves once the hub
+//! shows it the chat; Control-Tab and Alt with a digit change tabs; and the grip, the seam between the band and the
+//! console, sets how tall the console is. An engine the hub shows no chat keeps the console as it was.
 
 mod binned;
 mod chart;
+mod chat;
 mod colour;
 mod console;
 mod frames;

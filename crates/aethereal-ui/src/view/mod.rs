@@ -15,7 +15,7 @@ mod tests;
 pub use method::{Handed, Method};
 
 use crate::drag::{Dropped, Drops};
-use crate::input::{Event, Key, Raised};
+use crate::input::{Event, First, Key, Raised};
 use crate::screen::{Clipping, Copying, Heard, ImeAsked, Pasting};
 use crate::tree::Tree;
 use aethereal_actor::{Actor, Allows, Answer, Asks, DeclaredBy, Fault, Handles, Level, Path, Sends, ToAny, Turn, path};
@@ -33,12 +33,13 @@ pub trait Controls: Actor {
     /// blocking, while no widget that types has its focus. Written beside `key`, whose `match` reads them.
     const HOTKEYS: &'static [&'static str] = &[];
 
-    /// The keys `key` takes before the focused widget hears them, by their places on the keyboard: a key that must
-    /// reach the screen whatever has its focus, as a console's toggle does while its line has focus, or its Tab, which
-    /// completes the line rather than moving focus. The text such a key types is dropped. Listing a key here declares
-    /// nothing: it reaches the screen as its list declares it, among [`Self::HOTKEYS`], or as every key while a widget
-    /// that types has focus.
-    const FIRST: &'static [&'static str] = &[];
+    /// The keys `key` takes before the focused widget hears them, by their places on the keyboard, alone or chorded
+    /// with Alt: a key that must reach the screen whatever has its focus, as a console's toggle does while its line has
+    /// focus, or its Tab, which completes the line rather than moving focus, or Alt and a digit, which choose a tab
+    /// while the digit alone types. The text such a key types is dropped. Listing a key here declares nothing: it
+    /// reaches the screen as its list declares it, among [`Self::HOTKEYS`], or as every key while a widget that types
+    /// has focus.
+    const FIRST: &'static [First] = &[];
 
     /// Whether the screen takes every key of its window now, whatever has its focus: while it says so, its list
     /// declares every key, blocking, so none reaches what is beneath it, as a console takes every key while it is open

@@ -1,9 +1,9 @@
-use super::bars::fill_swatch;
+use super::bars::fill_ink;
 use super::history::MOST_METER_COLUMNS;
 use super::widget::drawn;
 use super::{EngineMemory, Held, MemoryFigures, Meter, MeterHistories, ProcessMemory};
 use crate::chart::tests::{Record, read};
-use crate::colour::{BRICK, LICHEN, RUST, STONE};
+use crate::colour::{Ink, Palette};
 use crate::frames::{Slide, span_nanos};
 use crate::layout::Scale;
 use aethereal_math::{Rect2, Vec2};
@@ -54,7 +54,7 @@ fn graph_area() -> Rect2 {
 fn drawn_row(meter: Meter, area: Rect2, memory: &EngineMemory, histories: &MeterHistories, count: u32) -> Vec<Record> {
     let shown = super::drawn(meter, memory, histories, slide_at(50 * SECOND, count), count);
     let mut fills = Vec::new();
-    drawn(&mut fills, area, SCALE, &shown);
+    drawn(&mut fills, &Palette::default(), area, SCALE, &shown);
 
     read(&fills)
 }
@@ -64,16 +64,16 @@ const fn boxed(area: Rect2) -> [f32; 4] {
     [area.min.x, area.min.y, area.max.x - area.min.x, area.max.y - area.min.y]
 }
 
-/// A fill is lichen under 75% of its most, rust from 75%, and brick from 90%, so a threshold set a step off the
+/// A fill is lichen under 75% of its most, the warning's ink from 75%, and the error's from 90%, so a threshold set a step off the
 /// ADR's table, or a percentage worked out in the wrong order, is caught.
 #[test]
 fn a_fill_turns_rust_at_three_quarters_and_brick_at_nine_tenths() {
-    let at = |bytes| fill_swatch(Held { bytes, most: 100 });
+    let at = |bytes| fill_ink(Held { bytes, most: 100 });
 
-    assert_eq!([at(74), at(75), at(89), at(90), at(250)], [LICHEN, RUST, RUST, BRICK, BRICK]);
+    assert_eq!([at(74), at(75), at(89), at(90), at(250)], [Ink::Lichen, Ink::Warn, Ink::Warn, Ink::Error, Ink::Error]);
 }
 
-/// Each meter with a limit draws its trough in faint stone across its graph, and its fill over it from the trough's
+/// Each meter with a limit draws its trough in faint dim across its graph, and its fill over it from the trough's
 /// left, as wide a share as the bytes are of their most and never past the trough; a meter with no most draws its
 /// trough alone; and nothing is drawn of it before the engine's figures are read. So a fill that runs out of its trough
 /// when an actor holds more than its most, one scaled against the wrong figure, or a fill drawn for a backlog that is
@@ -92,16 +92,16 @@ fn a_bar_s_fill_is_its_share_of_the_trough() {
     let unread = drawn_row(Meter::Blobs, area, &EngineMemory::Unread, &histories, 60);
 
     assert_eq!(blobs[0].area, boxed(area));
-    assert_eq!(blobs[0].colour, STONE.at(0.08));
+    assert_eq!(blobs[0].colour, Palette::default().faded(Ink::Dim, 0.08));
     assert!((blobs[1].area[2] - area.width() / 4.0).abs() < 0.01, "{:?} is not a quarter of {area:?}", blobs[1]);
-    assert_eq!(blobs[1].colour, LICHEN.opaque());
-    assert_eq!((backlog[1].area, backlog[1].colour), (boxed(area), BRICK.opaque()));
+    assert_eq!(blobs[1].colour, Palette::default().ink(Ink::Lichen));
+    assert_eq!((backlog[1].area, backlog[1].colour), (boxed(area), Palette::default().ink(Ink::Error)));
     assert_eq!(none.len(), 1, "an empty meter drew a fill");
     assert_eq!(unread, vec![]);
 }
 
 /// Each meter's line is the gutter's twenty characters, its label from the first and its value flush right at the
-/// last, a value that is no figure in stone; a meter with a limit writes the bytes it holds alone, as its bar shows
+/// last, a value that is no figure dim; a meter with a limit writes the bytes it holds alone, as its bar shows
 /// the share, even at the widest bytes against the widest limit; and the process's label says `heap` where a browser
 /// reports the script heap. So a value column that wanders from line to line, a line that runs past the band's padding
 /// at a long value, or a heap shown as the program's resident memory, is caught.
@@ -112,7 +112,7 @@ fn the_meters_lines_fill_the_gutter_and_a_limit_is_left_to_the_bar() {
     let heap = read_with(ProcessMemory::Heap { bytes: 84 << 20 }, widest, widest);
 
     let line = |memory: &EngineMemory, meter: Meter| -> String {
-        memory.row_runs(meter, 2048).iter().map(|run| run.text.as_str()).collect()
+        memory.row_pieces(meter, 2048).iter().map(|run| run.text.as_str()).collect()
     };
 
     for meter in Meter::ALL {
@@ -121,7 +121,7 @@ fn the_meters_lines_fill_the_gutter_and_a_limit_is_left_to_the_bar() {
         }
     }
     assert_eq!(line(&memory, Meter::Process), "process      unknown");
-    assert_eq!(memory.row_runs(Meter::Process, 0)[1].colour, STONE.opaque());
+    assert_eq!(memory.row_pieces(Meter::Process, 0)[1].ink, Ink::Dim);
     assert_eq!(line(&memory, Meter::Blobs), "blobs     1023.0 MiB");
     assert_eq!(line(&memory, Meter::Backlog), "backlog         none");
     assert_eq!(line(&memory, Meter::Guests), "guests     no guests");
@@ -147,7 +147,7 @@ fn a_column_no_reading_fell_in_carries_the_reading_before_it() {
     history.cut(60);
     let shown = super::MeterDrawn::History { columns: history.columns(slide, 60), slide };
     let mut fills = Vec::new();
-    drawn(&mut fills, area, SCALE, &shown);
+    drawn(&mut fills, &Palette::default(), area, SCALE, &shown);
 
     let lefts: Vec<f32> = read(&fills)[1..].iter().map(|record| record.area[0]).collect();
     let at = |span: u64| {
@@ -163,7 +163,7 @@ fn a_column_no_reading_fell_in_carries_the_reading_before_it() {
     assert!(drawn(20) && drawn(9) && drawn(0), "{lefts:?} lost a column that was read");
 }
 
-/// A meter's history is its trough of faint stone the graph's size, and over it a stone bar a column, each the most of the readings in its span, against the most any column
+/// A meter's history is its trough of faint dim the graph's size, and over it a dim bar a column, each the most of the readings in its span, against the most any column
 /// shown came to, from the graph's foot, the newest column at its right edge; and the GPU's is every kind of its memory
 /// summed, which its text shows as the engine's figures are read. So a column that averages its readings and hides a
 /// spike, a graph scaled against something else than what it shows, a newest column drawn away from the right edge, or
@@ -185,16 +185,16 @@ fn a_meter_s_history_is_the_most_of_each_column_against_the_most_shown() {
     histories.cut(60);
     let shown = super::MeterDrawn::History { columns: histories.process.columns(slide, 60), slide };
     let mut fills = Vec::new();
-    drawn(&mut fills, area, SCALE, &shown);
+    drawn(&mut fills, &Palette::default(), area, SCALE, &shown);
 
     let read_back = read(&fills);
     let (trough, drawn) = (&read_back[0], &read_back[1..]);
-    assert_eq!((trough.area, trough.colour), (boxed(area), STONE.at(0.08)));
+    assert_eq!((trough.area, trough.colour), (boxed(area), Palette::default().faded(Ink::Dim, 0.08)));
     let heights: Vec<f32> = drawn.iter().map(|record| record.area[3]).collect();
     let expected = [area.height() / 2.0, area.height()];
     let near = heights.len() == expected.len() && heights.iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.01);
     assert!(near, "{heights:?} are not {expected:?}");
-    assert!(drawn.iter().all(|record| record.colour == STONE.at(0.6)));
+    assert!(drawn.iter().all(|record| record.colour == Palette::default().faded(Ink::Dim, 0.6)));
     let at_foot = drawn.iter().all(|record| (record.area[1] + record.area[3] - area.max.y).abs() < 0.01);
     assert!(at_foot, "{drawn:?} are off the graph's foot");
     assert!((drawn[0].area[0] - (area.max.x - pitch / 2.0)).abs() < 0.01, "{:?} is not at the right edge", drawn[0]);
@@ -229,7 +229,7 @@ fn a_meter_s_history_survives_its_graph_being_cut_again() {
     assert!(!first.is_empty());
     assert_eq!(first, again, "the history drew otherwise after a resize and back");
     let bar_in_graph = |record: &&Record| {
-        let bar = record.colour == STONE.at(0.6);
+        let bar = record.colour == Palette::default().faded(Ink::Dim, 0.6);
         let within = record.area[1] >= area.min.y && record.area[1] + record.area[3] <= area.max.y + 0.01;
         bar && within
     };

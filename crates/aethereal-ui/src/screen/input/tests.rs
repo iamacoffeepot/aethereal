@@ -6,7 +6,7 @@ use super::super::orders::Order;
 use super::super::tests::{answered, id, last_list, mono, screen};
 use super::super::{Listed, Outcome, Screen};
 use super::Heard;
-use crate::input::{Input, Pointing, Raised};
+use crate::input::{First, Input, Pointing, Raised};
 use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
@@ -383,18 +383,18 @@ fn a_key_the_screen_takes_first_reaches_it_past_a_focused_input_and_types_nothin
     // focus, so the keys typed at the open console reach the game.
     let mut screen = screen_with_fonts();
     let tree = || column(vec![text_input("")]);
-    let first = ["Backquote"];
+    let first = [First::Key("Backquote")];
     let down = |screen: &mut Screen, entry: u32, code: &str, key: &str| {
         let event = KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
         screen.keyed(Keyed { window: window(), entry, event }, &first)
     };
-    laid(&mut screen, tree(), &first);
+    laid(&mut screen, tree(), &["Backquote"]);
     let declared = keys(&screen, Role::Screen);
 
     let opened = down(&mut screen, declared, "Backquote", "`");
     screen.focus(&child(0));
     let toggle_typed = raised(typed(&mut screen, declared, "`"));
-    laid(&mut screen, tree(), &first);
+    laid(&mut screen, tree(), &["Backquote"]);
     let every = keys(&screen, Role::Screen);
     let letter = down(&mut screen, every, "KeyM", "m");
     let letter_typed = raised(typed(&mut screen, every, "m"));
@@ -408,6 +408,36 @@ fn a_key_the_screen_takes_first_reaches_it_past_a_focused_input_and_types_nothin
     assert_eq!(letter_typed, vec![Raised::Text(Ev::Changed, String::from("m"))]);
     assert_eq!(left_over(&closed), vec!["Backquote"]);
     assert_eq!(closing_typed, vec![]);
+}
+
+#[test]
+fn a_key_taken_first_with_alt_reaches_the_screen_only_chorded_and_types_alone() {
+    // Catches a chord taken whatever is held, so the digit it names never types into a focused line; and one taken
+    // without Alt, or whose text is typed into the line as it is taken.
+    let mut screen = screen_with_fonts();
+    let tree = || column(vec![text_input("")]);
+    let first = [First::Alt("Digit1")];
+    let keyed = |screen: &mut Screen, entry: u32, event: KeyEvent| {
+        screen.keyed(Keyed { window: window(), entry, event }, &first)
+    };
+    let down =
+        |code: &str, key: &str| KeyEvent::KeyDown { code: String::from(code), key: String::from(key), repeat: false };
+    let text = |text: &str| KeyEvent::Text { text: String::from(text) };
+    laid(&mut screen, tree(), &[]);
+    screen.focus(&child(0));
+    laid(&mut screen, tree(), &[]);
+    let every = keys(&screen, Role::Screen);
+
+    let alone = keyed(&mut screen, every, down("Digit1", "1"));
+    let alone_typed = raised(keyed(&mut screen, every, text("1")));
+    let _ = keyed(&mut screen, every, down("AltLeft", "Alt"));
+    let chorded = keyed(&mut screen, every, down("Digit1", "1"));
+    let chorded_typed = raised(keyed(&mut screen, every, text("1")));
+
+    assert_eq!(left_over(&alone), Vec::<&str>::new());
+    assert_eq!(alone_typed, vec![Raised::Text(Ev::Changed, String::from("1"))]);
+    assert_eq!(left_over(&chorded), vec!["Digit1"]);
+    assert_eq!(chorded_typed, vec![]);
 }
 
 #[test]

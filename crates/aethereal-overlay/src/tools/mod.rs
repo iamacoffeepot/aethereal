@@ -1,10 +1,21 @@
 //! The overlay's own tools (ADR-0053: Commands are tools): `mark`, which pins a mark at this moment on the band's chart
 //! and in the scrollback, and `memory`, which prints the engine's memory against its limits with its largest guests
 //! and longest backlogs. The overlay offers them to the engine's tools root with a worker of their own, so a person at
-//! the console and an agent through the hub call them alike, and an agent's mark shows on the owner's screen.
+//! the console and an agent through the hub call them alike, and an agent's mark shows on the owner's screen. The
+//! overlay serves `set_theme` (`theme`) itself, in every engine, as the theme is its own state; and the chat's words
+//! (`words`) itself too, and only once the hub has shown it the chat.
 
 #[cfg(test)]
 mod tests;
+mod theme;
+mod words;
+
+#[cfg(test)]
+pub use theme::Choice;
+pub use theme::{ChooseTheme, SET_THEME, chosen, theme_sheet};
+pub use words::{
+    ARCHIVE_SESSION, ArchiveSession, CHAT_WORDS, NEW_SESSION, NewSession, STOP_SESSION, StopSession, chat_sheets,
+};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
@@ -117,8 +128,8 @@ impl Actor for OverlayTools {
 impl OverlayTools {
     /// What the worker offers: `mark` and `memory`.
     pub fn sheets() -> Vec<ToolSheet> {
-        let mark = "Pins a mark at this moment on the dev overlay. The mark is an ochre tick on the overlay's frame \
-                    chart at this time, sliding left with the columns for sixty seconds, and an ochre line in its \
+        let mark = "Pins a mark at this moment on the dev overlay. The mark is a tick in the mark's ink on the overlay's frame \
+                    chart at this time, sliding left with the columns for sixty seconds, and a line in the mark's ink in its \
                     console's scrollback. Answers once the overlay has been told.";
         let memory = format!(
             "Prints the engine's memory against its limits. It reads them as the step began: `process`, the \

@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! the band:    padding │ left column, 60%: chart │ gutter          │ rule │ right column: meter graph │ gutter │ padding
-//! the console: a third of the window: rule, scrollback (its bar at its right edge), rule, the prompt's strip
+//! the console: a third of the window, or as dragged: grip, scrollback or transcript, asks, rule, prompt, tabs
 //! ```
 
 use aethereal_math::Vec2;
@@ -42,8 +42,16 @@ pub const SECTION_PIXELS: f32 = 8.0;
 /// How far a row's bars stand in from its top and foot, in logical pixels, so the rows read apart.
 const ROW_INSET_PIXELS: f32 = 3.0;
 
-/// The share of the window's height the console's panel takes, beneath the band.
+/// The share of the window's height the console's panel takes, beneath the band, until its grip is dragged.
 pub const CONSOLE_SHARE: f32 = 1.0 / 3.0;
+
+/// The least and the most share of the window's height the console's panel is dragged to.
+pub const LEAST_CONSOLE_SHARE: f32 = 0.15;
+pub const MOST_CONSOLE_SHARE: f32 = 0.85;
+
+/// How tall the console's grip is, the seam between the band and the console, in logical pixels: its shadow along its
+/// top, its handle in its middle, and room around them to take hold of.
+pub const GRIP_PIXELS: f32 = 7.0;
 
 /// The share of the window's width the band's left column takes: the chart's column. The right column, the memory
 /// meters', takes the rest.
@@ -59,9 +67,52 @@ pub const GAP_PIXELS: f32 = 4.0;
 /// The space above and below the prompt's line inside its strip, in logical pixels.
 pub const STRIP_PADDING_PIXELS: f32 = 6.0;
 
-/// How thick the lines between the band and the console, between the scrollback and the prompt's strip, between the
-/// band's two columns, and between the left column's sections are, in logical pixels.
+/// How thick the lines between the scrollback and the prompt's strip, between the prompt's strip and the tabs', between
+/// the band's two columns, between the left column's sections, and between the tabs are, and the grip's shadow, in
+/// logical pixels.
 pub const DIVIDER_PIXELS: f32 = 1.0;
+
+/// How wide the grip's handle is, centred across it, in logical pixels: a mark to take hold of, while the whole grip
+/// takes the drag.
+pub const HANDLE_WIDTH_PIXELS: f32 = 28.0;
+
+/// How tall the grip's handle is, in logical pixels.
+pub const HANDLE_PIXELS: f32 = 3.0;
+
+/// The space above and below a tab's title inside the tab, in logical pixels; [`TAB_SIDE_PIXELS`] stand either side.
+/// The tabs fill their strip's height, which has no padding of its own, so this is the strip's space above and below
+/// too.
+pub const TAB_PADDING_PIXELS: f32 = 7.0;
+
+/// The space either side of a tab's title, and of its status icon before it, inside the tab, in logical pixels: room
+/// enough that each tab reads as a button of its own.
+pub const TAB_SIDE_PIXELS: f32 = 18.0;
+
+/// The space between two tabs, and either side of the line that parts them, in logical pixels.
+pub const TAB_GAP_PIXELS: f32 = 4.0;
+
+/// How wide and tall the slot of a session tab's status icon is, in logical pixels: fixed, whatever the icon, so the
+/// title after it never moves as the session's status changes.
+pub const TAB_ICON_PIXELS: f32 = 8.0;
+
+/// The space between a session tab's status icon and its title, in logical pixels.
+pub const TAB_ICON_GAP_PIXELS: f32 = 7.0;
+
+/// How far in from either side of the open tab the line along its bottom edge stops, in logical pixels, so the lines of
+/// two tabs side by side never read as one.
+pub const TAB_ACCENT_INSET_PIXELS: f32 = 10.0;
+
+/// How thick the line along the open tab's bottom edge is, in logical pixels: over the tab's own space beneath its
+/// title, so an open tab stands as tall as the others.
+pub const TAB_ACCENT_PIXELS: f32 = 2.0;
+
+/// How tall the divider between two sessions' tabs is, in logical pixels: shorter than the strip, so it stands in from
+/// its top and its foot.
+pub const TAB_DIVIDER_PIXELS: f32 = 12.0;
+
+/// How tall the break between the console's own tab and the sessions' is, in logical pixels: taller than a divider
+/// between sessions, with [`PADDING_PIXELS`] of space either side, so the engine's tab stands apart from Claude's.
+pub const TAB_BREAK_PIXELS: f32 = 18.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
 pub const TEXT_PIXELS: f32 = 14.0;
@@ -244,13 +295,13 @@ impl Layout {
         columns
     }
 
-    /// How many rows of the scrollback are in view: as many lines as fit the console's third of the window less its
-    /// two lines, the prompt's strip, and the scrollback's padding above and gap below, at least one.
+    /// How many rows of the scrollback are in view: as many lines as fit the console's `share` of the window less its
+    /// grip and line, the prompt's strip, and the scrollback's padding above and gap below, at least one.
     #[must_use]
-    pub fn scrollback_rows(self) -> usize {
+    pub fn scrollback_rows(self, share: f32) -> usize {
         let line = self.scale.line_pixels_tall();
-        let console = (self.size.y * CONSOLE_SHARE).round();
-        let strip = STRIP_PADDING_PIXELS.mul_add(2.0, DIVIDER_PIXELS * 2.0).mul_add(self.scale.0, line);
+        let console = (self.size.y * share).round();
+        let strip = STRIP_PADDING_PIXELS.mul_add(2.0, GRIP_PIXELS + DIVIDER_PIXELS).mul_add(self.scale.0, line);
         let padding = (PADDING_PIXELS + GAP_PIXELS) * self.scale.0;
         let fit = ((console - strip - padding) / line).floor();
         // A count of lines down a window is some tens, which a usize holds; a negative room fits none.

@@ -1,15 +1,15 @@
 //! The meters' text (ADR-0053: Memory): one line a meter's row, in the gutter at the right column's right, as the left
-//! column's rows' are: its label in stone in the gutter's first characters, and its value set flush right in bone at
+//! column's rows' are: its label dim in the gutter's first characters, and its value set flush right in the text's ink at
 //! the gutter's end, the band's right padding, so the labels start at one edge and the digits end at another in the
 //! mono face; bytes in KiB, MiB, and GiB as the `memory` tool shows them, and a value that is no figure, `unknown`,
-//! `none`, `no guests`, in stone. A meter with a limit writes the bytes it holds alone, as its bar shows their share of
+//! `none`, `no guests`, dim. A meter with a limit writes the bytes it holds alone, as its bar shows their share of
 //! the limit, so every value fits the gutter and no line is cut as its value changes.
 
 use super::{EngineMemory, Held, MemoryFigures, Meter, ProcessMemory};
-use crate::colour::{BONE, STONE, Swatch};
+use crate::colour::Ink;
+use crate::console::Piece;
 use crate::layout::{GUTTER_CHARACTERS, GUTTER_LABEL_CHARACTERS};
 use crate::tools::bytes_shown;
-use aethereal_render::text::Run;
 
 /// How many characters a value is given, flush right: the gutter's after its label's.
 const VALUE_CHARACTERS: usize = GUTTER_CHARACTERS - GUTTER_LABEL_CHARACTERS;
@@ -29,19 +29,19 @@ impl Meter {
     }
 }
 
-/// A meter's value as it is written, and its colour: bone for a figure, stone for what is none.
+/// A meter's value as it is written, and its ink: the text's for a figure, dim for what is none.
 struct Value {
     text: String,
-    swatch: Swatch,
+    ink: Ink,
 }
 
 impl Value {
     fn figure(text: String) -> Self {
-        Self { text, swatch: BONE }
+        Self { text, ink: Ink::Text }
     }
 
     fn none(text: &str) -> Self {
-        Self { text: String::from(text), swatch: STONE }
+        Self { text: String::from(text), ink: Ink::Dim }
     }
 
     /// The bytes held, `412.0 MiB`, as the bar shows their share of the most; and `none` for nothing against nothing.
@@ -58,12 +58,12 @@ impl Value {
 impl EngineMemory {
     /// The runs of the line of `meter`'s row, with the GPU's memory `gpu_bytes`: as wide as the gutter, its label at
     /// its left and its value ending at its right.
-    pub fn row_runs(&self, meter: Meter, gpu_bytes: u64) -> Vec<Run> {
+    pub fn row_pieces(&self, meter: Meter, gpu_bytes: u64) -> Vec<Piece> {
         let value = self.value(meter, gpu_bytes);
         let label = format!("{:<GUTTER_LABEL_CHARACTERS$}", meter.label(self));
         let value_text = format!("{:>VALUE_CHARACTERS$}", value.text);
 
-        vec![Run::new(&label, STONE.opaque()), Run::new(&value_text, value.swatch.opaque())]
+        vec![Piece::new(&label, Ink::Dim), Piece::new(&value_text, value.ink)]
     }
 
     /// The value of `meter`, with the GPU's memory `gpu_bytes`.
