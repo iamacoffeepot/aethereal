@@ -21,11 +21,14 @@
 //! [`Heard`] for the screen's handler to take in with its `&mut self` and its turn.
 
 mod held;
+mod presses;
 #[cfg(test)]
 pub(super) mod tests;
 
 pub(super) use held::Hold;
+pub(super) use presses::Presses;
 
+use super::clipboard::{self, Clipping};
 use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
@@ -35,7 +38,7 @@ use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Shape, Tree};
 use crate::widget::Built;
-use aethereal_actor::{Answered, Level};
+use aethereal_actor::{Answered, Level, Time};
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::Vec2;
 use aethereal_render::draw_list::{Entry, Pointer};
@@ -48,13 +51,14 @@ pub struct ImeAsked;
 
 /// What a turn of input leaves for the screen's handler: the events its widgets raised, for the screen's methods; the
 /// keys that neither its focus nor its focus keys used, for its `key`; what to ask of its window's input method; the
-/// drags dropped on other actors, to mail; and the lines to log.
+/// drags dropped on other actors, to mail; what to ask of the clipboard; and the lines to log.
 #[derive(Debug, Default)]
 pub struct Heard {
     pub(crate) raised: Vec<Raised<Erased>>,
     pub(crate) keys: Vec<Key>,
     pub(crate) imes: Vec<AllowIme>,
     pub(crate) away: Vec<Away>,
+    pub(crate) clips: Vec<Clipping>,
     pub(crate) lines: Vec<(Level, String)>,
 }
 
@@ -115,8 +119,9 @@ impl Screen {
     /// While a button is down, a press, move, or release through an entry the first press reached goes where that
     /// press reached, though the list has changed since and the entry's number names something else there. A move or
     /// release to a widget that has gone from the tree goes nowhere, and a grip of that widget lets go, landing nothing.
-    /// A release's `over` is read in the list last sent, as it was probed at the release.
-    pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
+    /// A release's `over` is read in the list last sent, as it was probed at the release. A press taken in at `now`, the
+    /// time of the turn that takes it in, is counted with the presses before it in a row.
+    pub fn pointed(&mut self, pointed: Pointed, me: ActorId, now: Time) -> Heard {
         let mut heard = Heard::default();
         let Pointed { entry, event, .. } = pointed;
         let Some((listed, moved)) = self.reached_by(entry, event) else {
@@ -180,7 +185,10 @@ impl Screen {
             PointerEvent::PointerEntered => Pointing::Entered,
             PointerEvent::PointerLeft => Pointing::Left,
             PointerEvent::PointerMoved { x, y } => Pointing::Moved { at: at(x, y) },
-            PointerEvent::PointerDown { x, y, button } => Pointing::Down { at: at(x, y), button },
+            PointerEvent::PointerDown { x, y, button } => {
+                let presses = self.count_press(&path, Vec2::new(x, y), button, now);
+                Pointing::Down { at: at(x, y), button, presses }
+            }
             PointerEvent::PointerUp { x, y, button, over } => {
                 let over_it = self.is_over(&path, over, me);
                 let clicks = over_it && !dragged;
@@ -229,8 +237,9 @@ impl Screen {
     /// before its focus ([`Controls::FIRST`](crate::Controls::FIRST)), goes to the screen's own `key` alone; any other
     /// goes to the focused widget, then, when it passed it, to the focus keys, Tab and Escape, then to the screen's
     /// `key`. Typed text goes where the key that typed it went: to the focused widget, unless the screen's `key` took
-    /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. The modifiers
-    /// are watched as they go down and come up, whichever declaration they come through.
+    /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. What the input
+    /// method composes goes to the focused widget, as it follows no key of its own. The modifiers are watched as they go
+    /// down and come up, whichever declaration they come through.
     pub fn keyed(&mut self, keyed: Keyed, first: &[&str]) -> Heard {
         let mut heard = Heard::default();
         let Some(Listed::Keys(role)) = self.listing.get(place(keyed.entry)) else {
@@ -252,7 +261,13 @@ impl Screen {
                     self.input(&path, &mut heard, |widget, state, input| widget.typed(state, &text, input));
                 }
             }
-            KeyEvent::Text { .. } => {}
+            KeyEvent::Composing { text, caret } if screen => {
+                let focused = self.table.focus().clone();
+                if let Focus::On(path) = focused {
+                    self.input(&path, &mut heard, |widget, state, input| widget.composing(state, &text, caret, input));
+                }
+            }
+            KeyEvent::Text { .. } | KeyEvent::Composing { .. } => {}
         }
 
         heard
@@ -426,7 +441,7 @@ impl Screen {
     /// Hands input to the widget at `path`, with its state as the table keeps it, or first made, and where layout put
     /// it, and answers what it said: none when the last tree or layout has no widget there. A state it changed is kept,
     /// and lays the screen out at the next `Prepare`; what it raised is handed back in `heard`.
-    fn input<T>(
+    pub(super) fn input<T>(
         &mut self,
         path: &KeyPath,
         heard: &mut Heard,
@@ -442,8 +457,10 @@ impl Screen {
         let before = state.clone();
         let mut measuring = fonts.measuring(texts, self.viewport.scale);
         measuring.at(path, Asker::Drawing);
-        let mut input = Input::new(node.style(), *laid, &mut measuring, &mut heard.raised);
+        let mut clips = Vec::new();
+        let mut input = Input::new(node.style(), *laid, &mut measuring, (&mut heard.raised, &mut clips));
         let took = take(widget, &mut state, &mut input);
+        heard.clips.extend(clipboard::clippings(clips, path));
         if state != before {
             self.table.write(path, widget.state_kind(), state);
             self.fresh = Fresh::Stale;

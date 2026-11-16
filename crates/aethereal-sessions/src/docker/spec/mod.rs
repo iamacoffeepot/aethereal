@@ -71,9 +71,9 @@ pub struct Bind {
 }
 
 /// A named volume a container sees, read and written: `name` at `target` inside it. Docker keeps where it is, so no
-/// path of this machine is named. Nothing of the image is ever copied into it: left to itself, Docker fills an empty
-/// volume from the image as a container is made, the owner of the directory at `target` too, which a working directory
-/// there makes root's, so a volume given to another user would be root's again by its next container.
+/// path of this machine is named. As a container is made on a volume that is still empty, Docker fills it from what
+/// the image holds at `target`, that directory's owner with it: an image that holds `target` owned by the container's
+/// user gives it a volume it can write, where a new volume is otherwise root's.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.docker.volume")]
 pub struct Volume {
@@ -211,7 +211,7 @@ impl Volume {
         write_json_string(self.name.written()?, out);
         out.push_str(",\"Target\":");
         write_json_string(&self.target, out);
-        out.push_str(",\"ReadOnly\":false,\"VolumeOptions\":{\"NoCopy\":true}}");
+        out.push_str(",\"ReadOnly\":false}");
 
         Ok(())
     }

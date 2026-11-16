@@ -16,10 +16,10 @@ pub use method::{Handed, Method};
 
 use crate::drag::{Dropped, Drops};
 use crate::input::{Event, Key, Raised};
-use crate::screen::{Heard, ImeAsked};
+use crate::screen::{Clipping, Copying, Heard, ImeAsked, Pasting};
 use crate::tree::Tree;
-use aethereal_actor::{Actor, Allows, Asks, DeclaredBy, Fault, Level, Path, Sends, ToAny, Turn, path};
-use aethereal_window::{AllowIme, Windows};
+use aethereal_actor::{Actor, Allows, Answer, Asks, DeclaredBy, Fault, Handles, Level, Path, Sends, ToAny, Turn, path};
+use aethereal_window::{AllowIme, Copied, Pasted, ReadClipboard, Windows, WriteClipboard};
 
 /// What a screen writes by hand beside the methods its events call: what those methods and its `key` may send, the
 /// keys it hears of its own, and what it does with each.
@@ -121,7 +121,8 @@ pub enum Took {
 }
 
 /// Takes in `heard`, what a turn of input left, in `screen`'s handler: asks the window's input method what it said,
-/// logs its lines, and mails each drag dropped on another actor that takes drops, its payload put as a blob; then calls
+/// logs its lines, runs a job that writes each copy and cut to the clipboard, its text put as a blob, and one that
+/// reads it for each paste, and mails each drag dropped on another actor that takes drops, its payload put as a blob; then calls
 /// the method each raised event names, in the order raised, a drag's `drop_outside` last when the actor it was dropped
 /// on takes no drops or its payload was not put, and then the screen's `key` with each key left for it. An event of
 /// another screen's type, which no markup raises, is logged.
@@ -129,17 +130,42 @@ pub enum Took {
 /// # Errors
 ///
 /// A fault when a send was not written.
-pub fn take_in<A, I, J>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A, A::Sends>) -> Result<Took, Fault>
+pub fn take_in<A, I, J>(
+    screen: &mut A,
+    heard: Heard,
+    turn: &mut Turn<'_, A, <A as Controls>::Sends>,
+) -> Result<Took, Fault>
 where
-    A: View,
-    A::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
+    A: View + Handles<Answer<Pasted, Pasting>> + Handles<Answer<Copied, Copying>>,
+    <A as Controls>::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
 {
-    let Heard { mut raised, keys, imes, away, lines } = heard;
+    let Heard { mut raised, keys, imes, away, clips, lines } = heard;
     for (level, line) in lines {
         turn.log(level, line);
     }
     for allow in imes {
         turn.to(path::<Windows>(())).ask(&allow, &ImeAsked)?;
+    }
+    for clip in clips {
+        match clip {
+            Clipping::Copy(text) => {
+                let Ok(text) = turn.put(text.into_bytes()) else {
+                    turn.log(Level::Error, "a copy was not written to the clipboard: its text was not put");
+                    continue;
+                };
+                turn.run(&WriteClipboard { text }, &Copying::Copy)?;
+            }
+            Clipping::Cut(text, path) => {
+                let Ok(text) = turn.put(text.into_bytes()) else {
+                    turn.log(Level::Error, "a cut was not written to the clipboard: its text was not put");
+                    continue;
+                };
+                turn.run(&WriteClipboard { text }, &Copying::Cut { path })?;
+            }
+            Clipping::Paste(path) => {
+                turn.run(&ReadClipboard, &Pasting { path })?;
+            }
+        }
     }
     for away in away {
         let Some(target) = turn.cast::<Drops>(away.to) else {

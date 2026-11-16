@@ -7,10 +7,10 @@
 //! `SessionsTools` is the hub's six tools for it: `session_new`, `session_say`, `session_read`, `session_list`,
 //! `session_interrupt`, and `session_archive`.
 //!
-//! [`Docker`] is the hub's client of Docker's Engine API over its Unix socket: it makes, starts, stops, waits for,
-//! inspects, lists, and removes containers from typed requests, makes named volumes, attaches to a container's stdin
-//! and output, reads its logs, and follows the events of the containers that carry a label, each as a typed stream. No
-//! request reaches Docker that its asker wrote: a container is made only from a [`ContainerSpec`].
+//! [`Docker`] is the hub's client of Docker's Engine API over its Unix socket: it makes, starts, stops, inspects, lists,
+//! and removes containers from typed requests, makes named volumes, attaches to a container's stdin and output, reads
+//! its logs, and follows the events of the containers that carry a label, each as a typed stream. No request reaches
+//! Docker that its asker wrote: a container is made only from a [`ContainerSpec`].
 
 mod docker;
 mod sessions;
@@ -22,14 +22,14 @@ pub use docker::{
     Create, CreateVolume, Created, Detached, Dialing, Docker, DockerConfig, DockerError, DockerSettings, Event, Events,
     EventsDone, Fetches, Inspect, Inspected, Kill, Label, List, Listed, Listing, Logging, Logs, LogsDone, Network,
     Output, Phase, Remove, SocketUnaddressable, Start, Std, Stdin, Stop, Until, Unwritable, Variable, Volume,
-    VolumeCreated, VolumeName, Wait, Waited, Watching,
+    VolumeCreated, VolumeName, Watching,
 };
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, CLAUDE, Conversation, Credential, Credentialed, Crediting, Ended, Entry,
-    Feed, HOME, HUB_LABEL, Heard, Home, Homing, Index, Interrupt, Interrupted, Keeping, ListSessions, ListedSession,
+    Act, Acting, Archive, Archived, Asking, CARGO, CLAUDE, Conversation, Credential, Credentialed, Crediting, Ended,
+    Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Keeping, ListSessions, ListedSession,
     Loading, NewSession, NoCredential, Note, Numbered, Opened, ReadCredential, ReadTranscript, Reconciling, Record,
     Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed, SessionsSettings, Since, Speaker, Standing,
-    State, Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
+    State, TARGET, Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
 };
 #[cfg(feature = "tools")]
 pub use tools::{Asking as ToolsAsking, Entered, Read, SessionsTools, SessionsToolsConfig};

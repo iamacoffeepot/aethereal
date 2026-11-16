@@ -115,24 +115,6 @@ pub enum ContainerState {
     },
 }
 
-/// Asked of the client: wait until the container no longer runs, and answer how its process ended.
-#[derive(Debug, Plain)]
-#[kind(name = "aether.docker.wait")]
-pub struct Wait {
-    pub container: ContainerId,
-}
-
-/// What a wait came to.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.docker.waited")]
-pub enum Waited {
-    /// The container's process ended with `code`.
-    Exited {
-        code: i64,
-    },
-    Failed(DockerError),
-}
-
 /// A named volume, by a name its maker built: 2 to 255 of ASCII letters, digits, `_`, `.`, and `-`, the first a letter
 /// or a digit, as Docker names one. A request names a volume only by such a name, which never spells a path, so it
 /// names one volume Docker keeps and never a directory of this machine.
@@ -268,10 +250,6 @@ impl Carries<Inspect> for Docker {
 
 impl Carries<List> for Docker {
     type Answers = (Listed,);
-}
-
-impl Carries<Wait> for Docker {
-    type Answers = (Waited,);
 }
 
 impl Carries<CreateVolume> for Docker {

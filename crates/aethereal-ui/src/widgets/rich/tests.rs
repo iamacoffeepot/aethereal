@@ -49,11 +49,12 @@ fn clicked(rich: &Rich<Ev>, at: Vec2) -> Vec<Raised<Ev>> {
     let style = Style::default();
     let rect = Rect2::from_origin_size(Vec2::ZERO, Vec2::new(400.0, 40.0));
     let laid = Laid { rect, content: rect, clip: rect, extent: Vec2::ZERO, bar: Span::WHOLE, scale: 1.0 };
-    let mut raised = Vec::new();
+    let (mut raised, mut clips) = (Vec::new(), Vec::new());
     let mut state = super::Reading::default();
-    for pointing in [Pointing::Down { at, button: Button::Main }, Pointing::Up { at, button: Button::Main, over: true }]
+    for pointing in
+        [Pointing::Down { at, button: Button::Main, presses: 1 }, Pointing::Up { at, button: Button::Main, over: true }]
     {
-        let mut input = Input::new(&style, laid, &mut measuring, &mut raised);
+        let mut input = Input::new(&style, laid, &mut measuring, (&mut raised, &mut clips));
         Widget::pointed(rich, &mut state, pointing, &mut input);
     }
 

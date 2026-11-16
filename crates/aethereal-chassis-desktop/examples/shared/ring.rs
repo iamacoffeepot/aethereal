@@ -420,6 +420,7 @@ impl Handles<Keyed> for Scene {
                 self.held = self.held.saturating_sub(1);
             }
             KeyEvent::Text { text } => println!("text text={text:?}"),
+            KeyEvent::Composing { text, caret } => println!("composing text={text:?} caret={caret}"),
         }
 
         Ok(())
@@ -461,7 +462,7 @@ impl Handles<Event> for Scene {
             Event::CloseRequested => println!("close=requested"),
             Event::Closed => println!("closed"),
             // Keys and text come through the scene's list, never raw (ADR-0055).
-            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } => {}
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } | Event::Composing { .. } => {}
         }
 
         Ok(())

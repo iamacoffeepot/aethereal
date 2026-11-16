@@ -35,7 +35,7 @@ impl Text {
 
     /// Its box, as `measuring` lays it out at its style's size within `width` pixels, with the wrap it is made with
     /// to be drawn in that box.
-    fn fitted(
+    pub(super) fn fitted(
         &self,
         style: &Style,
         measuring: &mut Measuring<'_>,

@@ -9,7 +9,7 @@
 //!   game, and the window's input method is allowed while it has (ADR-0051).
 //! - **Otherwise,** the screen's hotkeys; and, while a widget has focus, Tab, Escape, the keys that widget hears, and
 //!   the keys each widget it is within hears, as a scroll hears Page Up and Page Down around a focused row; all
-//!   blocking. Beside them, the modifiers, which the screen watches go down and come up and lets through, so
+//!   blocking. Beside them, the modifiers, Shift, Control, Alt, and Meta, which the screen watches go down and come up and lets through, so
 //!   Shift-Tab and a chord read their modifiers without taking Shift from the game.
 //!
 //! So a shown screen whose widgets have no focus takes only its hotkeys: a HUD does not take the game's Tab or Escape. A
@@ -36,8 +36,18 @@ pub(super) const ESCAPE: &str = "Escape";
 /// The Shift keys, by place.
 const SHIFTS: [&str; 2] = ["ShiftLeft", "ShiftRight"];
 
-/// The keys a command is chorded with: Control, and Meta, the command key of a Mac.
-const COMMANDS: [&str; 4] = ["ControlLeft", "ControlRight", "MetaLeft", "MetaRight"];
+/// The Control keys, by place.
+const CONTROLS: [&str; 2] = ["ControlLeft", "ControlRight"];
+
+/// The Alt keys, by place: Option on a Mac.
+const ALTS: [&str; 2] = ["AltLeft", "AltRight"];
+
+/// The Meta keys, by place: Command on a Mac.
+const METAS: [&str; 2] = ["MetaLeft", "MetaRight"];
+
+/// Every modifier the screen watches.
+const WATCHED: [&str; 8] =
+    ["ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"];
 
 /// Keys a screen declares: the set, whether it blocks them from what is beneath, and what the screen does with them.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
@@ -95,16 +105,15 @@ impl Modifiers {
 
     /// The modifiers held.
     pub(super) fn held(&self) -> Held {
-        let shift = self.down.iter().any(|down| SHIFTS.contains(&down.as_str()));
-        let command = self.down.iter().any(|down| COMMANDS.contains(&down.as_str()));
+        let down = |keys: [&str; 2]| self.down.iter().any(|down| keys.contains(&down.as_str()));
 
-        Held { shift, command }
+        Held { shift: down(SHIFTS), control: down(CONTROLS), alt: down(ALTS), meta: down(METAS) }
     }
 }
 
 /// Whether the key at `code` is a modifier the screen watches.
 fn is_modifier(code: &str) -> bool {
-    SHIFTS.contains(&code) || COMMANDS.contains(&code)
+    WATCHED.contains(&code)
 }
 
 /// What the widget with `focus` among `flat` hears, when one has it.
@@ -174,7 +183,7 @@ pub(super) fn declared(
     if codes.is_empty() {
         return Vec::new();
     }
-    let watched = SHIFTS.iter().chain(&COMMANDS).map(|code| String::from(*code)).collect();
+    let watched = WATCHED.iter().map(|code| String::from(*code)).collect();
 
     vec![
         Declared { keys: KeySet::Of(codes.into_iter().map(String::from).collect()), blocks: true, role: Role::Screen },

@@ -141,6 +141,24 @@ let listening = controls::listen(&feed)?;
 - **The root keeps each control as it stands** and sends a new subscriber every one before anything else. A root made with the program subscribes in its `begin`, and whether its `Subscribe` or the controls read before the first frame reach the controls root first is not something either can rely on; with the record, the subscriber hears each control once in either order, and an actor that subscribes long after a control last moved still hears it.
 - **The root sends on only what its source brought**, mail from itself to itself. A `Control` another actor mails it is logged and dropped, neither kept nor sent on.
 
+### The clipboard
+
+```rust
+pub trait Clipboard: Send + Sync {                                 // a host service (ADR-0034)
+    fn read(&self) -> ClipboardReading<'_>;                         // ClipboardRead::{Text(String), Empty, Refused, Unavailable}
+    fn write(&self, text: String) -> ClipboardWriting<'_>;          // ClipboardWritten::{Written, Refused, Unavailable}
+}
+
+turn.run(&ReadClipboard, &context)?;                    // answered Pasted::{Text { text: Bytes }, Empty, Refused, Unavailable}
+turn.run(&WriteClipboard { text: blob }, &context)?;    // answered Copied::{Copied, Refused, Unavailable}
+```
+
+- **The clipboard is the host's, as a window is, so it is the window capability's,** but no window owns it and no actor stands in front of it: plain text is read and written by two jobs (ADR-0018), `ReadClipboard` and `WriteClipboard`, through a service the host serves its runners, `dyn Clipboard` (ADR-0034), defined in the window crate. A host serves it as it bootstraps its windows. A job is mail to no actor, so a screen that copies adds no send, the window root keeps no record, and a read that waits on another program holds no actor's turn.
+- **Every answer is a named case:** the text, nothing, refused, or unavailable. A host with no clipboard, the headless one, serves none, and both jobs answer `Unavailable`; no stand-in fills the absence. The text crosses as a blob both ways (ADR-0042), as a paste or a copy may be far longer than a piece of mail.
+- **The desktop** reaches the system clipboard through `arboard`, on a thread of its own that holds the one handle to it for the program's life: a read waits on the program that owns the selection, which never blocks the thread that polls the job, and on X11 text copied is only offered while its owner lives. It covers X11, a Wayland session through XWayland, which carries the clipboard between the two, macOS, and Windows. A Wayland session with no XWayland answers `Unavailable`. A clipboard that does not open, as with no display to reach, answers each read and write `Unavailable`.
+- **The browser** reaches `navigator.clipboard`, whose `readText` and `writeText` are promises the page's event loop drives. The browser asks its reader before a page reads, and lets a page write only while it has the reader's focus, so a refusal is answered `Refused`, never a fault. A page served where the browser offers no clipboard, not over HTTPS nor from the local machine, answers `Unavailable`.
+- **A guest that copies or pastes runs the two jobs as any guest runs a job of the host's**, so its program lists them (`with_guest_jobs::<(ReadClipboard, WriteClipboard)>()`); a native actor's job carries its own code.
+
 ## Consequences
 
 - An actor reads a window's pointer, keys, size, and focus in one vocabulary on every host, in the pixels it draws in, and reaches a window by its type and id alone.

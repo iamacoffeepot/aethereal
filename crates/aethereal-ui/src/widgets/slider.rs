@@ -201,7 +201,7 @@ impl<E: Event> Widget for Slider<E> {
         match pointing {
             Pointing::Entered => sliding.hovered = true,
             Pointing::Left => sliding.hovered = false,
-            Pointing::Down { at, button: Button::Main } => {
+            Pointing::Down { at, button: Button::Main, .. } => {
                 sliding.dragging = true;
                 self.dragged(at, input);
             }

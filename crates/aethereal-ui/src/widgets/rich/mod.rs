@@ -214,7 +214,7 @@ impl<E: Event> Widget for Rich<E> {
         let laid = *input.laid();
         match pointing {
             Pointing::Moved { at } => reading.over = self.link_at(at, &style, &laid, input.measuring()),
-            Pointing::Down { at, button: Button::Main } => {
+            Pointing::Down { at, button: Button::Main, .. } => {
                 reading.pressed = self.link_at(at, &style, &laid, input.measuring());
             }
             Pointing::Up { at, button: Button::Main, over } => {

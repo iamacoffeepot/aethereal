@@ -2,8 +2,8 @@
 //! containers the hub's sessions run in.
 //!
 //! An actor asks it at its typed path, `path::<Docker>(())`, to [`Create`] a container from a [`ContainerSpec`], to
-//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, to [`Wait`] until it no longer runs, to
-//! [`List`] the containers that carry a label, or to [`CreateVolume`] a named volume, and is answered once Docker has.
+//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, to [`List`] the
+//! containers that carry a label, or to [`CreateVolume`] a named volume, and is answered once Docker has.
 //! It opens an [`Attaching`] stream to a container's stdin and output, a [`Logging`] stream of what a container wrote
 //! from a time on, or a [`Watching`] stream of the events of the containers that carry a label. Each request goes on a connection of its own, which `Http` dials to the socket and
 //! the client shuts once its reply is read, so a stream that runs for hours holds up nothing else.
@@ -39,7 +39,7 @@ mod whole;
 
 pub use asks::{
     Acted, ContainerId, ContainerState, Create, CreateVolume, Created, DockerError, Inspect, Inspected, Kill, Label,
-    List, Listed, Listing, Phase, Remove, Start, Stop, Unwritable, VolumeCreated, VolumeName, Wait, Waited,
+    List, Listed, Listing, Phase, Remove, Start, Stop, Unwritable, VolumeCreated, VolumeName,
 };
 pub use request::API_VERSION;
 pub use settings::{DockerConfig, DockerSettings, SocketUnaddressable};
@@ -169,7 +169,6 @@ impl Actor for Docker {
         Remove,
         Inspect,
         List,
-        Wait,
         CreateVolume,
         Open<Attaching>,
         Open<Logging>,

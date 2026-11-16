@@ -11,7 +11,7 @@ use crate::args::Serving;
 use crate::cargo;
 use crate::failure::Failure;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wasm_bindgen_cli_support::Bindgen;
 
 /// The browser chassis's examples, from the workspace's root: a directory each, with its `lib.rs`.
@@ -42,7 +42,8 @@ pub fn run(name: &str, serving: Serving) -> Result<(), Failure> {
         &format!("build={name}"),
     )?;
 
-    let module = target_directory()?.join("wasm32-unknown-unknown/release/examples").join(format!("{name}.wasm"));
+    let module =
+        cargo::target_directory()?.join("wasm32-unknown-unknown/release/examples").join(format!("{name}.wasm"));
     let pkg = examples.join(name).join("pkg");
     Bindgen::new()
         .input_path(&module)
@@ -74,20 +75,4 @@ fn names(examples: &Path) -> Result<Vec<String>, Failure> {
     }
     names.sort();
     Ok(names)
-}
-
-/// Where cargo writes what it builds, as `cargo metadata` reports it.
-fn target_directory() -> Result<PathBuf, Failure> {
-    let output = cargo::command().args(["metadata", "--format-version", "1", "--no-deps"]).output()?;
-    let failed = !output.status.success();
-    if failed {
-        return Err(Failure::new(String::from_utf8_lossy(&output.stderr)));
-    }
-
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| Failure::new(format_args!("cargo metadata: {error}")))?;
-    metadata["target_directory"]
-        .as_str()
-        .map(PathBuf::from)
-        .ok_or_else(|| Failure::new("cargo metadata named no target_directory"))
 }

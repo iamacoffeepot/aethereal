@@ -6,6 +6,7 @@
 //! is the render root's.
 
 pub(crate) mod atlas;
+mod carets;
 pub(crate) mod faces;
 pub mod generate;
 pub(crate) mod glyph_program;
@@ -23,6 +24,7 @@ use crate::placement::{JoinRefused, PlacementId};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
+pub use carets::{CaretLine, Carets, Ends, Stop, carets};
 pub use layout::{Laid, LaidGlyph, Which, lay_out};
 pub use measure::{Measured, measure};
 
