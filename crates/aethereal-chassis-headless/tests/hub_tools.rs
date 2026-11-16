@@ -10,15 +10,16 @@ use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Json, Plain, Schema, SchemaNodes, from_bytes, json_schema, to_bytes, to_json};
 use aethereal_link::{
-    DescribeTools, DescribedTools, Down, EngineAnswer, EngineCall, EngineDescription, EngineList, EngineListing,
-    EngineTools, Engines, EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintToken, Minted, Origin,
-    Outcome, REVISION, Token, ToolSummary, ToolsShown, Up, Within,
+    DescribeTools, DescribedTools, Down, Engine, EngineAnswer, EngineCall, EngineDescription, EngineList,
+    EngineListing, EngineTools, Engines, EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintFor,
+    MintToken, Minted, Origin, Outcome, REVISION, Token, ToolSummary, ToolsShown, Trust, Up, Within,
 };
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{
-    Call, Called, Holder, Offer, Offered, Output, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Tools, Withdraw,
+    Call, Called, Caller, Holder, Offer, Offered, Output, Table, ToolSheet, Toolbox, ToolboxConfig, Tooling, Tools,
+    Withdraw,
 };
 use std::io::{Read as _, Write as _};
 use std::iter;
@@ -258,9 +259,20 @@ fn ask<T: Plain>(
     tool: &str,
     input: &T,
 ) -> Result<Asked<Called>, Unheard> {
+    ask_by(harness, worker, Caller::Owner, tool, input)
+}
+
+/// A call of `tool` with `input`, as its holder forwards one of `caller`'s.
+fn ask_by<T: Plain>(
+    harness: &mut Harness<Headless>,
+    worker: ProtocolRef<Tooling>,
+    caller: Caller,
+    tool: &str,
+    input: &T,
+) -> Result<Asked<Called>, Unheard> {
     let input = harness.put(bytes_of(input))?;
 
-    harness.ask(worker, &Call { tool: String::from(tool), input })
+    harness.ask(worker, &Call { tool: String::from(tool), input, caller })
 }
 
 /// What the hub's tools `worker` answer a call of `tool` with `input`, needing nothing of an engine's side.
@@ -288,7 +300,7 @@ fn dialed(port: u16) -> TcpStream {
 /// A token `Engines` minted for an engine started outside the hub.
 fn minted(harness: &mut Harness<Headless>) -> Token {
     let engines = harness.root::<Engines>();
-    let minting = harness.ask(engines, &MintToken);
+    let minting = harness.ask(engines, &MintFor { by: Caller::Owner });
     let Ok(Answered::Yes(Minted { token, .. })) = minting.and_then(|minting| harness.answer(minting)) else {
         panic!("`Engines` mints a token");
     };
@@ -367,7 +379,13 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
 
     assert_eq!(
         listed.engines,
-        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1, origin: Origin::External }]
+        vec![EngineListing {
+            engine: 0,
+            name: String::from("scene"),
+            tools: 1,
+            origin: Origin::External,
+            trust: Trust::Trusted
+        }]
     );
 
     Ok(())
@@ -589,6 +607,49 @@ fn started(args: &[String]) -> Result<Harness<Headless>, Unheard> {
 }
 
 #[test]
+fn an_engine_a_session_minted_a_token_for_links_untrusted_and_one_of_the_owner_s_trusted() -> Result<(), Unheard> {
+    // Catches trust taken from anything but who called `mint_token`: an engine a session started listed, or kept by
+    // its `Engine`, as trusted, which would hand it the owner's sessions, or the owner's engine kept from them. Each
+    // engine is a real `Link`, so what the hub decides is decided over the real link, from a `Hello` that says nothing
+    // of trust (ADR-0057).
+    let (mut hub, _, worker) = hub()?;
+    let asked = ask_by(&mut hub, worker, Caller::Session { session: 5 }, "mint_token", &MintToken)?;
+    let answered = hub.answer(asked)?;
+    let by_session: Minted = output(&mut hub, answered);
+    let answered = called(&mut hub, worker, "mint_token", &MintToken)?;
+    let by_owner: Minted = output(&mut hub, answered);
+
+    let mut session_s = started(&by_session.args)?;
+    waiting::until(BUDGET, || {
+        session_s.step();
+        listed(&mut hub).is_ok_and(|list| list.engines.len() == 1)
+    });
+    let mut owner_s = started(&by_owner.args)?;
+    waiting::until(BUDGET, || {
+        session_s.step();
+        owner_s.step();
+        listed(&mut hub).is_ok_and(|list| list.engines.len() == 2)
+    });
+
+    let trusts: Vec<(u32, Trust)> =
+        listed(&mut hub)?.engines.iter().map(|listed| (listed.engine, listed.trust)).collect();
+    assert_eq!(trusts, vec![(0, Trust::Untrusted { session: 5 }), (1, Trust::Trusted)]);
+    let engines = hub.root::<Engines>();
+    let kept: Vec<Option<Trust>> = [0, 1]
+        .into_iter()
+        .map(|id| {
+            let Some(engine) = hub.state(engines).ok().and_then(|engines| engines.engine(id)) else {
+                panic!("engine {id} is linked");
+            };
+            hub.state(engine).map(Engine::trust).unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(kept, vec![Some(Trust::Untrusted { session: 5 }), Some(Trust::Trusted)]);
+
+    Ok(())
+}
+
+#[test]
 fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<(), Unheard> {
     // Catches arguments that name the wrong flag, the wrong port or host, or a token written in a form `--hub-token`
     // does not read, and a token the tool answers that `Engines` does not hold: the engine would never be listed.
@@ -604,7 +665,13 @@ fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<
     });
     assert_eq!(
         listed(&mut hub)?.engines,
-        vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0, origin: Origin::External }]
+        vec![EngineListing {
+            engine: 0,
+            name: String::from("engine"),
+            tools: 0,
+            origin: Origin::External,
+            trust: Trust::Trusted
+        }]
     );
 
     Ok(())

@@ -13,6 +13,8 @@ const ENTRIES: &str = "entries";
 const NAMES: &str = "names";
 /// The directory beside it that holds the launch copies.
 const RUNNING: &str = "running";
+/// The directory beside it that holds each session's drop box, by the session's number (ADR-0057).
+const DROPS: &str = "drops";
 /// What a launch copy is marked, where the host marks files so: read and run by anyone, written by its owner.
 #[cfg(unix)]
 const EXECUTABLE: u32 = 0o755;
@@ -63,7 +65,58 @@ pub fn copy(root: &Path, path: &Path, most_bytes: u64, number: u64) -> Result<Co
     // Asked before the file is opened, so a pipe, which an open would wait on, is never opened.
     let found = fs::metadata(path).map_err(|error| uncopied(error.kind()))?;
     check(&found, most_bytes)?;
-    let mut source = File::open(path).map_err(|error| uncopied(error.kind()))?;
+    let source = File::open(path).map_err(|error| uncopied(error.kind()))?;
+
+    copy_open(root, source, most_bytes, number)
+}
+
+/// Copies the file `file` in the drop box of the session numbered `session` into the store at `root`, as `copy`
+/// does, opening it without following a link, and without waiting on a pipe: a link, a pipe, a directory, or a socket
+/// there is not a file the store copies (ADR-0057). The box is the hub's, and only its session writes in it, so a name
+/// in it reaches nothing outside it but through a link, which is never followed.
+pub fn copy_dropped(root: &Path, session: u32, file: &str, most_bytes: u64, number: u64) -> Result<Copied, Uncopied> {
+    let path = drop_box_of(root, session).join(file);
+    let source = open_unfollowed(&path)?;
+
+    copy_open(root, source, most_bytes, number)
+}
+
+/// Makes the drop box of the session numbered `session` in the store at `root`, when it is not there, and answers its
+/// absolute path.
+pub fn drop_box(root: &Path, session: u32) -> Result<String, Unkept> {
+    let place = drop_box_of(root, session);
+    fs::create_dir_all(&place).map_err(|_| Unkept)?;
+
+    path::absolute(&place).map_err(|_| Unkept)?.into_os_string().into_string().map_err(|_| Unkept)
+}
+
+/// The drop box of the session numbered `session` in the store at `root`.
+fn drop_box_of(root: &Path, session: u32) -> PathBuf {
+    root.join(DROPS).join(session.to_string())
+}
+
+/// Opens the file at `path` to read, refusing a link at its last name and never waiting on a pipe.
+#[cfg(unix)]
+fn open_unfollowed(path: &Path) -> Result<File, Uncopied> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let opened = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path);
+
+    opened.map_err(|error| match error.raw_os_error() {
+        Some(libc::ELOOP | libc::ENXIO) => Uncopied::NotAFile,
+        _ => uncopied(error.kind()),
+    })
+}
+
+/// Opens nothing: a host that cannot refuse to follow a link takes no file from a drop box.
+#[cfg(not(unix))]
+fn open_unfollowed(_: &Path) -> Result<File, Uncopied> {
+    Err(Uncopied::Failed)
+}
+
+/// Copies the opened `source` into the store at `root`, as its copy numbered `number`: only a regular file of at most
+/// `most_bytes`.
+fn copy_open(root: &Path, mut source: File, most_bytes: u64, number: u64) -> Result<Copied, Uncopied> {
     check(&source.metadata().map_err(|_| Uncopied::Failed)?, most_bytes)?;
     let entries = root.join(ENTRIES);
     fs::create_dir_all(&entries).map_err(|_| Uncopied::Failed)?;

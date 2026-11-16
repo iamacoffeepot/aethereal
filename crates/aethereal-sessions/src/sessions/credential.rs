@@ -1,11 +1,16 @@
-//! The credential each session's container is given (ADR-0057): a file of `KEY=VALUE` lines the host reads where the
-//! settings name it, as each container is made. It is a secret, so it is never kept in `Files`, whose namespaces any
-//! actor may read, and never a setting's value, an argument, a log line, or a record: only the file's path is a
-//! setting.
+//! What each session's container is given beside its settings (ADR-0057), readied by one job as each container is
+//! made: the credential, a file of `KEY=VALUE` lines the host reads where the settings name it; the bearer of the
+//! session's route to the hub's tools, drawn from the host's randomness; and the session's drop box, which the store's
+//! stockroom makes. The credential and the bearer are secrets, so neither is ever kept in `Files`, whose namespaces any
+//! actor may read, nor a setting's value, an argument, a log line, or a record: only the credential's path is a
+//! setting, and each crosses the engine only as this job's answer and the create Docker is asked, as the container's
+//! environment, and the bearer as the `Admit` that tells `Mcp` of it, each `Debug` written without it.
 
 use crate::Variable;
-use aethereal_actor::{Fault, Job, Runner, Running};
+use aethereal_actor::{Fault, Job, Randomness, Runner, Running};
 use aethereal_data::{Bound, Plain};
+use aethereal_mcp::Bearer;
+use aethereal_store::Stockroom;
 use core::str;
 
 /// The host could not read the credential's file.
@@ -24,10 +29,13 @@ pub trait Credential: Send + Sync {
     fn read(&self) -> Result<Vec<u8>, NoCredential>;
 }
 
-/// Reads the credential, before a session's container is made. Private to this crate.
+/// Readies what the container of the session numbered `session` is given, before it is made: the credential read, a
+/// bearer drawn, and the drop box made. Private to this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.read_credential")]
-pub struct ReadCredential;
+#[kind(name = "aether.sessions.provision")]
+pub struct Provision {
+    pub session: u32,
+}
 
 /// What the capability keeps for a read of the credential: the session, and the run it is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -37,29 +45,48 @@ pub struct Crediting {
     pub run: u32,
 }
 
-/// What a [`ReadCredential`] came to.
+/// What a [`Provision`] came to.
 #[derive(Bound)]
-#[kind(name = "aether.sessions.credentialed")]
-pub enum Credentialed {
-    /// The credential's variables.
-    Read(Vec<Variable>),
+#[kind(name = "aether.sessions.provisioned")]
+pub enum Provisioned {
+    /// The credential's variables, the bearer of the session's route, and the absolute path of its drop box.
+    Ready { env: Vec<Variable>, bearer: Bearer, drop_box: String },
     /// The host serves no credential, could not read its file, or a line of it is not `KEY=VALUE`.
     Unread,
+    /// The host serves no randomness, or it filled nothing.
+    Undrawn,
+    /// The host serves no stockroom, or it could not make the drop box.
+    Unboxed,
 }
 
-/// It waits on nothing: a host's read is of a few lines and done where the job runs, so it is done in the one poll a
-/// job for computing is given.
-impl Job for ReadCredential {
-    type Done = Credentialed;
-    const RUNNER: Runner = Runner::Compute;
+/// It waits on the stockroom, which makes the drop box on a thread of its own; the credential's read is of a few lines
+/// and the randomness answers at once, each done where the job runs.
+impl Job for Provision {
+    type Done = Provisioned;
+    const RUNNER: Runner = Runner::Io;
 
-    async fn run(self, job: &mut Running) -> Result<Credentialed, Fault> {
+    async fn run(self, job: &mut Running) -> Result<Provisioned, Fault> {
         let Some(credential) = job.service::<dyn Credential>() else {
-            return Ok(Credentialed::Unread);
+            return Ok(Provisioned::Unread);
         };
-        let env = credential.read().map_err(|NoCredential| Unsettable).and_then(|bytes| variables(&bytes));
+        let Ok(env) = credential.read().map_err(|NoCredential| Unsettable).and_then(|bytes| variables(&bytes)) else {
+            return Ok(Provisioned::Unread);
+        };
+        let Some(randomness) = job.service::<dyn Randomness>() else {
+            return Ok(Provisioned::Undrawn);
+        };
+        let mut bytes = [0; 16];
+        if randomness.fill(&mut bytes).is_err() {
+            return Ok(Provisioned::Undrawn);
+        }
+        let Some(stockroom) = job.service::<dyn Stockroom>() else {
+            return Ok(Provisioned::Unboxed);
+        };
+        let Ok(drop_box) = stockroom.drop_box(self.session).await else {
+            return Ok(Provisioned::Unboxed);
+        };
 
-        Ok(env.map_or(Credentialed::Unread, Credentialed::Read))
+        Ok(Provisioned::Ready { env, bearer: Bearer(bytes), drop_box })
     }
 }
 

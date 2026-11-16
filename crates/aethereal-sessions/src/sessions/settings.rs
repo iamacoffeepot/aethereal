@@ -56,7 +56,8 @@ pub struct SessionsSettings {
     /// directories its volumes are mounted at.
     #[flag]
     pub user: String,
-    /// The hub's MCP endpoint a session reaches the hub's tools at; empty for none.
+    /// The sessions' route to the hub's tools, as a container on Docker's default bridge reaches it: `Mcp`'s
+    /// `route_port` on its `route_interface` (ADR-0057). Empty for none.
     #[flag]
     pub hub_url: String,
     /// The value of the label every container of this hub carries, [`HUB_LABEL`].
@@ -98,7 +99,7 @@ impl Default for SessionsSettings {
             image: String::from("aethereal-session"),
             model: String::from("opus"),
             user: String::from("1000:1000"),
-            hub_url: String::from("http://127.0.0.1:8890/mcp"),
+            hub_url: String::from("http://172.17.0.1:8893/mcp"),
             label: String::from("hub"),
             labels: Vec::new(),
             most_running: 4,

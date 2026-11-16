@@ -11,11 +11,13 @@ use aethereal_tcp::{Accept, Accepted, Accepting, Listener, Shut, Unbound};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-/// What a server is made from: the listener `Tcp` bound for it, the handler its exchanges ask, and its limits.
+/// What a server is made from: the listener `Tcp` bound for it, the port it bound, the handler its exchanges ask, and
+/// its limits.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.server_config")]
 pub struct ServerConfig {
     pub listener: ActorRef<Listener>,
+    pub port: u16,
     pub handler: ProtocolRef<Handling>,
     pub most_exchanges: u32,
     pub limits: Limits,
@@ -28,6 +30,7 @@ pub struct ServerConfig {
 #[kind(name = "aether.http.server")]
 pub struct Server {
     listener: ActorRef<Listener>,
+    port: u16,
     handler: ProtocolRef<Handling>,
     most_exchanges: u32,
     limits: Limits,
@@ -59,6 +62,7 @@ impl Actor for Server {
 
         Ok(Self {
             listener: config.listener,
+            port: config.port,
             handler: config.handler,
             most_exchanges: config.most_exchanges,
             limits: config.limits,
@@ -113,6 +117,7 @@ impl Handles<Part<Accepting>> for Server {
         let config = ExchangeConfig {
             connection: incoming.connection,
             peer: incoming.peer,
+            port: self.port,
             handler: self.handler,
             limits: self.limits,
         };

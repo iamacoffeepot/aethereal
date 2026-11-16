@@ -14,6 +14,9 @@ tools = ["aethereal-data/json"]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-process = { path = "../aethereal-process" }
+# The chat a trusted engine's frames carry is the sessions capability's, which the hub's `Engine` forwards it to
+# (ADR-0057).
+aethereal-sessions = { path = "../aethereal-sessions" }
 aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tcp = { path = "../aethereal-tcp" }

@@ -35,11 +35,16 @@ fn binary() -> Binary {
     Binary::Named(name)
 }
 
+/// What the token of the spawn numbered `number` is kept for: its engine, asked for by the owner.
+fn spawn(number: u64) -> Purpose {
+    Purpose::Spawn { spawned: spawned(number), binary: binary(), hash: HASH, by: Caller::Owner }
+}
+
 /// What taking `token` at `now` finds it was for.
 fn taken(tokens: &mut Tokens, token: Token, now: Time) -> TokenFor {
     match tokens.take(token, now) {
-        Some(Purpose::External { .. }) => TokenFor::External,
-        Some(Purpose::Spawn { .. }) => TokenFor::Spawned,
+        Some(Purpose::External { .. }) => TokenFor::External { trust: Trust::Trusted },
+        Some(Purpose::Spawn { .. }) => TokenFor::Spawned { trust: Trust::Trusted },
         None => TokenFor::Unknown,
     }
 }
@@ -49,10 +54,13 @@ fn a_token_is_good_until_its_time_has_passed_and_not_at_it() {
     // Catches expiry measured from the wrong time, or compared the wrong way at its edge: a token taken at the instant
     // its time runs out would link an engine the setting says is too late.
     let mut tokens = Tokens::default();
-    tokens.mint_external(token(1), at(5), WITHIN, 64);
-    tokens.mint_external(token(2), at(5), WITHIN, 64);
+    tokens.mint_external(token(1), at(5), WITHIN, 64, Caller::Owner);
+    tokens.mint_external(token(2), at(5), WITHIN, 64, Caller::Owner);
 
-    assert_eq!(taken(&mut tokens, token(1), Time::from_nanos(15_000_000_000 - 1)), TokenFor::External);
+    assert_eq!(
+        taken(&mut tokens, token(1), Time::from_nanos(15_000_000_000 - 1)),
+        TokenFor::External { trust: Trust::Trusted }
+    );
     assert_eq!(taken(&mut tokens, token(2), at(15)), TokenFor::Unknown);
 }
 
@@ -61,13 +69,13 @@ fn past_the_most_kept_the_oldest_token_is_dropped_as_another_is_minted() {
     // Catches a table that grows without bound, one that drops the newest or a token at random, and one that keeps
     // fewer than its most.
     let mut tokens = Tokens::default();
-    tokens.mint_external(token(1), at(1), WITHIN, 2);
-    tokens.mint_external(token(2), at(2), WITHIN, 2);
-    tokens.mint_external(token(3), at(3), WITHIN, 2);
+    tokens.mint_external(token(1), at(1), WITHIN, 2, Caller::Owner);
+    tokens.mint_external(token(2), at(2), WITHIN, 2, Caller::Owner);
+    tokens.mint_external(token(3), at(3), WITHIN, 2, Caller::Owner);
 
     assert_eq!(taken(&mut tokens, token(1), at(4)), TokenFor::Unknown);
-    assert_eq!(taken(&mut tokens, token(2), at(4)), TokenFor::External);
-    assert_eq!(taken(&mut tokens, token(3), at(4)), TokenFor::External);
+    assert_eq!(taken(&mut tokens, token(2), at(4)), TokenFor::External { trust: Trust::Trusted });
+    assert_eq!(taken(&mut tokens, token(3), at(4)), TokenFor::External { trust: Trust::Trusted });
 }
 
 #[test]
@@ -76,15 +84,15 @@ fn a_spawns_token_lasts_until_its_spawn_forgets_it_and_is_never_dropped_for_room
     // link, one dropped to make room for those, or counted against their most, and one still good once its spawn has
     // ended.
     let mut tokens = Tokens::default();
-    tokens.mint_spawn(token(1), spawned(0), binary(), HASH);
-    tokens.mint_spawn(token(2), spawned(1), binary(), HASH);
-    tokens.mint_external(token(3), at(100), WITHIN, 1);
-    tokens.mint_external(token(4), at(100), WITHIN, 1);
+    tokens.mint_spawn(token(1), spawn(0));
+    tokens.mint_spawn(token(2), spawn(1));
+    tokens.mint_external(token(3), at(100), WITHIN, 1, Caller::Owner);
+    tokens.mint_external(token(4), at(100), WITHIN, 1, Caller::Owner);
     tokens.forget(token(2));
 
-    let first = Purpose::Spawn { spawned: spawned(0), binary: binary(), hash: HASH };
+    let first = spawn(0);
     assert_eq!(tokens.take(token(1), at(1_000)), Some(first));
     assert_eq!(taken(&mut tokens, token(2), at(100)), TokenFor::Unknown);
     assert_eq!(taken(&mut tokens, token(3), at(100)), TokenFor::Unknown);
-    assert_eq!(taken(&mut tokens, token(4), at(100)), TokenFor::External);
+    assert_eq!(taken(&mut tokens, token(4), at(100)), TokenFor::External { trust: Trust::Trusted });
 }

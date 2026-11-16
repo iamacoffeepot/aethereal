@@ -1,7 +1,7 @@
 //! The host's stockroom, where the store's bytes and records are kept: a service the host serves its jobs (ADR-0034,
 //! ADR-0039).
 
-use crate::StoreHash;
+use crate::{DropName, StoreHash};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -78,6 +78,16 @@ pub trait Stockroom: Send + Sync {
     /// Copies the file at `path` in, hashing it as it copies: only a regular file of at most `most_bytes`. A copy of
     /// bytes already kept is let go, and the entry kept.
     fn copy(&self, path: String, most_bytes: u64) -> Copying<'_>;
+
+    /// Copies the file named `file` in the drop box of the session numbered `session` in, as [`copy`](Self::copy)
+    /// does, never following a link: what is at that name is copied only when it is itself a regular file
+    /// (ADR-0057). A file a session writes in its box is the session's to name, so nothing it names reaches another
+    /// file of the host's.
+    fn copy_dropped(&self, session: u32, file: DropName, most_bytes: u64) -> Copying<'_>;
+
+    /// Makes the drop box of the session numbered `session`, when it is not there yet, and answers its absolute path,
+    /// which the session's container is given as [`DROP_BOX`](crate::DROP_BOX).
+    fn drop_box(&self, session: u32) -> Launching<'_>;
 
     /// Reads every record and the names file. On the way it removes what a check-in or a write cut short left: an
     /// entry without its record, a record without its entry, and a copy or a write never finished; and every launch

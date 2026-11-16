@@ -2,14 +2,16 @@
 //! of its own, writes lines to its stdin, reads its output into a numbered transcript, stops it when it is idle, and
 //! resumes it when it is spoken to.
 
-/// Everything the capability sends in a turn: requests of Docker, its streams and their credit, writes to stdin, and
-/// reads and writes of its files; and, for a turn that handles an ask, the answer to it. One list, as each turn may start, stop, or write to any
+/// Everything the capability sends in a turn: requests of Docker, its streams and their credit, writes to stdin, reads
+/// and writes of its files, its bearers told to `Mcp`, and what the trusted engines are shown; and, for a turn that
+/// handles an ask, the answer to it. One list, as each turn may start, stop, or write to any
 /// session, its markers always first and in this order, so [`Does`] finds each at its place.
 macro_rules! acts {
     ($($answer:ty)?) => {
         (
             super::M0, super::M1, super::M2, super::M3, super::M4, super::M5, super::M6, super::M7, super::M8,
-            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15,
+            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15, super::M16, super::M17,
+            super::M18, super::M19, super::M20,
             $($answer,)?
         )
     };
@@ -17,6 +19,7 @@ macro_rules! acts {
 
 mod asked;
 mod asks;
+mod chat;
 mod container;
 mod credential;
 mod heard;
@@ -36,7 +39,8 @@ pub use asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
     ReadTranscript, Refusal, Said, Say, Session as ListedSession, State, Transcribed,
 };
-pub use credential::{Credential, Credentialed, Crediting, NoCredential, ReadCredential};
+pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowEvents, ShowTabs, Showing, Tab};
+pub use credential::{Credential, Crediting, NoCredential, Provision, Provisioned};
 pub use heard::Heard;
 pub use record::{Conversation, Record, Standing};
 pub use saves::{Index, Keeping, Loading};
@@ -49,12 +53,14 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, More, Number, Open, Part, Path,
-    Streamed, Streams, ToAny, Top, Turn,
+    Streamed, Streams, Tells, ToAny, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_files::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
+use aethereal_mcp::{Admit, Dismiss, Mcp};
 use aethereal_tcp::{Write, Writing};
 use asked::Waiting;
+use chat::Chats;
 use core::time::Duration;
 use loading::Reading;
 use saves::{Indexed, Lane};
@@ -152,9 +158,14 @@ type M12 = Asks<Writing, Write, Typing>;
 type M13 = Asks<Path<Docker>, CreateVolume, Homing>;
 type M14 = Asks<Path<Files>, ReadFile, Loading>;
 type M15 = Asks<Path<Files>, WriteFile, Keeping>;
+type M16 = Tells<Path<Mcp>, Admit>;
+type M17 = Tells<Path<Mcp>, Dismiss>;
+type M18 = ToAny<Showing, ShowTabs>;
+type M19 = ToAny<Showing, ShowEvents>;
+type M20 = ToAny<Showing, ShowAsk>;
 
 /// The sends of a turn that handles no ask.
-type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15);
+type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20);
 
 /// A turn's sends that list everything [`Acts`] does, at the same places: what the capability's helpers act through,
 /// whichever answer the turn's ask is answered with.
@@ -175,6 +186,11 @@ trait Does:
     + Allows<M13, At<13>>
     + Allows<M14, At<14>>
     + Allows<M15, At<15>>
+    + Allows<M16, At<16>>
+    + Allows<M17, At<17>>
+    + Allows<M18, At<18>>
+    + Allows<M19, At<19>>
+    + Allows<M20, At<20>>
 {
 }
 
@@ -195,6 +211,11 @@ impl<S> Does for S where
         + Allows<M13, At<13>>
         + Allows<M14, At<14>>
         + Allows<M15, At<15>>
+        + Allows<M16, At<16>>
+        + Allows<M17, At<17>>
+        + Allows<M18, At<18>>
+        + Allows<M19, At<19>>
+        + Allows<M20, At<20>>
 {
 }
 
@@ -227,6 +248,8 @@ pub struct Sessions {
     watching: Streams<Watching, ()>,
     /// The number of the next rest begun.
     next_rest: u64,
+    /// The trusted engines the chat is shown to, and what waits for their owner's answer (ADR-0057).
+    chats: Chats,
 }
 
 /// Where the capability is in beginning. In each phase before it runs, `waiting` asks are answered once it does.
@@ -267,7 +290,7 @@ impl Actor for Sessions {
         Archive,
         Answer<FileRead, Loading>,
         Answer<FileWritten, Keeping>,
-        Answer<Credentialed, Crediting>,
+        Answer<Provisioned, Crediting>,
         Answer<crate::VolumeCreated, Homing>,
         Answer<aethereal_actor::Slept, Resting>,
         Answer<crate::Created, Asking>,
@@ -281,6 +304,9 @@ impl Actor for Sessions {
         Part<Watching>,
         Answer<crate::EventsDone, Number>,
         Answer<aethereal_tcp::Wrote, Typing>,
+        Joined,
+        Chatted,
+        aethereal_actor::Ended,
     );
     type BeginSends = (M14,);
     type EndSends = ();
@@ -302,6 +328,7 @@ impl Actor for Sessions {
             logging: Streams::new(WINDOW),
             watching: Streams::new(WINDOW),
             next_rest: 0,
+            chats: Chats::new(),
         })
     }
 

@@ -1,22 +1,30 @@
 //! A session's container, made only from the capability's settings and the session's own facts (ADR-0057): its
-//! number, its run, the conversation Claude named, and the credential; and the named volumes it mounts, built from the
-//! settings and the number. Nothing a caller asked reaches either.
+//! number, its run, the conversation Claude named, the credential, the bearer of its route, and its drop box; and the
+//! named volumes it mounts, built from the settings and the number. Nothing a caller asked reaches either.
 
 #[cfg(test)]
 mod tests;
 
 use super::record::Conversation;
 use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
-use crate::{ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
+use crate::{Access, Bind, ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
 use aethereal_data::write_json_string;
+use aethereal_mcp::Bearer;
+use aethereal_store::DROP_BOX;
 
-/// What a session's container is made for: the session, its run, the conversation it carries on, and the credential's
-/// variables.
+/// The variable that holds the bearer of a session's route in its container's environment, which its MCP config
+/// names, so the bearer is never an argument of its command.
+pub const BEARER_VARIABLE: &str = "AETHEREAL_HUB_BEARER";
+
+/// What a session's container is made for: the session, its run, the conversation it carries on, the credential's
+/// variables, the bearer of its route to the hub's tools, and the absolute path of its drop box.
 pub struct Made<'a> {
     pub session: u32,
     pub run: u32,
     pub conversation: &'a Conversation,
     pub env: Vec<Variable>,
+    pub bearer: Bearer,
+    pub drop_box: String,
 }
 
 /// Why a session's container, or a volume it mounts, could not be made from the settings.
@@ -103,11 +111,12 @@ pub fn labels(settings: &SessionsSettings, session: u32) -> Result<Vec<Label>, U
 ///
 /// As [`Unmade`] says.
 pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec, Unmade> {
-    let Made { session, run, conversation, env } = made;
+    let Made { session, run, conversation, env, bearer, drop_box } = made;
     let places = [("HOME", HOME), ("CARGO_HOME", CARGO), ("CARGO_TARGET_DIR", TARGET)];
     let mut variables: Vec<Variable> =
         places.map(|(name, value)| Variable { name: String::from(name), value: String::from(value) }).to_vec();
     variables.extend(env);
+    variables.push(Variable { name: String::from(BEARER_VARIABLE), value: bearer.hex() });
     let volumes =
         shelves(settings, session)?.map(|shelf| Volume { name: shelf.name, target: String::from(shelf.target) });
 
@@ -118,10 +127,13 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
         working_dir: String::from(HOME),
         command: command(settings, conversation),
         env: variables,
-        // Claude Code is in the image, so nothing of the machine is bound in.
-        binds: Vec::new(),
+        // Claude Code is in the image, so nothing of the machine is bound in but the session's drop box, which the
+        // store reads only what the session puts in, never following a link.
+        binds: vec![Bind { source: drop_box, target: String::from(DROP_BOX), access: Access::ReadWrite }],
         volumes: Vec::from(volumes),
-        network: Network::Host,
+        // A network of its own: the container reaches the hub's tools only by its route, never the owner's port on the
+        // loopback.
+        network: Network::Bridge,
         millicpus: settings.millicpus,
         memory_bytes: settings.memory_bytes,
         labels: labels(settings, session)?,
@@ -159,11 +171,15 @@ fn command(settings: &SessionsSettings, conversation: &Conversation) -> Vec<Stri
     command
 }
 
-/// The MCP config that names the hub's tools at `url`, as Claude Code reads one inline.
+/// The MCP config that names the hub's tools at `url`, as Claude Code reads one inline: each call bears the session's
+/// bearer, which Claude Code reads from the container's environment as it expands `${…}` in a header, so the config
+/// names the variable and never the bearer.
 fn mcp_config(url: &str) -> String {
     let mut config = String::from(r#"{"mcpServers":{"aethereal":{"type":"http","url":"#);
     write_json_string(url, &mut config);
-    config.push_str("}}}");
+    config.push_str(r#","headers":{"Authorization":"#);
+    write_json_string(&format!("Bearer ${{{BEARER_VARIABLE}}}"), &mut config);
+    config.push_str("}}}}");
 
     config
 }

@@ -8,7 +8,7 @@ use crate::window::WindowId;
 use crate::windows::{Heard, Listed, Logical, Place, Unplaced, Windowing};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
-use aethereal_tools::{CommandLine, FlagsFault};
+use aethereal_tools::{Caller, CommandLine, FlagsFault};
 use std::num::NonZeroUsize;
 
 /// The surface the window is opened at.
@@ -29,7 +29,7 @@ fn tooled() -> Result<Harness<Bench>, Unheard> {
 fn call<K: Plain>(harness: &mut Harness<Bench>, tool: &str, input: &K) -> Result<Result<Vec<u8>, String>, Unheard> {
     let input = harness.put(to_bytes(input)?)?;
     let worker = WindowTool::worker(harness.root::<WindowTool>());
-    let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input, caller: Caller::Owner })?;
     let called = match harness.answer(asked)? {
         Answered::Yes(Called::Output(output)) => Ok(harness.read(&output).map(<[u8]>::to_vec).unwrap_or_default()),
         Answered::Yes(Called::Refused(why)) => Err(why),

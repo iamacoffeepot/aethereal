@@ -4,12 +4,12 @@ mod launches;
 mod shelves;
 
 use crate::jobs::{
-    Counted, Counting, Issue, Issued, Issuing, Recall, Recalled, Recalling, Recount, Shelve, Shelved, Shelving, Stock,
-    Stocked, Stocking,
+    Counted, Counting, Issue, Issued, Issuing, Recall, Recalled, Recalling, Recount, Shelve, Shelved, Shelving, Source,
+    Stock, Stocked, Stocking,
 };
 use crate::{
-    Binary, CheckIn, CheckedIn, Held, Hold, Launch, Launched, ListStored, Pin, Pinned, StoreConfig, StoreHash,
-    StoreName, Stored, StoredBinary, Unpin,
+    Binary, CheckIn, CheckInDropped, CheckedIn, Held, Hold, Launch, Launched, ListStored, Pin, Pinned, StoreConfig,
+    StoreHash, StoreName, Stored, StoredBinary, Unpin,
 };
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
@@ -24,7 +24,8 @@ use std::mem;
 
 /// The store: keeps binaries checked in from a path on the host's machine, each named by the BLAKE3 hash of its bytes,
 /// under names that move to the latest build, pruned to a byte budget (ADR-0039). An actor asks it at its typed path,
-/// `path::<Store>(())`: [`CheckIn`], [`ListStored`], [`Pin`], [`Unpin`], [`Hold`], and [`Launch`] (ADR-0040). Its bytes
+/// `path::<Store>(())`: [`CheckIn`], [`CheckInDropped`], [`ListStored`], [`Pin`], [`Unpin`], [`Hold`], and [`Launch`]
+/// (ADR-0040). Its bytes
 /// are never given back; a launch copy of an entry is, to run, removed when its asker ends.
 ///
 /// It reads its index from its host's stockroom as it begins, holding what it is asked until it has. It runs one job
@@ -55,7 +56,7 @@ enum Stage {
 /// A request the store holds, with what it asked.
 #[derive(Bound)]
 enum Ask {
-    CheckIn { debt: Debt<CheckedIn>, check_in: CheckIn },
+    CheckIn { debt: Debt<CheckedIn>, from: Source, name: StoreName },
     List { debt: Debt<Stored> },
     Pin { debt: Debt<Pinned>, hash: StoreHash },
     Unpin { debt: Debt<Pinned>, hash: StoreHash },
@@ -66,8 +67,8 @@ enum Ask {
 /// A job of the stockroom waiting for the lane.
 #[derive(Bound)]
 enum Waiting {
-    /// A check-in, waiting for its copy.
-    CheckIn { debt: Debt<CheckedIn>, check_in: CheckIn },
+    /// A check-in to `name` of the file `from` names, waiting for its copy.
+    CheckIn { debt: Debt<CheckedIn>, from: Source, name: StoreName },
     /// A launch of the entry `hash`, held already, waiting for its launch copy `copy`.
     Launch { debt: Debt<Launched>, hash: StoreHash, copy: String },
     /// The launch copies of an asker that has ended, waiting to be removed.
@@ -136,7 +137,7 @@ impl Open {
     /// Answers `ask`, or queues it for the lane when it is a check-in.
     fn take<S>(&mut self, ask: Ask, turn: &mut Turn<'_, Store, S>) -> Result<(), Fault> {
         match ask {
-            Ask::CheckIn { debt, check_in } => self.queue.push_back(Waiting::CheckIn { debt, check_in }),
+            Ask::CheckIn { debt, from, name } => self.queue.push_back(Waiting::CheckIn { debt, from, name }),
             Ask::List { debt } => turn.answer(debt, &self.shelves.stored())?,
             Ask::Pin { debt, hash } => self.pin(debt, hash, true, turn)?,
             Ask::Unpin { debt, hash } => self.pin(debt, hash, false, turn)?,
@@ -222,8 +223,8 @@ impl Open {
             return Ok(());
         };
         let lane = match waiting {
-            Waiting::CheckIn { debt, check_in: CheckIn { path, name } } => {
-                turn.run(&Stock { path, most_file_bytes: config.most_file_bytes }, &Stocking)?;
+            Waiting::CheckIn { debt, from, name } => {
+                turn.run(&Stock { from, most_file_bytes: config.most_file_bytes }, &Stocking)?;
                 Lane::Stocking { debt, name }
             }
             Waiting::Launch { debt, hash, copy } => {
@@ -324,6 +325,10 @@ impl Carries<CheckIn> for Store {
     type Answers = (CheckedIn,);
 }
 
+impl Carries<CheckInDropped> for Store {
+    type Answers = (CheckedIn,);
+}
+
 /// Asked at its typed path, it lists what it holds.
 impl Carries<ListStored> for Store {
     type Answers = (Stored,);
@@ -354,6 +359,7 @@ impl Actor for Store {
     type Key = ();
     type Handles = (
         CheckIn,
+        CheckInDropped,
         ListStored,
         Pin,
         Unpin,
@@ -385,7 +391,18 @@ impl Handles<CheckIn> for Store {
 
     fn handle(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
-        self.take(Ask::CheckIn { debt, check_in }, turn)
+        let CheckIn { path, name } = check_in;
+        self.take(Ask::CheckIn { debt, from: Source::Path(path), name }, turn)
+    }
+}
+
+impl Handles<CheckInDropped> for Store {
+    type Sends = (ToSender<CheckedIn>,);
+
+    fn handle(&mut self, check_in: CheckInDropped, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let debt = turn.hold()?;
+        let CheckInDropped { session, file, name } = check_in;
+        self.take(Ask::CheckIn { debt, from: Source::Dropped { session, file }, name }, turn)
     }
 }
 

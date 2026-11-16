@@ -39,7 +39,7 @@ pub use stats::{
 pub use table::{HeldOutput, HeldTool, Table};
 pub use tool::{Tool, ToolList};
 pub use toolbox::{Offering, Toolbox, ToolboxConfig, Unlisted};
-pub use tooling::{Call, Called, Done, Offer, Offered, Output, ToolFlag, ToolSheet, Tooling, Typed, Withdraw};
+pub use tooling::{Call, Called, Caller, Done, Offer, Offered, Output, ToolFlag, ToolSheet, Tooling, Typed, Withdraw};
 pub use tools::{CallTool, Forwarding, ListTools, Sheets, Subscribe, Tools, ToolsSettings};
 pub use tuning::{
     About, ActorTuning, FieldsSet, ListTuning, Listed, Reading, Setting, TunableList, TuneFields, TuningList,

@@ -13,7 +13,7 @@ use aethereal_actor::{
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that opens a session.
@@ -167,8 +167,14 @@ impl Handles<Call> for SessionsTools {
         ToSender<Called>,
     );
 
-    /// Reads the call's input, or refuses it; holds the call, and asks the capability.
+    /// Reads the call's input, or refuses it; holds the call, and asks the capability. A session's call is refused:
+    /// the sessions are the owner's to open, speak to, and end, and a session that drove another would be a pipeline
+    /// of sessions, which the hub is not built for (ADR-0057).
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if let Caller::Session { .. } = call.caller {
+            turn.reply(&Called::Refused(String::from("the session tools are the owner's, not a session's")))?;
+            return Ok(());
+        }
         let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
             Err(refusal) => {
@@ -297,6 +303,8 @@ fn refusal(why: &Refusal) -> String {
         Refusal::NotRunning => String::from("the session's container does not run, so no turn runs"),
         Refusal::Busy => String::from("the session is starting or stopping: ask again once it is not"),
         Refusal::NoCredential => String::from("the hub could not read the credential's file as KEY=VALUE lines"),
+        Refusal::NoBearer => String::from("the hub's randomness drew no bearer for the session's route"),
+        Refusal::NoDropBox => String::from("the store could not make the session's drop box"),
         Refusal::Docker(error) => format!("Docker: {error:?}"),
     }
 }

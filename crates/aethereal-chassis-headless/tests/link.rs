@@ -11,12 +11,12 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_link::{
     CallEngine, DescribeEngine, Described, Down, Engine, EngineList, EngineListing, Engines, EnginesSettings, Link,
-    LinkSettings, ListEngines, MintToken, Minted, Origin, Outcome, REVISION, Refusal, Token, Up, Within,
+    LinkSettings, ListEngines, MintFor, Minted, Origin, Outcome, REVISION, Refusal, Token, Trust, Up, Within,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Offer, Offered, Output, ToolSheet, Tooling, Tools, Withdraw};
+use aethereal_tools::{Call, Called, Caller, Offer, Offered, Output, ToolSheet, Tooling, Tools, Withdraw};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
@@ -184,7 +184,7 @@ fn dialed(port: u16) -> TcpStream {
 /// A token `Engines` minted for an engine started outside the hub.
 fn minted(harness: &mut Harness<Headless>) -> Result<Token, Unheard> {
     let engines = harness.root::<Engines>();
-    let minting = harness.ask(engines, &MintToken)?;
+    let minting = harness.ask(engines, &MintFor { by: Caller::Owner })?;
     let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
         panic!("`Engines` mints a token");
     };
@@ -267,7 +267,13 @@ fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described(
     let list = listed_once(&mut harness, |list| holds_one_with(list, 2))?;
     assert_eq!(
         list.engines,
-        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 2, origin: Origin::External }]
+        vec![EngineListing {
+            engine: 0,
+            name: String::from("scene"),
+            tools: 2,
+            origin: Origin::External,
+            trust: Trust::Trusted
+        }]
     );
 
     let engines = harness.root::<Engines>();
@@ -389,7 +395,13 @@ fn a_token_is_good_for_one_hello_and_refused_the_second_time() -> Result<(), Unh
     assert!(closed, "the hub hangs up once its refusal is sent");
     assert_eq!(
         listed(&mut harness)?.engines,
-        vec![EngineListing { engine: 0, name: String::from("scene"), tools: 1, origin: Origin::External }]
+        vec![EngineListing {
+            engine: 0,
+            name: String::from("scene"),
+            tools: 1,
+            origin: Origin::External,
+            trust: Trust::Trusted
+        }]
     );
 
     Ok(())

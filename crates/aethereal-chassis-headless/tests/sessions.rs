@@ -9,17 +9,21 @@ use aethereal_actor::{
 use aethereal_actor::{Service, Spares};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
-use aethereal_data::{Bound, Budget, FilePath, Plain, from_bytes, to_bytes};
+use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
 use aethereal_http::{Http, HttpSettings};
+use aethereal_link::{Down, Engines, EnginesSettings, ListEngines, MintFor, Minted, REVISION, Up};
+use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_sessions::{
     Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt, Interrupted, ListSessions,
     NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions, SessionsListed,
     SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
 };
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::Tcp;
+use aethereal_tools::{Caller as By, Output, ToolSheet};
 use core::fmt::Write as _;
 use core::mem;
 use core::time::Duration;
@@ -27,6 +31,7 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{ErrorKind, Read as _, Write as _};
+use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path as FsPath, PathBuf};
 use std::pin::Pin;
@@ -252,6 +257,11 @@ impl Daemon {
             idle_secs,
             ..SessionsSettings::default()
         }
+    }
+
+    /// The store's settings: kept in the test's directory, where each session's drop box is made.
+    fn store(&self) -> StoreSettings {
+        StoreSettings { root: self.dir.join("store").display().to_string(), ..StoreSettings::default() }
     }
 
     /// `Files`' settings: each namespace a directory in the test's.
@@ -515,12 +525,19 @@ fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>,
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
         .root::<Caller>();
 
     Harness::of(program)
+}
+
+/// `Mcp` on ports the host picks, its route on the loopback, where the sessions' bearers are admitted.
+fn route() -> McpSettings {
+    McpSettings { port: 0, route_port: 0, route_interface: String::from("127.0.0.1"), ..McpSettings::default() }
 }
 
 /// The engine's settings for a hub: it reads whatever `Http` reads whole.
@@ -817,6 +834,71 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     );
     assert!(written.iter().all(|line| !line.contains("/compact")), "nothing is compacted: {written:?}");
     assert!(daemon.containers.contains_key(&id), "its container runs");
+
+    Ok(())
+}
+
+/// The status the sessions' route of `Mcp` answers a `tools/list` bearing the `Authorization` header `authorization`
+/// with, the hub and the daemon stepped until a client on a thread of its own has read it.
+fn route_status(harness: &mut Harness<Headless>, daemon: &mut Daemon, authorization: &str) -> Result<u16, Unheard> {
+    let mcp = harness.root::<Mcp>();
+    let Some(port) = harness.state(mcp)?.route_port() else {
+        panic!("the route is served");
+    };
+    let meta =
+        r#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{meta}}}}}"#);
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\nMCP-Protocol-Version: 2026-07-28\r\n\
+         Mcp-Method: tools/list\r\nAuthorization: {authorization}\r\n\r\n{body}",
+        body.len()
+    );
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    let client = thread::spawn(move || {
+        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+            panic!("the client connects to the route");
+        };
+        assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
+        assert!(stream.write_all(request.as_bytes()).is_ok(), "the client writes");
+        let mut whole = Vec::new();
+        assert!(stream.read_to_end(&mut whole).is_ok(), "a response comes within ten seconds");
+        let text = String::from_utf8_lossy(&whole).into_owned();
+        let Some(status) = text.split(' ').nth(1).and_then(|status| status.parse::<u16>().ok()) else {
+            panic!("a status: {text}");
+        };
+        status
+    });
+    while !client.is_finished() {
+        harness.step();
+        daemon.pump();
+    }
+    let Ok(status) = client.join() else {
+        panic!("the client finished");
+    };
+
+    Ok(status)
+}
+
+#[test]
+fn a_session_s_container_bears_a_bearer_the_route_lets_in_until_its_container_is_removed() -> Result<(), Unheard> {
+    // Catches a container given a bearer `Mcp` was never told of, so the session reaches none of the hub's tools; the
+    // bearer written into the container's command, where every process list and `docker inspect` show it; and a
+    // bearer still let in once its container is gone (ADR-0057).
+    let mut daemon = Daemon::new("bearer");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "bearer")?;
+    let body = daemon.body(&daemon.made(0));
+    let bearer = body.split("\"AETHEREAL_HUB_BEARER=").nth(1).and_then(|rest| rest.split('"').next());
+    let Some(bearer) = bearer.map(String::from) else {
+        panic!("the container's environment holds its bearer: {body}");
+    };
+    let authorization = format!("Bearer {bearer}");
+
+    assert_eq!(body.matches(&bearer).count(), 1, "the bearer is in the environment alone");
+    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 200);
+    order(&mut harness, &Order::Archive(Archive { session }))?;
+    until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
+    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 401);
 
     Ok(())
 }
@@ -1149,6 +1231,8 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Recorder>(daemon.files())
         .root_with::<Docker>(daemon.docker())
@@ -1278,6 +1362,11 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(StoreSettings {
+            root: root.join("store").display().to_string(),
+            ..StoreSettings::default()
+        })
         .root_with::<Files>(files)
         .root_with::<Docker>(DockerSettings::default())
         .root_with::<Sessions>(settings)
@@ -1437,4 +1526,294 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
     report_transcript(&entries);
 
     Ok(())
+}
+
+/// The most bytes of a link's frame in the chat's hubs.
+const LINK_BYTES: u32 = 1 << 16;
+
+/// A hub as `hub` makes one, with `Engines` too, on a port of its choosing, so engines link and chat over the real
+/// link (ADR-0057).
+fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
+    let engines = EnginesSettings { port: 0, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(daemon.store())
+        .root_with::<Files>(daemon.files())
+        .root_with::<Docker>(daemon.docker())
+        .root_with::<Engines>(engines)
+        .root_with::<Sessions>(daemon.sessions(4, 3600))
+        .root::<Caller>();
+
+    Harness::of(program)
+}
+
+/// Writes `frame` to `stream` as the link frames it: its length, big-endian, then its bytes.
+fn send_frame<T: Plain>(stream: &mut TcpStream, frame: &T) {
+    let Ok(bytes) = to_bytes(frame) else {
+        panic!("the frame encodes");
+    };
+    let Ok(length) = u32::try_from(bytes.len()) else {
+        panic!("the frame has a length");
+    };
+    assert!(stream.write_all(&length.to_be_bytes()).is_ok(), "the length writes");
+    assert!(stream.write_all(&bytes).is_ok(), "the frame writes");
+}
+
+/// The frames the hub writes on `stream` until one `ends` reads, each read on a thread of the engine's side, the hub
+/// and the daemon stepped meanwhile; and the stream.
+fn downs_until(
+    harness: &mut Harness<Headless>,
+    daemon: &mut Daemon,
+    stream: TcpStream,
+    ends: impl Fn(&Down) -> bool + Send + 'static,
+) -> (Vec<Down>, TcpStream) {
+    #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
+    let peer = thread::spawn(move || {
+        let mut stream = stream;
+        let mut downs = Vec::new();
+        loop {
+            let mut prefix = [0; 4];
+            assert!(stream.read_exact(&mut prefix).is_ok(), "a frame comes within ten seconds");
+            let mut bytes = vec![0; usize::try_from(u32::from_be_bytes(prefix)).unwrap_or(usize::MAX)];
+            assert!(stream.read_exact(&mut bytes).is_ok(), "the frame comes whole");
+            let Ok(down) = from_bytes::<Down>(&bytes, &mut Budget::new(1 << 24)) else {
+                panic!("the frame reads as a `Down`");
+            };
+            let is_last = ends(&down);
+            downs.push(down);
+            if is_last {
+                return (downs, stream);
+            }
+        }
+    });
+    while !peer.is_finished() {
+        harness.step();
+        daemon.pump();
+    }
+    let Ok(heard) = peer.join() else {
+        panic!("the engine's side finished");
+    };
+
+    heard
+}
+
+/// An engine's side linked to the hub with a token minted for `by`, named `name` and holding no tools, once `Engines`
+/// lists `count` engines.
+fn linked_as(
+    harness: &mut Harness<Headless>,
+    daemon: &mut Daemon,
+    by: By,
+    name: &str,
+    count: usize,
+) -> Result<TcpStream, Unheard> {
+    let engines = harness.root::<Engines>();
+    let minting = harness.ask(engines, &MintFor { by })?;
+    let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
+        panic!("`Engines` mints a token");
+    };
+    let Some(port) = harness.state(engines)?.port() else {
+        panic!("`Engines` listens");
+    };
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        panic!("the engine's side connects");
+    };
+    assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
+    send_frame(&mut stream, &Up::Hello { revision: REVISION, name: String::from(name), token });
+    send_frame(&mut stream, &Up::Sheets { revision: 0, tools: Vec::new() });
+    let mut listed = 0;
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+        listed = engines_listed(harness);
+        listed >= count
+    });
+    assert_eq!(listed, count, "the engine is listed");
+
+    Ok(stream)
+}
+
+/// How many engines `Engines` lists.
+fn engines_listed(harness: &mut Harness<Headless>) -> usize {
+    let engines = harness.root::<Engines>();
+    let Ok(listing) = harness.ask(engines, &ListEngines) else {
+        return 0;
+    };
+    let Ok(Answered::Yes(list)) = harness.answer(listing) else {
+        return 0;
+    };
+
+    list.engines.len()
+}
+
+/// Whether `down` shows `session`'s events up to the one numbered `last`.
+fn shows_through(down: &Down, session: u32, last: u64) -> bool {
+    let Down::Show { session: shown, events } = down else {
+        return false;
+    };
+    let reaches = events.last().is_some_and(|numbered| numbered.number >= last);
+
+    *shown == session && reaches
+}
+
+/// Whether `down` shows `session`'s line said at engine `engine`.
+fn shows_said_at(down: &Down, session: u32, engine: u32) -> bool {
+    let Down::Show { session: shown, events } = down else {
+        return false;
+    };
+    let by = Speaker::Engine { engine };
+    let said_there =
+        events.iter().any(|numbered| matches!(&numbered.entry, Entry::Said { by: said, .. } if *said == by));
+
+    *shown == session && said_there
+}
+
+#[test]
+fn an_untrusted_engine_s_chat_is_dropped_and_it_is_shown_none_of_it() -> Result<(), Unheard> {
+    // Catches a chat frame from an engine a session started acted on, so code a session just wrote could type to a
+    // real session, and such an engine joined to be shown the sessions, all over the real link (ADR-0057).
+    let mut daemon = Daemon::new("chat-untrusted");
+    let mut harness = chat_hub(&daemon)?;
+    let session = open(&mut harness, &mut daemon, "chat")?;
+    let id = daemon.made(0);
+    let _trusted = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+    let mut untrusted = linked_as(&mut harness, &mut daemon, By::Session { session }, "session's", 2)?;
+
+    send_frame(&mut untrusted, &Up::Say { session, text: String::from("from code a session wrote") });
+    send_frame(&mut untrusted, &Up::Interrupt { session });
+    send_frame(&mut untrusted, &Up::New { name: String::from("another") });
+    send_frame(&mut untrusted, &Up::Sheets { revision: 1, tools: vec![sheet()] });
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+        tools_of(&mut harness, 1) == 1
+    });
+
+    let sessions = harness.root::<Sessions>();
+    assert_eq!(harness.state(sessions)?.joined(), vec![0], "only the owner's engine is shown the chat");
+    let entries = read(&mut harness, &mut daemon, session, 0)?;
+    let said =
+        entries.iter().filter(|numbered| matches!(numbered.entry, Entry::Said { .. } | Entry::Interrupted { .. }));
+    assert_eq!(said.count(), 0, "nothing the untrusted engine sent reached the session: {entries:?}");
+    assert_eq!(daemon.stdin(&id), Vec::<String>::new());
+    let listed = caller(&mut harness)?.listed.len();
+    order(&mut harness, &Order::List)?;
+    until(&mut harness, &mut daemon, |caller, _| caller.listed.len() > listed);
+    let sessions_listed = caller(&mut harness)?.listed.last().map(|listed| listed.sessions.len());
+    assert_eq!(sessions_listed, Some(1), "no session was made");
+
+    Ok(())
+}
+
+#[test]
+fn a_trusted_engine_is_shown_the_sessions_and_its_line_reaches_claude_tagged_with_its_commands_folded_in()
+-> Result<(), Unheard> {
+    // Catches a trusted engine not shown the sessions as it links, a tab opened from `after` that misses or repeats its
+    // backlog, a line written to Claude untagged or without the `/` commands run before it, and the line kept in the
+    // transcript as anyone's but the engine's, over the real link (ADR-0057).
+    let mut daemon = Daemon::new("chat-trusted");
+    let mut harness = chat_hub(&daemon)?;
+    let session = open(&mut harness, &mut daemon, "chat")?;
+    let id = daemon.made(0);
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+
+    let (downs, mut stream) =
+        downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+    let Some(Down::Sessions { list }) = downs.last() else {
+        panic!("the engine is shown the sessions");
+    };
+    let tabs: Vec<(u32, &str)> = list.iter().map(|tab| (tab.session, tab.name.as_str())).collect();
+    assert_eq!(tabs, vec![(session, "chat")]);
+    say(&mut harness, &mut daemon, session, "hello")?;
+    answer_turn(&mut daemon, &id, "hello to you");
+    until_state(&mut harness, &mut daemon, session, State::Idle)?;
+    let backlog = read(&mut harness, &mut daemon, session, 0)?;
+    let last = backlog.last().map_or(0, |numbered| numbered.number);
+    assert!(last > 2, "the session has a backlog to show: {backlog:?}");
+    send_frame(&mut stream, &Up::Open { session, after: 1 });
+    let (downs, mut stream) =
+        downs_until(&mut harness, &mut daemon, stream, move |down| shows_through(down, session, last));
+    let shown: Vec<u64> = downs
+        .iter()
+        .filter_map(|down| match down {
+            Down::Show { events, .. } => Some(events.iter().map(|numbered| numbered.number)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(shown, (2..=last).collect::<Vec<u64>>(), "the backlog after event 1, once each");
+
+    send_frame(&mut stream, &Up::Ran { session, line: String::from("/capture"), printed: String::from("a frame\n") });
+    send_frame(&mut stream, &Up::Say { session, text: String::from("what do you see?") });
+    let written = stdin(&mut harness, &mut daemon, &id, 2);
+    let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, move |down| shows_said_at(down, session, 0));
+
+    let expected =
+        r#"{"type":"user","message":{"role":"user","content":"[0] /capture\na frame\n[0] what do you see?"}}"#;
+    assert_eq!(written.get(1).map(String::as_str), Some(expected));
+    let ran = downs.iter().any(|down| {
+        matches!(down, Down::Show { events, .. } if events.iter().any(|numbered| matches!(&numbered.entry, Entry::Ran { engine: 0, .. })))
+    });
+    assert!(ran, "the command is shown where it was run: {downs:?}");
+
+    Ok(())
+}
+
+#[test]
+fn an_ask_of_claude_s_is_shown_to_trusted_engines_and_their_answer_is_written_as_its_control_response()
+-> Result<(), Unheard> {
+    // Catches Claude Code's `can_use_tool` request never shown to the owner, so its turn waits for good, and an answer
+    // written for another request, or not as the control response Claude Code reads (ADR-0057).
+    let mut daemon = Daemon::new("chat-ask");
+    let mut harness = chat_hub(&daemon)?;
+    let session = open(&mut harness, &mut daemon, "ask")?;
+    let id = daemon.made(0);
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+    let (_, stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+
+    let request = r#"{"type":"control_request","request_id":"r-9","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}"#;
+    daemon.emit(&id, request);
+    let (downs, mut stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Ask { .. }));
+    let Some(Down::Ask { ask, session: asking, what }) = downs.last().cloned() else {
+        panic!("the ask is shown");
+    };
+    assert_eq!((asking, what.as_str()), (session, r#"Bash {"command":"ls"}"#));
+    send_frame(&mut stream, &Up::Answer { ask, allow: true });
+    let written = stdin(&mut harness, &mut daemon, &id, 1);
+
+    let expected = concat!(
+        r#"{"type":"control_response","response":{"subtype":"success","request_id":"r-9","#,
+        r#""response":{"behavior":"allow","updatedInput":{"command":"ls"}}}}"#
+    );
+    assert_eq!(written, vec![String::from(expected)]);
+
+    Ok(())
+}
+
+/// The sheet of a tool an engine's side holds: what it is is nothing to the chat.
+fn sheet() -> ToolSheet {
+    let shape = SchemaNodes::of(&ListSessions::SHAPE);
+
+    ToolSheet {
+        name: String::from("nothing"),
+        description: String::from("Does nothing"),
+        input: shape.clone(),
+        flags: Vec::new(),
+        output: Output::Value(shape),
+    }
+}
+
+/// How many tools `Engines` lists engine `engine` holding: 0 for one it does not list.
+fn tools_of(harness: &mut Harness<Headless>, engine: u32) -> u32 {
+    let engines = harness.root::<Engines>();
+    let Ok(listing) = harness.ask(engines, &ListEngines) else {
+        return 0;
+    };
+    let Ok(Answered::Yes(list)) = harness.answer(listing) else {
+        return 0;
+    };
+
+    list.engines.iter().find(|listed| listed.engine == engine).map_or(0, |listed| listed.tools)
 }

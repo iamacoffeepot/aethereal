@@ -4,15 +4,17 @@ use super::{Came, Engine, Engines, Linked, Minting, Port, Runs, Spawned, Spawned
 use crate::Token;
 use crate::engines::ExitedEngine;
 use crate::engines::randomness::Draw;
+use crate::engines::tokens::Purpose;
 use aethereal_actor::{ActorRef, Fault, Handles, Held, Level, ToSender, ToType, Turn};
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Stop};
 use aethereal_store::Binary;
 use aethereal_tcp::Shut;
+use aethereal_tools::Caller;
 use core::mem;
 
-/// Asks `Engines`, at `path::<Engines>(())`, to spawn an engine from its store: `binary`, started with `args`, then the
-/// link's own arguments. Answered with [`Spawn`] once the engine has linked, or what came of it before.
+/// What the agent asks of the hub's `spawn_engine`: an engine from the store, `binary`, started with `args`, then the
+/// link's own arguments. It names no one, as who asked is the tool's caller, which [`SpawnFor`] carries.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.spawn_engine")]
 pub struct SpawnEngine {
@@ -24,7 +26,17 @@ pub struct SpawnEngine {
     pub args: Option<Vec<String>>,
 }
 
-/// What came of a [`SpawnEngine`].
+/// Asks `Engines`, at `path::<Engines>(())`, to spawn the engine `spawn` names, for `by`: answered with [`Spawn`]
+/// once the engine has linked, or what came of it before. The engine is trusted only when `by` is the owner
+/// (ADR-0057).
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.spawn_for")]
+pub struct SpawnFor {
+    pub spawn: SpawnEngine,
+    pub by: Caller,
+}
+
+/// What came of a [`SpawnFor`].
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.spawn")]
 pub enum Spawn {
@@ -71,13 +83,14 @@ enum Request {
 }
 
 /// One spawn `Engines` keeps while its [`Spawned`] lives: the actor, the binary it was asked for, the token its engine
-/// links with, which `Engines` takes once the spawn says the build it runs, and lets go of as it ends, and its
-/// request.
+/// links with, which `Engines` takes once the spawn says the build it runs, and lets go of as it ends, who asked for
+/// it, and its request.
 #[derive(Bound)]
 pub(super) struct Spawning {
     pub(super) spawned: ActorRef<Spawned>,
     pub(super) binary: Binary,
     token: Token,
+    by: Caller,
     request: Request,
 }
 
@@ -91,13 +104,13 @@ enum Terminating {
     Unproven,
 }
 
-impl Handles<SpawnEngine> for Engines {
+impl Handles<SpawnFor> for Engines {
     type Sends = (ToSender<Spawn>,);
 
     /// Holds the request, and draws its engine's token from the host's randomness.
-    fn handle(&mut self, spawn: SpawnEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, asked: SpawnFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
-        turn.run(&Draw, &Minting::Spawn { held, spawn })?;
+        turn.run(&Draw, &Minting::Spawn { held, spawn: asked.spawn, by: asked.by })?;
 
         Ok(())
     }
@@ -112,8 +125,13 @@ impl Handles<Runs> for Engines {
         let Some((_, spawning)) = self.spawn_of(turn.sender().id()) else {
             return Ok(());
         };
-        let (token, spawned, binary) = (spawning.token, spawning.spawned, spawning.binary.clone());
-        self.tokens.mint_spawn(token, spawned, binary, runs.hash);
+        let purpose = Purpose::Spawn {
+            spawned: spawning.spawned,
+            binary: spawning.binary.clone(),
+            hash: runs.hash,
+            by: spawning.by,
+        };
+        self.tokens.mint_spawn(spawning.token, purpose);
 
         Ok(())
     }
@@ -185,7 +203,7 @@ impl Linked {
     fn terminating(&self) -> Terminating {
         match &self.standing {
             Standing::Linked { came: Came::Spawned { spawned, .. }, .. } => Terminating::Spawned(*spawned),
-            Standing::Linked { came: Came::External, .. } => Terminating::External(self.engine),
+            Standing::Linked { came: Came::External { .. }, .. } => Terminating::External(self.engine),
             Standing::Unproven => Terminating::Unproven,
         }
     }
@@ -200,8 +218,8 @@ impl Engines {
             .map(|(&spawn, spawning)| (spawn, spawning))
     }
 
-    /// Spawns, for the request `held`, the engine `spawn` asks for, which links to this hub at `port` with `token`; a
-    /// spawn the engine will not stand up is answered `Refused` at once.
+    /// Spawns, for the request `held` of `by`, the engine `spawn` asks for, which links to this hub at `port` with
+    /// `token`; a spawn the engine will not stand up is answered `Refused` at once.
     pub(super) fn spawn<S>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -209,6 +227,7 @@ impl Engines {
         spawn: SpawnEngine,
         token: Token,
         port: u16,
+        by: Caller,
     ) -> Result<(), Fault> {
         let SpawnEngine { binary, args } = spawn;
         let args = args.into_iter().flatten().chain(self.link_args(token, port)).collect();
@@ -225,7 +244,7 @@ impl Engines {
             }
         };
         turn.watch(spawned);
-        self.spawns.insert(number, Spawning { spawned, binary, token, request: Request::Held(held) });
+        self.spawns.insert(number, Spawning { spawned, binary, token, by, request: Request::Held(held) });
 
         Ok(())
     }
@@ -242,22 +261,23 @@ impl Engines {
         Some(binary)
     }
 
-    /// A token drawn for a spawn: spawned at once when the root listens, or kept waiting for its port.
+    /// A token drawn for a spawn of `by`'s: spawned at once when the root listens, or kept waiting for its port.
     pub(super) fn spawn_drawn<S>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
         held: Held<Spawn>,
         spawn: SpawnEngine,
         token: Token,
+        by: Caller,
     ) -> Result<(), Fault> {
         let port = match &mut self.port {
             Port::Bound(port) => *port,
             Port::Asked { minted } => {
-                minted.push(Waiting::Spawn { held, spawn, token });
+                minted.push(Waiting::Spawn { held, spawn, token, by });
                 return Ok(());
             }
         };
 
-        self.spawn(turn, held, spawn, token, port)
+        self.spawn(turn, held, spawn, token, port, by)
     }
 }

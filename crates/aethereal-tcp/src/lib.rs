@@ -39,4 +39,4 @@ pub use readiness::{Interest, Readiness, Readying};
 pub use ready::Readied;
 pub use settings::TcpSettings;
 pub use socket::{BoundSocket, Socket};
-pub use tcp::{Connect, ConnectUnix, Connected, ConnectedUnix, Listen, Listening, Tcp, TcpConfig};
+pub use tcp::{Connect, ConnectUnix, Connected, ConnectedUnix, Interface, Listen, Listening, Tcp, TcpConfig};

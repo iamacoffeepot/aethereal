@@ -9,8 +9,8 @@ use aethereal_data::{ActorPath, Budget, Plain, from_bytes, to_bytes};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_tools::{
-    ActorLog, Call, Called, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent, RecentLog,
-    Tool, Tooling,
+    ActorLog, Call, Called, Caller, LogEntry, LogLevel, LoggedEntry, LogsTool, LogsToolConfig, ReadLog, ReadRecent,
+    RecentLog, Tool, Tooling,
 };
 
 /// The most bytes reading an answer takes.
@@ -111,7 +111,7 @@ fn logged(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>, read: &
         panic!("the read encodes");
     };
     let input = harness.put(bytes)?;
-    let asked = harness.ask(worker, &Call { tool: String::from("actor_logs"), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from("actor_logs"), input, caller: Caller::Owner })?;
     let Answered::Yes(Called::Output(output)) = harness.answer(asked)? else {
         panic!("the tool answers an output");
     };
@@ -137,7 +137,7 @@ fn recent(
         panic!("the read encodes");
     };
     let input = harness.put(bytes)?;
-    let asked = harness.ask(worker, &Call { tool: String::from("read_recent"), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from("read_recent"), input, caller: Caller::Owner })?;
     let Answered::Yes(Called::Output(output)) = harness.answer(asked)? else {
         panic!("the tool answers an output");
     };

@@ -12,15 +12,15 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Budget, Plain, from_bytes, to_bytes};
 use aethereal_link::{
     Down, EngineList, EngineListing, EngineTools, EngineToolsConfig, Engines, EnginesSettings, ExitedEngine, Link,
-    LinkSettings, ListEngines, MintToken, Minted, Origin, REVISION, Refusal, Spawn, SpawnEngine, SpawnedEngine,
-    TerminateEngine, Terminated, Token, Up,
+    LinkSettings, ListEngines, MintFor, Minted, Origin, REVISION, Refusal, Spawn, SpawnEngine, SpawnFor, SpawnedEngine,
+    TerminateEngine, Terminated, Token, Trust, Up,
 };
 use aethereal_process::{ExitStatus, Processes, ProcessesSettings};
 use aethereal_store::{Binary, CheckIn, CheckedIn, Store, StoreHash, StoreName, StoreSettings, StoredBinary};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
-use aethereal_tools::{Call, Called, Done, Tooling, Tools};
+use aethereal_tools::{Call, Called, Caller, Done, Tooling, Tools};
 use std::io::{self, Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -248,10 +248,15 @@ fn hub(dir: &Dir, link_within_millis: u64) -> Result<(Harness<Headless>, u16, St
     Ok((harness, port, hash))
 }
 
-/// What spawning `binary` with `args` comes to.
+/// What spawning `binary` with `args` for the owner comes to.
 fn spawn(harness: &mut Harness<Headless>, binary: Binary, args: Vec<String>) -> Result<Spawn, Unheard> {
+    spawn_for(harness, Caller::Owner, binary, args)
+}
+
+/// What spawning `binary` with `args` for `by` comes to.
+fn spawn_for(harness: &mut Harness<Headless>, by: Caller, binary: Binary, args: Vec<String>) -> Result<Spawn, Unheard> {
     let engines = harness.root::<Engines>();
-    let asked = harness.ask(engines, &SpawnEngine { binary, args: Some(args) })?;
+    let asked = harness.ask(engines, &SpawnFor { spawn: SpawnEngine { binary, args: Some(args) }, by })?;
     let Answered::Yes(spawn) = harness.answer(asked)? else {
         panic!("`Engines` answers a spawn");
     };
@@ -374,17 +379,20 @@ fn stops(harness: &mut Harness<Headless>, hub: &mut Harness<Headless>) -> bool {
 #[test]
 fn a_spawn_that_links_answers_its_engine_and_lists_it_as_spawned_from_its_binary_and_build() -> Result<(), Unheard> {
     // Catches the link's arguments not appended or built unlike `Minted`'s, so the program could not link; a spawn
-    // answered before its engine linked, or with another id; and an engine listed as started by hand, or without the
-    // binary it was spawned as or the hash of the build it runs.
+    // answered before its engine linked, or with another id; an engine listed as started by hand, or without the
+    // binary it was spawned as or the hash of the build it runs; and who asked for the spawn lost on its way to the
+    // token, so an engine a session spawned would link trusted (ADR-0057).
     let dir = Dir::new("links");
     let (mut harness, _, hash) = hub(&dir, 60_000)?;
 
-    let spawned = spawn(&mut harness, spawnee(), args(Behaviour::Links, &dir))?;
+    let by = Caller::Session { session: 4 };
+    let spawned = spawn_for(&mut harness, by, spawnee(), args(Behaviour::Links, &dir))?;
     let list = listed_once(&mut harness, |list| list.engines.len() == 1)?;
 
     assert_eq!(spawned, Spawn::Linked { engine: 0 });
     let origin = Origin::Spawned { binary: spawnee(), hash };
-    assert_eq!(list.engines, vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0, origin }]);
+    let trust = Trust::Untrusted { session: 4 };
+    assert_eq!(list.engines, vec![EngineListing { engine: 0, name: String::from("engine"), tools: 0, origin, trust }]);
 
     Ok(())
 }
@@ -484,7 +492,7 @@ fn terminating_an_engine_started_by_hand_shuts_its_link_and_it_ends() -> Result<
     let dir = Dir::new("terminate-external");
     let (mut hub, _, _) = hub(&dir, 60_000)?;
     let engines = hub.root::<Engines>();
-    let minting = hub.ask(engines, &MintToken)?;
+    let minting = hub.ask(engines, &MintFor { by: Caller::Owner })?;
     let Answered::Yes(Minted { args, .. }) = hub.answer(minting)? else {
         panic!("`Engines` mints a token");
     };
@@ -554,7 +562,7 @@ fn tools(harness: &mut Harness<Headless>) -> ProtocolRef<Tooling> {
 fn called<T: Plain>(harness: &mut Harness<Headless>, tool: &str, input: &T) -> Result<Answered<Called>, Unheard> {
     let worker = tools(harness);
     let input = harness.put(bytes_of(input))?;
-    let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input, caller: Caller::Owner })?;
 
     harness.answer(asked)
 }

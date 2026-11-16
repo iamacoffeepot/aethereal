@@ -17,7 +17,7 @@ use aethereal_library::{
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Head, Host, Lifecycle, Program};
-use aethereal_tools::{Call, Called, Tool, Tooling};
+use aethereal_tools::{Call, Called, Caller, Tool, Tooling};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, process};
@@ -224,7 +224,7 @@ where
 /// Calls the library's tool `tool` with `input`, and reads what it answered as `O`.
 fn call<I: Plain, O: Plain>(running: &mut Running, tool: &str, input: &I) -> Result<O, Unheard> {
     let input = running.harness.put(to_bytes(input)?)?;
-    let asked = running.harness.ask(running.tool, &Call { tool: String::from(tool), input })?;
+    let asked = running.harness.ask(running.tool, &Call { tool: String::from(tool), input, caller: Caller::Owner })?;
     let Answered::Yes(Called::Output(output)) = running.harness.answer(asked)? else {
         panic!("`{tool}` answers an output");
     };

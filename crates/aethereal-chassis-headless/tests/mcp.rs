@@ -10,15 +10,15 @@ use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, 
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{
-    Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintToken, Minted, Outcome, REVISION, Up,
+    Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintFor, Minted, Outcome, REVISION, Up,
     Within,
 };
-use aethereal_mcp::{Mcp, McpSettings};
+use aethereal_mcp::{Admit, Bearer, Dismiss, Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{
-    Call, Called, Offer, Offered, Output, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
+    Call, Called, Caller, Offer, Offered, Output, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
 };
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -110,9 +110,14 @@ fn engine_for(http: &HttpSettings) -> EngineSettings {
     EngineSettings { read_limit, mail_bytes: 1 << 24, ..EngineSettings::default() }
 }
 
+/// `settings` with both ports any the host picks, the route's on the loopback, as a test reaches it.
+fn on_loopback(settings: McpSettings) -> McpSettings {
+    McpSettings { port: 0, route_port: 0, route_interface: String::from("127.0.0.1"), ..settings }
+}
+
 /// A host serving MCP over `http` on a port of its choosing, and that port.
 fn served_over(http: HttpSettings, settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
-    let settings = McpSettings { port: 0, ..settings };
+    let settings = on_loopback(settings);
     let mut harness = Harness::of(
         Headless::program()
             .with_engine(engine_for(&http))
@@ -122,12 +127,13 @@ fn served_over(http: HttpSettings, settings: McpSettings) -> Result<(Harness<Hea
     )?;
     let mcp = harness.root::<Mcp>();
     for _ in 0..1000 {
-        if let Some(port) = harness.state(mcp)?.port() {
+        let served = harness.state(mcp)?;
+        if let (Some(port), Some(_)) = (served.port(), served.route_port()) {
             return Ok((harness, mcp, port));
         }
         harness.step();
     }
-    panic!("`Mcp` is served");
+    panic!("`Mcp` is served, and its route");
 }
 
 /// A host holding the tool `say`, the test its worker.
@@ -226,6 +232,8 @@ struct Post {
     name: Option<&'static str>,
     /// The `Origin` sent: none leaves it out.
     origin: Option<&'static str>,
+    /// The `Authorization` sent: none leaves it out.
+    authorization: Option<String>,
     /// A body in place of the request's own.
     body: Option<&'static str>,
     /// How many empty headers to send, of the fewest bytes one can be.
@@ -246,6 +254,7 @@ impl Post {
             method: Some(rpc.method()),
             name: rpc.tool(),
             origin: None,
+            authorization: None,
             body: None,
             fillers: 0,
             write_bytes: usize::MAX,
@@ -272,6 +281,7 @@ impl Post {
             ("Mcp-Method", self.method),
             ("Mcp-Name", self.name),
             ("Origin", self.origin),
+            ("Authorization", self.authorization.as_deref()),
         ];
         let lines = headers.iter().filter_map(|(name, value)| value.map(|value| format!("{name}: {value}\r\n")));
         text.extend(lines);
@@ -368,6 +378,55 @@ fn a_call_reaches_the_worker_as_bytes_and_its_output_comes_back_as_json() -> Res
     assert!(read.body.contains("\"structuredContent\":{\"length\":5}"), "{read:?}");
     assert!(read.body.contains("\"text\":\"{\\\"length\\\":5}\""), "{read:?}");
     assert!(read.body.contains("\"isError\":false"), "{read:?}");
+
+    Ok(())
+}
+
+/// `rpc` bearing `bearer`, as a session's container sends it.
+fn bearing(rpc: Rpc, bearer: Bearer) -> Post {
+    Post { authorization: Some(format!("Bearer {}", bearer.hex())), ..Post::of(rpc) }
+}
+
+/// The caller of the call `request` brings the host's worker, `say` answered once it is asked.
+fn caller_of(harness: &mut Harness<Headless>, port: u16, request: &Post) -> Result<Caller, Unheard> {
+    let client = client(port, request);
+    let call = harness.asked::<Call>()?;
+    let caller = call.request.caller;
+    harness.reply(call, &Called::Refused(String::from("heard")))?;
+    let read = heard(harness, client);
+    assert_eq!(read.status, 200, "{read:?}");
+
+    Ok(caller)
+}
+
+#[test]
+fn the_route_lets_in_only_a_bearer_it_was_told_of_and_forwards_its_session_as_the_caller() -> Result<(), Unheard> {
+    // Catches a call on the sessions' route that bears no bearer, another's, or one let go of reaching a tool; a call
+    // on the route forwarded as the owner's, so a session could mint a trusted engine; another session's bearer named
+    // as this one's; and a bearer sent on the owner's own port read as a session's (ADR-0057).
+    let (mut harness, port) = holding_say()?;
+    let mcp = harness.root::<Mcp>();
+    let Some(route) = harness.state(mcp)?.route_port() else {
+        panic!("the route is served");
+    };
+    let (three, four) = (Caller::Session { session: 3 }, Caller::Session { session: 4 });
+    let (bearer, other, stranger) = (Bearer([0x5a; 16]), Bearer([0xa5; 16]), Bearer([0x3c; 16]));
+    harness.tell(mcp, &Admit { bearer, caller: three })?;
+    harness.tell(mcp, &Admit { bearer: other, caller: four })?;
+
+    for refused in [Post::of(Rpc::CallSay), bearing(Rpc::CallSay, stranger), bearing(Rpc::List, stranger)] {
+        let read = answered(&mut harness, route, &refused);
+        assert_eq!(read.status, 401, "{read:?}");
+    }
+    assert_eq!(harness.rest(), Vec::new());
+    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, bearer))?, three);
+    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, other))?, four);
+    assert_eq!(caller_of(&mut harness, port, &bearing(Rpc::CallSay, bearer))?, Caller::Owner);
+
+    harness.tell(mcp, &Dismiss { caller: three })?;
+    let read = answered(&mut harness, route, &bearing(Rpc::CallSay, bearer));
+    assert_eq!(read.status, 401, "{read:?}");
+    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, other))?, four);
 
     Ok(())
 }
@@ -927,7 +986,7 @@ fn program() -> Program<Headless, Served> {
         .with_engine(engine_for(&http))
         .root::<Tcp>()
         .root_with::<Http>(http)
-        .root_with::<Mcp>(McpSettings { port: 0, ..McpSettings::default() })
+        .root_with::<Mcp>(on_loopback(McpSettings::default()))
 }
 
 /// The port `harness` serves on, once `Http` has bound it.
@@ -1218,7 +1277,7 @@ fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, Tcp
         .with_engine(EngineSettings { read_limit, ..engine_for(&http) })
         .root::<Tcp>()
         .root_with::<Http>(http)
-        .root_with::<Mcp>(McpSettings { port: 0, ..McpSettings::default() })
+        .root_with::<Mcp>(on_loopback(McpSettings::default()))
         .root_with::<Engines>(engines)
         .root::<Toolbox<(EngineTools,), Mcp>>();
     let mut harness = Harness::of(program)?;
@@ -1233,7 +1292,7 @@ fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, Tcp
     };
     harness.settle();
 
-    let minting = harness.ask(engines, &MintToken)?;
+    let minting = harness.ask(engines, &MintFor { by: Caller::Owner })?;
     let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
         panic!("`Engines` mints a token");
     };

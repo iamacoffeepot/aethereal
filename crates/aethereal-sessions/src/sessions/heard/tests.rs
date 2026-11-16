@@ -5,7 +5,9 @@ const ID: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
 #[test]
 fn the_events_that_move_a_session_s_turns_are_told_apart() {
     // Catches a turn's start or end, a compaction, or a task's start or end read as something else, so the hub never
-    // stops an idle session, stops one with a task running, or never finishes winding one down.
+    // stops an idle session, stops one with a task running, or never finishes winding one down; and Claude Code's ask
+    // to use a tool missed, or another control request taken for one, so a turn waits on an answer no owner is asked
+    // for, or the owner is asked what nothing waits on.
     let lines = [
         (format!(r#"{{"type":"system","subtype":"init","session_id":"{ID}"}}"#), Heard::Init),
         (String::from(r#"{"type":"result","subtype":"error_during_execution"}"#), Heard::Result),
@@ -27,6 +29,20 @@ fn the_events_that_move_a_session_s_turns_are_told_apart() {
             Heard::TaskEnded(String::from("t1")),
         ),
         (String::from(r#"{"type":"assistant","message":{}}"#), Heard::Other),
+        (
+            String::from(
+                r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls -l"}}}"#,
+            ),
+            Heard::Asked {
+                request: String::from("r1"),
+                tool: String::from("Bash"),
+                input: String::from(r#"{"command":"ls -l"}"#),
+            },
+        ),
+        (
+            String::from(r#"{"type":"control_request","request_id":"r2","request":{"subtype":"interrupt"}}"#),
+            Heard::Other,
+        ),
     ];
     for (line, expected) in lines {
         assert_eq!(read(&line).0, expected, "{line}");

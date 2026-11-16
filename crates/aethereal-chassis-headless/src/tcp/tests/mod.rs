@@ -13,8 +13,8 @@ use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_tcp::{
-    Accept, Accepted, Accepting, Connect, Connected, Dialed, Framing, HungUp, Listen, Listener, Listening, Read,
-    Reading, Shut, Unbound, Write, Writing, Wrote,
+    Accept, Accepted, Accepting, Connect, Connected, Dialed, Framing, HungUp, Interface, Listen, Listener, Listening,
+    Read, Reading, Shut, Unbound, Write, Writing, Wrote,
 };
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -274,7 +274,7 @@ fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(),
     let mut harness = Harness::of(Headless::program().root::<Tcp>().root::<Streamer>())?;
     let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
 
-    let listening = harness.ask(tcp, &Listen { port: 0, framing: FRAMING })?;
+    let listening = harness.ask(tcp, &Listen { port: 0, interface: Interface::Settings, framing: FRAMING })?;
     let Answered::Yes(Listening::Bound { listener, port }) = harness.answer(listening)? else {
         panic!("the port is bound");
     };
@@ -326,7 +326,7 @@ fn a_listener_at_its_most_connections_accepts_the_next_once_one_ends() -> Result
     let settings = TcpSettings { most_connections: 1, ..TcpSettings::default() };
     let mut harness = Harness::of(Headless::program().root_with::<Tcp>(settings).root::<Streamer>())?;
     let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
-    let listening = harness.ask(tcp, &Listen { port: 0, framing: FRAMING })?;
+    let listening = harness.ask(tcp, &Listen { port: 0, interface: Interface::Settings, framing: FRAMING })?;
     let Answered::Yes(Listening::Bound { listener, port }) = harness.answer(listening)? else {
         panic!("the port is bound");
     };

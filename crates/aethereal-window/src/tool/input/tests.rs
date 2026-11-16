@@ -13,7 +13,7 @@ use aethereal_actor::{Tells, Top};
 use aethereal_data::{ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Turned, Unheard};
-use aethereal_tools::{CommandLine, FlagsFault};
+use aethereal_tools::{Caller, CommandLine, FlagsFault};
 use std::num::NonZeroUsize;
 
 /// The surface the window is opened at.
@@ -114,7 +114,7 @@ fn opened() -> Result<Harness<Bench>, Unheard> {
 fn send(harness: &mut Harness<Bench>, window: u64, inputs: Vec<Input>) -> Result<(Performed, Vec<Event>), Unheard> {
     let input = harness.put(to_bytes(&SendInput { window: WindowId::nth(window), inputs })?)?;
     let tool = InputTool::worker(harness.root::<InputTool>());
-    let asked = harness.ask(tool, &Call { tool: String::from("send_input"), input })?;
+    let asked = harness.ask(tool, &Call { tool: String::from("send_input"), input, caller: Caller::Owner })?;
     let Answered::Yes(Called::Output(output)) = harness.answer(asked)? else {
         panic!("send_input answers a value");
     };

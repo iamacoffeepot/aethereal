@@ -17,12 +17,25 @@ impl Carries<Call> for Tooling {
 }
 
 /// A call of `tool`, named as one worker may serve many, with `input` a value of the tool's input schema, as its
-/// bytes in a blob (ADR-0042).
+/// bytes in a blob (ADR-0042), and who called, as its holder knows it (ADR-0057).
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.tools.call")]
 pub struct Call {
     pub tool: String,
     pub input: Bytes,
+    pub caller: Caller,
+}
+
+/// Who a call came from, as the holder that forwards it knows it (ADR-0057). Its holder says it, never the caller: a
+/// tool's input names no caller, so none can claim to be another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Plain)]
+#[kind(name = "aether.tools.caller")]
+pub enum Caller {
+    /// The holder's own side: a call on the hub's own port, which stays on the loopback, or one an engine's `Tools`
+    /// forwards from its console or its link.
+    Owner,
+    /// The Claude session numbered `session`, by its own route to the hub's tools, whose bearer names it.
+    Session { session: u32 },
 }
 
 /// What a call came to.

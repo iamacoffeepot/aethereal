@@ -8,7 +8,7 @@ description = "The sessions capability: Claude sessions the hub runs in containe
 
 [features]
 # The hub's tools for its caller (ADR-0057): types only, as a program lists what it serves and nothing is spawned for it.
-tools = ["dep:aethereal-tools"]
+tools = []
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
@@ -17,9 +17,14 @@ aethereal-data = { path = "../aethereal-data", features = ["json"] }
 # The sessions' records and transcripts are kept in `Files`' `Save` namespace, asked as any actor asks it.
 aethereal-files = { path = "../aethereal-files" }
 aethereal-http = { path = "../aethereal-http" }
+# Each session's calls of the hub's tools come on `Mcp`'s route, bearing a bearer the capability tells it of.
+aethereal-mcp = { path = "../aethereal-mcp" }
+# Each session's drop box, the one directory of the machine its container is given, is the store's.
+aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }
 aethereal-tcp = { path = "../aethereal-tcp" }
-aethereal-tools = { path = "../aethereal-tools", optional = true }
+# Who calls the hub's tools: a session's route names it as the caller (ADR-0057).
+aethereal-tools = { path = "../aethereal-tools" }
 
 [lints]
 workspace = true

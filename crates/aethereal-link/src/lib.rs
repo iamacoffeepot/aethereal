@@ -11,8 +11,12 @@
 //! for each one linked, keyed by its id. A token is good for one `Hello`: an engine is listed only once `Engines` has
 //! taken the token its `Hello` brought. It spawns engines from the hub's store too, a [`Spawned`] beneath itself for
 //! each, which launches its binary from the `Store` and starts it through `Processes`, so a hub that spawns lists
-//! both. The hub's tools ask `Engines` to [`ListEngines`], to [`MintToken`], to [`SpawnEngine`], or to
+//! both. The hub's tools ask `Engines` to [`ListEngines`], to [`MintFor`], to [`SpawnFor`], or to
 //! [`TerminateEngine`], and ask an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`].
+//!
+//! Each token and spawn is asked for by a caller of the hub's tools, the owner or a session, and the engine that links
+//! with it is [`Trust`]ed only when the owner asked (ADR-0057). `Engines` decides it as the engine's token is taken,
+//! and its [`Engine`] keeps it; the engine never says what it is.
 //!
 //! Behind the `tools` feature, `EngineTools` is the hub's tools for the agent: `list_engines`, `describe_engine`,
 //! `call_tool`, `mint_token`, `spawn_engine`, and `terminate_engine`, which a hub lists in its toolbox after `Engines`.
@@ -27,7 +31,7 @@
 //! stops waiting for `Tools` then (ADR-0041).
 //!
 //! `Link` needs nothing of its host but `Tcp`, so it is bootstrapped for every host. `Engines` needs the host's
-//! [`Randomness`] too, which each native host's crate serves as it bootstraps it. Their settings, the sections `link`
+//! [`Randomness`](aethereal_actor::Randomness) too, which each native host's crate serves as it bootstraps it. Their settings, the sections `link`
 //! and `engines`, are their configs. A toolbox in an engine is listed after `Tools`, and `Link` after `Tools` and
 //! `Tcp`:
 //!
@@ -62,12 +66,13 @@ mod link;
 mod token;
 #[cfg(feature = "tools")]
 mod tools;
+mod trust;
 
 pub use engines::{
     Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing, Engines,
-    EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintToken, Minted, Minting, Origin,
-    Patience, Randomness, Runs, Sent, Shown, Spawn, SpawnEngine, Spawned, SpawnedConfig, TakeToken, TerminateEngine,
-    Terminated, TokenFor, Unfilled, Unlistened, Vouching,
+    EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintFor, MintToken, Minted, Minting,
+    Origin, Patience, Runs, Sent, Shown, Spawn, SpawnEngine, SpawnFor, Spawned, SpawnedConfig, TakeToken,
+    TerminateEngine, Terminated, TokenFor, Unlistened, Vouching,
 };
 pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
 pub use limits::{BlobBytesTooLow, ReadLimitTooLow};
@@ -78,3 +83,4 @@ pub use tools::{
     Asking, DescribeTools, DescribedTools, EngineAnswer, EngineCall, EngineDescription, EngineTools, EngineToolsConfig,
     JsonSheet, SpawnedEngine, ToolSummary, ToolsShown,
 };
+pub use trust::Trust;

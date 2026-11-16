@@ -1,19 +1,28 @@
 //! The job that copies a file into the store (ADR-0039).
 
 use crate::stockroom::{Copied, Uncopied};
-use crate::{Stockroom, StoreHash};
+use crate::{DropName, Stockroom, StoreHash};
 use aethereal_actor::{Fault, Job, Runner, Running};
 use aethereal_data::Plain;
 
-/// Copies the file at `path` into the stockroom, hashing it as it copies. The bytes never enter the engine. Private
+/// Copies the file `from` names into the stockroom, hashing it as it copies. The bytes never enter the engine. Private
 /// to this crate, so no actor but [`Store`](crate::Store) copies a file in.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.store.stock")]
 pub struct Stock {
-    /// Where the file is on the host's machine.
-    pub path: String,
+    pub from: Source,
     /// The most bytes it may hold.
     pub most_file_bytes: u64,
+}
+
+/// Where a file checked in is.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.store.source")]
+pub enum Source {
+    /// At a path on the host's machine, as the owner names it.
+    Path(String),
+    /// Named `file` in the drop box of the session numbered `session` (ADR-0057).
+    Dropped { session: u32, file: DropName },
 }
 
 /// What the store keeps for a copy it runs: nothing, as it runs one at a time and keeps the check-in it is for.
@@ -50,7 +59,10 @@ impl Job for Stock {
         let Some(room) = job.service::<dyn Stockroom>() else {
             return Ok(Stocked::Failed);
         };
-        let copied = room.copy(self.path, self.most_file_bytes).await;
+        let copied = match self.from {
+            Source::Path(path) => room.copy(path, self.most_file_bytes).await,
+            Source::Dropped { session, file } => room.copy_dropped(session, file, self.most_file_bytes).await,
+        };
         let stocked = match copied {
             Ok(Copied { hash, bytes }) => Stocked::Copied { hash, bytes },
             Err(Uncopied::Missing) => Stocked::Missing,

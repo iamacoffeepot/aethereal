@@ -4,13 +4,15 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{CheckIn, CheckedIn, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin};
+use crate::{
+    CheckIn, CheckInDropped, CheckedIn, DROP_BOX, DropName, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin,
+};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
     ProtocolRef, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Done, Output, Tool, ToolSheet, Tooling};
+use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 
 /// The tool that checks a binary in.
@@ -37,16 +39,36 @@ pub struct Asking {
 #[kind(name = "aether.store.store_tools_config")]
 pub struct StoreToolsConfig;
 
-/// What a call asks of the store: its input, which is the store's own ask (ADR-0037).
+/// What a call asks of the store: its input, which is the store's own ask (ADR-0037), or a session's check-in from its
+/// drop box (ADR-0057).
 enum Order {
     CheckIn(CheckIn),
+    CheckInDropped(CheckInDropped),
     List,
     Pin(Pin),
     Unpin(Unpin),
 }
 
+impl Order {
+    /// What it asks when `caller` calls: a session's check-in is of the file its path names in the session's drop box,
+    /// and refused when it names any other path.
+    fn by(self, caller: Caller) -> Result<Self, Called> {
+        let (Self::CheckIn(CheckIn { path, name }), Caller::Session { session }) = (&self, caller) else {
+            return Ok(self);
+        };
+        let Some(file) = DropName::of_container_path(path) else {
+            return Err(refused(format!(
+                "a session checks in a file it put directly in `{DROP_BOX}`, by its path there"
+            )));
+        };
+
+        Ok(Self::CheckInDropped(CheckInDropped { session, file, name: name.clone() }))
+    }
+}
+
 /// The store's four tools for the agent (ADR-0039), served by one worker: `check_in` asks [`Store`] to copy the file
-/// at a path on the host's machine in under a name, `list_stored` asks it for every entry, and `pin` and `unpin` ask it
+/// at a path on the host's machine in under a name, or, called by a session, the file at a path in its drop box
+/// (ADR-0057), `list_stored` asks it for every entry, and `pin` and `unpin` ask it
 /// to keep an entry from pruning or to clear that. Each takes the store's own ask as its input, and answers what the
 /// store answers, as both are plain (ADR-0037); each case short of done is refused with a reason the agent reads.
 #[derive(Bound)]
@@ -82,11 +104,13 @@ impl Tool for StoreTools {
         vec![
             ToolSheet::of::<CheckIn>(
                 CHECK_IN,
-                "Copies a file on the hub's machine into the store and names it. The file is at a path on the hub's \
-                 machine, and the name pointed at it is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`, and \
-                 not the 64 lowercase hexadecimal digits that spell a hash. Answers the BLAKE3 hash of its bytes, \
-                 how many bytes it holds, and whether they were not already stored. A name checked in again moves to \
-                 the newer bytes.",
+                "Copies a file into the store and names it. Called from a Claude session, the file is one the \
+                 session put directly in its drop box, `/session/drop`, named by its path there, such as \
+                 `/session/drop/engine`; a link there is not followed. Otherwise it is at a path on the hub's \
+                 machine. The name pointed at it is 1 to 128 of ASCII letters, digits, `_`, `-`, and `.`, and not \
+                 the 64 lowercase hexadecimal digits that spell a hash. Answers the BLAKE3 hash of its bytes, how \
+                 many bytes it holds, and whether they were not already stored. A name checked in again moves to the \
+                 newer bytes.",
                 Output::Value(SchemaNodes::of(&StoredBinary::SHAPE)),
             ),
             ToolSheet::json::<ListStored>(
@@ -116,15 +140,17 @@ impl Tool for StoreTools {
 impl Handles<Call> for StoreTools {
     type Sends = (
         Asks<Path<Store>, CheckIn, Asking>,
+        Asks<Path<Store>, CheckInDropped, Asking>,
         Asks<Path<Store>, ListStored, Asking>,
         Asks<Path<Store>, Pin, Asking>,
         Asks<Path<Store>, Unpin, Asking>,
         ToSender<Called>,
     );
 
-    /// Reads the call's input, or refuses it; holds the call, and asks the store.
+    /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
+    /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let order = match order(&call.tool, turn.read(&call.input)) {
+        let order = match order(&call.tool, turn.read(&call.input)).and_then(|order| order.by(call.caller)) {
             Ok(order) => order,
             Err(refusal) => {
                 turn.reply(&refusal)?;
@@ -137,6 +163,7 @@ impl Handles<Call> for StoreTools {
         let store = path::<Store>(());
         match order {
             Order::CheckIn(check_in) => turn.to(store).ask(&check_in, &asking)?,
+            Order::CheckInDropped(check_in) => turn.to(store).ask(&check_in, &asking)?,
             Order::List => turn.to(store).ask(&ListStored, &asking)?,
             Order::Pin(pin) => turn.to(store).ask(&pin, &asking)?,
             Order::Unpin(unpin) => turn.to(store).ask(&unpin, &asking)?,

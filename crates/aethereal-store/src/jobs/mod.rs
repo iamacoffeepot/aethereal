@@ -11,4 +11,4 @@ pub use issue::{Issue, Issued, Issuing};
 pub use recall::{Recall, Recalled, Recalling};
 pub use recount::{Counted, Counting, Recount};
 pub use shelve::{Shelve, Shelved, Shelving};
-pub use stock::{Stock, Stocked, Stocking};
+pub use stock::{Source, Stock, Stocked, Stocking};
