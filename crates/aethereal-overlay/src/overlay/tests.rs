@@ -13,6 +13,8 @@ use aethereal_render::{Gpu, Renderer, RendererConfig};
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use aethereal_substrate::{Engine, Feed};
 use aethereal_tools::{Tools, ToolsSettings};
+use aethereal_ui::Stand;
+use aethereal_ui::widgets::Scroll;
 use aethereal_window::{Hosting, KeyEvent, Keyed, Mode, Opening, Surface, WindowFeed, WindowId, Windows};
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -141,6 +143,58 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
     let closed = harness.state(overlay)?;
     assert_eq!(closed.stop, Stop::Hidden);
     assert_eq!(closed.console.line(), "me", "the backtick that closed the console was typed into its line");
+
+    Ok(())
+}
+
+/// Where the console's scrollback stands, as its screen's table keeps it.
+fn scrollback(harness: &mut Harness<Bench>) -> Result<Stand, Unheard> {
+    let overlay = harness.root::<Overlay>();
+    let state = harness.state(overlay)?.ui.table().state::<Scroll>(&super::view::scrollback_path());
+
+    Ok(state.unwrap_or_default().stand)
+}
+
+/// Enters `memory` at the open console `times` times, each answer printed before the next.
+fn printed(harness: &mut Harness<Bench>, on: WindowId, times: u32) -> Result<(), Unheard> {
+    for _ in 0..times {
+        key(harness, on, down("KeyM", "m"))?;
+        key(harness, on, typed("memory"))?;
+        key(harness, on, down("Enter", "Enter"))?;
+        run(harness, 2);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn the_scrollback_keeps_to_its_end_as_rows_are_printed_and_pages_back_and_down_to_it() -> Result<(), Unheard> {
+    // Catches a scrollback, a scroll that builds only the rows that can show, that stays where it stood as answers are
+    // printed beneath it, so the newest never shows; Page Up handed from the line to it that does not slide it back;
+    // and one paged back down to its end that does not keep to it again.
+    let (mut harness, held) = program()?;
+    let on = held.window.window();
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    printed(&mut harness, on, 30)?;
+    let kept_to_end = scrollback(&mut harness)?;
+
+    key(&mut harness, on, down("PageUp", "PageUp"))?;
+    run(&mut harness, 3);
+    let paged = scrollback(&mut harness)?;
+    for _ in 0..3 {
+        key(&mut harness, on, down("PageDown", "PageDown"))?;
+        run(&mut harness, 3);
+    }
+    let paged_down = scrollback(&mut harness)?;
+
+    assert!(matches!(kept_to_end, Stand::End { .. }), "{kept_to_end:?}");
+    assert!(matches!(paged, Stand::At(_)), "{paged:?}");
+    assert!(matches!(paged_down, Stand::End { .. }), "paged down to its end, it keeps to it again: {paged_down:?}");
 
     Ok(())
 }

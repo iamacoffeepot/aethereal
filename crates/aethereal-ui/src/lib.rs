@@ -13,7 +13,7 @@
 //! - [`Tree`] and [`Node`]: what a view builds, each node a widget, its style, and its children, compared by value; a
 //!   child a widget's `items` repeats is told apart by its [`ItemKey`], and a list in a widget that declares it windows
 //!   its items ([`Widget::WINDOWS`]), a [`Scroll`](widgets::Scroll) or a program's own, builds only the items its
-//!   [`Rows`] say it shows.
+//!   [`Rows`] say can show, from the item it [stands](Stand) at.
 //! - [`Widget`]: a primitive. It arranges its children, measures itself as a leaf, draws itself, and takes in input;
 //!   its state is kept by key in the screen's [`Table`], with the screen's focus.
 //! - [`Style`]: every property a style sets, resolved.
@@ -157,8 +157,8 @@ pub use tree::{Composite, Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, 
 pub use tree::{Look, same};
 pub use view::{Controls, Handed, Method, Took, View, take_in, unmatched};
 pub use widget::{
-    Arrange, Axis, Draws, Inside, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side, Slices, Stateless,
-    TextDraw, Tip, Widget,
+    Anchor, Arrange, Axis, Draws, Inside, Jump, Keeps, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side,
+    Slices, Span, Stand, Stateless, TextDraw, Tip, Widget,
 };
 
 /// What a screen's code names: the tree, the stock widgets, the style, the screen, and what its markup and its

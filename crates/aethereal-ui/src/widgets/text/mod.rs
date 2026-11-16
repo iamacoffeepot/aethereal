@@ -110,6 +110,16 @@ impl Widget for Text {
         Vec2::new(measured.width + pad, measured.height + pad)
     }
 
+    /// One line of it, as tall as its font's line at its size, within its rim: nothing before its font's metrics come.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        let pad = rim(style, measuring.scale()) * 2.0;
+        let Ok((measured, _)) = self.fitted(style, measuring, Width::Unbounded) else {
+            return Vec2::ZERO;
+        };
+
+        Vec2::new(0.0, one_line(measured) + pad)
+    }
+
     fn draw(&self, _: &Stateless, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let pad = rim(style, laid.scale);
         let width = pad.mul_add(-2.0, laid.content.width());
@@ -136,6 +146,15 @@ impl Widget for Text {
             runs: self.runs(style),
         });
     }
+}
+
+/// How tall one line of `measured` is: a text always has at least one.
+fn one_line(measured: Measured) -> f32 {
+    // A text's lines are at most some tens of thousands, which an f32 holds exactly.
+    #[allow(clippy::cast_precision_loss)]
+    let lines = measured.lines.max(1) as f32;
+
+    measured.height / lines
 }
 
 /// `outline`, its width at `scale`.

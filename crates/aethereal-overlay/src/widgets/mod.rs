@@ -34,6 +34,18 @@ impl Widget for Printed {
         measured.map_or(Vec2::ZERO, |measured| Vec2::new(measured.width, measured.height))
     }
 
+    /// One line, as tall as its font's line at its size, which even a row printed with nothing has: nothing before its
+    /// font's metrics come.
+    fn least(&self, style: &Style, measuring: &mut Measuring<'_>) -> Vec2 {
+        let size = style.font_size * measuring.scale();
+        let measured = measuring.text(style.font, size, &self.runs, Wrap::None);
+        // A text's lines are at most some tens of thousands, which an f32 holds exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let line = measured.map_or(0.0, |measured| measured.height / measured.lines.max(1) as f32);
+
+        Vec2::new(0.0, line)
+    }
+
     fn draw(&self, _: &Stateless, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         draws.text(TextDraw {
             at: laid.content.min,

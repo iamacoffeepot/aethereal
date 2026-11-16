@@ -1,5 +1,4 @@
-//! What a screen keeps of its layouts from one to the next (ADR-0056: Layout is Taffy; *settled by the library's
-//! layout-cost stage*): the last boxes, handed back while its tree lays out as it did, and what Taffy keeps of each
+//! What a screen keeps of its layouts from one to the next (ADR-0056: Layout is Taffy): the last boxes, handed back while its tree lays out as it did, and what Taffy keeps of each
 //! node, so a layout lays out again only the nodes whose layout changed and those that hold them, as Taffy's own tree
 //! does when a node is marked dirty.
 
@@ -15,7 +14,7 @@ use core::cell::OnceCell;
 use core::mem;
 use taffy::{AvailableSpace, Cache, Layout, LayoutInput, LayoutOutput, NodeId, Size, compute_root_layout};
 
-/// What a screen keeps of its layouts from one to the next (*settled by the library's layout-cost stage*): what Taffy
+/// What a screen keeps of its layouts from one to the next: what Taffy
 /// kept of each node, in the tree order of the flattening it was laid out from, and the boxes of the last layout, with
 /// whether they hold.
 ///
@@ -155,7 +154,7 @@ impl Layouts {
     /// Lays `flattened`, a tree's nodes in tree order, of the build `built`, which last laid out otherwise at the build
     /// `relaid`, out in a screen `size` pixels across and down at `scale` pixels to the logical pixel, measuring text
     /// with `measuring`, and then each node at a place among `tops` as a root of its own, out of flow in the screen's
-    /// box, the content of an open popup: each node's boxes, in the same order, and each scroll's pitch. A node within a
+    /// box, the content of an open popup: each node's boxes, in the same order. A node within a
     /// popup's content whose root is not among `tops` is laid out nowhere.
     ///
     /// The last layout's boxes when the tree lays out as it did, at the same size, scale, and tops.
@@ -273,7 +272,7 @@ impl Layouts {
             })
             .collect();
 
-        boxed(flat, tops, &flowing, &layouts, scale)
+        boxed(flat, tops, &flowing, &layouts)
     }
 }
 

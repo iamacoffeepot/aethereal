@@ -3,10 +3,9 @@
 //! is the style's times the UI scale; and a leaf measures its content, a text with its font's metrics, as Taffy asks.
 //!
 //! A scroll is a flex container whose children are never shrunk, so they run past its box. When it built only a window
-//! of a list's items, its lines are taken to be one length, the distance from its first built child to its second, or
-//! its first's length and the gap with only one: each built child is placed at its item's line, and what it scrolls
-//! through runs to the list's last line, so the content's length is known without building every item. Where it slides
-//! them, and what it cuts them to, is the screen's, which keeps its offset.
+//! of a list's items, those it built are laid out one after another as any children are, and what it reaches is theirs:
+//! no item it did not build is measured, counted, or guessed at. Where it slides them, and what it cuts them to, is the
+//! screen's, which keeps where it stands among its items ([`Stand`](crate::Stand)).
 //!
 //! A popup lays out its anchor alone, as a `Stack` lays out its child. The content of each open popup is laid out after
 //! the rest, each piece as its own root, out of flow in the screen's box: as wide and tall as it asks, within the
@@ -24,9 +23,9 @@ mod tests;
 pub use kept::Layouts;
 
 use crate::fonts::{Asker, Measuring};
-use crate::style::{Edges, Parent, Space, Style, flow};
+use crate::style::{Edges, Parent, flow};
 use crate::tree::Flat;
-use crate::widget::{Arrange, Axis, Lines, Offer, Offered, anchor};
+use crate::widget::{Arrange, Axis, Offer, Offered, anchor};
 use aethereal_math::{Rect2, Vec2};
 use core::cell::OnceCell;
 use core::slice::Iter;
@@ -47,79 +46,81 @@ pub struct Boxed {
     pub extent: Vec2,
 }
 
-/// How a scroll's lines stand along its axis, in pixels: where its first line starts past its content box's start,
-/// and how far one line is from the next.
+/// Where layout put one node within its parent: its border box's top left from its parent's, its size, and how far
+/// its content box is inset from its border box's top left and from its bottom right.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pitch {
-    pub lead: f32,
-    pub stride: f32,
+pub struct Placement {
+    pub local: Vec2,
+    pub size: Vec2,
+    pub inset_min: Vec2,
+    pub inset_max: Vec2,
 }
 
-/// What a layout found: each node's boxes, in tree order, and the pitch of each scroll with a child, by its place.
+impl Placement {
+    /// Where it was laid out as `layout` says.
+    fn of(layout: &Layout) -> Self {
+        let (inset_min, inset_max) = insets(layout);
+
+        Self { local: Vec2::new(layout.location.x, layout.location.y), size: size_of(layout), inset_min, inset_max }
+    }
+
+    /// Its border box and its content box, its parent's border box's top left at `origin`: the same figures for the
+    /// same placement and origin, whoever works them out.
+    pub fn boxes(&self, origin: Vec2) -> (Rect2, Rect2) {
+        let rect = Rect2::from_origin_size(origin + self.local, self.size);
+        let inner_min = rect.min + self.inset_min;
+        let inner_max = rect.max - self.inset_max;
+        let content =
+            Rect2 { min: inner_min, max: Vec2::new(inner_max.x.max(inner_min.x), inner_max.y.max(inner_min.y)) };
+
+        (rect, content)
+    }
+
+    /// It, `place` pixels along `axis` from its parent's content box's start, placed so: where a scroll keeps a child
+    /// it built in what it holds.
+    #[must_use]
+    pub fn along(self, axis: Axis, place: f32, parent: &Self) -> Self {
+        let local = match axis {
+            Axis::Row => Vec2::new(parent.inset_min.x + place, self.local.y),
+            Axis::Column => Vec2::new(self.local.x, parent.inset_min.y + place),
+        };
+
+        Self { local, ..self }
+    }
+}
+
+/// What a layout found: each node's boxes, and where it was placed within its parent, in tree order.
 #[derive(Debug, Default, PartialEq)]
 pub struct Laidout {
     pub boxes: Vec<Boxed>,
-    pub pitches: Vec<(usize, Pitch)>,
+    pub placements: Vec<Placement>,
 }
 
 /// Where each of `flat`, laid out as `layouts` with its children laid out in its box `flowing` and `tops` rooted on
-/// their own, stands at `scale`: its boxes, from the screen's top left, and each scroll's pitch, the items a window
-/// did not build counted in what it reaches.
-fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[&[usize]], layouts: &[Layout], scale: f32) -> Laidout {
-    let mut locals: Vec<Vec2> = layouts.iter().map(|layout| Vec2::new(layout.location.x, layout.location.y)).collect();
-    let mut pitches = Vec::new();
-    for (at, node) in flat.iter().enumerate() {
-        let Arrange::Scroll(axis) = node.node.widget().arrange() else {
-            continue;
-        };
-        let Some(pitch) = pitch(node, layouts, &locals, &layouts[at], axis, scale) else {
-            continue;
-        };
-        if let Lines::Window { at: items, .. } = node.node.widget().lines() {
-            lined(node, flat, items, &mut locals, axis, pitch);
-        }
-        pitches.push((at, pitch));
-    }
-
+/// their own, stands: its boxes, from the screen's top left, and where it was placed within its parent.
+fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[&[usize]], layouts: &[Layout]) -> Laidout {
+    let placements: Vec<Placement> = layouts.iter().map(Placement::of).collect();
     let mut boxes: Vec<Boxed> = Vec::with_capacity(flat.len());
     let mut origins = vec![Vec2::ZERO; flat.len()];
-    for (at, layout) in layouts.iter().enumerate() {
+    for (at, placement) in placements.iter().enumerate() {
         let rooted = tops.contains(&at);
         let origin = if rooted {
-            locals[at]
+            Vec2::ZERO
         } else {
-            origins[at] + locals[at]
+            origins[at]
         };
+        let (rect, content) = placement.boxes(origin);
         for child in flat[at].children {
-            origins[*child] = origin;
+            origins[*child] = rect.min;
         }
-        let rect = Rect2::from_origin_size(origin, size_of(layout));
-        let (inset_min, inset_max) = insets(layout);
-        let inner_min = rect.min + inset_min;
-        let inner_max = rect.max - inset_max;
-        let content =
-            Rect2 { min: inner_min, max: Vec2::new(inner_max.x.max(inner_min.x), inner_max.y.max(inner_min.y)) };
         let mut extent = Vec2::ZERO;
         for child in flowing[at] {
-            extent = extent.max(locals[*child] + size_of(&layouts[*child]) - inset_min);
+            extent = extent.max(placements[*child].local + placements[*child].size - placement.inset_min);
         }
-        let windowed = pitches.binary_search_by_key(&at, |(scroll, _)| *scroll).ok().map(|found| pitches[found].1);
-        let (Some(pitch), Arrange::Scroll(axis), Lines::Window { count, .. }, Some(first)) =
-            (windowed, flat[at].node.widget().arrange(), flat[at].node.widget().lines(), flat[at].children.first())
-        else {
-            boxes.push(Boxed { rect, content, extent });
-            continue;
-        };
-        let last = pitch.stride.mul_add(lines(count.saturating_sub(1)), pitch.lead);
-        let along = last + axis.along(size_of(&layouts[*first]));
-        let extent = match axis {
-            Axis::Row => Vec2::new(along, extent.y),
-            Axis::Column => Vec2::new(extent.x, along),
-        };
         boxes.push(Boxed { rect, content, extent });
     }
 
-    Laidout { boxes, pitches }
+    Laidout { boxes, placements }
 }
 
 /// The places in `flat` of the children of `node` laid out in its box: a popup's anchor alone, and every other node's
@@ -147,71 +148,6 @@ fn insets(layout: &Layout) -> (Vec2, Vec2) {
     let max = Vec2::new(border.right + padding.right, border.bottom + padding.bottom);
 
     (min, max)
-}
-
-/// The pitch of the lines of `node`, a scroll along `axis` laid out as `layout`, its children placed at `locals` as
-/// Taffy put them: its first child's start past its content box's, and the distance from its first child to its
-/// second, or with only one, the first's length and the gap. None for a scroll with no child.
-fn pitch(
-    node: &Flat<'_>,
-    layouts: &[Layout],
-    locals: &[Vec2],
-    layout: &Layout,
-    axis: Axis,
-    scale: f32,
-) -> Option<Pitch> {
-    let first = *node.children.first()?;
-    let (inset_min, inset_max) = insets(layout);
-    let lead = axis.along(locals[first] - inset_min);
-    let alone = || {
-        let content = axis.along(size_of(layout) - inset_min - inset_max);
-        axis.along(size_of(&layouts[first])) + gap(node.node.style(), axis, content, scale)
-    };
-    let stride = node.children.get(1).map_or_else(alone, |second| axis.along(locals[*second] - locals[first]));
-
-    Some(Pitch { lead, stride })
-}
-
-/// Places each child of `node`, a scroll along `axis` whose children are the items `items` of a list, at its item's
-/// line, `pitch` apart from the first line, which Taffy put its first child at.
-fn lined(node: &Flat<'_>, flat: &[Flat<'_>], items: &[u32], locals: &mut [Vec2], axis: Axis, pitch: Pitch) {
-    let Some(first) = node.children.first() else {
-        return;
-    };
-    let start = axis.along(locals[*first]);
-    for child in node.children {
-        let Some(item) = items.get(flat[*child].born) else {
-            continue;
-        };
-        let along = pitch.stride.mul_add(lines(*item), start);
-        let local = locals[*child];
-        locals[*child] = match axis {
-            Axis::Row => Vec2::new(along, local.y),
-            Axis::Column => Vec2::new(local.x, along),
-        };
-    }
-}
-
-/// `count` lines, as a length is counted.
-fn lines(count: u32) -> f32 {
-    // A list's lines are far fewer than an f32 counts exactly.
-    #[allow(clippy::cast_precision_loss)]
-    let lines = count as f32;
-
-    lines
-}
-
-/// The gap a flex container styled `style` leaves between its children along `axis`, in pixels at `scale`: a share is
-/// of its content box's length along the axis, `content`.
-fn gap(style: &Style, axis: Axis, content: f32, scale: f32) -> f32 {
-    let space = match axis {
-        Axis::Row => style.gap.columns,
-        Axis::Column => style.gap.rows,
-    };
-    match space {
-        Space::Pixels(pixels) => pixels * scale,
-        Space::Share(share) => share * content,
-    }
 }
 
 /// One node as Taffy lays it out: how it arranges its children, the node, the places of the children it lays out in its

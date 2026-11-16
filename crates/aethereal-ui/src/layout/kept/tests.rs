@@ -94,9 +94,9 @@ impl Screen {
         };
         texts.begin(scale);
         let mut measuring = fonts.measuring(texts, scale);
-        let Laidout { boxes, pitches } =
+        let Laidout { boxes, placements } =
             layouts.lay_out(&flattened, &[], &mut measuring, (size, scale), (*builds, *relaid));
-        let laidout = Laidout { boxes: boxes.clone(), pitches: pitches.clone() };
+        let laidout = Laidout { boxes: boxes.clone(), placements: placements.clone() };
         texts.sweep();
 
         laidout
@@ -112,9 +112,9 @@ fn fresh(fonts: &Fonts, tree: &Tree, size: Vec2, scale: f32) -> Laidout {
     let mut texts = Texts::default();
     let mut layouts = Layouts::default();
     let mut measuring = fonts.measuring(&mut texts, scale);
-    let Laidout { boxes, pitches } = layouts.lay_out(&flattened, &[], &mut measuring, (size, scale), (1, 1));
+    let Laidout { boxes, placements } = layouts.lay_out(&flattened, &[], &mut measuring, (size, scale), (1, 1));
 
-    Laidout { boxes: boxes.clone(), pitches: pitches.clone() }
+    Laidout { boxes: boxes.clone(), placements: placements.clone() }
 }
 
 /// A text of `text` in the monospace font at `place`, styled by `style` over that font.

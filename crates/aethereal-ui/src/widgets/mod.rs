@@ -16,13 +16,14 @@ mod text_input;
 mod toggle;
 mod tooltip;
 
+pub use crate::widget::Keeps;
 pub use bar::{Bar, Fill};
 pub use button::Button;
 pub use containers::{Column, Grid, Row, Stack};
 pub use image::{Image, Region, Texture};
 pub use popup::{Opened, Popped, Popup};
 pub use press::Press;
-pub use scroll::{Drag, Keeps, Scroll, Scrolling};
+pub use scroll::{Drag, Scroll, Scrolling};
 pub use slider::{Slider, Sliding};
 pub use tabs::{Header, Tab, Tabbing, Tabs};
 pub use text::Text;

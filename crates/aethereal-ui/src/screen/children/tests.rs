@@ -12,6 +12,7 @@ use crate::input::Raised;
 use crate::style::{Edges, Length, Space, Style};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Segment, Tree};
+use crate::widget::{Anchor, Stand};
 use crate::widgets::{Button, Opened, Popup, Scroll, Stack};
 use aethereal_actor::{
     Actor, ActorRef, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, SeatNumber, Seated, Turn, child,
@@ -223,8 +224,9 @@ fn a_child_in_a_scroll_slides_with_it_and_is_cut_to_it() {
     point(&mut screen, entry, PointerEvent::Wheel { x: 10.0, y: 10.0, delta_x: 0.0, delta_y: 20.0 });
     let (_, slid) = laid(&mut screen, tree(), &[]);
 
-    let offset = screen.table().state::<Scroll>(&scroll).unwrap_or_default().offset;
-    assert!(offset > 0.0, "the wheel slid the scroll");
+    let stand = screen.table().state::<Scroll>(&scroll).unwrap_or_default().stand;
+    let offset = 20.0;
+    assert_eq!(stand, Stand::At(Anchor { item: 0, key: Segment::Place(0), into: offset }), "the wheel slid the scroll");
     let called = Area::Inherit { origin: Vec2::new(0.0, 30.0), clip: Clip::To(rect([0.0, 30.0], [80.0, 70.0])) };
     let view = Clip::To(rect([0.0, 0.0], [192.0, 50.0]));
     assert_eq!(area_of(&first, 1), called);
