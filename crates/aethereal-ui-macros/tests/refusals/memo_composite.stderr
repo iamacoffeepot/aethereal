@@ -1,0 +1,5 @@
+error: `memo` keeps a composite placed in a screen's view: a composite builds its own tree whole each time it is built
+ --> tests/refusals/memo_composite.rs:5:22
+  |
+5 |     Column { Meter { memo, level: level } }
+  |                      ^^^^

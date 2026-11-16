@@ -10,19 +10,26 @@
 
 mod compare;
 mod element;
+mod memo;
+mod shape;
 #[cfg(test)]
 mod tests;
 
 pub use compare::{Difference, Relaid};
 pub use element::{Element, whole, windows};
+pub use memo::{Composite, Look, same};
+pub use memo::{Inputs, Memos};
+pub use shape::{Reshaped, Shape, Was};
 
 use crate::drag::{DragSource, DropTarget};
 use crate::style::Style;
 use crate::widget::{Built, Widget};
-use aethereal_data::Plain;
+use crate::widgets::Stack;
+use aethereal_data::{Bare, Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Writer};
 use core::borrow::Borrow;
 use core::fmt;
-use std::collections::BTreeSet;
+use core::ops::Deref;
+use std::sync::Arc;
 
 /// How deep a tree may be, the root at one: a view is written by hand, as markup, and stands far shallower.
 pub const MOST_DEPTH: usize = 64;
@@ -90,25 +97,63 @@ impl From<usize> for ItemKey {
 
 /// Where a widget stands in its screen's tree: the segments from the root to it, the root's first. It is the
 /// widget's identity: its state is kept under it (ADR-0056: Widget state is kept by key), and so are its draws.
+///
+/// Its segments are shared by every copy of it, so a path is copied without copying them: a screen copies a widget's
+/// path into everything it keeps of the widget, and that costs a count, not an allocation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Plain)]
 pub struct KeyPath {
-    segments: Vec<Segment>,
+    segments: Shared,
+}
+
+/// A key path's segments, shared by its copies, and written as the sequence of them they are.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+struct Shared(Arc<[Segment]>);
+
+impl Deref for Shared {
+    type Target = [Segment];
+
+    fn deref(&self) -> &[Segment] {
+        &self.0
+    }
+}
+
+impl Schema for Shared {
+    const SHAPE: aethereal_data::Shape = <Vec<Segment> as Schema>::SHAPE;
+}
+
+impl Plain for Shared where Vec<Segment>: Encode<Bare> + Decode<Bare> {}
+
+impl<B: Boundary> Encode<B> for Shared
+where
+    Vec<Segment>: Encode<B>,
+{
+    fn encode(&self, out: &mut Writer<'_, B>) -> Result<(), EncodeError> {
+        self.0.to_vec().encode(out)
+    }
+}
+
+impl<B: Boundary> Decode<B> for Shared
+where
+    Vec<Segment>: Decode<B>,
+{
+    fn decode(input: &mut Reader<'_, B>) -> Result<Self, DecodeError> {
+        Vec::<Segment>::decode(input).map(|segments| Self(segments.into()))
+    }
 }
 
 impl KeyPath {
     /// The path of `segments`, the root's first.
     #[must_use]
     pub fn of(segments: &[Segment]) -> Self {
-        Self { segments: segments.to_vec() }
+        Self { segments: Shared(segments.into()) }
     }
 
     /// The path of a child of this one, told apart from its siblings by `segment`.
     #[must_use]
     pub fn child(&self, segment: Segment) -> Self {
-        let mut segments = self.segments.clone();
-        segments.push(segment);
+        let segments: Arc<[Segment]> = self.segments.iter().copied().chain([segment]).collect();
 
-        Self { segments }
+        Self { segments: Shared(segments) }
     }
 
     /// Its segments, the root's first.
@@ -148,7 +193,7 @@ impl KeyPath {
 /// A path is its segments, so what is kept by path is found by a run of segments without making a path of them.
 impl Borrow<[Segment]> for KeyPath {
     fn borrow(&self) -> &[Segment] {
-        &self.segments
+        &self.segments.0
     }
 }
 
@@ -164,13 +209,72 @@ pub struct Node {
     drag: Option<DragSource>,
     /// What it takes dropped on it, fixed when the view builds it: none for a widget the markup gives no `drop`.
     drop: Option<DropTarget>,
+    memo: Memo,
+    stamps: Stamps,
+}
+
+/// The numbers of the builds of its screen's tree at which a node last laid out otherwise than the node before it at
+/// its key path, and last drew otherwise, each the build it entered the tree at when it has not changed since: what a
+/// screen kept of the node from a layout of an earlier build holds while these are no later than that build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamps {
+    pub laid: u64,
+    pub drawn: u64,
+}
+
+impl Stamps {
+    /// A node no merge has taken in: later than every build, so nothing kept of an earlier one holds for it.
+    const UNMERGED: Self = Self { laid: u64::MAX, drawn: u64::MAX };
+
+    /// A node that changed at `build`, or entered the tree then.
+    pub(crate) const fn at(build: u64) -> Self {
+        Self { laid: build, drawn: build }
+    }
+}
+
+/// Where a node stands with what its screen's view keeps of the composites marked `memo`.
+#[derive(Debug)]
+enum Memo {
+    /// It is built at every view.
+    Plain,
+    /// It is the root of a composite marked `memo`, built at this view from these inputs.
+    Built(Inputs),
+    /// It is the root of a composite marked `memo`, its inputs kept by its screen.
+    Root,
+    /// It stands in place of a composite marked `memo` whose inputs stood: the last tree's node at its path is taken
+    /// whole as the tree is merged.
+    Kept,
 }
 
 impl Node {
     /// The widget `widget` at `segment` among its siblings, styled `style`, over `children` in layout and draw order.
     #[must_use]
     pub fn new<W: Widget>(segment: Segment, widget: W, style: Style, children: Vec<Self>) -> Self {
-        Self { segment, widget: Box::new(widget), style, children, drag: None, drop: None }
+        let stamps = Stamps::UNMERGED;
+
+        Self { segment, widget: Box::new(widget), style, children, drag: None, drop: None, memo: Memo::Plain, stamps }
+    }
+
+    /// The builds at which it last laid out otherwise and drew otherwise.
+    pub(crate) const fn stamps(&self) -> Stamps {
+        self.stamps
+    }
+
+    /// The marker of a composite at `segment` whose inputs stood: it draws nothing, and the last tree's node at its
+    /// path takes its place as the tree is merged.
+    fn kept(segment: Segment) -> Self {
+        Self { memo: Memo::Kept, ..Self::new(segment, Stack, Style::default(), Vec::new()) }
+    }
+
+    /// Whether it is the marker of a kept composite.
+    #[cfg(test)]
+    pub(crate) const fn is_kept(&self) -> bool {
+        matches!(self.memo, Memo::Kept)
+    }
+
+    /// It, the root of a composite marked `memo`, built from `inputs`.
+    fn memoed(self, inputs: Inputs) -> Self {
+        Self { memo: Memo::Built(inputs), ..self }
     }
 
     /// It, dragged as `source` says: what the markup's `drag`, and its `drop_outside`, compile into.
@@ -234,7 +338,7 @@ impl fmt::Debug for Node {
             .field("children", &self.children)
             .field("drag", &self.drag)
             .field("drop", &self.drop)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -261,82 +365,25 @@ impl Tree {
 
         rest.iter().try_fold(&self.root, |node, segment| node.child(*segment))
     }
-
-    /// Its nodes in tree order, the order they lay out and draw in, each beside its path and the places of its
-    /// children in the list: walked with a stack of its own, so a tree's depth costs no frames. An item whose key a
-    /// sibling before it has is left out, with its descendants, and named in [`Flattened::twice`]; children whose keys
-    /// stand in order, as markup's places and most lists' keys do, share none, and are taken as they are.
-    ///
-    /// # Errors
-    ///
-    /// [`TreeRefused::Deep`] for a node past [`MOST_DEPTH`], and [`TreeRefused::Twice`] for two siblings at one place in
-    /// the markup, which only a tree built by hand can hold.
-    pub(crate) fn flat(&self) -> Result<Flattened<'_>, TreeRefused> {
-        let mut nodes: Vec<Flat<'_>> = Vec::new();
-        let mut twice = Vec::new();
-        let root = KeyPath::of(&[self.root.segment]);
-        let mut stack = vec![(&self.root, root, Parent::Root)];
-        while let Some((node, path, parent)) = stack.pop() {
-            let deep = path.segments.len() > MOST_DEPTH;
-            if deep {
-                return Err(TreeRefused::Deep { path });
-            }
-            let at = nodes.len();
-            let born = match parent {
-                Parent::Root => 0,
-                Parent::At { at: parent, born } => {
-                    nodes[parent].children.push(at);
-                    born
-                }
-            };
-            let ordered = node.children.windows(2).all(|pair| pair[0].segment < pair[1].segment);
-            if ordered {
-                for (born, child) in node.children.iter().enumerate().rev() {
-                    stack.push((child, path.child(child.segment), Parent::At { at, born }));
-                }
-            } else {
-                let mut seen = BTreeSet::new();
-                let mut kept = Vec::with_capacity(node.children.len());
-                for (born, child) in node.children.iter().enumerate() {
-                    let fresh = seen.insert(child.segment);
-                    match child.segment {
-                        _ if fresh => kept.push((born, child)),
-                        Segment::Place(_) => return Err(TreeRefused::Twice { path: path.child(child.segment) }),
-                        Segment::Item(_) => twice.push(path.child(child.segment)),
-                    }
-                }
-                for (born, child) in kept.into_iter().rev() {
-                    stack.push((child, path.child(child.segment), Parent::At { at, born }));
-                }
-            }
-            nodes.push(Flat { path, node, born, children: Vec::new() });
-        }
-
-        Ok(Flattened { nodes, twice })
-    }
 }
 
-/// Where a node being walked was met: as the root, or as a child of the node at `at` in the list, `born` its place
-/// among that node's children.
-#[derive(Debug, Clone, Copy)]
-enum Parent {
-    Root,
-    At { at: usize, born: usize },
-}
-
-/// A tree's nodes in tree order, and the items left out because a sibling before each had its key.
+/// A tree's nodes in tree order, and the items left out because a sibling before each had its key; where each node
+/// stood in the last flattening, whether any stands otherwise, and the number of this flattening.
 pub struct Flattened<'tree> {
     pub nodes: Vec<Flat<'tree>>,
     pub twice: Vec<KeyPath>,
+    pub was: Vec<Was>,
+    pub reshaped: Reshaped,
+    pub generation: u64,
 }
 
 /// One node of a tree as it is laid out and drawn: its path, the node, its place among its parent's children as the
 /// view built them, and the places of its children in the list.
 pub struct Flat<'tree> {
-    pub path: KeyPath,
+    pub path: &'tree KeyPath,
     pub node: &'tree Node,
     pub born: usize,
-    pub children: Vec<usize>,
+    pub children: &'tree [usize],
 }
 
 /// Why a tree was not laid out.

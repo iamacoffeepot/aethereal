@@ -24,16 +24,17 @@ mod tests;
 pub use kept::Layouts;
 
 use crate::fonts::{Asker, Measuring};
-use crate::style::{Space, Style};
+use crate::style::{Edges, Parent, Space, Style, flow};
 use crate::tree::Flat;
 use crate::widget::{Arrange, Axis, Lines, Offer, Offered, anchor};
 use aethereal_math::{Rect2, Vec2};
+use core::cell::OnceCell;
 use core::slice::Iter;
 use kept::Kept;
 use taffy::{
-    AvailableSpace, CacheTree, Layout, LayoutContainingBlock, LayoutFlexboxContainer, LayoutGridContainer, LayoutInput,
-    LayoutOutput, LayoutPartialTree, NodeId, RunMode, Size, TraversePartialTree, compute_cached_layout,
-    compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, compute_oof_layout,
+    AvailableSpace, CacheTree, Dimension, Layout, LayoutContainingBlock, LayoutFlexboxContainer, LayoutGridContainer,
+    LayoutInput, LayoutOutput, LayoutPartialTree, NodeId, Position, RunMode, Size, TraversePartialTree,
+    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout, compute_oof_layout,
 };
 
 /// Where layout put one node, in its screen's pixels from the screen's top left, as though no scroll had slid it: its
@@ -64,7 +65,7 @@ pub struct Laidout {
 /// Where each of `flat`, laid out as `layouts` with its children laid out in its box `flowing` and `tops` rooted on
 /// their own, stands at `scale`: its boxes, from the screen's top left, and each scroll's pitch, the items a window
 /// did not build counted in what it reaches.
-fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[Vec<usize>], layouts: &[Layout], scale: f32) -> Laidout {
+fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[&[usize]], layouts: &[Layout], scale: f32) -> Laidout {
     let mut locals: Vec<Vec2> = layouts.iter().map(|layout| Vec2::new(layout.location.x, layout.location.y)).collect();
     let mut pitches = Vec::new();
     for (at, node) in flat.iter().enumerate() {
@@ -89,7 +90,7 @@ fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[Vec<usize>], layouts: &[L
         } else {
             origins[at] + locals[at]
         };
-        for child in &flat[at].children {
+        for child in flat[at].children {
             origins[*child] = origin;
         }
         let rect = Rect2::from_origin_size(origin, size_of(layout));
@@ -99,7 +100,7 @@ fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[Vec<usize>], layouts: &[L
         let content =
             Rect2 { min: inner_min, max: Vec2::new(inner_max.x.max(inner_min.x), inner_max.y.max(inner_min.y)) };
         let mut extent = Vec2::ZERO;
-        for child in &flowing[at] {
+        for child in flowing[at] {
             extent = extent.max(locals[*child] + size_of(&layouts[*child]) - inset_min);
         }
         let windowed = pitches.binary_search_by_key(&at, |(scroll, _)| *scroll).ok().map(|found| pitches[found].1);
@@ -123,13 +124,14 @@ fn boxed(flat: &[Flat<'_>], tops: &[usize], flowing: &[Vec<usize>], layouts: &[L
 
 /// The places in `flat` of the children of `node` laid out in its box: a popup's anchor alone, and every other node's
 /// children.
-fn in_flow(node: &Flat<'_>, flat: &[Flat<'_>]) -> Vec<usize> {
+fn in_flow<'flat>(node: &Flat<'flat>, flat: &[Flat<'_>]) -> &'flat [usize] {
     match node.node.widget().arrange() {
         Arrange::Popup(_) => {
-            let anchor = anchor(&node.path);
-            node.children.iter().copied().filter(|child| flat[*child].path == anchor).collect()
+            let anchor = anchor(node.path);
+            let held = node.children.iter().position(|child| *flat[*child].path == anchor);
+            held.map_or(&[], |at| &node.children[at..=at])
         }
-        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => node.children.clone(),
+        Arrange::Flex(_) | Arrange::Grid | Arrange::Stack | Arrange::Scroll(_) | Arrange::Leaf => node.children,
     }
 }
 
@@ -177,7 +179,7 @@ fn lined(node: &Flat<'_>, flat: &[Flat<'_>], items: &[u32], locals: &mut [Vec2],
         return;
     };
     let start = axis.along(locals[*first]);
-    for child in &node.children {
+    for child in node.children {
         let Some(item) = items.get(flat[*child].born) else {
             continue;
         };
@@ -213,13 +215,53 @@ fn gap(style: &Style, axis: Axis, content: f32, scale: f32) -> f32 {
 }
 
 /// One node as Taffy lays it out: how it arranges its children, the node, the places of the children it lays out in its
-/// box, its style as Taffy reads it, and what Taffy keeps of it.
+/// box, what its style is converted to Taffy's with, its style as Taffy reads it, converted as Taffy first reads it,
+/// and what Taffy keeps of it.
 struct Laying<'flat> {
     arrange: Arrange,
     flat: &'flat Flat<'flat>,
-    children: Vec<usize>,
-    style: taffy::Style,
+    children: &'flat [usize],
+    converting: Converting,
+    style: OnceCell<taffy::Style>,
     kept: Kept,
+}
+
+/// What a node's style is converted to Taffy's with beside the style itself: how it arranges its children, how its
+/// parent arranges it, the room it keeps, the UI scale, and where it stands.
+#[derive(Debug, Clone, Copy)]
+struct Converting {
+    arrange: Arrange,
+    parent: Parent,
+    room: Edges<f32>,
+    scale: f32,
+    stands: Stands,
+}
+
+/// Where a node stands in the layout beside its style: the root, the screen's size; the root of an open popup's
+/// content, out of flow; or within its parent's flow.
+#[derive(Debug, Clone, Copy)]
+enum Stands {
+    Root(Vec2),
+    Top,
+    Flowing,
+}
+
+impl Laying<'_> {
+    /// Its style as Taffy reads it, converted the first time it is read.
+    fn style(&self) -> &taffy::Style {
+        self.style.get_or_init(|| {
+            let Converting { arrange, parent, room, scale, stands } = self.converting;
+            let mut style = flow(self.flat.node.style(), arrange, parent, room, scale);
+            match stands {
+                Stands::Root(size) => {
+                    style.size = Size { width: Dimension::length(size.x), height: Dimension::length(size.y) };
+                }
+                Stands::Top => style.position = Position::Absolute,
+                Stands::Flowing => {}
+            }
+            style
+        })
+    }
 }
 
 /// A tree's nodes as Taffy walks them, by their places in tree order, with the fonts its leaves measure by.
@@ -279,7 +321,7 @@ impl LayoutPartialTree for Tree<'_, '_> {
     type CustomIdent = String;
 
     fn get_core_container_style(&self, node: NodeId) -> &taffy::Style {
-        &self.node(node).style
+        self.node(node).style()
     }
 
     fn set_unrounded_layout(&mut self, node: NodeId, layout: &Layout) {
@@ -295,7 +337,7 @@ impl LayoutPartialTree for Tree<'_, '_> {
                 Arrange::Leaf => {
                     let Tree { nodes, measuring } = tree;
                     let laying = &nodes[usize::from(node)];
-                    measuring.at(&laying.flat.path, Asker::Layout);
+                    measuring.at(laying.flat.path, Asker::Layout);
                     let measured = |known: Size<Option<f32>>, available: Size<AvailableSpace>| {
                         let offer = Offer {
                             width: offered(known.width, available.width),
@@ -305,7 +347,7 @@ impl LayoutPartialTree for Tree<'_, '_> {
 
                         Size { width: content.x, height: content.y }
                     };
-                    compute_leaf_layout(inputs, &laying.style, |_, _| 0.0, measured)
+                    compute_leaf_layout(inputs, laying.style(), |_, _| 0.0, measured)
                 }
             };
             let performs = inputs.run_mode == RunMode::PerformLayout;
@@ -335,7 +377,7 @@ impl LayoutContainingBlock for Tree<'_, '_> {
         Self: 'a;
 
     fn get_oof_item_style(&self, node: NodeId) -> &taffy::Style {
-        &self.node(node).style
+        self.node(node).style()
     }
 
     fn clear_hoisted_children(&mut self, node: NodeId) {
@@ -357,7 +399,7 @@ impl CacheTree for Tree<'_, '_> {
     }
 
     fn cache_clear(&mut self, node: NodeId) {
-        let _ = self.kept(node).cache.clear();
+        self.kept(node).cache.clear();
     }
 }
 
@@ -373,11 +415,11 @@ impl LayoutFlexboxContainer for Tree<'_, '_> {
         Self: 'a;
 
     fn get_flexbox_container_style(&self, node: NodeId) -> &taffy::Style {
-        &self.node(node).style
+        self.node(node).style()
     }
 
     fn get_flexbox_child_style(&self, child: NodeId) -> &taffy::Style {
-        &self.node(child).style
+        self.node(child).style()
     }
 }
 
@@ -393,10 +435,10 @@ impl LayoutGridContainer for Tree<'_, '_> {
         Self: 'a;
 
     fn get_grid_container_style(&self, node: NodeId) -> &taffy::Style {
-        &self.node(node).style
+        self.node(node).style()
     }
 
     fn get_grid_child_style(&self, child: NodeId) -> &taffy::Style {
-        &self.node(child).style
+        self.node(child).style()
     }
 }

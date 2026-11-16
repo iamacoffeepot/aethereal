@@ -44,6 +44,15 @@ struct Kept {
     state: Vec<u8>,
 }
 
+impl Kept {
+    /// Whether it is the state of `flat`'s widget: kept under its path, of its state's kind.
+    fn holds(&self, flat: &Flat<'_>) -> bool {
+        let pathed = self.path == *flat.path;
+
+        pathed && self.kind.same(flat.node.widget().state_kind())
+    }
+}
+
 impl Table {
     /// Keeps a state for each node of `flat`, a tree's nodes: a state kept under the node's path, of its widget's
     /// state's kind, stays as it is, moved and not copied; any other is made with `Default`; and a state no node's path
@@ -51,10 +60,15 @@ impl Table {
     /// Focus held by a path no node names, or by a widget that cannot hold it, is cleared.
     pub(crate) fn refresh(&mut self, flat: &[Flat<'_>]) {
         if let Focus::On(path) = &self.focus {
-            let holds = flat.iter().any(|flat| flat.path == *path && flat.node.widget().focusable());
+            let holds = flat.iter().any(|flat| flat.path == path && flat.node.widget().focusable());
             if !holds {
                 self.focus = Focus::Nowhere;
             }
+        }
+        let ordered = flat.windows(2).all(|pair| pair[0].path < pair[1].path);
+        if ordered {
+            self.merge(flat);
+            return;
         }
         let unchanged = self.holds_each(flat);
         if unchanged {
@@ -66,7 +80,7 @@ impl Table {
             .map(|flat| {
                 let widget = flat.node.widget();
                 let kind = widget.state_kind();
-                let found = was.binary_search_by(|kept| kept.path.cmp(&flat.path)).ok().map(|at| &mut was[at]);
+                let found = was.binary_search_by(|kept| kept.path.cmp(flat.path)).ok().map(|at| &mut was[at]);
                 let state = match found {
                     Some(kept) if kept.kind.same(kind) => mem::take(&mut kept.state),
                     Some(_) | None => widget.first_state(),
@@ -80,6 +94,31 @@ impl Table {
         self.kept = kept;
     }
 
+    /// Refreshes it for `flat`, whose paths stand in the order it keeps its states in, as a tree's do when each node's
+    /// children stand in the order of their keys: walked beside `flat` in step, so a state kept under a node's path is
+    /// found without a search, and a table keeping each node's state already is left as it is.
+    fn merge(&mut self, flat: &[Flat<'_>]) {
+        let counted = self.kept.len() == flat.len();
+        let aligned = counted && self.kept.iter().zip(flat).all(|(kept, flat)| kept.holds(flat));
+        if aligned {
+            return;
+        }
+        let mut was = mem::take(&mut self.kept).into_iter().peekable();
+        let mut kept = Vec::with_capacity(flat.len());
+        for flat in flat {
+            let widget = flat.node.widget();
+            let kind = widget.state_kind();
+            while was.next_if(|old| old.path < *flat.path).is_some() {}
+            let state = match was.next_if(|old| old.path == *flat.path) {
+                Some(old) if old.kind.same(kind) => old.state,
+                Some(_) | None => widget.first_state(),
+            };
+            kept.push(Kept { path: flat.path.clone(), kind, state });
+        }
+
+        self.kept = kept;
+    }
+
     /// Whether it keeps a state of its widget's kind for each node of `flat`, and nothing else: what a refresh would
     /// keep, as a tree that changed none of its keys or widgets' types leaves it.
     fn holds_each(&self, flat: &[Flat<'_>]) -> bool {
@@ -88,7 +127,7 @@ impl Table {
         counted
             && flat.iter().all(|flat| {
                 let kind = flat.node.widget().state_kind();
-                self.found(&flat.path).is_some_and(|kept| kept.kind.same(kind))
+                self.found(flat.path).is_some_and(|kept| kept.kind.same(kind))
             })
     }
 
@@ -100,6 +139,16 @@ impl Table {
     /// The bytes of the state kept under `path`, if any.
     pub(crate) fn bytes(&self, path: &KeyPath) -> Option<&[u8]> {
         self.found(path).map(|kept| kept.state.as_slice())
+    }
+
+    /// The bytes of the state kept under `path`, the path of the node at `at` in its tree's order, if any: found at
+    /// `at` when the table stands in that order, as a refresh leaves it for a tree whose paths stand in order, and
+    /// searched for otherwise.
+    pub(crate) fn bytes_at(&self, at: usize, path: &KeyPath) -> Option<&[u8]> {
+        match self.kept.get(at) {
+            Some(kept) if kept.path == *path => Some(&kept.state),
+            Some(_) | None => self.bytes(path),
+        }
     }
 
     /// Keeps `state`, of the kind `kind`, under `path`, in place of what was kept there.

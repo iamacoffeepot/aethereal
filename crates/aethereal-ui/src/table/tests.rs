@@ -2,7 +2,7 @@
 
 use super::Table;
 use crate::style::Style;
-use crate::tree::{KeyPath, Node, Segment, Tree};
+use crate::tree::{KeyPath, Node, Segment, Shape, Tree};
 use crate::widget::{Arrange, Draws, Laid, Widget};
 use crate::widgets::Column;
 use aethereal_data::{Plain, to_bytes};
@@ -56,7 +56,8 @@ fn counters(places: &[u32], label: u32) -> Tree {
 
 /// Refreshes `table` from `tree`.
 fn refresh(table: &mut Table, tree: &Tree) {
-    let Ok(flattened) = tree.flat() else {
+    let mut shape = Shape::default();
+    let Ok(flattened) = tree.flat(&mut shape) else {
         panic!("the tree lays out");
     };
     table.refresh(&flattened.nodes);

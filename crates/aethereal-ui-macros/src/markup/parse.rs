@@ -9,7 +9,7 @@
 
 use super::reference::{Reference, SUBSET};
 use super::text::Text;
-use super::{Call, Drag, Dropping, Element, Event, Field, Kind, Look, Outside, Repeat, Rest, Shown, Value};
+use super::{Call, Drag, Dropping, Element, Event, Field, Kind, Look, Memo, Outside, Repeat, Rest, Shown, Value};
 use crate::style::Property;
 use proc_macro2::Span;
 use syn::parse::{Parse, ParseStream};
@@ -72,7 +72,17 @@ fn contents(input: ParseStream<'_>, element: &mut Element) -> syn::Result<()> {
         let setting = named && input.peek2(Token![:]);
         let event = named && input.peek2(Token![=>]);
         let text = input.peek(LitStr);
-        if rest {
+        let kept = memo_alone(input);
+        if kept {
+            settled(stage, input.span())?;
+            let keyword: kw::memo = input.parse()?;
+            let twice = matches!(element.memo, Memo::Kept(_));
+            if twice {
+                return Err(syn::Error::new(keyword.span, "`memo` is given twice"));
+            }
+            element.memo = Memo::Kept(keyword.span);
+            separated(input)?;
+        } else if rest {
             settled(stage, input.span())?;
             let dots: Token![..] = input.parse()?;
             element.rest = Rest::Defaulted(dots.spans[0]);
@@ -106,6 +116,19 @@ fn contents(input: ParseStream<'_>, element: &mut Element) -> syn::Result<()> {
     }
 
     Ok(())
+}
+
+/// The keywords markup writes alone, with no value.
+mod kw {
+    syn::custom_keyword!(memo);
+}
+
+/// Whether the next setting is `memo` written alone: the keyword, then a comma or the end of the braces.
+fn memo_alone(input: ParseStream<'_>) -> bool {
+    let ahead = input.fork();
+    let keyword = ahead.parse::<kw::memo>().is_ok();
+
+    keyword && (ahead.is_empty() || ahead.peek(Token![,]))
 }
 
 /// Refuses a setting, an event, or a rest after an element's children or text.

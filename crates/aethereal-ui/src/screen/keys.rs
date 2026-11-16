@@ -113,7 +113,7 @@ fn heard(flat: &[Flat<'_>], focus: &Focus) -> Option<Hears> {
         return None;
     };
 
-    flat.iter().find(|flat| flat.path == *path).map(|flat| flat.node.widget().hears())
+    flat.iter().find(|flat| flat.path == path).map(|flat| flat.node.widget().hears())
 }
 
 /// The keys the widgets among `flat` that the one with `focus` is within hear, up to the popup whose content it is in.
@@ -124,7 +124,7 @@ fn around(flat: &[Flat<'_>], focus: &Focus) -> Vec<&'static str> {
     let bound = boundary(flat, path);
     let mut codes = Vec::new();
     for within in flat.iter().filter(|flat| flat.path.holds(path)) {
-        let beyond = bound.is_some_and(|bound| !bound.holds(&within.path));
+        let beyond = bound.is_some_and(|bound| !bound.holds(within.path));
         if beyond {
             continue;
         }
@@ -187,7 +187,7 @@ pub(super) fn declared(
 /// reach, the first, or the last; none when it reaches none.
 pub(super) fn tabbed(flat: &[Flat<'_>], reaches: &[bool], focus: &Focus, back: bool) -> Focus {
     let focusable: Vec<&KeyPath> =
-        flat.iter().zip(reaches).filter(|(_, reached)| **reached).map(|(flat, _)| &flat.path).collect();
+        flat.iter().zip(reaches).filter(|(_, reached)| **reached).map(|(flat, _)| flat.path).collect();
     let count = focusable.len();
     if count == 0 {
         return Focus::Nowhere;

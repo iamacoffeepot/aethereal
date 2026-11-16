@@ -1,0 +1,5 @@
+error: `memo` keeps a composite built from its fields alone: `drag` and `drop` go on an element around it
+ --> tests/refusals/memo_dragged.rs:4:16
+  |
+4 |         Slot { memo, item: self.item, drag: self.item }
+  |                ^^^^

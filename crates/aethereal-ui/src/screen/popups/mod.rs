@@ -29,7 +29,7 @@ use super::orders::Orders;
 use super::{Fresh, Last, Screen, Worked};
 use crate::input::Used;
 use crate::table::{Focus, Table};
-use crate::tree::{Flat, KeyPath};
+use crate::tree::{Flat, KeyPath, Shape};
 use crate::widget::{Arrange, Built, Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
 use aethereal_actor::{Answered, Level, Slept};
 use aethereal_data::Plain;
@@ -188,21 +188,21 @@ pub(super) fn surfaces(flat: &[Flat<'_>], table: &Table) -> Vec<Surface> {
     for (at, node) in flat.iter().enumerate() {
         let here = surfaces[at];
         let Some(popper) = popper(node.node.widget()) else {
-            for child in &node.children {
+            for child in node.children {
                 surfaces[*child] = here;
             }
             continue;
         };
-        let open = popper.open(table, &node.path);
+        let open = popper.open(table, node.path);
         let shown = here.stands != Stands::Hidden;
         let content = if open && shown {
             Surface { stands: Stands::Top { popup: at }, touch: popper.touch(here.touch) }
         } else {
             Surface { stands: Stands::Hidden, touch: here.touch }
         };
-        let first = anchor(&node.path);
-        for child in &node.children {
-            let held = flat[*child].path == first;
+        let first = anchor(node.path);
+        for child in node.children {
+            let held = *flat[*child].path == first;
             surfaces[*child] = if held {
                 here
             } else {
@@ -219,7 +219,7 @@ pub(super) fn surfaces(flat: &[Flat<'_>], table: &Table) -> Vec<Surface> {
 pub(super) fn tops(flat: &[Flat<'_>], surfaces: &[Surface]) -> Vec<usize> {
     let mut tops = Vec::new();
     for (at, node) in flat.iter().enumerate() {
-        for child in &node.children {
+        for child in node.children {
             let rooted = surfaces[*child].stands == Stands::Top { popup: at };
             if rooted {
                 tops.push(*child);
@@ -241,7 +241,7 @@ pub(super) fn open(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -> Op
             continue;
         };
         let shown = surface.stands != Stands::Hidden;
-        let opened = popper.open(table, &node.path);
+        let opened = popper.open(table, node.path);
         let counts = shown && opened;
         if !counts {
             continue;
@@ -283,7 +283,7 @@ fn topmost<'flat>(
             continue;
         };
         let shown = surface.stands != Stands::Hidden;
-        let opened = popper.open(table, &node.path);
+        let opened = popper.open(table, node.path);
         let takes = wanted(modal);
         let counts = shown && opened && takes;
         if counts {
@@ -302,7 +302,7 @@ pub(super) fn tabbable(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -
         .zip(surfaces)
         .map(|(node, surface)| {
             let focusable = node.node.widget().focusable();
-            let ringed = modal.is_none_or(|modal| contains(modal, &node.path));
+            let ringed = modal.is_none_or(|modal| contains(modal, node.path));
 
             focusable && surface.reaches() && ringed
         })
@@ -311,10 +311,10 @@ pub(super) fn tabbable(flat: &[Flat<'_>], surfaces: &[Surface], table: &Table) -
 
 /// The path of the popup among `flat` whose content `path` stands in, the innermost, if it stands in one: what the
 /// widgets around it that hear keys end at, as a popup's content is a surface of its own.
-pub(super) fn boundary<'flat>(flat: &'flat [Flat<'_>], path: &KeyPath) -> Option<&'flat KeyPath> {
+pub(super) fn boundary<'tree>(flat: &[Flat<'tree>], path: &KeyPath) -> Option<&'tree KeyPath> {
     flat.iter()
         .filter(|node| popper(node.node.widget()).is_some())
-        .map(|node| &node.path)
+        .map(|node| node.path)
         .rfind(|popup| contains(popup, path))
 }
 
@@ -325,7 +325,7 @@ pub(super) fn stood(flat: &[Flat<'_>], table: &mut Table) -> Vec<Surface> {
     unanchored(flat, table);
     let surfaces = surfaces(flat, table);
     let reachable = match table.focus() {
-        Focus::On(path) => flat.iter().zip(&surfaces).any(|(node, surface)| node.path == *path && surface.reaches()),
+        Focus::On(path) => flat.iter().zip(&surfaces).any(|(node, surface)| node.path == path && surface.reaches()),
         Focus::Nowhere => true,
     };
     if !reachable {
@@ -342,12 +342,12 @@ fn unanchored(flat: &[Flat<'_>], table: &mut Table) {
         let Some(popper) = popper(node.node.widget()) else {
             continue;
         };
-        let first = anchor(&node.path);
-        let held = node.children.iter().any(|child| flat[*child].path == first);
+        let first = anchor(node.path);
+        let held = node.children.iter().any(|child| *flat[*child].path == first);
         if held {
             continue;
         }
-        popper.shut(table, &node.path);
+        popper.shut(table, node.path);
     }
 }
 
@@ -401,7 +401,8 @@ impl Screen {
         let Worked { last: Last::Built(tree), .. } = &*self.unkept else {
             return;
         };
-        let Ok(flattened) = tree.flat() else {
+        let mut shape = Shape::default();
+        let Ok(flattened) = tree.flat(&mut shape) else {
             return;
         };
         for node in &flattened.nodes {
@@ -411,8 +412,8 @@ impl Screen {
             let Opens::Rested { delay } = popper.layer.opens else {
                 continue;
             };
-            let on = hovered(&self.reached, &node.path);
-            let tip = popper.tip(&self.table, &node.path);
+            let on = hovered(&self.reached, node.path);
+            let tip = popper.tip(&self.table, node.path);
             let next = match (tip, on) {
                 (Tip::Away, true) => {
                     self.hovers += 1;
@@ -425,7 +426,7 @@ impl Screen {
             if tip == Tip::Open {
                 self.fresh = Fresh::Stale;
             }
-            popper.tip_to(&mut self.table, &node.path, next);
+            popper.tip_to(&mut self.table, node.path, next);
         }
     }
 
@@ -463,7 +464,8 @@ impl Screen {
         let Worked { last: Last::Built(tree), .. } = &*self.unkept else {
             return;
         };
-        let Ok(flattened) = tree.flat() else {
+        let mut shape = Shape::default();
+        let Ok(flattened) = tree.flat(&mut shape) else {
             return;
         };
         for node in &flattened.nodes {
@@ -472,25 +474,25 @@ impl Screen {
             };
             match popper.layer.opens {
                 Opens::Pressed { .. } => {
-                    let within = pressing.within(&node.path);
+                    let within = pressing.within(node.path);
                     if within {
                         continue;
                     }
-                    let was_open = popper.shut(&mut self.table, &node.path);
+                    let was_open = popper.shut(&mut self.table, node.path);
                     if was_open {
                         self.fresh = Fresh::Stale;
                     }
                 }
                 Opens::Rested { .. } => {
-                    let on = hovered(&self.reached, &node.path);
+                    let on = hovered(&self.reached, node.path);
                     if !on {
                         continue;
                     }
-                    let shown = popper.tip(&self.table, &node.path) == Tip::Open;
+                    let shown = popper.tip(&self.table, node.path) == Tip::Open;
                     if shown {
                         self.fresh = Fresh::Stale;
                     }
-                    popper.tip_to(&mut self.table, &node.path, Tip::Dismissed);
+                    popper.tip_to(&mut self.table, node.path, Tip::Dismissed);
                 }
             }
         }
@@ -529,7 +531,8 @@ impl Screen {
         let Worked { last: Last::Built(tree), .. } = &*self.unkept else {
             return Used::Passed;
         };
-        let Ok(flattened) = tree.flat() else {
+        let mut shape = Shape::default();
+        let Ok(flattened) = tree.flat(&mut shape) else {
             return Used::Passed;
         };
         let surfaces = surfaces(&flattened.nodes, &self.table);
