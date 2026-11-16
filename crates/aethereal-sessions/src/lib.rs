@@ -10,7 +10,8 @@
 //! `session_interrupt`, and `session_archive`.
 //!
 //! [`engine_name`] is what the chat calls an engine: a name made from its id alone, `mellow-snipe:4`, so every engine
-//! that shows the chat calls one engine alike.
+//! that shows the chat calls one engine alike; [`engine_words`] is its words alone, `mellow-snipe`, as a transcript's
+//! tag shows it.
 //!
 //! [`Docker`] is the hub's client of Docker's Engine API over its Unix socket: it makes, starts, stops, inspects, lists,
 //! and removes containers from typed requests, makes named volumes, attaches to a container's stdin and output, reads
@@ -30,7 +31,7 @@ pub use docker::{
     Output, Phase, Remove, SocketUnaddressable, Start, Std, Stdin, Stop, Until, Unwritable, Variable, Volume,
     VolumeCreated, VolumeName, Watching,
 };
-pub use names::engine_name;
+pub use names::{engine_name, engine_words};
 pub use sessions::{
     Act, Acting, Archive, Archived, Asking, CARGO, CLAUDE, Chat, Chatted, Conversation, Credential, Crediting, Ended,
     Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions,

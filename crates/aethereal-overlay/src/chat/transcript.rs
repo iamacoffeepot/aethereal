@@ -3,7 +3,7 @@
 //! fold opens or closes, or the engine learns which lines are its own.
 //!
 //! ```text
-//! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name:id >` at another
+//! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name >` at another
 //!                                     engine, on the raised band, another engine's tag dimmed
 //!                                     a subagent's events under the tool call that started it, folded until opened
 //!                                     compact_boundary a centred divider with its tokens; a turn begun with no line
@@ -18,7 +18,7 @@ use crate::colour::{Ink, Palette};
 use crate::console::{LOCAL, PROMPT_MARK, Shade};
 use aethereal_data::Plain;
 use aethereal_render::text::Run;
-use aethereal_sessions::{Numbered, Speaker, engine_name};
+use aethereal_sessions::{Numbered, Speaker, engine_words};
 use aethereal_ui::markdown::{Blocks, Document};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -409,12 +409,12 @@ fn thousands(tokens: u64) -> String {
     format!("{}k", tokens.saturating_add(500) / 1_000)
 }
 
-/// Who `by` is, as the engine that knows itself as `mine` names it: `local` for itself, another engine by its name,
-/// `mellow-snipe:4`, or who else wrote to the session.
+/// Who `by` is, as the engine that knows itself as `mine` names it: `local` for itself, another engine by its name's
+/// words alone, `mellow-snipe`, its id kept out of the transcript, or who else wrote to the session.
 fn who(by: Speaker, mine: Mine) -> String {
     match (by, mine) {
         (Speaker::Engine { engine }, Mine::Engine(own)) if engine == own => String::from(LOCAL),
-        (Speaker::Engine { engine }, Mine::Engine(_) | Mine::Unknown) => engine_name(engine),
+        (Speaker::Engine { engine }, Mine::Engine(_) | Mine::Unknown) => engine_words(engine),
         (Speaker::Caller, _) => String::from("[tools]"),
         (Speaker::Hub, _) => String::from("[hub]"),
     }

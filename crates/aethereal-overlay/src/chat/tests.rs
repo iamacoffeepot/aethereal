@@ -103,7 +103,7 @@ fn a_turn_that_begins_with_no_line_says_so_and_one_begun_by_a_line_does_not() {
     let done = r#"{"type":"result","subtype":"success","is_error":false}"#;
     chats.shown(1, &[said(1, 4, "go"), claude(2, init), claude(3, done), claude(4, init), claude(5, done)]);
 
-    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > go", "· done", "· a turn began by itself", "· done"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe > go", "· done", "· a turn began by itself", "· done"]);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
     assert_eq!(tones, [Tone::Other, Tone::Other, Tone::Own]);
     assert_eq!(
         texts(&chats.rows()),
-        ["wary-owl:12 > from another engine", "wary-owl:12 > something else", "local > what do you see?"]
+        ["wary-owl > from another engine", "wary-owl > something else", "local > what do you see?"]
     );
 }
 
@@ -246,7 +246,7 @@ fn events_shown_twice_or_out_of_order_are_held_once_in_order() {
     chats.shown(1, &[said(3, 4, "c"), said(1, 4, "a")]);
     chats.shown(1, &[said(1, 4, "a"), said(2, 4, "b"), said(3, 4, "c")]);
 
-    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > a", "mellow-snipe:4 > b", "mellow-snipe:4 > c"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe > a", "mellow-snipe > b", "mellow-snipe > c"]);
 }
 
 #[test]
