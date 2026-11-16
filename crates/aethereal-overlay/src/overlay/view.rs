@@ -13,7 +13,8 @@
 //! raised again for the owner's lines, inset for the prompt, the grip, and the open tab, and deepest for the tabs'
 //! strip, a closed tab shaded a step lighter while the pointer is over it; and every rule and divider is the one
 //! divider ink. Each session's tab marks its status with a small shape before its title, which pulses while its
-//! container comes up or a turn runs.
+//! container comes up or a turn runs. Once the engine knows its own id, its name stands before the tabs as a label, and
+//! the pointer resting on the `local` tag of its own lines shows its name and id.
 //!
 //! ```text
 //! Column (the window)
@@ -22,14 +23,15 @@
 //! │  ├─ Tint (the line between the columns)
 //! │  └─ Column: a Row (MeterGraph, gutter) for each meter
 //! └─ Column, at the console's stop (a third of the window): Grip (the seam), Scroll (the rows) or Scroll (a
-//!    transcript), asks, rule, Row (> line…, running), rule, Row (the tabs: console ‖ ◦ session | • session)
+//!    transcript), asks, rule, Row (> line…, running), rule, Row (own name, then the tabs: console ‖ ◦ session |
+//!    • session)
 //! ```
 
 use super::{Calling, Overlay};
 use crate::chart::{ChartShown, FrameChart};
-use crate::chat::{Icon, Open, Parting, Row as TranscriptRow, Status, Title};
+use crate::chat::{Icon, Mine, Open, Parting, Row as TranscriptRow, Status, Title};
 use crate::colour::{Ink, Palette, Surface};
-use crate::console::{Piece, Row as PrintedRow, Shade};
+use crate::console::{LOCAL, Piece, Row as PrintedRow, Shade};
 use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
     DIVIDER_PIXELS, GAP_PIXELS, GRIP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
@@ -45,10 +47,11 @@ use aethereal_link::Link;
 use aethereal_render::Renderer;
 use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
 use aethereal_render::text::{Colour, Font, Run};
-use aethereal_sessions::Chat;
+use aethereal_sessions::{Chat, engine_words};
 use aethereal_tools::{CallTool, Tools};
 use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
+use aethereal_ui::widgets::DELAY;
 use core::f64::consts::TAU;
 
 /// The overlay's root, the window, and the console's column within it, as the markup places them.
@@ -280,11 +283,22 @@ aethereal_ui::style! {
     /// The session tabs beneath the prompt's strip, nearest the scene: a surface of their own, the deepest of the
     /// console's, so the prompt and the tabs never merge. It has no padding above or below, so the tabs fill its height,
     /// and a small gap between its tabs.
-    pub tab_strip {
-        padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0),
+    pub tab_strip { padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0), align_items: Alignment::Stretch }
+    /// This engine's own name at the strip's start, once it knows its id: a label, not a tab, in the label's ink,
+    /// centred down the strip and set apart from the console's tab by the room the break between the console's tab
+    /// and the sessions' takes.
+    pub own_name: mono {
+        shrink: 0.0,
+        align_self: SelfAlign::Own(Alignment::Center),
+        margin: margined(0.0, PADDING_PIXELS.mul_add(2.0, DIVIDER_PIXELS), 0.0, 0.0),
+    }
+    /// The tabs, a small gap between each.
+    pub tab_row {
         align_items: Alignment::Stretch,
         gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(TAB_GAP_PIXELS) },
     }
+    /// What the pointer resting on `local` shows: this engine's name and id, on the raised surface.
+    pub own_tip { padding: padded(SECTION_PIXELS, SECTION_PIXELS, GAP_PIXELS, GAP_PIXELS) }
     /// The hairline along the tabs' strip's top, parting it from the prompt.
     pub tab_strip_rule { height: Length::Pixels(DIVIDER_PIXELS) }
     /// A tab and what parts it from the one before, the full height of the strip, the gap between them as between
@@ -385,7 +399,13 @@ aethereal_ui::view! { Overlay, ui,
                 Column { style: entry { background: self.entry_shade(row), padding: inset(row) },
                     Selectable { show: row.is_line(), style: said { colour: self.entry_colour(row) }, text: row.text() }
                     Row { show: row.is_turn(), style: turn,
-                        Printed { style: tag, runs: self.tag_runs(row) }
+                        Printed { show: row.is_other_turn(), style: tag, runs: self.tag_runs(row) }
+                        Tooltip { show: row.is_own_turn(), side: Side::Above, delay: DELAY,
+                            Printed { style: tag, runs: self.tag_runs(row) }
+                            Column { style: own_tip { background: self.surface(Surface::Raised) },
+                                Text { style: mono { colour: self.ink(Ink::Text) }, "{self.local_tip()}" }
+                            }
+                        }
                         Selectable { style: turn_text { colour: self.entry_colour(row) }, text: row.text() }
                     }
                     Row { show: row.is_divider(), style: divided,
@@ -435,7 +455,8 @@ aethereal_ui::view! { Overlay, ui,
             Row {
                 style: tab_strip { background: self.surface(Surface::Deepest) },
                 show: self.chats.is_listed(),
-                items: self.chats.titles() as tab key tab.place,
+                Text { style: own_name { colour: self.ink(Ink::Label) }, show: self.knows_itself(), "{self.own_name()}" }
+                Row { style: tab_row, items: self.chats.titles() as tab key tab.place,
                 Row { style: tab_item,
                     Tint {
                         show: tab.parting.parts(),
@@ -460,6 +481,7 @@ aethereal_ui::view! { Overlay, ui,
                             Text { style: tab_text { colour: self.tab_colour(tab) }, "{tab.name}" }
                         }
                     }
+                }
                 }
             }
         }
@@ -580,6 +602,28 @@ impl Overlay {
     /// The colour of the tab `tab`'s title.
     pub(super) const fn tab_colour(&self, tab: &Title) -> Colour {
         self.palette.ink(tab.ink())
+    }
+
+    /// Whether this engine has learned its own id, so its name shows at the tabs' start.
+    pub(super) const fn knows_itself(&self) -> bool {
+        matches!(self.chats.mine(), Mine::Engine(_))
+    }
+
+    /// This engine's own name, its words alone: none until it has learned its id, when it does not show.
+    pub(super) fn own_name(&self) -> String {
+        match self.chats.mine() {
+            Mine::Engine(engine) => engine_words(engine),
+            Mine::Unknown => String::new(),
+        }
+    }
+
+    /// What the pointer resting on the `local` tag of this engine's own lines shows: `local`, its name, and its id,
+    /// the one place in the chat its id shows. A line is tagged `local` only once the id is learned.
+    pub(super) fn local_tip(&self) -> String {
+        match self.chats.mine() {
+            Mine::Engine(engine) => format!("{LOCAL} · {} · engine {engine}", engine_words(engine)),
+            Mine::Unknown => String::from(LOCAL),
+        }
     }
 
     /// The shape of the tab `tab`'s status icon: blank for the console's own tab.

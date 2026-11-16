@@ -196,6 +196,11 @@ impl Chats {
         matches!(self.listed, Listed::Tabs(_))
     }
 
+    /// Whose this engine is, as far as it has learned from the transcripts.
+    pub const fn mine(&self) -> Mine {
+        self.mine
+    }
+
     /// Which tab is open.
     pub const fn open(&self) -> Open {
         self.open

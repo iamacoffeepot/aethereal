@@ -108,6 +108,19 @@ impl Row {
         }
     }
 
+    /// Whether it is a line the owner typed at this engine, tagged `local`.
+    pub const fn is_own_turn(&self) -> bool {
+        matches!(self.look, Look::Turn { tone: Tone::Own, .. })
+    }
+
+    /// Whether it is a line the owner typed at another engine, tagged with that engine's name.
+    pub const fn is_other_turn(&self) -> bool {
+        matches!(
+            self.look,
+            Look::Turn { tone: Tone::Other | Tone::Written | Tone::Tool | Tone::Faint | Tone::Alert, .. }
+        )
+    }
+
     /// Whether it is a line the owner typed, at this engine or another: set apart from Claude's on a shade of its own.
     pub const fn is_turn(&self) -> bool {
         matches!(self.look, Look::Turn { .. })
