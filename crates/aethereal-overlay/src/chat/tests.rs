@@ -27,7 +27,7 @@ fn texts(rows: &[&Row]) -> Vec<String> {
     rows.iter()
         .map(|row| match &row.look {
             Look::Line { text, .. } | Look::Fold { text, .. } => text.clone(),
-            Look::Turn { tag, text, .. } => format!("{tag} {text}"),
+            Look::Turn { tag, text, .. } => format!("{tag} > {text}"),
             Look::Reply { .. } => String::from("<reply>"),
         })
         .collect()

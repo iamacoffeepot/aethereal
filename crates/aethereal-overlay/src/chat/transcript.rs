@@ -23,6 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// How opaque the tag of a line typed at another engine is drawn: dimmed, as the line beside it is.
 const OTHER_TAG_OPACITY: f32 = 0.7;
 
+/// The prompt mark after a turn's tag: who typed it, then this, then what they typed.
+const PROMPT_MARK: &str = " >";
+
 /// What an engine calls itself in a transcript: the lines typed at it, once it knows its own id. Every other engine is
 /// called by its name.
 const LOCAL: &str = "local";
@@ -111,15 +114,17 @@ impl Row {
         matches!(self.look, Look::Turn { .. })
     }
 
-    /// Its tag, who typed it and the prompt mark, as text in its own colour: slate blue, a label's colour, apart from
-    /// the bone or stone of the text beside it, and dimmed, as its text is, for a line typed at another engine. None but
-    /// for one of the owner's lines.
+    /// Its tag, who typed it then the prompt mark: who in slate blue, a label's colour, apart from the bone or stone
+    /// of the text beside it, and dimmed, as its text is, for a line typed at another engine; the mark in the text's
+    /// own colour, as it is punctuation, not the label. None but for one of the owner's lines.
     pub fn tag_runs(&self) -> Vec<Run> {
-        match &self.look {
-            Look::Turn { tag, ink: Ink::Own, .. } => vec![Run::new(tag, SLATE_BLUE.opaque())],
-            Look::Turn { tag, .. } => vec![Run::new(tag, SLATE_BLUE.at(OTHER_TAG_OPACITY))],
-            Look::Line { .. } | Look::Reply { .. } | Look::Fold { .. } => Vec::new(),
-        }
+        let who = match &self.look {
+            Look::Turn { tag, ink: Ink::Own, .. } => Run::new(tag, SLATE_BLUE.opaque()),
+            Look::Turn { tag, .. } => Run::new(tag, SLATE_BLUE.at(OTHER_TAG_OPACITY)),
+            Look::Line { .. } | Look::Reply { .. } | Look::Fold { .. } => return Vec::new(),
+        };
+
+        vec![who, Run::new(PROMPT_MARK, self.colour())]
     }
 
     /// What it is drawn on: the owner's lines a step lighter than the transcript, as a prompt's lines are in a
@@ -317,7 +322,7 @@ impl Turned {
 fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32, said: Turned) -> Vec<Row> {
     let line = |text: String, ink: Ink| Row { key, look: Look::Line { text: format!("{indent}{text}"), ink } };
     let turn = |by: Speaker, text: String| {
-        let tag = format!("{indent}{} >", who(by, mine));
+        let tag = format!("{indent}{}", who(by, mine));
         Row { key, look: Look::Turn { tag, text, ink: inked(by, mine) } }
     };
     match told {
