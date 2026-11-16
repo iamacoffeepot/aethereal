@@ -1,23 +1,51 @@
 //! What the overlay keeps as the program runs (ADR-0053): its window's size, which its screen lays out to; each
 //! `Tick` while it is shown, the cycle's time, the marks told since the last, the figures and the engine's memory when
-//! they are due, the engine's recent log about once a second, and the charts cut to as many columns as the window holds;
+//! they are due, the engine's recent log about once a second, and the charts cut to as many columns as the boxes the
+//! screen last laid them out in hold;
 //! and each frame's statistics and the GPU's time over its passes. Nothing here draws: the band and the console show
 //! what is kept at the screen's next `Prepare`.
 
-use super::view::prompt_path;
+use super::view::{chart_path, meter_graph_path, prompt_path};
 use super::{FIGURES_EVERY_NANOS, LOGS_EVERY_NANOS, Overlay};
 use crate::console::Logged;
 use crate::gpu::{GpuFigures, GpuTiming};
-use crate::layout::Layout;
+use crate::layout::Scale;
 use crate::meters::{EngineMemory, MOST_METER_COLUMNS};
 use aethereal_actor::{Fault, Handles, Level, On, Tick, ToType, Turn};
+use aethereal_data::Plain;
 use aethereal_link::{Link, Listen};
 use aethereal_render::stats::{FrameDrawing, FrameStats, GpuTimes};
-use aethereal_ui::Viewport;
+use aethereal_ui::{KeyPath, Screen, Viewport};
 use aethereal_window::Event;
 
 /// The most columns the charts of the band's left column are cut into, whatever the window's width.
 pub const MOST_COLUMNS: u32 = 3_000;
+
+/// How many columns the charts of the band's left column, and the meters' graphs, were last cut into.
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Columns {
+    pub chart: u32,
+    pub meters: u32,
+}
+
+impl Columns {
+    /// One column each, as the charts' own are before they are first cut: what the band is built with before the
+    /// screen first lays it out, when it holds nothing to draw.
+    pub const FIRST: Self = Self { chart: 1, meters: 1 };
+
+    /// As many columns as the boxes `ui` last laid the frame chart and a meter's graph out in hold: each as it was
+    /// where the last layout laid no such box out, as while the band was hidden.
+    fn laid(self, ui: &Screen) -> Self {
+        let across = |path: KeyPath, most: u32, kept: u32| {
+            ui.laid(&path).map_or(kept, |laid| Scale(laid.scale).columns_across(laid.content.width(), most))
+        };
+
+        Self {
+            chart: across(chart_path(), MOST_COLUMNS, self.chart),
+            meters: across(meter_graph_path(), MOST_METER_COLUMNS, self.meters),
+        }
+    }
+}
 
 /// A resize lays the overlay's screen out again at the window's new size; the overlay hears nothing else of its window
 /// raw.
@@ -36,16 +64,18 @@ impl Handles<Event> for Overlay {
 }
 
 impl Overlay {
-    /// Cuts the charts and the meters' graphs into as many columns as the window holds at its size now.
+    /// Cuts the charts and the meters' graphs into as many columns as the boxes the screen last laid them out in
+    /// hold: after a resize, the boxes the next layout gives them, so for one frame a chart draws the columns of its
+    /// old width in its new box, from its right edge.
     fn cut(&mut self) {
-        let layout = Layout::of(self.ui.viewport());
-        let count = layout.chart_columns(MOST_COLUMNS);
-        self.frames.cut(count);
+        self.columns = self.columns.laid(&self.ui);
+        let Columns { chart, meters } = self.columns;
+        self.frames.cut(chart);
         if let GpuTiming::Timed(times) = &mut self.gpu {
-            times.cut(count);
+            times.cut(chart);
         }
-        self.lines.cut(count);
-        self.histories.cut(layout.meter_columns(MOST_METER_COLUMNS));
+        self.lines.cut(chart);
+        self.histories.cut(meters);
     }
 
     /// Reads what the engine logged since it was last read: each entry but a debug line printed into the
@@ -60,10 +90,9 @@ impl Overlay {
             .collect();
         self.logs_since = next;
 
-        let columns = self.columns();
         let open = self.stop.console();
         if left > 0 {
-            self.console.missed(left, columns);
+            self.console.missed(left);
         }
         for logged in &logged {
             if !open {
@@ -71,7 +100,7 @@ impl Overlay {
             }
             let debug = logged.level == Level::Debug;
             if !debug {
-                self.console.logged(logged, columns);
+                self.console.logged(logged);
             }
         }
     }
@@ -96,9 +125,8 @@ impl Handles<On<Tick>> for Overlay {
             // Nanoseconds of the program's time, which an f64 holds closely enough to show in tenths of a second.
             #[allow(clippy::cast_precision_loss)]
             let at_seconds = tick.elapsed_nanos as f64 / 1e9;
-            let columns = self.columns();
             for text in &stamped {
-                self.console.marked(text, at_seconds, columns);
+                self.console.marked(text, at_seconds);
             }
         }
         self.cut();

@@ -2,8 +2,12 @@
 //! draws nothing, the tools root, and the overlay, each of its keys delivered through the keys its screen declared, as
 //! the window delivers them. What it did is read from its state.
 
+use super::stats::{Columns, MOST_COLUMNS};
 use super::{Overlay, OverlayConfig};
 use crate::chat::Open;
+use crate::console::Shade;
+use crate::layout::Scale;
+use crate::meters::MOST_METER_COLUMNS;
 use crate::stop::Stop;
 use aethereal_actor::{Prepare, Render, Requests, Tick};
 use aethereal_data::{Budget, Json};
@@ -16,8 +20,8 @@ use aethereal_sessions::{Entry, Numbered, ShowEvents, ShowTabs, Speaker, State, 
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use aethereal_substrate::{Engine, Feed};
 use aethereal_tools::{Tools, ToolsSettings};
-use aethereal_ui::Stand;
 use aethereal_ui::widgets::Scroll;
+use aethereal_ui::{ItemKey, Segment, Stand};
 use aethereal_window::{Hosting, KeyEvent, Keyed, Mode, Opening, Surface, WindowFeed, WindowId, Windows};
 use core::num::NonZeroUsize;
 use core::time::Duration;
@@ -310,6 +314,45 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
     assert_eq!(line, "", "Alt-1 types nothing into the line");
     assert_eq!(trusted, 1, "once the hub lists the sessions, `new_session` is a tool the console's own tab runs");
     assert_eq!(harness.state(overlay)?.chats.open(), Open::Session(2), "the session made opens as it lists");
+
+    Ok(())
+}
+
+#[test]
+fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_laid_out() -> Result<(), Unheard> {
+    // Catches a scrollback row drawn on one line and cut at the console's edge, or laid out wider than the scrollback,
+    // now that the library wraps it rather than the console cutting it into rows of so many characters; and charts cut
+    // into another count of columns than the boxes the library last laid them out in hold, as a path that names
+    // another node than the frame chart or a meter's graph, or counts never read from the layout, would cut them.
+    let (mut harness, held) = program()?;
+    let on = held.window.window();
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    let long = "a long line of words ".repeat(30);
+    entered(&mut harness, on, long.trim_end())?;
+
+    let overlay = harness.root::<Overlay>();
+    let state = harness.state(overlay)?;
+    let echo = state.console.rows().find(|row| row.shade == Shade::Raised).map(|row| row.number);
+    let Some(echo) = echo else {
+        panic!("the line entered is echoed");
+    };
+    let row = super::view::scrollback_path().child(Segment::Item(ItemKey::from(echo))).child(Segment::Place(0));
+    let laid = |path| state.ui.laid(&path).expect("laid out");
+    let (row, view, line) = (laid(row), laid(super::view::scrollback_path()), laid(super::view::sign_path()));
+    let (chart, meter) = (laid(super::view::chart_path()), laid(super::view::meter_graph_path()));
+    let across =
+        |box_laid: aethereal_ui::Laid, most| Scale(box_laid.scale).columns_across(box_laid.content.width(), most);
+
+    assert!(row.rect.height() >= 2.0 * line.content.height(), "the line wraps onto several: {row:?}");
+    assert!(row.rect.width() <= view.content.width(), "the row stands within the scrollback: {row:?} {view:?}");
+    let expected = Columns { chart: across(chart, MOST_COLUMNS), meters: across(meter, MOST_METER_COLUMNS) };
+    assert_eq!(state.columns, expected);
+    assert!(expected.chart > expected.meters, "the frame chart is the band's widest graph: {expected:?}");
 
     Ok(())
 }

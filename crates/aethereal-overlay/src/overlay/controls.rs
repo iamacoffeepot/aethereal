@@ -13,7 +13,6 @@ use super::Overlay;
 use super::chat::Reports;
 use super::view::{OverlaySends, prompt_path, scrollback_path, transcript_path};
 use crate::chat::Open;
-use crate::layout::Layout;
 use crate::layout::{LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE};
 use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
@@ -72,8 +71,8 @@ impl Controls for Overlay {
                 self.tell(turn, chat)
             }
             COMPLETE_KEY if console => {
-                let (caret, columns) = (self.caret(), self.columns());
-                self.console.complete(caret, columns);
+                let caret = self.caret();
+                self.console.complete(caret);
                 Ok(())
             }
             "ArrowUp" if console => {
@@ -106,7 +105,7 @@ impl Overlay {
     #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
     pub(super) fn enter(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
         let (command, reports) = match self.chats.open() {
-            Open::Console => (self.console.submitted(&line, self.columns()), Reports::Here),
+            Open::Console => (self.console.submitted(&line), Reports::Here),
             Open::Session(session) => self.chatted(turn, session, &line)?,
         };
         let end = Key { code: String::from("End"), key: String::from("End"), repeat: false, held: Held::default() };
@@ -204,10 +203,5 @@ impl Overlay {
         }
 
         Ok(())
-    }
-
-    /// How many characters wide the console's rows are on the window as it is now.
-    pub(super) fn columns(&self) -> usize {
-        Layout::of(self.ui.viewport()).console_columns()
     }
 }

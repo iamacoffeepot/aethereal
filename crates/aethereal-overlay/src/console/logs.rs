@@ -107,8 +107,10 @@ impl Alerts {
 
     /// The gutter's line of the counts: `alerts` dim, then each count that is not zero flush right as the rows'
     /// values are, `! N` in the warning's ink and `× N` in the error's, as IBM Plex Mono has no `⚠` or `✕`; and
-    /// `no alerts` dim when both are zero, so the line is never blank.
-    pub fn pieces(self) -> Vec<Piece> {
+    /// `no alerts` dim when both are zero, so the line is never blank; and `after` at its end, the counts padded short
+    /// by as much, so the line stays the gutter's width and the gutter, sized to its lines, as wide as every other.
+    pub fn pieces(self, after: Vec<Piece>) -> Vec<Piece> {
+        let trailing: usize = after.iter().map(|piece| piece.text.chars().count()).sum();
         let mut counts = Vec::new();
         if self.warnings > 0 {
             counts.push(Piece::new(&format!("! {}", self.warnings), Ink::Warn));
@@ -121,13 +123,12 @@ impl Alerts {
             counts.push(Piece::new(&format!("× {}", self.errors), Ink::Error));
         }
         if counts.is_empty() {
-            return vec![Piece::new("no alerts", Ink::Dim)];
+            return [vec![Piece::new("no alerts", Ink::Dim)], after].concat();
         }
         let written: usize = counts.iter().map(|piece| piece.text.chars().count()).sum();
-        let pad = GUTTER_CHARACTERS.saturating_sub(ALERTS_LABEL.len() + written);
-        let mut pieces = vec![Piece::new(ALERTS_LABEL, Ink::Dim), Piece::new(&" ".repeat(pad), Ink::Dim)];
-        pieces.extend(counts);
+        let pad = GUTTER_CHARACTERS.saturating_sub(ALERTS_LABEL.len() + written + trailing);
+        let pieces = vec![Piece::new(ALERTS_LABEL, Ink::Dim), Piece::new(&" ".repeat(pad), Ink::Dim)];
 
-        pieces
+        [pieces, counts, after].concat()
     }
 }

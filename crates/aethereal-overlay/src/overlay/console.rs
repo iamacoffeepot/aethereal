@@ -54,7 +54,7 @@ impl Overlay {
             }
             Err(refused) => {
                 let why = format!("the input was not put: {refused:?}");
-                self.console.refused(&why, self.columns());
+                self.console.refused(&why);
                 self.report::<_, J>(turn, reports, &why)?;
             }
         }
@@ -87,17 +87,16 @@ impl Handles<Answer<Called, Calling>> for Overlay {
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
         self.console.settled(&tool);
-        let columns = self.columns();
         let printed = match answered {
-            Answered::Yes(Called::Output(bytes)) => self.console.answered(&output, turn.read(&bytes), columns),
-            Answered::Yes(Called::Image { png, text }) => self.console.answered_image(turn.read(&png), &text, columns),
+            Answered::Yes(Called::Output(bytes)) => self.console.answered(&output, turn.read(&bytes)),
+            Answered::Yes(Called::Image { png, text }) => self.console.answered_image(turn.read(&png), &text),
             Answered::Yes(Called::Refused(why)) => {
-                self.console.refused(&why, columns);
+                self.console.refused(&why);
                 why
             }
             Answered::No(why) => {
                 let why = format!("the tools root did not answer: {why:?}");
-                self.console.refused(&why, columns);
+                self.console.refused(&why);
                 why
             }
         };

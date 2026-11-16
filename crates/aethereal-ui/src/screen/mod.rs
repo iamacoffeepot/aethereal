@@ -445,6 +445,16 @@ impl Screen {
         self.viewport
     }
 
+    /// Where its last layout put the widget at `path`: its box, content box, and clip in the screen's pixels, and the
+    /// UI scale it was laid out at. What a screen sizes from its layout rather than its window, as a chart cut into as
+    /// many columns as its box holds, reads it here, a layout behind: a view builds its tree before that tree is laid
+    /// out, so what it reads is the box the tree before it was given. `None` for a path the last layout laid nothing
+    /// at: before the first, for a widget not shown, and after the screen moved onto new code, until it lays out again.
+    #[must_use]
+    pub fn laid(&self, path: &KeyPath) -> Option<Laid> {
+        self.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| *laid)
+    }
+
     /// Sets how big the screen is and what it draws into: a change lays it out at the next `Prepare` though its tree
     /// is the same, and a frame of another size is written to the program's uniform.
     pub fn resize(&mut self, viewport: Viewport) -> Orders {

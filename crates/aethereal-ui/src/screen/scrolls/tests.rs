@@ -113,8 +113,7 @@ fn frame(screen: &mut Screen, keys: &[u64]) -> (Outcome, Vec<ItemKey>, Vec<Order
 
 /// Where the screen's last layout put the widget at `path`.
 fn placed(screen: &Screen, path: &KeyPath) -> Laid {
-    let found = screen.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| *laid);
-    let Some(laid) = found else {
+    let Some(laid) = screen.laid(path) else {
         panic!("{path:?} is laid out");
     };
 

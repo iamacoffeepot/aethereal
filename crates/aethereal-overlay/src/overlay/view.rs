@@ -36,12 +36,11 @@ use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
     DIVIDER_PIXELS, GAP_PIXELS, GRIP_PIXELS, LEFT_SHARE, Layout, METER_INSET_PIXELS, PADDING_PIXELS, SECTION_PIXELS,
     STRIP_PADDING_PIXELS, TAB_BREAK_PIXELS, TAB_DIVIDER_PIXELS, TAB_GAP_PIXELS, TAB_ICON_GAP_PIXELS, TAB_ICON_PIXELS,
-    TAB_PADDING_PIXELS, TAB_SIDE_PIXELS, TEXT_PIXELS, advance_pixels, gutter_pixels, meter_gutter_pixels,
+    TAB_PADDING_PIXELS, TAB_SIDE_PIXELS, TEXT_PIXELS, WORD_GAP_PIXELS,
 };
 use crate::lines::{LineRows, LinesShown};
-use crate::meters::{self, MOST_METER_COLUMNS, Meter, MeterDrawn, MeterGraph};
-use crate::overlay::stats::MOST_COLUMNS;
-use crate::widgets::{Grip, Printed, Shape, StatusIcon, TabButton, Tint, runs_of};
+use crate::meters::{self, Meter, MeterDrawn, MeterGraph};
+use crate::widgets::{Grip, Hint, Printed, Shape, StatusIcon, TabButton, Tint, runs_of};
 use aethereal_actor::{Asks, Fault, Level, Path, Tells, ToType, Turn};
 use aethereal_link::Link;
 use aethereal_render::Renderer;
@@ -51,11 +50,27 @@ use aethereal_sessions::{Chat, engine_words};
 use aethereal_tools::{CallTool, Tools};
 use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
-use aethereal_ui::widgets::DELAY;
+use aethereal_ui::widgets::{DELAY, Flow, Link as RunLink, Rich};
 use core::f64::consts::TAU;
 
 /// The overlay's root, the window, and the console's column within it, as the markup places them.
 const CONSOLE: [Segment; 2] = [Segment::Place(0), Segment::Place(1)];
+
+/// The band's row of its two columns, as the markup places it: in the window, the stack first in it, second in that.
+const BAND: [Segment; 3] = [Segment::Place(0), Segment::Place(0), Segment::Place(1)];
+
+/// The path of the frame chart: in the band's left column, its first, in the row first in it, first.
+pub fn chart_path() -> KeyPath {
+    KeyPath::of(&[BAND[0], BAND[1], BAND[2], Segment::Place(0), Segment::Place(0), Segment::Place(0)])
+}
+
+/// The path of the first meter's graph, every meter's as wide: in the band's right column, its third, the meter's
+/// row, keyed by its number, first.
+pub fn meter_graph_path() -> KeyPath {
+    let first = Segment::Item(ItemKey::from(Meter::ALL[0].index()));
+
+    KeyPath::of(&[BAND[0], BAND[1], BAND[2], Segment::Place(2), first, Segment::Place(0)])
+}
 
 /// The path of the scroll the scrollback's rows are in: the console's second child.
 pub fn scrollback_path() -> KeyPath {
@@ -71,6 +86,11 @@ pub fn transcript_path() -> KeyPath {
 /// first.
 pub fn prompt_path() -> KeyPath {
     KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(5), Segment::Place(1), Segment::Place(0)])
+}
+
+/// The path of the prompt's mark, one line of the console's text: in the prompt's strip, first.
+pub(super) fn sign_path() -> KeyPath {
+    KeyPath::of(&[CONSOLE[0], CONSOLE[1], Segment::Place(5), Segment::Place(0)])
 }
 
 /// `left`, `right`, `top`, and `bottom` logical pixels of padding.
@@ -126,7 +146,7 @@ fn inset(row: &TranscriptRow) -> Edges<Space> {
 
 /// The padding inside a scrollback's row: either side of one of the owner's lines, as a transcript's turn is inset, so
 /// its text stands clear of its shade's edge, and none around any other. A line the owner entered is printed as one
-/// row for each line it wraps to, so none is padded above or below, which would part its rows.
+/// row for each of its lines, so none is padded above or below, which would part its rows.
 fn sides(row: &Shown<'_>) -> Edges<Space> {
     match row.shade() {
         Shade::Raised => padded(GAP_PIXELS, GAP_PIXELS, 0.0, 0.0),
@@ -204,8 +224,9 @@ aethereal_ui::style! {
     pub right { grow: 1.0, padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, 0.0) }
     /// A graph of the left column: as wide as its row leaves it beside its gutter.
     pub graph { grow: 1.0 }
-    /// The gutter beside a graph of the left column: its characters, a section's space after the graph.
-    pub gutter { width: Length::Pixels(gutter_pixels()), shrink: 0.0, padding: padded(SECTION_PIXELS, 0.0, 0.0, 0.0) }
+    /// The gutter beside a graph of the left column: as wide as its lines, each as many characters as every gutter's,
+    /// a section's space after the graph.
+    pub gutter { shrink: 0.0, padding: padded(SECTION_PIXELS, 0.0, 0.0, 0.0) }
     /// A line of figures beneath a graph, a gap beneath it.
     pub figures: mono { margin: spaced(GAP_PIXELS, 0.0) }
     /// The band's panel, so the program shows behind it.
@@ -225,12 +246,8 @@ aethereal_ui::style! {
         align_self: SelfAlign::Own(Alignment::Stretch),
         margin: spaced(METER_INSET_PIXELS, METER_INSET_PIXELS),
     }
-    /// A meter's gutter: its characters, a character's space after the graph.
-    pub meter_gutter: mono {
-        width: Length::Pixels(meter_gutter_pixels()),
-        shrink: 0.0,
-        padding: padded(advance_pixels(), 0.0, 0.0, 0.0),
-    }
+    /// A meter's gutter: as wide as its line, as many characters as every gutter's, a word's space after the graph.
+    pub meter_gutter: mono { shrink: 0.0, padding: padded(WORD_GAP_PIXELS, 0.0, 0.0, 0.0) }
     /// The console's panel, beneath the band: its height is the overlay's, set by dragging its grip.
     pub console {}
     /// The seam between the band and the console, a grip a few pixels tall for dragging over its whole width: an inset
@@ -251,9 +268,9 @@ aethereal_ui::style! {
     pub said: mono {}
     /// One of the owner's lines: its tag, then its text.
     pub turn { width: Length::Share(1.0) }
-    /// An owner's line's tag, who typed it and the prompt mark: a label in its own colour, unbroken, a character's space
+    /// An owner's line's tag, who typed it and the prompt mark: a label in its own colour, unbroken, a word's space
     /// after it, as a text measures no space at its end.
-    pub tag: mono { shrink: 0.0, padding: padded(0.0, advance_pixels(), 0.0, 0.0) }
+    pub tag: mono { shrink: 0.0, padding: padded(0.0, WORD_GAP_PIXELS, 0.0, 0.0) }
     /// An owner's line's text, as wide as the row leaves it.
     pub turn_text: said { grow: 1.0 }
     /// A divider across a transcript: a line either side of its label, centred down the row.
@@ -332,8 +349,8 @@ aethereal_ui::style! {
     }
     /// The line typed.
     pub typed: mono {}
-    /// The prompt before the line, a character's space after it, as a text measures no space at its end.
-    pub sign: typed { padding: padded(0.0, advance_pixels(), 0.0, 0.0) }
+    /// The prompt before the line, a word's space after it, as a text measures no space at its end.
+    pub sign: typed { padding: padded(0.0, WORD_GAP_PIXELS, 0.0, 0.0) }
     /// The line, as wide as the strip leaves it.
     pub line { grow: 1.0 }
 }
@@ -388,7 +405,13 @@ aethereal_ui::view! { Overlay, ui,
                 keeps: Keeps::End,
                 items: self.rows() as row key row.number(),
                 Column { style: printed_row { background: self.printed_shade(row), padding: sides(row) },
-                    Printed { style: mono, runs: self.printed_runs(row) }
+                    Rich {
+                        style: mono,
+                        runs: self.printed_runs(row),
+                        links: self.unlinked(),
+                        flow: Flow::Wraps,
+                        link: self.unraised(),
+                    }
                 }
             }
             Scroll { ..,
@@ -447,7 +470,7 @@ aethereal_ui::view! { Overlay, ui,
                         change => self.edit(),
                         submit => self.enter(),
                     }
-                    Printed { style: mono, runs: self.hint_runs() }
+                    Hint { style: mono, runs: self.hint_runs() }
                 }
                 Printed { style: mono, runs: self.running_runs() }
             }
@@ -577,6 +600,18 @@ impl Overlay {
     /// The scrollback's row `row`'s runs.
     pub(super) fn printed_runs(&self, row: &Shown<'_>) -> Vec<Run> {
         row.runs(&self.palette)
+    }
+
+    /// The links of a scrollback's row: none, as nothing printed there leads anywhere.
+    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
+    pub(super) fn unlinked(&self) -> Vec<RunLink> {
+        Vec::new()
+    }
+
+    /// What a scrollback's row raises as a link is pressed: nothing, as it has none.
+    #[allow(clippy::unused_self, reason = "markup reads a computed value through a `&self` method")]
+    pub(super) const fn unraised(&self) -> Raises<OverlayEvent> {
+        Raises::Nothing
     }
 
     /// What the transcript's row `row` is filled with.
@@ -726,7 +761,7 @@ impl Overlay {
 
     /// What the frame chart shows: its columns as last cut, where they stand, the budget, and the marks.
     pub(super) fn chart(&self) -> ChartShown {
-        let count = self.layout().chart_columns(MOST_COLUMNS);
+        let count = self.columns.chart;
 
         ChartShown {
             columns: self.frames.columns().collect(),
@@ -744,13 +779,14 @@ impl Overlay {
     /// The gutter's line beneath the median: the warnings and errors since the console was last opened, and how many
     /// sessions wait on the owner, in the mark's ink, when any does (ADR-0057).
     pub(super) fn alerts_runs(&self) -> Vec<Run> {
-        let mut pieces = self.alerts.pieces();
         let waiting = self.chats.waiting();
-        if waiting > 0 {
-            pieces.push(Piece::new(&format!(" {waiting}?"), Ink::Mark));
-        }
+        let after = if waiting > 0 {
+            vec![Piece::new(&format!(" {waiting}?"), Ink::Mark)]
+        } else {
+            Vec::new()
+        };
 
-        self.painted(pieces)
+        self.painted(self.alerts.pieces(after))
     }
 
     /// The figures beneath the frame chart.
@@ -765,7 +801,7 @@ impl Overlay {
 
     /// What the GPU's graph shows: its columns as last cut, where they stand, and the budget.
     pub(super) fn gpu_graph(&self) -> GpuShown {
-        let count = self.layout().chart_columns(MOST_COLUMNS);
+        let count = self.columns.chart;
         let columns = match &self.gpu {
             GpuTiming::Timed(times) => times.columns().collect(),
             GpuTiming::Unsupported => Vec::new(),
@@ -791,7 +827,7 @@ impl Overlay {
 
     /// What the lines' rows show: their columns as last cut, and where they stand.
     pub(super) fn line_rows(&self) -> LinesShown {
-        let count = self.layout().chart_columns(MOST_COLUMNS);
+        let count = self.columns.chart;
 
         LinesShown { columns: self.lines.columns().collect(), slide: self.frames.slide(count) }
     }
@@ -803,7 +839,7 @@ impl Overlay {
 
     /// Each meter's row: its graph or bar as last cut, and its line of text.
     pub(super) fn meters(&self) -> Vec<MeterRow> {
-        let count = self.layout().meter_columns(MOST_METER_COLUMNS);
+        let count = self.columns.meters;
         let slide = self.frames.slide(count);
         let gpu_bytes = self.histories.gpu_shown();
 
@@ -817,13 +853,34 @@ impl Overlay {
             .collect()
     }
 
-    /// The scrollback's rows, oldest first, after as many blank ones as the view has rows the printed ones do not fill.
+    /// The scrollback's rows, oldest first, after as many blank ones as the view has lines the printed rows do not
+    /// fill: so few printed rows stand at the view's foot, just above the prompt, as the scroll keeps to its end.
     pub(super) fn rows(&self) -> Vec<Shown<'_>> {
         let printed = self.console.rows();
-        let blank = self.layout().scrollback_rows(self.console_share).saturating_sub(printed.len());
+        let blank = self.scrollback_lines().saturating_sub(printed.len());
         let blanks = (0..blank).rev().map(|back| Shown::Blank(u64::MAX - u64::try_from(back).unwrap_or(u64::MAX)));
 
         blanks.chain(printed.map(Shown::Printed)).collect()
+    }
+
+    /// How many lines of the console's text the scrollback's view holds: its content box's height, as the screen last
+    /// laid it out, over the height of the prompt's mark, one line of the same text, laid out with it. A row that wraps
+    /// takes more than a line, so the blank rows then overfill the view by as much, which the scroll, kept to its end,
+    /// shows nothing of. Before both are laid out, as the console first opens, as many as the window has pixels down,
+    /// more than any view of it holds, so the newest row stands at the view's foot from the first frame; after a resize
+    /// or a drag of the grip, the view's height before it, a frame behind.
+    fn scrollback_lines(&self) -> usize {
+        let view = self.ui.laid(&scrollback_path()).map(|laid| laid.content.height());
+        let line = self.ui.laid(&sign_path()).map(|laid| laid.content.height());
+        let fit = match (view, line) {
+            (Some(view), Some(line)) if line > 0.0 => (view / line).floor(),
+            _ => self.ui.viewport().size.y,
+        };
+        // A count of lines down a window is some thousands at most, which a usize holds; a negative room fits none.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let lines = fit.max(0.0) as usize;
+
+        lines
     }
 
     /// The line as typed.
@@ -845,14 +902,13 @@ impl Overlay {
     }
 
     /// The completion of the word before the caret, faint, set after the line as typed, which is drawn clear, so the
-    /// completion stands just ahead of the line in the mono face: none once the line runs onto a second line, where the
-    /// line wraps as its text input lays it out and the hint would not.
+    /// completion stands just ahead of the line in the mono face: none once the line is broken onto a second line; and
+    /// the hint draws itself only where it fits its box on one line ([`Hint`]), so never where the text input wraps the
+    /// line and the hint would not.
     pub(super) fn hint_runs(&self) -> Vec<Run> {
         let ahead = self.console.completion_ahead(self.caret());
-        let line = self.console.line();
-        let broken = line.contains('\n');
-        let wraps = line.chars().count() + ahead.chars().count() >= self.columns();
-        let hidden = ahead.is_empty() || broken || wraps;
+        let broken = self.console.line().contains('\n');
+        let hidden = ahead.is_empty() || broken;
         if hidden {
             return self.painted(Vec::new());
         }

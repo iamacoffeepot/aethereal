@@ -31,8 +31,12 @@ pub enum Command {
     Refused(String),
 }
 
-/// What `line` comes to among the tools of `sheets`, `help` laid out `width` characters wide.
-pub fn command(line: &str, sheets: &Sheets, width: usize) -> Command {
+/// How many characters wide `help` lays its columns out: a width that reads at a glance. The scrollback wraps a row of
+/// it again at the console's own width, as it does every row, where the console is narrower.
+const HELP_CHARACTERS: usize = 120;
+
+/// What `line` comes to among the tools of `sheets`, `help` laid out [`HELP_CHARACTERS`] wide.
+pub fn command(line: &str, sheets: &Sheets) -> Command {
     let words = match split_words(line) {
         Ok(words) => words,
         Err(error) => return Command::Refused(error.to_string()),
@@ -41,7 +45,7 @@ pub fn command(line: &str, sheets: &Sheets, width: usize) -> Command {
         return Command::Blank;
     };
     match first.as_str() {
-        HELP => help(rest, &sheets.tools, width),
+        HELP => help(rest, &sheets.tools, HELP_CHARACTERS),
         CLEAR => Command::Clear,
         tool => call(tool, rest, sheets),
     }

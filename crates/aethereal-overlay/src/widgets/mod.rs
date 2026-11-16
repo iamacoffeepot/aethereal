@@ -1,6 +1,7 @@
 //! The overlay's own primitives that draw nothing of the band's charts (ADR-0056: Your own widgets): [`Printed`], text
-//! in pieces of their own colours, as the gutters, the figures, and the scrollback's rows are, which the library's
-//! `Text`, in its style's one colour, does not draw; and [`Tint`], a box filled with its style's colour that the pointer passes
+//! in pieces of their own colours on lines it never breaks, as the gutters and the figures are, which the library's
+//! `Text`, in its style's one colour, does not draw, and `Rich`, which the scrollback's rows are, wraps; [`Hint`], the
+//! completion ahead of the console's line, drawn only where it fits on one; and [`Tint`], a box filled with its style's colour that the pointer passes
 //! through, as the band's panel and the lines that part its sections are, where a style's background would block the
 //! pointer from the program beneath; and [`Grip`], the line between the band and the console, which a drag moves; and
 //! [`TabButton`], a session tab, and [`StatusIcon`], the shape before its title that marks the session's status. Each
@@ -8,10 +9,12 @@
 //! drawing (`chart`, `gpu`, `lines`, `meters`), and paint what it fills ([`paint`]).
 
 mod grip;
+mod hint;
 mod icon;
 mod tab;
 
 pub use grip::Grip;
+pub use hint::Hint;
 pub use icon::{Shape, StatusIcon};
 pub use tab::TabButton;
 

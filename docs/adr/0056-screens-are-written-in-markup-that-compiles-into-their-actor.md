@@ -312,6 +312,7 @@ impl<E: Event> Widget for Button<E> {
 - **A text tells layout its size** through Taffy's measure step. It is measured with the font's metrics, asked of the renderer once for each font, and with the same layout code the renderer draws text with, so the measured size is the drawn size (see Consequences).
 - **Sizes are logical pixels times a UI scale,** so one scale setting enlarges everything without touching markup.
 - **A root screen learns the window's size from the window, and a child screen learns its size from its parent** (see Child actors). A size change is mail, and costs one rebuild.
+- **A screen answers where its last layout put a widget.** `Screen::laid(path)` gives the widget at `path` its box, its content box, and its clip in the screen's pixels, with the UI scale it was laid out at, or nothing where the last layout placed nothing: before the first, for a widget not shown, and after the screen moved onto new code, until it lays out again. A view that sizes what it shows by a widget's box rather than the window's, as the dev overlay cuts its charts into as many columns as their boxes hold (ADR-0053), reads it there, never a copy of the library's own sizes or a font's metrics. A view is built before its tree is laid out, so what it reads is the box the tree before it was given: after a resize, the old box, for one `Prepare`.
 - **Taffy is pinned to an exact version, without default features.** The library calls Taffy's algorithms over its own tree and does not use Taffy's tree type.
 
 ### Focus and keys

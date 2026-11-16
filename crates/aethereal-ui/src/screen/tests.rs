@@ -323,6 +323,33 @@ fn a_tree_taken_in_after_input_lays_out_as_it_stands() {
     let _ = screen.prepare(wide(40.0), &[]);
 
     let path = KeyPath::of(&[Segment::Place(0), Segment::Place(0)]);
-    let placed = screen.unkept.placed.iter().find(|(placed, _)| *placed == path).map(|(_, laid)| laid.rect.width());
+    let placed = screen.laid(&path).map(|laid| laid.rect.width());
     assert_eq!(placed, Some(40.0));
+}
+
+#[test]
+fn laid_answers_the_box_the_last_layout_gave_a_widget() {
+    // Catches a screen that answers the box a widget was given before the last layout, so a view sizing itself by it
+    // stays at the window's old size after a resize; one that answers another widget's box; and one that answers a box
+    // for a widget no layout placed.
+    let mut screen = screen();
+    let half = Style { width: Length::Share(0.5), ..filled(Colour::opaque(1.0, 0.0, 0.0)) };
+    let tree = || stack(vec![Node::new(Segment::Place(0), Stack, half.clone(), Vec::new())]);
+    let path = KeyPath::of(&[Segment::Place(0), Segment::Place(0)]);
+    let unplaced = KeyPath::of(&[Segment::Place(0), Segment::Place(1)]);
+    let before = screen.laid(&path);
+    let prepared = screen.prepare(tree(), &[]);
+    answered(&mut screen, &prepared.orders, false);
+    let first = screen.laid(&path).map(|laid| laid.rect.width());
+
+    let _ = screen.resize(Viewport::window(400, 300, 1.0));
+    let stale = screen.laid(&path).map(|laid| laid.rect.width());
+    let _ = screen.prepare(tree(), &[]);
+    let resized = screen.laid(&path).map(|laid| laid.rect.width());
+
+    assert_eq!(before, None, "nothing is laid out before the first layout");
+    assert_eq!(first, Some(100.0), "half the 200 pixels across");
+    assert_eq!(stale, Some(100.0), "a resize answers the last layout's box until the screen lays out again");
+    assert_eq!(resized, Some(200.0), "half the 400 pixels across");
+    assert_eq!(screen.laid(&unplaced), None);
 }
