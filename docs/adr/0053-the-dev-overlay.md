@@ -145,6 +145,7 @@ The greys share one hue and a low chroma, set by the theme; their lightness is f
 | Surface   | L     | For                                                                   |
 | --------- | ----- | --------------------------------------------------------------------- |
 | `deepest` | 0.160 | the tabs' strip                                                       |
+| `hover`   | 0.174 | a closed tab with the pointer over it                                 |
 | `inset`   | 0.188 | the prompt's well, the grip's well, and the open tab                  |
 | `band`    | 0.207 | the band's panel, at 85% opacity, so the game shows behind it         |
 | `sheet`   | 0.255 | the scrollback and the transcript, at 96%, as every console panel is  |
@@ -177,7 +178,7 @@ The accents are the same in every theme:
 | `fast`   | 0.450, 0.035, 188    | the chart's fastest bar                                             |
 | `median` | 0.775, 0.045, 167    | the chart's median bar; code in Claude's replies                    |
 | `slow`   | 0.500, 0.035, 80     | the chart's slowest bar                                             |
-| `lichen` | 0.775, 0.045, 167    | healthy lines and meters; the owner's sent lines; the open tab's underline |
+| `lichen` | 0.775, 0.045, 167    | healthy lines and meters; the owner's sent lines; the open tab's underline; a session starting, working, or compacting |
 | `input`  | 0.880, 0.055, 167    | the line being typed: its sign, its text, and its caret             |
 | `label`  | 0.650, 0.060, 250    | the engine's tag on the owner's sent lines                          |
 | `link`   | 0.740, 0.070, 245    | a link in Claude's replies                                          |
@@ -187,7 +188,7 @@ The accents are the same in every theme:
 
 The GPU's passes share one lightness and chroma, so they are told apart by hue alone, cycling in the order their labels were first heard; none is a bar of the frame chart, whose three keep their one meaning each. The frame chart's three keep their lightness apart on purpose, so the median stays brightest. Mark, warn, and error climb in chroma and fall in lightness as trouble grows. Every text is `Font::Mono`, so figures line up.
 
-The owner's sent lines read the same in the console's own tab and a session's: `lichen` text on the `raised` band, the tag (`local`, or another engine's name, dimmed) in `label`. The open tab is on `inset`, the tabs filling the strip's height, with a 2-pixel `lichen` underline along its bottom edge; the dividers between tabs stand in from the strip's top and foot. A compaction is a divider across the transcript, its label centred, `compacted · 182k → 31k tokens`, in `mark`, with a thin line either side in `mark` at 35%.
+The owner's sent lines read the same in the console's own tab and a session's: `lichen` text on the `raised` band, the tag (`local`, or another engine's name, dimmed) in `label`. The tabs keep their natural widths, each with 18 pixels either side of its label and 4 between one tab and the next, and either side of the line that parts them. The open tab is on `inset`, the tabs filling the strip's height, with a 2-pixel `lichen` underline along its bottom edge, stopping 10 pixels short of either side so two tabs never read as joined; a closed tab under the pointer is shaded `hover`; the dividers between tabs stand in from the strip's top and foot. Each session's tab marks its status with a small shape in a fixed 8-pixel slot before its title, so the title never moves: a ring in `lichen` while its container starts, a ring in `dim` while it is idle, a dot in `lichen` while a turn runs, a `lichen` ring half filled while it compacts, a dot in `mark` while an ask waits on the owner (over every other status), a short `faint` dash once it is stopped, and a small `error` square once its container is gone by no word of the hub's. Only starting and working move, a slow pulse of opacity, 1.4 seconds round. The console's own tab has none. A compaction is a divider across the transcript, its label centred, `compacted · 182k → 31k tokens`, in `mark`, with a thin line either side in `mark` at 35%.
 
 ### Where it lives
 

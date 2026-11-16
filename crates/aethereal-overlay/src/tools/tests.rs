@@ -45,12 +45,12 @@ fn set_theme_reads_its_word_and_switches_the_palette() {
     let listed = read("set_theme");
     let unknown = read("set_theme pink");
 
-    assert_eq!(stone, Some(ChooseTheme { theme: Some(Theme::Stone) }));
-    assert_eq!(listed, Some(ChooseTheme { theme: None }));
+    assert_eq!(stone.map(ChooseTheme::choice), Some(Choice::Switch(Theme::Stone)));
+    assert_eq!(listed.map(ChooseTheme::choice), Some(Choice::List));
     assert_eq!(unknown, None);
 
-    let (switched, answered) = chosen(&Palette::default(), &ChooseTheme { theme: Some(Theme::Stone) });
-    let (kept, listing) = chosen(&switched, &ChooseTheme { theme: None });
+    let (switched, answered) = chosen(&Palette::default(), Choice::Switch(Theme::Stone));
+    let (kept, listing) = chosen(&switched, Choice::List);
 
     assert_eq!(switched, Palette::new(Theme::Stone));
     assert_eq!(kept, switched);

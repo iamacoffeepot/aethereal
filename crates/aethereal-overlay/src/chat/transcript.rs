@@ -3,7 +3,7 @@
 //! fold opens or closes, or the engine learns which lines are its own.
 //!
 //! ```text
-//! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name:id >` at another
+//! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name >` at another
 //!                                     engine, on the raised band, another engine's tag dimmed
 //!                                     a subagent's events under the tool call that started it, folded until opened
 //!                                     compact_boundary a centred divider with its tokens; a turn begun with no line
@@ -13,12 +13,12 @@
 //! The entries are kept whole, so scrolling back builds the earlier rows from what the engine holds: the scroll builds
 //! only the rows in view.
 
-use super::read::{Read, Told, Under, read};
+use super::read::{Container, Read, Told, Under, read};
 use crate::colour::{Ink, Palette};
 use crate::console::{LOCAL, PROMPT_MARK, Shade};
 use aethereal_data::Plain;
 use aethereal_render::text::Run;
-use aethereal_sessions::{Numbered, Speaker, engine_name};
+use aethereal_sessions::{Numbered, Speaker, engine_words};
 use aethereal_ui::markdown::{Blocks, Document};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -106,6 +106,19 @@ impl Row {
             | Look::Reply { .. }
             | Look::Fold { .. } => Ink::Dim,
         }
+    }
+
+    /// Whether it is a line the owner typed at this engine, tagged `local`.
+    pub const fn is_own_turn(&self) -> bool {
+        matches!(self.look, Look::Turn { tone: Tone::Own, .. })
+    }
+
+    /// Whether it is a line the owner typed at another engine, tagged with that engine's name.
+    pub const fn is_other_turn(&self) -> bool {
+        matches!(
+            self.look,
+            Look::Turn { tone: Tone::Other | Tone::Written | Tone::Tool | Tone::Faint | Tone::Alert, .. }
+        )
     }
 
     /// Whether it is a line the owner typed, at this engine or another: set apart from Claude's on a shade of its own.
@@ -220,6 +233,17 @@ impl Transcript {
         });
 
         latest.unwrap_or(Compaction::Idle)
+    }
+
+    /// What the latest note that says anything of the session's container says: unsaid when none does.
+    pub fn container(&self) -> Container {
+        let latest = self.entries.values().flatten().rev().find_map(|read| match read.told {
+            Told::Note { container: Container::Unsaid, .. } => None,
+            Told::Note { container, .. } => Some(container),
+            _ => None,
+        });
+
+        latest.unwrap_or(Container::Unsaid)
     }
 
     /// Builds the rows again, the lines said at `mine` inked as its own. Each part under the main conversation is
@@ -346,7 +370,7 @@ fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32
             };
             vec![line(format!("{} {verb} ask {ask}", who(*by, mine)), Tone::Faint)]
         }
-        Told::Note { text, alert } => {
+        Told::Note { text, alert, .. } => {
             let tone = if *alert {
                 Tone::Alert
             } else {
@@ -398,12 +422,12 @@ fn thousands(tokens: u64) -> String {
     format!("{}k", tokens.saturating_add(500) / 1_000)
 }
 
-/// Who `by` is, as the engine that knows itself as `mine` names it: `local` for itself, another engine by its name,
-/// `mellow-snipe:4`, or who else wrote to the session.
+/// Who `by` is, as the engine that knows itself as `mine` names it: `local` for itself, another engine by its name's
+/// words alone, `mellow-snipe`, its id kept out of the transcript, or who else wrote to the session.
 fn who(by: Speaker, mine: Mine) -> String {
     match (by, mine) {
         (Speaker::Engine { engine }, Mine::Engine(own)) if engine == own => String::from(LOCAL),
-        (Speaker::Engine { engine }, Mine::Engine(_) | Mine::Unknown) => engine_name(engine),
+        (Speaker::Engine { engine }, Mine::Engine(_) | Mine::Unknown) => engine_words(engine),
         (Speaker::Caller, _) => String::from("[tools]"),
         (Speaker::Hub, _) => String::from("[hub]"),
     }

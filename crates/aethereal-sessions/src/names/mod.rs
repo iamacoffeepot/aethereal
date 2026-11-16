@@ -1,10 +1,11 @@
 //! What an engine is called in the chat (ADR-0057: The console is the chat): a name made from its id alone, so every
 //! engine calls the engine numbered 4 the same, `mellow-snipe:4`, and a person tells engines apart by a name rather
 //! than a bare number; an engine calls its own lines `local`. The id is kept in the name, so two engines whose words
-//! fall alike are still told apart.
+//! fall alike are still told apart where an engine is named in output and tools; a transcript's tags show the words
+//! alone, [`engine_words`], so the id stays out of the conversation's view.
 //!
 //! ```text
-//! id ──> mixed ──> top 6 bits: an adjective;  the next 6: a noun ──> "adjective-noun:id"
+//! id ──> mixed ──> top 6 bits: an adjective;  the next 6: a noun ──> "adjective-noun" ──> "adjective-noun:id"
 //! ```
 //!
 //! The words are fixed lists, and the mix a fixed function: a name is a pure function of the id, never drawn at random.
@@ -38,14 +39,20 @@ const NOUNS: [&str; 64] = [
 /// ratio's 32 bits.
 const SEED: u32 = 0x9e37_79b9;
 
-/// The name the chat calls the engine numbered `engine`: `adjective-noun:engine`.
+/// The name output and tools call the engine numbered `engine`: its words and its id, `adjective-noun:engine`.
 #[must_use]
 pub fn engine_name(engine: u32) -> String {
+    format!("{}:{engine}", engine_words(engine))
+}
+
+/// The words of the engine numbered `engine`'s name, without its id, `adjective-noun`: what a transcript's tag shows.
+#[must_use]
+pub fn engine_words(engine: u32) -> String {
     let mixed = mix(engine ^ SEED);
     let adjective = ADJECTIVES[word(mixed >> 26)];
     let noun = NOUNS[word(mixed >> 20)];
 
-    format!("{adjective}-{noun}:{engine}")
+    format!("{adjective}-{noun}")
 }
 
 /// The place in a list of 64 that the low six bits of `bits` name.
