@@ -9,7 +9,9 @@
 mod tests;
 mod words;
 
-pub use words::{ARCHIVE, ArchiveSession, CHAT_WORDS, NEW, NewSession, STOP, StopSession, chat_sheets};
+pub use words::{
+    ARCHIVE_SESSION, ArchiveSession, CHAT_WORDS, NEW_SESSION, NewSession, STOP_SESSION, StopSession, chat_sheets,
+};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{

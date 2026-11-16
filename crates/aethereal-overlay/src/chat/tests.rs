@@ -137,13 +137,15 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
 
 #[test]
 fn a_line_goes_to_claude_a_slash_line_runs_here_and_claude_codes_own_words_are_said() {
-    // Catches `/compact` run as one of the engine's tools rather than sent, a `/` command sent to Claude, and the
-    // chat's own words, `/stop`, `/new`, and `/archive`, noted in the session as a command run there.
+    // Catches `/compact` run as one of the engine's tools rather than sent, a `/` command sent to Claude, the chat's
+    // own words, `/stop_session`, `/new_session`, and `/archive_session`, noted in the session as a command run there,
+    // and a bare `/stop` taken as one of them.
     assert_eq!(typed("what do you see?"), Typed::Say(String::from("what do you see?")));
     assert_eq!(typed("/capture_frame --window 1"), Typed::Run(String::from("capture_frame --window 1")));
     assert_eq!(typed("/compact"), Typed::Say(String::from("/compact")));
-    assert_eq!(typed("/stop"), Typed::Own(String::from("stop")));
-    assert_eq!(typed("/new  work"), Typed::Own(String::from("new  work")));
+    assert_eq!(typed("/stop_session"), Typed::Own(String::from("stop_session")));
+    assert_eq!(typed("/new_session  work"), Typed::Own(String::from("new_session  work")));
+    assert_eq!(typed("/stop"), Typed::Run(String::from("stop")));
     assert_eq!(typed("   "), Typed::Blank);
 }
 

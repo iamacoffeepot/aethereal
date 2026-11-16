@@ -1,12 +1,12 @@
 //! How the overlay's actor serves the chat's words (ADR-0057: The console is the chat): the first time the hub lists
-//! the sessions, which it does only to an engine it trusts, the overlay offers `new`, `stop`, and `archive` to the
-//! engine's tools root with itself as their worker, as the chat they tell the link is its own. Each call of them is the
-//! owner's: one a session makes is refused.
+//! the sessions, which it does only to an engine it trusts, the overlay offers `new_session`, `stop_session`, and
+//! `archive_session` to the engine's tools root with itself as their worker, as the chat they tell the link is its own.
+//! Each call of them is the owner's: one a session makes is refused.
 
 use super::Overlay;
 use super::console::Offering;
 use crate::chat::Which;
-use crate::tools::{ARCHIVE, ArchiveSession, NEW, NewSession, STOP, StopSession, chat_sheets};
+use crate::tools::{ARCHIVE_SESSION, ArchiveSession, NEW_SESSION, NewSession, STOP_SESSION, StopSession, chat_sheets};
 use aethereal_actor::{Allows, Asks, Fault, Handles, Path, ToSender, ToType, Turn, path};
 use aethereal_data::{Budget, Plain, from_bytes, to_bytes};
 use aethereal_link::Link;
@@ -32,9 +32,11 @@ impl Overlay {
     /// What the word `call` names comes to: the chat it tells the link, or why it tells nothing.
     fn word(&mut self, call: &Call, input: &[u8]) -> Result<Chat, String> {
         match call.tool.as_str() {
-            NEW => read::<NewSession>(input).map(|new| self.chats.make(new.name)),
-            STOP => read::<StopSession>(input).and_then(|stop| self.chats.stop(&which(stop.session))),
-            ARCHIVE => read::<ArchiveSession>(input).and_then(|archive| self.chats.archive(&which(archive.session))),
+            NEW_SESSION => read::<NewSession>(input).map(|new| self.chats.make(new.name)),
+            STOP_SESSION => read::<StopSession>(input).and_then(|stop| self.chats.stop(&which(stop.session))),
+            ARCHIVE_SESSION => {
+                read::<ArchiveSession>(input).and_then(|archive| self.chats.archive(&which(archive.session)))
+            }
             other => Err(format!("the overlay has no tool named `{other}`")),
         }
     }

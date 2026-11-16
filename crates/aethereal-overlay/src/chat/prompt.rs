@@ -5,7 +5,8 @@
 //! ```text
 //! "what do you see?"            ──> Say
 //! "/capture_frame"              ──> Run "capture_frame", as the console runs a line, then Ran
-//! "/new work", "/stop"          ──> Own "new work": the chat's words, the engine's tools, run here and not noted
+//! "/new_session work"           ──> Own "new_session work": the chat's words, the engine's tools, run here, not noted
+//! "/new work", "/stop"          ──> Run "new work": not one of the chat's words, so run and noted as any other
 //! "/compact", "/context"        ──> Say, the line as typed: Claude Code's own commands
 //! ```
 

@@ -11,7 +11,8 @@
 //! a tab chosen, by a press, by its place, or the next or the one before ──> Close the one open, Open the chosen from
 //!              the last entry held
 //! a line ──> Say, Run here then Ran, or run here alone (`prompt`)
-//! the chat's words, the engine's tools `new`, `stop`, and `archive` ──> New, Interrupt, or Archive (`words`)
+//! the chat's words, the engine's tools `new_session`, `stop_session`, and `archive_session` ──> New, Interrupt,
+//!              or Archive (`words`)
 //! ```
 //!
 //! Until the hub lists the sessions, which it never does to an untrusted engine, the console is the engine's own, as it

@@ -283,11 +283,12 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
     }
     let overlay = harness.root::<Overlay>();
     let unknown = |harness: &mut Harness<Bench>| -> Result<usize, Unheard> {
-        let rows = harness.state(overlay)?.console.rows().filter(|row| row.text().contains("no tool is named `new`"));
+        let rows =
+            harness.state(overlay)?.console.rows().filter(|row| row.text().contains("no tool is named `new_session`"));
         Ok(rows.count())
     };
 
-    entered(&mut harness, on, "new work")?;
+    entered(&mut harness, on, "new_session work")?;
     let untrusted = unknown(&mut harness)?;
     let old = Tab { session: 1, name: String::from("old"), state: State::Idle, asking: 0 };
     harness.tell(overlay, &ShowTabs { tabs: vec![old.clone()] })?;
@@ -298,16 +299,16 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
     key(&mut harness, on, up("AltLeft", "Alt"))?;
     let chosen = harness.state(overlay)?.chats.open();
     let line = String::from(harness.state(overlay)?.console.line());
-    entered(&mut harness, on, "new work")?;
+    entered(&mut harness, on, "new_session work")?;
     let trusted = unknown(&mut harness)?;
     let made = Tab { session: 2, name: String::from("work"), state: State::Starting, asking: 0 };
     harness.tell(overlay, &ShowTabs { tabs: vec![old, made] })?;
     run(&mut harness, 3);
 
-    assert_eq!(untrusted, 1, "an engine the hub shows no chat has no `new`");
+    assert_eq!(untrusted, 1, "an engine the hub shows no chat has no `new_session`");
     assert_eq!(chosen, Open::Console, "Alt-1 opens the console's own tab");
     assert_eq!(line, "", "Alt-1 types nothing into the line");
-    assert_eq!(trusted, 1, "once the hub lists the sessions, `new` is a tool the console's own tab runs");
+    assert_eq!(trusted, 1, "once the hub lists the sessions, `new_session` is a tool the console's own tab runs");
     assert_eq!(harness.state(overlay)?.chats.open(), Open::Session(2), "the session made opens as it lists");
 
     Ok(())
