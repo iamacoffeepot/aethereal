@@ -111,13 +111,13 @@ pub(super) enum Activity {
 
 impl Session {
     /// A new session named `name`, about to start its first container.
-    pub fn new(name: String, opening: Held<Opened>) -> Self {
+    pub fn new(name: String, opening: Vec<Held<Opened>>) -> Self {
         Self {
             name,
             conversation: Conversation::Unbegun,
             runs: 1,
             transcript: Transcript::new(),
-            life: Life::Starting { run: 1, step: Step::Housing { made: 0 }, opening: vec![opening], lines: Vec::new() },
+            life: Life::Starting { run: 1, step: Step::Housing { made: 0 }, opening, lines: Vec::new() },
         }
     }
 

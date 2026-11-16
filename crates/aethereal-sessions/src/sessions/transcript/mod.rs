@@ -34,6 +34,12 @@ pub enum Entry {
     Interrupted { by: Speaker },
     /// Something the hub did with the session's container, or saw become of it.
     Hub(Note),
+    /// A `/` command the owner ran at the trusted engine `engine`, with the session's tab open, and what it printed:
+    /// written to the session at the head of the owner's next line, and starting no turn (ADR-0057).
+    Ran { engine: u32, line: String, printed: String },
+    /// The owner's answer to the ask numbered `ask`, written to the session as Claude Code's control response, and
+    /// who gave it.
+    Answered { ask: u64, allow: bool, by: Speaker },
 }
 
 /// Who wrote a line to a session.
@@ -44,6 +50,16 @@ pub enum Speaker {
     Caller,
     /// The hub itself, as it winds an idle session down.
     Hub,
+    /// The owner, at the trusted engine `engine`, whose line Claude reads tagged `[engine]` (ADR-0057).
+    Engine { engine: u32 },
+}
+
+/// A `/` command the owner ran at an engine, as the transcript holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran<'a> {
+    pub engine: u32,
+    pub line: &'a str,
+    pub printed: &'a str,
 }
 
 /// Something the hub did with a session's container, or saw become of it.
@@ -165,7 +181,7 @@ impl Transcript {
                     }
                     Heard::Init => self.turn = Turning::Running,
                     Heard::CompactBoundary => self.since = Since::Compacted,
-                    Heard::TaskStarted(_) | Heard::TaskEnded(_) | Heard::Other => {}
+                    Heard::TaskStarted(_) | Heard::TaskEnded(_) | Heard::Asked { .. } | Heard::Other => {}
                 }
             }
             Entry::Stdout { bytes, .. } => self.stdout_bytes += bytes + 1,
@@ -176,7 +192,7 @@ impl Transcript {
                 self.turn = Turning::Ended;
             }
             Entry::Said { .. } => self.turn = Turning::Running,
-            Entry::Interrupted { .. } | Entry::Hub(_) => {}
+            Entry::Interrupted { .. } | Entry::Hub(_) | Entry::Ran { .. } | Entry::Answered { .. } => {}
         }
         self.entries.push(numbered);
     }
@@ -193,6 +209,22 @@ impl Transcript {
         let start = self.entries.partition_point(|numbered| numbered.number <= after);
 
         self.entries[start..].iter().take(most).cloned().collect()
+    }
+
+    /// Each `/` command an owner ran since the last line an owner said, in order: what the next line folds in at its
+    /// head. A line of the hub's own is not an owner's.
+    #[must_use]
+    pub fn ran_since_said(&self) -> Vec<Ran<'_>> {
+        let said = self.entries.iter().rposition(|numbered| numbered.entry.is_owner_s_line());
+        let start = said.map_or(0, |place| place + 1);
+
+        self.entries[start..]
+            .iter()
+            .filter_map(|numbered| match &numbered.entry {
+                Entry::Ran { engine, line, printed } => Some(Ran { engine: *engine, line, printed }),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The bytes of the latest container's stdout and of its stderr the transcript holds.
@@ -217,6 +249,13 @@ impl Transcript {
 impl Default for Transcript {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Entry {
+    /// Whether it is a line an owner said: a caller's of the hub's tools, or one typed at an engine.
+    const fn is_owner_s_line(&self) -> bool {
+        matches!(self, Self::Said { by: Speaker::Caller | Speaker::Engine { .. }, .. })
     }
 }
 

@@ -366,6 +366,7 @@ impl Sessions {
             return Ok(());
         };
         turn.to(path::<Mcp>(())).send(&Dismiss { caller: Caller::Session { session } })?;
+        self.chats.forget(session);
         self.dirty(session);
         match then {
             Then::Rest { lines } => {

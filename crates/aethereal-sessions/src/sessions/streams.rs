@@ -172,8 +172,12 @@ impl Sessions {
         }
     }
 
-    /// What an event of Claude's in `session` says of its turns and tasks.
+    /// What an event of Claude's in `session` says of its turns and tasks, and what it asks the owner.
     fn heard<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, heard: Heard) -> Result<(), Fault> {
+        let heard = match heard {
+            Heard::Asked { request, tool, input } => return self.asked(turn, session, request, &tool, input),
+            other => other,
+        };
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
@@ -206,7 +210,7 @@ impl Sessions {
                     return self.settle(turn, session);
                 }
             }
-            Heard::CompactBoundary | Heard::Other => {}
+            Heard::CompactBoundary | Heard::Asked { .. } | Heard::Other => {}
         }
 
         Ok(())

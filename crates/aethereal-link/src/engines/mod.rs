@@ -306,9 +306,9 @@ impl Handles<Part<Accepting>> for Engines {
             turn.to(connection).send(&Shut)?;
             return Ok(());
         }
-        let config =
-            EngineConfig { connection, most_calls: self.settings.most_calls, most_bytes: self.settings.most_bytes };
         let id = self.next;
+        let (most_calls, most_bytes) = (self.settings.most_calls, self.settings.most_bytes);
+        let config = EngineConfig { id, connection, most_calls, most_bytes };
         let Some(following) = id.checked_add(1) else {
             // Every id has been given: no engine links again.
             turn.to(connection).send(&Shut)?;

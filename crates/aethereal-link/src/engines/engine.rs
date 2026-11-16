@@ -9,16 +9,18 @@ use aethereal_actor::{
     ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
+use aethereal_sessions::{Chat, Chatted, Joined, Numbered, Sessions, ShowAsk, ShowEvents, ShowTabs};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
 use aethereal_tools::Called;
 use core::mem;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-/// What an engine is made from: the connection accepted for it, and its limits.
+/// What an engine is made from: its id, which is its key, the connection accepted for it, and its limits.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.link.engine_config")]
 pub struct EngineConfig {
+    pub id: u32,
     pub connection: ActorRef<Accepted>,
     pub most_calls: u32,
     pub most_bytes: u32,
@@ -94,9 +96,16 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// Its end is its connection's: it closes when the connection hangs up, or sends a frame that does not read, or that
 /// is out of turn, and each call it holds is then answered `No`. Asked to [`Shut`] by `Engines`, it shuts the
 /// connection and closes.
+///
+/// It keeps whether the hub trusts the engine, as `Engines` answers the take of its token (ADR-0057). A trusted
+/// engine [`Joined`] the sessions as it links, and each chat frame it sends is told to them as [`Chatted`], with the
+/// engine's id added, so a frame names no engine and none can claim to be another; what the sessions show it is
+/// written down as [`Down::Sessions`], [`Down::Show`], and [`Down::Ask`]. A chat frame from an engine not trusted, or
+/// not yet, is dropped and logged, and nothing of the chat is written to one.
 #[derive(Bound)]
 #[kind(name = "aether.link.engine")]
 pub struct Engine {
+    id: u32,
     connection: ActorRef<Accepted>,
     most_calls: u32,
     most_bytes: u32,
@@ -150,6 +159,9 @@ impl Actor for Engine {
         DescribeEngine,
         CallEngine,
         Shut,
+        ShowTabs,
+        ShowEvents,
+        ShowAsk,
     );
     type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type EndSends = ();
@@ -160,6 +172,7 @@ impl Actor for Engine {
         reading.open(turn, config.connection.protocol(), Read, ())?;
 
         Ok(Self {
+            id: config.id,
             connection: config.connection,
             most_calls: config.most_calls,
             most_bytes: config.most_bytes,
@@ -182,10 +195,11 @@ impl Handles<Part<Reading>> for Engine {
         ToType<Accepted, Shut>,
         ToType<Engines, Shown>,
         Asks<Path<Engines>, TakeToken, Vouching>,
+        ToType<Sessions, Chatted>,
     );
 
-    /// A frame from the engine, in the order the link has them: `Hello` first, then sets and answers. A set that comes
-    /// while its token is being taken is kept, and told once it is.
+    /// A frame from the engine, in the order the link has them: `Hello` first, then sets, answers, and chat. A set that
+    /// comes while its token is being taken is kept, and told once it is.
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
@@ -199,6 +213,10 @@ impl Handles<Part<Reading>> for Engine {
                 turn.log(Level::Warn, format_args!("a frame from an engine did not read: {why:?}"));
                 return self.shut(turn);
             }
+        };
+        let up = match up.into_chat() {
+            Ok(chat) => return self.chatted(turn, chat),
+            Err(up) => up,
         };
         match (up, &mut self.said) {
             (Up::Hello { revision, name, token }, Said::Nothing) => self.greeted(turn, revision, name, token),
@@ -263,10 +281,11 @@ impl Handles<Answer<Wrote, Sent>> for Engine {
 }
 
 impl Handles<Answer<TokenFor, Vouching>> for Engine {
-    type Sends = (Asks<Writing, Write, Sent>, ToType<Engines, Shown>);
+    type Sends = (Asks<Writing, Write, Sent>, ToType<Engines, Shown>, ToType<Sessions, Joined>);
 
-    /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a token
-    /// `Engines` does not hold is refused, and the connection shut once the refusal is sent.
+    /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a trusted
+    /// engine joins the sessions, to be shown them, when the hub serves any. A token `Engines` does not hold is
+    /// refused, and the connection shut once the refusal is sent.
     fn handle(
         &mut self,
         (answered, Vouching): (Answered<TokenFor>, Vouching),
@@ -284,6 +303,71 @@ impl Handles<Answer<TokenFor, Vouching>> for Engine {
         let shown = shown(&name, &tools);
         self.said = Said::Linked { name, tools, trust };
         turn.to(turn.parent()).send(&shown)?;
+        let sessions = turn.found(&path::<Sessions>(()));
+        if let (true, Some(sessions)) = (trust.is_trusted(), sessions) {
+            let joined = Joined { engine: self.id, shown: turn.me().protocol() };
+            turn.to(sessions).send(&joined)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<ShowTabs> for Engine {
+    type Sends = (Asks<Writing, Write, Sent>,);
+
+    /// Every session, written down as `Sessions`, to a trusted engine alone.
+    fn handle(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if !self.is_trusted() {
+            turn.log(Level::Warn, format_args!("the sessions were not shown to engine {}, not trusted", self.id));
+            return Ok(());
+        }
+
+        self.write_down(turn, &Down::Sessions { list: tabs.tabs })
+    }
+}
+
+impl Handles<ShowAsk> for Engine {
+    type Sends = (Asks<Writing, Write, Sent>,);
+
+    /// An ask that waits for the owner, written down as `Ask`, to a trusted engine alone.
+    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if !self.is_trusted() {
+            turn.log(Level::Warn, format_args!("an ask was not shown to engine {}, not trusted", self.id));
+            return Ok(());
+        }
+        let ShowAsk { ask, session, what } = ask;
+
+        self.write_down(turn, &Down::Ask { ask, session, what })
+    }
+}
+
+impl Handles<ShowEvents> for Engine {
+    type Sends = (Asks<Writing, Write, Sent>,);
+
+    /// Events of a session's transcript, written down as `Show`, to a trusted engine alone: as many to a frame as fit
+    /// in one, and an event that fits in none, which a long tool's output can be, left out and logged.
+    fn handle(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if !self.is_trusted() {
+            turn.log(Level::Warn, format_args!("a transcript was not shown to engine {}, not trusted", self.id));
+            return Ok(());
+        }
+        let ShowEvents { session, events } = shown;
+        let mut pending: Vec<Vec<Numbered>> = vec![events];
+        while let Some(events) = pending.pop() {
+            let frame = Down::Show { session, events };
+            let bytes = match frames::written(&frame, self.most_bytes)? {
+                Written::Fits(bytes) => bytes,
+                Written::TooLarge => {
+                    let Down::Show { events, .. } = frame else {
+                        continue;
+                    };
+                    pending.extend(halves(events, self.id, turn));
+                    continue;
+                }
+            };
+            self.write(turn, bytes, false)?;
+        }
 
         Ok(())
     }
@@ -446,6 +530,57 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether the hub trusts the engine, its token taken.
+    fn is_trusted(&self) -> bool {
+        self.trust().is_some_and(Trust::is_trusted)
+    }
+
+    /// What the owner did at the engine, as a chat frame says: told to the sessions, with the engine's id, when the
+    /// engine is trusted, and dropped and logged otherwise, so code an untrusted engine runs never acts on a session
+    /// (ADR-0057). A chat frame before `Hello` is out of turn, as any frame is.
+    fn chatted<S, IT, IC>(&self, turn: &mut Turn<'_, Self, S>, chat: Chat) -> Result<(), Fault>
+    where
+        S: Allows<ToType<Accepted, Shut>, IT> + Allows<ToType<Sessions, Chatted>, IC>,
+    {
+        let id = self.id;
+        match &self.said {
+            Said::Linked { trust: Trust::Trusted, .. } => {
+                let Some(sessions) = turn.found(&path::<Sessions>(())) else {
+                    turn.log(Level::Info, format_args!("a chat frame from engine {id} was dropped: no sessions here"));
+                    return Ok(());
+                };
+                turn.to(sessions).send::<_, IC>(&Chatted { engine: id, chat })?;
+            }
+            Said::Linked { trust: Trust::Untrusted { session }, .. } => {
+                turn.log(Level::Warn, format_args!("a chat frame from engine {id}, session {session}'s, was dropped"));
+            }
+            Said::Vouching { .. } => {
+                turn.log(Level::Warn, format_args!("a chat frame from engine {id}, not yet trusted, was dropped"));
+            }
+            Said::Refused => {}
+            Said::Nothing => {
+                turn.log(Level::Warn, format_args!("an engine sent a chat frame before its `Hello`: {chat:?}"));
+                return self.shut::<_, IT>(turn);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Writes `frame` down the link, unless it is too large for one, which is logged and left out.
+    fn write_down<S, I>(&self, turn: &mut Turn<'_, Self, S>, frame: &Down) -> Result<(), Fault>
+    where
+        S: Allows<Asks<Writing, Write, Sent>, I>,
+    {
+        match frames::written(frame, self.most_bytes)? {
+            Written::Fits(bytes) => self.write::<_, I>(turn, bytes, false),
+            Written::TooLarge => {
+                turn.log(Level::Warn, format_args!("a frame too large for the link was not written to {}", self.id));
+                Ok(())
+            }
+        }
+    }
+
     /// Shuts the connection, and closes.
     fn shut<S, I>(&self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
@@ -456,6 +591,19 @@ impl Engine {
 
         Ok(())
     }
+}
+
+/// `events`, too many for one frame, as the halves to write in their place, the later first, as they are taken from
+/// the end: none for one event alone, which no frame holds, and which is logged as left out.
+fn halves<S>(mut events: Vec<Numbered>, engine: u32, turn: &mut Turn<'_, Engine, S>) -> Vec<Vec<Numbered>> {
+    if events.len() < 2 {
+        let numbers: Vec<u64> = events.iter().map(|numbered| numbered.number).collect();
+        turn.log(Level::Warn, format_args!("events {numbers:?} were too large to show engine {engine}, and left out"));
+        return Vec::new();
+    }
+    let later = events.split_off(events.len() / 2);
+
+    vec![later, events]
 }
 
 /// What an engine named `name`, holding `tools`, shows the agent.
