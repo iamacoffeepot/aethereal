@@ -356,7 +356,7 @@ impl Handles<Keyed> for Scene {
                 }
             }
             KeyEvent::KeyUp { .. } => self.held = self.held.saturating_sub(1),
-            KeyEvent::Text { .. } => {}
+            KeyEvent::Text { .. } | KeyEvent::Composing { .. } => {}
         }
 
         Ok(())
@@ -388,6 +388,7 @@ impl Handles<Event> for Scene {
             | Event::KeyDown { .. }
             | Event::KeyUp { .. }
             | Event::Text { .. }
+            | Event::Composing { .. }
             | Event::Moded(_)
             | Event::FocusGained
             | Event::CloseRequested

@@ -21,10 +21,12 @@
 //! [`Heard`] for the screen's handler to take in with its `&mut self` and its turn.
 
 mod held;
+mod presses;
 #[cfg(test)]
 pub(super) mod tests;
 
 pub(super) use held::Hold;
+pub(super) use presses::Presses;
 
 use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
@@ -35,7 +37,7 @@ use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Shape, Tree};
 use crate::widget::Built;
-use aethereal_actor::{Answered, Level};
+use aethereal_actor::{Answered, Level, Time};
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::Vec2;
 use aethereal_render::draw_list::{Entry, Pointer};
@@ -115,8 +117,9 @@ impl Screen {
     /// While a button is down, a press, move, or release through an entry the first press reached goes where that
     /// press reached, though the list has changed since and the entry's number names something else there. A move or
     /// release to a widget that has gone from the tree goes nowhere, and a grip of that widget lets go, landing nothing.
-    /// A release's `over` is read in the list last sent, as it was probed at the release.
-    pub fn pointed(&mut self, pointed: Pointed, me: ActorId) -> Heard {
+    /// A release's `over` is read in the list last sent, as it was probed at the release. A press taken in at `now`, the
+    /// time of the turn that takes it in, is counted with the presses before it in a row.
+    pub fn pointed(&mut self, pointed: Pointed, me: ActorId, now: Time) -> Heard {
         let mut heard = Heard::default();
         let Pointed { entry, event, .. } = pointed;
         let Some((listed, moved)) = self.reached_by(entry, event) else {
@@ -180,7 +183,10 @@ impl Screen {
             PointerEvent::PointerEntered => Pointing::Entered,
             PointerEvent::PointerLeft => Pointing::Left,
             PointerEvent::PointerMoved { x, y } => Pointing::Moved { at: at(x, y) },
-            PointerEvent::PointerDown { x, y, button } => Pointing::Down { at: at(x, y), button },
+            PointerEvent::PointerDown { x, y, button } => {
+                let presses = self.count_press(&path, Vec2::new(x, y), button, now);
+                Pointing::Down { at: at(x, y), button, presses }
+            }
             PointerEvent::PointerUp { x, y, button, over } => {
                 let over_it = self.is_over(&path, over, me);
                 let clicks = over_it && !dragged;
@@ -229,8 +235,9 @@ impl Screen {
     /// before its focus ([`Controls::FIRST`](crate::Controls::FIRST)), goes to the screen's own `key` alone; any other
     /// goes to the focused widget, then, when it passed it, to the focus keys, Tab and Escape, then to the screen's
     /// `key`. Typed text goes where the key that typed it went: to the focused widget, unless the screen's `key` took
-    /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. The modifiers
-    /// are watched as they go down and come up, whichever declaration they come through.
+    /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. What the input
+    /// method composes goes to the focused widget, as it follows no key of its own. The modifiers are watched as they go
+    /// down and come up, whichever declaration they come through.
     pub fn keyed(&mut self, keyed: Keyed, first: &[&str]) -> Heard {
         let mut heard = Heard::default();
         let Some(Listed::Keys(role)) = self.listing.get(place(keyed.entry)) else {
@@ -252,7 +259,13 @@ impl Screen {
                     self.input(&path, &mut heard, |widget, state, input| widget.typed(state, &text, input));
                 }
             }
-            KeyEvent::Text { .. } => {}
+            KeyEvent::Composing { text, caret } if screen => {
+                let focused = self.table.focus().clone();
+                if let Focus::On(path) = focused {
+                    self.input(&path, &mut heard, |widget, state, input| widget.composing(state, &text, caret, input));
+                }
+            }
+            KeyEvent::Text { .. } | KeyEvent::Composing { .. } => {}
         }
 
         heard

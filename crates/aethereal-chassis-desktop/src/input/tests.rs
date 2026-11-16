@@ -64,20 +64,25 @@ fn a_key_types_its_text_without_control_characters_and_never_in_a_chord() {
 #[test]
 fn a_composition_holds_back_key_text_and_sends_its_commit_once() {
     // Catches key text sent while an input method composes, which sends each character again with the commit; a
-    // commit not sent, or one that leaves the composition open, so every key typed after it is dropped; and a
-    // composition an empty preedit or a disabled input method ended left open, which drops keys' text for good.
+    // commit not sent, or one that leaves the composition open, so every key typed after it is dropped; a composition
+    // an empty preedit or a disabled input method ended left open, which drops keys' text for good; and a commit sent
+    // without first closing what was shown composing, which a field would show beside the committed text.
     let none = ModifiersState::empty();
-    let preedit = |text: &str| Ime::Preedit(String::from(text), None);
+    let preedit = |text: &str, cursor| Ime::Preedit(String::from(text), cursor);
+    let composing = |text: &str, caret| Event::Composing { text: String::from(text), caret };
+    let closed_up = vec![composing("", 0)];
 
-    let (open, sent) = composed(Composition::Closed, preedit("にほ"));
-    assert_eq!((open, sent), (Composition::Open, None));
+    let (open, sent) = composed(Composition::Closed, preedit("にほ", Some((3, 3))));
+    assert_eq!((open, sent), (Composition::Open, vec![composing("にほ", 3)]));
     assert_eq!(typed(Some("n"), none, open), None);
-    assert_eq!(composed(open, Ime::Enabled), (Composition::Open, None));
+    assert_eq!(composed(open, Ime::Enabled), (Composition::Open, Vec::new()));
+    assert_eq!(composed(open, preedit("にほ", None)).1, vec![composing("にほ", 6)]);
 
     let (closed, sent) = composed(open, Ime::Commit(String::from("日本")));
-    assert_eq!((closed, sent), (Composition::Closed, Some(String::from("日本"))));
+    let committed = vec![composing("", 0), Event::Text { text: String::from("日本") }];
+    assert_eq!((closed, sent), (Composition::Closed, committed));
     assert_eq!(typed(Some("w"), none, closed), Some(String::from("w")));
 
-    assert_eq!(composed(open, preedit("")), (Composition::Closed, None));
-    assert_eq!(composed(open, Ime::Disabled), (Composition::Closed, None));
+    assert_eq!(composed(open, preedit("", None)), (Composition::Closed, closed_up.clone()));
+    assert_eq!(composed(open, Ime::Disabled), (Composition::Closed, closed_up));
 }

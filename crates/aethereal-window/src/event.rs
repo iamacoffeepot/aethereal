@@ -32,6 +32,10 @@ pub enum Event {
     /// any dead key before it, or the string an input method committed. Sent after the `KeyDown` that typed it, and
     /// again for each repeat. Never a control character, never empty (ADR-0051).
     Text { text: String },
+    /// What the window's input method is composing and has not committed, as it stands: its text, and its caret, a
+    /// byte offset into it. An empty text says the composition closed, committed as `Text` or given up. Sent only while
+    /// the input method is allowed (ADR-0051), and to where typed text goes, so a text field shows it at its caret.
+    Composing { text: String, caret: u32 },
     /// The window's surface is now this size, or its screen this scale; or this is how it stands, sent as the actor
     /// subscribed.
     Resized(Surface),
@@ -54,7 +58,7 @@ impl Event {
     /// (ADR-0055).
     pub(crate) const fn is_keys(&self) -> bool {
         match self {
-            Self::KeyDown { .. } | Self::KeyUp { .. } | Self::Text { .. } => true,
+            Self::KeyDown { .. } | Self::KeyUp { .. } | Self::Text { .. } | Self::Composing { .. } => true,
             Self::PointerMoved { .. }
             | Self::PointerDown { .. }
             | Self::PointerUp { .. }

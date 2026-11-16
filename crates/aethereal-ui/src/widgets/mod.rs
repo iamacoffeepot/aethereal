@@ -27,6 +27,6 @@ pub use scroll::{Drag, Scroll, Scrolling};
 pub use slider::{Slider, Sliding};
 pub use tabs::{Header, Tab, Tabbing, Tabs};
 pub use text::Text;
-pub use text_input::{Editing, TextInput};
+pub use text_input::{Along, Composing, Editing, Enter, TextInput};
 pub use toggle::Toggle;
 pub use tooltip::{DELAY, Tooltip};

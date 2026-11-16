@@ -45,6 +45,9 @@ pub enum Event {
     /// any dead key before it, or the string an input method committed. Sent after the `KeyDown` that typed it, and
     /// again for each repeat. Never a control character, never empty.
     Text { text: String },
+    /// What the input method is composing and has not committed: its text, and its caret, a byte offset into it. An
+    /// empty text says the composition closed.
+    Composing { text: String, caret: u32 },
 }
 ```
 
@@ -58,7 +61,7 @@ pub enum Event {
 
 - **On each pressed key, the chassis pushes `KeyDown`, then `Text` of `KeyEvent.text` with its control characters removed,** unless that leaves nothing, or Ctrl or Super is held. winit's text counts every modifier but Ctrl (Ctrl+C types `"c"`), so the chassis keeps the modifiers winit last reported (`WindowEvent::ModifiersChanged`) and checks them itself.
 - **While a composition is open, a key's text is not sent.** A composition is open from a `Preedit` with text until a `Commit`, a `Preedit` with no text, or `Disabled`. The composed string is sent once, as `Text` of the `Commit`. So no character is sent twice.
-- **`Preedit` is not sent yet.** A program does not show the uncommitted text until then, and the input method's own candidate window shows it. Showing it inline is follow-on work (below).
+- **What is composing is sent as it changes, as `Composing { text, caret }`,** so a text field shows the uncommitted text at its caret: each `Preedit` with text as it stands, its caret where winit puts its cursor, or at its end when winit hides the cursor; and an empty `Composing` as the composition closes, by a `Preedit` with no text, `Disabled`, or a `Commit`, which sends it before the commit's `Text`, so a field drops what it showed before it types what was committed. `Composing` goes where typed text goes (ADR-0055), and a browser, which has no input method, never sends it.
 
 ### The browser
 
@@ -94,7 +97,6 @@ pub enum ImeAllowed { Allowed, Refused(Unset) }
 - **Each program that edits text owes the window an `AllowIme` when its field gains focus and again when it loses it.** One that forgets to stop it leaves the input method able to take game keys until it does. The dev overlay (ichor's console's successor) does this for itself.
 - **An agent tests a text field by performing `KeyDown` and `Text` together.** It cannot test an input method, which only a person's keyboard drives.
 - **Follow-on work this leaves open:**
-  - `Preedit` sent as an event, so a field shows the uncommitted text inline with its cursor;
   - placing the input method's candidate window at the text field (`set_ime_cursor_area`), which shows at the window's corner until then;
   - an input method in the browser, through an editable element the chassis keeps focused while it is allowed.
 

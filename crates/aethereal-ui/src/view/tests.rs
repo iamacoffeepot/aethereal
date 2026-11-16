@@ -112,7 +112,7 @@ aethereal_ui::view! { Shop, ui,
             Text { "{ware.name}" }
         }
         Text { show: self.open, "{{open}}" }
-        TextInput { text: self.query, change => self.search(), submit => self.buy() }
+        TextInput { text: self.query, most_lines: 1, enter: Enter::Submits, change => self.search(), submit => self.buy() }
         Toggle { on: self.muted, change => self.mute() }
         Slider { value: self.volume, min: 0.0, max: 1.0, step: 0.25, change => self.set_volume() }
         Tabs { selected: self.tab, change => self.open_tab(),
@@ -261,8 +261,7 @@ fn by_hand() -> Tree {
     let sold = node(Segment::Place(1), Tab { title: String::from("Sold") }, vec![text(Segment::Place(0), "sold")]);
     let window = Lines::Window { count: 2, at: vec![0] };
     let scroll = Scroll { axis: Axis::Column, lines: window.clone(), keeps: Keeps::Offset };
-    let input =
-        TextInput { text: String::from("pe"), change: ShopEvent::Search, submit: Raises::Event(ShopEvent::Buy) };
+    let input = TextInput::new("pe", ShopEvent::Search).submit(ShopEvent::Buy);
     let first = || text(Segment::Item(ItemKey::from(WareId(1))), "Apple");
     let children = vec![
         Node::new(Segment::Place(0), Text::new("Wares: 2"), title(), vec![]),

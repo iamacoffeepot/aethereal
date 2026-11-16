@@ -12,8 +12,9 @@ use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
 use crate::widget::{Arrange, Draws, Laid, Stateless, Widget};
 use crate::widgets::{Button, Column, Press, Scroll, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
-use aethereal_actor::{ProtocolRef, SeatNumber, Seated};
+use aethereal_actor::{ProtocolRef, SeatNumber, Seated, Time};
 use aethereal_data::ActorId;
+use aethereal_math::Vec2;
 use aethereal_render::draw_list::{Entry, Pointer};
 use aethereal_render::text::{Colour, Font};
 use aethereal_window::WindowId;
@@ -92,7 +93,7 @@ pub(in crate::screen) fn keys(screen: &Screen, role: Role) -> u32 {
 
 /// `event` through the entry `entry` of the screen's list.
 pub(in crate::screen) fn point(screen: &mut Screen, entry: u32, event: PointerEvent) -> Heard {
-    screen.pointed(Pointed { window: window(), entry, event }, me())
+    screen.pointed(Pointed { window: window(), entry, event }, me(), Time::ZERO)
 }
 
 /// A press of the main button at `x`, `y` through the entry `entry`.
@@ -655,4 +656,27 @@ fn tabs_raise_change_with_the_tab_chosen_and_never_open_one_themselves() {
     assert_eq!(first, vec![Raised::Index(Ev::Opened, 1)]);
     assert_eq!(again, vec![Raised::Index(Ev::Opened, 1)], "the open tab is still the screen's first");
     assert_eq!(back, vec![Raised::Index(Ev::Opened, 2)], "left from the first goes round to the last");
+}
+
+#[test]
+fn presses_soon_after_and_near_the_last_on_one_widget_count_in_a_row() {
+    // Catches presses counted by place alone, so two clicks a minute apart select a word; counted across widgets, so a
+    // click on one field and then another selects in the second; and a count that never starts again.
+    let mut screen = screen();
+    let one = KeyPath::of(&[Segment::Place(0)]);
+    let other = KeyPath::of(&[Segment::Place(1)]);
+    let at = |millis: u64| Time::from_nanos(millis * 1_000_000);
+    let here = Vec2::new(10.0, 10.0);
+
+    let counted = [
+        screen.count_press(&one, here, Pressed::Main, at(0)),
+        screen.count_press(&one, here + Vec2::new(2.0, 0.0), Pressed::Main, at(300)),
+        screen.count_press(&one, here, Pressed::Main, at(600)),
+        screen.count_press(&one, here, Pressed::Main, at(1_200)),
+        screen.count_press(&other, here, Pressed::Main, at(1_300)),
+        screen.count_press(&other, here + Vec2::new(20.0, 0.0), Pressed::Main, at(1_400)),
+        screen.count_press(&other, here + Vec2::new(20.0, 0.0), Pressed::Secondary, at(1_500)),
+    ];
+
+    assert_eq!(counted, [1, 2, 3, 1, 1, 1, 1]);
 }

@@ -132,6 +132,7 @@ impl Window {
             | Event::KeyDown { .. }
             | Event::KeyUp { .. }
             | Event::Text { .. }
+            | Event::Composing { .. }
             | Event::CloseRequested
             | Event::Closed => true,
         }

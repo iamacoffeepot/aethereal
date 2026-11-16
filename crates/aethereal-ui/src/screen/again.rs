@@ -85,7 +85,7 @@ aethereal_ui::view! { Board, ui,
             }
         }
         Line { memo, show: self.shown, entry: self.pinned, click => self.pick(self.chosen) }
-        TextInput { style: lettered, text: self.query(), change => self.search(), submit => self.search() }
+        TextInput { style: lettered, text: self.query(), most_lines: 1, enter: Enter::Submits, change => self.search(), submit => self.search() }
     }
 }
 

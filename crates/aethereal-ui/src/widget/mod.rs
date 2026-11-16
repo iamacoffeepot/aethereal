@@ -197,6 +197,12 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
     fn typed(&self, state: &mut Self::State, text: &str, input: &mut Input<'_, '_>) {
         let _ = (state, text, input);
     }
+
+    /// Takes in what the window's input method is composing while it has its screen's focus, `text` with its caret at
+    /// the byte `caret`, not yet committed: an empty text when the composition closed (ADR-0051).
+    fn composing(&self, state: &mut Self::State, text: &str, caret: u32, input: &mut Input<'_, '_>) {
+        let _ = (state, text, caret, input);
+    }
 }
 
 /// How a widget lays its children out.
@@ -365,6 +371,9 @@ pub trait Built: Debug + Send {
     fn key(&self, state: &mut Vec<u8>, key: &Key, input: &mut Input<'_, '_>) -> Used;
     /// Takes in typed text, its state read from and written back to `state`.
     fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>);
+
+    /// Takes in what the input method is composing, its state read from and written back to `state`.
+    fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>);
 }
 
 /// `W`'s state read from `state`, the bytes its table keeps: one that does not read, which only a table not kept by
@@ -482,5 +491,9 @@ impl<W: Widget> Built for W {
 
     fn typed(&self, state: &mut Vec<u8>, text: &str, input: &mut Input<'_, '_>) {
         changed::<W, ()>(state, |state| Widget::typed(self, state, text, input));
+    }
+
+    fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>) {
+        changed::<W, ()>(state, |state| Widget::composing(self, state, text, caret, input));
     }
 }

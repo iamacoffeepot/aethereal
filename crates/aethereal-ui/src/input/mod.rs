@@ -29,8 +29,10 @@ pub enum Pointing {
     Left,
     /// The pointer moved, to `at`: over it, or anywhere while a press on it is held.
     Moved { at: Vec2 },
-    /// A button went down over it, at `at`: every move and the release come to it until every button is up.
-    Down { at: Vec2, button: Button },
+    /// A button went down over it, at `at`: every move and the release come to it until every button is up. `presses`
+    /// counts the presses of the main button in a row on it, each soon after and near the one before, from 1: 2 is a
+    /// double click, 3 a triple; any other button's press counts 1.
+    Down { at: Vec2, button: Button, presses: u32 },
     /// A button came up, at `at`, after a press on it; `over` when what the pointer reaches at the release is this
     /// widget, as a click needs.
     Up { at: Vec2, button: Button, over: bool },
@@ -55,16 +57,30 @@ impl Key {
         let mut characters = self.key.chars();
         let one = characters.next().is_some() && characters.next().is_none();
 
-        one && !self.held.command
+        one && !self.held.command()
     }
 }
 
-/// The modifiers held, as the screen saw their keys go down and come up: Shift, and Control or Meta, the key a
-/// command is chorded with on either kind of keyboard.
+/// The modifiers held, as the screen saw their keys go down and come up: Shift, Control, Alt (Option on a Mac), and
+/// Meta (Command on a Mac).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each modifier is held or not apart from the others, as on a keyboard"
+)]
 pub struct Held {
     pub shift: bool,
-    pub command: bool,
+    pub control: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+impl Held {
+    /// Whether the key a command is chorded with is held, on either kind of keyboard: Control, or Meta.
+    #[must_use]
+    pub const fn command(self) -> bool {
+        self.control || self.meta
+    }
 }
 
 /// What a widget hears while it has its screen's focus: the keys at these places on the keyboard, declared with the

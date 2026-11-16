@@ -250,7 +250,7 @@ impl Widget for Scroll {
         let bar = self.bar(input.style(), input.laid());
         let axis = self.axis;
         match (pointing, scrolling.drag) {
-            (Pointing::Down { at, button: Button::Main }, _) if bar.track.contains_point(at) => {
+            (Pointing::Down { at, button: Button::Main, .. }, _) if bar.track.contains_point(at) => {
                 let on_thumb = bar.thumb.contains_point(at);
                 let grip = if on_thumb {
                     axis.along(at - bar.thumb.min)
