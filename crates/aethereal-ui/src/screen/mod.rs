@@ -37,6 +37,7 @@
 mod again;
 mod around;
 mod children;
+mod clipboard;
 mod drags;
 mod input;
 mod keys;
@@ -49,6 +50,7 @@ mod scrolls;
 #[cfg(test)]
 mod tests;
 
+pub use clipboard::{Clipping, Copying, Pasting};
 pub use drags::Landing;
 pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
@@ -82,7 +84,7 @@ use around::{Around, Holding, Slid, Stood};
 use children::Told;
 use core::mem::discriminant;
 use drags::Grip;
-use input::{Hold, Typed};
+use input::{Hold, Presses, Typed};
 use keys::{Declared, Ime, Modifiers, Role, Taking};
 use layers::Layer;
 use listings::{Listed as Listing, Listings, Reading};
@@ -139,7 +141,7 @@ impl Viewport {
 /// while a button is down on it, whether what it last laid out is current, the modifiers held, where the text the last
 /// key typed goes, what it last asked of its window's input method, what its tooltips wait on: the hits the pointer
 /// reaches, the number of the last hover, and whether the pointer moved since its tooltips were looked at; the size it
-/// last told each child it places; and where it stands with a drag.
+/// last told each child it places; where it stands with a drag; and its last press, which the next may follow in a row.
 #[derive(Debug, Bound)]
 pub struct Screen {
     target: Target,
@@ -182,6 +184,8 @@ pub struct Screen {
     /// The size the last layout told each child it places, or found it was told before.
     told: Vec<Told>,
     grip: Grip,
+    /// The last press of the main button, which the next may follow in a row.
+    presses: Presses,
     /// Whether the list last sent may no longer be the one to send: its order, its keys, or a draw in it changed since.
     sent: Sent,
     unkept: Unkept<Worked>,
@@ -402,6 +406,7 @@ impl Screen {
             hover: Hover::Settled,
             told: Vec::new(),
             grip: Grip::Loose,
+            presses: Presses::Unpressed,
             sent: Sent::Stale,
             unkept: Unkept::default(),
         }

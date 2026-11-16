@@ -205,6 +205,7 @@ impl Cascade {
             Event::KeyDown { .. }
             | Event::KeyUp { .. }
             | Event::Text { .. }
+            | Event::Composing { .. }
             | Event::Resized(_)
             | Event::Moded(_)
             | Event::FocusGained
@@ -274,6 +275,7 @@ impl Cascade {
                 Event::KeyDown { .. }
                 | Event::KeyUp { .. }
                 | Event::Text { .. }
+                | Event::Composing { .. }
                 | Event::Resized(_)
                 | Event::Moded(_)
                 | Event::FocusGained

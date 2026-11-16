@@ -221,7 +221,7 @@ impl<E: Event> Widget for Tabs<E> {
         match pointing {
             Pointing::Entered | Pointing::Left => tabbing.hovered = Header::Nowhere,
             Pointing::Moved { at } => tabbing.hovered = self.under(at, &style, rect, input.measuring()),
-            Pointing::Down { at, button: Button::Main } => {
+            Pointing::Down { at, button: Button::Main, .. } => {
                 tabbing.pressed = self.under(at, &style, rect, input.measuring());
             }
             Pointing::Up { at, button: Button::Main, over } => {

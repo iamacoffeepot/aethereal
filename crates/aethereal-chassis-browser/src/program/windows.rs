@@ -3,10 +3,13 @@
 
 use super::unopened;
 use crate::canvas::{self, Density, Page};
+use crate::clipboard::PageClipboard;
 use crate::{Browser, Performance};
+use aethereal_actor::Service;
 use aethereal_data::Plain;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
-use aethereal_window::{InitialWindows, Opening, Windows};
+use aethereal_window::{Clipboard, InitialWindows, Opening, Windows};
+use std::sync::Arc;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
 
@@ -32,8 +35,8 @@ impl Default for WindowsSettings {
 /// Opens each canvas the settings name as a window, standing as the page has it now, `0`, `1`, … in the order named,
 /// begins the window root with them, and gives the browser its end, which answers each window the root asks to open or
 /// close `NoHost`, as a page owns its canvases (ADR-0027). Each canvas is drawn at the size the page lays it out at,
-/// at the settings' density, and the browser keeps the page's listeners that feed each window what it hears. Provides
-/// the windows opened.
+/// at the settings' density, and the browser keeps the page's listeners that feed each window what it hears; and serves
+/// its jobs the page's clipboard (ADR-0024: The clipboard). Provides the windows opened.
 impl Bootstrap<Browser<Performance>> for Windows {
     const SECTION: &'static str = "windows";
     type Settings = WindowsSettings;
@@ -68,6 +71,7 @@ impl Bootstrap<Browser<Performance>> for Windows {
         let (config, hosting) = opening.config();
         cx.begin(&(), config)?;
         cx.serve(hosting);
+        cx.serve(Service::<dyn Clipboard>::of(Arc::new(PageClipboard)));
 
         Ok((InitialWindows::new(first, opened.collect()),))
     }

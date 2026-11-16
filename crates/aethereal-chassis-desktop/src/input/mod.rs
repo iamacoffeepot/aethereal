@@ -97,16 +97,30 @@ pub fn typed(text: Option<&str>, modifiers: ModifiersState, composition: Composi
     printable(text?)
 }
 
-/// The composition `ime`, heard while `composition` stood, leaves, and the text it sends: a commit's, sent once, which
-/// closes the composition. A `Preedit` with text opens one, and one with none closes it, as `Disabled` does; the
-/// uncommitted text itself is not sent.
-pub fn composed(composition: Composition, ime: Ime) -> (Composition, Option<String>) {
+/// The composition `ime`, heard while `composition` stood, leaves, and what it sends, in order. A `Preedit` with text
+/// opens one and sends it as `Composing`, its caret where winit puts its cursor, or at its end when winit hides it;
+/// one with none closes it, as `Disabled` does, each sending an empty `Composing` while one was open. A commit closes
+/// it, and sends its text once, as `Text`, after an empty `Composing` while one was open, so a field drops the
+/// uncommitted text before it types the committed.
+pub fn composed(composition: Composition, ime: Ime) -> (Composition, Vec<Event>) {
+    let closing = match composition {
+        Composition::Open => vec![Event::Composing { text: String::new(), caret: 0 }],
+        Composition::Closed => Vec::new(),
+    };
     match ime {
-        Ime::Enabled => (composition, None),
-        Ime::Preedit(text, _) if text.is_empty() => (Composition::Closed, None),
-        Ime::Preedit(..) => (Composition::Open, None),
-        Ime::Commit(text) => (Composition::Closed, printable(&text)),
-        Ime::Disabled => (Composition::Closed, None),
+        Ime::Enabled => (composition, Vec::new()),
+        Ime::Preedit(text, _) if text.is_empty() => (Composition::Closed, closing),
+        Ime::Preedit(text, cursor) => {
+            let at = cursor.map_or(text.len(), |(start, _)| start);
+            let caret = u32::try_from(at).unwrap_or(u32::MAX);
+            (Composition::Open, vec![Event::Composing { text, caret }])
+        }
+        Ime::Commit(text) => {
+            let mut sent = closing;
+            sent.extend(printable(&text).map(|text| Event::Text { text }));
+            (Composition::Closed, sent)
+        }
+        Ime::Disabled => (Composition::Closed, closing),
     }
 }
 

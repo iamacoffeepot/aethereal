@@ -72,12 +72,12 @@ impl Running {
                 return;
             }
             WindowEvent::Ime(ime) => {
-                let (composition, committed) = input::composed(opened.composition, ime);
+                let (composition, sent) = input::composed(opened.composition, ime);
                 opened.composition = composition;
-                let Some(text) = committed else {
-                    return;
-                };
-                Event::Text { text }
+                for event in sent {
+                    opened.feed.push(event).ok();
+                }
+                return;
             }
             WindowEvent::Focused(true) => Event::FocusGained,
             WindowEvent::Focused(false) => Event::FocusLost,

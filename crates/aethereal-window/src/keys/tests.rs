@@ -74,6 +74,7 @@ fn keyed(event: &Event) -> KeyEvent {
         Event::KeyDown { code, key, repeat } => KeyEvent::KeyDown { code, key, repeat },
         Event::KeyUp { code, key } => KeyEvent::KeyUp { code, key },
         Event::Text { text } => KeyEvent::Text { text },
+        Event::Composing { text, caret } => KeyEvent::Composing { text, caret },
         other => panic!("{other:?} is not the keys'"),
     }
 }

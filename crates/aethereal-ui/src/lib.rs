@@ -145,10 +145,11 @@ pub use drag::{
     Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
 };
 pub use fonts::{Measuring, Unmeasured};
-pub use input::{Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising};
+pub use input::{Clip, Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising};
 pub use screen::{
-    DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Placing, Prepared,
-    Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming, Viewport, Whitening,
+    Clipping, Copying, DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Pasting,
+    Placing, Prepared, Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Tipping, Uniforming,
+    Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
 pub use table::{Focus, Table};
@@ -165,8 +166,8 @@ pub use widget::{
 /// controls are written as.
 pub mod prelude {
     pub use crate::widgets::{
-        Bar, Button, Column, Fill, Grid, Image, Keeps, Popup, Region, Row, Scroll, Slider, Stack, Tab, Tabs, Text,
-        TextInput, Texture, Toggle, Tooltip,
+        Bar, Button, Column, Enter, Fill, Grid, Image, Keeps, Popup, Region, Row, Scroll, Selectable, Slider, Stack,
+        Tab, Tabs, Text, TextInput, Texture, Toggle, Tooltip,
     };
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
@@ -189,11 +190,12 @@ pub mod __private {
     pub use aethereal_render::text::{FontMetrics, TextMade, TextPlaced};
     pub use aethereal_render::texture::Textured;
     pub use aethereal_render::uniforms::Uniformed;
-    pub use aethereal_window::{AllowIme, ImeAllowed, Keyed, Pointed, Windows};
+    pub use aethereal_window::{AllowIme, Copied, ImeAllowed, Keyed, Pasted, Pointed, Windows};
 }
 
 /// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, the answer to
-/// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, the size a
+/// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, the clipboard's
+/// answers to a paste and a copy with the widget that asked, the size a
 /// screen that places it as a child mails it, a drag another actor dropped on it, and the refusal of one it dropped on
 /// another; then each of `$own`, what the screen handles of its own.
 #[macro_export]
@@ -215,6 +217,8 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::TextPlaced, $crate::TextPlacing>,
             $crate::__private::Answer<$crate::__private::ImeAllowed, $crate::ImeAsked>,
             $crate::__private::Answer<$crate::__private::Slept, $crate::Tipping>,
+            $crate::__private::Answer<$crate::__private::Pasted, $crate::Pasting>,
+            $crate::__private::Answer<$crate::__private::Copied, $crate::Copying>,
             $crate::Resize,
             $crate::Dropped,
             $crate::DropRefused,
@@ -248,7 +252,9 @@ macro_rules! sends {
 /// once it has said whether it takes every key ([`Controls::takes_every_key`]); the pointer and the keys its list
 /// reaches, whose raised events call its methods through [`View::on`] and whose keys left over call [`Controls::key`],
 /// after which its view is built again for the next input to reach; each answer the
-/// library's asks bring; the end of each tooltip's sleep; the size a screen that places it as a child mails it, which it
+/// library's asks bring; the end of each tooltip's sleep; the clipboard's answers, which paste into the widget that
+/// asked, or cut its selection, and call its methods with what that raises; the size a screen that places it as a child
+/// mails it, which it
 /// lays out to as a root screen lays out to its window's; and a drag dropped on it by another actor, which raises its
 /// target's drop as a drop of its own does, and a refusal of one it dropped, which raises its source's
 /// `drop_outside`. A screen's markup compiles into a call of it.
@@ -279,7 +285,7 @@ macro_rules! screen {
                 pointed: $crate::__private::Pointed,
                 turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
-                let heard = self.$field.pointed(pointed, turn.me().id());
+                let heard = self.$field.pointed(pointed, turn.me().id(), turn.now());
                 $crate::screen!(@take $field, self, heard, turn)
             }
         }
@@ -323,6 +329,36 @@ macro_rules! screen {
         $crate::screen!(@answer $screen, $field, TextPlaced, TextPlacing, text_placed);
         $crate::screen!(@answer $screen, $field, ImeAllowed, ImeAsked, ime_answered);
         $crate::screen!(@answer $screen, $field, Slept, Tipping, slept);
+
+        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::Pasted, $crate::Pasting>>
+            for $screen
+        {
+            type Sends = <Self as $crate::Controls>::Sends;
+
+            fn handle(
+                &mut self,
+                (answered, pasting): ($crate::__private::Answered<$crate::__private::Pasted>, $crate::Pasting),
+                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+            ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                let heard = self.$field.pasted(answered, pasting, |blob| turn.read(blob));
+                $crate::screen!(@take $field, self, heard, turn)
+            }
+        }
+
+        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::Copied, $crate::Copying>>
+            for $screen
+        {
+            type Sends = <Self as $crate::Controls>::Sends;
+
+            fn handle(
+                &mut self,
+                (answered, copying): ($crate::__private::Answered<$crate::__private::Copied>, $crate::Copying),
+                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+            ) -> ::core::result::Result<(), $crate::__private::Fault> {
+                let heard = self.$field.copied(answered, copying);
+                $crate::screen!(@take $field, self, heard, turn)
+            }
+        }
 
         impl $crate::__private::Handles<$crate::Resize> for $screen {
             type Sends = $crate::Sends;
