@@ -60,6 +60,14 @@ impl Edit {
         (self.caret.min(self.anchor), self.caret.max(self.anchor))
     }
 
+    /// The text selected.
+    #[must_use]
+    pub fn selection(&self) -> &str {
+        let (start, end) = self.selected();
+
+        &self.text[start..end]
+    }
+
     /// Whether anything is selected.
     #[must_use]
     pub fn selects(&self) -> bool {

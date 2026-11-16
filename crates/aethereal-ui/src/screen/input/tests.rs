@@ -11,7 +11,7 @@ use crate::style::{Length, Style};
 use crate::table::Focus;
 use crate::tree::{ItemKey, KeyPath, Node, Segment, Tree};
 use crate::widget::{Arrange, Draws, Laid, Stateless, Widget};
-use crate::widgets::{Button, Column, Press, Scroll, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
+use crate::widgets::{Button, Column, Press, Scroll, Selectable, Slider, Sliding, Tab, Tabs, Text, TextInput, Toggle};
 use aethereal_actor::{ProtocolRef, SeatNumber, Seated, Time};
 use aethereal_data::ActorId;
 use aethereal_math::Vec2;
@@ -679,4 +679,23 @@ fn presses_soon_after_and_near_the_last_on_one_widget_count_in_a_row() {
     ];
 
     assert_eq!(counted, [1, 2, 3, 1, 1, 1, 1]);
+}
+
+#[test]
+fn a_selectable_text_takes_the_focus_on_a_press_and_tab_passes_it() {
+    // Catches a selectable text that cannot hold the focus, so the copy chord never reaches it; and one Tab stops at,
+    // so tabbing through a transcript visits every message before the field to type in.
+    let mut screen = screen_with_fonts();
+    let read = || Node::new(Segment::Place(0), Selectable::new("read me"), sized(100.0, 20.0), vec![]);
+    let typed = || Node::new(Segment::Place(1), TextInput::new("", Ev::Changed), sized(100.0, 20.0), vec![]);
+    let tree = || column(vec![read(), typed()]);
+    laid(&mut screen, tree(), &["Tab"]);
+    let declared = keys(&screen, Role::Screen);
+    key_down(&mut screen, declared, "Tab", "Tab");
+    let tabbed = screen.table().focus().clone();
+    let entry = hit(&screen, &child(0));
+    press(&mut screen, entry, 5.0, 5.0);
+
+    assert_eq!(tabbed, Focus::On(child(1)));
+    assert_eq!(screen.table().focus(), &Focus::On(child(0)));
 }

@@ -50,6 +50,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod budgeting;
 #[cfg(not(target_arch = "wasm32"))]
+mod clipboard;
+#[cfg(not(target_arch = "wasm32"))]
 mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 mod input;

@@ -328,7 +328,18 @@ impl<E: Event> Widget for Button<E> {
 - **The modifiers are watched, not taken**. A key event carries no modifiers (ADR-0024), so beside a set short of every key the library declares Shift, Control, Alt, and Meta in a second entry that does not block, and keeps which are down. Shift-Tab and a text input's Shift-arrow read them, and the game still hears Shift.
 - **A focused text input uses every key that types text,** a key whose meaning is one character with neither Control nor Meta held, as its text comes after it (ADR-0051); so a letter typed into it never reaches the screen's hotkeys, and a key it passes, F2 or Tab, still does.
 - **The library allows the window's input method while a widget that types has focus, and stops it after** (ADR-0051: `AllowIme`), each asked only as it changes, from the turn of input that moved focus, or from the `Prepare` that found the focused key gone. So the screen's input handlers send that ask besides the screen's own, which `sends![…]` adds.
+- **A widget that holds focus may stand outside Tab's round**: `Widget::tabbable`, the same as `focusable` unless the widget says otherwise. A text read rather than filled in, `Selectable`, takes focus on a press so its copy reaches it, and Tab passes it, so tabbing through a transcript does not visit every message.
 - **Moving focus by direction, for a gamepad or arrow keys, is left out** until something needs it.
+
+### Copy and paste
+
+- **A widget asks the clipboard through its input:** `Input::copy(text)`, `Input::cut(text)`, and `Input::paste()`. The screen's handler runs the window capability's jobs for each (ADR-0024: The clipboard), keeping the widget's key path as the job's context, so `handles!` lists their answers, `Answer<Pasted, Pasting>` and `Answer<Copied, Copying>`, and `screen!` writes their handlers. A screen's sends gain nothing: a job is mail to no actor.
+- **A paste types what the clipboard holds at the caret as it stands when the read is answered,** a later turn, through the widget's `typed`: a text edited in between is pasted into as it stands, its `\r\n` and `\r` written `\n` and its other control characters but a tab left out, as typed text holds none. It reaches the widget only while it still has the screen's focus.
+- **A cut deletes its selection only once the clipboard holds it,** by typing nothing over the widget's selection then, while it still has the focus, so a write the host refuses loses no text. A copy changes nothing.
+- **A refusal, or a host with no clipboard, is logged and changes nothing.** A clipboard that holds no text pastes nothing.
+- **A `TextInput` copies, cuts, and pastes with Control or Command and C, X, and V.**
+- **`Selectable` is a text its reader selects and copies,** as a transcript's messages are: it measures and draws as a `Text` of its string, in the same box, and a press puts its caret, a drag selects, a double click selects a word and a triple click the line between breaks, and Control or Command with C copies, with A selects the whole. Its selection shows while it has the focus. It is a widget of its own, not a setting of `Text`, as markup writes every field of an element it does not leave to `..`: a setting added to `Text` would be a build error in every `Text { "…" }`.
+- **Selection runs within one `Selectable`.** A selection across several, down a transcript, would be the screen's, not a widget's: an anchor and a caret each a key path and an offset, the selectables between them in tree order selected whole, each drawing its part, and a copy joining their parts in tree order. It is left until something needs it.
 
 ### Popups draw in one top layer per screen
 
@@ -452,7 +463,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 |---|---|
 | Layout | `Row`, `Column`, `Grid`, `Stack` (children layered on one spot) |
 | Content | `Text`, `Image` (a texture or a region of one, with nine-slice), `Bar` (a filled fraction) |
-| Interaction | `Button`, `Scroll` (clips; builds only visible rows when given `items`), `TextInput` (`change`, `submit`), `Toggle`, `Slider`, `Tabs`, `Popup`, `Tooltip` |
+| Interaction | `Button`, `Scroll` (clips; builds only visible rows when given `items`), `TextInput` (`change`, `submit`), `Selectable` (a text read, selected, and copied), `Toggle`, `Slider`, `Tabs`, `Popup`, `Tooltip` |
 
 **`Scroll` and `Tabs`**:
 

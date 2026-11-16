@@ -28,6 +28,7 @@ pub(super) mod tests;
 pub(super) use held::Hold;
 pub(super) use presses::Presses;
 
+use super::clipboard::{self, Clipping};
 use super::drags::{Away, Ended};
 use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
@@ -50,13 +51,14 @@ pub struct ImeAsked;
 
 /// What a turn of input leaves for the screen's handler: the events its widgets raised, for the screen's methods; the
 /// keys that neither its focus nor its focus keys used, for its `key`; what to ask of its window's input method; the
-/// drags dropped on other actors, to mail; and the lines to log.
+/// drags dropped on other actors, to mail; what to ask of the clipboard; and the lines to log.
 #[derive(Debug, Default)]
 pub struct Heard {
     pub(crate) raised: Vec<Raised<Erased>>,
     pub(crate) keys: Vec<Key>,
     pub(crate) imes: Vec<AllowIme>,
     pub(crate) away: Vec<Away>,
+    pub(crate) clips: Vec<Clipping>,
     pub(crate) lines: Vec<(Level, String)>,
 }
 
@@ -439,7 +441,7 @@ impl Screen {
     /// Hands input to the widget at `path`, with its state as the table keeps it, or first made, and where layout put
     /// it, and answers what it said: none when the last tree or layout has no widget there. A state it changed is kept,
     /// and lays the screen out at the next `Prepare`; what it raised is handed back in `heard`.
-    fn input<T>(
+    pub(super) fn input<T>(
         &mut self,
         path: &KeyPath,
         heard: &mut Heard,
@@ -455,8 +457,10 @@ impl Screen {
         let before = state.clone();
         let mut measuring = fonts.measuring(texts, self.viewport.scale);
         measuring.at(path, Asker::Drawing);
-        let mut input = Input::new(node.style(), *laid, &mut measuring, &mut heard.raised);
+        let mut clips = Vec::new();
+        let mut input = Input::new(node.style(), *laid, &mut measuring, (&mut heard.raised, &mut clips));
         let took = take(widget, &mut state, &mut input);
+        heard.clips.extend(clipboard::clippings(clips, path));
         if state != before {
             self.table.write(path, widget.state_kind(), state);
             self.fresh = Fresh::Stale;

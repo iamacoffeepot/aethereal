@@ -30,6 +30,7 @@
 //! entry the press reached. As it changes, the window's actor asks its root, [`ShowCursor`], which asks its host; a
 //! host makes each distinct image into a cursor of its own once, [`MadeCursors`].
 
+mod clipboard;
 mod cursor;
 mod event;
 mod host;
@@ -41,6 +42,10 @@ mod tool;
 mod window;
 mod windows;
 
+pub use clipboard::{
+    Clipboard, ClipboardRead, ClipboardReading, ClipboardWriting, ClipboardWritten, Copied, Pasted, ReadClipboard,
+    WriteClipboard,
+};
 pub use cursor::{Cursor, CursorImage, CursorUnfit, CursorUnmade, MOST_CURSOR_SIDE, MadeCursors, ShowCursor};
 pub use event::{Button, Event, Mode, Subscribe, Surface, Unsubscribe};
 pub use host::{Hosting, InitialWindows, Opening, WindowFeed};
