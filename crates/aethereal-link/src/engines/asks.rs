@@ -1,5 +1,6 @@
 //! What the hub's tools ask of its engines, and what an engine tells its root (ADR-0038, ADR-0040).
 
+use crate::Trust;
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use aethereal_process::ExitStatus;
@@ -22,7 +23,7 @@ pub struct EngineList {
 }
 
 /// One engine linked: its id, which is its `Engine`'s key, the name it gave, which two engines may share, how many
-/// tools it holds, and where it came from.
+/// tools it holds, where it came from, and whether the hub trusts it: an engine a session started is not (ADR-0057).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.engine_listing")]
 pub struct EngineListing {
@@ -30,6 +31,7 @@ pub struct EngineListing {
     pub name: String,
     pub tools: u32,
     pub origin: Origin,
+    pub trust: Trust,
 }
 
 /// Where an engine linked came from (ADR-0040).
@@ -38,7 +40,7 @@ pub struct EngineListing {
 pub enum Origin {
     /// The hub spawned it from its store: the binary as the spawn named it, and the hash of the build it runs.
     Spawned { binary: Binary, hash: StoreHash },
-    /// It was started outside the hub, with a token from `MintToken`.
+    /// It was started outside the hub, with a token from `MintFor`.
     External,
 }
 

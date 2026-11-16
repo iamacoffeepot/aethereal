@@ -3,7 +3,7 @@
 
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
-use super::credential::{Credentialed, Crediting};
+use super::credential::{Crediting, Provisioned};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
@@ -15,6 +15,8 @@ use crate::{
     Stop, Until, Unwritable,
 };
 use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Turn, path};
+use aethereal_mcp::{Admit, Dismiss, Mcp};
+use aethereal_tools::Caller;
 use core::mem;
 use std::collections::BTreeSet;
 
@@ -176,24 +178,31 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<Credentialed, Crediting>> for Sessions {
+impl Handles<Answer<Provisioned, Crediting>> for Sessions {
     type Sends = Acts;
 
-    /// The credential is read: Docker is asked to make the session's container.
+    /// The credential is read, a bearer drawn, and the drop box made: `Mcp` is told the bearer is the session's, and
+    /// Docker asked to make the session's container, which is given both.
     fn handle(
         &mut self,
-        (answered, Crediting { session, run }): (Answered<Credentialed>, Crediting),
+        (answered, Crediting { session, run }): (Answered<Provisioned>, Crediting),
         turn: &mut Turn<'_, Self, Acts>,
     ) -> Result<(), Fault> {
         let is_crediting = self.is_at(session, run, |step| matches!(step, Step::Crediting));
         if !is_crediting {
             return Ok(());
         }
-        let Answered::Yes(Credentialed::Read(env)) = answered else {
-            return self.unstarted(turn, session, run, &Refusal::NoCredential);
+        let (env, bearer, drop_box) = match answered {
+            Answered::Yes(Provisioned::Ready { env, bearer, drop_box }) => (env, bearer, drop_box),
+            Answered::Yes(Provisioned::Undrawn) => return self.unstarted(turn, session, run, &Refusal::NoBearer),
+            Answered::Yes(Provisioned::Unboxed) => return self.unstarted(turn, session, run, &Refusal::NoDropBox),
+            Answered::Yes(Provisioned::Unread) | Answered::No(_) => {
+                return self.unstarted(turn, session, run, &Refusal::NoCredential);
+            }
         };
+        turn.to(path::<Mcp>(())).send(&Admit { bearer, caller: Caller::Session { session } })?;
         let conversation = self.held.get(&session).map_or(Conversation::Unbegun, |held| held.conversation.clone());
-        let made = Made { session, run, conversation: &conversation, env };
+        let made = Made { session, run, conversation: &conversation, env, bearer, drop_box };
         let spec = match spec(&self.settings, made) {
             Ok(spec) => spec,
             Err(Unmade::Unlabelled(_)) => {
@@ -330,7 +339,8 @@ impl Sessions {
         self.remove(turn, session, container.clone(), run)
     }
 
-    /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said.
+    /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said, and
+    /// `Mcp` lets go of its bearer, so nothing calls the hub's tools as the session until its next container.
     fn removed<S: Does>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -355,6 +365,7 @@ impl Sessions {
         let Life::Stopping { then, .. } = mem::replace(&mut held.life, Life::Stopped) else {
             return Ok(());
         };
+        turn.to(path::<Mcp>(())).send(&Dismiss { caller: Caller::Session { session } })?;
         self.dirty(session);
         match then {
             Then::Rest { lines } => {

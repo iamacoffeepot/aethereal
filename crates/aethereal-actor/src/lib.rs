@@ -40,12 +40,13 @@ mod path;
 mod placement;
 mod portable;
 mod publisher;
+#[cfg(feature = "std")]
+mod randomness;
 pub mod records;
 mod reference;
 mod resource;
 mod seat;
 pub mod section;
-#[cfg(feature = "std")]
 mod services;
 mod sleep;
 mod source;
@@ -102,13 +103,14 @@ pub use path::{
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
 pub use portable::{OldFields, OldState, Portability, Portable, TakeOverError};
 pub use publisher::Publisher;
+#[cfg(feature = "std")]
+pub use randomness::{Randomness, Unfilled};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
     Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
 };
 pub use seat::{SeatNumber, Seated, Seats};
-#[cfg(feature = "std")]
 pub use services::{Service, Services};
 pub use sleep::{Never, Sleep, Slept, Timer, Until};
 pub use source::Source;

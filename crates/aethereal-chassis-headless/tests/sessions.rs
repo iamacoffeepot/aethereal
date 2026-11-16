@@ -12,11 +12,13 @@ use aethereal_chassis_headless::{Directories, FileRoots, Headless};
 use aethereal_data::{Bound, Budget, FilePath, Plain, from_bytes, to_bytes};
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
 use aethereal_http::{Http, HttpSettings};
+use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_sessions::{
     Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt, Interrupted, ListSessions,
     NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions, SessionsListed,
     SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
 };
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::Tcp;
@@ -27,6 +29,7 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{ErrorKind, Read as _, Write as _};
+use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path as FsPath, PathBuf};
 use std::pin::Pin;
@@ -252,6 +255,11 @@ impl Daemon {
             idle_secs,
             ..SessionsSettings::default()
         }
+    }
+
+    /// The store's settings: kept in the test's directory, where each session's drop box is made.
+    fn store(&self) -> StoreSettings {
+        StoreSettings { root: self.dir.join("store").display().to_string(), ..StoreSettings::default() }
     }
 
     /// `Files`' settings: each namespace a directory in the test's.
@@ -515,12 +523,19 @@ fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>,
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
         .root::<Caller>();
 
     Harness::of(program)
+}
+
+/// `Mcp` on ports the host picks, its route on the loopback, where the sessions' bearers are admitted.
+fn route() -> McpSettings {
+    McpSettings { port: 0, route_port: 0, route_interface: String::from("127.0.0.1"), ..McpSettings::default() }
 }
 
 /// The engine's settings for a hub: it reads whatever `Http` reads whole.
@@ -817,6 +832,71 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     );
     assert!(written.iter().all(|line| !line.contains("/compact")), "nothing is compacted: {written:?}");
     assert!(daemon.containers.contains_key(&id), "its container runs");
+
+    Ok(())
+}
+
+/// The status the sessions' route of `Mcp` answers a `tools/list` bearing the `Authorization` header `authorization`
+/// with, the hub and the daemon stepped until a client on a thread of its own has read it.
+fn route_status(harness: &mut Harness<Headless>, daemon: &mut Daemon, authorization: &str) -> Result<u16, Unheard> {
+    let mcp = harness.root::<Mcp>();
+    let Some(port) = harness.state(mcp)?.route_port() else {
+        panic!("the route is served");
+    };
+    let meta =
+        r#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{meta}}}}}"#);
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\nMCP-Protocol-Version: 2026-07-28\r\n\
+         Mcp-Method: tools/list\r\nAuthorization: {authorization}\r\n\r\n{body}",
+        body.len()
+    );
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    let client = thread::spawn(move || {
+        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+            panic!("the client connects to the route");
+        };
+        assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
+        assert!(stream.write_all(request.as_bytes()).is_ok(), "the client writes");
+        let mut whole = Vec::new();
+        assert!(stream.read_to_end(&mut whole).is_ok(), "a response comes within ten seconds");
+        let text = String::from_utf8_lossy(&whole).into_owned();
+        let Some(status) = text.split(' ').nth(1).and_then(|status| status.parse::<u16>().ok()) else {
+            panic!("a status: {text}");
+        };
+        status
+    });
+    while !client.is_finished() {
+        harness.step();
+        daemon.pump();
+    }
+    let Ok(status) = client.join() else {
+        panic!("the client finished");
+    };
+
+    Ok(status)
+}
+
+#[test]
+fn a_session_s_container_bears_a_bearer_the_route_lets_in_until_its_container_is_removed() -> Result<(), Unheard> {
+    // Catches a container given a bearer `Mcp` was never told of, so the session reaches none of the hub's tools; the
+    // bearer written into the container's command, where every process list and `docker inspect` show it; and a
+    // bearer still let in once its container is gone (ADR-0057).
+    let mut daemon = Daemon::new("bearer");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "bearer")?;
+    let body = daemon.body(&daemon.made(0));
+    let bearer = body.split("\"AETHEREAL_HUB_BEARER=").nth(1).and_then(|rest| rest.split('"').next());
+    let Some(bearer) = bearer.map(String::from) else {
+        panic!("the container's environment holds its bearer: {body}");
+    };
+    let authorization = format!("Bearer {bearer}");
+
+    assert_eq!(body.matches(&bearer).count(), 1, "the bearer is in the environment alone");
+    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 200);
+    order(&mut harness, &Order::Archive(Archive { session }))?;
+    until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
+    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 401);
 
     Ok(())
 }
@@ -1149,6 +1229,8 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Recorder>(daemon.files())
         .root_with::<Docker>(daemon.docker())
@@ -1278,6 +1360,11 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
+        .root_with::<Mcp>(route())
+        .root_with::<Store>(StoreSettings {
+            root: root.join("store").display().to_string(),
+            ..StoreSettings::default()
+        })
         .root_with::<Files>(files)
         .root_with::<Docker>(DockerSettings::default())
         .root_with::<Sessions>(settings)

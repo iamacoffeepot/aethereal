@@ -25,9 +25,9 @@ pub use docker::{
     VolumeCreated, VolumeName, Watching,
 };
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, CARGO, CLAUDE, Conversation, Credential, Credentialed, Crediting, Ended,
-    Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Keeping, ListSessions, ListedSession,
-    Loading, NewSession, NoCredential, Note, Numbered, Opened, ReadCredential, ReadTranscript, Reconciling, Record,
+    Act, Acting, Archive, Archived, Asking, CARGO, CLAUDE, Conversation, Credential, Crediting, Ended, Entry, Feed,
+    HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Keeping, ListSessions, ListedSession, Loading,
+    NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned, ReadTranscript, Reconciling, Record,
     Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed, SessionsSettings, Since, Speaker, Standing,
     State, TARGET, Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
 };

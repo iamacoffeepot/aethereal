@@ -183,6 +183,10 @@ pub enum Refusal {
     Busy,
     /// The credential's file could not be read, or does not read as `KEY=VALUE` lines.
     NoCredential,
+    /// The host's randomness drew no bearer for the session's route to the hub's tools.
+    NoBearer,
+    /// The store could not make the session's drop box.
+    NoDropBox,
     /// Docker refused, or could not be reached.
     Docker(DockerError),
 }

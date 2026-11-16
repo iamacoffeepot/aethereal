@@ -8,7 +8,7 @@ use aethereal_http::{
 };
 use aethereal_substrate::harness::{Harness, Held, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
-use aethereal_tcp::Tcp;
+use aethereal_tcp::{Interface, Tcp};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::thread::{self, JoinHandle};
@@ -30,7 +30,7 @@ fn served(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
     let mut harness = Harness::of(Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings))?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, handler })?;
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler })?;
     let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
         panic!("the port is bound");
     };

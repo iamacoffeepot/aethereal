@@ -1,23 +1,8 @@
-//! The host's randomness, which `Engines` mints its tokens from: a service the host serves its jobs, and the job that
-//! draws a token through it (ADR-0034, ADR-0040).
+//! The job that draws a token from the host's randomness, which `Engines` mints its tokens from (ADR-0034, ADR-0040).
 
 use crate::Token;
-use aethereal_actor::{Fault, Job, Runner, Running};
+use aethereal_actor::{Fault, Job, Randomness, Runner, Running, Unfilled};
 use aethereal_data::Plain;
-
-/// Why the host's randomness filled nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Unfilled;
-
-/// The host's randomness (ADR-0040): bytes no other process can guess, which `Engines` mints its tokens from. A host
-/// serves it into the services its runners hand every job (ADR-0034), as it bootstraps `Engines`; a host that cannot
-/// serve it does not bootstrap `Engines`.
-///
-/// A fill never blocks the thread that polls it: a host's randomness is ready once its machine has started.
-pub trait Randomness: Send + Sync {
-    /// Fills `bytes` with the host's randomness.
-    fn fill(&self, bytes: &mut [u8]) -> Result<(), Unfilled>;
-}
 
 /// Draws a token's bytes from the host's randomness (ADR-0018: `Running::service`). It is private to this crate, so
 /// only `Engines` mints.

@@ -14,13 +14,30 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, TcpListener};
 
-/// What an actor asks the root to listen on: a port, 0 for any the host picks, and how the connections it accepts
-/// frame what they read.
+/// This machine's loopback, as [`Interface::Loopback`] binds it.
+const LOOPBACK: &str = "127.0.0.1";
+
+/// What an actor asks the root to listen on: a port, 0 for any the host picks, the interface it is bound on, and how
+/// the connections it accepts frame what they read.
 #[derive(Debug, Plain)]
 #[kind(name = "aether.tcp.listen")]
 pub struct Listen {
     pub port: u16,
+    pub interface: Interface,
     pub framing: Framing,
+}
+
+/// The interface a listener is bound on.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.tcp.interface")]
+pub enum Interface {
+    /// The one the root's settings name, `interface`: loopback unless set otherwise.
+    Settings,
+    /// This machine's loopback, `127.0.0.1`, whatever the settings name: for a port only this machine's own programs
+    /// may reach.
+    Loopback,
+    /// The address written out, as one of the settings is.
+    At(String),
 }
 
 /// What a listen came to.
@@ -337,8 +354,7 @@ impl Handles<Ended> for Tcp {
 }
 
 impl Tcp {
-    /// Binds `listen`'s port on the interface the root's settings name and stands a listener up on it, or says why
-    /// not.
+    /// Binds `listen`'s port on the interface it names and stands a listener up on it, or says why not.
     fn listen<S>(&mut self, turn: &mut Turn<'_, Self, S>, listen: &Listen) -> Result<Listening, Fault> {
         let is_full = self.listeners.len() >= usize::try_from(self.config.most_listeners).unwrap_or(usize::MAX);
         if is_full {
@@ -348,7 +364,12 @@ impl Tcp {
         if is_held {
             return Ok(Listening::Taken);
         }
-        let Ok(interface) = self.config.interface.parse::<IpAddr>() else {
+        let address = match &listen.interface {
+            Interface::Settings => self.config.interface.as_str(),
+            Interface::Loopback => LOOPBACK,
+            Interface::At(address) => address.as_str(),
+        };
+        let Ok(interface) = address.parse::<IpAddr>() else {
             return Ok(Listening::Refused);
         };
         let bound = match TcpListener::bind((interface, listen.port)) {

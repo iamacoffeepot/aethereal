@@ -6,7 +6,8 @@ use crate::Headless;
 use crate::errands::Errands;
 use aethereal_actor::Service;
 use aethereal_store::{
-    Copying, Keeping, Launching, RecordFile, Recounting, Stockroom, Store, StoreHash, StoreSettings, Uncopied, Unkept,
+    Copying, DropName, Keeping, Launching, RecordFile, Recounting, Stockroom, Store, StoreHash, StoreSettings,
+    Uncopied, Unkept,
 };
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use std::path::PathBuf;
@@ -14,8 +15,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The native host's stockroom (ADR-0039, ADR-0040): the store's directory, `entries/` holding each entry's bytes as
-/// `<hash>` and its record as `<hash>.entry`, beside the `names` file and `running/`, which holds the launch copies,
-/// each marked executable where the host marks files so. What it is asked is done on a thread of its own, in the order
+/// `<hash>` and its record as `<hash>.entry`, beside the `names` file, `running/`, which holds the launch copies, each
+/// marked executable where the host marks files so, and `drops/`, which holds each session's drop box, `drops/<n>`, the
+/// one directory of this machine its container is given (ADR-0057). A session's container runs as the user the hub
+/// does, so it writes its box, and the hub reads what it put there. What it is asked is done on a thread of its own, in the order
 /// asked, so the disk never blocks the thread that polls it, and woken once done. One thread is enough: the store asks
 /// one thing at a time. Dropping it stops its thread once it has finished what it was doing.
 pub struct StoreDirectory {
@@ -51,6 +54,26 @@ impl Stockroom for StoreDirectory {
         let copying = self.errands.ask(move || disk::copy(&root, &PathBuf::from(path), most_bytes, number));
 
         Box::pin(async move { copying.await.unwrap_or(Err(Uncopied::Failed)) })
+    }
+
+    fn copy_dropped(&self, session: u32, file: DropName, most_bytes: u64) -> Copying<'_> {
+        let root = self.root.clone();
+        let number = self.next_copy.fetch_add(1, Ordering::Relaxed);
+        let copying = self.errands.ask(move || {
+            let Some(file) = file.as_plain() else {
+                return Err(Uncopied::Missing);
+            };
+            disk::copy_dropped(&root, session, file, most_bytes, number)
+        });
+
+        Box::pin(async move { copying.await.unwrap_or(Err(Uncopied::Failed)) })
+    }
+
+    fn drop_box(&self, session: u32) -> Launching<'_> {
+        let root = self.root.clone();
+        let making = self.errands.ask(move || disk::drop_box(&root, session));
+
+        Box::pin(async move { making.await.unwrap_or(Err(Unkept)) })
     }
 
     fn count(&self) -> Recounting<'_> {

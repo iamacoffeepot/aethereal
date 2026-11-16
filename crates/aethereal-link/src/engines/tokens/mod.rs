@@ -4,18 +4,28 @@
 mod tests;
 
 use super::{Spawn, SpawnEngine, Spawned};
-use crate::Token;
+use crate::{Token, Trust};
 use aethereal_actor::{ActorRef, Held, Time};
 use aethereal_data::{Bound, Plain};
 use aethereal_store::{Binary, StoreHash};
+use aethereal_tools::Caller;
 use core::time::Duration;
 use std::collections::BTreeMap;
 
-/// Asks `Engines`, at `path::<Engines>(())`, for a token for an engine started outside the hub, answered with
-/// [`Minted`] once the hub listens.
+/// What the agent asks of the hub's `mint_token`: a token for an engine it starts itself. It names no one, as who
+/// asked is the tool's caller, which [`MintFor`] carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.mint_token")]
 pub struct MintToken;
+
+/// Asks `Engines`, at `path::<Engines>(())`, for a token for an engine started outside the hub, for `by`: answered
+/// with [`Minted`] once the hub listens. The engine that links with it is trusted only when `by` is the owner
+/// (ADR-0057).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.link.mint_for")]
+pub struct MintFor {
+    pub by: Caller,
+}
 
 /// A token minted for an engine started outside the hub, and exactly what to start that engine with: `--hub`, the
 /// host engines dial, `--port`, the port the hub listens on, and `--hub-token`, the token. It is good for one link,
@@ -35,14 +45,14 @@ pub struct TakeToken {
     pub token: Token,
 }
 
-/// What a token taken was for.
+/// What a token taken was for, and whether the engine that links with it is trusted (ADR-0057).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.token_for")]
 pub enum TokenFor {
     /// An engine started outside the hub.
-    External,
+    External { trust: Trust },
     /// An engine the hub spawned.
-    Spawned,
+    Spawned { trust: Trust },
     /// Nothing the hub holds: it never minted the token, the token expired, its spawn ended, or a `Hello` brought it
     /// already.
     Unknown,
@@ -52,20 +62,20 @@ pub enum TokenFor {
 #[derive(Debug, Bound)]
 #[kind(name = "aether.link.minting")]
 pub enum Minting {
-    /// A [`MintToken`]'s, answered with the token.
-    External { held: Held<Minted> },
-    /// A [`SpawnEngine`]'s, whose engine is spawned with the token.
-    Spawn { held: Held<Spawn>, spawn: SpawnEngine },
+    /// A [`MintFor`]'s, answered with the token, minted for `by`.
+    External { held: Held<Minted>, by: Caller },
+    /// A [`SpawnFor`](super::SpawnFor)'s, whose engine is spawned with the token for `by`.
+    Spawn { held: Held<Spawn>, spawn: SpawnEngine, by: Caller },
 }
 
-/// What a token held was minted for.
+/// What a token held was minted for, and for whom.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 pub(super) enum Purpose {
-    /// An engine started outside the hub, which may link with it before `expires_at`.
-    External { expires_at: Time },
-    /// The engine of the spawn `spawned`, asked for as `binary`, a copy of the build of `hash`, which may link with it
-    /// until the spawn ends and [`forget`](Tokens::forget)s it.
-    Spawn { spawned: ActorRef<Spawned>, binary: Binary, hash: StoreHash },
+    /// An engine started outside the hub for `by`, which may link with it before `expires_at`.
+    External { expires_at: Time, by: Caller },
+    /// The engine of the spawn `spawned`, asked for by `by` as `binary`, a copy of the build of `hash`, which may link
+    /// with it until the spawn ends and [`forget`](Tokens::forget)s it.
+    Spawn { spawned: ActorRef<Spawned>, binary: Binary, hash: StoreHash, by: Caller },
 }
 
 impl Purpose {
@@ -73,7 +83,7 @@ impl Purpose {
     /// ends.
     fn is_live_at(&self, now: Time) -> bool {
         match self {
-            Self::External { expires_at } => *expires_at > now,
+            Self::External { expires_at, .. } => *expires_at > now,
             Self::Spawn { .. } => true,
         }
     }
@@ -88,10 +98,10 @@ pub(super) struct Tokens {
 }
 
 impl Tokens {
-    /// Keeps `token`, minted at `now` for an engine started outside the hub, until `within` has passed: first
-    /// dropping each such token expired at `now`, then the oldest of them while `most` or more are kept, so at most
-    /// `most` are kept once it is, and it always is. A spawn's token is neither dropped nor counted.
-    pub(super) fn mint_external(&mut self, token: Token, now: Time, within: Duration, most: usize) {
+    /// Keeps `token`, minted at `now` for an engine started outside the hub for `by`, until `within` has passed:
+    /// first dropping each such token expired at `now`, then the oldest of them while `most` or more are kept, so at
+    /// most `most` are kept once it is, and it always is. A spawn's token is neither dropped nor counted.
+    pub(super) fn mint_external(&mut self, token: Token, now: Time, within: Duration, most: usize, by: Caller) {
         self.held.retain(|_, purpose| purpose.is_live_at(now));
         while self.external().count() >= most {
             let oldest = self.external().min_by_key(|(_, expires_at)| *expires_at).map(|(token, _)| token);
@@ -100,13 +110,13 @@ impl Tokens {
             };
             self.held.remove(&oldest);
         }
-        self.held.insert(token, Purpose::External { expires_at: now + within });
+        self.held.insert(token, Purpose::External { expires_at: now + within, by });
     }
 
-    /// Keeps `token` for the spawn `spawned`, asked for as `binary`, which runs a copy of the build of `hash`, until a
-    /// `Hello` brings it or the spawn ends and [`forget`](Self::forget)s it.
-    pub(super) fn mint_spawn(&mut self, token: Token, spawned: ActorRef<Spawned>, binary: Binary, hash: StoreHash) {
-        self.held.insert(token, Purpose::Spawn { spawned, binary, hash });
+    /// Keeps `token` for the spawn `spawned`, which `purpose` names with the binary it was asked for, the build it
+    /// runs, and who asked, until a `Hello` brings it or the spawn ends and [`forget`](Self::forget)s it.
+    pub(super) fn mint_spawn(&mut self, token: Token, purpose: Purpose) {
+        self.held.insert(token, purpose);
     }
 
     /// Takes `token` out, as a `Hello` that brought it at `now` does: what it was for, or none when it was never held,
@@ -120,7 +130,7 @@ impl Tokens {
     /// Each token kept for an engine started outside the hub, with when it expires.
     fn external(&self) -> impl Iterator<Item = (Token, Time)> + '_ {
         self.held.iter().filter_map(|(token, purpose)| match purpose {
-            Purpose::External { expires_at } => Some((*token, *expires_at)),
+            Purpose::External { expires_at, .. } => Some((*token, *expires_at)),
             Purpose::Spawn { .. } => None,
         })
     }

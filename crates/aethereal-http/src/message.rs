@@ -83,6 +83,8 @@ pub struct Request {
     pub body: Bytes,
     /// Where the request came from.
     pub peer: SocketAddress,
+    /// The port it came in on: the server's, which tells two serves of one handler apart.
+    pub port: u16,
 }
 
 impl Request {

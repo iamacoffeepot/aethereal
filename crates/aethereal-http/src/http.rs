@@ -8,17 +8,19 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{
-    self as tcp, ConnectUnix, ConnectedUnix, Dialed, Framing, Listen, Listener, Listening, Shut, SocketPath, Tcp,
-    Unaddressable,
+    self as tcp, ConnectUnix, ConnectedUnix, Dialed, Framing, Interface, Listen, Listener, Listening, Shut, SocketPath,
+    Tcp, Unaddressable,
 };
 use std::collections::BTreeMap;
 
-/// What an actor asks the root to serve on: a port, 0 for any the host picks, and the handler each request is asked
-/// of, usually the asker itself (`turn.me().protocol()`).
+/// What an actor asks the root to serve on: a port, 0 for any the host picks, the interface `Tcp` binds it on, and the
+/// handler each request is asked of, usually the asker itself (`turn.me().protocol()`). Each request names the port it
+/// came in on, so one handler of two serves tells them apart.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.serve")]
 pub struct Serve {
     pub port: u16,
+    pub interface: Interface,
     pub handler: ProtocolRef<Handling>,
 }
 
@@ -245,7 +247,8 @@ impl Handles<Serve> for Http {
         let asker = self.watch_asker(turn);
         let number = self.next;
         self.next += 1;
-        let listen = Listen { port: serve.port, framing: Framing::Chunks { most_bytes: self.settings.chunk_bytes } };
+        let framing = Framing::Chunks { most_bytes: self.settings.chunk_bytes };
+        let listen = Listen { port: serve.port, interface: serve.interface, framing };
         turn.to(path::<Tcp>(())).ask(&listen, &Binding { number })?;
         self.waiting.insert(number, Waiting { held, handler: serve.handler, asker });
 
@@ -410,6 +413,7 @@ impl Http {
         }
         let config = ServerConfig {
             listener,
+            port,
             handler,
             most_exchanges: self.settings.most_exchanges,
             limits: self.settings.limits(),

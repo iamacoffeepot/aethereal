@@ -8,7 +8,7 @@ mod tests;
 pub use kinds::{CallTool, ListTools, Sheets, Subscribe};
 pub use settings::ToolsSettings;
 
-use crate::{Call, Called, Holder, Offer, Offered, Table, Tooling, Withdraw};
+use crate::{Call, Called, Caller, Holder, Offer, Offered, Table, Tooling, Withdraw};
 use aethereal_actor::{
     Actor, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
     Subscribers, ToAny, ToSender, Top, Turn, Unanswered,
@@ -197,7 +197,8 @@ impl Handles<CallTool> for Tools {
         let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
-        turn.to(worker).ask(&Call { tool, input }, &Forwarding { number })?;
+        // An engine's tools are its own: what it forwards is called from its console or by its hub.
+        turn.to(worker).ask(&Call { tool, input, caller: Caller::Owner }, &Forwarding { number })?;
         self.calls.insert(number, held);
 
         Ok(())

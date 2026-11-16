@@ -15,7 +15,7 @@ use aethereal_http::{
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_tcp::{HungUp, SocketPath, Tcp, Write, Writing, Wrote};
+use aethereal_tcp::{HungUp, Interface, SocketPath, Tcp, Write, Writing, Wrote};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::num::NonZeroU32;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -323,7 +323,7 @@ fn a_response_is_read_whole_by_its_length_and_the_connection_is_kept_for_the_nex
     let mut harness = host(HttpSettings::default())?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, handler })?;
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler })?;
     let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
         panic!("the port is bound");
     };

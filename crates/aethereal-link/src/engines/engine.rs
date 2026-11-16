@@ -2,7 +2,7 @@
 
 use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, TokenFor};
 use crate::frames::{self, Written};
-use crate::{Down, REVISION, Refusal, Token, Up, Within};
+use crate::{Down, REVISION, Refusal, Token, Trust, Up, Within};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
     JobId, Level, More, Number, Open, Part, Path, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, ToSender,
@@ -67,8 +67,9 @@ enum Said {
     /// `Hello`, naming itself, whose token `Engines` is asked to take, and the set it has sent since, kept until it
     /// answers.
     Vouching { name: String, tools: Described },
-    /// `Hello`, its token taken, and the set it has sent last.
-    Linked { name: String, tools: Described },
+    /// `Hello`, its token taken, the set it has sent last, and whether the hub trusts it, as `Engines` answered the
+    /// take of its token (ADR-0057).
+    Linked { name: String, tools: Described, trust: Trust },
     /// It was refused: the refusal is being written, and what it sends is passed over.
     Refused,
 }
@@ -111,6 +112,15 @@ impl Engine {
     #[must_use]
     pub fn calls_out(&self) -> usize {
         self.calls.len()
+    }
+
+    /// Whether the hub trusts the engine: none until its token is taken.
+    #[must_use]
+    pub const fn trust(&self) -> Option<Trust> {
+        match &self.said {
+            Said::Linked { trust, .. } => Some(*trust),
+            Said::Nothing | Said::Vouching { .. } | Said::Refused => None,
+        }
     }
 }
 
@@ -196,7 +206,7 @@ impl Handles<Part<Reading>> for Engine {
                 *kept = Described::Tools { revision, tools };
                 Ok(())
             }
-            (Up::Sheets { revision, tools }, Said::Linked { name, tools: kept }) => {
+            (Up::Sheets { revision, tools }, Said::Linked { name, tools: kept, .. }) => {
                 *kept = Described::Tools { revision, tools };
                 let shown = shown(name, kept);
                 turn.to(turn.parent()).send(&shown)?;
@@ -255,8 +265,8 @@ impl Handles<Answer<Wrote, Sent>> for Engine {
 impl Handles<Answer<TokenFor, Vouching>> for Engine {
     type Sends = (Asks<Writing, Write, Sent>, ToType<Engines, Shown>);
 
-    /// Its token taken, the engine is linked, and `Engines` told what it shows; a token `Engines` does not hold is
-    /// refused, and the connection shut once the refusal is sent.
+    /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a token
+    /// `Engines` does not hold is refused, and the connection shut once the refusal is sent.
     fn handle(
         &mut self,
         (answered, Vouching): (Answered<TokenFor>, Vouching),
@@ -267,12 +277,12 @@ impl Handles<Answer<TokenFor, Vouching>> for Engine {
             self.said = said;
             return Ok(());
         };
-        let Answered::Yes(TokenFor::External | TokenFor::Spawned) = answered else {
+        let Answered::Yes(TokenFor::External { trust } | TokenFor::Spawned { trust }) = answered else {
             turn.log(Level::Info, format_args!("an engine's token was refused: {answered:?}"));
             return self.write(turn, to_bytes(&Down::Refused(Refusal::Token))?, true);
         };
         let shown = shown(&name, &tools);
-        self.said = Said::Linked { name, tools };
+        self.said = Said::Linked { name, tools, trust };
         turn.to(turn.parent()).send(&shown)?;
 
         Ok(())

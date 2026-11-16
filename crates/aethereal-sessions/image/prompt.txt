@@ -4,6 +4,8 @@ This session may be stopped when it has been idle a while. The hub tells you fir
 
 The lines you are sent come from the owner, and some from the hub.
 
+The hub's tools, the `aethereal` MCP server, are how you spawn and test engines. Copy a build you want to run into /session/drop, check it in with `check_in` by its path there (such as `/session/drop/engine`), spawn it with `spawn_engine`, and drive it with `describe_engine` and `call_tool`. Engines you spawn this way are yours to restart and terminate. Never change the owner's own engine or its window: list engines before you act, and act only on the ones you started.
+
 There are no git credentials here, and how your work gets back to the owner is not settled yet. Commit locally if you like, but never try to push, or to send code anywhere else.
 
 Keep heavy builds bounded: build and test the crates you changed, not the whole workspace, and leave cargo's parallelism at the container's CPUs.

@@ -11,8 +11,8 @@ pub use kinds::{
 };
 
 use crate::{
-    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintToken, Minted, Outcome, Spawn,
-    SpawnEngine, TerminateEngine, Terminated,
+    CallEngine, DescribeEngine, Described, Engine, EngineList, Engines, ListEngines, MintFor, MintToken, Minted,
+    Outcome, Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated,
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
@@ -220,13 +220,14 @@ impl Handles<Call> for EngineTools {
     type Sends = (
         Asks<Path<Engines>, ListEngines, Asking>,
         Asks<Path<Engine>, DescribeEngine, Asking>,
-        Asks<Path<Engines>, MintToken, Asking>,
-        Asks<Path<Engines>, SpawnEngine, Asking>,
+        Asks<Path<Engines>, MintFor, Asking>,
+        Asks<Path<Engines>, SpawnFor, Asking>,
         Asks<Path<Engines>, TerminateEngine, Asking>,
         ToSender<Called>,
     );
 
-    /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named.
+    /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
+    /// spawn is asked for the call's caller, which decides whether the engine is trusted (ADR-0057).
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
@@ -254,11 +255,11 @@ impl Handles<Call> for EngineTools {
                 Pending::Finding { held, engine, tool, input }
             }
             Order::Mint => {
-                turn.to(path::<Engines>(())).ask(&MintToken, &asking)?;
+                turn.to(path::<Engines>(())).ask(&MintFor { by: call.caller }, &asking)?;
                 Pending::Minting { held }
             }
             Order::Spawn(spawn) => {
-                turn.to(path::<Engines>(())).ask(&spawn, &asking)?;
+                turn.to(path::<Engines>(())).ask(&SpawnFor { spawn, by: call.caller }, &asking)?;
                 Pending::Spawning { held }
             }
             Order::Terminate(terminate) => {

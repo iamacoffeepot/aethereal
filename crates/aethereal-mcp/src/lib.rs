@@ -1,5 +1,9 @@
 //! The MCP capability (ADR-0037): one root, [`Mcp`], a server of MCP's revision `2026-07-28` on the HTTP capability.
 //!
+//! It serves two ports: its own, on the loopback, whose calls are the owner's, and the sessions' route, whose every
+//! call bears a [`Bearer`] some actor told it of with an [`Admit`], and is forwarded as that bearer's caller
+//! (ADR-0057).
+//!
 //! The root names no tool. It is a tools [`Holder`]: any actor may [`Offer`] it tools at its typed path,
 //! `path::<Mcp>(())`, naming a worker that speaks [`Tooling`], and the root forwards each call to the worker, as bytes
 //! of the schemas in the tool's [`ToolSheet`]. It watches each worker, and when one ends, drops its tools.
@@ -41,7 +45,9 @@
 
 mod front;
 mod mcp;
+mod route;
 mod settings;
 
 pub use mcp::{Calling, Mcp, Serving, Unserved, Unstored};
+pub use route::{Admit, Admitted, Bearer, Dismiss};
 pub use settings::McpSettings;

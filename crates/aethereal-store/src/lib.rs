@@ -1,7 +1,8 @@
 //! The store (ADR-0039): one root, [`Store`], that keeps binaries checked in from a path on the host's machine, each
 //! named by the BLAKE3 hash of its bytes, under names that move to the latest build, pruned to a byte budget.
 //!
-//! An actor checks a file in with a [`CheckIn`], lists the entries with
+//! An actor checks a file in with a [`CheckIn`], or one a session put in its drop box with a [`CheckInDropped`]
+//! (ADR-0057), lists the entries with
 //! [`ListStored`], keeps one from pruning with a [`Pin`] or, for as long as
 //! it lives, a [`Hold`], and asks for a copy of one to run with a [`Launch`]
 //! (ADR-0040), which holds it too. No ask gives an entry's bytes back. Each
@@ -29,7 +30,7 @@ mod store;
 #[cfg(feature = "tools")]
 mod tools;
 
-pub use check_in::{CheckIn, CheckedIn, StoredBinary};
+pub use check_in::{CheckIn, CheckInDropped, CheckedIn, DROP_BOX, DropName, StoredBinary};
 pub use hash::StoreHash;
 pub use hold::{Held, Hold};
 pub use launch::{Binary, Launch, Launched};

@@ -7,7 +7,7 @@ use aethereal_data::{Budget, Plain, from_bytes, to_bytes};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_tools::{
-    BacklogFigure, Call, Called, EngineFigures, EngineStatsTool, EngineStatsToolConfig, Meter, ProcessMemory,
+    BacklogFigure, Call, Called, Caller, EngineFigures, EngineStatsTool, EngineStatsToolConfig, Meter, ProcessMemory,
     ReadEngineStats, Tool, Tooling,
 };
 
@@ -108,7 +108,7 @@ fn figures(harness: &mut Harness<Headless>, worker: ProtocolRef<Tooling>) -> Res
         panic!("the read encodes");
     };
     let input = harness.put(bytes)?;
-    let asked = harness.ask(worker, &Call { tool: String::from("engine_stats"), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from("engine_stats"), input, caller: Caller::Owner })?;
     let Answered::Yes(Called::Output(output)) = harness.answer(asked)? else {
         panic!("the tool answers an output");
     };

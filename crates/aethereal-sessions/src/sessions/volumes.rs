@@ -7,7 +7,7 @@
 
 use super::asks::Refusal;
 use super::container;
-use super::credential::{Crediting, ReadCredential};
+use super::credential::{Crediting, Provision};
 use super::session::{Life, Step};
 use super::{Acts, Does, Sessions};
 use crate::{Docker, DockerError, Unwritable, VolumeCreated};
@@ -38,7 +38,7 @@ impl Sessions {
         };
         let at = usize::try_from(made).unwrap_or(usize::MAX);
         let Some(create) = volumes.into_iter().nth(at) else {
-            turn.run(&ReadCredential, &Crediting { session, run })?;
+            turn.run(&Provision { session }, &Crediting { session, run })?;
             self.step_to(session, Step::Crediting);
             return Ok(());
         };

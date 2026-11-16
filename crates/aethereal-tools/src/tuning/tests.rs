@@ -2,7 +2,7 @@
 //! set, every other kept, each checked by the tuning's schema and then by the actor.
 
 use super::*;
-use crate::{CommandLine, FlagsFault};
+use crate::{Caller, CommandLine, FlagsFault};
 use aethereal_actor::{Top, tuning};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
@@ -107,7 +107,7 @@ fn tuned() -> Result<Harness<Bench>, Unheard> {
 fn call<K: Plain, O: Plain>(harness: &mut Harness<Bench>, tool: &str, input: &K) -> Result<Result<O, String>, Unheard> {
     let input = harness.put(to_bytes(input)?)?;
     let worker = Tuner::worker(harness.root::<Tuner>());
-    let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input, caller: Caller::Owner })?;
     let called = match harness.answer(asked)? {
         Answered::Yes(Called::Output(output)) => {
             let bytes = harness.read(&output).map(<[u8]>::to_vec).unwrap_or_default();

@@ -13,13 +13,13 @@ pub use asks::{
     CallEngine, DescribeEngine, Described, EngineList, EngineListing, ExitedEngine, ListEngines, Origin, Shown,
 };
 pub use engine::{Engine, EngineConfig, Lapsing, Sent, Vouching};
-pub use randomness::{Randomness, Unfilled};
+
 pub use settings::EnginesSettings;
 pub use spawned::{Booting, Fetching, LinkedAs, Patience, Runs, Spawned, SpawnedConfig};
-pub use spawning::{Spawn, SpawnEngine, TerminateEngine, Terminated};
-pub use tokens::{MintToken, Minted, Minting, TakeToken, TokenFor};
+pub use spawning::{Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated};
+pub use tokens::{MintFor, MintToken, Minted, Minting, TakeToken, TokenFor};
 
-use crate::Token;
+use crate::{Token, Trust};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
     More, Number, Open, Part, Path, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn, path,
@@ -27,7 +27,8 @@ use aethereal_actor::{
 use aethereal_data::{Bound, Plain};
 use aethereal_process::Exited;
 use aethereal_store::{Binary, StoreHash};
-use aethereal_tcp::{Accept, Accepted, Accepting, Framing, Listen, Listening, Shut, Tcp, Unbound};
+use aethereal_tcp::{Accept, Accepted, Accepting, Framing, Interface, Listen, Listening, Shut, Tcp, Unbound};
+use aethereal_tools::Caller;
 use core::mem;
 use core::time::Duration;
 use randomness::{Draw, Drawn};
@@ -58,10 +59,10 @@ enum Port {
 /// A token minted before the root listens, and the request it is for, which waits until it does.
 #[derive(Debug, Bound)]
 enum Waiting {
-    /// A [`MintToken`]'s, answered with the token and the port.
+    /// A [`MintFor`]'s, answered with the token and the port.
     Minted { held: Held<Minted>, token: Token },
-    /// A [`SpawnEngine`]'s, whose engine is spawned to link with the token at the port.
-    Spawn { held: Held<Spawn>, spawn: SpawnEngine, token: Token },
+    /// A [`SpawnFor`]'s, whose engine is spawned for `by` to link with the token at the port.
+    Spawn { held: Held<Spawn>, spawn: SpawnEngine, token: Token, by: Caller },
 }
 
 /// What the agent is shown of one engine whose token was taken.
@@ -73,28 +74,36 @@ enum Shows {
     Named { name: String, tools: u32 },
 }
 
-/// Where an engine whose token was taken came from.
+/// Where an engine whose token was taken came from, and who asked for it.
 #[derive(Bound)]
 enum Came {
-    /// It was started outside the hub.
-    External,
-    /// The hub spawned it: its spawn, the binary the spawn was asked for, and the hash of the build it runs.
-    Spawned { spawned: ActorRef<Spawned>, binary: Binary, hash: StoreHash },
+    /// It was started outside the hub, with a token minted for `by`.
+    External { by: Caller },
+    /// The hub spawned it for `by`: its spawn, the binary the spawn was asked for, and the hash of the build it runs.
+    Spawned { spawned: ActorRef<Spawned>, binary: Binary, hash: StoreHash, by: Caller },
 }
 
 impl Came {
-    /// What its token was for, as the engine that brought it is answered.
-    const fn token_for(&self) -> TokenFor {
+    /// Whether the hub trusts it: only when the owner asked for it (ADR-0057).
+    fn trust(&self) -> Trust {
         match self {
-            Self::External => TokenFor::External,
-            Self::Spawned { .. } => TokenFor::Spawned,
+            Self::External { by } | Self::Spawned { by, .. } => Trust::from(*by),
+        }
+    }
+
+    /// What its token was for, as the engine that brought it is answered.
+    fn token_for(&self) -> TokenFor {
+        let trust = self.trust();
+        match self {
+            Self::External { .. } => TokenFor::External { trust },
+            Self::Spawned { .. } => TokenFor::Spawned { trust },
         }
     }
 
     /// Where it came from, as the agent is shown.
     fn origin(&self) -> Origin {
         match self {
-            Self::External => Origin::External,
+            Self::External { .. } => Origin::External,
             Self::Spawned { binary, hash, .. } => Origin::Spawned { binary: binary.clone(), hash: *hash },
         }
     }
@@ -126,7 +135,7 @@ const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// engine itself at `path::<Engine>(id)`.
 ///
 /// Every engine links with a token it minted, good for one `Hello`: an engine reading a `Hello` asks it to
-/// [`TakeToken`], and is listed only once it has. A token is 16 bytes of the host's [`Randomness`], drawn by a job. One
+/// [`TakeToken`], and is listed only once it has. A token is 16 bytes of the host's randomness, drawn by a job. One
 /// for an engine started outside the hub lasts `token_within_millis`, measured on the engine's clock; at most
 /// `most_tokens` are kept, the oldest dropped as another is minted. A token asked for before the hub listens is
 /// answered once it does, with the port bound.
@@ -188,7 +197,7 @@ impl Carries<ListEngines> for Engines {
 }
 
 /// Asked at its typed path, it answers once a token is drawn and it listens.
-impl Carries<MintToken> for Engines {
+impl Carries<MintFor> for Engines {
     type Answers = (Minted,);
 }
 
@@ -198,7 +207,7 @@ impl Carries<TakeToken> for Engines {
 }
 
 /// Asked at its typed path, it answers once the engine has linked, or what came of it before.
-impl Carries<SpawnEngine> for Engines {
+impl Carries<SpawnFor> for Engines {
     type Answers = (Spawn,);
 }
 
@@ -217,10 +226,10 @@ impl Actor for Engines {
         Ended,
         Shown,
         ListEngines,
-        MintToken,
+        MintFor,
         Answer<Drawn, Minting>,
         TakeToken,
-        SpawnEngine,
+        SpawnFor,
         Runs,
         Spawn,
         Exited,
@@ -231,8 +240,8 @@ impl Actor for Engines {
 
     /// Asks `Tcp` to listen on its port.
     fn begin(settings: EnginesSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let listen =
-            Listen { port: settings.port, framing: Framing::LengthPrefixed { most_bytes: settings.most_bytes } };
+        let framing = Framing::LengthPrefixed { most_bytes: settings.most_bytes };
+        let listen = Listen { port: settings.port, interface: Interface::Settings, framing };
         turn.to(path::<Tcp>(())).ask(&listen, &Binding)?;
 
         Ok(Self {
@@ -274,7 +283,7 @@ impl Handles<Answer<Listening, Binding>> for Engines {
         for waiting in minted {
             match waiting {
                 Waiting::Minted { held, token } => turn.answer(held, &self.minted(token, port))?,
-                Waiting::Spawn { held, spawn, token } => self.spawn(turn, held, spawn, token, port)?,
+                Waiting::Spawn { held, spawn, token, by } => self.spawn(turn, held, spawn, token, port, by)?,
             }
         }
 
@@ -372,13 +381,13 @@ impl Handles<ListEngines> for Engines {
     }
 }
 
-impl Handles<MintToken> for Engines {
+impl Handles<MintFor> for Engines {
     type Sends = (ToSender<Minted>,);
 
     /// Holds the request, and draws a token for it from the host's randomness.
-    fn handle(&mut self, _: MintToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, mint: MintFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
-        turn.run(&Draw, &Minting::External { held })?;
+        turn.run(&Draw, &Minting::External { held, by: mint.by })?;
 
         Ok(())
     }
@@ -403,13 +412,13 @@ impl Handles<Answer<Drawn, Minting>> for Engines {
             }
             return Ok(());
         };
-        let held = match minting {
-            Minting::External { held } => held,
-            Minting::Spawn { held, spawn } => return self.spawn_drawn(turn, held, spawn, token),
+        let (held, by) = match minting {
+            Minting::External { held, by } => (held, by),
+            Minting::Spawn { held, spawn, by } => return self.spawn_drawn(turn, held, spawn, token, by),
         };
         let within = Duration::from_millis(self.settings.token_within_millis);
         let most = usize::try_from(self.settings.most_tokens).unwrap_or(usize::MAX);
-        self.tokens.mint_external(token, turn.now(), within, most);
+        self.tokens.mint_external(token, turn.now(), within, most, by);
         let port = match &mut self.port {
             Port::Bound(port) => *port,
             Port::Asked { minted } => {
@@ -426,8 +435,9 @@ impl Handles<Answer<Drawn, Minting>> for Engines {
 impl Handles<TakeToken> for Engines {
     type Sends = (ToSender<TokenFor>, ToType<Spawned, LinkedAs>);
 
-    /// Takes the token out of the table: what it was for, or that it is unknown, once used, expired, or its spawn
-    /// ended too. The engine that asked is linked from then on, with where it came from, and a spawn's told its id.
+    /// Takes the token out of the table: what it was for and whether its engine is trusted, or that it is unknown,
+    /// once used, expired, or its spawn ended too. The engine that asked is linked from then on, with where it came
+    /// from, and a spawn's told its id.
     fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender().id();
         let Some(purpose) = self.tokens.take(take.token, turn.now()) else {
@@ -453,8 +463,8 @@ impl Handles<TakeToken> for Engines {
 impl From<Purpose> for Came {
     fn from(purpose: Purpose) -> Self {
         match purpose {
-            Purpose::External { .. } => Self::External,
-            Purpose::Spawn { spawned, binary, hash } => Self::Spawned { spawned, binary, hash },
+            Purpose::External { by, .. } => Self::External { by },
+            Purpose::Spawn { spawned, binary, hash, by } => Self::Spawned { spawned, binary, hash, by },
         }
     }
 }
@@ -487,6 +497,6 @@ impl Linked {
             return None;
         };
 
-        Some(EngineListing { engine, name: name.clone(), tools: *tools, origin: came.origin() })
+        Some(EngineListing { engine, name: name.clone(), tools: *tools, origin: came.origin(), trust: came.trust() })
     }
 }

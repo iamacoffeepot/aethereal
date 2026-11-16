@@ -17,13 +17,14 @@ use core::time::Duration;
 use parse::{Head, Parsed as Front, Refusal};
 use std::num::NonZeroU32;
 
-/// What an exchange is made from: the connection it reads, where it came from, the handler it asks each request
-/// of, and the limits on each request.
+/// What an exchange is made from: the connection it reads, where it came from, the port it came in on, the handler it
+/// asks each request of, and the limits on each request.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.exchange_config")]
 pub struct ExchangeConfig {
     pub connection: ActorRef<Accepted>,
     pub peer: SocketAddress,
+    pub port: u16,
     pub handler: ProtocolRef<Handling>,
     pub limits: Limits,
 }
@@ -84,6 +85,7 @@ enum Phase {
 pub struct Exchange {
     connection: ActorRef<Accepted>,
     peer: SocketAddress,
+    port: u16,
     handler: ProtocolRef<Handling>,
     limits: Limits,
     reading: Streams<Reading, ()>,
@@ -131,6 +133,7 @@ impl Actor for Exchange {
         Ok(Self {
             connection: config.connection,
             peer: config.peer,
+            port: config.port,
             handler: config.handler,
             limits: config.limits,
             reading,
@@ -381,7 +384,7 @@ impl Exchange {
         };
         self.phase = Phase::Answering { closes, head_only };
         self.time(turn)?;
-        let request = Request { method, path, query, headers, body, peer: self.peer };
+        let request = Request { method, path, query, headers, body, peer: self.peer, port: self.port };
         let due = turn.now() + Duration::from_millis(u64::from(self.limits.answer_within_millis));
         turn.to(self.handler).within(due).ask::<_, _, IP>(&request, &Asking)?;
 

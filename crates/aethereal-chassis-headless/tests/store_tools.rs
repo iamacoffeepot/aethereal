@@ -12,7 +12,9 @@ use aethereal_store::{
 };
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_tools::{Call, Called, Done, Tool, Tooling};
+use aethereal_tools::{Call, Called, Caller, Done, Tool, Tooling};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::{env, fs, process};
 
@@ -85,7 +87,7 @@ fn called_with(
     input: Vec<u8>,
 ) -> Result<Answered<Called>, Unheard> {
     let input = harness.put(input)?;
-    let asked = harness.ask(worker, &Call { tool: String::from(tool), input })?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input, caller: Caller::Owner })?;
 
     harness.answer(asked)
 }
@@ -293,6 +295,59 @@ fn each_case_short_of_done_is_refused_with_its_own_reason() -> Result<(), Unhear
     assert_eq!(refusal(pin_unknown), "no binary of that hash is stored");
     assert_eq!(refusal(unpin_unknown), "no binary of that hash is stored");
     assert_eq!(listed(&mut harness, worker)?, Vec::new(), "nothing was checked in");
+
+    Ok(())
+}
+
+/// What the tools `worker` answer a call of `check_in` of `path` under `under`, as the session numbered `session`
+/// calls it on its route.
+fn checked_in_by(
+    harness: &mut Harness<Headless>,
+    worker: ProtocolRef<Tooling>,
+    session: u32,
+    path: &str,
+    under: &str,
+) -> Result<Answered<Called>, Unheard> {
+    let input = harness.put(bytes_of(&check_in_input(String::from(path), under)))?;
+    let caller = Caller::Session { session };
+    let asked = harness.ask(worker, &Call { tool: String::from("check_in"), input, caller })?;
+
+    harness.answer(asked)
+}
+
+#[test]
+#[cfg(unix)]
+fn a_session_checks_in_only_a_regular_file_of_its_own_drop_box_and_follows_no_link() -> Result<(), Unheard> {
+    // Catches a session's check-in that reads a path on the hub's machine it names, a link it put in its box to a
+    // file of the hub's followed so that file's bytes enter the store, and another session's box reached through a
+    // path that climbs out of its own (ADR-0057).
+    let dir = Dir::new("drop-box");
+    let (mut harness, worker) = store_tools(dir.settings(1 << 20))?;
+    let secret = dir.file("secret", b"the owner's");
+    let drops = dir.0.join("store").join("drops");
+    let made = [fs::create_dir_all(drops.join("3")), fs::create_dir_all(drops.join("4"))];
+    assert!(made.iter().all(Result::is_ok), "the boxes are made");
+    let written =
+        [fs::write(drops.join("3").join("engine"), b"a build"), fs::write(drops.join("4").join("theirs"), b"x")];
+    assert!(written.iter().all(Result::is_ok), "the boxes' files are written");
+    let linked = symlink(&secret, drops.join("3").join("link"));
+    assert!(linked.is_ok(), "the session's link is made");
+
+    let built = checked_in_by(&mut harness, worker, 3, "/session/drop/engine", "built")?;
+    let stored: StoredBinary = output(&mut harness, built);
+    let named_outside = checked_in_by(&mut harness, worker, 3, &secret, "secret")?;
+    let through_link = checked_in_by(&mut harness, worker, 3, "/session/drop/link", "secret")?;
+    let climbing = checked_in_by(&mut harness, worker, 3, "/session/drop/../4/theirs", "theirs")?;
+    let not_its_own = checked_in_by(&mut harness, worker, 3, "/session/drop/theirs", "theirs")?;
+
+    assert_eq!(stored, StoredBinary { hash: hash_of(b"a build"), bytes: 7, fresh: true });
+    let outside = "a session checks in a file it put directly in `/session/drop`, by its path there";
+    assert_eq!(refusal(named_outside), outside);
+    assert_eq!(refusal(through_link), "that is not a regular file");
+    assert_eq!(refusal(climbing), outside);
+    assert_eq!(refusal(not_its_own), "nothing is at that path");
+    let names: Vec<Vec<StoreName>> = listed(&mut harness, worker)?.into_iter().map(|entry| entry.names).collect();
+    assert_eq!(names, vec![vec![name("built")]], "only the session's own build was checked in");
 
     Ok(())
 }

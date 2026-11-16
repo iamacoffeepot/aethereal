@@ -14,6 +14,10 @@
 //! sessions.credential=/srv/claude.env`, and Docker's socket in `docker`. The sessions keep their records and
 //! transcripts through `Files`, in the directory `--save` names, and each session's home is a volume Docker keeps.
 //!
+//! `Mcp` serves its own port on the loopback, and the sessions' route on `--route-port`, bound on `--route-interface`:
+//! Docker's default bridge gateway unless set otherwise, where the sessions' containers reach it at
+//! `sessions.hub_url`. Each session's calls there bear a bearer the hub minted for it (ADR-0057).
+//!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example link_hub -- --mcp-port 8890 --link-port 8892
 //! --root store`. The store is kept in the directory `--root` names. Then check an engine's binary in, such as the
 //! `link_engine` example's, and spawn it with `spawn_engine`, or start one by hand with the arguments `mint_token`
