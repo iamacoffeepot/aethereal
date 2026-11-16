@@ -1,8 +1,8 @@
 //! The overlay's actor (ADR-0053): a root on the program's first window, and a screen of the widget library (ADR-0056),
 //! which lays out and draws its band and console in its own draw list in the window's interface pass, declares the keys
 //! it hears, and takes in what its list reaches. It subscribes to its window for its size, and to the engine's tools
-//! root for the tools the console calls; as it begins it spawns the worker of its own tools and offers them, and offers
-//! `set_theme`, which it serves itself.
+//! root for the tools the console calls; as it begins it spawns the worker of its own tools and offers them. It serves
+//! no tool itself: the worker mails it what needs its state.
 //!
 //! ```text
 //! Tick, FrameStats, GpuTimes, the engine's figures and log ──> the band's and the console's state
@@ -10,8 +10,10 @@
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
 //! first shown ──> Listen to the link ──> ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the link (ADR-0057)
-//! first listed ──> Offer the chat's words, served by the overlay ──> Call ──> Chat to the link, Called
-//! begun ──> Offer `set_theme`, served by the overlay ──> Call ──> the palette of the theme named, Called
+//! begun ──> spawn OverlayTools ──> Offer `mark`, `memory`, `set_theme` with it as their worker
+//! first listed ──> Offer the chat's words with the same worker
+//! the worker's Marked ──> a mark kept;  Choice ──> the palette of the theme named, ThemesShown;
+//!   ChatWord ──> Chat to the link, Worded
 //! ```
 
 mod chat;
@@ -20,8 +22,8 @@ mod controls;
 mod stats;
 #[cfg(test)]
 mod tests;
+mod tools;
 mod view;
-mod words;
 
 pub use console::{Calling, Offering};
 
@@ -35,9 +37,9 @@ use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
 use crate::stop::Stop;
-use crate::tools::{Marked, OverlayTools, OverlayToolsConfig};
+use crate::tools::{ChatWord, Choice, Marked, OverlayTools};
 use aethereal_actor::{
-    Actor, Answer, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Tells, Tick, Top, path,
+    Actor, ActorRef, Answer, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Tells, Tick, Top, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -46,7 +48,7 @@ use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
 use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_tools::{Call, Called, Offer, Offered, Sheets, Tools};
+use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Shaping, Target, Viewport};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
 use chat::Linking;
@@ -85,7 +87,7 @@ pub struct OverlayConfig {
 /// cycle's time, each frame's statistics, and the GPU's time over each frame's passes, which its band shows against
 /// the frame budget the renderer's statistics bring. At the console's stop its line takes every key of the window, and
 /// its panel the pointer and the wheel over it, and its line calls the engine's tools. While it is hidden it draws
-/// nothing and hears no `Tick` and no statistics, only its window, the backtick, its tools, its marks, and the library's
+/// nothing and hears no `Tick` and no statistics, only its window, the backtick, its tools' worker, and the library's
 /// `Prepare`, whose tree is then the same each frame, so nothing is laid out or sent and the renderer counts nothing for
 /// it.
 #[derive(Bound)]
@@ -132,6 +134,9 @@ pub struct Overlay {
     /// The colours the overlay draws in, of the theme `set_theme` last named, lichen grey until it names one: the
     /// engine's own, as the console's height is, never sent and not kept past the engine's end.
     palette: Palette,
+    /// The worker of every tool the overlay offers, spawned as it begins: the chat's words are offered with it too,
+    /// once the hub lists the sessions.
+    tools: ActorRef<OverlayTools>,
 }
 
 impl ChildOf for Overlay {
@@ -153,7 +158,8 @@ impl Actor for Overlay {
         ShowTabs,
         ShowEvents,
         ShowAsk,
-        Call,
+        Choice,
+        ChatWord,
     ];
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,
@@ -164,22 +170,13 @@ impl Actor for Overlay {
     type EndSends = ();
 
     /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
-    /// which hears the backtick, and spawns the worker of its own tools and offers them.
+    /// which hears the backtick, and spawns the worker of its tools and offers them.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
         let target = Target::of::<Interface>(Frame::Main(config.window));
         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
         turn.to(path::<Tools>(())).send(&aethereal_tools::Subscribe)?;
-        match turn.spawn::<OverlayTools>(&(), OverlayToolsConfig) {
-            Ok(worker) => {
-                let offer = Offer { tools: OverlayTools::sheets(), worker: OverlayTools::worker(worker) };
-                turn.to(path::<Tools>(())).ask(&offer, &Offering)?;
-            }
-            Err(refused) => {
-                turn.log(Level::Error, format_args!("the overlay's tools were not spawned: {refused:?}"));
-            }
-        }
-        Self::offer_theme(turn)?;
+        let tools = Self::spawn_tools(turn)?;
 
         Ok(Self {
             stop: Stop::Hidden,
@@ -203,6 +200,7 @@ impl Actor for Overlay {
             console_share: CONSOLE_SHARE,
             now_nanos: 0,
             palette: Palette::default(),
+            tools,
         })
     }
 

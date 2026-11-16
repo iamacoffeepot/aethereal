@@ -1,29 +1,40 @@
-//! The overlay's own tools (ADR-0053: Commands are tools): `mark`, which pins a mark at this moment on the band's chart
-//! and in the scrollback, and `memory`, which prints the engine's memory against its limits with its largest guests
-//! and longest backlogs. The overlay offers them to the engine's tools root with a worker of their own, so a person at
-//! the console and an agent through the hub call them alike, and an agent's mark shows on the owner's screen. The
-//! overlay serves `set_theme` (`theme`) itself, in every engine, as the theme is its own state; and the chat's words
-//! (`words`) itself too, and only once the hub has shown it the chat.
+//! The overlay's tools (ADR-0053: Commands are tools), all served by one worker, [`OverlayTools`], which the overlay
+//! spawns as it begins: `mark`, which pins a mark at this moment on the band's chart and in the scrollback; `memory`,
+//! which prints the engine's memory against its limits with its largest guests and longest backlogs; `set_theme`
+//! (`theme`), which tints the overlay's greys; and the chat's words (`words`), which the overlay offers with the same
+//! worker only once the hub has shown it the chat. A person at the console and an agent through the hub call them alike,
+//! and an agent's mark shows on the owner's screen.
+//!
+//! The worker reads each call's input and keeps no state of the overlay's: what needs it, a mark, a theme, or a change
+//! of the chat, is mailed to the overlay, told when the answer does not hang on it and asked when it does, and the call
+//! is answered once the overlay has answered.
+//!
+//! ```text
+//! Call ──> OverlayTools ──> the input read ──> refused, or:
+//!   mark            ──> Marked told to the overlay ──> Called: done
+//!   memory          ──> the engine's figures ──> Called: MemoryShown
+//!   set_theme       ──> Choice asked of the overlay ──> ThemesShown ──> Called: ThemesShown
+//!   the chat's words ──> the owner's alone ──> ChatWord asked of the overlay ──> Worded ──> Called: done, or refused
+//! ```
 
 #[cfg(test)]
 mod tests;
 mod theme;
 mod words;
 
-#[cfg(test)]
-pub use theme::Choice;
-pub use theme::{ChooseTheme, SET_THEME, chosen, theme_sheet};
-pub use words::{
-    ARCHIVE_SESSION, ArchiveSession, CHAT_WORDS, NEW_SESSION, NewSession, STOP_SESSION, StopSession, chat_sheets,
-};
+pub use theme::{Choice, ChooseTheme, ThemesShown, chosen};
+pub use words::{CHAT_WORDS, ChatWord, NewSession, Worded, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Against, Anywhere, Beginning, ChildOf, Ending, EngineStats, Fault, Figures, Handles,
-    LARGEST, Path, Process, ProtocolRef, Tells, ToSender, Turn, path,
+    Actor, ActorName, ActorRef, Against, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, EngineStats,
+    Fault, Figures, Handles, Held, LARGEST, Path, Process, ProtocolRef, Tells, ToSender, Turn, path,
 };
-use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_tools::{Call, Called, Done, Output, ToolSheet, Tooling};
+use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
+use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
+use std::collections::BTreeMap;
+use theme::{SET_THEME, theme_sheet};
+use words::{ARCHIVE_SESSION, ArchiveSession, NEW_SESSION, STOP_SESSION, StopSession};
 
 /// The tool that pins a mark.
 const MARK: &str = "mark";
@@ -31,7 +42,7 @@ const MARK: &str = "mark";
 /// The tool that prints the engine's memory.
 const MEMORY: &str = "memory";
 
-/// The most bytes reading an input may take: a mark's text is typed by hand.
+/// The most bytes reading an input may take: a mark's text, or a session's name, is typed by hand.
 const INPUT_BYTES: usize = 8 * 1024;
 
 /// Pins a mark at this moment, saying `text`.
@@ -95,15 +106,45 @@ pub struct Marked {
     pub text: String,
 }
 
+/// What the worker keeps for its ask of the overlay: which call it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.answering")]
+pub struct Answering {
+    call: u64,
+}
+
 /// What the overlay's tools' worker is made from: nothing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.overlay.overlay_tools_config")]
 pub struct OverlayToolsConfig;
 
-/// The worker of the overlay's tools, spawned by the overlay as it begins and offered to the engine's tools root.
-#[derive(Debug, Plain)]
+/// The worker of every tool the overlay offers, spawned by the overlay as it begins: it answers `memory` itself, tells
+/// the overlay a mark, and asks the overlay for a theme or a change of the chat, answering the call with what the
+/// overlay answered.
+#[derive(Bound)]
 #[kind(name = "aether.overlay.overlay_tools")]
-pub struct OverlayTools;
+pub struct OverlayTools {
+    /// The calls asked of the overlay and not yet answered, by number.
+    calls: BTreeMap<u64, Held<Called>>,
+    /// The number of the next call.
+    next: u64,
+}
+
+/// What a call of one of the overlay's tools comes to, its input read: what the worker does for it.
+enum Order {
+    Mark(Mark),
+    Memory(Memory),
+    Theme(Choice),
+    Word(ChatWord),
+}
+
+/// What every turn of the worker may send: an answer to its caller, a mark told to the overlay, and an ask of it.
+type Sends = (
+    ToSender<Called>,
+    Tells<Path<Overlay>, Marked>,
+    Asks<Path<Overlay>, Choice, Answering>,
+    Asks<Path<Overlay>, ChatWord, Answering>,
+);
 
 impl ChildOf for OverlayTools {
     type Parent = Anywhere;
@@ -112,12 +153,12 @@ impl ChildOf for OverlayTools {
 impl Actor for OverlayTools {
     type Config = OverlayToolsConfig;
     type Key = ();
-    type Handles = (Call,);
+    type Handles = (Call, Answer<ThemesShown, Answering>, Answer<Worded, Answering>);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(_: OverlayToolsConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self)
+        Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -125,9 +166,10 @@ impl Actor for OverlayTools {
     }
 }
 
-impl OverlayTools {
-    /// What the worker offers: `mark` and `memory`.
-    pub fn sheets() -> Vec<ToolSheet> {
+/// What the overlay offers as it begins: `mark`, `memory`, and `set_theme`, in every engine, trusted or not. The chat's
+/// words, served by the same worker, are offered apart, once the hub shows the overlay the chat ([`chat_sheets`]).
+impl Tool for OverlayTools {
+    fn sheets() -> Vec<ToolSheet> {
         let mark = "Pins a mark at this moment on the dev overlay. The mark is a tick in the mark's ink on the overlay's frame \
                     chart at this time, sliding left with the columns for sixty seconds, and a line in the mark's ink in its \
                     console's scrollback. Answers once the overlay has been told.";
@@ -142,40 +184,126 @@ impl OverlayTools {
         vec![
             ToolSheet::of::<Mark>(MARK, mark, Output::Value(SchemaNodes::of(&Done::SHAPE))),
             ToolSheet::of::<Memory>(MEMORY, &memory, Output::Value(SchemaNodes::of(&MemoryShown::SHAPE))),
+            theme_sheet(),
         ]
     }
 
-    /// The worker as the tools root asks it.
-    pub fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
     }
 }
 
+/// A call read: `memory` answered at once, a mark told to the overlay and answered done, and a theme or a chat's word
+/// held and asked of the overlay, answered once the overlay answers. A call whose input is not its tool's, or a chat's
+/// word a session calls, is refused.
 impl Handles<Call> for OverlayTools {
-    type Sends = (ToSender<Called>, Tells<Path<Overlay>, Marked>);
+    type Sends = Sends;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let called = match call.tool.as_str() {
-            MARK => match from_bytes::<Mark>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
-                Ok(mark) => {
-                    turn.to(path::<Overlay>(())).send(&Marked { text: mark.text })?;
-                    Called::output(turn, to_bytes(&Done {})?)
-                }
-                Err(fault) => Called::Refused(format!("the input of `{MARK}`: {fault}")),
-            },
-            MEMORY => match from_bytes::<Memory>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
-                Ok(memory) => Self::memory(&memory, turn)?,
-                Err(fault) => Called::Refused(format!("the input of `{MEMORY}`: {fault}")),
-            },
-            other => Called::Refused(format!("the overlay has no tool named `{other}`")),
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+        let input = turn.read(&call.input);
+        let order = match call.tool.as_str() {
+            MARK => read(MARK, input).map(Order::Mark),
+            MEMORY => read(MEMORY, input).map(Order::Memory),
+            SET_THEME => read(SET_THEME, input).map(|choose: ChooseTheme| Order::Theme(choose.choice())),
+            NEW_SESSION => owned(call.caller)
+                .and_then(|()| read(NEW_SESSION, input))
+                .map(|new: NewSession| Order::Word(ChatWord::New { name: new.name })),
+            STOP_SESSION => owned(call.caller)
+                .and_then(|()| read(STOP_SESSION, input))
+                .map(|stop: StopSession| Order::Word(ChatWord::Stop(stop.which()))),
+            ARCHIVE_SESSION => owned(call.caller)
+                .and_then(|()| read(ARCHIVE_SESSION, input))
+                .map(|archive: ArchiveSession| Order::Word(ChatWord::Archive(archive.which()))),
+            other => Err(format!("the overlay has no tool named `{other}`")),
         };
-        turn.reply(&called)?;
+
+        match order {
+            Ok(Order::Mark(mark)) => {
+                turn.to(path::<Overlay>(())).send(&Marked { text: mark.text })?;
+                let called = Called::output(turn, to_bytes(&Done {})?);
+                turn.reply(&called)?;
+            }
+            Ok(Order::Memory(memory)) => {
+                let called = Self::memory(&memory, turn)?;
+                turn.reply(&called)?;
+            }
+            Ok(Order::Theme(choice)) => {
+                let answering = self.hold(turn)?;
+                turn.to(path::<Overlay>(())).ask(&choice, &answering)?;
+            }
+            Ok(Order::Word(word)) => {
+                let answering = self.hold(turn)?;
+                turn.to(path::<Overlay>(())).ask(&word, &answering)?;
+            }
+            Err(why) => turn.reply(&Called::Refused(why))?,
+        }
 
         Ok(())
     }
 }
 
+/// The overlay chose the theme, and answered the themes and the one in use; or no overlay answered.
+impl Handles<Answer<ThemesShown, Answering>> for OverlayTools {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, answering): (Answered<ThemesShown>, Answering),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let called = match answered {
+            Answered::Yes(shown) => Called::output(turn, to_bytes(&shown)?),
+            Answered::No(why) => Called::Refused(format!("the overlay did not answer: {why:?}")),
+        };
+
+        self.answer(answering, &called, turn)
+    }
+}
+
+/// The overlay told the link the chat a word came to, or said why it told nothing; or no overlay answered.
+impl Handles<Answer<Worded, Answering>> for OverlayTools {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, answering): (Answered<Worded>, Answering),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let called = match answered {
+            Answered::Yes(Worded::Told) => Called::output(turn, to_bytes(&Done {})?),
+            Answered::Yes(Worded::Refused(why)) => Called::Refused(why),
+            Answered::No(why) => Called::Refused(format!("the overlay did not answer: {why:?}")),
+        };
+
+        self.answer(answering, &called, turn)
+    }
+}
+
 impl OverlayTools {
+    /// Holds the call `turn` handles, to answer once the overlay has, and answers what to keep for the ask.
+    fn hold(&mut self, turn: &mut Turn<'_, Self, Sends>) -> Result<Answering, Fault> {
+        let answering = Answering { call: self.next };
+        self.calls.insert(answering.call, turn.hold()?);
+        self.next += 1;
+
+        Ok(answering)
+    }
+
+    /// Answers the call `answering` names with `called`: nothing when it is held no longer.
+    fn answer<S>(
+        &mut self,
+        Answering { call }: Answering,
+        called: &Called,
+        turn: &mut Turn<'_, Self, S>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&call) else {
+            return Ok(());
+        };
+        turn.answer(held, called)?;
+
+        Ok(())
+    }
+
     /// Answers `memory`: the engine's figures as the step began, at most `most` guests and backlogs named.
     fn memory<S>(memory: &Memory, turn: &mut Turn<'_, Self, S>) -> Result<Called, Fault> {
         let EngineStats::Read(figures) = turn.engine_stats() else {
@@ -184,6 +312,19 @@ impl OverlayTools {
         let most = memory.most.map_or(LARGEST, |most| usize::try_from(most).unwrap_or(usize::MAX));
 
         Ok(Called::output(turn, to_bytes(&MemoryShown::of(&figures, most))?))
+    }
+}
+
+/// The input `bytes` of the tool `tool` as a `K`, or why they are not one.
+fn read<K: Plain>(tool: &str, bytes: &[u8]) -> Result<K, String> {
+    from_bytes::<K>(bytes, &mut Budget::new(INPUT_BYTES)).map_err(|fault| format!("the input of `{tool}`: {fault}"))
+}
+
+/// Whether `caller` may call the chat's words: the owner may, and a session is refused, as the sessions are the owner's.
+fn owned(caller: Caller) -> Result<(), String> {
+    match caller {
+        Caller::Owner => Ok(()),
+        Caller::Session { session } => Err(format!("the chat's words are the owner's, not session {session}'s")),
     }
 }
 

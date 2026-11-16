@@ -1,7 +1,8 @@
 //! The `set_theme` tool (ADR-0053: Colours): it names the theme the overlay's greys are tinted by, and the next frame is
-//! drawn in it; named nothing, it lists the themes and says which is in use. The overlay serves it itself, as the theme
-//! is its own state, in every engine, trusted or not: it changes nothing but how this engine's overlay looks. The
-//! choice is the engine's own, as the console's height is, and is not kept past the engine's end.
+//! drawn in it; named nothing, it lists the themes and says which is in use. The overlay's tools' worker reads the call
+//! and asks the overlay, whose state the theme is, for the [`Choice`] it makes, and answers what the overlay answered. It
+//! is offered in every engine, trusted or not, and called by anyone: it changes nothing but how this engine's overlay
+//! looks. The choice is the engine's own, as the console's height is, and is not kept past the engine's end.
 
 use crate::colour::{Palette, Theme};
 use aethereal_data::{Plain, Schema, SchemaNodes};
@@ -21,21 +22,30 @@ pub struct ChooseTheme {
     theme: Option<Theme>,
 }
 
-/// What a call of `set_theme` asks for: the themes listed, the palette kept; or the palette switched to a theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a call of `set_theme` asks the overlay for: the themes listed, the palette kept; or the palette switched to a
+/// theme. Answered with [`ThemesShown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.theme_choice")]
 pub enum Choice {
     List,
     Switch(Theme),
 }
 
 impl ChooseTheme {
+    /// The input that names `theme`, as a caller writes it.
+    #[cfg(test)]
+    pub const fn naming(theme: Theme) -> Self {
+        Self { theme: Some(theme) }
+    }
+
     /// What it asks for.
     pub fn choice(self) -> Choice {
         self.theme.map_or(Choice::List, Choice::Switch)
     }
 }
 
-/// The themes, and the one the overlay is drawn in now.
+/// The themes, and the one the overlay is drawn in now: the overlay's answer to a [`Choice`], and what `set_theme`
+/// answers.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.overlay.themes_shown")]
 pub struct ThemesShown {

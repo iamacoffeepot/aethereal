@@ -1,12 +1,34 @@
 //! The chat's words (ADR-0057: The console is the chat): `new_session`, `stop_session`, and `archive_session`, the
-//! engine's own tools, which the overlay serves itself once the hub has shown it the chat, so only an engine the hub
-//! trusts offers them. Being tools, they run from any tab of the console, `help` lists them, and Tab completes them, as
-//! every other command.
+//! engine's own tools, which the overlay offers with its tools' worker once the hub has shown it the chat, so only an
+//! engine the hub trusts offers them. Being tools, they run from any tab of the console, `help` lists them, and Tab
+//! completes them, as every other command. The worker reads each, refuses one a session calls, and asks the overlay,
+//! whose chat it changes, for the [`ChatWord`] it comes to; the overlay answers whether it told the link ([`Worded`]).
 
 use crate::chat::Which;
 use aethereal_data::config::Flagged;
 use aethereal_data::{Plain, Schema, SchemaNodes};
 use aethereal_tools::{Done, Output, ToolSheet};
+
+/// One of the chat's words, as the owner called it, asked of the overlay, whose chat it changes: answered with
+/// [`Worded`].
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.chat_word")]
+pub enum ChatWord {
+    /// Make a session named `name`.
+    New { name: String },
+    /// Stop the turn of the session named.
+    Stop(Which),
+    /// Archive the session named.
+    Archive(Which),
+}
+
+/// What the overlay made of a [`ChatWord`]: the chat it came to told the link, or why it told nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.worded")]
+pub enum Worded {
+    Told,
+    Refused(String),
+}
 
 /// The word that makes a session.
 pub const NEW_SESSION: &str = "new_session";
@@ -17,7 +39,7 @@ pub const STOP_SESSION: &str = "stop_session";
 /// The word that archives a session.
 pub const ARCHIVE_SESSION: &str = "archive_session";
 
-/// The chat's words, each an engine's tool the overlay serves while the hub shows it the chat.
+/// The chat's words, each an engine's tool the overlay offers once the hub shows it the chat.
 pub const CHAT_WORDS: [&str; 3] = [NEW_SESSION, STOP_SESSION, ARCHIVE_SESSION];
 
 /// Makes a session named `name`, whose tab opens once the hub lists it.
@@ -63,7 +85,7 @@ impl ArchiveSession {
     }
 }
 
-/// The sheets of the chat's words.
+/// The sheets of the chat's words, offered apart from the worker's others, once the hub shows the overlay the chat.
 pub fn chat_sheets() -> Vec<ToolSheet> {
     let new = "Makes a Claude session the hub runs, named as given, and opens its tab in this engine's console once the \
                hub lists it. Served only in an engine the hub trusts.";

@@ -1,11 +1,10 @@
 //! How the overlay's actor runs the console's tools (ADR-0053: Commands are tools): a command that names a tool is asked
-//! of the engine's tools root and its answer printed, the tools root's sheets are kept for the next line, the overlay's
-//! own tools are offered, and marks pinned through them are kept to be stamped at the next `Tick`.
+//! of the engine's tools root and its answer printed, the tools root's sheets are kept for the next line, and an offer
+//! of the overlay's own tools refused is logged.
 
 use super::Overlay;
 use super::chat::Reports;
 use crate::console::Command;
-use crate::tools::Marked;
 use aethereal_actor::{Allows, Answer, Answered, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
 use aethereal_data::Plain;
 use aethereal_link::Link;
@@ -120,18 +119,6 @@ impl Handles<Answer<Offered, Offering>> for Overlay {
         if !held {
             turn.log(Level::Error, format_args!("tools the overlay offered were not held: {answered:?}"));
         }
-
-        Ok(())
-    }
-}
-
-/// A mark, kept to be pinned at the next `Tick`'s time: its tick is drawn on the chart from then, and it is printed
-/// in the mark's ink then.
-impl Handles<Marked> for Overlay {
-    type Sends = ();
-
-    fn handle(&mut self, marked: Marked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.marks.wait(marked.text);
 
         Ok(())
     }

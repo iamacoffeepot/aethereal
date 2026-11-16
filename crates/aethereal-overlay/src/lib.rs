@@ -28,15 +28,15 @@
 //! which the wheel slides, which keeps to its newest row, and whose bar at its right edge shows where the view stands.
 //! Its line calls the engine's tools, held by the tools root every engine lists (ADR-0053: Commands are tools), and
 //! prints their answers as they would be typed, with the engine's recent log beneath them as it comes; what it has
-//! called and not yet heard from shows at the prompt's right end. The overlay offers two tools of its own, `mark` and
-//! `memory`, which an agent may call too.
+//! called and not yet heard from shows at the prompt's right end. The overlay offers tools of its own, `mark`, `memory`,
+//! and `set_theme`, which an agent may call too, all served by one worker that mails the overlay what needs its state.
 //!
 //! In an engine its hub trusts, the console is the chat with Claude's sessions (ADR-0057): the overlay listens to the
 //! engine's link, the sessions show as tabs beneath the prompt, the console's own first, and with a session's tab open
 //! its transcript shows in place of the scrollback, a line goes to the session, and a `/` line runs here and is noted
 //! in it. Escape on an empty line stops the session's turn, and on a line typed empties it. The chat's words,
-//! `new_session`, `stop_session`, and `archive_session`, are the engine's tools, which the overlay serves once the hub
-//! shows it the chat; Control-Tab and Alt with a digit change tabs; and the grip, the seam between the band and the
+//! `new_session`, `stop_session`, and `archive_session`, are the engine's tools, which the overlay offers with the same
+//! worker once the hub shows it the chat; Control-Tab and Alt with a digit change tabs; and the grip, the seam between the band and the
 //! console, sets how tall the console is. An engine the hub shows no chat keeps the console as it was.
 
 mod binned;
