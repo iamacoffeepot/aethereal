@@ -52,5 +52,10 @@ aethereal-sessions = { path = "../aethereal-sessions", features = ["tools"] }
 aethereal-store = { path = "../aethereal-store", features = ["tools"] }
 aethereal-tools = { path = "../aethereal-tools" }
 
+# Its test reads the hub's own composition: every section and flag it lists.
+[[example]]
+name = "link_hub"
+test = true
+
 [lints]
 workspace = true
