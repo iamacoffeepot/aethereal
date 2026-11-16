@@ -462,7 +462,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 | Kind | Widgets |
 |---|---|
 | Layout | `Row`, `Column`, `Grid`, `Stack` (children layered on one spot) |
-| Content | `Text`, `Image` (a texture or a region of one, with nine-slice), `Bar` (a filled fraction) |
+| Content | `Text`, `Rich` (runs in colours of their own, some of them links), `Image` (a texture or a region of one, with nine-slice), `Picture` (decoded pixels the screen makes a texture of), `Bar` (a filled fraction) |
 | Interaction | `Button`, `Scroll` (clips; builds only visible rows when given `items`), `TextInput` (`change`, `submit`), `Selectable` (a text read, selected, and copied), `Toggle`, `Slider`, `Tabs`, `Popup`, `Tooltip` |
 
 **`Scroll` and `Tabs`**:
@@ -492,7 +492,42 @@ let panels = match self.tab { 0 => vec![items_panel], 1 => vec![skills_panel], _
 Node::new(Segment::Place(3), Tabs::new(&["Items", "Skills"], self.tab, InventoryEvent::Open), tabs_style(), panels)
 ```
 
-Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can later be a composite of `Popup` and `Button`: a `Popup` with `inside: Inside::Closes`, its anchor what shows the choice and its content a `Button` for each option, raising the composite's `change`. Opening and shutting it are the popup's own, so it needs no method of the screen's.
+Dropdowns, trees, and colour pickers are left out. A dropdown can later be a composite of `Popup` and `Button`: a `Popup` with `inside: Inside::Closes`, its anchor what shows the choice and its content a `Button` for each option, raising the composite's `change`. Opening and shutting it are the popup's own, so it needs no method of the screen's.
+
+### Markdown
+
+Claude's replies are markdown, and the overlay's chat shows them (ADR-0057). The library builds markdown into its own widgets, so a reply is laid out, drawn, kept, and reached by input as any other part of a screen.
+
+```text
+markdown ──> Document (read again only from its last blocks as it grows) ──> Blocks, each keyed by its place
+         ──> Column { items: blocks as block key block.index,
+                      MarkdownBlock { memo, block: block, prose: …, link => … } } ──> each block kept while it stands
+```
+
+- **A `Document` reads markdown into its top-level blocks** with `pulldown-cmark`: CommonMark with GitHub's tables and strikethrough. The events it gives, a flat stream of starts, ends, and text, are folded into blocks with one stack of the containers open, never by recursion, so a reply nested deeply cannot overflow the stack.
+- **Nesting is capped.** Containers, a list, its item, a quote, and a table, nest at most `MOST_NESTING`, eight, deep; one nested deeper is read as plain text, each of its blocks on a line of its own, in a paragraph of the container at the cap. Each level is a few levels of the screen's tree, so a reply stands well within `MOST_DEPTH`.
+- **Nothing in it panics on any input.** A reply is untrusted, so an unfinished construct, an open fence or half a table, closes where the text stops, and arbitrary markdown is tested to read, build, and stream.
+- **A reply grows token by token, and only its end is read again.** A document keeps each block with the byte it starts at; text added is read again from the start of the line of its last block, or of the blocks before it while a line added could join them: one no blank line parts from it, or a list or code, which a blank line does not end. Each block before that is kept as the same shared value, and a block read again equal to the one it replaces keeps it too. A definition of a link by reference, which a block before it may use, makes the document read whole from then on. A document is written as its markdown, so a screen that holds one keeps it across a move onto new code.
+- **One style set, `Prose`, styles every block,** shared so a block compares it with the last at once: the document's column, a paragraph, three headings (deeper ones are styled as the third), a code block's panel and its code, a list, its item, its marker, and its blocks, a quote, its bar, and its blocks, a table, its header's cells and its rows', a rule, and a colour for each look of a span and for a link.
+- **Each block builds widgets of the library's own,** with one stack of the boxes still open:
+  - a paragraph, a heading, and a table's cell are each one `Rich`, its emphasised, strong, struck, code, and linked spans runs of it. The renderer draws a text's runs in colours alone, in one font, so a span's look is its colour; inline code is coloured, not set in the monospace font;
+  - a code block is its code in a monospace `Rich`, unbroken, in a `Scroll` across, on a panel; the fence's language is kept in the block, for a highlighter later;
+  - a list is a column of rows, each its marker and a column of its blocks, so a nested list stands within its item; a quote is a row of a bar and a column of its blocks;
+  - a table is a `Grid` with a column of `Track::Auto` for each cell across, so its columns are as wide as their content within the width there is and its cells wrap; a short row is filled with empty cells;
+  - a rule is an empty box its style sizes;
+  - an image on a line of its own is a block of its own, keeping its source: a `Picture` of the pixels the caller decoded for that source, handed in as `Images`, or its alt text, in the image colour, until it has them. One within a line of text is its alt text. `Document::images` lists the sources to fetch; the library never fetches one or reads a file.
+- **A link raises the composite's `link` with its target** when a press and a release of the main button are both on it, and shows the hand while the pointer is over it. Nothing is opened: the screen's method decides. `Rich` finds the run under the pointer by laying its text out as it was drawn, each run's colour standing in for its place, through `Measuring::laid`.
+- **Two composites build it.** `Markdown { blocks, prose, images, link => … }` builds a whole document, a column of its blocks keyed by their places. A screen showing a reply as it streams builds each block on its own, `MarkdownBlock { memo, block: block, prose: …, images: …, link => … }` in a column of the document's blocks, so a block that stands is kept by `memo` and compares equal in the tree comparison, neither laid out nor drawn again. Each is written in Rust, implementing `Element` and `Composite`, as its tree depends on its input in a way markup cannot write.
+- **Each reply in a windowed transcript has a least length** (Lists and conditions are settings): a text holds one line, and a rule its style's height and margins, so a reply of only a rule, or only an image's alt text, still bounds how many replies fill the view.
+
+### Pictures
+
+- **A `Picture` draws an image from pixels the caller decoded,** `Pixels`: RGBA in sRGB, shared, and named by a `PictureId`, its size and a digest of its bytes, so a picture compares with the last at the cost of a few numbers.
+- **Decoding is the caller's, once, as the bytes arrive:** `Pixels::decode` reads a PNG (`png`) or a JPEG (`zune-jpeg`), told apart by how they start, widened to RGBA. Images are untrusted: a side past 8,192 pixels or more than 16 Mi pixels is refused from the header, before the pixels are decoded, and nothing panics on any bytes. Nothing is decoded per frame.
+- **Its box keeps the image's proportions:** its content is the image's size, a pixel to each logical pixel, shrunk to the width it is offered with its height in proportion and never enlarged; a box its style sizes shows the whole image within it, centred. It is never shorter than 16 logical pixels, or the image's own height when less, which is its least length, so a transcript of pictures alone still windows.
+- **The screen makes one texture for each picture its tree shows,** whatever widgets show it, the first time a layout meets it: that layout waits, drawing nothing, as one that meets a font whose metrics have not come does, and the next after the texture is made lays out again. A picture's quads bind the texture made of it; one the renderer refused binds the white pixel and is logged.
+- **A texture is released once no widget shows its picture,** after the list that last named it is replaced, as a retired draw is. The textures are kept with the screen's state, so they survive a move onto new code.
+- **The white pixel and a picture's texture are asked for under one context, `Texturing`,** as an actor answers one kind of answer with one kind of context.
 
 ### Expanded by a macro, never read at runtime
 
@@ -519,6 +554,8 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - `aethereal-ui` is the runtime: widgets, the widget table, layout, input routing, and diffing. It compiles into guests, so it cannot live in `aethereal-render` (native, wgpu) or `aethereal-actor` (the framework, which this library must not touch), and it is not the overlay, which is one of its users.
   - `aethereal-ui-macros` is the proc-macro crate of `view!`, `style!`, and `widget!`, and of the attribute `#[events]`, over `syn`, `quote`, and `proc-macro2`, with no XML parser. `aethereal-ui` re-exports it, so a screen writes `aethereal_ui::view!`. A proc-macro crate runs on the build machine only, so `syn` still never enters a guest.
 - **Taffy becomes a dependency of `aethereal-ui`,** pinned exactly, without default features, and checked in CI for supply-chain changes.
+- **So do `png` and `zune-jpeg`,** which decode pictures: `png` at the version the renderer already pins (MIT OR Apache-2.0), and `zune-jpeg` (MIT OR Apache-2.0 OR Zlib), pinned exactly without its SIMD paths, so it is plain Rust on every host.
+- **So does `pulldown-cmark`,** which reads markdown (MIT, maintained, forbidding unsafe code without its SIMD feature), pinned exactly and without default features, so neither its HTML writer nor its command line is built; it adds `bitflags`, `memchr`, and `unicase`, and builds for the browser's host.
 - **The window gives the library two things** (ADR-0055, ADR-0024):
   - a release under a held button reports the topmost actor under the pointer, its entry, and the position in that entry's coordinates;
   - an actor can show an image as the window's cursor, and the default again, as a declaration, not a message that sets it (ADR-0055): each `Draw` and `Hit` entry the pointer reaches carries a `Cursor` in its `Pointer`, an icon or an image whose pixels are a blob, and the window shows the topmost reached entry's, or the press's while a button is held. A message would let whichever actor set it last win over the others sharing the window.
@@ -540,7 +577,7 @@ Dropdowns, rich text, trees, and colour pickers are left out. A dropdown can lat
   - focus that crosses into a child, so Tab walks from a screen into its child and out again (a press into a child already makes its parent leave its own focus);
   - a child screen placed in the window's pixels that is told where its slot is, and so moves by mail;
   - themes switched while running, with style values as named tokens that a theme actor mails;
-  - dropdowns, rich text, trees, and colour pickers;
+  - dropdowns, trees, and colour pickers;
   - animation and transitions.
 
 ## Alternatives considered

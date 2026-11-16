@@ -33,46 +33,56 @@ impl Text {
         vec![Run::new(&self.text, style.colour)]
     }
 
-    /// Its box, as `measuring` lays it out at its style's size within `width` pixels, `None` for as wide as it wants,
-    /// with the wrap it is made with to be drawn in that box.
+    /// Its box, as `measuring` lays it out at its style's size within `width` pixels, with the wrap it is made with
+    /// to be drawn in that box.
     pub(super) fn fitted(
         &self,
         style: &Style,
         measuring: &mut Measuring<'_>,
         width: Width,
     ) -> Result<(Measured, Wrap), Unmeasured> {
-        let size = style.font_size * measuring.scale();
-        let runs = self.runs(style);
-        let mut measured = |wrap| measuring.text(style.font, size, &runs, wrap);
-        let most = match width {
-            Width::Unbounded => return measured(Wrap::None).map(|unbroken| (unbroken, Wrap::None)),
-            Width::Narrowest => {
-                let narrowest = measured(Wrap::At { width: f32::MIN_POSITIVE })?;
-                return Ok((narrowest, Wrap::At { width: narrowest.width.max(f32::MIN_POSITIVE) }));
-            }
-            Width::Within(most) => most.max(0.0),
-        };
-        let unbroken = measured(Wrap::None)?;
-        let fits = unbroken.width <= most;
-        if fits {
-            return Ok((unbroken, Wrap::None));
-        }
-        let offered = most.max(f32::MIN_POSITIVE);
-        let wrapped = measured(Wrap::At { width: offered })?;
-        let unbreakable = wrapped.width > offered;
-        let wrap = if unbreakable {
-            offered
-        } else {
-            wrapped.width.max(f32::MIN_POSITIVE)
-        };
-
-        Ok((wrapped, Wrap::At { width: wrap }))
+        fitted(&self.runs(style), style, measuring, width)
     }
+}
+
+/// The box of `runs`, as `measuring` lays them out at `style`'s size within `width` pixels, with the wrap they are made
+/// with to be drawn in that box.
+pub fn fitted(
+    runs: &[Run],
+    style: &Style,
+    measuring: &mut Measuring<'_>,
+    width: Width,
+) -> Result<(Measured, Wrap), Unmeasured> {
+    let size = style.font_size * measuring.scale();
+    let mut measured = |wrap| measuring.text(style.font, size, runs, wrap);
+    let most = match width {
+        Width::Unbounded => return measured(Wrap::None).map(|unbroken| (unbroken, Wrap::None)),
+        Width::Narrowest => {
+            let narrowest = measured(Wrap::At { width: f32::MIN_POSITIVE })?;
+            return Ok((narrowest, Wrap::At { width: narrowest.width.max(f32::MIN_POSITIVE) }));
+        }
+        Width::Within(most) => most.max(0.0),
+    };
+    let unbroken = measured(Wrap::None)?;
+    let fits = unbroken.width <= most;
+    if fits {
+        return Ok((unbroken, Wrap::None));
+    }
+    let offered = most.max(f32::MIN_POSITIVE);
+    let wrapped = measured(Wrap::At { width: offered })?;
+    let unbreakable = wrapped.width > offered;
+    let wrap = if unbreakable {
+        offered
+    } else {
+        wrapped.width.max(f32::MIN_POSITIVE)
+    };
+
+    Ok((wrapped, Wrap::At { width: wrap }))
 }
 
 /// The width a text is laid out within.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum Width {
+pub enum Width {
     /// As wide as it wants: its lines broken only where it breaks them.
     Unbounded,
     /// As narrow as it goes: its widest word.
@@ -82,7 +92,7 @@ pub(super) enum Width {
 }
 
 /// How wide a text's rim is, in pixels at `scale`: none for a text with no rim.
-pub(super) fn rim(style: &Style, scale: f32) -> f32 {
+pub fn rim(style: &Style, scale: f32) -> f32 {
     match style.outline {
         Outline::None => 0.0,
         Outline::Of { width, .. } => width * scale,
@@ -150,7 +160,7 @@ impl Widget for Text {
 }
 
 /// `outline`, its width at `scale`.
-fn scaled(outline: Outline, scale: f32) -> Outline {
+pub fn scaled(outline: Outline, scale: f32) -> Outline {
     match outline {
         Outline::None => Outline::None,
         Outline::Of { width, colour } => Outline::Of { width: width * scale, colour },

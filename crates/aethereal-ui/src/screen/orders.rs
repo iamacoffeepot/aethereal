@@ -7,10 +7,12 @@
 
 use super::input::ImeAsked;
 use super::layers::{Instancing, Placing, TextPlacing, Texting};
+use super::pictures::{Picturing, Texturing};
 use super::popups::Tipping;
 use super::program::{Asked, Meshing, MetricsAsked, Programming, Uniforming, Whitening};
 use crate::child::{Resize, Resizes};
 use crate::draw::{FRAME_BYTES, PLACE, SHADE, corner_layout, corners, fill_layout, record_layout, triangles};
+use crate::pixels::Pixels;
 use aethereal_actor::{
     Allows, Answer, Asks, Fault, Handles, Level, Path, ProtocolRef, Sleep, Slept, Tells, ToAny, Turn, path,
 };
@@ -36,7 +38,7 @@ pub type Sends = (
     Asks<Path<Renderer>, CreateMesh, Meshing>,
     Asks<Path<Renderer>, CreateProgram, Programming>,
     Asks<Path<Renderer>, CreateUniforms, Uniforming>,
-    Asks<Path<Renderer>, CreateTexture, Whitening>,
+    Asks<Path<Renderer>, CreateTexture, Texturing>,
     Asks<Path<Renderer>, ReadMetrics, MetricsAsked>,
     Asks<Path<Renderer>, CreateInstances, Instancing>,
     Asks<Path<Renderer>, Place, Placing>,
@@ -65,6 +67,8 @@ pub enum Order {
     Program(Programming),
     Uniforms(Uniforming, Vec<u8>),
     White(Whitening),
+    /// The texture of a picture, made of its pixels.
+    Picture(Picturing, Pixels),
     Metrics(MetricsAsked),
     Instances {
         context: Instancing,
@@ -129,6 +133,10 @@ impl Orders {
 
     pub(super) fn ask_white(&mut self, context: Whitening) {
         self.orders.push(Order::White(context));
+    }
+
+    pub(super) fn ask_picture(&mut self, context: Picturing, pixels: Pixels) {
+        self.orders.push(Order::Picture(context, pixels));
     }
 
     pub(super) fn ask_metrics(&mut self, font: Font) {
@@ -206,7 +214,7 @@ impl Orders {
         S: Allows<Asks<Path<Renderer>, CreateMesh, Meshing>, I0>
             + Allows<Asks<Path<Renderer>, CreateProgram, Programming>, I1>
             + Allows<Asks<Path<Renderer>, CreateUniforms, Uniforming>, I2>
-            + Allows<Asks<Path<Renderer>, CreateTexture, Whitening>, I3>
+            + Allows<Asks<Path<Renderer>, CreateTexture, Texturing>, I3>
             + Allows<Asks<Path<Renderer>, ReadMetrics, MetricsAsked>, I4>
             + Allows<Asks<Path<Renderer>, CreateInstances, Instancing>, I5>
             + Allows<Asks<Path<Renderer>, Place, Placing>, I6>
@@ -252,7 +260,14 @@ impl Orders {
                         continue;
                     };
                     let white = CreateTexture { width: 1, height: 1, format: TextureFormat::Rgba8, pixels };
-                    turn.to(renderer).ask(&white, &context)?;
+                    turn.to(renderer).ask(&white, &Texturing::White(context))?;
+                }
+                Order::Picture(context, pixels) => {
+                    let Ok(texture) = turn.put(pixels.rgba().to_vec()).map(|bytes| texture_of(&pixels, bytes)) else {
+                        turn.log(Level::Error, "a picture of the screen was not made: its pixels were not put");
+                        continue;
+                    };
+                    turn.to(renderer).ask(&texture, &Texturing::Picture(context))?;
                 }
                 Order::Metrics(context) => {
                     turn.to(renderer).ask(&ReadMetrics { font: context.font }, &context)?;
@@ -315,6 +330,13 @@ impl Orders {
 
         Ok(())
     }
+}
+
+/// The texture of `pixels`, its bytes put as `bytes`: sRGB, as a decoded image's colours are.
+fn texture_of(pixels: &Pixels, bytes: aethereal_actor::Bytes) -> CreateTexture {
+    let (width, height) = pixels.size();
+
+    CreateTexture { width, height, format: TextureFormat::Rgba8Srgb, pixels: bytes }
 }
 
 /// The program `asked` names, from `wgsl`, made against `shape`: it reads the unit square and a record for each quad,
