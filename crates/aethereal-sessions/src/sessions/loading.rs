@@ -149,8 +149,8 @@ impl Sessions {
                 Standing::Running { .. } | Standing::Stopped => Life::Stopped,
             };
             let transcript = transcripts.remove(&session).unwrap_or_default();
-            let Record { name, conversation, runs, home, .. } = record;
-            self.held.insert(session, Session { name, conversation, runs, home, transcript, life });
+            let Record { name, conversation, runs, .. } = record;
+            self.held.insert(session, Session { name, conversation, runs, transcript, life });
         }
 
         self.watching.open(turn, docker.protocol(), Events { label: self.settings.hub_label() }, ())?;

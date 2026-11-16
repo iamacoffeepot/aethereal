@@ -2,7 +2,7 @@
 
 use super::asks::{self, Archived, Opened, State};
 use super::output::Reading;
-use super::record::{Conversation, Home, Record, Standing};
+use super::record::{Conversation, Record, Standing};
 use super::transcript::Transcript;
 use crate::ContainerId;
 use aethereal_actor::{Held, JobId, Number, ProtocolRef};
@@ -17,7 +17,6 @@ pub(super) struct Session {
     pub conversation: Conversation,
     /// How many containers it has run in.
     pub runs: u32,
-    pub home: Home,
     pub transcript: Transcript,
     pub life: Life,
 }
@@ -38,34 +37,17 @@ pub(super) enum Life {
     Archived,
 }
 
-/// How far a container being started is. A session whose home is not its user's yet goes through every step; one
-/// whose home is starts at reading the credential.
+/// How far a container being started is.
 #[derive(Bound)]
 pub(super) enum Step {
-    /// Docker makes its home's volume.
-    Housing,
-    /// Docker makes the container that gives the home to the session's user.
-    Owning,
-    /// Docker starts that container, `owner`.
-    Handing { owner: ContainerId },
-    /// Docker waits for `owner` to end.
-    Waiting { owner: ContainerId },
+    /// Docker makes the next of the volumes it mounts, `made` of them made already.
+    Housing { made: u32 },
     /// The credential is read.
     Crediting,
     /// Docker makes it.
     Creating,
     /// Docker starts it.
     Launching { container: ContainerId },
-}
-
-impl Step {
-    /// Where a start begins, for a session whose home is as `home` says.
-    pub const fn first(home: Home) -> Self {
-        match home {
-            Home::Unowned => Self::Housing,
-            Home::Owned => Self::Crediting,
-        }
-    }
 }
 
 /// What a session is left as once its container is stopped and removed.
@@ -134,9 +116,8 @@ impl Session {
             name,
             conversation: Conversation::Unbegun,
             runs: 1,
-            home: Home::Unowned,
             transcript: Transcript::new(),
-            life: Life::Starting { run: 1, step: Step::Housing, opening: vec![opening], lines: Vec::new() },
+            life: Life::Starting { run: 1, step: Step::Housing { made: 0 }, opening: vec![opening], lines: Vec::new() },
         }
     }
 
@@ -179,12 +160,6 @@ impl Session {
             Life::Archived => Standing::Archived,
         };
 
-        Record {
-            name: self.name.clone(),
-            conversation: self.conversation.clone(),
-            runs: self.runs,
-            home: self.home,
-            kept,
-        }
+        Record { name: self.name.clone(), conversation: self.conversation.clone(), runs: self.runs, kept }
     }
 }

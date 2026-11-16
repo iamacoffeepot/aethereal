@@ -3,6 +3,8 @@
 //! ```text
 //! cargo xtask example <example> [--serve [--port <port>]]   one browser example's page, built and served
 //! cargo xtask check [fmt | clippy | browser | test]...      what CI runs; every check when none is named
+//! cargo xtask create-session-image --claude <version | latest | stable> [--uid <uid>] [--gid <gid>]
+//!     [--rust <version>] [--tag <tag>]                       the image Claude sessions run in, built on Docker
 //! ```
 //!
 //! **A native-only tool** (ADR-0001): it runs cargo and serves files on the machine it is run on. A build for `wasm32`
@@ -20,6 +22,8 @@ mod check;
 mod example;
 #[cfg(not(target_arch = "wasm32"))]
 mod failure;
+#[cfg(not(target_arch = "wasm32"))]
+mod session_image;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::env;
@@ -31,6 +35,7 @@ fn main() -> ExitCode {
     let ran = args::parse(env::args().skip(1)).and_then(|command| match command {
         args::Command::Example { name, serving } => example::run(&name, serving),
         args::Command::Check(jobs) => check::run(&jobs),
+        args::Command::CreateSessionImage(request) => session_image::run(&request),
     });
     match ran {
         Ok(()) => ExitCode::SUCCESS,

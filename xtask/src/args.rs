@@ -2,12 +2,15 @@
 
 use crate::check::Job;
 use crate::failure::Failure;
+use crate::session_image::{self, Base, Claude, Request, Tag};
 
 /// The port `--serve` listens on when no `--port` names one.
 const DEFAULT_PORT: u16 = 8000;
 
 const USAGE: &str = "usage: cargo xtask example <example> [--serve [--port <port>]]
-       cargo xtask check [fmt | clippy | browser | test]...";
+       cargo xtask check [fmt | clippy | browser | test]...
+       cargo xtask create-session-image --claude <version | latest | stable> [--uid <uid>] [--gid <gid>]
+           [--rust <version>] [--tag <tag>]";
 
 /// What the command line asks for.
 pub enum Command {
@@ -15,6 +18,8 @@ pub enum Command {
     Example { name: String, serving: Serving },
     /// The checks named, in CI's order; every check when none is named.
     Check(Vec<Job>),
+    /// The image Claude sessions run in, made as asked.
+    CreateSessionImage(Request),
 }
 
 /// Whether a built example's page is served, and on which port of localhost.
@@ -30,6 +35,7 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Command, Failure>
     match command.as_deref() {
         Some("example") => example(args),
         Some("check") => check(args),
+        Some("create-session-image") => create_session_image(args),
         _ => Err(Failure::usage(USAGE)),
     }
 }
@@ -68,4 +74,39 @@ fn check(args: impl Iterator<Item = String>) -> Result<Command, Failure> {
         Job::ALL.into_iter().filter(|job| named.contains(job)).collect()
     };
     Ok(Command::Check(jobs))
+}
+
+fn create_session_image(mut args: impl Iterator<Item = String>) -> Result<Command, Failure> {
+    // What `--claude` and `--rust` named, where they named it: `--claude` must, and `--rust` defaults to the
+    // repository's toolchain.
+    let mut claude = None;
+    let mut rust = None;
+    let mut uid = session_image::DEFAULT_ID;
+    let mut gid = session_image::DEFAULT_ID;
+    let mut tag = Tag::Versioned;
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| Failure::usage(USAGE))?;
+        match flag.as_str() {
+            "--claude" => claude = Some(Claude::read(&value)?),
+            "--rust" => rust = Some(Base::pinned(&value)?),
+            "--uid" => uid = id(&value)?,
+            "--gid" => gid = id(&value)?,
+            "--tag" => tag = Tag::Named(value),
+            _ => return Err(Failure::usage(USAGE)),
+        }
+    }
+
+    let claude = claude.ok_or_else(|| {
+        Failure::usage(format_args!("refused: --claude names the Claude Code the image holds\n{USAGE}"))
+    })?;
+    let base = match rust {
+        Some(base) => base,
+        None => Base::toolchain()?,
+    };
+    Ok(Command::CreateSessionImage(Request { claude, uid, gid, base, tag }))
+}
+
+/// The uid or gid `value` writes.
+fn id(value: &str) -> Result<u32, Failure> {
+    value.parse().map_err(|_| Failure::usage(format_args!("refused id={value}: a uid or gid is a number\n{USAGE}")))
 }

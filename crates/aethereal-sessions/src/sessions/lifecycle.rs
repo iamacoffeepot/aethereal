@@ -1,10 +1,9 @@
-//! A session's container through its life (ADR-0057): its home made its user's when it is not yet and the credential
-//! read, made from the settings, started, attached and followed, and stopped and removed once it is idle, archived, or
-//! has ended.
+//! A session's container through its life (ADR-0057): its volumes made and the credential read, made from the
+//! settings, started, attached and followed, and stopped and removed once it is idle, archived, or has ended.
 
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
-use super::credential::{Credentialed, Crediting, ReadCredential};
+use super::credential::{Credentialed, Crediting};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
@@ -21,14 +20,9 @@ use std::collections::BTreeSet;
 
 impl Sessions {
     /// Starts a container of `session` for its run `run`, which its life is already `Starting` for at its first step:
-    /// its home made its user's first when it is not yet, and the credential read.
+    /// its volumes made first, and the credential read.
     pub(super) fn start<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, run: u32) -> Result<(), Fault> {
-        let is_housing = self.is_at(session, run, |step| matches!(step, Step::Housing));
-        if is_housing {
-            self.house(turn, session, run)?;
-        } else {
-            turn.run(&ReadCredential, &Crediting { session, run })?;
-        }
+        self.house(turn, session, run, 0)?;
         self.dirty(session);
 
         Ok(())
@@ -221,18 +215,12 @@ impl Handles<Answer<Credentialed, Crediting>> for Sessions {
 impl Handles<Answer<Created, Asking>> for Sessions {
     type Sends = Acts;
 
-    /// Docker made the container: it is recorded, and started. One made for a start given up on is removed. One made
-    /// to give the session's home to its user is that step's.
+    /// Docker made the container: it is recorded, and started. One made for a start given up on is removed.
     fn handle(
         &mut self,
         (answered, Asking { session, run }): (Answered<Created>, Asking),
         turn: &mut Turn<'_, Self, Acts>,
     ) -> Result<(), Fault> {
-        let is_owning = self.is_at(session, run, |step| matches!(step, Step::Owning));
-        if is_owning {
-            self.owner_made(turn, session, run, answered)?;
-            return self.flush(turn);
-        }
         let is_creating = self.is_at(session, run, |step| matches!(step, Step::Creating));
         let container = match answered {
             Answered::Yes(Created::Made(container)) => container,
@@ -271,8 +259,6 @@ impl Handles<Answer<Acted, Acting>> for Sessions {
             Act::Start => self.started(turn, session, run, acted)?,
             Act::Stop => self.stopped(turn, session, run, &acted)?,
             Act::Remove => self.removed(turn, session, run, acted)?,
-            Act::Own => self.owner_started(turn, session, run, acted)?,
-            Act::Disown => Self::disowned(turn, session, &acted),
         }
 
         self.flush(turn)
@@ -407,7 +393,7 @@ impl Sessions {
         };
         held.runs += 1;
         let run = held.runs;
-        held.life = Life::Starting { run, step: Step::first(held.home), opening: Vec::new(), lines };
+        held.life = Life::Starting { run, step: Step::Housing { made: 0 }, opening: Vec::new(), lines };
 
         self.start(turn, session, run)
     }

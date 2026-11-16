@@ -181,9 +181,6 @@ pub enum Refusal {
     NotRunning,
     /// The session is starting or stopping: ask again once it is not.
     Busy,
-    /// The container that gives the session's home to the session's user ended with `code`, not 0: its home is not
-    /// the user's, so it is tried again at the next start.
-    Unowned { code: i64 },
     /// The credential's file could not be read, or does not read as `KEY=VALUE` lines.
     NoCredential,
     /// Docker refused, or could not be reached.
