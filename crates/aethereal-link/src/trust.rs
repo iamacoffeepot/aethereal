@@ -21,6 +21,17 @@ impl Trust {
     pub const fn is_trusted(self) -> bool {
         matches!(self, Self::Trusted)
     }
+
+    /// Whether `caller` reaches an engine of this trust through the hub's tools: the owner reaches every engine, and a
+    /// session only the engines it started, never the owner's or another session's (ADR-0057).
+    #[must_use]
+    pub const fn reachable_by(self, caller: Caller) -> bool {
+        match (self, caller) {
+            (_, Caller::Owner) => true,
+            (Self::Untrusted { session: started }, Caller::Session { session }) => started == session,
+            (Self::Trusted, Caller::Session { .. }) => false,
+        }
+    }
 }
 
 /// An engine is trusted when the owner asked for it, and not when a session did.

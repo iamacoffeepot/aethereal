@@ -384,7 +384,12 @@ fn a_call_reaches_the_worker_as_bytes_and_its_output_comes_back_as_json() -> Res
 
 /// `rpc` bearing `bearer`, as a session's container sends it.
 fn bearing(rpc: Rpc, bearer: Bearer) -> Post {
-    Post { authorization: Some(format!("Bearer {}", bearer.hex())), ..Post::of(rpc) }
+    borne(&Post::of(rpc), bearer)
+}
+
+/// `post` bearing `bearer`, as a session's container sends it.
+fn borne(post: &Post, bearer: Bearer) -> Post {
+    Post { authorization: Some(format!("Bearer {}", bearer.hex())), ..*post }
 }
 
 /// The caller of the call `request` brings the host's worker, `say` answered once it is asked.
@@ -1271,6 +1276,15 @@ fn engine_list(harness: &mut Harness<Headless>) -> Result<EngineList, Unheard> {
 /// A hub over `http`, serving MCP with the hub's tools, with one call out to each engine, and an engine linked to it
 /// holding `say`, played by a socket: the hub, its MCP port, and the engine's connection.
 fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
+    let (mut harness, port, link_port) = hub(http)?;
+    let stream = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
+
+    Ok((harness, port, stream))
+}
+
+/// A hub over `http`, serving MCP with the hub's tools, with one call out to each engine: the hub, its MCP port, and
+/// the port engines link on.
+fn hub(http: HttpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
     let engines = EnginesSettings { port: 0, most_calls: 1, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
     let read_limit = engine_for(&http).read_limit.max(LINK_BYTES);
     let program = Headless::program()
@@ -1292,7 +1306,20 @@ fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, Tcp
     };
     harness.settle();
 
-    let minting = harness.ask(engines, &MintFor { by: Caller::Owner })?;
+    Ok((harness, port, link_port))
+}
+
+/// An engine named `name` holding `say`, played by a socket, linked to the hub at `link_port` with a token minted for
+/// `by`, once `Engines` lists `count` engines: its connection.
+fn linked(
+    harness: &mut Harness<Headless>,
+    link_port: u16,
+    by: Caller,
+    name: &str,
+    count: usize,
+) -> Result<TcpStream, Unheard> {
+    let engines = harness.root::<Engines>();
+    let minting = harness.ask(engines, &MintFor { by })?;
     let Answered::Yes(Minted { token, .. }) = harness.answer(minting)? else {
         panic!("`Engines` mints a token");
     };
@@ -1300,12 +1327,12 @@ fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, Tcp
         panic!("the engine's side connects");
     };
     assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
-    send_frame(&mut stream, &Up::Hello { revision: REVISION, name: String::from("scene"), token });
+    send_frame(&mut stream, &Up::Hello { revision: REVISION, name: String::from(name), token });
     send_frame(&mut stream, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
-    waiting::until(BUDGET, || engine_list(&mut harness).is_ok_and(|list| list.engines.len() == 1));
-    assert_eq!(engine_list(&mut harness)?.engines.len(), 1, "the engine is linked");
+    waiting::until(BUDGET, || engine_list(harness).is_ok_and(|list| list.engines.len() == count));
+    assert_eq!(engine_list(harness)?.engines.len(), count, "the engine is linked");
 
-    Ok((harness, port, stream))
+    Ok(stream)
 }
 
 /// `call_tool` of `say` on engine 0.
@@ -1367,6 +1394,118 @@ fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_
     let read = heard(&mut harness, again);
     assert!(read.body.contains("\"length\":5"), "the engine's slot came back: {read:?}");
     assert!(answering.join().is_ok(), "the engine's side answered the call");
+
+    Ok(())
+}
+
+/// A hub with the owner's engine `scene` linked as engine 0 and session 3's engine `work` as engine 1, its sessions'
+/// route served, with session 3's bearer and session 4's admitted.
+struct SessionsHub {
+    harness: Harness<Headless>,
+    /// The owner's own port.
+    port: u16,
+    /// The sessions' route.
+    route: u16,
+    /// Session 3's bearer.
+    three: Bearer,
+    /// Session 4's bearer.
+    four: Bearer,
+    /// The engines' connections, kept open while the test runs.
+    engines: [TcpStream; 2],
+}
+
+/// The hub of [`SessionsHub`], once both engines are listed and the route is served.
+fn sessions_hub() -> Result<SessionsHub, Unheard> {
+    let (mut harness, port, link_port) = hub(HttpSettings::default())?;
+    let owner_s = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
+    let session_s = linked(&mut harness, link_port, Caller::Session { session: 3 }, "work", 2)?;
+    let mcp = harness.root::<Mcp>();
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.state(mcp).is_ok_and(|mcp| mcp.route_port().is_some())
+    });
+    let Some(route) = harness.state(mcp)?.route_port() else {
+        panic!("the route is served");
+    };
+    let (three, four) = (Bearer([0x5a; 16]), Bearer([0xa5; 16]));
+    harness.tell(mcp, &Admit { bearer: three, caller: Caller::Session { session: 3 } })?;
+    harness.tell(mcp, &Admit { bearer: four, caller: Caller::Session { session: 4 } })?;
+
+    Ok(SessionsHub { harness, port, route, three, four, engines: [owner_s, session_s] })
+}
+
+/// `describe_engine` of engine `engine`'s tools by name.
+fn describe(engine: u32) -> Post {
+    call_tool("describe_engine", &format!("{{\"engine\":{engine}}}"))
+}
+
+/// Whether `read` is `describe_engine`'s result naming the tool `say`.
+fn describes_say(read: &Read) -> bool {
+    let is_done = read.body.contains("\"isError\":false");
+    let names_say = read.body.contains("\"say\"");
+
+    is_done && names_say
+}
+
+/// Whether `read` is a tool's result refusing a session's call of engine `engine`, as not one it started.
+fn unreached(read: &Read, engine: u32) -> bool {
+    let is_result = read.status == 200;
+    let is_error = read.body.contains("\"isError\":true");
+    let says = read.body.contains(&format!("engine {engine} is not one this session started"));
+
+    is_result && is_error && says
+}
+
+#[test]
+fn a_session_reaches_only_the_engines_it_started_and_the_owner_reaches_every_one() -> Result<(), Unheard> {
+    // Catches a session's `describe_engine`, `call_tool`, or `terminate_engine` reaching the owner's engine, so a
+    // session could drive, capture, or end it; a session reaching another session's engine, as if being untrusted were
+    // enough; a session refused its own engine; an id no engine has refused other than the owner's engine is, which
+    // would tell a session which ids the owner runs; and the owner's own calls checked or refused (ADR-0057). Each
+    // call goes over the real route, so the caller is what `Mcp` read from the bearer.
+    let SessionsHub { mut harness, port, route, three, four, engines: _engines } = sessions_hub()?;
+    let say_on = |engine: u32| {
+        call_tool("call_tool", &format!("{{\"engine\":{engine},\"tool\":\"say\",\"input\":{{\"text\":\"hi\"}}}}"))
+    };
+    let terminate = call_tool("terminate_engine", "{\"engine\":0}");
+
+    for refused in [describe(0), say_on(0), terminate] {
+        let read = answered(&mut harness, route, &borne(&refused, three));
+        assert!(unreached(&read, 0), "{read:?}");
+    }
+    harness.settle();
+    assert_eq!(engine_list(&mut harness)?.engines.len(), 2, "the owner's engine is not terminated");
+
+    let read = answered(&mut harness, route, &borne(&describe(1), four));
+    assert!(unreached(&read, 1), "another session's engine is refused: {read:?}");
+    let read = answered(&mut harness, route, &borne(&describe(9), three));
+    assert!(unreached(&read, 9), "an id no engine has is refused as the owner's engine is: {read:?}");
+
+    let read = answered(&mut harness, route, &borne(&describe(1), three));
+    assert!(describes_say(&read), "a session reaches its own engine: {read:?}");
+    for engine in [0, 1] {
+        let read = answered(&mut harness, port, &describe(engine));
+        assert!(describes_say(&read), "the owner reaches engine {engine}: {read:?}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn a_session_s_list_engines_shows_only_its_own_and_the_owner_s_shows_every_one() -> Result<(), Unheard> {
+    // Catches a session's `list_engines` showing the owner's engine or another session's, which it cannot reach and
+    // whose names are not its own to read, and the owner's list cut by the filter meant for sessions (ADR-0057).
+    let SessionsHub { mut harness, port, route, three, four, engines: _engines } = sessions_hub()?;
+    let list = call_tool("list_engines", "{}");
+
+    let shown = |read: &Read| (read.body.contains("\"work\""), read.body.contains("\"scene\""));
+
+    let read = answered(&mut harness, route, &borne(&list, three));
+    assert_eq!(shown(&read), (true, false), "session 3 is shown its own engine alone: {read:?}");
+    let read = answered(&mut harness, route, &borne(&list, four));
+    assert_eq!(shown(&read), (false, false), "session 4 is shown neither: {read:?}");
+    let read = answered(&mut harness, port, &list);
+    assert_eq!(shown(&read), (true, true), "the owner is shown both: {read:?}");
 
     Ok(())
 }
