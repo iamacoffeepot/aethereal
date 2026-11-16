@@ -255,6 +255,12 @@ impl Node {
         Self { segment, widget: Box::new(widget), style, children, drag: None, drop: None, memo: Memo::Plain, stamps }
     }
 
+    /// It, styled `style` in place of its own: a composite's root styled where it is placed.
+    #[must_use]
+    pub(crate) fn restyled(self, style: Style) -> Self {
+        Self { style, ..self }
+    }
+
     /// The builds at which it last laid out otherwise and drew otherwise.
     pub(crate) const fn stamps(&self) -> Stamps {
         self.stamps

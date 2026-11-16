@@ -23,6 +23,7 @@ use crate::placement::{JoinRefused, PlacementId};
 use aethereal_actor::Bytes;
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
+pub use layout::{Laid, LaidGlyph, Which, lay_out};
 pub use measure::{Measured, measure};
 
 /// Asks the renderer for a font made from `source`, a character it lacks looked for in each of `fallbacks` in turn,

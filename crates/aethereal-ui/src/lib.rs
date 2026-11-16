@@ -130,6 +130,7 @@ mod draw;
 mod fonts;
 mod input;
 mod layout;
+pub mod markdown;
 mod screen;
 mod style;
 mod table;

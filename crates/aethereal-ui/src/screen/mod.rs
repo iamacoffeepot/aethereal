@@ -47,6 +47,8 @@ mod popups;
 mod program;
 mod scrolls;
 #[cfg(test)]
+mod streaming;
+#[cfg(test)]
 mod tests;
 
 pub use drags::Landing;

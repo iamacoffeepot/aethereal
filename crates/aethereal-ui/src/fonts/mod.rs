@@ -10,7 +10,7 @@ pub use texts::{Asker, Texts};
 
 use crate::tree::KeyPath;
 use aethereal_render::font::Metrics;
-use aethereal_render::text::{Font, Measured, Run, Wrap, measure};
+use aethereal_render::text::{Align, Font, Laid, Measured, Run, Wrap, lay_out, measure};
 
 /// What a screen knows of each font it has met.
 #[derive(Debug, Default)]
@@ -116,6 +116,18 @@ impl Measuring<'_> {
         let line = own.line_metrics().line_height() as f32 * own.pixels_per_unit(size);
 
         Ok(line)
+    }
+
+    /// `runs` laid out glyph by glyph in `font` at `size` pixels to the em, their lines broken and set as `layout`
+    /// says, as the renderer lays them out to draw them: what a widget finds a place in its text by. Nothing is kept.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::text`]'s, for want of the font's metrics.
+    pub fn laid(&mut self, font: Font, size: f32, runs: &[Run], layout: (Wrap, Align)) -> Result<Laid, Unmeasured> {
+        let (own, fallbacks) = self.metrics(font)?;
+
+        Ok(lay_out(own, fallbacks, size, runs, layout))
     }
 
     /// Whether a text went unmeasured for want of its font's metrics, so what was laid out is not drawn.
