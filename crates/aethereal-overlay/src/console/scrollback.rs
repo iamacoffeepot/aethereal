@@ -1,5 +1,6 @@
-//! The console's scrollback (ADR-0053): what was printed, as rows no wider than the console, the last 2,000 of them,
-//! each numbered as it was printed, so the scroll that shows them keeps each row by its number while older ones leave.
+//! The console's scrollback (ADR-0053): what was printed, a row for each line, the last 2,000 of them, each numbered as
+//! it was printed, so the scroll that shows them keeps each row by its number while older ones leave. A row is never
+//! cut to the console's width here: the scroll lays each out wrapped at the width it gives it, by the font's measure.
 
 use crate::colour::Ink;
 use aethereal_data::Plain;
@@ -32,8 +33,8 @@ pub enum Shade {
     Raised,
 }
 
-/// One row as it is drawn: its number, counted from the first row printed, its pieces, left to right, no wider than the
-/// console was when it was printed, and what it is drawn on.
+/// One row as it is drawn: its number, counted from the first row printed, its pieces, left to right, one line of what
+/// was printed, and what it is drawn on.
 #[derive(Plain, Debug, Clone, Default, PartialEq, Eq)]
 pub struct Row {
     pub number: u64,
@@ -46,20 +47,6 @@ impl Row {
     pub fn text(&self) -> String {
         self.pieces.iter().map(|piece| piece.text.as_str()).collect()
     }
-
-    /// The row of `cells`, each a character and its ink, joined into a piece wherever the ink runs on, drawn on
-    /// `shade`.
-    fn of(cells: &[(char, Ink)], shade: Shade) -> Self {
-        let mut pieces: Vec<Piece> = Vec::new();
-        for &(character, ink) in cells {
-            match pieces.last_mut() {
-                Some(piece) if piece.ink == ink => piece.text.push(character),
-                Some(_) | None => pieces.push(Piece { text: String::from(character), ink }),
-            }
-        }
-
-        Self { number: 0, pieces, shade }
-    }
 }
 
 /// The rows printed, oldest first, and the number the next is given.
@@ -70,23 +57,16 @@ pub struct Scrollback {
 }
 
 impl Scrollback {
-    /// Prints `text` in `ink` on the sheet: each of its lines wrapped at `width` characters.
-    pub fn print(&mut self, text: &str, ink: Ink, width: usize) {
+    /// Prints `text` in `ink` on the sheet: a row for each of its lines.
+    pub fn print(&mut self, text: &str, ink: Ink) {
         for line in text.split('\n') {
-            self.push(&[Piece::new(line, ink)], Shade::Sheet, width);
+            self.push(vec![Piece::new(line, ink)], Shade::Sheet);
         }
     }
 
-    /// Prints one line of `pieces` on `shade`, wrapped at `width` characters.
-    pub fn push(&mut self, pieces: &[Piece], shade: Shade, width: usize) {
-        for row in wrapped(pieces, shade, width) {
-            self.add(row);
-        }
-    }
-
-    /// Adds `row` as the newest, numbered next, the oldest leaving past [`MOST_ROWS`].
-    fn add(&mut self, row: Row) {
-        self.rows.push_back(Row { number: self.next, ..row });
+    /// Prints one line of `pieces` on `shade` as the newest row, numbered next, the oldest leaving past [`MOST_ROWS`].
+    pub fn push(&mut self, pieces: Vec<Piece>, shade: Shade) {
+        self.rows.push_back(Row { number: self.next, pieces, shade });
         self.next += 1;
         while self.rows.len() > MOST_ROWS {
             self.rows.pop_front();
@@ -102,36 +82,4 @@ impl Scrollback {
     pub fn rows(&self) -> impl ExactSizeIterator<Item = &Row> {
         self.rows.iter()
     }
-}
-
-/// `pieces`, one line on `shade`, cut into rows of at most `width` characters: at the last space past the middle of
-/// the row, which is dropped, or else where the width ends. An empty line is one empty row.
-pub fn wrapped(pieces: &[Piece], shade: Shade, width: usize) -> Vec<Row> {
-    let width = width.max(1);
-    let cells: Vec<(char, Ink)> =
-        pieces.iter().flat_map(|piece| piece.text.chars().map(move |character| (character, piece.ink))).collect();
-    if cells.is_empty() {
-        return vec![Row { shade, ..Row::default() }];
-    }
-
-    let mut rows = Vec::new();
-    let mut start = 0;
-    while start < cells.len() {
-        let rest = &cells[start..];
-        let fits = rest.len() <= width;
-        if fits {
-            rows.push(Row::of(rest, shade));
-            break;
-        }
-        // The character just past the width is looked at too, as a space there ends the row cleanly.
-        let space = rest[..=width].iter().rposition(|&(character, _)| character == ' ');
-        let (row_end, next) = match space {
-            Some(at) if at >= width / 2 => (at, at + 1),
-            Some(_) | None => (width, width),
-        };
-        rows.push(Row::of(&rest[..row_end], shade));
-        start += next;
-    }
-
-    rows
 }

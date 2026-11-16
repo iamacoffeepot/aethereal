@@ -52,6 +52,7 @@ use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Shaping, Target, Viewport};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
 use chat::Linking;
+use stats::Columns;
 
 /// How often the figures beneath the chart, and the engine's memory for the meters, are worked out again while the
 /// overlay is shown: four times a second. The library writes a text again only when what it shows changes.
@@ -97,6 +98,9 @@ pub struct Overlay {
     /// What the widget library keeps of the overlay's screen: its size, its widgets' state, and what it drew.
     ui: Screen,
     frames: FrameTimes,
+    /// How many columns the charts and the meters' graphs were last cut into, from the boxes the screen laid them out
+    /// in.
+    columns: Columns,
     /// The frame time the chart measures each cycle against, as the renderer's statistics last said: the program's own,
     /// which follows its present mode and the display its window is on (ADR-0053: Frame statistics). Until they first
     /// say, the fallback refresh, drawn as a reference.
@@ -182,6 +186,7 @@ impl Actor for Overlay {
             stop: Stop::Hidden,
             ui,
             frames: FrameTimes::default(),
+            columns: Columns::FIRST,
             budget: FrameBudget::UNTOLD,
             gpu: GpuTiming::default(),
             gpu_figures: GpuFigures::default(),

@@ -345,7 +345,7 @@ fn a_child_screen_lays_out_to_the_size_it_is_told_within_its_parent_s_frame() {
     let (outcome, _) = laid(&mut screen, tree(), &[]);
 
     let root = KeyPath::of(&[Segment::Place(0)]);
-    let found = screen.unkept.placed.iter().find(|(placed, _)| *placed == root).map(|(_, laid)| laid.rect);
+    let found = screen.laid(&root).map(|laid| laid.rect);
     assert_eq!(outcome, Outcome::Laid);
     assert_eq!(found, Some(rect([0.0, 0.0], [80.0, 40.0])));
     assert!(rewritten.is_empty(), "{rewritten:?}");

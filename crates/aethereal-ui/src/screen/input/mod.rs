@@ -423,7 +423,7 @@ impl Screen {
 
     /// Where the last layout put the widget at `path`, its border box's top left in the screen's pixels.
     fn origin(&self, path: &KeyPath) -> Option<Vec2> {
-        self.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| laid.rect.min)
+        self.laid(path).map(|laid| laid.rect.min)
     }
 
     /// Whether `over`, what a release was over, is the hit over the widget at `path` in the list of `me`.

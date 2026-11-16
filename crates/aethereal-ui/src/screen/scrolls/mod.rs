@@ -287,16 +287,14 @@ impl Screen {
     /// Brings the widget at `path` into view: each scroll around it, innermost first and up to the popup whose content
     /// it is in, slides as little as it can to show the widget's box within its content box, as far as it can scroll.
     pub(super) fn reveal(&mut self, path: &KeyPath) {
-        let found = self.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| laid.rect);
-        let Some(mut rect) = found else {
+        let Some(mut rect) = self.laid(path).map(|laid| laid.rect) else {
             return;
         };
         for at in self.surfaced(path) {
             let Some(axis) = self.scrolls(&at) else {
                 continue;
             };
-            let viewed = self.unkept.placed.iter().find(|(placed, _)| *placed == at).map(|(_, laid)| laid.content);
-            let Some(view) = viewed else {
+            let Some(view) = self.laid(&at).map(|laid| laid.content) else {
                 continue;
             };
             let by = into_view(rect, view, axis);

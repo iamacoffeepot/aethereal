@@ -35,7 +35,7 @@ fn memory_is_shown_in_powers_of_1024() {
 fn set_theme_reads_its_word_and_switches_the_palette() {
     let mut console = Console::default();
     console.hear(Sheets { revision: 1, tools: vec![theme_sheet()] });
-    let mut read = |line: &str| match console.submitted(line, 80) {
+    let mut read = |line: &str| match console.submitted(line) {
         Command::Call { input, .. } => from_bytes::<ChooseTheme>(&input, &mut Budget::new(INPUT_BYTES)).ok(),
         Command::Blank | Command::Shown(_) | Command::Clear | Command::Refused(_) => None,
     };

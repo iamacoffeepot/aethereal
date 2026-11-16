@@ -101,7 +101,6 @@ impl Overlay {
     where
         S: Allows<ToType<Link, Chat>, I>,
     {
-        let columns = self.columns();
         let typed = typed(line);
         let reports = match &typed {
             Typed::Run(command) => Reports::Session { session, line: command.clone() },
@@ -110,7 +109,7 @@ impl Overlay {
         let (chat, command) = match typed {
             Typed::Blank => (Vec::new(), Command::Blank),
             Typed::Say(text) => (self.chats.say(text), Command::Blank),
-            Typed::Run(command) | Typed::Own(command) => (Vec::new(), self.console.ran(&command, columns)),
+            Typed::Run(command) | Typed::Own(command) => (Vec::new(), self.console.ran(&command)),
         };
         self.console.kept(line);
         self.tell::<_, I>(turn, chat)?;

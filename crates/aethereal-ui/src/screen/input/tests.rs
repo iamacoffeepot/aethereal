@@ -660,8 +660,7 @@ fn tabs_raise_change_with_the_tab_chosen_and_never_open_one_themselves() {
     laid(&mut screen, tabs(0), &[]);
     let entry = hit(&screen, &child(0));
     let placed = |screen: &Screen, path: &KeyPath| {
-        let found = screen.unkept.placed.iter().find(|(placed, _)| placed == path).map(|(_, laid)| *laid);
-        let Some(laid) = found else {
+        let Some(laid) = screen.laid(path) else {
             panic!("{path:?} is laid out");
         };
         laid

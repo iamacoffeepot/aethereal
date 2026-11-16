@@ -1,8 +1,8 @@
 //! The console's tests: the line stepped through its history, a line turned into a call of a real tool, refusals
-//! printed in the error's ink, tab completion of a tool, a flag, and a variant and its hint, the scrollback's bound and wrap, the
+//! printed in the error's ink, tab completion of a tool, a flag, and a variant and its hint, the scrollback's bound and lines, the
 //! band's count of warnings and errors, and the calls running.
 
-use super::scrollback::{MOST_ROWS, Scrollback, wrapped};
+use super::scrollback::{MOST_ROWS, Scrollback};
 use super::*;
 use crate::colour::Ink;
 use crate::tools::OverlayTools;
@@ -10,9 +10,6 @@ use aethereal_actor::Level;
 use aethereal_data::from_bytes;
 use aethereal_tools::{LogLevel, LogsTool, ReadRecent, Tool};
 use core::error::Error;
-
-/// How many characters wide a console's rows are at 1080.
-const COLUMNS: usize = 80;
 
 /// A console holding the engine's own log tools and the overlay's, as the tools root of revision 3 sends them.
 fn holding_tools() -> Console {
@@ -30,14 +27,14 @@ fn shown(console: &Console) -> Vec<(String, Ink)> {
 
 /// Submits `line` at `console`, as its text input does with Enter.
 fn enter(console: &mut Console, line: &str) -> Command {
-    console.submitted(line, COLUMNS)
+    console.submitted(line)
 }
 
 /// Types `text` on at the end of `console`'s line, as its text input raises the edit, and completes it with the caret
 /// at its end, as Tab does.
 fn complete(console: &mut Console, text: &str) -> String {
     console.edited(format!("{}{text}", console.line()));
-    console.complete(console.line().len(), COLUMNS);
+    console.complete(console.line().len());
 
     String::from(console.line())
 }
@@ -96,7 +93,7 @@ fn refusals_print_in_the_error_s_ink_after_the_owner_s_line() {
 
     let unknown = enter(&mut console, "memroy");
     enter(&mut console, "read_recent --level loud");
-    console.refused("the tool did not answer in time", COLUMNS);
+    console.refused("the tool did not answer in time");
 
     let rows = shown(&console);
     assert!(matches!(unknown, Command::Refused(_)), "{unknown:?}");
@@ -146,31 +143,31 @@ fn a_completion_shows_ahead_of_the_caret() {
     assert_eq!(whole, "");
 }
 
-/// The scrollback keeps the newest 2,000 rows, and a line wider than the console wraps at a space past the middle
-/// of the row, or at the width when there is none, so a bound off by one or a row wider than the console is caught.
+/// The scrollback keeps the newest 2,000 rows, and a text printed is a row for each of its lines, however long, which
+/// the scroll wraps as it lays them out, so a bound off by one, a line lost or joined to the next, or a line cut into
+/// rows here is caught.
 #[test]
-fn the_scrollback_keeps_two_thousand_rows_and_wraps_at_the_width() {
+fn the_scrollback_keeps_two_thousand_rows_a_row_for_each_line() {
     let mut scrollback = Scrollback::default();
     for number in 0..2_500 {
-        scrollback.print(&format!("row {number}"), Ink::Text, 80);
+        scrollback.print(&format!("row {number}"), Ink::Text);
     }
-
-    let words = wrapped(&[Piece::new("the quick brown fox jumps", Ink::Text)], Shade::Sheet, 10);
-    let unbroken = wrapped(&[Piece::new("abcdefghijklmnopqrstuvwxy", Ink::Text)], Shade::Sheet, 10);
+    let long = "the quick brown fox jumps ".repeat(20);
+    let mut lines = Scrollback::default();
+    lines.print(&format!("{long}\n\nlast"), Ink::Text);
 
     let first = scrollback.rows().next();
     assert_eq!(scrollback.rows().len(), MOST_ROWS);
     assert_eq!(first.map(Row::text), Some(String::from("row 500")));
     assert_eq!(first.map(|row| row.number), Some(500), "a row keeps the number it was printed under");
-    let words: Vec<String> = words.iter().map(Row::text).collect();
-    assert_eq!(words, ["the quick", "brown fox", "jumps"]);
-    let unbroken: Vec<String> = unbroken.iter().map(Row::text).collect();
-    assert_eq!(unbroken, ["abcdefghij", "klmnopqrst", "uvwxy"]);
+    let lines: Vec<String> = lines.rows().map(Row::text).collect();
+    assert_eq!(lines, [long.as_str(), "", "last"]);
 }
 
 /// Warnings and errors are counted, in the warning's and the error's inks, flush right in the gutter's line after `alerts`, and nothing
 /// else is; and clearing forgets them, leaving `no alerts` rather than a blank line, so a count of the wrong level, one
-/// the console's opening does not clear, counts out of line with the gutter's values, or a blank line, is caught.
+/// the console's opening does not clear, counts out of line with the gutter's values, a line that what follows the
+/// counts makes wider than the gutter, or a blank line, is caught.
 #[test]
 fn warnings_and_errors_are_counted_until_cleared() {
     let mut alerts = Alerts::default();
@@ -178,12 +175,15 @@ fn warnings_and_errors_are_counted_until_cleared() {
         alerts.count(level);
     }
 
-    let counted = alerts.pieces();
+    let counted = alerts.pieces(Vec::new());
+    let waiting = alerts.pieces(vec![Piece::new(" 3?", Ink::Mark)]);
     alerts.clear();
-    let cleared = alerts.pieces();
+    let cleared = alerts.pieces(Vec::new());
 
     let line: String = counted.iter().map(|piece| piece.text.as_str()).collect();
+    let waiting: String = waiting.iter().map(|piece| piece.text.as_str()).collect();
     assert_eq!(line, "alerts      ! 2  × 1");
+    assert_eq!(waiting, "alerts   ! 2  × 1 3?", "what follows the counts keeps the line the gutter's width");
     assert_eq!(counted[2..], [Piece::new("! 2", Ink::Warn), Piece::new("  ", Ink::Dim), Piece::new("× 1", Ink::Error)]);
     assert_eq!(cleared, vec![Piece::new("no alerts", Ink::Dim)]);
 }
