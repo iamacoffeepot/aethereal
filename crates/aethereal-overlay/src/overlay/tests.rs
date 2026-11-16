@@ -5,12 +5,14 @@
 use super::stats::{Columns, MOST_COLUMNS};
 use super::{Overlay, OverlayConfig};
 use crate::chat::Open;
+use crate::colour::{Palette, Theme};
 use crate::console::Shade;
 use crate::layout::Scale;
 use crate::meters::MOST_METER_COLUMNS;
 use crate::stop::Stop;
-use aethereal_actor::{Prepare, Render, Requests, Tick};
-use aethereal_data::{Budget, Json};
+use crate::tools::{ChooseTheme, NewSession, OverlayTools};
+use aethereal_actor::{Answered, Prepare, Render, Requests, Tick};
+use aethereal_data::{Budget, Json, Plain, to_bytes};
 use aethereal_render::mapping::{Mapped, Mapping};
 use aethereal_render::shape::ColourFormat;
 use aethereal_render::stats::FrameBudget;
@@ -19,7 +21,7 @@ use aethereal_render::{Gpu, Renderer, RendererConfig};
 use aethereal_sessions::{Entry, Numbered, ShowEvents, ShowTabs, Speaker, State, Tab};
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use aethereal_substrate::{Engine, Feed};
-use aethereal_tools::{Tools, ToolsSettings};
+use aethereal_tools::{Call, Called, Caller, Tool, Tools, ToolsSettings};
 use aethereal_ui::widgets::Scroll;
 use aethereal_ui::{ItemKey, Segment, Stand};
 use aethereal_window::{Hosting, KeyEvent, Keyed, Mode, Opening, Surface, WindowFeed, WindowId, Windows};
@@ -353,6 +355,51 @@ fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_lai
     let expected = Columns { chart: across(chart, MOST_COLUMNS), meters: across(meter, MOST_METER_COLUMNS) };
     assert_eq!(state.columns, expected);
     assert!(expected.chart > expected.meters, "the frame chart is the band's widest graph: {expected:?}");
+
+    Ok(())
+}
+
+/// Calls the overlay's tool `tool` of its tools' worker as `caller`, with `input`, and answers whether it answered a
+/// value or why it refused.
+fn called<K: Plain>(
+    harness: &mut Harness<Bench>,
+    caller: Caller,
+    tool: &str,
+    input: &K,
+) -> Result<Result<(), String>, Unheard> {
+    let overlay = harness.root::<Overlay>();
+    let worker = OverlayTools::worker(harness.state(overlay)?.tools);
+    let input = harness.put(to_bytes(input)?)?;
+    let asked = harness.ask(worker, &Call { tool: String::from(tool), input, caller })?;
+    let answered = match harness.answer(asked)? {
+        Answered::Yes(Called::Output(_)) => Ok(()),
+        Answered::Yes(Called::Refused(why)) => Err(why),
+        Answered::Yes(Called::Image { .. }) | Answered::No(_) => Err(String::from("not an answer the worker gives")),
+    };
+
+    Ok(answered)
+}
+
+#[test]
+fn the_worker_asks_the_overlay_for_a_session_s_theme_and_refuses_it_the_chat_s_words() -> Result<(), Unheard> {
+    // Catches a theme the worker asks of the overlay never answered to its caller, or never switching the palette; a
+    // `set_theme` refused to a session, though it changes only how the overlay looks; and a chat's word a session calls
+    // asked of the overlay, where the sessions are the owner's.
+    let (mut harness, _held) = program()?;
+    run(&mut harness, 3);
+    let overlay = harness.root::<Overlay>();
+    let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![tab] })?;
+    run(&mut harness, 3);
+    let session = Caller::Session { session: 1 };
+
+    let themed = called(&mut harness, session, "set_theme", &ChooseTheme::naming(Theme::Stone))?;
+    let palette = harness.state(overlay)?.palette;
+    let worded = called(&mut harness, session, "new_session", &NewSession { name: String::from("more") })?;
+
+    assert_eq!(themed, Ok(()));
+    assert_eq!(palette, Palette::new(Theme::Stone));
+    assert_eq!(worded, Err(String::from("the chat's words are the owner's, not session 1's")));
 
     Ok(())
 }

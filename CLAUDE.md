@@ -55,5 +55,12 @@ Every commit is public. No personal names, no absolute home paths, no host, moun
 - **No reaching through another type's fields**: the owning type gets a named method.
 - **Printed output is an interface**: a printed `key=value` value stays one token and a status goes before the key.
 - **Module structure**: break a crate into submodules by concept, tests beside the code they exercise, so the file listing reads as the design. A new sibling mirrors the shape of its siblings unless it honestly does not fit.
+- **Reuse before reinventing**: before writing a helper, constant, widget, or algorithm, look for it in std and the shared crates (`aethereal-ui`, `aethereal-math`, `aethereal-data`, the crate that owns the work). A crate that lacks what the work needs is a gap to name, not to work around silently. If the gap blocks the work, stop and ask the owner whether to fill it in the shared crate first. If it does not, carry on, and list each case in the report and the pull request body under **Reinvented or library gaps**: where, what it duplicates or what the shared crate lacks, and whether it belongs there. Reinventing is never unannounced, and it is right only when one of these holds, which the listing names:
+  - **One user**: nothing else needs it yet, so a shared shape would be a guess. It stays local until a second user appears, and is moved then.
+  - **Different meaning**: the shared version answers a different question (another rounding, another bound, another order), and taking this one in would bend its meaning for its other users.
+  - **Tangled dependency**: depending on the crate that has it would add an edge the graph should not have: one pointing the wrong way (a shared crate depending on its user, a `no_std` crate on `std`), one closing a cycle, one coupling crates that are kept apart, or a heavy crate pulled in for a few lines. The listing also says whether the piece could instead move down into a crate both sides already depend on.
+  - **Test oracle**: a test writes its own plain version to check the real one against.
+
+  Never right: copying another crate's private value, re-deriving what a crate already computes and could hand over, or duplicating a public function that does the same thing.
 - **Streams** go through `aethereal-actor`'s stream library (ADR-0017): a protocol implements `Stream`, the asker opens through `Streams`, and the receiver serves through `Serving`. Never a hand-written part, credit, stop, or stream-number kind.
 - **Locks and atomics** each say why one-mail-at-a-time does not already cover them.

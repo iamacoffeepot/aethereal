@@ -160,7 +160,8 @@ enum Making {
 }
 
 /// Which session one of the chat's words names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.which")]
 pub enum Which {
     /// The one whose tab is open.
     Open,
