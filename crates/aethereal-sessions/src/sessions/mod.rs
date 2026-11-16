@@ -2,14 +2,15 @@
 //! of its own, writes lines to its stdin, reads its output into a numbered transcript, stops it when it is idle, and
 //! resumes it when it is spoken to.
 
-/// Everything the capability sends in a turn: requests of Docker, its streams and their credit, and writes to stdin;
-/// and, for a turn that handles an ask, the answer to it. One list, as each turn may start, stop, or write to any
+/// Everything the capability sends in a turn: requests of Docker, its streams and their credit, writes to stdin, and
+/// reads and writes of its files; and, for a turn that handles an ask, the answer to it. One list, as each turn may start, stop, or write to any
 /// session, its markers always first and in this order, so [`Does`] finds each at its place.
 macro_rules! acts {
     ($($answer:ty)?) => {
         (
             super::M0, super::M1, super::M2, super::M3, super::M4, super::M5, super::M6, super::M7, super::M8,
-            super::M9, super::M10, super::M11, super::M12, $($answer,)?
+            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15, super::M16,
+            $($answer,)?
         )
     };
 }
@@ -17,13 +18,15 @@ macro_rules! acts {
 mod asked;
 mod asks;
 mod container;
-mod disk;
+mod credential;
 mod heard;
+mod home;
 mod idle;
 mod lifecycle;
 mod loading;
 mod output;
 mod record;
+mod saves;
 mod session;
 mod settings;
 mod streams;
@@ -33,25 +36,28 @@ pub use asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
     ReadTranscript, Refusal, Said, Say, Session as ListedSession, State, Transcribed,
 };
-pub use disk::{
-    Fetching, Find, Finding, Found, FoundSession, Keep, Keeping, Kept, Loading, Making, Prepare, Prepared, Preparing,
-    SessionsDisk, Storing, Unkept, Write as DiskWrite, Wrote,
-};
+pub use credential::{Credential, Credentialed, Crediting, NoCredential, ReadCredential};
 pub use heard::Heard;
-pub use record::{Conversation, Record, Standing};
+pub use home::Homing;
+pub use record::{Conversation, Home, Record, Standing};
+pub use saves::{Index, Keeping, Loading};
 pub use settings::{CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, Unlabelled};
 pub use transcript::{Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
 
-use crate::{Attaching, ContainerId, Create, Docker, Inspect, List, Logging, Remove, Start, Stop, Watching};
-use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, Handles, Level, More, Number, Open,
-    Part, Path, Streamed, Streams, ToAny, Top, Turn,
+use crate::{
+    Attaching, ContainerId, Create, CreateVolume, Docker, Inspect, List, Logging, Remove, Start, Stop, Wait, Watching,
 };
-use aethereal_data::{Bound, Plain, to_bytes};
+use aethereal_actor::{
+    Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, More, Number, Open, Part, Path,
+    Streamed, Streams, ToAny, Top, Turn,
+};
+use aethereal_data::{Bound, Plain};
+use aethereal_files::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
 use aethereal_tcp::{Write, Writing};
 use asked::Waiting;
-use core::mem;
 use core::time::Duration;
+use loading::Reading;
+use saves::{Indexed, Lane};
 use session::Session;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -70,7 +76,8 @@ pub struct Asking {
     pub run: u32,
 }
 
-/// What the capability keeps for a start, a stop, or a removal of a session's container.
+/// What the capability keeps for a start, a stop, or a removal of a session's container, or of the container that
+/// gives its home to its user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.acting")]
 pub struct Acting {
@@ -86,6 +93,10 @@ pub enum Act {
     Start,
     Stop,
     Remove,
+    /// The start of the container that gives the session's home to its user.
+    Own,
+    /// The removal of that container, once it has ended.
+    Disown,
 }
 
 /// What the capability keeps for the list it reconciles its sessions by, as it begins.
@@ -121,8 +132,8 @@ pub struct Resting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.unfound")]
 pub enum Unfound {
-    /// The host serves no disk, or could not read it.
-    Disk,
+    /// `Files` could not read the sessions' files, or answered nothing, as when it is not listed before them.
+    Files,
     /// No Docker client is listed before it.
     Docker,
     /// The engine had no room to hold what it writes.
@@ -143,9 +154,13 @@ type M9 = ToAny<Streamed<Logging>, More>;
 type M10 = Asks<Streamed<Watching>, Open<Watching>, Number>;
 type M11 = ToAny<Streamed<Watching>, More>;
 type M12 = Asks<Writing, Write, Typing>;
+type M13 = Asks<Path<Docker>, CreateVolume, Homing>;
+type M14 = Asks<Path<Docker>, Wait, Homing>;
+type M15 = Asks<Path<Files>, ReadFile, Loading>;
+type M16 = Asks<Path<Files>, WriteFile, Keeping>;
 
 /// The sends of a turn that handles no ask.
-type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12);
+type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16);
 
 /// A turn's sends that list everything [`Acts`] does, at the same places: what the capability's helpers act through,
 /// whichever answer the turn's ask is answered with.
@@ -163,6 +178,10 @@ trait Does:
     + Allows<M10, At<10>>
     + Allows<M11, At<11>>
     + Allows<M12, At<12>>
+    + Allows<M13, At<13>>
+    + Allows<M14, At<14>>
+    + Allows<M15, At<15>>
+    + Allows<M16, At<16>>
 {
 }
 
@@ -180,6 +199,10 @@ impl<S> Does for S where
         + Allows<M10, At<10>>
         + Allows<M11, At<11>>
         + Allows<M12, At<12>>
+        + Allows<M13, At<13>>
+        + Allows<M14, At<14>>
+        + Allows<M15, At<15>>
+        + Allows<M16, At<16>>
 {
 }
 
@@ -190,10 +213,11 @@ impl<S> Does for S where
 /// Each session runs in a container of its own, made by [`Docker`] only from the settings and the session's number,
 /// so nothing a caller asks reaches what a container is made of. At most the settings' number run at once. A session
 /// with no turn and no background task for the idle time is told it is about to be compacted, compacted, and stopped,
-/// and the next line resumes it in a new container on the same home. Every line its container writes and every line
-/// written to it is numbered in its transcript, kept on the host's disk with its record, so a hub that starts again
-/// knows its sessions: it follows Docker's events, lists the containers that carry its label, and re-attaches to each
-/// that still runs, reading what it missed from its logs.
+/// and the next line resumes it in a new container on the same home, a named volume of its own. Every line its
+/// container writes and every line written to it is numbered in its transcript, kept with its record in `Files`'
+/// `Save` namespace, which it asks as any actor does and needs listed before it, so a hub that starts again knows its
+/// sessions: it follows Docker's events, lists the containers that carry its label, and re-attaches to each that still
+/// runs, reading what it missed from its logs.
 #[derive(Bound)]
 #[kind(name = "aether.sessions")]
 pub struct Sessions {
@@ -205,6 +229,7 @@ pub struct Sessions {
     lane: Lane,
     /// What each session has to write: frames to append to its transcript, and its record, rewritten.
     unwritten: BTreeMap<u32, Vec<u8>>,
+    indexed: Indexed,
     attaching: Streams<Attaching, Feed>,
     logging: Streams<Logging, Feed>,
     watching: Streams<Watching, ()>,
@@ -212,11 +237,13 @@ pub struct Sessions {
     next_rest: u64,
 }
 
-/// Where the capability is in beginning.
+/// Where the capability is in beginning. In each phase before it runs, `waiting` asks are answered once it does.
 #[derive(Bound)]
 enum Phase {
-    /// Its sessions are being read from disk; `waiting` asks are answered once they are, and their containers found.
-    Loading { waiting: Vec<Waiting> },
+    /// The index of its sessions is read through `Files`.
+    Indexing { waiting: Vec<Waiting> },
+    /// Each session the index lists is read, its record and its transcript, and `reading` holds what has come.
+    Reading { reading: Reading, waiting: Vec<Waiting> },
     /// Docker lists the containers carrying its label, to be matched with `recorded`, the containers its records say
     /// may still run.
     Listing { docker: ActorRef<Docker>, recorded: Vec<Recorded>, waiting: Vec<Waiting> },
@@ -230,13 +257,6 @@ struct Recorded {
     session: u32,
     container: ContainerId,
     run: u32,
-}
-
-/// The write the capability is running on the host's disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-enum Lane {
-    Idle,
-    Writing,
 }
 
 impl ChildOf for Sessions {
@@ -253,9 +273,11 @@ impl Actor for Sessions {
         ListSessions,
         Interrupt,
         Archive,
-        Answer<Found, Loading>,
-        Answer<Prepared, Preparing>,
-        Answer<Wrote, Keeping>,
+        Answer<FileRead, Loading>,
+        Answer<FileWritten, Keeping>,
+        Answer<Credentialed, Crediting>,
+        Answer<crate::VolumeCreated, Homing>,
+        Answer<crate::Waited, Homing>,
         Answer<aethereal_actor::Slept, Resting>,
         Answer<crate::Created, Asking>,
         Answer<crate::Acted, Acting>,
@@ -269,20 +291,22 @@ impl Actor for Sessions {
         Answer<crate::EventsDone, Number>,
         Answer<aethereal_tcp::Wrote, Typing>,
     );
-    type BeginSends = ();
+    type BeginSends = (M15,);
     type EndSends = ();
 
-    /// Reads its sessions from the host's disk.
-    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        turn.run(&Find, &Loading)?;
+    /// Reads the index of its sessions through `Files`.
+    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self, (M15,)>) -> Result<Self, Fault> {
+        let index = ReadFile { namespace: Namespace::Save, path: saves::INDEX };
+        turn.to(aethereal_actor::path::<Files>(())).ask(&index, &Loading::Index)?;
 
         Ok(Self {
             settings,
-            phase: Phase::Loading { waiting: Vec::new() },
+            phase: Phase::Indexing { waiting: Vec::new() },
             held: BTreeMap::new(),
             strays: Vec::new(),
             lane: Lane::Idle,
             unwritten: BTreeMap::new(),
+            indexed: Indexed::Written,
             attaching: Streams::new(WINDOW),
             logging: Streams::new(WINDOW),
             watching: Streams::new(WINDOW),
@@ -292,25 +316,6 @@ impl Actor for Sessions {
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
-    }
-}
-
-impl Handles<Answer<Wrote, Keeping>> for Sessions {
-    type Sends = Acts;
-
-    /// A write is done: the next is run, of what was changed meanwhile.
-    fn handle(
-        &mut self,
-        (answered, Keeping): (aethereal_actor::Answered<Wrote>, Keeping),
-        turn: &mut Turn<'_, Self, Acts>,
-    ) -> Result<(), Fault> {
-        self.lane = Lane::Idle;
-        let is_done = answered == aethereal_actor::Answered::Yes(Wrote::Done);
-        if !is_done {
-            turn.log(Level::Error, format_args!("a session's transcript or record was not written: {answered:?}"));
-        }
-
-        self.flush(turn)
     }
 }
 
@@ -335,34 +340,10 @@ impl Sessions {
         self.unwritten.entry(session).or_default();
     }
 
-    /// Runs the write of what has changed, unless one runs.
-    fn flush<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
-        let is_writing = self.lane == Lane::Writing;
-        let is_clean = self.unwritten.is_empty();
-        if is_writing || is_clean {
-            return Ok(());
-        }
-        let mut writes = Vec::new();
-        for (session, frames) in mem::take(&mut self.unwritten) {
-            let Some(held) = self.held.get(&session) else {
-                continue;
-            };
-            let record = to_bytes(&held.record())?;
-            let (Ok(frames), Ok(record)) = (turn.put(frames), turn.put(record)) else {
-                return Err(Fault::new(&Unfound::NoRoom)?);
-            };
-            writes.push(DiskWrite { session, frames, record });
-        }
-        turn.run(&Keep { writes }, &Keeping)?;
-        self.lane = Lane::Writing;
-
-        Ok(())
-    }
-
     /// The Docker client, once the capability has found it.
     const fn docker(&self) -> Option<ActorRef<Docker>> {
         match &self.phase {
-            Phase::Loading { .. } => None,
+            Phase::Indexing { .. } | Phase::Reading { .. } => None,
             Phase::Listing { docker, .. } | Phase::Ready { docker } => Some(*docker),
         }
     }

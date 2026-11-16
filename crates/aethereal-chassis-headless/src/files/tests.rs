@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{Answered, Tick};
-use aethereal_files::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
+use aethereal_files::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile, Writes};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
 use std::env;
@@ -229,6 +229,28 @@ fn a_write_beneath_a_file_or_over_a_directory_fails() {
     assert_eq!(dir.beside("slots/one.sav"), vec![String::from("one.sav")]);
 }
 
+/// What became of `storage` appending `bytes` to the file at `path` in `namespace`.
+fn append(storage: &Directories, namespace: Namespace, path: &str, bytes: &[u8]) -> Result<(), Unwritten> {
+    pollster::block_on(storage.append(namespace, &checked(path), bytes.to_vec()))
+}
+
+#[test]
+fn an_append_makes_a_missing_file_and_appends_land_in_the_order_answered() {
+    // Catches an append to a file not there that fails rather than making it and the directories its path names
+    // (every first transcript lost), one that truncates or replaces the file, and appends sent one at a time that
+    // land out of order on threads of their own.
+    let dir = Dir::new("append", &[]);
+    let storage = Directories::new(&dir.roots(4));
+
+    for number in 0..16u8 {
+        assert_eq!(append(&storage, Namespace::Save, "sessions/1/transcript", &[number; 3]), Ok(()));
+    }
+
+    let expected: Vec<u8> = (0..16u8).flat_map(|number| [number; 3]).collect();
+    assert_eq!(read_in(&storage, Namespace::Save, "sessions/1/transcript"), Ok(expected));
+    assert_eq!(dir.beside("sessions/1/transcript"), vec![String::from("transcript")]);
+}
+
 #[test]
 fn the_storage_writes_no_asset() {
     // Catches a storage that writes the files the program ships with when asked directly, past the capability's
@@ -238,6 +260,8 @@ fn the_storage_writes_no_asset() {
 
     assert_eq!(write(&storage, Namespace::Assets, "a.txt", b"b"), Err(Unwritten::ReadOnly));
     assert_eq!(write(&storage, Namespace::Assets, "new.txt", b"b"), Err(Unwritten::ReadOnly));
+    assert_eq!(append(&storage, Namespace::Assets, "a.txt", b"b"), Err(Unwritten::ReadOnly));
+    assert_eq!(append(&storage, Namespace::Code, "a.wasm", b"b"), Err(Unwritten::ReadOnly));
 
     assert_eq!(read(&storage, "a.txt"), Ok(b"a".to_vec()));
     assert!(!dir.file(Namespace::Assets, "new.txt").exists(), "no asset is made");
@@ -289,13 +313,19 @@ fn asset(path: &str) -> ReadFile {
     ReadFile { namespace: Namespace::Assets, path: checked(path) }
 }
 
-/// A request to write `bytes` as the file at `path` in `namespace`, its bytes put in `harness`.
-fn write_file(harness: &mut Harness<Headless>, namespace: Namespace, path: &str, bytes: &[u8]) -> WriteFile {
+/// A request to write `bytes` to the file at `path` in `namespace` as `how` says, its bytes put in `harness`.
+fn write_file(
+    harness: &mut Harness<Headless>,
+    namespace: Namespace,
+    path: &str,
+    bytes: &[u8],
+    how: Writes,
+) -> WriteFile {
     let Ok(bytes) = harness.put(bytes.to_vec()) else {
         panic!("the bytes fit in the blobs' budget");
     };
 
-    WriteFile { namespace, path: checked(path), bytes }
+    WriteFile { namespace, path: checked(path), bytes, how }
 }
 
 #[test]
@@ -332,8 +362,8 @@ fn an_actor_writes_a_save_and_reads_it_back_through_the_file_capability() -> Res
     let files = harness.root::<Files>();
 
     let (first, other) = (
-        write_file(&mut harness, Namespace::Save, "slots/game.sav", b"first"),
-        write_file(&mut harness, Namespace::Save, "other.sav", b"other"),
+        write_file(&mut harness, Namespace::Save, "slots/game.sav", b"first", Writes::Whole),
+        write_file(&mut harness, Namespace::Save, "other.sav", b"other", Writes::Whole),
     );
     let first = harness.ask(files, &first)?;
     let other = harness.ask(files, &other)?;
@@ -350,21 +380,42 @@ fn an_actor_writes_a_save_and_reads_it_back_through_the_file_capability() -> Res
 }
 
 #[test]
-fn a_write_to_assets_is_read_only_in_the_turn_that_asks() -> Result<(), Unheard> {
-    // Catches a write to `Assets` handed to a job, which `Files` would take a second turn to answer and which leaves
-    // the storage's own refusal the only guard, and one that writes the asset.
+fn an_actor_appends_to_a_save_through_the_file_capability() -> Result<(), Unheard> {
+    // Catches a capability that writes an append whole, so each one replaces the file and only the last is kept, and a
+    // `how` dropped on the way to the job.
+    let dir = Dir::new("capability-append", &[]);
+    let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)))?;
+    let files = harness.root::<Files>();
+
+    for part in [&b"one,"[..], b"two"] {
+        let append = write_file(&mut harness, Namespace::Save, "log/parts", part, Writes::Append);
+        let appended = harness.ask(files, &append)?;
+        assert_eq!(harness.answer(appended)?, Answered::Yes(FileWritten::Written));
+    }
+
+    assert_eq!(fs::read(dir.file(Namespace::Save, "log/parts")).ok(), Some(b"one,two".to_vec()));
+
+    Ok(())
+}
+
+#[test]
+fn a_write_or_an_append_to_assets_is_read_only_in_the_turn_that_asks() -> Result<(), Unheard> {
+    // Catches a write or an append to `Assets` handed to a job, which `Files` would take a second turn to answer and
+    // which leaves the storage's own refusal the only guard, and one that writes the asset.
     let dir = Dir::new("capability-assets", &[("a.txt", b"a")]);
     let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root_with::<Files>(dir.roots(2)))?;
     let files = harness.root::<Files>();
     harness.host().engine_mut().record_turns();
 
-    let write = write_file(&mut harness, Namespace::Assets, "a.txt", b"b");
-    let written = harness.ask(files, &write)?;
-    assert_eq!(harness.answer(written)?, Answered::Yes(FileWritten::ReadOnly));
+    for how in [Writes::Whole, Writes::Append] {
+        let write = write_file(&mut harness, Namespace::Assets, "a.txt", b"b", how);
+        let written = harness.ask(files, &write)?;
+        assert_eq!(harness.answer(written)?, Answered::Yes(FileWritten::ReadOnly));
+    }
 
     let turns_of_files =
         harness.host().engine_mut().take_turned().iter().filter(|turn| turn.actor == files.seated()).count();
-    assert_eq!(turns_of_files, 1, "the asking turn alone");
+    assert_eq!(turns_of_files, 2, "the asking turns alone");
     assert_eq!(fs::read(dir.file(Namespace::Assets, "a.txt")).ok(), Some(b"a".to_vec()));
 
     Ok(())

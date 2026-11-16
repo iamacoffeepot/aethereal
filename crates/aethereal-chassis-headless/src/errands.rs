@@ -1,6 +1,6 @@
 //! A thread of its own that a host's service does its blocking work on, one errand at a time, in the order asked,
-//! waking the job that polls each once it is done (ADR-0034): what the store's stockroom and the sessions' disk keep
-//! their disk work on, so it never blocks the thread that polls it.
+//! waking the job that polls each once it is done (ADR-0034): what the store's stockroom keeps its disk work on, so it
+//! never blocks the thread that polls it.
 
 use crossbeam_queue::SegQueue;
 use std::future::Future;

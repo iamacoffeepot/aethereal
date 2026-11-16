@@ -31,7 +31,11 @@ pub enum Namespace {
 
 impl Carries<WriteFile> for Files { type Answers = (FileWritten,); }
 
-pub struct WriteFile { pub namespace: Namespace, pub path: FilePath, pub bytes: Vec<u8> }
+pub struct WriteFile { pub namespace: Namespace, pub path: FilePath, pub bytes: Vec<u8>, pub how: Writes }
+pub enum Writes {
+    Whole,    // as the whole file: a reader sees it as it was, or all of it
+    Append,   // after what the file holds, made when missing, and synced before it is answered
+}
 pub enum FileWritten {
     Written,
     ReadOnly,      // the namespace is not written, as `Assets` is not
@@ -41,6 +45,9 @@ pub enum FileWritten {
 ```
 
 - **A write is a job only `Files` makes** (`Save`, beside `Load`), and the host's `Storage` gains `write`. The native storage writes a sibling of the file and renames it over the file, on its own threads, and makes the directories the path names. A browser's writes to OPFS, whose writable stream replaces a file whole as it is closed. A reader never sees half a file.
+- **An append is the one other way a write lands,** for a file that only grows, such as a log: `Storage` gains `append`. Natively it opens the file to append, making it and its directories when missing, writes, and syncs before it answers; in a browser, OPFS's writable stream keeps the file's data, is moved to its end, and is closed. Two things it does not promise:
+  - **It is not all or nothing.** A crash can leave a cut-off tail, so whoever appends frames what it writes and reads back only whole frames.
+  - **Two appends to one file in flight at once may land in either order,** as the native storage takes them on any of its threads. Whoever appends waits for one's answer before it sends the next; `Files` routes nothing by path to order them.
 - **`ReadOnly` is answered in the turn that asks,** with no job run.
 - **The bytes are inline,** as a TCP write's are (ADR-0033): a save is written once, and a blob would cost a put and a hash for bytes not read again.
 - **Each host's settings gain the root of `Save`:** `save`, beside the program, natively, and nothing to set in a browser, whose OPFS is the origin's.

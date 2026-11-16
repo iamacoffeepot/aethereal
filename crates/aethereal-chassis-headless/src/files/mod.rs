@@ -56,7 +56,8 @@ impl Default for FileRoots {
 /// The native host's storage (ADR-0032, ADR-0039, ADR-0054): each namespace a directory, each read, write, and listing
 /// done on one of threads of its own, so none blocks the thread that polls it, and woken once it is done. A write goes to a
 /// sibling of its file, synced, and renamed over the file, so a reader sees the file as it was or as it is written,
-/// never half of it. Dropping the last reference to it stops its threads once each has finished what it was doing.
+/// never half of it. An append is written after the file's end where it is, and synced before it is answered.
+/// Dropping the last reference to it stops its threads once each has finished what it was doing.
 pub struct Directories {
     /// The directory of the program's assets.
     assets: PathBuf,
@@ -89,6 +90,8 @@ enum Asked {
     Read { file: PathBuf, lent: Spares, delivery: Shelf<Read> },
     /// Write `bytes` as the whole of `file`, by way of `sibling`.
     Write { file: PathBuf, sibling: PathBuf, bytes: Vec<u8>, delivery: Shelf<Result<(), Unwritten>> },
+    /// Append `bytes` to `file`, making it when it is missing.
+    Append { file: PathBuf, bytes: Vec<u8>, delivery: Shelf<Result<(), Unwritten>> },
     /// List the files directly in `directory` that `namespace`'s listing holds.
     List { directory: PathBuf, namespace: Namespace, delivery: Shelf<Result<Vec<FilePath>, Unlisted>> },
 }
@@ -195,6 +198,15 @@ impl Storage for Directories {
         Box::pin(self.ask(|number, delivery| Asked::Write { sibling: sibling(&file, number), file, bytes, delivery }))
     }
 
+    fn append<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        if !namespace.is_written() {
+            return Box::pin(future::ready(Err(Unwritten::ReadOnly)));
+        }
+        let file = self.root(namespace).join(path.as_str());
+
+        Box::pin(self.ask(|_, delivery| Asked::Append { file, bytes, delivery }))
+    }
+
     fn list(&self, namespace: Namespace) -> Listing<'_> {
         if !namespace.is_listed() {
             return Box::pin(future::ready(Err(Unlisted::NotListed)));
@@ -243,6 +255,9 @@ fn work(shared: &Shared) {
                 }
                 Asked::Write { file, sibling, bytes, delivery } => {
                     deliver(&delivery, write_whole(&file, &sibling, &bytes).map_err(|_| Unwritten::Failed));
+                }
+                Asked::Append { file, bytes, delivery } => {
+                    deliver(&delivery, append_synced(&file, &bytes).map_err(|_| Unwritten::Failed));
                 }
                 Asked::List { directory, namespace, delivery } => {
                     deliver(&delivery, list_whole(&directory, namespace).map_err(|error| unlisted(error.kind())));
@@ -313,6 +328,24 @@ fn write_synced(file: &Path, bytes: &[u8]) -> io::Result<()> {
     made.write_all(bytes)?;
 
     made.sync_all()
+}
+
+/// Appends `bytes` to `file`, making the directories it is in and the file itself when they are missing, and syncs
+/// what it wrote to the disk. A new file's directory is synced too, so the file outlasts a crash.
+fn append_synced(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    let directory = file.parent().ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+    fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    let is_new = !file.exists();
+    let mut opened = File::options().create(true).append(true).open(file)?;
+    opened.write_all(bytes)?;
+    opened.sync_data()?;
+    #[cfg(unix)]
+    if is_new {
+        File::open(directory)?.sync_all()?;
+    }
+
+    Ok(())
 }
 
 /// The files directly in `directory` that `namespace`'s listing holds. Each is a file, or a link to one; a name no path

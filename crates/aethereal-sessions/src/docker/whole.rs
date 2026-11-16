@@ -3,8 +3,8 @@
 
 use super::request::{Body, Call};
 use super::{
-    Acted, Calling, Connecting, Create, Created, Dial, Docker, DockerError, Fetches, HangUp, Inspect, Inspected, Kill,
-    List, Listed, Remove, Start, Stop, Unwritable, reply,
+    Acted, Calling, Connecting, Create, CreateVolume, Created, Dial, Docker, DockerError, Fetches, HangUp, Inspect,
+    Inspected, Kill, List, Listed, Remove, Start, Stop, Unwritable, VolumeCreated, Wait, Waited, reply,
 };
 use aethereal_actor::{ActorRef, Allows, Answer, Answered, Bytes, Due, Fault, Handles, Held, Refused, ToSender, Turn};
 use aethereal_data::Bound;
@@ -25,6 +25,8 @@ enum Answering {
     Acted(Held<Acted>),
     Inspected(Held<Inspected>),
     Listed(Held<Listed>),
+    Waited(Held<Waited>),
+    VolumeCreated(Held<VolumeCreated>),
 }
 
 /// Where a request answered whole is.
@@ -110,6 +112,38 @@ impl Handles<List> for Docker {
                 self.ask(turn, call, answering)?;
             }
             Err(why) => turn.reply(&Listed::Failed(DockerError::Unwritable(why)))?,
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Wait> for Docker {
+    type Sends = (Dial, ToSender<Waited>);
+
+    fn handle(&mut self, wait: Wait, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        match wait.call() {
+            Ok(call) => {
+                let answering = Answering::Waited(turn.hold()?);
+                self.ask(turn, call, answering)?;
+            }
+            Err(why) => turn.reply(&Waited::Failed(DockerError::Unwritable(why)))?,
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<CreateVolume> for Docker {
+    type Sends = (Dial, ToSender<VolumeCreated>);
+
+    fn handle(&mut self, create: CreateVolume, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        match create.call() {
+            Ok(call) => {
+                let answering = Answering::VolumeCreated(turn.hold()?);
+                self.ask(turn, call, answering)?;
+            }
+            Err(why) => turn.reply(&VolumeCreated::Failed(DockerError::Unwritable(why)))?,
         }
 
         Ok(())
@@ -205,6 +239,8 @@ impl Answering {
             Self::Acted(held) => held.due(),
             Self::Inspected(held) => held.due(),
             Self::Listed(held) => held.due(),
+            Self::Waited(held) => held.due(),
+            Self::VolumeCreated(held) => held.due(),
         }
     }
 
@@ -227,6 +263,14 @@ impl Answering {
                 let listed = reply::listed(status, turn.read(body));
                 turn.answer(held, &listed)?;
             }
+            Self::Waited(held) => {
+                let waited = reply::waited(status, turn.read(body));
+                turn.answer(held, &waited)?;
+            }
+            Self::VolumeCreated(held) => {
+                let created = reply::volume_created(status, turn.read(body));
+                turn.answer(held, &created)?;
+            }
         }
 
         Ok(())
@@ -239,6 +283,8 @@ impl Answering {
             Self::Acted(held) => turn.answer(held, &Acted::Failed(error))?,
             Self::Inspected(held) => turn.answer(held, &Inspected::Failed(error))?,
             Self::Listed(held) => turn.answer(held, &Listed::Failed(error))?,
+            Self::Waited(held) => turn.answer(held, &Waited::Failed(error))?,
+            Self::VolumeCreated(held) => turn.answer(held, &VolumeCreated::Failed(error))?,
         }
 
         Ok(())

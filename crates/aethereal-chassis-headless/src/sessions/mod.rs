@@ -1,74 +1,29 @@
-//! The native host's disk for the sessions capability: each session a directory under the root its settings name,
-//! worked on a thread of its own (ADR-0057).
-
-mod disk;
+//! The sessions capability on the native host (ADR-0057): its records and transcripts are kept through `Files`, and
+//! each home is a volume Docker keeps, so the one thing the host serves it is the read of the credential's file.
 
 use crate::Headless;
-use crate::errands::Errands;
 use aethereal_actor::Service;
-use aethereal_sessions::{Fetching, Finding, Making, Sessions, SessionsDisk, SessionsSettings, Storing, Unkept};
+use aethereal_sessions::{Credential, NoCredential, Sessions, SessionsSettings};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The native host's disk for the sessions (ADR-0057): the root its settings name, each session's directory under it
-/// named by its number, holding its `record`, its `transcript`, and its `home`; and the credential's file, read where
-/// the settings name it. What it is asked is done on a thread of its own, in the order asked, so the disk never blocks
-/// the thread that polls it.
-pub struct SessionsDirectory {
-    root: PathBuf,
-    credential: PathBuf,
-    errands: Errands,
+/// The credential's file, where the settings name it, read whole as each container is made. It is a secret, so it is
+/// read here, by the host, and never through `Files`, whose namespaces any actor may read; its bytes are handed only
+/// to the job that turns them into the container's environment.
+pub struct CredentialFile {
+    path: PathBuf,
 }
 
-impl SessionsDirectory {
-    /// The disk keeping the sessions where `settings` say.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the host cannot make a thread.
-    #[must_use]
-    pub fn new(settings: &SessionsSettings) -> Self {
-        Self {
-            root: PathBuf::from(&settings.root),
-            credential: PathBuf::from(&settings.credential),
-            errands: Errands::new("aethereal-sessions"),
-        }
+impl Credential for CredentialFile {
+    fn read(&self) -> Result<Vec<u8>, NoCredential> {
+        fs::read(&self.path).map_err(|_| NoCredential)
     }
 }
 
-impl SessionsDisk for SessionsDirectory {
-    fn find(&self) -> Finding<'_> {
-        let root = self.root.clone();
-        let finding = self.errands.ask(move || disk::find(&root));
-
-        Box::pin(async move { finding.await.unwrap_or(Err(Unkept)) })
-    }
-
-    fn make(&self, session: u32) -> Making<'_> {
-        let root = self.root.clone();
-        let making = self.errands.ask(move || disk::make(&root, session));
-
-        Box::pin(async move { making.await.unwrap_or(Err(Unkept)) })
-    }
-
-    fn credential(&self) -> Fetching<'_> {
-        let credential = self.credential.clone();
-        let fetching = self.errands.ask(move || disk::credential(&credential));
-
-        Box::pin(async move { fetching.await.unwrap_or(Err(Unkept)) })
-    }
-
-    fn keep(&self, session: u32, frames: Vec<u8>, record: Vec<u8>) -> Storing<'_> {
-        let root = self.root.clone();
-        let storing = self.errands.ask(move || disk::keep(&root, session, &frames, &record));
-
-        Box::pin(async move { storing.await.unwrap_or(Err(Unkept)) })
-    }
-}
-
-/// The sessions capability on the native host: its disk the directory its settings name, served to the host for its
-/// runners (ADR-0057). It refuses to start when a label of its settings is not `key=value`.
+/// The sessions capability on the native host: the credential's file its settings name, served to the host for its
+/// runners (ADR-0034, ADR-0057). It refuses to start when a label of its settings is not `key=value`.
 impl Bootstrap<Headless> for Sessions {
     const SECTION: &'static str = "sessions";
     type Settings = SessionsSettings;
@@ -81,7 +36,8 @@ impl Bootstrap<Headless> for Sessions {
         cx: &mut Bootstrapping<'_, Headless, Self>,
     ) -> Result<(), Unbuilt> {
         settings.container_labels().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
-        cx.serve(Service::<dyn SessionsDisk>::of(Arc::new(SessionsDirectory::new(&settings))));
+        let credential = CredentialFile { path: PathBuf::from(&settings.credential) };
+        cx.serve(Service::<dyn Credential>::of(Arc::new(credential)));
         cx.begin(&(), settings)
     }
 }

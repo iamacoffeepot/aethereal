@@ -20,19 +20,17 @@ pub const HOME: &str = "/session/home";
 /// Where the Claude Code binary is inside its container.
 pub const CLAUDE: &str = "/usr/local/bin/claude";
 
-/// The sessions capability's section, `sessions`: where the hub keeps its sessions, what each one's container is made
-/// of, and its limits (ADR-0057). Every field of a container comes from here or from the session's number, never from
-/// what a caller asked.
+/// The sessions capability's section, `sessions`: what each session's container is made of, and its limits (ADR-0057).
+/// Every field of a container comes from here or from the session's number, never from what a caller asked. Where the
+/// sessions' records and transcripts are kept is `Files`' setting for its `Save` namespace, and where each home is
+/// kept is Docker's.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.sessions.settings")]
 #[settings]
 pub struct SessionsSettings {
-    /// The directory each session's record, transcript, and home are kept under, one directory a session: relative
-    /// to where the program runs, or absolute.
-    #[flag]
-    pub root: String,
-    /// The file of `KEY=VALUE` lines given to each container as its environment: the Claude Code credential. Read as
-    /// each container is made, and never written anywhere else.
+    /// The file of `KEY=VALUE` lines given to each container as its environment: the Claude Code credential. Only its
+    /// path is a setting; it is read by the host as each container is made, never through `Files`, and never written
+    /// anywhere else.
     #[flag]
     pub credential: String,
     /// The image each container runs.
@@ -44,7 +42,8 @@ pub struct SessionsSettings {
     /// The model each session runs, stated as print mode otherwise picks its own.
     #[flag]
     pub model: String,
-    /// The user each container's process runs as: a name, or `uid:gid`, which owns the session's directories.
+    /// The user each container's process runs as: a name the image knows, or `uid:gid`, which is given the session's
+    /// home before its first container.
     #[flag]
     pub user: String,
     /// The hub's MCP endpoint a session reaches the hub's tools at; empty for none.
@@ -83,7 +82,6 @@ pub struct SessionsSettings {
 impl Default for SessionsSettings {
     fn default() -> Self {
         Self {
-            root: String::from("sessions"),
             credential: String::from("sessions/claude.env"),
             image: String::from("rust:1.97-slim"),
             claude: String::from("/usr/local/lib/claude-code/claude"),
