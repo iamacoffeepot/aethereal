@@ -1,7 +1,7 @@
 //! The console's chat, as its state: what the hub shows it, built into rows, and what the owner does, come to the chat
 //! the link is told. Claude's events are written as Claude Code 2.1 writes them, cut to the members the console reads.
 
-use super::{Chats, Ink, Look, Open, Row, Typed, typed};
+use super::{Chats, Ink, Look, Open, Row, Typed, Which, typed};
 use aethereal_data::{Budget, Json};
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
 
@@ -27,6 +27,7 @@ fn texts(rows: &[&Row]) -> Vec<String> {
     rows.iter()
         .map(|row| match &row.look {
             Look::Line { text, .. } | Look::Fold { text, .. } => text.clone(),
+            Look::Turn { tag, text, .. } => format!("{tag} {text}"),
             Look::Reply { .. } => String::from("<reply>"),
         })
         .collect()
@@ -103,13 +104,14 @@ fn a_turn_that_begins_with_no_line_says_so_and_one_begun_by_a_line_does_not() {
     let done = r#"{"type":"result","subtype":"success","is_error":false}"#;
     chats.shown(1, &[said(1, 4, "go"), claude(2, init), claude(3, done), claude(4, init), claude(5, done)]);
 
-    assert_eq!(texts(&chats.rows()), ["[4] go", "· done", "· a turn began by itself", "· done"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > go", "· done", "· a turn began by itself", "· done"]);
 }
 
 #[test]
 fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine_s() {
     // Catches an engine that inks every line as its own, or none; one that takes another engine's line of other text
-    // as its own; and lines shown before the echo left inked as others' once it is learned.
+    // as its own; lines shown before the echo left inked as others' once it is learned; and its own lines tagged with
+    // its name rather than `local`, or another engine's with `local`.
     let mut chats = opened();
     chats.shown(1, &[said(1, 12, "from another engine")]);
     let sent = chats.say(String::from("what do you see?"));
@@ -121,25 +123,89 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
         .rows()
         .iter()
         .map(|row| match row.look {
-            Look::Line { ink, .. } => ink,
+            Look::Line { ink, .. } | Look::Turn { ink, .. } => ink,
             Look::Reply { .. } | Look::Fold { .. } => Ink::Faint,
         })
         .collect();
 
     assert_eq!(inks, [Ink::Other, Ink::Other, Ink::Own]);
+    assert_eq!(
+        texts(&chats.rows()),
+        ["wary-owl:12 > from another engine", "wary-owl:12 > something else", "local > what do you see?"]
+    );
 }
 
 #[test]
 fn a_line_goes_to_claude_a_slash_line_runs_here_and_claude_codes_own_words_are_said() {
     // Catches `/compact` run as one of the engine's tools rather than sent, a `/` command sent to Claude, and the
-    // chat's own words, `/stop`, `/new`, and `/archive`, missed.
+    // chat's own words, `/stop`, `/new`, and `/archive`, noted in the session as a command run there.
     assert_eq!(typed("what do you see?"), Typed::Say(String::from("what do you see?")));
     assert_eq!(typed("/capture_frame --window 1"), Typed::Run(String::from("capture_frame --window 1")));
     assert_eq!(typed("/compact"), Typed::Say(String::from("/compact")));
-    assert_eq!(typed("/stop"), Typed::Stop);
-    assert_eq!(typed("/new  overlay work"), Typed::New(String::from("overlay work")));
-    assert_eq!(typed("/archive"), Typed::Archive);
+    assert_eq!(typed("/stop"), Typed::Own(String::from("stop")));
+    assert_eq!(typed("/new  work"), Typed::Own(String::from("new  work")));
     assert_eq!(typed("   "), Typed::Blank);
+}
+
+#[test]
+fn an_owner_s_line_is_a_turn_and_a_line_the_hub_or_a_caller_wrote_is_not() {
+    // Catches Claude's lines, or the hub's and its callers', set apart as the owner's turns, and an owner's line at
+    // another engine not set apart.
+    let mut chats = opened();
+    let written = Numbered { number: 2, entry: Entry::Said { by: Speaker::Hub, text: String::from("winding down") } };
+    chats.shown(1, &[said(1, 12, "at another engine"), written, claude(3, REPLY)]);
+    let turns: Vec<bool> = chats.rows().iter().map(|row| row.is_turn()).collect();
+
+    assert_eq!(turns, [true, false, false]);
+}
+
+#[test]
+fn a_word_names_the_open_session_or_one_by_its_name_and_says_why_none_is() {
+    // Catches a word that stops or archives a session other than the one named, one that guesses among sessions of one
+    // name, and one from the console's own tab that names none but acts.
+    let mut chats = Chats::default();
+    let _ = chats.listed(vec![tab(1, State::Idle, 0), tab(2, State::Idle, 0), tab(3, State::Idle, 0)]);
+    let _ = chats.listed(vec![
+        tab(1, State::Idle, 0),
+        tab(2, State::Idle, 0),
+        Tab { session: 3, name: String::from("s2"), state: State::Idle, asking: 0 },
+    ]);
+
+    assert_eq!(chats.stop(&Which::Open), Ok(Chat::Interrupt { session: 3 }));
+    assert_eq!(chats.archive(&Which::Named(String::from("s1"))), Ok(Chat::Archive { session: 1 }));
+    assert!(chats.archive(&Which::Named(String::from("s2"))).is_err(), "two sessions are named s2");
+    assert!(chats.stop(&Which::Named(String::from("s9"))).is_err(), "none is named s9");
+
+    let _ = chats.choose(0);
+
+    assert!(chats.stop(&Which::Open).is_err(), "the console's own tab is no session");
+}
+
+#[test]
+fn a_session_made_here_opens_once_the_hub_lists_it_and_not_one_of_its_name_listed_before() {
+    // Catches a session made here left closed once it lists, and an older session of the same name opened in its
+    // place.
+    let mut chats = Chats::default();
+    let named = |session: u32| Tab { session, name: String::from("work"), state: State::Idle, asking: 0 };
+    let _ = chats.listed(vec![named(1), tab(2, State::Idle, 0)]);
+    let _ = chats.choose(0);
+
+    assert_eq!(chats.make(String::from("work")), Chat::New { name: String::from("work") });
+    assert_eq!(chats.listed(vec![named(1), tab(2, State::Idle, 0)]), []);
+    assert_eq!(chats.listed(vec![named(1), tab(2, State::Idle, 0), named(3)]), [Chat::Open { session: 3, after: 0 }]);
+    assert_eq!(chats.listed(vec![named(1), tab(2, State::Idle, 0), named(3), named(4)]), []);
+}
+
+#[test]
+fn the_next_and_the_tab_before_go_round_from_the_last_to_the_first() {
+    // Catches a step past the last tab, or back before the console's own, that opens nothing or a tab that is not
+    // there.
+    let mut chats = Chats::default();
+    let _ = chats.listed(vec![tab(1, State::Idle, 0), tab(2, State::Idle, 0)]);
+
+    assert_eq!(chats.step(false), [Chat::Close { session: 2 }]);
+    assert_eq!(chats.step(true), [Chat::Open { session: 2, after: 0 }]);
+    assert_eq!(chats.step(true), [Chat::Close { session: 2 }, Chat::Open { session: 1, after: 0 }]);
 }
 
 #[test]
@@ -179,7 +245,7 @@ fn events_shown_twice_or_out_of_order_are_held_once_in_order() {
     chats.shown(1, &[said(3, 4, "c"), said(1, 4, "a")]);
     chats.shown(1, &[said(1, 4, "a"), said(2, 4, "b"), said(3, 4, "c")]);
 
-    assert_eq!(texts(&chats.rows()), ["[4] a", "[4] b", "[4] c"]);
+    assert_eq!(texts(&chats.rows()), ["mellow-snipe:4 > a", "mellow-snipe:4 > b", "mellow-snipe:4 > c"]);
 }
 
 #[test]

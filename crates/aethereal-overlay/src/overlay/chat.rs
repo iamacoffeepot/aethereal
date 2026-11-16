@@ -4,12 +4,14 @@
 //! no chat, keeps the console as it was.
 
 use super::Overlay;
+use super::console::Offering;
 use crate::chat::{Typed, typed};
 use crate::console::Command;
-use aethereal_actor::{ActorRef, Allows, Fault, Handles, Level, ToType, Turn, path};
+use aethereal_actor::{ActorRef, Allows, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_link::{Link, Listen};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_tools::{Offer, Tools};
 
 /// The most bytes of what a `/` command printed that are noted in the session: what a tool prints can be large, and the
 /// line folded into the owner's next is read by Claude.
@@ -88,8 +90,8 @@ impl Overlay {
         self.tell::<_, I>(turn, vec![ran])
     }
 
-    /// Runs the line `line` typed with a session's tab open: said to it, run here and noted in it, or one of the
-    /// chat's own words. Answers the command a line run here comes to, for the overlay to call.
+    /// Runs the line `line` typed with a session's tab open: said to it, run here and noted in it, or run here alone,
+    /// one of the chat's own words. Answers the command a line run here comes to, for the overlay to call.
     pub(super) fn chatted<S, I>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -103,15 +105,12 @@ impl Overlay {
         let typed = typed(line);
         let reports = match &typed {
             Typed::Run(command) => Reports::Session { session, line: command.clone() },
-            Typed::Blank | Typed::Say(_) | Typed::Stop | Typed::New(_) | Typed::Archive => Reports::Here,
+            Typed::Blank | Typed::Say(_) | Typed::Own(_) => Reports::Here,
         };
         let (chat, command) = match typed {
             Typed::Blank => (Vec::new(), Command::Blank),
             Typed::Say(text) => (self.chats.say(text), Command::Blank),
-            Typed::Stop => (self.chats.interrupt(), Command::Blank),
-            Typed::New(name) => (vec![Chat::New { name }], Command::Blank),
-            Typed::Archive => (self.chats.archive(), Command::Blank),
-            Typed::Run(command) => (Vec::new(), self.console.ran(&command, columns)),
+            Typed::Run(command) | Typed::Own(command) => (Vec::new(), self.console.ran(&command, columns)),
         };
         self.console.kept(line);
         self.tell::<_, I>(turn, chat)?;
@@ -130,14 +129,20 @@ fn cut(printed: &str) -> &str {
     &printed[..end]
 }
 
-/// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told.
+/// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told, and offers the
+/// chat's words, as only an engine the hub trusts is shown the sessions.
 impl Handles<ShowTabs> for Overlay {
-    type Sends = (ToType<Link, Chat>,);
+    type Sends = (ToType<Link, Chat>, Asks<Path<Tools>, Offer, Offering>);
 
     fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let first = !self.chats.is_listed();
         let chat = self.chats.listed(shown.tabs);
+        self.tell(turn, chat)?;
+        if first {
+            Self::offer_words(turn)?;
+        }
 
-        self.tell(turn, chat)
+        Ok(())
     }
 }
 

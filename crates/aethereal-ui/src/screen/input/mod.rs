@@ -34,7 +34,7 @@ use super::keys::{self, ESCAPE, Role, TAB};
 use super::popups::{self, Pressing};
 use super::{Fresh, Last, Listed, Orders, Screen, Worked};
 use crate::fonts::Asker;
-use crate::input::{Erased, Hears, Input, Key, Pointing, Raised, Used};
+use crate::input::{Erased, First, Hears, Input, Key, Pointing, Raised, Used};
 use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Shape, Tree};
 use crate::widget::Built;
@@ -240,7 +240,7 @@ impl Screen {
     /// that key, when it is dropped, so a key the screen takes never types into a text input it focused. What the input
     /// method composes goes to the focused widget, as it follows no key of its own. The modifiers are watched as they go
     /// down and come up, whichever declaration they come through.
-    pub fn keyed(&mut self, keyed: Keyed, first: &[&str]) -> Heard {
+    pub fn keyed(&mut self, keyed: Keyed, first: &[First]) -> Heard {
         let mut heard = Heard::default();
         let Some(Listed::Keys(role)) = self.listing.get(place(keyed.entry)) else {
             return heard;
@@ -316,8 +316,8 @@ impl Screen {
     /// is within that hears the key, innermost first and up to the popup whose content it is in, the focus keys, and the
     /// screen, in turn, until one uses it. Answers where the text it types goes: to the focus, or nowhere when the
     /// screen took it.
-    fn pressed(&mut self, key: Key, first: &[&str], heard: &mut Heard) -> Typed {
-        let taken_first = first.contains(&key.code.as_str());
+    fn pressed(&mut self, key: Key, first: &[First], heard: &mut Heard) -> Typed {
+        let taken_first = first.iter().any(|first| first.takes(&key));
         if taken_first {
             heard.keys.push(key);
             return Typed::Dropped;

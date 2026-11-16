@@ -16,6 +16,10 @@ pub const SLATE: Swatch = Swatch::hex(0x15_18_1b);
 /// read apart: `#20252a`.
 pub const SLATE_LIGHTER: Swatch = Swatch::hex(0x20_25_2a);
 
+/// The owner's own lines in a session's transcript, a step lighter than the scrollback's slate, so the owner's turns
+/// stand apart from Claude's as a prompt's lines do in a terminal: `#2a3036`.
+pub const SLATE_RAISED: Swatch = Swatch::hex(0x2a_30_36);
+
 /// The prompt's strip, a step darker than the band's slate, a well the line is typed into: `#111417`.
 pub const SLATE_DARKER: Swatch = Swatch::hex(0x11_14_17);
 
@@ -57,8 +61,12 @@ pub const RUST: Swatch = Swatch::hex(0xd0_8a_4c);
 /// An error, the console's count of them, and a refusal: `#cc5f52`.
 pub const BRICK: Swatch = Swatch::hex(0xcc_5f_52);
 
-/// How opaque the panels are drawn: 85%, so the program shows behind them.
+/// How opaque the band's panel is drawn: 85%, so the program shows behind it.
 pub const PANEL_OPACITY: f32 = 0.85;
+
+/// How opaque the console's panels are drawn: 96%, nearly solid, so the console reads as a sheet laid over the scene
+/// and the band's see-through graphs above it never read as part of its text.
+pub const CONSOLE_OPACITY: f32 = 0.96;
 
 /// A colour as the ADR's table writes it: sRGB, eight bits a channel.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,7 +5,9 @@
 //! each of a graph and its gutter. The console, beneath the band, is a scroll of the scrollback's rows, which builds
 //! only the rows it shows and keeps to its newest, and the prompt's strip: the prompt, the line's text input with the
 //! completion of the word before its caret shown ahead of it, and what is running at its right end. Its panels fill
-//! their boxes, so the console blocks the pointer from the program beneath, and the wheel over it scrolls it.
+//! their boxes, so the console blocks the pointer from the program beneath, and the wheel over it scrolls it. The band
+//! is a see-through HUD over the scene and the console a sheet laid over it: the console's panels are nearly opaque, and
+//! a firm seam, the grip, parts the two, so the band's graphs never read as the console's text.
 //!
 //! ```text
 //! Column (the window)
@@ -13,13 +15,16 @@
 //! │  ├─ Column (60%): Row (FrameChart, gutter), figures, rule, Row (GpuGraph, gutter), figures, rule, Row (LineRows, gutter)
 //! │  ├─ Tint (the line between the columns)
 //! │  └─ Column: a Row (MeterGraph, gutter) for each meter
-//! └─ Column, at the console's stop (a third of the window): rule, Scroll (the rows), rule, Row (> line…, running)
+//! └─ Column, at the console's stop (a third of the window): Grip (the seam), Scroll (the rows) or Scroll (a
+//!    transcript), asks, rule, Row (> line…, running), Row (the tabs: console ‖ session | session)
 //! ```
 
 use super::{Calling, Overlay};
 use crate::chart::{ChartShown, FrameChart};
-use crate::chat::Open;
-use crate::colour::{BONE, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch};
+use crate::chat::{Open, Parting, Row as TranscriptRow};
+use crate::colour::{
+    BONE, CONSOLE_OPACITY, LICHEN, OCHRE, PANEL_OPACITY, SLATE, SLATE_DARKER, SLATE_LIGHTER, STONE, Swatch,
+};
 use crate::console::{Piece, Row as PrintedRow};
 use crate::gpu::{self, GpuGraph, GpuShown, GpuTiming, GraphTop};
 use crate::layout::{
@@ -86,9 +91,69 @@ const PROMPT_LINES: u32 = 6;
 /// How opaque the lines between the panels are drawn, in stone: faint, so they part the panels without drawing the eye.
 const DIVIDER_OPACITY: f32 = 0.28;
 
-/// A panel's colour, at the panels' opacity.
+/// How opaque the seam between the band and the console is drawn, in stone: firm, so the console's edge is never lost
+/// against the band's graphs above it.
+const SEAM_OPACITY: f32 = 0.7;
+
+/// How opaque the break between the console's own tab and the sessions' is drawn, in stone: firmer than the light
+/// dividers between sessions.
+const BREAK_OPACITY: f32 = 0.6;
+
+/// The band's panel's colour, at its opacity.
 fn panel(swatch: Swatch) -> Colour {
     swatch.at(PANEL_OPACITY)
+}
+
+/// A console's panel's colour, at its opacity.
+fn sheet(swatch: Swatch) -> Colour {
+    swatch.at(CONSOLE_OPACITY)
+}
+
+/// `left` and `right` logical pixels of margin, and `top` and `bottom`.
+fn margined(left: f32, right: f32, top: f32, bottom: f32) -> Edges<Length> {
+    Edges {
+        left: Length::Pixels(left),
+        right: Length::Pixels(right),
+        top: Length::Pixels(top),
+        bottom: Length::Pixels(bottom),
+    }
+}
+
+/// The padding inside a transcript's row: around one of the owner's lines, so its shade stands clear of its text, and
+/// none around any other.
+fn inset(row: &TranscriptRow) -> Edges<Space> {
+    if row.is_turn() {
+        padded(GAP_PIXELS, GAP_PIXELS, GAP_PIXELS / 2.0, GAP_PIXELS / 2.0)
+    } else {
+        padded(0.0, 0.0, 0.0, 0.0)
+    }
+}
+
+impl Parting {
+    /// How wide the line before the tab is: two lines' width for the break, one for a light divider.
+    fn width(self) -> Length {
+        match self {
+            Self::Break => Length::Pixels(DIVIDER_PIXELS * 2.0),
+            Self::First | Self::Light => Length::Pixels(DIVIDER_PIXELS),
+        }
+    }
+
+    /// The line's colour: firm stone for the break, and faint for a light divider.
+    fn colour(self) -> Colour {
+        match self {
+            Self::Break => STONE.at(BREAK_OPACITY),
+            Self::First | Self::Light => STONE.at(DIVIDER_OPACITY),
+        }
+    }
+
+    /// The space either side of the line: a narrow breather either side of the break, and none beside a light
+    /// divider, whose tabs' own padding parts it from their titles.
+    fn margin(self) -> Edges<Length> {
+        match self {
+            Self::Break => margined(GAP_PIXELS, GAP_PIXELS, 0.0, 0.0),
+            Self::First | Self::Light => margined(0.0, 0.0, 0.0, 0.0),
+        }
+    }
 }
 
 aethereal_ui::style! {
@@ -135,22 +200,31 @@ aethereal_ui::style! {
     }
     /// The console's panel, beneath the band: its height is the overlay's, set by dragging its grip.
     pub console {}
-    /// The line between the band and the console, over the scrollback's tint, a grip a few pixels tall for dragging.
-    pub grip: rule { height: Length::Pixels(GRIP_PIXELS), background: panel(SLATE_LIGHTER) }
+    /// The seam between the band and the console, a grip a few pixels tall for dragging: a firm stone line across a
+    /// dark well, so the console's edge reads at a glance against the band's graphs.
+    pub grip { height: Length::Pixels(GRIP_PIXELS), background: sheet(SLATE_DARKER), colour: STONE.at(SEAM_OPACITY) }
     /// The scrollback: the rest of the console above the prompt's strip, a step lighter than the band, its rows inside
     /// its padding and its bar, faint stone, at its right edge.
     pub scrollback {
         grow: 1.0,
-        background: panel(SLATE_LIGHTER),
+        background: sheet(SLATE_LIGHTER),
         padding: padded(PADDING_PIXELS, PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS),
         colour: STONE.opaque(),
     }
     /// A session's transcript: as the scrollback is, its rows a small gap apart.
     pub transcript: scrollback { gap: Gap { rows: Space::Pixels(GAP_PIXELS), columns: Space::Pixels(0.0) } }
-    /// One row of a transcript, across it, at least a line of text tall, which the scroll windows its rows by.
+    /// One row of a transcript, across it, at least a line of text tall, which the scroll windows its rows by; its
+    /// background and padding its own, the owner's lines set apart from Claude's on a shade.
     pub entry { width: Length::Share(1.0), min_height: Length::Pixels(TEXT_PIXELS) }
     /// A line of a transcript, which its reader can select and copy: the mono face, its colour its own.
     pub said: mono {}
+    /// One of the owner's lines: its tag, then its text.
+    pub turn { width: Length::Share(1.0) }
+    /// An owner's line's tag, who typed it and the prompt mark: a label in its own colour, unbroken, a character's space
+    /// after it, as a text measures no space at its end.
+    pub tag: mono { shrink: 0.0, padding: padded(0.0, advance_pixels(), 0.0, 0.0) }
+    /// An owner's line's text, as wide as the row leaves it.
+    pub turn_text: said { grow: 1.0 }
     /// The fold of a subagent's events, pressed to open or close it.
     pub fold { align_self: SelfAlign::Own(Alignment::Start) }
     /// The fold's text: stone.
@@ -158,24 +232,29 @@ aethereal_ui::style! {
     /// Claude's text, as markdown.
     pub reply { width: Length::Share(1.0) }
     /// The asks of the open session that wait on the owner, above the prompt's strip.
-    pub asks { background: panel(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS, GAP_PIXELS) }
+    pub asks { background: sheet(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS, GAP_PIXELS) }
     /// One ask, its answers at its end.
     pub ask_row { align_items: Alignment::Center, gap: Gap { rows: Space::Pixels(0.0), columns: Space::Pixels(SECTION_PIXELS) } }
     /// What an ask says: ochre, as wide as the row leaves it.
     pub asked: mono { colour: OCHRE.opaque(), grow: 1.0 }
     /// An ask's answer, pressed.
-    pub answer { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0), background: panel(SLATE_LIGHTER) }
+    pub answer { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0), background: sheet(SLATE_LIGHTER) }
     /// The session tabs beneath the prompt's strip, nearest the scene.
-    pub tab_strip { background: panel(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, GAP_PIXELS) }
+    pub tab_strip { background: sheet(SLATE_DARKER), padding: padded(PADDING_PIXELS, PADDING_PIXELS, 0.0, GAP_PIXELS) }
+    /// A tab and what parts it from the one before, centred down the strip.
+    pub tab_item { align_items: Alignment::Center }
+    /// What parts a tab from the one before: its width, colour, and space as its parting says, a line of text tall and
+    /// centred against the tabs' titles.
+    pub tab_rule { height: Length::Pixels(TEXT_PIXELS), align_self: SelfAlign::Own(Alignment::Center), shrink: 0.0 }
     /// A tab, pressed to open it.
     pub tab_button { padding: padded(SECTION_PIXELS, SECTION_PIXELS, 2.0, 2.0) }
     /// A tab's title.
     pub tab_text: mono {}
     /// The line between the scrollback and the prompt's strip, over the strip's tint.
-    pub prompt_rule: rule { height: Length::Pixels(DIVIDER_PIXELS), background: panel(SLATE_DARKER) }
+    pub prompt_rule: rule { height: Length::Pixels(DIVIDER_PIXELS), background: sheet(SLATE_DARKER) }
     /// The prompt's strip: a line of text tall inside its padding, a step darker than the band.
     pub prompt_strip {
-        background: panel(SLATE_DARKER),
+        background: sheet(SLATE_DARKER),
         padding: padded(PADDING_PIXELS, PADDING_PIXELS, STRIP_PADDING_PIXELS, STRIP_PADDING_PIXELS),
         align_items: Alignment::Center,
     }
@@ -234,8 +313,12 @@ aethereal_ui::view! { Overlay, ui,
             }
             Scroll { .., style: transcript, show: self.shows_transcript(), keeps: Keeps::End,
                 items: self.chats.rows() as row key row.key,
-                Column { style: entry,
+                Column { style: entry { background: row.background(), padding: inset(row) },
                     Selectable { show: row.is_line(), style: said { colour: row.colour() }, text: row.text() }
+                    Row { show: row.is_turn(), style: turn,
+                        Printed { style: tag, runs: row.tag_runs() }
+                        Selectable { style: turn_text { colour: row.colour() }, text: row.text() }
+                    }
                     Button { show: row.is_fold(), style: fold, click => self.fold(row.key),
                         Text { style: folded, "{row.text()}" }
                     }
@@ -268,8 +351,14 @@ aethereal_ui::view! { Overlay, ui,
                 Printed { style: mono, runs: self.running_runs() }
             }
             Row { style: tab_strip, show: self.chats.is_listed(), items: self.chats.titles() as tab key tab.place,
-                Button { style: tab_button { background: tab.background() }, click => self.choose(tab.place),
-                    Text { style: tab_text { colour: tab.colour() }, "{tab.name}" }
+                Row { style: tab_item,
+                    Tint {
+                        show: tab.parting.parts(),
+                        style: tab_rule { width: tab.parting.width(), colour: tab.parting.colour(), margin: tab.parting.margin() },
+                    }
+                    Button { style: tab_button { background: tab.background() }, click => self.choose(tab.place),
+                        Text { style: tab_text { colour: tab.colour() }, "{tab.name}" }
+                    }
                 }
             }
         }

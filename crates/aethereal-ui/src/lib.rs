@@ -147,7 +147,9 @@ pub use drag::{
     Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
 };
 pub use fonts::{Measuring, Unmeasured};
-pub use input::{Clip, Erased, Event, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising};
+pub use input::{
+    Clip, Erased, Event, First, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising,
+};
 pub use screen::{
     Clipping, Copying, DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Pasting,
     Picturing, Placing, Prepared, Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Texturing,

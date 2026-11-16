@@ -4,11 +4,14 @@
 //! tell the link, and what it shows is laid out by the overlay's screen.
 //!
 //! ```text
-//! ShowTabs ──> the tabs: "console", then each session not archived, a mark on one working or waiting on the owner
+//! ShowTabs ──> the tabs: "console", a break, then each session not archived, a light divider between them, a mark on
+//!              one working or waiting on the owner; a session made here opened once it lists
 //! ShowEvents ──> the session's transcript, its rows built again;  a line of this engine's echoed ──> its own id
 //! ShowAsk ──> kept until answered here, or its session waits on none
-//! a tab chosen ──> Close the one open, Open the chosen from the last entry held
-//! a line ──> Say, Run here then Ran, Interrupt, New, or Archive (`prompt`)
+//! a tab chosen, by a press, by its place, or the next or the one before ──> Close the one open, Open the chosen from
+//!              the last entry held
+//! a line ──> Say, Run here then Ran, or run here alone (`prompt`)
+//! the chat's words, the engine's tools `new`, `stop`, and `archive` ──> New, Interrupt, or Archive (`words`)
 //! ```
 //!
 //! Until the hub lists the sessions, which it never does to an untrusted engine, the console is the engine's own, as it
@@ -26,7 +29,7 @@ pub use prompt::{Typed, typed};
 use transcript::Ink;
 pub use transcript::{Look, Mine, Row};
 
-use crate::colour::{BONE, PANEL_OPACITY, SLATE_LIGHTER, STONE};
+use crate::colour::{BONE, CONSOLE_OPACITY, SLATE_LIGHTER, STONE};
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
@@ -66,12 +69,42 @@ struct Sent {
     text: String,
 }
 
-/// A tab as the console shows it: its place, the console's own first, its title, and whether it is open.
+/// A tab as the console shows it: its place, the console's own first, its title, whether it is open, and what parts it
+/// from the tab before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Title {
     pub place: u32,
     pub name: String,
     pub open: bool,
+    pub parting: Parting,
+}
+
+/// What parts a tab from the one before it: the console's own tab is the engine's, and each session's is Claude's, so
+/// the first session's stands apart from it by a break, and the sessions' from each other by a light divider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parting {
+    /// Nothing: the first tab, the console's own.
+    First,
+    /// A break: the first session's tab, after the console's own.
+    Break,
+    /// A light divider: any later session's tab.
+    Light,
+}
+
+impl Parting {
+    /// What parts the tab at `place` from the one before it.
+    const fn at(place: u32) -> Self {
+        match place {
+            0 => Self::First,
+            1 => Self::Break,
+            _ => Self::Light,
+        }
+    }
+
+    /// Whether anything parts the tab from the one before it.
+    pub const fn parts(self) -> bool {
+        !matches!(self, Self::First)
+    }
 }
 
 impl Title {
@@ -89,7 +122,7 @@ impl Title {
     /// What it is drawn on: slate while open, and nothing otherwise.
     pub fn background(&self) -> Colour {
         if self.open {
-            SLATE_LIGHTER.at(PANEL_OPACITY)
+            SLATE_LIGHTER.at(CONSOLE_OPACITY)
         } else {
             Colour::CLEAR
         }
@@ -109,6 +142,26 @@ pub struct Chats {
     unechoed: Vec<Sent>,
     /// The asks that wait on the owner, in the order they came.
     asks: Vec<ShowAsk>,
+    making: Making,
+}
+
+/// A session the owner made here, which the console opens once the hub lists it.
+#[derive(Plain, Debug, Clone, PartialEq, Eq)]
+enum Making {
+    /// None waits to be listed.
+    Nothing,
+    /// The session named `name`, made when the hub listed the sessions `listed`: the first session so named the hub
+    /// lists that is not among them is it.
+    Named { name: String, listed: Vec<u32> },
+}
+
+/// Which session one of the chat's words names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Which {
+    /// The one whose tab is open.
+    Open,
+    /// The one listed under this name.
+    Named(String),
 }
 
 impl Default for Chats {
@@ -120,6 +173,7 @@ impl Default for Chats {
             mine: Mine::Unknown,
             unechoed: Vec::new(),
             asks: Vec::new(),
+            making: Making::Nothing,
         }
     }
 }
@@ -163,11 +217,29 @@ impl Chats {
             self.open = Open::Console;
         }
         let newest = live.last().copied();
-        if let (true, Some(session)) = (first, newest) {
+        let made = self.made();
+        if let Some(session) = made {
+            self.making = Making::Nothing;
+            chat.extend(self.choose_open(Open::Session(session)));
+        } else if let (true, Some(session)) = (first, newest) {
             chat.extend(self.choose_open(Open::Session(session)));
         }
 
         chat
+    }
+
+    /// The session made here that the hub now lists for the first time: none while none waits, or it is not yet
+    /// listed.
+    fn made(&self) -> Option<u32> {
+        let Making::Named { name, listed } = &self.making else {
+            return None;
+        };
+
+        self.live()
+            .iter()
+            .filter(|tab| tab.name == *name)
+            .map(|tab| tab.session)
+            .find(|session| !listed.contains(session))
     }
 
     /// Events of `session`'s transcript the hub showed: held, a line this engine sent and now sees echoed telling it
@@ -245,6 +317,19 @@ impl Chats {
         self.choose_open(chosen)
     }
 
+    /// The tab after the one open chosen, or with `back` the one before, round from the last to the first.
+    pub fn step(&mut self, back: bool) -> Vec<Chat> {
+        let count = u32::try_from(self.live().len()).unwrap_or(u32::MAX).saturating_add(1);
+        let selected = self.selected();
+        let place = if back {
+            selected.checked_sub(1).unwrap_or(count - 1)
+        } else {
+            (selected + 1) % count
+        };
+
+        self.choose(place)
+    }
+
     /// Opens `chosen`, closing the tab open: nothing when it is open already.
     fn choose_open(&mut self, chosen: Open) -> Vec<Chat> {
         if chosen == self.open {
@@ -289,11 +374,37 @@ impl Chats {
         }
     }
 
-    /// Archives the session whose tab is open: nothing with the console's own open.
-    pub fn archive(&self) -> Vec<Chat> {
-        match self.open {
-            Open::Session(session) => vec![Chat::Archive { session }],
-            Open::Console => Vec::new(),
+    /// A session made, named `name`, opened once the hub lists it.
+    pub fn make(&mut self, name: String) -> Chat {
+        let listed = self.live().iter().map(|tab| tab.session).collect();
+        self.making = Making::Named { name: name.clone(), listed };
+
+        Chat::New { name }
+    }
+
+    /// Stops the turn of the session `which` names, or says why no session is named.
+    pub fn stop(&self, which: &Which) -> Result<Chat, String> {
+        self.session(which).map(|session| Chat::Interrupt { session })
+    }
+
+    /// Archives the session `which` names, or says why no session is named.
+    pub fn archive(&self, which: &Which) -> Result<Chat, String> {
+        self.session(which).map(|session| Chat::Archive { session })
+    }
+
+    /// The session `which` names among those listed and not archived, or why none is: no tab of a session is open, no
+    /// session has the name, or several have it.
+    fn session(&self, which: &Which) -> Result<u32, String> {
+        let name = match (which, self.open) {
+            (Which::Open, Open::Session(session)) => return Ok(session),
+            (Which::Open, Open::Console) => return Err(String::from("no session's tab is open: name the session")),
+            (Which::Named(name), _) => name,
+        };
+        let named: Vec<u32> = self.live().iter().filter(|tab| tab.name == *name).map(|tab| tab.session).collect();
+        match named.as_slice() {
+            [session] => Ok(*session),
+            [] => Err(format!("no session is named `{name}`")),
+            _ => Err(format!("{} sessions are named `{name}`: open its tab, and leave the name out", named.len())),
         }
     }
 
@@ -338,7 +449,7 @@ impl Chats {
         iter::once(String::from(CONSOLE_TITLE))
             .chain(sessions)
             .zip(0..)
-            .map(|(title, place)| Title { place, name: title, open: place == selected })
+            .map(|(title, place)| Title { place, name: title, open: place == selected, parting: Parting::at(place) })
             .collect()
     }
 

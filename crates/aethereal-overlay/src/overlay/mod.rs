@@ -9,6 +9,7 @@
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
 //! first shown ──> Listen to the link ──> ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the link (ADR-0057)
+//! first listed ──> Offer the chat's words, served by the overlay ──> Call ──> Chat to the link, Called
 //! ```
 
 mod chat;
@@ -18,6 +19,7 @@ mod stats;
 #[cfg(test)]
 mod tests;
 mod view;
+mod words;
 
 pub use console::{Calling, Offering};
 
@@ -41,7 +43,7 @@ use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
 use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
+use aethereal_tools::{Call, Called, Offer, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Shaping, Target, Viewport};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
 use chat::Linking;
@@ -143,6 +145,7 @@ impl Actor for Overlay {
         ShowTabs,
         ShowEvents,
         ShowAsk,
+        Call,
     ];
     type BeginSends = (
         Tells<Path<Window>, window::Subscribe>,

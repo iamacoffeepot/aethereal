@@ -5,7 +5,9 @@
 //! closes the console, and Tab completes the word before the caret. Up and Down, which the line passes, step its history, and Page
 //! Up and Page Down are handed to the scroll shown. The line's edits keep its text, and Enter runs it. With a session's
 //! tab open (ADR-0057), Escape empties the line, or on an empty one stops the session's turn; the tabs, a subagent's
-//! fold, and an ask's answers are pressed; and the grip is dragged to size the console.
+//! fold, and an ask's answers are pressed; and the grip is dragged to size the console. Control and Tab open the next
+//! tab, and with Shift the one before, round from the last to the first; Alt and a digit, 1 to 9, the tab at that
+//! place, Alt-1 the console's own, while the digit alone types into the line.
 
 use super::Overlay;
 use super::chat::Reports;
@@ -17,7 +19,7 @@ use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
 use aethereal_render::Renderer;
 use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
-use aethereal_ui::{Controls, Held, Key, View, take_in};
+use aethereal_ui::{Controls, First, Held, Key, View, take_in};
 
 /// The key that steps the overlay, by its place on the keyboard: the backtick, left of the 1 (ADR-0053).
 const STEP_KEY: &str = "Backquote";
@@ -25,15 +27,32 @@ const STEP_KEY: &str = "Backquote";
 /// The key that closes the console back to the band.
 const CLOSE_KEY: &str = "Escape";
 
-/// The key that completes the word before the caret.
+/// The key that completes the word before the caret, and with Control opens the next tab.
 const COMPLETE_KEY: &str = "Tab";
+
+/// The keys that, with Alt, open the tab at their place: the digits 1 to 9 of the keyboard's top row, Alt-1 the
+/// console's own tab.
+const TAB_KEYS: [&str; 9] = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"];
 
 impl Controls for Overlay {
     type Sends = OverlaySends;
 
     const HOTKEYS: &'static [&'static str] = &[STEP_KEY];
 
-    const FIRST: &'static [&'static str] = &[STEP_KEY, CLOSE_KEY, COMPLETE_KEY];
+    const FIRST: &'static [First] = &[
+        First::Key(STEP_KEY),
+        First::Key(CLOSE_KEY),
+        First::Key(COMPLETE_KEY),
+        First::Alt(TAB_KEYS[0]),
+        First::Alt(TAB_KEYS[1]),
+        First::Alt(TAB_KEYS[2]),
+        First::Alt(TAB_KEYS[3]),
+        First::Alt(TAB_KEYS[4]),
+        First::Alt(TAB_KEYS[5]),
+        First::Alt(TAB_KEYS[6]),
+        First::Alt(TAB_KEYS[7]),
+        First::Alt(TAB_KEYS[8]),
+    ];
 
     /// The console takes every key of the window while it is open (ADR-0053), though a press on its panel moved focus
     /// off its line until the next `Tick` gives it back.
@@ -43,9 +62,15 @@ impl Controls for Overlay {
 
     fn key(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, key: Key) -> Result<(), Fault> {
         let console = self.stop.console();
+        let switching = console && key.held.control;
+        let choosing = console && key.held.alt;
         match key.code.as_str() {
             STEP_KEY => self.step(turn),
             CLOSE_KEY if console => self.escape(turn),
+            COMPLETE_KEY if switching => {
+                let chat = self.chats.step(key.held.shift);
+                self.tell(turn, chat)
+            }
             COMPLETE_KEY if console => {
                 let (caret, columns) = (self.caret(), self.columns());
                 self.console.complete(caret, columns);
@@ -60,6 +85,7 @@ impl Controls for Overlay {
                 Ok(())
             }
             "PageUp" | "PageDown" if console => self.scroll(&key, turn),
+            digit if choosing => self.choose_by(turn, digit),
             _ => Ok(()),
         }
     }
@@ -116,6 +142,16 @@ impl Overlay {
         take_in(self, heard, turn)?;
 
         Ok(())
+    }
+
+    /// Opens the tab at the place of `digit` among the tab keys, the console's own at the first: nothing for any other
+    /// key, or a place past the last tab.
+    fn choose_by(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, digit: &str) -> Result<(), Fault> {
+        let Some(place) = TAB_KEYS.iter().position(|code| *code == digit) else {
+            return Ok(());
+        };
+
+        self.choose(turn, u32::try_from(place).unwrap_or(u32::MAX))
     }
 
     /// Steps to the next stop: shown, it hears each `Tick`, each frame's statistics, and the GPU's times; hidden, it

@@ -3,7 +3,8 @@
 //! fold opens or closes, or the engine learns which lines are its own.
 //!
 //! ```text
-//! Numbered ──> read ──> by number ──> rows: each line tagged [engine], its own full and others' dimmed
+//! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name:id >` at another
+//!                                     engine, on its own shade, its own full and others' dimmed
 //!                                     a subagent's events under the tool call that started it, folded until opened
 //!                                     compact_boundary a divider with its tokens; a turn begun with no line marked
 //! ```
@@ -12,12 +13,19 @@
 //! only the rows in view.
 
 use super::read::{Read, Told, Under, read};
-use crate::colour::{BONE, BRICK, LICHEN, OCHRE, STONE};
+use crate::colour::{BONE, BRICK, CONSOLE_OPACITY, LICHEN, OCHRE, SLATE_BLUE, SLATE_RAISED, STONE};
 use aethereal_data::Plain;
-use aethereal_render::text::Colour;
-use aethereal_sessions::{Numbered, Speaker};
+use aethereal_render::text::{Colour, Run};
+use aethereal_sessions::{Numbered, Speaker, engine_name};
 use aethereal_ui::markdown::{Blocks, Document};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// How opaque the tag of a line typed at another engine is drawn: dimmed, as the line beside it is.
+const OTHER_TAG_OPACITY: f32 = 0.7;
+
+/// What an engine calls itself in a transcript: the lines typed at it, once it knows its own id. Every other engine is
+/// called by its name.
+const LOCAL: &str = "local";
 
 /// How many rows one entry may show: past it, a part's key would run into the next entry's.
 const PARTS_PER_ENTRY: u64 = 1 << 16;
@@ -25,10 +33,12 @@ const PARTS_PER_ENTRY: u64 = 1 << 16;
 /// How a row's text is inked.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ink {
-    /// A line this engine's owner typed here.
+    /// A line this engine's owner typed here: a turn of the owner's.
     Own,
-    /// A line typed at another engine, or by a caller of the hub's tools: dimmed.
+    /// A line the owner typed at another engine, dimmed: a turn of the owner's too.
     Other,
+    /// A line written by a caller of the hub's tools, or the hub: dimmed, and not the owner's turn.
+    Written,
     /// A tool Claude called, or a command run.
     Tool,
     /// What a tool answered, a note of the hub's, a turn's end: faint.
@@ -51,6 +61,9 @@ pub struct Row {
 pub enum Look {
     /// A line of text, wrapped to the console, and how it is inked.
     Line { text: String, ink: Ink },
+    /// A line the owner typed, at this engine or another, `text`, after `tag`, who typed it and the prompt mark, which
+    /// is drawn as a label in a colour of its own; inked [`Ink::Own`] or [`Ink::Other`].
+    Turn { tag: String, text: String, ink: Ink },
     /// Text Claude wrote, as markdown: the part `part` of the entry numbered `number`.
     Reply { number: u64, part: u32 },
     /// The fold of the subagent the tool call `tool` started, saying how many of its events it holds, and whether it
@@ -72,7 +85,7 @@ impl Row {
     /// Its text: none for a reply, whose blocks are its own.
     pub fn text(&self) -> String {
         match &self.look {
-            Look::Line { text, .. } | Look::Fold { text, .. } => text.clone(),
+            Look::Line { text, .. } | Look::Turn { text, .. } | Look::Fold { text, .. } => text.clone(),
             Look::Reply { .. } => String::new(),
         }
     }
@@ -80,14 +93,43 @@ impl Row {
     /// The colour its text is drawn in.
     pub fn colour(&self) -> Colour {
         let swatch = match self.look {
-            Look::Line { ink: Ink::Own, .. } => BONE,
+            Look::Line { ink: Ink::Own, .. } | Look::Turn { ink: Ink::Own, .. } => BONE,
             Look::Line { ink: Ink::Tool, .. } => LICHEN,
             Look::Line { ink: Ink::Alert, .. } => BRICK,
             Look::Line { ink: Ink::Divider, .. } => OCHRE,
-            Look::Line { ink: Ink::Other | Ink::Faint, .. } | Look::Reply { .. } | Look::Fold { .. } => STONE,
+            Look::Line { ink: Ink::Other | Ink::Written | Ink::Faint, .. }
+            | Look::Turn { .. }
+            | Look::Reply { .. }
+            | Look::Fold { .. } => STONE,
         };
 
         swatch.opaque()
+    }
+
+    /// Whether it is a line the owner typed, at this engine or another: set apart from Claude's on a shade of its own.
+    pub const fn is_turn(&self) -> bool {
+        matches!(self.look, Look::Turn { .. })
+    }
+
+    /// Its tag, who typed it and the prompt mark, as text in its own colour: slate blue, a label's colour, apart from
+    /// the bone or stone of the text beside it, and dimmed, as its text is, for a line typed at another engine. None but
+    /// for one of the owner's lines.
+    pub fn tag_runs(&self) -> Vec<Run> {
+        match &self.look {
+            Look::Turn { tag, ink: Ink::Own, .. } => vec![Run::new(tag, SLATE_BLUE.opaque())],
+            Look::Turn { tag, .. } => vec![Run::new(tag, SLATE_BLUE.at(OTHER_TAG_OPACITY))],
+            Look::Line { .. } | Look::Reply { .. } | Look::Fold { .. } => Vec::new(),
+        }
+    }
+
+    /// What it is drawn on: the owner's lines a step lighter than the transcript, as a prompt's lines are in a
+    /// terminal, and the rest on the transcript's own.
+    pub fn background(&self) -> Colour {
+        if self.is_turn() {
+            SLATE_RAISED.at(CONSOLE_OPACITY)
+        } else {
+            Colour::CLEAR
+        }
     }
 }
 
@@ -274,11 +316,17 @@ impl Turned {
 /// The rows `told` shows, keyed from `key`, indented by `indent`, the lines said at `mine` inked as its own.
 fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32, said: Turned) -> Vec<Row> {
     let line = |text: String, ink: Ink| Row { key, look: Look::Line { text: format!("{indent}{text}"), ink } };
+    let turn = |by: Speaker, text: String| {
+        let tag = format!("{indent}{} >", who(by, mine));
+        Row { key, look: Look::Turn { tag, text, ink: inked(by, mine) } }
+    };
     match told {
-        Told::Said { by, text } => vec![line(format!("{} {text}", tag(*by)), inked(*by, mine))],
+        Told::Said { by: by @ Speaker::Engine { .. }, text } => vec![turn(*by, text.clone())],
+        Told::Said { by, text } => vec![line(format!("{} {text}", who(*by, mine)), inked(*by, mine))],
         Told::Ran { engine, line: typed, printed } => {
-            let ink = inked(Speaker::Engine { engine: *engine }, mine);
-            let mut rows = vec![line(format!("[{engine}] /{typed}"), ink)];
+            let by = Speaker::Engine { engine: *engine };
+            let ink = inked(by, mine);
+            let mut rows = vec![turn(by, format!("/{typed}"))];
             let blank = printed.trim().is_empty();
             if !blank {
                 let faint = if ink == Ink::Own {
@@ -290,14 +338,14 @@ fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32
             }
             rows
         }
-        Told::Interrupted { by } => vec![line(format!("{} interrupted the turn", tag(*by)), Ink::Alert)],
+        Told::Interrupted { by } => vec![line(format!("{} interrupted the turn", who(*by, mine)), Ink::Alert)],
         Told::Answered { ask, allow, by } => {
             let verb = if *allow {
                 "allowed"
             } else {
                 "denied"
             };
-            vec![line(format!("{} {verb} ask {ask}", tag(*by)), Ink::Faint)]
+            vec![line(format!("{} {verb} ask {ask}", who(*by, mine)), Ink::Faint)]
         }
         Told::Note { text, alert } => {
             let ink = if *alert {
@@ -341,19 +389,23 @@ fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32
     }
 }
 
-/// The tag a line said by `by` is shown with: its engine's id, or who else said it.
-fn tag(by: Speaker) -> String {
-    match by {
-        Speaker::Engine { engine } => format!("[{engine}]"),
-        Speaker::Caller => String::from("[tools]"),
-        Speaker::Hub => String::from("[hub]"),
+/// Who `by` is, as the engine that knows itself as `mine` names it: `local` for itself, another engine by its name,
+/// `mellow-snipe:4`, or who else wrote to the session.
+fn who(by: Speaker, mine: Mine) -> String {
+    match (by, mine) {
+        (Speaker::Engine { engine }, Mine::Engine(own)) if engine == own => String::from(LOCAL),
+        (Speaker::Engine { engine }, Mine::Engine(_) | Mine::Unknown) => engine_name(engine),
+        (Speaker::Caller, _) => String::from("[tools]"),
+        (Speaker::Hub, _) => String::from("[hub]"),
     }
 }
 
-/// How a line said by `by` is inked: in full when `mine` said it, and dimmed otherwise.
+/// How a line said by `by` is inked: in full when `mine` said it, dimmed at another engine, and dimmed and not the
+/// owner's turn when written by a caller of the hub's tools or the hub.
 fn inked(by: Speaker, mine: Mine) -> Ink {
     match (by, mine) {
         (Speaker::Engine { engine }, Mine::Engine(own)) if engine == own => Ink::Own,
-        _ => Ink::Other,
+        (Speaker::Engine { .. }, Mine::Engine(_) | Mine::Unknown) => Ink::Other,
+        (Speaker::Caller | Speaker::Hub, _) => Ink::Written,
     }
 }

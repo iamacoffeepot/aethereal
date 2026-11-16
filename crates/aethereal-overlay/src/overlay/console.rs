@@ -22,7 +22,7 @@ pub struct Calling {
     reports: Reports,
 }
 
-/// The overlay's own tools were offered to the engine's tools root.
+/// The overlay's own tools, or the chat's words, were offered to the engine's tools root.
 #[derive(Plain)]
 #[kind(name = "aether.overlay.offering")]
 pub struct Offering;
@@ -106,7 +106,8 @@ impl Handles<Answer<Called, Calling>> for Overlay {
     }
 }
 
-/// An offer of the overlay's own tools that the tools root refused is logged: the console works on without them.
+/// An offer of the overlay's own tools, or the chat's words, that the tools root refused is logged: the console works
+/// on without them.
 impl Handles<Answer<Offered, Offering>> for Overlay {
     type Sends = ();
 
@@ -117,7 +118,7 @@ impl Handles<Answer<Offered, Offering>> for Overlay {
     ) -> Result<(), Fault> {
         let held = answered == Answered::Yes(Offered::Yes);
         if !held {
-            turn.log(Level::Error, format_args!("the overlay's tools were not held: {answered:?}"));
+            turn.log(Level::Error, format_args!("tools the overlay offered were not held: {answered:?}"));
         }
 
         Ok(())

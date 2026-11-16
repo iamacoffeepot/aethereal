@@ -61,6 +61,32 @@ impl Key {
     }
 }
 
+/// A key a screen takes before its focused widget hears it ([`Controls::FIRST`](crate::Controls::FIRST)), by its place
+/// on the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum First {
+    /// The key, whatever is held with it.
+    Key(&'static str),
+    /// The key while Alt is held, Option on a Mac: a chord whose key alone types, so the key alone still reaches the
+    /// focus.
+    Alt(&'static str),
+}
+
+impl First {
+    /// Whether `key`, pressed, is this.
+    #[must_use]
+    pub fn takes(self, key: &Key) -> bool {
+        match self {
+            Self::Key(code) => key.code == code,
+            Self::Alt(code) => {
+                let chorded = key.held.alt;
+                let named = key.code == code;
+                chorded && named
+            }
+        }
+    }
+}
+
 /// The modifiers held, as the screen saw their keys go down and come up: Shift, Control, Alt (Option on a Mac), and
 /// Meta (Command on a Mac).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Plain)]

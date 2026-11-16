@@ -3,9 +3,9 @@ use aethereal_tools::{CommandLine, FlagsFault};
 
 #[test]
 fn every_sheet_s_flags_fit_its_input() {
-    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the overlay's tools would be missing from a
-    // running engine, and nothing would answer when they are called.
-    let sheets = OverlayTools::sheets();
+    // Catches a `#[flag]` an `Offer` refuses (`Offered::BadFlags`): the overlay's tools, or the chat's words, would be
+    // missing from a running engine, and nothing would answer when they are called.
+    let sheets: Vec<ToolSheet> = OverlayTools::sheets().into_iter().chain(chat_sheets()).collect();
     let refused: Vec<(&str, FlagsFault)> = sheets
         .iter()
         .filter_map(|sheet| CommandLine::of(sheet).err().map(|fault| (sheet.name.as_str(), fault)))

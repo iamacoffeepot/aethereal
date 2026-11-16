@@ -251,3 +251,64 @@ fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_kee
 
     Ok(())
 }
+
+/// The key at `code`, meaning `key`, let up.
+fn up(code: &str, key: &str) -> KeyEvent {
+    KeyEvent::KeyUp { code: String::from(code), key: String::from(key) }
+}
+
+/// Types `line` at the open console and enters it, its answer settled.
+fn entered(harness: &mut Harness<Bench>, on: WindowId, line: &str) -> Result<(), Unheard> {
+    key(harness, on, down("KeyN", "n"))?;
+    key(harness, on, typed(line))?;
+    key(harness, on, down("Enter", "Enter"))?;
+    run(harness, 3);
+
+    Ok(())
+}
+
+#[test]
+fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made_opens_as_it_lists()
+-> Result<(), Unheard> {
+    // Catches the chat's words served by an engine the hub has not shown the chat; words that are not the engine's
+    // tools, so the console's own tab cannot run them; Alt-1 that does not open the console's own tab, or types into
+    // the line; and a session made at the console left closed once it lists.
+    let (mut harness, held) = program()?;
+    let on = held.window.window();
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    let overlay = harness.root::<Overlay>();
+    let unknown = |harness: &mut Harness<Bench>| -> Result<usize, Unheard> {
+        let rows = harness.state(overlay)?.console.rows().filter(|row| row.text().contains("no tool is named `new`"));
+        Ok(rows.count())
+    };
+
+    entered(&mut harness, on, "new work")?;
+    let untrusted = unknown(&mut harness)?;
+    let old = Tab { session: 1, name: String::from("old"), state: State::Idle, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![old.clone()] })?;
+    run(&mut harness, 3);
+    key(&mut harness, on, down("AltLeft", "Alt"))?;
+    key(&mut harness, on, down("Digit1", "1"))?;
+    key(&mut harness, on, typed("1"))?;
+    key(&mut harness, on, up("AltLeft", "Alt"))?;
+    let chosen = harness.state(overlay)?.chats.open();
+    let line = String::from(harness.state(overlay)?.console.line());
+    entered(&mut harness, on, "new work")?;
+    let trusted = unknown(&mut harness)?;
+    let made = Tab { session: 2, name: String::from("work"), state: State::Starting, asking: 0 };
+    harness.tell(overlay, &ShowTabs { tabs: vec![old, made] })?;
+    run(&mut harness, 3);
+
+    assert_eq!(untrusted, 1, "an engine the hub shows no chat has no `new`");
+    assert_eq!(chosen, Open::Console, "Alt-1 opens the console's own tab");
+    assert_eq!(line, "", "Alt-1 types nothing into the line");
+    assert_eq!(trusted, 1, "once the hub lists the sessions, `new` is a tool the console's own tab runs");
+    assert_eq!(harness.state(overlay)?.chats.open(), Open::Session(2), "the session made opens as it lists");
+
+    Ok(())
+}

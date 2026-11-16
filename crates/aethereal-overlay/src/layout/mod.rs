@@ -67,9 +67,13 @@ pub const GAP_PIXELS: f32 = 4.0;
 /// The space above and below the prompt's line inside its strip, in logical pixels.
 pub const STRIP_PADDING_PIXELS: f32 = 6.0;
 
-/// How thick the lines between the band and the console, between the scrollback and the prompt's strip, between the
-/// band's two columns, and between the left column's sections are, in logical pixels.
+/// How thick the lines between the scrollback and the prompt's strip, between the band's two columns, between the left
+/// column's sections, and between the sessions' tabs are, in logical pixels.
 pub const DIVIDER_PIXELS: f32 = 1.0;
+
+/// How thick the seam between the band and the console is, drawn across the middle of its grip, in logical pixels:
+/// twice a divider, so the console's edge is the firmest line the overlay draws.
+pub const SEAM_PIXELS: f32 = 2.0;
 
 /// The size of the overlay's text, in logical pixels to the em: what reads on a window 1080 pixels tall.
 pub const TEXT_PIXELS: f32 = 14.0;

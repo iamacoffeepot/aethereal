@@ -1,11 +1,11 @@
 //! [`Grip`]: the line between the band and the console, which a press and a drag move to set how tall the console is
-//! (ADR-0057: The console is the chat). It draws its style's colour across the middle of its box, which is taller than
-//! the line, so the line is easy to take hold of, and while a press on it is held raises its `change` with each move,
-//! the logical pixels the pointer moved down since the last, as the window keeps sending moves to what a press reached
-//! (ADR-0055: capture).
+//! (ADR-0057: The console is the chat). It draws its style's colour across the middle of its box, a seam twice a
+//! divider's thickness, on its background; the box is taller than the line, so the line is easy to take hold of. While
+//! a press on it is held it raises its `change` with each move, the logical pixels the pointer moved down since the
+//! last, as the window keeps sending moves to what a press reached (ADR-0055: capture).
 
 use crate::chart::Fill;
-use crate::layout::DIVIDER_PIXELS;
+use crate::layout::SEAM_PIXELS;
 use crate::widgets::paint;
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
@@ -42,7 +42,7 @@ impl<E: Event> Widget for Grip<E> {
     }
 
     fn draw(&self, _: &Gripping, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
-        let thick = (DIVIDER_PIXELS * laid.scale).max(1.0);
+        let thick = (SEAM_PIXELS * laid.scale).max(1.0);
         let middle = laid.rect.min.y + laid.rect.height() / 2.0;
         let area = Rect2 {
             min: Vec2::new(laid.rect.min.x, (middle - thick / 2.0).round()),

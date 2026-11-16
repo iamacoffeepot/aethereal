@@ -1,10 +1,15 @@
 //! The overlay's own tools (ADR-0053: Commands are tools): `mark`, which pins a mark at this moment on the band's chart
 //! and in the scrollback, and `memory`, which prints the engine's memory against its limits with its largest guests
 //! and longest backlogs. The overlay offers them to the engine's tools root with a worker of their own, so a person at
-//! the console and an agent through the hub call them alike, and an agent's mark shows on the owner's screen.
+//! the console and an agent through the hub call them alike, and an agent's mark shows on the owner's screen. The
+//! chat's words, `new`, `stop`, and `archive` (`words`), the overlay serves itself, and only once the hub has shown it
+//! the chat.
 
 #[cfg(test)]
 mod tests;
+mod words;
+
+pub use words::{ARCHIVE, ArchiveSession, CHAT_WORDS, NEW, NewSession, STOP, StopSession, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
