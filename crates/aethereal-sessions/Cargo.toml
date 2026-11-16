@@ -1,0 +1,18 @@
+[package]
+name = "aethereal-sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The sessions capability: Claude sessions the hub runs in containers, and the client of Docker's Engine API over its Unix socket that makes them (ADR-0057)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+# Docker's requests and replies are JSON, written and read with the workspace's own JSON (ADR-0007).
+aethereal-data = { path = "../aethereal-data", features = ["json"] }
+aethereal-http = { path = "../aethereal-http" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tcp = { path = "../aethereal-tcp" }
+
+[lints]
+workspace = true

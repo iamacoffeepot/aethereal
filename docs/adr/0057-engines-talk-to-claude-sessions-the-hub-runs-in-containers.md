@@ -51,7 +51,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 - **One container per open session.** It runs `claude -p --input-format stream-json --output-format stream-json --verbose --model <model> --resume <id>` and lives while the session is open: a long build or a background subagent keeps running between turns.
 - **The container is built only from the capability's config.** Its image, its mounts, its limits, its network, and its label all come from `Sessions`' settings and the session's id. Nothing is passed through from a tool call, a frame, or Claude, so no one can ask for another image or another mount. Access to the socket is access to the build host, and this rule is what keeps it the hub's.
 - **What a container holds:**
-  - its own clone of the project, its own cargo target directory, and its own home, each a directory under the sessions root on the build host, bind-mounted;
+  - its own clone of the project, its own cargo target directory, and its own home, each a directory under the sessions root on the build host, bind-mounted. A bind is written as one of `HostConfig.Mounts`, its source and target apart, so no path is split at a colon, and Docker refuses a source that is missing rather than making it, so the capability makes each directory before the container;
   - the shared cargo registry and the build host's cargo lock, mounted;
   - the credential, from a file the capability's settings name, given as the container's environment; it never appears in an argument or a log;
   - the Claude Code binary, from the build host, read-only.
@@ -63,7 +63,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 ### The hub reaches Docker through its Unix socket
 
 - **Docker's Engine API is HTTP over `/var/run/docker.sock`.** The hub uses it directly, not the `docker` command:
-  - `POST /containers/create`, `/start`, `/stop`, and `DELETE /containers/{id}` to make and end a session's container;
+  - `POST /containers/create`, `/start`, `/stop`, `/kill`, `DELETE /containers/{id}`, and `GET /containers/{id}/json` to make, end, and inspect a session's container;
   - `GET /containers/json`, filtered by the label every session container carries, to count what runs;
   - `POST /containers/{id}/attach`, upgraded, for stdin and stdout;
   - `GET /containers/{id}/logs?since=` to catch up after the hub was away;
@@ -71,7 +71,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 - **Three things are built for it, each in the crate it belongs to:**
   - **a Unix transport** beside `Tcp`, a stream connection to a socket path;
   - **an HTTP/1.1 client in `aethereal-http`:** requests with `Content-Length` bodies, responses with `Content-Length` or chunked bodies, and an upgrade that hands the connection back as a raw stream. It is written for the subset Docker speaks, not taken from a crate;
-  - **a Docker client in the sessions capability:** the endpoints above, and the 8-byte stream frames of an attach and of logs.
+  - **a Docker client in the sessions capability's crate, `aethereal-sessions`:** a root, `Docker`, asked at its typed path. It answers typed requests (`Create` from a `ContainerSpec`, `Start`, `Stop`, `Kill`, `Remove`, `Inspect`, `List` by a label) and serves typed streams (`Attaching`, whose first part is the container's stdin and each later part its output; `Logging` from a time on; `Watching` the start, die, and OOM events of the containers that carry a label), each paced by its asker's credit, with the 8-byte stream frames of an attach and of logs taken apart into stdout and stderr. No request, path, or JSON of its asker's reaches Docker: a container is made only from a `ContainerSpec`, and named only by its id as Docker gives one, never by a name or a path. Each request goes on a connection of its own, which the client hangs up once its reply is read, as `Http`'s client takes one request at a time and an attach or the events hold theirs for hours. Every path names API version 1.44, so a daemon answers in the shapes the client reads. Its errors are named cases: not found (`404`), a conflict (`409`), another status, a socket missing or with nothing listening, and a malformed reply.
 - **The container's stdin and stdout belong to Docker, not to the hub.** A hub that restarts loses no turn: the container keeps working, and the hub re-attaches and reads what it missed from the logs.
 
 ### Sessions belong to the hub
@@ -129,7 +129,7 @@ console /line ──> the engine's own tool, now ──> Up::Ran ──> transcr
 - **The owner works from an engine:** one engine they sit in, sessions in its console, and work engines that sessions spawn, restart, and test without ever restarting the owner's.
 - **Sessions are contained.** A session's files, builds, and processes stay in its container and its directories, its share of the build host is capped, and two sessions never write the same tree.
 - **The hub is the one place sessions live.** A hub restart costs no turn, and an engine restart costs nothing.
-- **New crates and crate code:** the Unix transport, the HTTP client in `aethereal-http`, the sessions capability with its Docker client, and session tools in the hub's toolbox (`session_new`, `session_say`, `session_read`, `session_list`, `session_interrupt`, `session_archive`) so sessions are used and tested before the overlay has a chat.
+- **New crates and crate code:** the Unix transport, the HTTP client in `aethereal-http`, the sessions capability, `aethereal-sessions`, with its Docker client, and session tools in the hub's toolbox (`session_new`, `session_say`, `session_read`, `session_list`, `session_interrupt`, `session_archive`) so sessions are used and tested before the overlay has a chat.
 - **The link's revision changes,** so an old engine and a new hub refuse each other at `Hello`.
 - **The widget library has gaps the chat needs:** a text input of several lines, a clipboard (which the window does not have), markdown turned into widgets, images inline in the transcript, a scroll that stays cheap over a long transcript (the library's draw stage), and a surface for approvals.
 - **The build host's Docker keeps its data on the disk that holds the sessions root,** not the system disk, before sessions run.

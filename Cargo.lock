@@ -100,6 +100,7 @@ dependencies = [
  "aethereal-mcp",
  "aethereal-pace",
  "aethereal-process",
+ "aethereal-sessions",
  "aethereal-store",
  "aethereal-substrate",
  "aethereal-tcp",
@@ -260,6 +261,17 @@ dependencies = [
  "wesl",
  "wesl-core",
  "wgpu",
+]
+
+[[package]]
+name = "aethereal-sessions"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-http",
+ "aethereal-substrate",
+ "aethereal-tcp",
 ]
 
 [[package]]
