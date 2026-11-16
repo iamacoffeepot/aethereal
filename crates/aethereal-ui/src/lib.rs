@@ -148,7 +148,7 @@ pub use drag::{
 };
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{
-    Clip, Erased, Event, First, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Used, raising,
+    Clip, Erased, Event, First, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Selecting, Used, raising,
 };
 pub use screen::{
     Clipping, Copying, DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Pasting,
@@ -156,14 +156,14 @@ pub use screen::{
     Tipping, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
-pub use table::{Focus, Table};
+pub use table::{Dragging, Focus, Made, Mark, Selection, Table};
 pub use tree::{Composite, Element, ItemKey, KeyPath, MOST_DEPTH, Node, Segment, Tree, TreeRefused, whole, windows};
 #[doc(hidden)]
 pub use tree::{Look, same};
 pub use view::{Controls, Handed, Method, Took, View, take_in, unmatched};
 pub use widget::{
-    Anchor, Arrange, Axis, Draws, Inside, Jump, Keeps, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Sample, Side,
-    Slices, Span, Stand, Stateless, TextDraw, Tip, Widget,
+    Anchor, Arrange, Axis, Draws, Inside, Jump, Keeps, Laid, Layer, Lines, Offer, Offered, Opens, Quad, Reads, Sample,
+    Selected, Selects, Side, Slices, Span, Stand, Stateless, TextDraw, Tip, Widget,
 };
 
 /// What a screen's code names: the tree, the stock widgets, the style, the screen, and what its markup and its
@@ -175,8 +175,8 @@ pub mod prelude {
     };
     pub use crate::{
         Alignment, Border, CallArea, Called, Controls, Distribute, DragSource, DropTarget, Edges, Gap, Inside, ItemKey,
-        Key, KeyPath, Length, Node, Payload, Placed, Raised, Raises, Rows, Screen, Segment, SelfAlign, Shaping, Side,
-        Space, Style, Target, Track, Tree, View, Viewport, rgb, rgba,
+        Key, KeyPath, Length, Node, Payload, Placed, Raised, Raises, Rows, Screen, Segment, Selects, SelfAlign,
+        Shaping, Side, Space, Style, Target, Track, Tree, View, Viewport, rgb, rgba,
     };
 }
 
@@ -407,6 +407,12 @@ macro_rules! screen {
         }
     };
     (@take $field:ident, $this:ident, $heard:ident, $turn:ident) => {{
+        let mut $heard = $heard;
+        if $heard.copies_selection() {
+            $this.$field.building_selection();
+            let built = <Self as $crate::View>::view($this);
+            $this.$field.copy_selection(&built, &mut $heard);
+        }
         let took = $crate::take_in($this, $heard, $turn)?;
         if took == $crate::Took::Called {
             let tree = <Self as $crate::View>::view($this);

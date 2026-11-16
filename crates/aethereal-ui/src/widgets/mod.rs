@@ -15,7 +15,7 @@ mod selectable;
 mod slider;
 mod tabs;
 mod text;
-mod text_input;
+pub(crate) mod text_input;
 mod toggle;
 mod tooltip;
 
@@ -29,7 +29,7 @@ pub use popup::{Opened, Popped, Popup};
 pub use press::Press;
 pub use rich::{AtLink, Flow, Link, Reading, Rich};
 pub use scroll::{Drag, Scroll, Scrolling};
-pub use selectable::{SELECTION_STRENGTH, Selectable, Selecting};
+pub use selectable::{SELECTION_STRENGTH, Selectable};
 pub use slider::{Slider, Sliding};
 pub use tabs::{Header, Tab, Tabbing, Tabs};
 pub use text::Text;

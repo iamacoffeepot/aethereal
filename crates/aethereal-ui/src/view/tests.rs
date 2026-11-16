@@ -262,7 +262,8 @@ fn by_hand() -> Tree {
         Tabs { titles: vec![String::from("Wares"), String::from("Sold")], selected: 1, change: ShopEvent::OpenTab };
     let sold = node(Segment::Place(1), Tab { title: String::from("Sold") }, vec![text(Segment::Place(0), "sold")]);
     let window = Lines::Window { count: 2, at: vec![0] };
-    let scroll = Scroll { axis: Axis::Column, lines: window.clone(), keeps: Keeps::Offset };
+    let scroll =
+        Scroll { axis: Axis::Column, lines: window.clone(), keeps: Keeps::Offset, selects: Selects::Selectables };
     let input = TextInput::new("pe", ShopEvent::Search).submit(ShopEvent::Buy);
     let first = || text(Segment::Item(ItemKey::from(WareId(1))), "Apple");
     let children = vec![

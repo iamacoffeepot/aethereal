@@ -5,13 +5,17 @@
 //! so its lines break where they were measured to. A word too long to break measures wider than the width offered; such
 //! a text wraps at the offered width, and its box cuts the word. A rim around its glyphs draws outside them, so its box
 //! is padded by the rim's width on every side.
+//!
+//! Its text is shown, and selected within a scroll that selects every text (ADR-0056: Copy and paste).
 
+pub(super) mod read;
 #[cfg(test)]
 mod tests;
 
+use super::rich::Flow;
 use crate::fonts::{Measuring, Unmeasured};
 use crate::style::Style;
-use crate::widget::{Arrange, Draws, Laid, Offer, Offered, Stateless, TextDraw, Widget};
+use crate::widget::{Arrange, Draws, Laid, Offer, Offered, Reads, Stateless, TextDraw, Widget};
 use aethereal_math::Vec2;
 use aethereal_render::text::{Align, Measured, Outline, Run, Wrap};
 
@@ -131,7 +135,9 @@ impl Widget for Text {
         Vec2::new(0.0, line + pad)
     }
 
+    /// The part of it its screen's selection holds, beneath it, then it.
     fn draw(&self, _: &Stateless, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
+        read::highlight(&self.runs(style), Flow::Wraps, (style, laid), draws);
         let pad = rim(style, laid.scale);
         let width = pad.mul_add(-2.0, laid.content.width());
         let Ok((measured, wrap)) = self.fitted(style, draws.measuring(), Width::Within(width)) else {
@@ -156,6 +162,18 @@ impl Widget for Text {
             outline: scaled(style.outline, laid.scale),
             runs: self.runs(style),
         });
+    }
+
+    fn reads(&self) -> Reads {
+        Reads::Shown
+    }
+
+    fn read(&self) -> String {
+        self.text.clone()
+    }
+
+    fn boundary(&self, at: Vec2, style: &Style, laid: &Laid, measuring: &mut Measuring<'_>) -> u32 {
+        read::boundary(&self.runs(style), Flow::Wraps, at, (style, laid), measuring)
     }
 }
 

@@ -14,11 +14,13 @@
 
 mod draws;
 mod layer;
+mod reads;
 mod stand;
 
 pub use draws::{Draws, Quad, Sample, Slices, TextDraw};
 pub use draws::{Focused, Lit, Piece};
 pub use layer::{Inside, Layer, Opens, Side, Tip, anchor, anchors, contains};
+pub use reads::{Reads, Selected, Selects};
 pub use stand::{Anchor, Jump, Keeps, Span, Stand};
 
 use crate::fonts::Measuring;
@@ -209,6 +211,31 @@ pub trait Widget: Debug + PartialEq + Send + 'static {
     fn composing(&self, state: &mut Self::State, text: &str, caret: u32, input: &mut Input<'_, '_>) {
         let _ = (state, text, caret, input);
     }
+
+    /// How its text is read (ADR-0056: Copy and paste): whether its screen's selection takes it in, and where. By
+    /// default it has none.
+    fn reads(&self) -> Reads {
+        Reads::Nothing
+    }
+
+    /// Its text as read: what its screen's selection's offsets count in it and a copy writes of it, for a widget that
+    /// reads.
+    fn read(&self) -> String {
+        String::new()
+    }
+
+    /// The boundary of its read text nearest `at`, a byte offset into it, as it is drawn at `laid` styled `style`, both
+    /// in its screen's pixels: on the line under `at`, or the first or last line past them. For a widget that reads.
+    fn boundary(&self, at: Vec2, style: &Style, laid: &Laid, measuring: &mut Measuring<'_>) -> u32 {
+        let _ = (at, style, laid, measuring);
+
+        0
+    }
+
+    /// What its reader selects of what it holds: for a widget that arranges its children as a scroll.
+    fn selects(&self) -> Selects {
+        Selects::Selectables
+    }
 }
 
 /// How a widget lays its children out.
@@ -383,6 +410,14 @@ pub trait Built: Debug + Send {
 
     /// Takes in what the input method is composing, its state read from and written back to `state`.
     fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>);
+    /// How its text is read.
+    fn reads(&self) -> Reads;
+    /// Its text as read.
+    fn read(&self) -> String;
+    /// The boundary of its read text nearest `at`.
+    fn boundary(&self, at: Vec2, style: &Style, laid: &Laid, measuring: &mut Measuring<'_>) -> u32;
+    /// What its reader selects of what it holds.
+    fn selects(&self) -> Selects;
 }
 
 /// `W`'s state read from `state`, the bytes its table keeps: one that does not read, which only a table not kept by
@@ -508,5 +543,21 @@ impl<W: Widget> Built for W {
 
     fn composing(&self, state: &mut Vec<u8>, text: &str, caret: u32, input: &mut Input<'_, '_>) {
         changed::<W, ()>(state, |state| Widget::composing(self, state, text, caret, input));
+    }
+
+    fn reads(&self) -> Reads {
+        Widget::reads(self)
+    }
+
+    fn read(&self) -> String {
+        Widget::read(self)
+    }
+
+    fn boundary(&self, at: Vec2, style: &Style, laid: &Laid, measuring: &mut Measuring<'_>) -> u32 {
+        Widget::boundary(self, at, style, laid, measuring)
+    }
+
+    fn selects(&self) -> Selects {
+        Widget::selects(self)
     }
 }

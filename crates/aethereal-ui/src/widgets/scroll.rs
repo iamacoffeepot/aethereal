@@ -10,6 +10,11 @@
 //! middle there and drags it. With focus, or with a widget within it focused, Page Up and Page Down slide it a box's
 //! length, and Home and End to its ends.
 //!
+//! Its reader selects across what it holds (ADR-0056: Copy and paste): the texts that are selectable wherever they
+//! stand, or, as `selects` says, every text, a press on a panel within it starting the selection at the text under the
+//! pointer. A drag past its view's edges slides it on, and Control or Command with A selects all it holds, with C
+//! copies the selection, while it or a widget within it has focus.
+//!
 //! Given `items`, it builds only the items that can show, as it declares ([`Widget::WINDOWS`]): its lines are
 //! [`Lines::Window`], made by [`Rows`](crate::Rows) as the view asks the screen which items to build, and its bar is
 //! by item.
@@ -18,15 +23,16 @@ use super::press::ring;
 use crate::fonts::Measuring;
 use crate::input::{Hears, Input, Key, Pointing, Used};
 use crate::style::{Edges, Style};
-use crate::widget::{Arrange, Axis, Draws, Keeps, Laid, Lines, Quad, Sample, Stand, Widget};
+use crate::widget::{Arrange, Axis, Draws, Keeps, Laid, Lines, Quad, Sample, Selects, Stand, Widget};
 use aethereal_data::Plain;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::draw_list::Pointer;
 use aethereal_render::text::Colour;
 use aethereal_window::{Button, Cursor};
 
-/// The keys that slide a scroll with focus, or around a focused widget.
-const PAGES: &[&str] = &["PageUp", "PageDown", "Home", "End"];
+/// The keys that slide a scroll with focus, or around a focused widget, and those that select all it holds and copy the
+/// selection.
+const HEARS: &[&str] = &["PageUp", "PageDown", "Home", "End", "KeyA", "KeyC"];
 
 /// How wide a scroll's bar is, in logical pixels.
 const BAR: f32 = 8.0;
@@ -41,13 +47,14 @@ const TRACK_STRENGTH: f32 = 0.15;
 const THUMB_STRENGTH: f32 = 0.5;
 const DRAGGED_STRENGTH: f32 = 0.8;
 
-/// What it holds, along `axis`, slid through: its children, or, as `lines` says, the items of a list it built; and
-/// where it keeps to as what it holds grows, as `keeps` says.
+/// What it holds, along `axis`, slid through: its children, or, as `lines` says, the items of a list it built; where it
+/// keeps to as what it holds grows, as `keeps` says; and what its reader selects of what it holds, as `selects` says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scroll {
     pub axis: Axis,
     pub lines: Lines,
     pub keeps: Keeps,
+    pub selects: Selects,
 }
 
 /// Where a scroll stands among what it holds, and whether a press on its bar drags its thumb.
@@ -78,13 +85,13 @@ impl Scroll {
     /// A scroll down through its children.
     #[must_use]
     pub const fn down() -> Self {
-        Self { axis: Axis::Column, lines: Lines::Whole, keeps: Keeps::Offset }
+        Self { axis: Axis::Column, lines: Lines::Whole, keeps: Keeps::Offset, selects: Selects::Selectables }
     }
 
     /// A scroll across through its children.
     #[must_use]
     pub const fn across() -> Self {
-        Self { axis: Axis::Row, lines: Lines::Whole, keeps: Keeps::Offset }
+        Self { axis: Axis::Row, lines: Lines::Whole, keeps: Keeps::Offset, selects: Selects::Selectables }
     }
 
     /// It, keeping to its end while it stands there.
@@ -202,6 +209,10 @@ impl Widget for Scroll {
         scrolling.stand = stand;
     }
 
+    fn selects(&self) -> Selects {
+        self.selects
+    }
+
     /// Its bar, faint, and its thumb over it, while it holds more than it shows; and its focus ring.
     fn draw(&self, scrolling: &Scrolling, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
         let bar = self.bar(style, laid);
@@ -243,7 +254,7 @@ impl Widget for Scroll {
     }
 
     fn hears(&self) -> Hears {
-        Hears::Keys(PAGES)
+        Hears::Keys(HEARS)
     }
 
     fn pointed(&self, scrolling: &mut Scrolling, pointing: Pointing, input: &mut Input<'_, '_>) {
@@ -276,7 +287,8 @@ impl Widget for Scroll {
     }
 
     /// Page Up and Page Down slide it a content box's length back and on, from where its last layout settled it; Home
-    /// to its first item and End to its end.
+    /// to its first item and End to its end; and Control or Command with A selects all it holds, with C copies the
+    /// selection.
     fn key(&self, scrolling: &mut Scrolling, key: &Key, input: &mut Input<'_, '_>) -> Used {
         let page = self.axis.along(input.laid().content.size());
         scrolling.stand = match key.code.as_str() {
@@ -284,7 +296,7 @@ impl Widget for Scroll {
             "PageUp" => scrolling.stand.slid(-page),
             "Home" => Stand::Item(0),
             "End" => scrolling.stand.ended(),
-            _ => return Used::Passed,
+            _ => return input.selection_key(key),
         };
 
         Used::Used

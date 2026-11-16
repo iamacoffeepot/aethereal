@@ -10,15 +10,19 @@
 //! A run that is a link shows the hand while the pointer is over it, and a press and a release of the main button both
 //! on it raise `link` with its target. Which run the pointer is over is found by laying the text out as it was drawn,
 //! each run's colour standing in for its place among the runs.
+//!
+//! Its text is shown, and selected within a scroll that selects every text (ADR-0056: Copy and paste): a press on a
+//! link follows it, and a press on the panel around the rest of its text selects there.
 
 #[cfg(test)]
 mod tests;
 
+use super::text::read::{self, joined};
 use super::text::{Width, fitted, rim, scaled};
 use crate::fonts::{Measuring, Unmeasured};
 use crate::input::{Event, Input, Pointing, Raised, Raises, Raising};
 use crate::style::Style;
-use crate::widget::{Arrange, Draws, Laid, Offer, Offered, TextDraw, Widget};
+use crate::widget::{Arrange, Draws, Laid, Offer, Offered, Reads, TextDraw, Widget};
 use aethereal_data::Plain;
 use aethereal_math::Vec2;
 use aethereal_render::draw_list::Pointer;
@@ -193,7 +197,9 @@ impl<E: Event> Widget for Rich<E> {
         Vec2::new(0.0, line + pad)
     }
 
+    /// The part of it its screen's selection holds, beneath it, then its runs.
     fn draw(&self, _: &Reading, style: &Style, laid: &Laid, draws: &mut Draws<'_, '_>) {
+        read::highlight(&self.runs, self.flow, (style, laid), draws);
         let pad = rim(style, laid.scale);
         let width = pad.mul_add(-2.0, laid.content.width());
         let Ok((measured, wrap)) = self.fitted(style, draws.measuring(), Width::Within(width)) else {
@@ -255,5 +261,17 @@ impl<E: Event> Widget for Rich<E> {
             Pointing::Left => *reading = Reading::default(),
             Pointing::Entered | Pointing::Down { .. } | Pointing::Up { .. } => {}
         }
+    }
+
+    fn reads(&self) -> Reads {
+        Reads::Shown
+    }
+
+    fn read(&self) -> String {
+        joined(&self.runs)
+    }
+
+    fn boundary(&self, at: Vec2, style: &Style, laid: &Laid, measuring: &mut Measuring<'_>) -> u32 {
+        read::boundary(&self.runs, self.flow, at, (style, laid), measuring)
     }
 }

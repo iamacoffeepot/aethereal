@@ -8,8 +8,10 @@
 //! lengths. The view asks [`Screen::rows`] for the window of the list at a key path: from the item the scroll stands
 //! at, found by its key near where it was, that many items on, and [`MARGIN`] more each way, so Tab finds the next
 //! item built and a turn of the wheel shows no gap; or the last that many, standing at its end. The focused item is
-//! built wherever it stands, so it keeps its focus and its state while it is scrolled out of view. A scroll never laid
-//! out builds the item it stands at, and the next view builds the window its layout bounds.
+//! built wherever it stands, so it keeps its focus and its state while it is scrolled out of view, and so are the items
+//! the screen's selection's two ends stand in, so tree order places them; a view built to copy the selection builds
+//! every item between them (ADR-0056: Copy and paste). A scroll never laid out builds the item it stands at, and the
+//! next view builds the window its layout bounds.
 //!
 //! ```text
 //! view ──> Screen::rows(list, scroll, count, key) ──> Rows: the window, from where it stands and its last layout
@@ -31,9 +33,10 @@ mod window;
 pub(super) use found::windows;
 pub(super) use window::{Window, Windowing};
 
+use super::selection::Building;
 use super::{Fresh, Last, Screen, Worked};
 use crate::input::Used;
-use crate::table::Focus;
+use crate::table::{Focus, Made, Mark, Selection};
 use crate::tree::{Element, ItemKey, KeyPath, Node, Segment};
 use crate::widget::{Arrange, Axis, Jump, Keeps, Lines, Stand};
 use aethereal_math::{Rect2, Vec2};
@@ -130,8 +133,9 @@ fn bounded(from: Origin, count: u32, view: f32, least: f32) -> (u32, u32) {
 impl Screen {
     /// What the list of `count` items, each keyed as `key` says by its place, in `scroll`, the scroll at `list`, builds
     /// in this view: the items that can show from where it stands, by its last layout, with [`MARGIN`] more each way;
-    /// the item it stands at before it was ever laid out; every item while it fails a condition of windowing; and,
-    /// wherever it stands, the item that has the screen's focus or holds the widget that has.
+    /// the item it stands at before it was ever laid out; every item while it fails a condition of windowing; wherever
+    /// they stand, the item that has the screen's focus or holds the widget that has, and those the screen's selection's
+    /// ends stand in; and, as the view is built to copy the selection, every item between its ends.
     #[must_use]
     pub fn rows<E: Element>(&self, list: &KeyPath, scroll: &E, count: usize, key: impl Fn(usize) -> ItemKey) -> Rows {
         let count = place(count);
@@ -172,16 +176,24 @@ impl Screen {
             Focus::On(path) => path.item_of(list),
             Focus::Nowhere => None,
         };
-        if let Some(focused) = focused {
-            let near = found.and_then(|window| window.place_of(Segment::Item(focused))).unwrap_or(0);
-            let at = locate(Segment::Item(focused), near, count, &keyed);
-            let held = keyed(at) == Segment::Item(focused);
-            let outside = at < first || at >= end;
-            let built_beside = held && outside;
-            if built_beside {
+        let marked: Vec<ItemKey> = match self.table.selection() {
+            Selection::Made(made) => made.marked().filter_map(|path| path.item_of(list)).collect(),
+            Selection::Nothing => Vec::new(),
+        };
+        for key in focused.into_iter().chain(marked) {
+            if let Some(at) = held(key, found, count, &keyed) {
                 let before = places.partition_point(|place| *place < at);
-                places.insert(before, at);
+                let built = places.get(before) == Some(&at);
+                if !built {
+                    places.insert(before, at);
+                }
             }
+        }
+        if let (Building::Selection, Selection::Made(made)) = (self.building, self.table.selection()) {
+            let between = between(made, list, (found, count), &keyed);
+            places.extend(between);
+            places.sort_unstable();
+            places.dedup();
         }
 
         Rows { count, places, at: Vec::new(), built: Vec::new() }
@@ -232,7 +244,7 @@ impl Screen {
     /// Slides the scroll at `path` by `by` pixels along its axis, from where its last layout settled it, within what it
     /// holds: how far it moved, none when it is not a scroll or is at its end that way. A slide past the items it built
     /// goes on from them at the next view. A move lays the screen out at the next `Prepare`.
-    fn slide(&mut self, path: &KeyPath, by: f32) -> f32 {
+    pub(super) fn slide(&mut self, path: &KeyPath, by: f32) -> f32 {
         let Worked { last: Last::Built(tree), windows, .. } = &*self.unkept else {
             return 0.0;
         };
@@ -255,7 +267,7 @@ impl Screen {
     }
 
     /// The axis of the scroll at `path` in the last tree built, if a scroll stands there.
-    fn scrolls(&self, path: &KeyPath) -> Option<Axis> {
+    pub(super) fn scrolls(&self, path: &KeyPath) -> Option<Axis> {
         let Last::Built(tree) = &self.unkept.last else {
             return None;
         };
@@ -302,6 +314,43 @@ impl Screen {
             rect = Rect2 { min: rect.min - axis.vector(moved), max: rect.max - axis.vector(moved) };
         }
     }
+}
+
+/// The places of every item of the list at `list`, of `count`, each keyed as `keyed` says, between the ends of
+/// `made`, when it runs within the scroll there: from the first item, or the one its start stands in, to the last,
+/// or the one its end stands in. None when it runs within another.
+fn between(
+    made: &Made,
+    list: &KeyPath,
+    (found, count): (Option<&Window>, u32),
+    keyed: &impl Fn(u32) -> Segment,
+) -> Vec<u32> {
+    let ours = made.scope == *list;
+    let empty = count == 0;
+    if !ours || empty {
+        return Vec::new();
+    }
+    let place = |mark: &Mark, missing: u32| match mark {
+        Mark::Start => 0,
+        Mark::End => count - 1,
+        Mark::At { path, .. } => path.item_of(list).and_then(|key| held(key, found, count, keyed)).unwrap_or(missing),
+    };
+    let (anchor, caret) = (place(&made.anchor, 0), place(&made.caret, count - 1));
+
+    (anchor.min(caret)..=anchor.max(caret)).collect()
+}
+
+/// The place in a list of `count`, each keyed as `keyed` says, of the item keyed `key`, looked for outward from where the
+/// last layout found it, as `found` says, or the list's start: none when no item is keyed so.
+fn held(key: ItemKey, found: Option<&Window>, count: u32, keyed: &impl Fn(u32) -> Segment) -> Option<u32> {
+    if count == 0 {
+        return None;
+    }
+    let near = found.and_then(|window| window.place_of(Segment::Item(key))).unwrap_or(0);
+    let at = locate(Segment::Item(key), near, count, keyed);
+    let keyed_so = keyed(at) == Segment::Item(key);
+
+    keyed_so.then_some(at)
 }
 
 /// The place in a list of `count` of the item keyed `key`, looked for from `near` outward: `near`, within the list,

@@ -27,7 +27,7 @@
 //! A text its screen sets that is not its own last edit, a line recalled or completed, puts its caret at the text's
 //! end. Undoing an edit is left out: the input keeps no history of its edits to step back through.
 
-pub(super) mod edit;
+pub mod edit;
 mod shown;
 #[cfg(test)]
 mod tests;

@@ -90,8 +90,8 @@ impl Typing {
         let mut measuring = fonts.measuring(&mut texts, 1.0);
         let style = style();
         let mut raised = Vec::new();
-        let mut clips = Vec::new();
-        let mut input = Input::new(&style, self.laid, &mut measuring, (&mut raised, &mut clips));
+        let (mut clips, mut selecting) = (Vec::new(), Vec::new());
+        let mut input = Input::new(&style, self.laid, &mut measuring, (&mut raised, &mut clips, &mut selecting));
         let took = take(&self.input, &mut self.editing, &mut input);
         for event in raised.into_iter().filter_map(|event| event.typed::<Ev>().ok()) {
             if let Raised::Text(Ev::Changed, text) = &event {

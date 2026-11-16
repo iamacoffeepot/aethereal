@@ -1,15 +1,19 @@
 //! A screen's widget table (ADR-0056: Widget state is kept by key): each widget's state, under its key path, made with
 //! `Default` the first time the key appears, kept across rebuilds, and dropped when the key goes. No widget makes or
 //! frees its own. It also keeps which widget has the screen's focus, at most one, by its key path, cleared when that
-//! key goes or its widget can no longer hold focus (ADR-0056: Focus and keys).
+//! key goes or its widget can no longer hold focus (ADR-0056: Focus and keys); and the screen's selection, cleared when
+//! the widget it runs within or a text an end of it stands at goes (ADR-0056: Copy and paste).
 //!
 //! The table is part of the screen's state, so it moves onto new code with the screen (ADR-0054). Each state is kept
 //! as its bytes beside its kind, so a table of every widget's state is one plain value, and a state whose type
 //! changed, a different widget at the same key or the same widget on new code whose state's layout changed, is made
 //! anew rather than read as something else (ADR-0006).
 
+mod selection;
 #[cfg(test)]
 mod tests;
+
+pub use selection::{Dragging, Made, Mark, Selection};
 
 use crate::tree::{Flat, KeyPath};
 use crate::widget::Widget;
@@ -19,11 +23,13 @@ use core::mem;
 /// The most bytes a state read out of the table may decode into.
 const MOST_STATE_BYTES: usize = 64 * 1024;
 
-/// Each widget's state, by its key path, in the paths' order, and the widget that has the screen's focus.
+/// Each widget's state, by its key path, in the paths' order, the widget that has the screen's focus, and what the
+/// screen's reader selected.
 #[derive(Debug, Clone, PartialEq, Default, Plain)]
 pub struct Table {
     kept: Vec<Kept>,
     focus: Focus,
+    selection: Selection,
 }
 
 /// Which widget has a screen's focus: none until one is pressed or tabbed to.
@@ -57,8 +63,13 @@ impl Table {
     /// Keeps a state for each node of `flat`, a tree's nodes: a state kept under the node's path, of its widget's
     /// state's kind, stays as it is, moved and not copied; any other is made with `Default`; and a state no node's path
     /// names is dropped. A table that keeps each node's state already is left as it is.
-    /// Focus held by a path no node names, or by a widget that cannot hold it, is cleared.
+    /// Focus held by a path no node names, or by a widget that cannot hold it, is cleared, and so is a selection whose
+    /// scope or a text an end of it stands at no node names.
     pub(crate) fn refresh(&mut self, flat: &[Flat<'_>]) {
+        let selected = self.selection.holds(|path| flat.iter().any(|flat| flat.path == path));
+        if !selected {
+            self.selection = Selection::Nothing;
+        }
         if let Focus::On(path) = &self.focus {
             let holds = flat.iter().any(|flat| flat.path == path && flat.node.widget().focusable());
             if !holds {
@@ -175,6 +186,17 @@ impl Table {
     /// Gives the screen's focus to `focus`.
     pub(crate) fn focus_on(&mut self, focus: Focus) {
         self.focus = focus;
+    }
+
+    /// What the screen's reader selected.
+    #[must_use]
+    pub const fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    /// Keeps `selection` as what the screen's reader selected.
+    pub(crate) fn select(&mut self, selection: Selection) {
+        self.selection = selection;
     }
 
     /// The state of the widget `W` kept under `path`: none when no state is kept there, or the one kept is another

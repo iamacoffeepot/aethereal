@@ -147,27 +147,41 @@ pub enum Clip {
     Paste,
 }
 
+/// What a widget asks of its screen's selection (ADR-0056: Copy and paste).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selecting {
+    /// Select all the scroll at or around the widget holds, or the whole widget outside a scroll.
+    All,
+    /// Write the selection, as it stands, to the clipboard.
+    Copy,
+}
+
 /// What a widget is given as input reaches it: its style; where layout put it, in its own coordinates, its border box
-/// from `0, 0`; the fonts its text measures by; where the events it raises go; and where what it asks of the clipboard
-/// goes.
+/// from `0, 0`; the fonts its text measures by; where the events it raises go; where what it asks of the clipboard
+/// goes; and where what it asks of its screen's selection goes.
 pub struct Input<'input, 'fonts> {
     style: &'input Style,
     laid: Laid,
     measuring: &'input mut Measuring<'fonts>,
     raised: &'input mut Vec<Raised<Erased>>,
     clips: &'input mut Vec<Clip>,
+    selecting: &'input mut Vec<Selecting>,
 }
 
 impl<'input, 'fonts> Input<'input, 'fonts> {
     /// Input to a widget styled `style`, laid at `laid` in its screen's pixels, measuring with `measuring`, raising into
-    /// `raised`, and asking the clipboard into `clips`.
+    /// `raised`, asking the clipboard into `clips`, and its screen's selection into `selecting`.
     pub(crate) fn new(
         style: &'input Style,
         laid: Laid,
         measuring: &'input mut Measuring<'fonts>,
-        (raised, clips): (&'input mut Vec<Raised<Erased>>, &'input mut Vec<Clip>),
+        (raised, clips, selecting): (
+            &'input mut Vec<Raised<Erased>>,
+            &'input mut Vec<Clip>,
+            &'input mut Vec<Selecting>,
+        ),
     ) -> Self {
-        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised, clips }
+        Self { style, laid: laid.relative_to(laid.rect.min), measuring, raised, clips, selecting }
     }
 
     /// Its style, resolved from the style its markup names.
@@ -208,5 +222,29 @@ impl<'input, 'fonts> Input<'input, 'fonts> {
     /// it stands when the read is answered, while it still has its screen's focus.
     pub fn paste(&mut self) {
         self.clips.push(Clip::Paste);
+    }
+
+    /// Selects all the scroll at or around the widget holds, or the whole widget outside a scroll, once the input is
+    /// taken in.
+    pub fn select_all(&mut self) {
+        self.selecting.push(Selecting::All);
+    }
+
+    /// Writes its screen's selection, as it stands, to the host's clipboard, once the input is taken in.
+    pub fn copy_selection(&mut self) {
+        self.selecting.push(Selecting::Copy);
+    }
+
+    /// Takes in `key` as the keys of a text read or a scroll of them take it: Control or Command with A selects all, and
+    /// with C copies the screen's selection; any other key is passed.
+    pub fn selection_key(&mut self, key: &Key) -> Used {
+        let command = key.held.command();
+        match key.code.as_str() {
+            "KeyA" if command => self.select_all(),
+            "KeyC" if command => self.copy_selection(),
+            _ => return Used::Passed,
+        }
+
+        Used::Used
     }
 }

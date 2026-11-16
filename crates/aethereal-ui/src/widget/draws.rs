@@ -5,17 +5,19 @@
 use crate::fonts::Measuring;
 use crate::pixels::PictureId;
 use crate::style::Edges;
+use crate::widget::Selected;
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::text::{Align, Colour, Font, Outline, Run, Wrap};
 use aethereal_render::texture::TextureId;
 
-/// Where a widget's draws go, in order, with the fonts it measures its text by, whether it has its screen's focus, and
-/// whether a drag its screen can drop on it is over it.
+/// Where a widget's draws go, in order, with the fonts it measures its text by, whether it has its screen's focus,
+/// whether a drag its screen can drop on it is over it, and what part of its text its screen's selection holds.
 pub struct Draws<'draws, 'fonts> {
     pieces: &'draws mut Vec<Piece>,
     measuring: &'draws mut Measuring<'fonts>,
     focus: Focused,
     lit: Lit,
+    selected: Selected,
 }
 
 /// Whether a widget being drawn has its screen's focus.
@@ -41,7 +43,19 @@ impl<'draws, 'fonts> Draws<'draws, 'fonts> {
         focus: Focused,
         lit: Lit,
     ) -> Self {
-        Self { pieces, measuring, focus, lit }
+        Self { pieces, measuring, focus, lit, selected: Selected::Nothing }
+    }
+
+    /// It, for a widget whose text its screen's selection holds as `selected` says.
+    #[must_use]
+    pub(crate) const fn selecting(self, selected: Selected) -> Self {
+        Self { selected, ..self }
+    }
+
+    /// What part of the widget's text its screen's selection holds, which a text that reads draws beneath it.
+    #[must_use]
+    pub const fn selected(&self) -> Selected {
+        self.selected
     }
 
     /// Whether the widget has its screen's focus, as a text input shows its caret only while it has.

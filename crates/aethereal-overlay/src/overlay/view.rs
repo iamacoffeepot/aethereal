@@ -215,7 +215,7 @@ aethereal_ui::style! {
     /// taken hold of.
     pub grip { height: Length::Pixels(GRIP_PIXELS) }
     /// The scrollback: the rest of the console above the prompt's strip, on the sheet, a step lighter than the band, its
-    /// rows inside its padding and its bar, dim, at its right edge.
+    /// rows inside its padding and its bar, dim, at its right edge, as a selection across its rows is drawn.
     pub scrollback { grow: 1.0, padding: padded(PADDING_PIXELS, PADDING_PIXELS, PADDING_PIXELS, GAP_PIXELS) }
     /// One row of the scrollback, across it: on the sheet, or the raised band of a line the owner entered.
     pub printed_row { width: Length::Share(1.0) }
@@ -224,8 +224,8 @@ aethereal_ui::style! {
     /// One row of a transcript, across it, at least a line of text tall, which the scroll windows its rows by; its
     /// background and padding its own, the owner's lines set apart from Claude's on the raised band.
     pub entry { width: Length::Share(1.0), min_height: Length::Pixels(TEXT_PIXELS) }
-    /// A line its reader can select and copy, a transcript's or the scrollback's: the mono face, its colour the
-    /// selection's, set where it is used, as its runs carry their own.
+    /// A line its reader can select and copy, a transcript's or the scrollback's: the mono face, as its runs carry their
+    /// own colours, and its selection is drawn in its scroll's.
     pub said: mono {}
     /// One of the owner's lines: its tag, then its text.
     pub turn { width: Length::Share(1.0) }
@@ -362,24 +362,25 @@ aethereal_ui::view! { Overlay, ui,
             }
             Scroll { ..,
                 name: scrollback,
-                style: scrollback { background: self.surface(Surface::Sheet), colour: self.ink(Ink::Dim) },
+                style: scrollback { background: self.surface(Surface::Sheet), colour: self.selection() },
                 show: self.shows_scrollback(),
                 keeps: Keeps::End,
                 items: self.rows() as row key row.number(),
                 Column { style: printed_row { background: self.printed_shade(row), padding: sides(row) },
-                    Selectable { name: printed, style: said { colour: self.selection() }, runs: self.printed_runs(row) }
+                    Selectable { name: printed, style: said, runs: self.printed_runs(row) }
                 }
             }
             Scroll { ..,
                 name: transcript,
-                style: transcript { background: self.surface(Surface::Sheet), colour: self.ink(Ink::Dim) },
+                style: transcript { background: self.surface(Surface::Sheet), colour: self.selection() },
                 show: self.shows_transcript(),
                 keeps: Keeps::End,
+                selects: Selects::Texts,
                 items: self.chats.rows() as row key row.key,
                 Column { style: entry { background: self.entry_shade(row), padding: inset(row) },
                     Selectable {
                         show: row.is_line(),
-                        style: said { colour: self.selection() },
+                        style: said,
                         runs: self.entry_runs(row),
                     }
                     Row { show: row.is_turn(), style: turn,
@@ -396,7 +397,7 @@ aethereal_ui::view! { Overlay, ui,
                                 Text { style: mono { colour: self.ink(Ink::Text) }, "{self.local_tip()}" }
                             }
                         }
-                        Selectable { style: turn_text { colour: self.selection() }, runs: self.entry_runs(row) }
+                        Selectable { style: turn_text, runs: self.entry_runs(row) }
                     }
                     Row { show: row.is_divider(), style: divided,
                         Tint { style: divider_line { colour: self.faded(Ink::Mark, MARK_LINE_OPACITY) } }
