@@ -68,7 +68,7 @@ pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 #[cfg(feature = "std")]
 pub use arena::{PinSource, Pinned};
-pub use ask::{Answer, Answered, Askable, Asking, Asks, Unanswered};
+pub use ask::{Answer, Answered, AnswersByType, Askable, AskedByType, Asking, Asks, Unanswered};
 pub use blob::{BlobHash, BlobId, Maker, Puts};
 #[cfg(feature = "std")]
 pub use blob::{Bytes, Pinning, pins, within};
