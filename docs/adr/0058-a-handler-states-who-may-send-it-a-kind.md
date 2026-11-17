@@ -22,101 +22,143 @@ What the engine already has:
 
 ## Decision
 
-**A mail handler states, beside what it may send, who may send it its kind: `type From`, a guard. Dispatch asks the guard before the handler runs, and hands what the guard refuses to the handler's `refused`.**
+**A mail handler states, beside what it may send, who may send it its kind: `type From`, a guard. Dispatch asks the guard before the handler runs, hands the handler the sender the guard checked, and hands what the guard refuses to the handler's `refused`.**
 
 ```rust
 impl Handles<Stop> for Spawned {
     type Sends = (ToType<Process, Stop>,);   // who it may send to
     type From = ActorRef<Engines>;           // who may send it this
 
-    fn handle(&mut self, stop: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> { /* … */ }
+    fn handle(&mut self, stop: Stop, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> { /* … */ }
 }
 ```
 
-### A guard is a type that admits or refuses a sender
+### A guard is a type that admits a sender, and hands it on checked
 
 ```rust
 pub trait Handles<K: Kind>: Actor {
     type Sends: Sends + DeclaredBy<Self>;
     type From: Guard<Self, K>;
 
-    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault>;
+    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault>;
 
     /// Mail of `K` from a sender `From` refused: logged, naming the sender, and a request answered
-    /// `Unanswered::Unreadable`; other mail is dropped.
+    /// `Unanswered::Unreadable`; other mail is dropped. Its turn holds the sender as an `ErasedActorRef`, as the guard
+    /// checked nothing to hand on.
     fn refused(&mut self, refused: Refused<K>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.refuse(&refused)
     }
 }
 
 pub trait Guard<A: Actor, K>: 'static {
-    /// The types of sender it may admit, as far as types alone decide: what a native send that names `A` is checked
-    /// against when the program is built. A guard that reads the receiver or the mail leaves it `Read`.
-    const TYPES: SenderTypes = SenderTypes::Read;
+    /// What the handler is handed for a sender it admits.
+    type Sent: Sent;
 
-    /// Whether `actor` takes `mail` from `sender`.
-    fn admits(actor: &A, mail: &K, sender: &Sender<'_>) -> bool;
+    /// The sender, checked, when `actor` takes `mail` from it; `None` when it does not, and the mail goes to `refused`.
+    fn admits(actor: &A, mail: &K, sender: &Sender<'_>) -> Option<Self::Sent>;
 }
+
+/// A checked sender, and the types of actor it can be: what a native send that names the receiver's type is checked
+/// against when the program is built.
+pub trait Sent: 'static {
+    const TYPES: SenderTypes;
+}
+
+impl<T: Actor> Sent for ActorRef<T> { /* Types([T]) */ }
+impl<P: Listed> Sent for ProtocolRef<P> { /* Speaking(P's kinds) */ }
+impl Sent for ErasedActorRef { /* Every */ }
 
 /// The source of the item being handled, as the receiver's turn reads it: nothing is read until a guard asks.
 pub struct Sender<'t> { .. }
 
 impl Sender<'_> {
-    pub fn reference(&self) -> ErasedActorRef;           // who it is
-    pub fn is<T: Actor>(&self) -> bool;                   // it is an actor of type `T`
-    pub fn speaks<P: Listed>(&self) -> bool;              // its type lists every kind of `P`, as a cast reads it
-    pub fn is_receiver(&self) -> bool;                    // it is the receiver's own seat
-    pub fn is_parent(&self) -> bool;                      // it is the actor directly above the receiver
-    pub fn is_child<T: ChildOf>(&self) -> bool;           // it is of type `T`, directly beneath the receiver
-    pub fn is_at<L: ChildOf + PathTo>(&self, path: &Path<L>) -> bool;   // it is the live actor the typed path names
+    pub fn reference(&self) -> ErasedActorRef;                                    // who it is
+    pub fn actor<T: Actor>(&self) -> Option<ActorRef<T>>;                         // it, when it is an actor of type `T`
+    pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>>;                  // it, when its type lists every kind of `P`, as a cast reads it
+    pub fn receiver<A: Actor>(&self) -> Option<ActorRef<A>>;                      // it, when it is the receiver's own seat
+    pub fn parent<P: Actor>(&self) -> Option<ActorRef<P>>;                        // it, when it is the actor directly above the receiver
+    pub fn child<T: ChildOf>(&self) -> Option<ActorRef<T>>;                       // it, when it is of type `T`, directly beneath the receiver
+    pub fn at<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>>; // it, when it is the live actor the typed path names
 }
 
-/// Which types of sender a guard may admit, as its type alone says.
+/// Which types of sender a guard may admit, as its `Sent` type says.
 pub enum SenderTypes {
     Every,                                  // any sender
     Types(&'static [KindId]),               // an actor of one of these types
     Speaking(&'static [KindId]),            // an actor whose type lists every one of these kinds
-    AnyOf(&'static [SenderTypes]),          // what any of these admits: a tuple of guards
-    Read,                                   // decided from the receiver or the mail, when the mail is delivered
+    AnyOf(&'static [SenderTypes]),          // what any of these admits: an enum's cases
 }
 ```
 
-A guard is handed the receiver, the mail read as its kind, and the sender, and decides from any of them. There is one trait and one call: the forms below are types the library writes impls of, and a handler writes its own as it writes any impl.
+A guard is handed the receiver, the mail read as its kind, and the sender, decides from any of them, and answers the sender as its `Sent`, or `None`. There is one trait and one call: the forms below are types the library writes impls of, and a handler writes its own as it writes any impl. Each of `Sender`'s checks answers the reference a guard hands on, typed, so a guard never casts; a seat's check reads the type too, so `receiver` of another type than the receiver's answers `None`.
+
+### The handler reads the sender its guard checked
+
+Dispatch keeps what `admits` answered on the turn, `Turn<'a, Me, S, F = Anyone>`, read with `turn.from()`, which answers `&F::Sent`. A guarded handler names its guard in its turn, `Turn<'_, Self, Self::Sends, Self::From>`. A handler with `Anyone` keeps its three-parameter signature, as `F` is defaulted, and `Anyone`'s `Sent` is the `ErasedActorRef`.
 
 ### The library's guards
 
-| `From` | Admits | `TYPES` |
+| `From` | Admits | Hands the handler (`Sent`) |
 |---|---|---|
-| `Anyone` | every sender | `Every` |
-| `ActorRef<T>` | an actor of type `T` | `Types([T])` |
-| `(G1, G2, …)` | what any of its guards admits | `AnyOf([G1::TYPES, G2::TYPES, …])` |
-| `Parent` | the actor directly above the receiver | `Types([A::Parent])` |
-| `Child<T>` | an actor of type `T` directly beneath the receiver | `Types([T])` |
-| `Itself` | the receiver's own seat | `Types([A])` |
-| `Speaks<P>` | an actor whose type lists every kind of `P`, a tuple of kinds or a named protocol | `Speaking(P's kinds)` |
+| `Anyone` | every sender | `ErasedActorRef` |
+| `ActorRef<T>` | an actor of type `T` | `ActorRef<T>` |
+| `Parent` | the actor directly above the receiver | `ActorRef<A::Parent>` |
+| `Child<T>` | an actor of type `T` directly beneath the receiver | `ActorRef<T>` |
+| `Itself` | the receiver's own seat | `ActorRef<A>` |
+| `Speaks<P>` | an actor whose type lists every kind of `P`, a tuple of kinds or a named protocol | `ProtocolRef<P>` |
 
 ```rust
 impl<A: Actor, K> Guard<A, K> for Itself {
-    const TYPES: SenderTypes = SenderTypes::Types(&[KindId::of::<A>()]);
+    type Sent = ActorRef<A>;
 
-    fn admits(_: &A, _: &K, sender: &Sender<'_>) -> bool {
-        sender.is_receiver()
-    }
-}
-
-impl<A: Actor, K, G1: Guard<A, K>, G2: Guard<A, K>> Guard<A, K> for (G1, G2) {
-    const TYPES: SenderTypes = SenderTypes::AnyOf(&[G1::TYPES, G2::TYPES]);
-
-    fn admits(actor: &A, mail: &K, sender: &Sender<'_>) -> bool {
-        G1::admits(actor, mail, sender) || G2::admits(actor, mail, sender)
+    fn admits(_: &A, _: &K, sender: &Sender<'_>) -> Option<ActorRef<A>> {
+        sender.receiver::<A>()
     }
 }
 ```
 
 - **`Itself` is mail the actor's own seat sent: what its host brought it, or what it sent itself.** The engine mails what a source brings (`aethereal-substrate/src/engine/bring/mod.rs:123`), a job's answer (`engine/jobs/mod.rs:384`), and a lifecycle stage (`engine/lifecycle/mod.rs:437`, its `by` and `to` at `:438` and `:439`) with the actor as both sender and receiver. The seat is compared, not the type, so it is exact for a keyed type as for a singleton: a sibling of the same type sits in another seat.
 - **`Parent` and `Child<T>` compare seats too,** so on a keyed parent's child `Parent` is its one parent, where `ActorRef<P>` is any actor of the parent's type.
-- **`Speaks<P>` is the form of a subscription:** a publisher that will send `Event` to whoever subscribes takes `Subscribe` from `Speaks<(Event,)>`.
-- **The tuples run to the width `Sends` tuples do,** written by the same macro.
+- **`Speaks<P>` is the form of a subscription:** a publisher that will send `Event` to whoever subscribes takes `Subscribe` from `Speaks<(Event,)>`, and is handed the subscriber as the `ProtocolRef<(Event,)>` it keeps, with no cast to miss and nothing to log.
+
+### Several senders are an enum
+
+A handler that takes its kind from senders of more than one type states an enum of them as its guard. The guard sorts the sender once, and the handler matches over what it was handed:
+
+```rust
+/// Who may send `Server` a request: an exchange, or a client.
+enum Peer {
+    Exchange(ActorRef<Exchange>),
+    Client(ActorRef<Client>),
+}
+
+impl Sent for Peer {
+    const TYPES: SenderTypes = SenderTypes::Types(&[KindId::of::<Exchange>(), KindId::of::<Client>()]);
+}
+
+impl Guard<Server, Request> for Peer {
+    type Sent = Peer;
+
+    fn admits(_: &Server, _: &Request, sender: &Sender<'_>) -> Option<Peer> {
+        let exchange = sender.actor::<Exchange>().map(Peer::Exchange);
+        exchange.or_else(|| sender.actor::<Client>().map(Peer::Client))
+    }
+}
+
+impl Handles<Request> for Server {
+    type From = Peer;
+    // ..
+
+    fn handle(&mut self, request: Request, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        match turn.from() {
+            Peer::Exchange(exchange) => { /* … */ }
+            Peer::Client(client) => { /* … */ }
+        }
+    }
+}
+```
+
+The match is exhaustive: a third peer is a case added to `Peer`, and a match that does not take it does not build. An enum's `Sent` impl is written by hand, as the types its cases hold, or `AnyOf` when a case is a `ProtocolRef`. There are no tuples of guards: guards with different `Sent` types have no one type to hand the handler.
 
 ### A handler's own guard reads its state or the mail
 
@@ -125,8 +167,10 @@ impl<A: Actor, K, G1: Guard<A, K>, G2: Guard<A, K>> Guard<A, K> for (G1, G2) {
 pub struct ItsProcess;
 
 impl Guard<Spawned, Exited> for ItsProcess {
-    fn admits(spawned: &Spawned, _: &Exited, sender: &Sender<'_>) -> bool {
-        spawned.process().is_some_and(|process| sender.reference() == process.erase())
+    type Sent = ActorRef<Process>;
+
+    fn admits(spawned: &Spawned, _: &Exited, sender: &Sender<'_>) -> Option<ActorRef<Process>> {
+        spawned.process().filter(|process| sender.reference() == process.erase())
     }
 }
 
@@ -137,7 +181,7 @@ impl Handles<Exited> for Spawned {
 }
 ```
 
-Its `TYPES` is left `Read`: what it admits is known only when the mail is delivered. A tuple admits what either of its guards admits, never what both do, so a guard that also wants a type checks it in its own body, `sender.is::<Process>() && …`.
+It hands on what it found, the process it holds. Its `Sent` is `ActorRef<Process>`, so it is checked when the program is built as `ActorRef<Process>` is: a native send of `Exited` that names `Spawned` builds only in a `Process`. Delivery checks that it is the process this spawn holds.
 
 ### Only mail has a guard
 
@@ -159,16 +203,19 @@ pub trait Receives<H: Received>: Actor {
 
 ```rust
 let sender = turning.sender(declared);
+let admitted = <A::From as Guard<A, K>>::admits(actor, &mail, &sender);
 
-if <A::From as Guard<A, K>>::admits(actor, &mail, &sender) {
-    A::handle(actor, mail, &mut turning.declaring::<A, A::Sends>(declared))
-} else {
-    A::refused(actor, Refused { sender: sender.reference(), mail }, &mut turning.declaring::<A, A::Sends>(declared))
+match admitted {
+    Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::Sends, A::From>(declared, from)),
+    None => {
+        let refused = Refused { sender: sender.reference(), mail };
+        A::refused(actor, refused, &mut turning.declaring::<A, A::Sends, Anyone>(declared, sender.reference()))
+    }
 }
 ```
 
 - **It holds for every sender:** a native actor, a guest whose host wrote its mail (ADR-0015), the outside (ADR-0036), a send through a `ProtocolRef`, and a reply.
-- **`Anyone` costs nothing.** Its `admits` is `true`, inlined, and the branch folds away; the sender is not read.
+- **`Anyone` costs nothing.** Its `admits` answers the reference the turn already holds, inlined, so the `None` arm folds away and the sender's type is not read.
 - **A sender's type is read from the table.** `Table::declared` (`aethereal-actor/src/boundary.rs:39`) answers it natively from the actor's entry (`aethereal-substrate/src/table/mod.rs:65`), or from what the step stood up (`engine/since.rs:125`). A guest's table holds no other actor's type (`aethereal-actor/src/guest.rs:1632`), so `Table` gains `is_of(id, actor_type)`, which a guest's table asks its host for, as it does `lists` (`guest.rs:1622`). `Itself`, `Parent`, and `Child<T>` compare seats the turn already holds.
 - **Mail that does not read is not handed to the guard.** It is answered as unread mail is (ADR-0017: `Untaken::Unread`), whoever sent it.
 
@@ -176,12 +223,18 @@ Whether a guest's own types, and the source the engine writes for its mail, can 
 
 ### Checked when the program is built, where the receiver's type is named
 
-A native send that names its receiver's type declares it: `ToType<T, K>` (`declared/sends.rs:44`) for a send through an `ActorRef<T>` or to `turn.me()`, and `Tells<Path<L>, K>` (`declared/sends.rs:30`) and `Asks<Path<L>, K, C>` (`aethereal-actor/src/ask.rs:501`) for a typed path. Each already requires that its receiver handles `K`, and each marker's `SENDING` now carries the receiver's guard's `TYPES`: `Target::Type` and `Target::Path` gain a `SenderTypes`, read from `<<T as Handles<K>>::From as Guard<T, K>>::TYPES`.
+A native send that names its receiver's type declares it: `ToType<T, K>` (`declared/sends.rs:44`) for a send through an `ActorRef<T>` or to `turn.me()`, and `Tells<Path<L>, K>` (`declared/sends.rs:30`) and `Asks<Path<L>, K, C>` (`aethereal-actor/src/ask.rs:501`) for a typed path. Each already requires that its receiver handles `K`, and each marker's `SENDING` now carries the types of sender the receiver's guard may admit: `Target::Type` and `Target::Path` gain a `SenderTypes`, read from the guard's `Sent` type, `<Admitted<T, K> as Sent>::TYPES`:
 
-`Declared::checked` (`declared/mod.rs:281`), which already refuses a type that handles one kind twice, then checks each send the type declares, as it begins, in each handler, and as it ends, against its receiver's `SenderTypes`: `Types` must hold the declaring type's id, and the declaring type must list each of `Speaking`'s kinds; `Every` passes, and so does anything that holds `Read`, which only delivery decides. A send that cannot be admitted panics in the constant, which stops the build and names the declaring type.
+```rust
+/// What `T`'s handler of `K` is handed for a sender its guard admits.
+type Admitted<T, K> = <<T as Handles<K>>::From as Guard<T, K>>::Sent;
+```
+
+`Declared::checked` (`declared/mod.rs:281`), which already refuses a type that handles one kind twice, then checks each send the type declares, as it begins, in each handler, and as it ends, against its receiver's `SenderTypes`: `Types` must hold the declaring type's id, the declaring type must list each of `Speaking`'s kinds, `AnyOf` passes when any of its cases does, and `Every` passes. A send that cannot be admitted panics in the constant, which stops the build and names the declaring type. Delivery is the guarantee, for every sender; the build check tells a native sender early what delivery would refuse.
 
 - **Nothing is inferred at a call site.** The check reads the declaration, where both types are known, so no index is written or inferred, and a send declared and never made is checked too.
-- **What the build checks:** `Anyone`, `ActorRef<T>`, `Parent`, `Child<T>`, `Itself`, `Speaks<P>`, and tuples of them. `Parent`, `Child<T>`, and `Itself` are checked by type when built, and by seat at delivery. A handler's own guard, and a tuple that holds one, is checked at delivery only.
+- **The types cannot disagree with `admits`.** They are read from what `admits` answers, and `admits` can answer an `ActorRef<T>` only for a sender it proved is a `T`.
+- **What the build checks:** every guard, by its `Sent` type, a handler's own included: `ItsProcess` by `ActorRef<Process>`, `Peer` by its two types. `Parent`, `Child<T>`, and `Itself` are checked by type when built, and by seat at delivery; a guard that reads the receiver or the mail is checked by type when built, and by what it reads at delivery.
 - **What only delivery checks:** a send through a `ProtocolRef<P>` (`ToAny<P, K>`), which names no receiver type; a reply (`ToSender<K>`), whose receiver is whoever sent the item; and every send a guest makes.
 
 ### A refusal goes to the handler's `refused`
@@ -200,38 +253,34 @@ pub struct Refused<K> {
 
 Dispatch takes the first listing whose role matches, so the declaration's constants already refuse a type that lists one kind twice (ADR-0013). There is no wrapper: a kind is listed as itself, and its one handler's guard decides who may send it. A kind several receivers take, such as `Exited`, which `Spawned` takes from `ItsProcess` and `Engines` from its spawns, is taken by each under its own guard.
 
-### Not decided here: what `admits` answers
-
-- **`bool`,** as above. `handle` is unchanged, and a handler that sends to its sender casts it, as it does today: for `Speaks<P>` the cast cannot miss. A handler that tells its senders apart asks `Sender::is` in its guard, and again in its body.
-- **The checked sender.** `Guard` gains `type Sent`, and `admits` answers it, or why not (`Option<Self::Sent>`, or a `Result`). Dispatch keeps it on the turn, `Turn<'a, Me, S, F = Anyone>`, read with `turn.from()`, and a guarded handler names its guard in its turn, `Turn<'_, Self, Self::Sends, Self::From>`; a handler with `Anyone` keeps its signature, as the parameter is defaulted, and is handed the `ErasedActorRef`. `ActorRef<T>` hands an `ActorRef<T>`, `Speaks<P>` a `ProtocolRef<P>`, an enum of references that implements `Guard`, `enum Peer { Exchange(ActorRef<Exchange>), Client(ActorRef<Client>) }`, tells its senders apart in one match, and a handler's own guard hands what it found, such as the spawn record its sender is.
-
 ## Migration
 
 **Every mail handler states its guard.** Rust 1.97.1 (`rust-toolchain.toml`) has no defaults for associated types, so each `Handles<K>` impl for a kind gains `type From = Anyone;`: 465 at 9204d99, 20 of them in the bodies of `macro_rules!`, and 34 more in doc examples. Each impl for an answer, an ending, a stage, or a fallback is written `Receives<…>` in place of `Handles<…>`: 262 of `Answer`, 28 of `Ended`, 56 of `On`, and 2 of `Others`, and 7 in doc examples. A bound that names a handler of an answer (`Asks`'s `DeclaredBy`) reads `Receives`.
 
-**Each check by hand becomes a guard, and leaves the body.** At 9204d99:
+**Each check by hand becomes a guard, and leaves the body.** A guarded handler's turn names its guard, `Turn<'_, Self, Self::Sends, Self::From>`, and the handler reads what the guard checked from `turn.from()` in place of comparing or casting `turn.sender()`. At 9204d99:
 
-- **The parent.** `aethereal-link/src/engines/engine.rs:451`: `Engine` takes `Shut` from `ActorRef<Engines>`. `aethereal-link/src/engines/spawned.rs:229` and `:250`: `Spawned` takes `LinkedAs` and `Stop` from `ActorRef<Engines>`. `aethereal-window/src/window.rs:226`: `Window` takes `Event` from `ActorRef<Windows>`. Each parent is a singleton, so `Parent` would say the same.
-- **What the host brings.** `aethereal-window/src/windows/mod.rs:448`: `Windows` takes `Heard` from `Itself`. `aethereal-chassis-browser/src/controls/mod.rs:138`: `Controls` takes `Control` from `Itself`. `aethereal-pace/src/pacer/mod.rs:233`: `Pacer` takes `Paced` from `Itself`. `aethereal-render/src/renderer/mod.rs:1083` and `:1165`: `Renderer` takes `Mapped` and `Surfaced` from `Itself`.
-- **A subscription.** `aethereal-window/src/window.rs:193` and `:280`: `Window` takes `Subscribe` from `Speaks<(Event,)>` and `SubscribeProbes` from `Speaks<(Probed,)>`. `aethereal-chassis-browser/src/controls/mod.rs:104`: `Controls` takes `Subscribe` from `Speaks<(Control,)>`. `aethereal-tools/src/tools/mod.rs:164`: `Tools` takes `Subscribe` from `Speaks<(Sheets,)>`. `aethereal-link/src/link/chat.rs:108`: `Link` takes `Listen` from `Speaks<Listening>`. `aethereal-render/src/renderer/watching/mod.rs:176` and `:205`: `Renderer` takes `SubscribeFrameStats` from `Speaks<(FrameStats,)>` and `SubscribeGpuTimes` from `Speaks<(GpuTimes,)>`.
-- **The receiver's state.** `aethereal-link/src/engines/spawned.rs:207`: `Spawned` takes `Exited` from `ItsProcess`. `aethereal-link/src/engines/spawning.rs:125`, `:147`, and `:165`: `Engines` takes `Runs`, `Spawn`, and `Exited` from `ItsSpawn`, a spawn it keeps a record of. `aethereal-link/src/engines/mod.rs:371`: `Engines` takes `Shown` from `ItsEngine`, an engine it has linked. `aethereal-window/src/window.rs:298` and `:323`: `Window` takes `Picked` and `KeysListed` from `Prober`, an actor subscribed to its probes; `aethereal-window` cannot name `Renderer`, which depends on it. `aethereal-actor/src/stream/streams.rs:116` and `:132`: a stream's opener takes `Part<S>` from the library's guard for parts, which reads the actor's `Streams<S, C>` and admits the receiver the part's stream was opened with.
-- **The mail.** `aethereal-window/src/windows/mod.rs:425`: `Windows` takes `ShowCursor` from `ItsWindow`, the `Window` keyed by the mail's `window`. `aethereal-render/src/renderer/mod.rs:1063`: `Renderer` takes `Probed` from `ProbingWindow`, the actor at `path::<Window>` of the mail's `window`. `aethereal-sessions/src/sessions/chat/mod.rs:211`: `Sessions` takes `Chatted` from `JoinedAs`, the actor that joined as the mail's `engine`; `aethereal-sessions` cannot name `Engine`, as `aethereal-link` depends on it.
-- **No check today.** `aethereal-sessions/src/sessions/chat/mod.rs:173`: `Sessions` takes `Joined` from `Speaks<Showing>`, an actor it can show sessions to.
+- **The parent.** `aethereal-link/src/engines/engine.rs:451`: `Engine` takes `Shut` from `ActorRef<Engines>`. `aethereal-link/src/engines/spawned.rs:229` and `:250`: `Spawned` takes `LinkedAs` and `Stop` from `ActorRef<Engines>`. `aethereal-window/src/window.rs:226`: `Window` takes `Event` from `ActorRef<Windows>`. Each is handed its parent as that `ActorRef`. Each parent is a singleton, so `Parent` would say the same.
+- **What the host brings.** `aethereal-window/src/windows/mod.rs:448`: `Windows` takes `Heard` from `Itself`. `aethereal-chassis-browser/src/controls/mod.rs:138`: `Controls` takes `Control` from `Itself`. `aethereal-pace/src/pacer/mod.rs:233`: `Pacer` takes `Paced` from `Itself`. `aethereal-render/src/renderer/mod.rs:1083` and `:1165`: `Renderer` takes `Mapped` and `Surfaced` from `Itself`. Each is handed its own `ActorRef`.
+- **A subscription.** `aethereal-window/src/window.rs:193` and `:280`: `Window` takes `Subscribe` from `Speaks<(Event,)>` and `SubscribeProbes` from `Speaks<(Probed,)>`. `aethereal-chassis-browser/src/controls/mod.rs:104`: `Controls` takes `Subscribe` from `Speaks<(Control,)>`. `aethereal-tools/src/tools/mod.rs:164`: `Tools` takes `Subscribe` from `Speaks<(Sheets,)>`. `aethereal-link/src/link/chat.rs:108`: `Link` takes `Listen` from `Speaks<Listening>`. `aethereal-render/src/renderer/watching/mod.rs:176` and `:205`: `Renderer` takes `SubscribeFrameStats` from `Speaks<(FrameStats,)>` and `SubscribeGpuTimes` from `Speaks<(GpuTimes,)>`. Each is handed the subscriber as the `ProtocolRef` it keeps, so the cast, and the log for a cast that missed, leave the body.
+- **The receiver's state.** `aethereal-link/src/engines/spawned.rs:207`: `Spawned` takes `Exited` from `ItsProcess`, handed its process as an `ActorRef<Process>`. `aethereal-link/src/engines/spawning.rs:125`, `:147`, and `:165`: `Engines` takes `Runs`, `Spawn`, and `Exited` from `ItsSpawn`, a spawn it keeps a record of, handed the spawn as an `ActorRef<Spawned>`. `aethereal-link/src/engines/mod.rs:371`: `Engines` takes `Shown` from `ItsEngine`, an engine it has linked, handed as an `ActorRef<Engine>`. `aethereal-window/src/window.rs:298` and `:323`: `Window` takes `Picked` and `KeysListed` from `Prober`, an actor subscribed to its probes, handed as a `ProtocolRef<(Probed,)>`; `aethereal-window` cannot name `Renderer`, which depends on it. `aethereal-actor/src/stream/streams.rs:116` and `:132`: a stream's opener takes `Part<S>` from the library's guard for parts, which reads the actor's `Streams<S, C>`, admits the receiver the part's stream was opened with, and hands it on as its `ProtocolRef<Streamed<S>>`.
+- **The mail.** `aethereal-window/src/windows/mod.rs:425`: `Windows` takes `ShowCursor` from `ItsWindow`, the `Window` keyed by the mail's `window`, handed as an `ActorRef<Window>`. `aethereal-render/src/renderer/mod.rs:1063`: `Renderer` takes `Probed` from `ProbingWindow`, the actor at `path::<Window>` of the mail's `window`, handed as an `ActorRef<Window>`. `aethereal-sessions/src/sessions/chat/mod.rs:211`: `Sessions` takes `Chatted` from `JoinedAs`, the actor that joined as the mail's `engine`, handed as the `ProtocolRef<Showing>` it joined with; `aethereal-sessions` cannot name `Engine`, as `aethereal-link` depends on it.
+- **No check today.** `aethereal-sessions/src/sessions/chat/mod.rs:173`: `Sessions` takes `Joined` from `Speaks<Showing>`, an actor it can show sessions to, handed as a `ProtocolRef<Showing>`.
 
 A check that passed the mail over silently, or logged a warning of its own, now goes to the default `refused`.
 
-**HTTP (ADR-0035).** A handler takes `Routed<S>`, and an authenticator `Authenticate`, from `ActorRef<Exchange>`, written as `type From` in each one's impl.
+**HTTP (ADR-0035).** A handler takes `Routed<S>`, and an authenticator `Authenticate`, from `ActorRef<Exchange>`, written as `type From` in each one's impl, and is handed the exchange as an `ActorRef<Exchange>`.
 
 **Untouched.** `Engines` answers `TakeToken` (`aethereal-link/src/engines/mod.rs:462`) for any asker, and links only an engine of its own: that is what the token is for, not who may ask. The renderer keys what it makes by its maker (`renderer/mod.rs:1379`, `:1442`, `:1502`, `:1679`, `:1720`; `renderer/text/mod.rs:697`, `:742`), and casts its sender for what it will tell it (`CreateDispatch` at `:1567`, `DrawList` at `:1611`), each taking from anyone. An unsubscribe removes its own sender, and a store, a connection, or HTTP holds whoever asked.
 
 ## Consequences
 
 - Whom a handler takes its kind from is in its impl, beside what it sends, and the engine holds it for every sender.
+- A handler is handed the sender its guard checked, typed as the guard found it, and never casts it; a handler that tells its senders apart matches over an enum guard's cases, exhaustively.
 - A refused sender is logged, and a refused request answered, where a check by hand often did neither.
-- A native send to a type whose guard is decided by type does not build when it would be refused. A send through a protocol reference, a reply, and a guest are checked at delivery.
-- `Handles<K>` gains `From` and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Sending`'s typed targets carry `SenderTypes`, and `Table` gains `is_of`.
+- A native send that names its receiver's type does not build when the receiver's guard's `Sent` type would refuse it, a handler's own guard included. A send through a protocol reference, a reply, and a guest are checked at delivery.
+- The types a guard admits are stated once, by its `Sent` type, and cannot disagree with `admits`.
+- `Handles<K>` gains `From` and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard` names a `Sent`, `Turn` gains its guard as a fourth, defaulted parameter, `Sending`'s typed targets carry `SenderTypes`, and `Table` gains `is_of`.
 - A test that hands a guarded handler its mail from the outside (ADR-0036), whose type is its own, stands up the type the guard admits.
-- **Not decided here:** what `admits` answers, `bool` or the checked sender.
 
 ## Alternatives considered
 
@@ -239,8 +288,11 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - **The rule on the kind,** `#[kind(senders = …)]`. A kind is data in the data layer and names no actor, and a kind several receivers take from different senders, `Shut`, `Stop`, `Event`, `Control`, would have to be split.
 - **A `SentBy<S, K>` wrapper in the actor's list, with senders restating it** (`ToType<T, K, Only<S>>`). The rule is written in two places, and every sender's declaration changes when a receiver adds one.
 - **A `Senders` trait whose forms each have a check of their own,** with a derive for enums. Every form is a type that implements `Guard`, checked by one call; a form the library lacks is an impl a handler writes.
+- **`admits` answers `bool`.** The guard has already found which sender it is, and `bool` throws that away: the handler asks again and casts by hand, and no match over senders is exhaustive.
+- **`TYPES` on each guard,** a constant beside `admits`. It states the rule a second time, and the two statements can disagree; a handler's own guard left it `Read` and went unchecked when built.
+- **Tuples of guards,** `(G1, G2)` admitting what either does. With the checked sender handed on, guards with different `Sent` types have no one type to hand the handler; an enum such as `Peer` names each case.
 - **`From` on every `Handles` impl,** answers, endings, stages, and fallbacks included: 348 more lines that each say `Anyone`, of items no sender chooses.
-- **The build check as a trait bound,** `<T as Handles<K>>::From: Admits<A>` on `ToType`'s `DeclaredBy<A>`. It holds for one type, but a tuple and `Speaks<P>` need an index, a place in the tuple or the places of `P`'s kinds, which an impl cannot leave unconstrained. At the send, where `Allows` infers its index, `Toward` would have to carry the sender's type, and a send declared and never made would go unchecked.
+- **The build check as a trait bound,** `<T as Handles<K>>::From: Admits<A>` on `ToType`'s `DeclaredBy<A>`. It holds for one type, but `Speaks<P>` and an enum guard need an index, the places of `P`'s kinds or the case whose type matches, which an impl cannot leave unconstrained. At the send, where `Allows` infers its index, `Toward` would have to carry the sender's type, and a send declared and never made would go unchecked.
 - **The check at the send alone.** It sees no guest, no reply, and no send through a protocol reference, which is how HTTP's exchange reaches its handler.
 - **The check at delivery alone.** It holds, but a native sender learns only from a log at run time what its build could have told it.
 - **Rust privacy on a kind's constructor.** A native sender must build a value to send it, but a guest writes bytes, whatever kind they claim.
