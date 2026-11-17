@@ -6,7 +6,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells, Tick,
     Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -316,7 +316,7 @@ impl Actor for Culler {
     }
 }
 
-impl Handles<On<Start>> for Culler {
+impl Receives<On<Start>> for Culler {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -329,7 +329,7 @@ impl Handles<On<Start>> for Culler {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Culler {
+impl Receives<Answer<Shaped, Nothing>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -362,7 +362,7 @@ const fn stored(binding: u32, bytes: u32, access: Access) -> Binding {
     Binding { group: 0, binding, kind: BindingKind::Storage { bytes, access } }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Culler {
+impl Receives<Answer<Meshed, Learned>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MeshId>,);
 
     fn handle(
@@ -413,7 +413,7 @@ fn cull(entry: &str, turn: &mut Turn<'_, Culler, impl Sized>) -> Result<CreateCo
     Ok(CreateCompute { wgsl, entry: String::from(entry), bindings })
 }
 
-impl Handles<Answer<Programmed, MeshId>> for Culler {
+impl Receives<Answer<Programmed, MeshId>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>,);
 
     fn handle(
@@ -438,7 +438,7 @@ impl Handles<Answer<Programmed, MeshId>> for Culler {
     }
 }
 
-impl Handles<Answer<Computed, Computing>> for Culler {
+impl Receives<Answer<Computed, Computing>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>, Asks<Path<Renderer>, CreateStorage, Storing>);
 
     fn handle(
@@ -480,7 +480,7 @@ impl Handles<Answer<Computed, Computing>> for Culler {
     }
 }
 
-impl Handles<Answer<Stored, Storing>> for Culler {
+impl Receives<Answer<Stored, Storing>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateStorage, Storing>, Asks<Path<Renderer>, CreateFrame, Made>);
 
     fn handle(
@@ -554,7 +554,7 @@ fn bound(bindings: &[(u32, StorageId)]) -> Vec<Bind> {
         .collect()
 }
 
-impl Handles<Answer<Framed, Made>> for Culler {
+impl Receives<Answer<Framed, Made>> for Culler {
     type Sends = (Asks<Path<Renderer>, Place, Made>,);
 
     fn handle(
@@ -607,7 +607,7 @@ fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
     }
 }
 
-impl Handles<Answer<Placed, Made>> for Culler {
+impl Receives<Answer<Placed, Made>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
 
     fn handle(
@@ -631,7 +631,7 @@ impl Handles<Answer<Placed, Made>> for Culler {
 }
 
 /// Each pass's dispatch made, the next is asked for; the last made, the placement and the three are listed.
-impl Handles<Answer<Dispatched, Dispatching>> for Culler {
+impl Receives<Answer<Dispatched, Dispatching>> for Culler {
     type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
@@ -667,7 +667,7 @@ impl Handles<Answer<Dispatched, Dispatching>> for Culler {
     }
 }
 
-impl Handles<On<Tick>> for Culler {
+impl Receives<On<Tick>> for Culler {
     type Sends = (Asks<Path<Renderer>, ReadStorage, Read>, Asks<Path<Renderer>, TimeFrame, Nothing>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -688,7 +688,7 @@ impl Handles<On<Tick>> for Culler {
     }
 }
 
-impl Handles<Answer<StorageContents, Read>> for Culler {
+impl Receives<Answer<StorageContents, Read>> for Culler {
     type Sends = ();
 
     fn handle(
@@ -723,7 +723,7 @@ impl Handles<Answer<StorageContents, Read>> for Culler {
     }
 }
 
-impl Handles<Answer<Timed, Nothing>> for Culler {
+impl Receives<Answer<Timed, Nothing>> for Culler {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

@@ -3,7 +3,7 @@
 //! on a thread of its own where it waits on the hub, or by a real `Link` started with what `mint_token` answers.
 
 use aethereal_actor::{
-    Actor, Answered, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, ToSender, Top, Turn,
+    Actor, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, ToSender, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
@@ -88,6 +88,7 @@ impl Actor for Stand {
 
 impl Handles<Offer> for Stand {
     type Sends = (ToSender<Offered>,);
+    type From = Anyone;
 
     fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let offered = self.table.take(offer.tools, offer.worker, 16);
@@ -99,6 +100,7 @@ impl Handles<Offer> for Stand {
 
 impl Handles<Withdraw> for Stand {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);

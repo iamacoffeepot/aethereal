@@ -10,7 +10,7 @@ use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
 use super::{Does, Phase, Sessions};
-use aethereal_actor::{Fault, Handles, Held, Level, ToSender, Turn};
+use aethereal_actor::{Anyone, Fault, Handles, Held, Level, ToSender, Turn};
 use aethereal_data::Bound;
 use core::fmt::Write as _;
 
@@ -50,6 +50,7 @@ pub(super) enum Waiting {
 
 impl Handles<NewSession> for Sessions {
     type Sends = acts!(ToSender<Opened>);
+    type From = Anyone;
 
     /// A new session, numbered after every other, its first container started: answered once it runs.
     fn handle(&mut self, new: NewSession, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -60,6 +61,7 @@ impl Handles<NewSession> for Sessions {
 
 impl Handles<Say> for Sessions {
     type Sends = acts!(ToSender<Said>);
+    type From = Anyone;
 
     /// A line for a session: written to it in order, a turn running or not; a stopped session is resumed first.
     fn handle(&mut self, say: Say, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -70,6 +72,7 @@ impl Handles<Say> for Sessions {
 
 impl Handles<ReadTranscript> for Sessions {
     type Sends = acts!(ToSender<Transcribed>);
+    type From = Anyone;
 
     fn handle(&mut self, read: ReadTranscript, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -79,6 +82,7 @@ impl Handles<ReadTranscript> for Sessions {
 
 impl Handles<ListSessions> for Sessions {
     type Sends = acts!(ToSender<Listed>);
+    type From = Anyone;
 
     fn handle(&mut self, ListSessions: ListSessions, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sessions = self.held.iter().map(|(&session, held)| held.listed(session)).collect();
@@ -91,6 +95,7 @@ impl Handles<ListSessions> for Sessions {
 
 impl Handles<Interrupt> for Sessions {
     type Sends = acts!(ToSender<Interrupted>);
+    type From = Anyone;
 
     /// The session's running turn interrupted, through the control request Claude Code reads on its stdin.
     fn handle(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -101,6 +106,7 @@ impl Handles<Interrupt> for Sessions {
 
 impl Handles<Archive> for Sessions {
     type Sends = acts!(ToSender<Archived>);
+    type From = Anyone;
 
     /// The session archived: its container stopped and removed, its transcript and home kept. Answered once no
     /// container of it is left.

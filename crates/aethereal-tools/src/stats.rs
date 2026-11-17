@@ -4,8 +4,8 @@
 use crate::logs::spoken_name;
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Against, Anywhere, Beginning, ChildOf, Ending, EngineStats, Fault, Figures, Handles, LARGEST,
-    Process, ProtocolRef, ToSender, Turn,
+    Actor, ActorRef, Against, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats, Fault, Figures, Handles,
+    LARGEST, Process, ProtocolRef, ToSender, Turn,
 };
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 
@@ -183,6 +183,7 @@ impl Tool for EngineStatsTool {
 
 impl Handles<Call> for EngineStatsTool {
     type Sends = (ToSender<Called>,);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let read = match from_bytes::<ReadEngineStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {

@@ -26,6 +26,7 @@ mod due;
 mod effect;
 mod ended;
 mod fault;
+pub mod guard;
 #[cfg(feature = "guest")]
 pub mod guest;
 mod guests;
@@ -75,13 +76,15 @@ pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, 
 pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
-    HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, RepliesTo, RepliesWith, RepliesWithin,
-    ReplyWithin, Role, Sending, Sends, StateSchema, Target, Tells, ToAny, ToSender, ToType, Untaken,
+    HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, Reached, Received, Receives, RepliesTo,
+    RepliesWith, RepliesWithin, ReplyWithin, Role, Sending, Sends, StateSchema, Target, Tells, ToAny, ToSender, ToType,
+    Untaken,
 };
 pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
+pub use guard::{Anyone, Checks, Guard, Itself, Sender, SenderTypes, Sent, Speaks};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
 #[cfg(feature = "std")]
 pub use guests::{Config, config_bytes};

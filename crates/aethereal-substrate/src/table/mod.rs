@@ -66,6 +66,10 @@ impl Table for ActorTable {
         self.entry(id).map(Entry::declared)
     }
 
+    fn path_of(&self, id: ActorId) -> Option<ActorPath> {
+        Self::path(self, id)
+    }
+
     /// The table holds no blobs: a turn reads them through what the engine opens it with, beside the table.
     fn blob(&self, _: BlobId) -> Option<&[u8]> {
         None

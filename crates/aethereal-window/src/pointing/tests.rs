@@ -8,8 +8,8 @@ use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{
-    Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Handles, Path, SeatNumber, Seated, Table, Tells, Top, Turn,
-    path,
+    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, SeatNumber, Seated, Table, Tells, Top,
+    Turn, path,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
@@ -394,6 +394,7 @@ impl Actor for Prober {
 
 impl Handles<ProbeOrder> for Prober {
     type Sends = (Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, Picked>, Tells<Path<Window>, KeysListed>);
+    type From = Anyone;
 
     fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let window = path::<Window>(WINDOW);
@@ -415,6 +416,7 @@ impl Handles<ProbeOrder> for Prober {
 
 impl Handles<Probed> for Prober {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -448,6 +450,7 @@ impl Actor for Widget {
 
 impl Handles<Pointed> for Widget {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Pointed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())

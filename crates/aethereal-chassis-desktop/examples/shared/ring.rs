@@ -5,8 +5,9 @@
 //! out (ADR-0049). Its turn and its triangles' sizes are tuned while it runs (ADR-0050).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, ProtocolRef,
-    ReadTuning, Start, Tells, Tick, ToSender, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path, tuning,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path,
+    ProtocolRef, ReadTuning, Receives, Start, Tells, Tick, ToSender, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn,
+    path, tuning,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -390,7 +391,7 @@ impl Scene {
     }
 }
 
-impl Handles<On<Start>> for Scene {
+impl Receives<On<Start>> for Scene {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -403,6 +404,7 @@ impl Handles<On<Start>> for Scene {
 /// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
 impl Handles<Keyed> for Scene {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match keyed.event {
@@ -429,6 +431,7 @@ impl Handles<Keyed> for Scene {
 
 impl Handles<Event> for Scene {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match event {
@@ -469,7 +472,7 @@ impl Handles<Event> for Scene {
     }
 }
 
-impl Handles<Answer<Shaped, Shaping>> for Scene {
+impl Receives<Answer<Shaped, Shaping>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>, Asks<Path<Renderer>, CreateEffect, Nothing>);
 
     fn handle(
@@ -525,7 +528,7 @@ fn view(window: WindowId) -> CreateFrame {
     }
 }
 
-impl Handles<Answer<Effected, Nothing>> for Scene {
+impl Receives<Answer<Effected, Nothing>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>,);
 
     fn handle(
@@ -543,7 +546,7 @@ impl Handles<Answer<Effected, Nothing>> for Scene {
     }
 }
 
-impl Handles<Answer<Framed, Framing>> for Scene {
+impl Receives<Answer<Framed, Framing>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>, Asks<Path<Renderer>, ShapeOf, Shaping>);
 
     fn handle(
@@ -608,7 +611,7 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Scene {
+impl Receives<Answer<Meshed, Learned>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
 
     fn handle(
@@ -642,7 +645,7 @@ impl Handles<Answer<Meshed, Learned>> for Scene {
     }
 }
 
-impl Handles<Answer<Programmed, MadeMesh>> for Scene {
+impl Receives<Answer<Programmed, MadeMesh>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
 
     fn handle(
@@ -665,7 +668,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Scene {
     }
 }
 
-impl Handles<Answer<Instanced, MadeProgram>> for Scene {
+impl Receives<Answer<Instanced, MadeProgram>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateUniforms, Looking>,);
 
     fn handle(
@@ -688,7 +691,7 @@ impl Handles<Answer<Instanced, MadeProgram>> for Scene {
     }
 }
 
-impl Handles<Answer<Uniformed, Looking>> for Scene {
+impl Receives<Answer<Uniformed, Looking>> for Scene {
     type Sends = (Asks<Path<Renderer>, Place, MadeAll>, Asks<Path<Renderer>, CreateUniforms, Looking>);
 
     fn handle(
@@ -752,7 +755,7 @@ impl Scene {
     }
 }
 
-impl Handles<Answer<Placed, MadeAll>> for Scene {
+impl Receives<Answer<Placed, MadeAll>> for Scene {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -775,7 +778,7 @@ impl Handles<Answer<Placed, MadeAll>> for Scene {
     }
 }
 
-impl Handles<On<Tick>> for Scene {
+impl Receives<On<Tick>> for Scene {
     type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -846,6 +849,7 @@ impl Tunable for Scene {
 
 impl Handles<ReadTuning> for Scene {
     type Sends = (ToSender<Tuning>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         tuning::read(self, turn)
@@ -854,6 +858,7 @@ impl Handles<ReadTuning> for Scene {
 
 impl Handles<Tune> for Scene {
     type Sends = (ToSender<Tuned>,);
+    type From = Anyone;
 
     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         tuning::tune(self, &tune, turn)

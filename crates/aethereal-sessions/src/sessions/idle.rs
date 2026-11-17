@@ -6,7 +6,7 @@
 use super::session::{Activity, Life, Then};
 use super::transcript::{Ended, Entry, Note, Since, Speaker, WindDown};
 use super::{Acts, Does, Resting, Sessions};
-use aethereal_actor::{Answer, Answered, Fault, Handles, JobId, Sleep, Slept, Turn};
+use aethereal_actor::{Answer, Answered, Fault, JobId, Receives, Sleep, Slept, Turn};
 use core::time::Duration;
 
 /// The line that asks Claude Code to compact its session.
@@ -53,7 +53,7 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<Slept, Resting>> for Sessions {
+impl Receives<Answer<Slept, Resting>> for Sessions {
     type Sends = Acts;
 
     /// A session's idle time, or a step's deadline, is up: unless it was active since, it is wound down a step.

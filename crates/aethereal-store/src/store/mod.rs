@@ -13,8 +13,8 @@ use crate::{
 };
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level,
-    ToSender, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level,
+    Receives, ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use launches::Launches;
@@ -388,6 +388,7 @@ impl Actor for Store {
 
 impl Handles<CheckIn> for Store {
     type Sends = (ToSender<CheckedIn>,);
+    type From = Anyone;
 
     fn handle(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -398,6 +399,7 @@ impl Handles<CheckIn> for Store {
 
 impl Handles<CheckInDropped> for Store {
     type Sends = (ToSender<CheckedIn>,);
+    type From = Anyone;
 
     fn handle(&mut self, check_in: CheckInDropped, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -408,6 +410,7 @@ impl Handles<CheckInDropped> for Store {
 
 impl Handles<ListStored> for Store {
     type Sends = (ToSender<Stored>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: ListStored, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -417,6 +420,7 @@ impl Handles<ListStored> for Store {
 
 impl Handles<Pin> for Store {
     type Sends = (ToSender<Pinned>,);
+    type From = Anyone;
 
     fn handle(&mut self, Pin { hash }: Pin, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -426,6 +430,7 @@ impl Handles<Pin> for Store {
 
 impl Handles<Unpin> for Store {
     type Sends = (ToSender<Pinned>,);
+    type From = Anyone;
 
     fn handle(&mut self, Unpin { hash }: Unpin, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -435,6 +440,7 @@ impl Handles<Unpin> for Store {
 
 impl Handles<Hold> for Store {
     type Sends = (ToSender<Held>,);
+    type From = Anyone;
 
     fn handle(&mut self, Hold { hash }: Hold, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -445,6 +451,7 @@ impl Handles<Hold> for Store {
 
 impl Handles<Launch> for Store {
     type Sends = (ToSender<Launched>,);
+    type From = Anyone;
 
     fn handle(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let debt = turn.hold()?;
@@ -455,7 +462,7 @@ impl Handles<Launch> for Store {
 
 /// A holder has ended: its holds go, and its launch copies are removed. Nothing is held and no launch copy handed out
 /// while the index is read, as each is taken only once it is.
-impl Handles<Ended> for Store {
+impl Receives<Ended> for Store {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -467,7 +474,7 @@ impl Handles<Ended> for Store {
     }
 }
 
-impl Handles<Answer<Counted, Counting>> for Store {
+impl Receives<Answer<Counted, Counting>> for Store {
     type Sends = ();
 
     fn handle(
@@ -497,7 +504,7 @@ impl Handles<Answer<Counted, Counting>> for Store {
     }
 }
 
-impl Handles<Answer<Stocked, Stocking>> for Store {
+impl Receives<Answer<Stocked, Stocking>> for Store {
     type Sends = ();
 
     fn handle(
@@ -517,7 +524,7 @@ impl Handles<Answer<Stocked, Stocking>> for Store {
     }
 }
 
-impl Handles<Answer<Shelved, Shelving>> for Store {
+impl Receives<Answer<Shelved, Shelving>> for Store {
     type Sends = ();
 
     fn handle(
@@ -539,7 +546,7 @@ impl Handles<Answer<Shelved, Shelving>> for Store {
     }
 }
 
-impl Handles<Answer<Issued, Issuing>> for Store {
+impl Receives<Answer<Issued, Issuing>> for Store {
     type Sends = ();
 
     fn handle(
@@ -559,7 +566,7 @@ impl Handles<Answer<Issued, Issuing>> for Store {
     }
 }
 
-impl Handles<Answer<Recalled, Recalling>> for Store {
+impl Receives<Answer<Recalled, Recalling>> for Store {
     type Sends = ();
 
     fn handle(

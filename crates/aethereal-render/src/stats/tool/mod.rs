@@ -13,8 +13,8 @@ use super::{
 };
 use crate::Renderer;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Tells, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, Tells, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -179,6 +179,7 @@ impl Tool for StatsTool {
 /// Holds the call, and subscribes to the renderer when it is the first to wait.
 impl Handles<Call> for StatsTool {
     type Sends = Subscribing;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<ReadRenderStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -203,6 +204,7 @@ impl Handles<Call> for StatsTool {
 /// Keeps the first frame's statistics heard while calls wait, and answers what it can.
 impl Handles<FrameStats> for StatsTool {
     type Sends = Subscribing;
+    type From = Anyone;
 
     fn handle(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
         if let Reading::Waiting { frame: frame @ FrameHeard::Awaited, .. } = &mut self.reading {
@@ -216,6 +218,7 @@ impl Handles<FrameStats> for StatsTool {
 /// Keeps the first pass times heard while calls wait, and answers what it can.
 impl Handles<GpuTimes> for StatsTool {
     type Sends = Subscribing;
+    type From = Anyone;
 
     fn handle(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
         if let Reading::Waiting { times: times @ TimesHeard::Awaited, .. } = &mut self.reading {
@@ -227,7 +230,7 @@ impl Handles<GpuTimes> for StatsTool {
 }
 
 /// Keeps the adapter, or why it was not told, and answers what it can.
-impl Handles<Answer<GpuDescribed, Describing>> for StatsTool {
+impl Receives<Answer<GpuDescribed, Describing>> for StatsTool {
     type Sends = Subscribing;
 
     fn handle(

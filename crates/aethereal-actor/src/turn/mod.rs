@@ -15,16 +15,18 @@ pub use refused::Refused;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
 use crate::Submitted;
+use crate::guard::{Anyone, Guard, Sender};
 #[cfg(feature = "std")]
 #[cfg(feature = "std")]
 use crate::job::{WrittenJob, lending_given};
 use crate::resource;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Handles, Held,
-    Instances, Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
-    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Recent, Resource, Runs, SeatNumber, Seated, Seats,
-    Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Untaken, Watchable, What, Within, Written,
+    Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
+    Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf, Parented,
+    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber, Seated, Seats,
+    Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Unreadable, Untaken, Watchable, What, Within,
+    Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -1481,8 +1483,19 @@ impl<'a> Turning<'a> {
         }
     }
 
-    /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`.
-    pub(crate) fn declaring<A: Actor, S: Sends>(self, declared: &'static Declared) -> Turn<'a, A, S> {
+    /// The source of the item the turn handles, as the guard of a handler of an actor whose type declares `declared`
+    /// reads it (ADR-0058).
+    pub(crate) const fn sender(&self, declared: &'static Declared) -> Sender<'_> {
+        Sender::new(self.source, self.me, declared, self.above, self.table, self.made)
+    }
+
+    /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`, and whose guard `F` checked
+    /// the sender as `from`.
+    pub(crate) fn declaring<A: Actor, S: Sends, F: Guard<A>>(
+        self,
+        declared: &'static Declared,
+        from: F::Sent,
+    ) -> Turn<'a, A, S, F> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
         let seat = Seat {
             me,
@@ -1499,35 +1512,37 @@ impl<'a> Turning<'a> {
             due,
         };
 
-        Turn { seat, instances, source, chain, of: PhantomData }
+        Turn { seat, instances, source, from, chain, of: PhantomData }
     }
 }
 
-/// What an actor of type `Me` asks of the engine while it handles one item, through a handler that may send `S`
-/// (ADR-0009, ADR-0013).
+/// What an actor of type `Me` asks of the engine while it handles one item, through a handler that may send `S`, and
+/// whose guard `F` checked the sender (ADR-0009, ADR-0013, ADR-0058).
 ///
 /// Each ask adds an effect to the turn's buffer of its class, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
-pub struct Turn<'a, Me, S> {
+pub struct Turn<'a, Me, S, F: Guard<Me> = Anyone> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
     /// The actor the item being handled comes from: whom a reply reaches.
     source: Seated,
+    /// The source as the handler's guard checked it (ADR-0058).
+    from: F::Sent,
     chain: Chain,
     of: PhantomData<fn() -> (Me, S)>,
 }
 
 /// The target of a turn's sends and asks, chosen once.
-impl<'a, Me, S> Turn<'a, Me, S> {
+impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
     /// the sends and asks that chain on what this answers (ADR-0016, ADR-0022). A path is found here, once, as a
     /// resolve sees it: each send and ask through it goes to the actor found then, and to none when the path held no
     /// live actor of its type.
     ///
     /// ```
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToType, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, ToType, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1556,6 +1571,7 @@ impl<'a, Me, S> Turn<'a, Me, S> {
     ///
     /// impl Handles<Knock> for Door {
     ///     type Sends = (ToType<Door, Knock>,);
+    ///     type From = Anyone;
     ///
     ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
     ///         turn.to(turn.me()).send(&Knock)?.send(&Knock)?;
@@ -1571,7 +1587,7 @@ impl<'a, Me, S> Turn<'a, Me, S> {
     }
 }
 
-impl<Me, S> Turn<'_, Me, S> {
+impl<Me, S, F: Guard<Me>> Turn<'_, Me, S, F> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
     /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
@@ -1667,7 +1683,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// (ADR-0013):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1696,6 +1712,7 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// impl Handles<Look> for Watcher {
     ///     type Sends = ();
+    ///     type From = Anyone;
     ///
     ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
     ///         let me = turn.me();
@@ -1707,7 +1724,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// ```
     pub fn watch<W: Watchable>(&mut self, of: W)
     where
-        Me: Handles<Ended>,
+        Me: Receives<Ended>,
     {
         let of = of.watched(self.seat.table);
         self.seat.watch(of);
@@ -1719,7 +1736,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// It builds only when the actor's type handles [`On<K>`](crate::On):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Tick, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1749,6 +1766,7 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// impl Handles<Wind> for Clock {
     ///     type Sends = ();
+    ///     type From = Anyone;
     ///
     ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
     ///         turn.subscribe::<Tick>();
@@ -1759,7 +1777,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// ```
     pub fn subscribe<K: Stage>(&mut self)
     where
-        Me: Handles<On<K>>,
+        Me: Receives<On<K>>,
     {
         self.seat.ask(What::Subscribe(KindId::of::<K>()));
     }
@@ -1768,7 +1786,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// not subscribed changes nothing.
     pub fn unsubscribe<K: Stage>(&mut self)
     where
-        Me: Handles<On<K>>,
+        Me: Receives<On<K>>,
     {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }
@@ -1791,7 +1809,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// actor, so the turn's sends do not list it:
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Sleep, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Sleep, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1821,6 +1839,7 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// impl Handles<Nap> for Napper {
     ///     type Sends = ();
+    ///     type From = Anyone;
     ///
     ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
     ///         let until = turn.now();
@@ -1839,7 +1858,7 @@ impl<Me, S> Turn<'_, Me, S> {
     where
         J: Job,
         C: Kind + Encode<Within> + Decode<Within> + 'static,
-        Me: Handles<Answer<J::Done, C>>,
+        Me: Receives<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
     }
@@ -1896,7 +1915,7 @@ impl<Me, S> Turn<'_, Me, S> {
     /// A type that spawns what stands beneath another does not build:
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1950,6 +1969,7 @@ impl<Me, S> Turn<'_, Me, S> {
     ///
     /// impl Handles<Lens> for Host {
     ///     type Sends = ();
+    ///     type From = Anyone;
     ///
     ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
     ///         let _ = turn.spawn::<Lens>(&(), lens);
@@ -2155,6 +2175,34 @@ impl<Me, S> Turn<'_, Me, S> {
         ErasedActorRef::new(self.source)
     }
 
+    /// The sender of the mail being handled, as the handler's guard checked it: an [`ErasedActorRef`] for
+    /// [`Anyone`], which checks nothing, and the reference the guard proved for any other (ADR-0058).
+    #[must_use]
+    pub const fn from(&self) -> &F::Sent {
+        &self.from
+    }
+
+    /// Refuses `mail`, whose sender the handler's guard did not admit: logs it, naming the sender's type and the actor
+    /// it is, and asks the engine to answer it [`Unanswered::Unreadable`] when it is a request and otherwise to drop
+    /// it, as the actor's log records with [`Unreadable::Refused`] (ADR-0058). What the default
+    /// [`refused`](crate::Handles::refused) does.
+    #[cold]
+    #[inline(never)]
+    pub fn refuse<K: Kind>(&mut self, _: &K) -> Result<(), Fault> {
+        let sender = self.source;
+        let kind = &K::NAME;
+        let of = self.seat.declared_at(sender.id).map_or("an unknown type", |declared| declared.name().as_str());
+
+        // A table that names no path, as a guest's does, leaves the sender named by its id and seat.
+        match self.seat.table.path_of(sender.id) {
+            Some(path) => self.log(Level::Warn, format_args!("refused {kind} from {path}, of {of}")),
+            None => self.log(Level::Warn, format_args!("refused {kind} from {sender:?}, of {of}")),
+        }
+        self.seat.ask(What::Unread(Unreadable::Refused));
+
+        Ok(())
+    }
+
     /// The id of the child `segment` names beneath the actor `parent` refers to, whether one stands there or not: what
     /// a receiver keeps something of a child by when the child's parent names it in mail, as the renderer keeps the
     /// list of a child a draw list calls (ADR-0055). Only the engine computes an id, so the table answers it.
@@ -2300,7 +2348,7 @@ pub trait Mailing<'a, Me, S> {
     fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives>;
 }
 
-impl<'a, Me, S> Mailing<'a, Me, S> for Turn<'a, Me, S> {
+impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Turn<'a, Me, S, F> {
     fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
         self.to(target)
     }
@@ -2395,7 +2443,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     where
         J: Job,
         C: Kind + Encode<Within> + Decode<Within> + 'static,
-        Me: Handles<Answer<J::Done, C>>,
+        Me: Receives<Answer<J::Done, C>>,
     {
         self.seat.run(job, context)
     }
@@ -2522,7 +2570,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// ```
     pub fn watch<W: Watchable>(&mut self, of: W)
     where
-        Me: Handles<Ended>,
+        Me: Receives<Ended>,
     {
         let of = of.watched(self.seat.table);
         self.seat.watch(of);
@@ -2534,7 +2582,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// It builds only when the actor's type handles [`On<K>`](crate::On):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Tick, Turn};
+    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Tick, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -2566,7 +2614,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// ```
     pub fn subscribe<K: Stage>(&mut self)
     where
-        Me: Handles<On<K>>,
+        Me: Receives<On<K>>,
     {
         self.seat.ask(What::Subscribe(KindId::of::<K>()));
     }
@@ -2575,7 +2623,7 @@ impl<Me, S> Beginning<'_, Me, S> {
     /// not subscribed changes nothing.
     pub fn unsubscribe<K: Stage>(&mut self)
     where
-        Me: Handles<On<K>>,
+        Me: Receives<On<K>>,
     {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }
@@ -2736,7 +2784,7 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     /// nothing: the actor is gone by the time an answer could come.
     ///
     /// ```compile_fail,E0599
-    /// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+    /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
     /// # use aethereal_actor::{ToSender, Top, Turn, path};
     /// # use aethereal_data::Plain;
     /// #
@@ -2786,13 +2834,14 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     /// #
     /// # impl Handles<Hello> for Greeter {
     /// #     type Sends = (ToSender<Hi>,);
+    /// #     type From = Anyone;
     /// #
     /// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
     /// #         Ok(turn.reply(&Hi)?)
     /// #     }
     /// # }
     /// #
-    /// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+    /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
     /// #     type Sends = ();
     /// #
     /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

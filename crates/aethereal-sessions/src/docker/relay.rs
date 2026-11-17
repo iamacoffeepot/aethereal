@@ -13,8 +13,8 @@ use super::{
     Relaying, Stopping, Unwritable, Watching, reply,
 };
 use aethereal_actor::{
-    ActorRef, Allows, Answer, Answered, Enough, Fault, Handles, More, Number, Open, Part, ProtocolRef, Serving, Stream,
-    StreamKey, Taken, ToAny, ToSender, Turn, Unsent,
+    ActorRef, Allows, Answer, Answered, Anyone, Enough, Fault, Handles, More, Number, Open, Part, ProtocolRef,
+    Receives, Serving, Stream, StreamKey, Taken, ToAny, ToSender, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Client, Failure, Finished, Follow, Received, Receiving, Switch};
@@ -96,6 +96,7 @@ enum Passed {
 
 impl Handles<Open<Attaching>> for Docker {
     type Sends = (ToSender<Detached>, Dial);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, attach) = self.attaching.open(turn, open)?;
@@ -107,6 +108,7 @@ impl Handles<Open<Attaching>> for Docker {
 
 impl Handles<Open<Logging>> for Docker {
     type Sends = (ToSender<LogsDone>, Dial);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, logs) = self.logging.open(turn, open)?;
@@ -118,6 +120,7 @@ impl Handles<Open<Logging>> for Docker {
 
 impl Handles<Open<Watching>> for Docker {
     type Sends = (ToSender<EventsDone>, Dial);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, events) = self.watching.open(turn, open)?;
@@ -129,6 +132,7 @@ impl Handles<Open<Watching>> for Docker {
 
 impl Handles<More> for Docker {
     type Sends = Relaying;
+    type From = Anyone;
 
     /// An asker grants a stream more credit: what waits for it is passed on.
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Relaying>) -> Result<(), Fault> {
@@ -148,6 +152,7 @@ impl Handles<More> for Docker {
 
 impl Handles<Enough> for Docker {
     type Sends = (Stopping,);
+    type From = Anyone;
 
     /// An asker stops a stream: it is answered at once, and the response's connection hung up.
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -173,6 +178,7 @@ impl Handles<Enough> for Docker {
 
 impl Handles<Part<Receiving>> for Docker {
     type Sends = Relaying;
+    type From = Anyone;
 
     /// A part of a response `Http`'s client streams: taken apart into the parts of the stream it is relayed to, its
     /// credit held back until they are passed on.
@@ -193,7 +199,7 @@ impl Handles<Part<Receiving>> for Docker {
     }
 }
 
-impl Handles<Answer<Finished, Number>> for Docker {
+impl Receives<Answer<Finished, Number>> for Docker {
     type Sends = Relaying;
 
     /// A response `Http`'s client streamed has ended: its client is hung up, and the stream it was relayed to is

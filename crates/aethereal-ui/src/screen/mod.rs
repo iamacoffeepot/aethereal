@@ -75,7 +75,7 @@ use crate::tree::{
 };
 use crate::unkept::Unkept;
 use crate::widget::{Arrange, Draws, Focused, Laid, Lit, Piece, Quad, Sample, Selected, anchor};
-use aethereal_actor::{Allows, Asks, Beginning, Fault, Handles, Level, On, Path, Prepare, path};
+use aethereal_actor::{Allows, Asks, Beginning, Fault, Level, On, Path, Prepare, Receives, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
@@ -379,7 +379,7 @@ impl Screen {
     /// A fault when the ask was not written.
     pub fn begin<A, S, I>(target: Target, viewport: Viewport, turn: &mut Beginning<'_, A, S>) -> Result<Self, Fault>
     where
-        A: Handles<On<Prepare>>,
+        A: Receives<On<Prepare>>,
         S: Allows<Asks<Path<Renderer>, ShapeOf, Shaping>, I>,
     {
         turn.subscribe::<Prepare>();

@@ -5,7 +5,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -281,7 +281,7 @@ fn program(wgsl: Bytes, reads: Vec<Read>, coverage: Coverage, shape: Shape) -> C
     }
 }
 
-impl Handles<On<Start>> for Rimmer {
+impl Receives<On<Start>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -294,7 +294,7 @@ impl Handles<On<Start>> for Rimmer {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Rimmer {
+impl Receives<Answer<Shaped, Nothing>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -321,7 +321,7 @@ impl Handles<Answer<Shaped, Nothing>> for Rimmer {
     }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Rimmer {
+impl Receives<Answer<Meshed, Learned>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, CreateEffect, Laying>,);
 
     fn handle(
@@ -354,7 +354,7 @@ impl Handles<Answer<Meshed, Learned>> for Rimmer {
     }
 }
 
-impl Handles<Answer<Effected, Laying>> for Rimmer {
+impl Receives<Answer<Effected, Laying>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
@@ -384,7 +384,7 @@ impl Handles<Answer<Effected, Laying>> for Rimmer {
     }
 }
 
-impl Handles<Answer<Programmed, Making>> for Rimmer {
+impl Receives<Answer<Programmed, Making>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateFrame, MadePrograms>);
 
     fn handle(
@@ -435,7 +435,7 @@ impl Handles<Answer<Programmed, Making>> for Rimmer {
     }
 }
 
-impl Handles<Answer<Framed, MadePrograms>> for Rimmer {
+impl Receives<Answer<Framed, MadePrograms>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, Place, Placing>,);
 
     fn handle(
@@ -460,7 +460,7 @@ impl Handles<Answer<Framed, MadePrograms>> for Rimmer {
 }
 
 /// The floor placed, the rims are asked for; the rims placed, both are listed.
-impl Handles<Answer<Placed, Placing>> for Rimmer {
+impl Receives<Answer<Placed, Placing>> for Rimmer {
     type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(

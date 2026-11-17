@@ -10,8 +10,8 @@ use crate::Renderer;
 use crate::readback::{Pixels, ReadBack, ReadRefused, Readable};
 use crate::texture::TextureFormat;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_pace::{Pace, PaceRead, Pacer, ReadPace};
@@ -179,6 +179,7 @@ impl Tool for CaptureTool {
 /// Holds the call, and asks the pacer how the clock moves: a held clock's capture reads the last frame drawn.
 impl Handles<Call> for CaptureTool {
     type Sends = (Asks<Path<Pacer>, ReadPace, PaceReading>, ToSender<Called>);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(capture) = from_bytes::<Capture>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -203,7 +204,7 @@ impl Handles<Call> for CaptureTool {
 
 /// Asks the renderer for the frame to capture: the last drawn under a held clock, and the next while it runs, or when
 /// the pacer did not answer.
-impl Handles<Answer<PaceRead, PaceReading>> for CaptureTool {
+impl Receives<Answer<PaceRead, PaceReading>> for CaptureTool {
     type Sends = (Asks<Path<Renderer>, ReadBack, Reading>,);
 
     fn handle(
@@ -224,7 +225,7 @@ impl Handles<Answer<PaceRead, PaceReading>> for CaptureTool {
     }
 }
 
-impl Handles<Answer<Pixels, Reading>> for CaptureTool {
+impl Receives<Answer<Pixels, Reading>> for CaptureTool {
     type Sends = ();
 
     fn handle(
@@ -267,7 +268,7 @@ impl Handles<Answer<Pixels, Reading>> for CaptureTool {
     }
 }
 
-impl Handles<Answer<Encoded, Encoding>> for CaptureTool {
+impl Receives<Answer<Encoded, Encoding>> for CaptureTool {
     type Sends = ();
 
     fn handle(

@@ -29,7 +29,7 @@ use core::marker::PhantomData;
 /// does not build.
 ///
 /// ```
-/// use aethereal_actor::{Bytes, Stream};
+/// use aethereal_actor::{Anyone, Bytes, Stream};
 /// use aethereal_data::{Bound, Plain};
 ///
 /// #[derive(Plain)]
@@ -63,7 +63,7 @@ use core::marker::PhantomData;
 /// Two streams whose parts are one kind, taken by one actor, do not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Declared, Ending, Fault, Handles, Part, Stream, Top, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Declared, Ending, Fault, Handles, Part, Stream, Top, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -120,6 +120,7 @@ use core::marker::PhantomData;
 ///
 /// impl Handles<Part<Files>> for Reader {
 ///     type Sends = ();
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())
@@ -128,6 +129,7 @@ use core::marker::PhantomData;
 ///
 /// impl Handles<Part<Logs>> for Reader {
 ///     type Sends = ();
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 ///         Ok(())

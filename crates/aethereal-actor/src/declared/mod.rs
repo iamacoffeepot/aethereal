@@ -16,7 +16,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-pub use handles::{Handled, HandledList, Handles, Others, Untaken};
+pub use handles::{Handled, HandledList, Handles, Others, Reached, Received, Receives, Untaken};
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
 pub use sends::Last;

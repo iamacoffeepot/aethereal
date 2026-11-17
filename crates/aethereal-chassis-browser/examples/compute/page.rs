@@ -4,7 +4,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells, Tick,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells, Tick,
     Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -257,7 +257,7 @@ fn seeded() -> Vec<u8> {
     floats(field.collect::<Vec<f32>>())
 }
 
-impl Handles<On<Start>> for Simulator {
+impl Receives<On<Start>> for Simulator {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -270,7 +270,7 @@ impl Handles<On<Start>> for Simulator {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Simulator {
+impl Receives<Answer<Shaped, Nothing>> for Simulator {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -303,7 +303,7 @@ const fn field(access: Access) -> Binding {
     Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 16, access } }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Simulator {
+impl Receives<Answer<Meshed, Learned>> for Simulator {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MeshId>,);
 
     fn handle(
@@ -340,7 +340,7 @@ impl Handles<Answer<Meshed, Learned>> for Simulator {
     }
 }
 
-impl Handles<Answer<Programmed, MeshId>> for Simulator {
+impl Receives<Answer<Programmed, MeshId>> for Simulator {
     type Sends = (Asks<Path<Renderer>, CreateCompute, Drawing>,);
 
     fn handle(
@@ -366,7 +366,7 @@ impl Handles<Answer<Programmed, MeshId>> for Simulator {
     }
 }
 
-impl Handles<Answer<Computed, Drawing>> for Simulator {
+impl Receives<Answer<Computed, Drawing>> for Simulator {
     type Sends = (Asks<Path<Renderer>, CreateStorage, MadePrograms>,);
 
     fn handle(
@@ -392,7 +392,7 @@ impl Handles<Answer<Computed, Drawing>> for Simulator {
     }
 }
 
-impl Handles<Answer<Stored, MadePrograms>> for Simulator {
+impl Receives<Answer<Stored, MadePrograms>> for Simulator {
     type Sends = (Asks<Path<Renderer>, Place, Placing>,);
 
     fn handle(
@@ -419,7 +419,7 @@ impl Handles<Answer<Stored, MadePrograms>> for Simulator {
     }
 }
 
-impl Handles<Answer<Placed, Placing>> for Simulator {
+impl Receives<Answer<Placed, Placing>> for Simulator {
     type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
 
     fn handle(
@@ -449,7 +449,7 @@ impl Handles<Answer<Placed, Placing>> for Simulator {
 }
 
 /// The dispatch made is listed, run before the dots are drawn.
-impl Handles<Answer<Dispatched, Dispatching>> for Simulator {
+impl Receives<Answer<Dispatched, Dispatching>> for Simulator {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -470,7 +470,7 @@ impl Handles<Answer<Dispatched, Dispatching>> for Simulator {
     }
 }
 
-impl Handles<On<Tick>> for Simulator {
+impl Receives<On<Tick>> for Simulator {
     type Sends = (Asks<Path<Renderer>, ReadStorage, Nothing>, Asks<Path<Renderer>, TimeFrame, Nothing>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -496,7 +496,7 @@ impl Handles<On<Tick>> for Simulator {
     }
 }
 
-impl Handles<Answer<StorageContents, Nothing>> for Simulator {
+impl Receives<Answer<StorageContents, Nothing>> for Simulator {
     type Sends = ();
 
     fn handle(
@@ -529,7 +529,7 @@ impl Handles<Answer<StorageContents, Nothing>> for Simulator {
     }
 }
 
-impl Handles<Answer<Timed, Nothing>> for Simulator {
+impl Receives<Answer<Timed, Nothing>> for Simulator {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

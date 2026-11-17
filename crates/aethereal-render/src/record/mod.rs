@@ -11,8 +11,8 @@ use crate::capture::image::{self, Region};
 use crate::capture::{Crop, crop_or_whole, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handle, Handles, Held,
-    Path, ProtocolRef, ToSender, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handle,
+    Handles, Held, Path, ProtocolRef, Receives, ToSender, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
@@ -299,6 +299,7 @@ impl Tool for RecordTool {
 /// Checks the call, holds it, and asks the pacer to hold the clock: frames are drawn once it has.
 impl Handles<Call> for RecordTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<Record>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -333,7 +334,7 @@ impl Handles<Call> for RecordTool {
 }
 
 /// The pacer held the clock, so the first frame is drawn; or it set the clock back, so the call is answered.
-impl Handles<Answer<PaceSet, Pacing>> for RecordTool {
+impl Receives<Answer<PaceSet, Pacing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
@@ -378,7 +379,7 @@ impl Handles<Answer<PaceSet, Pacing>> for RecordTool {
 }
 
 /// A frame's cycle has run: only a refusal matters, as the frame read back is what moves the clip on.
-impl Handles<Answer<Advanced, Stepping>> for RecordTool {
+impl Receives<Answer<Advanced, Stepping>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
@@ -400,7 +401,7 @@ impl Handles<Answer<Advanced, Stepping>> for RecordTool {
 
 /// A frame was read back: it is checked and waits for the encoder, made at the first frame's size; it is encoded once
 /// the encoder is free, and the next frame drawn when there is room for it.
-impl Handles<Answer<Pixels, Framing>> for RecordTool {
+impl Receives<Answer<Pixels, Framing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
@@ -465,7 +466,7 @@ impl Handles<Answer<Pixels, Framing>> for RecordTool {
 
 /// A frame was encoded, and the encoder handed back: the next frame waiting is encoded, the next drawn when there is
 /// room for it, and the clip's MP4 finished once the last is in.
-impl Handles<Answer<FrameEncoded, Framing>> for RecordTool {
+impl Receives<Answer<FrameEncoded, Framing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
@@ -503,7 +504,7 @@ impl Handles<Answer<FrameEncoded, Framing>> for RecordTool {
 }
 
 /// The clip's MP4 is finished: it is written into the program's saves.
-impl Handles<Answer<ClipFinished, Filing>> for RecordTool {
+impl Receives<Answer<ClipFinished, Filing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(
@@ -539,7 +540,7 @@ impl Handles<Answer<ClipFinished, Filing>> for RecordTool {
 }
 
 /// The clip's MP4 is written: the clock is set back, and the call answered with the clip once it is.
-impl Handles<Answer<FileWritten, Filing>> for RecordTool {
+impl Receives<Answer<FileWritten, Filing>> for RecordTool {
     type Sends = Sends;
 
     fn handle(

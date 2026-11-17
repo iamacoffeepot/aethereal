@@ -3,12 +3,12 @@
 
 use super::super::*;
 use super::{Answering, Waiting, owed};
-use aethereal_actor::Time;
 use aethereal_actor::Written;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Asks, Bytes, Carries, ChildOf, Due, Ending, Fault, Handles,
     Held, Protocol, Tie, ToAny, ToSender, ToType, Top, Turn, Unanswered, child,
 };
+use aethereal_actor::{Anyone, Receives, Time};
 use aethereal_data::{Bound, EncodeError, Kind, Plain};
 use std::iter;
 use std::mem;
@@ -190,6 +190,7 @@ impl Actor for Board {
 
 impl Handles<WhichTile> for Board {
     type Sends = (ToSender<TileIs>, ToAny<(HeldReply,), HeldReply>);
+    type From = Anyone;
 
     fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let tile = match which.spot {
@@ -231,6 +232,7 @@ impl Handles<WhichTile> for Board {
 
 impl Handles<Release> for Board {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let held = mem::take(&mut self.held);
@@ -432,6 +434,7 @@ impl Actor for Pointer {
 impl Handles<Orders> for Pointer {
     type Sends =
         (Asks<Tiles, WhichTile, Looking>, ToType<Board, WhichTile>, ToType<Board, Release>, ToType<Self, Orders>);
+    type From = Anyone;
 
     fn handle(&mut self, orders: Orders, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some((order, rest)) = orders.parted() else {
@@ -477,7 +480,7 @@ impl Handles<Orders> for Pointer {
     }
 }
 
-impl Handles<Answer<TileIs, Looking>> for Pointer {
+impl Receives<Answer<TileIs, Looking>> for Pointer {
     type Sends = ();
 
     fn handle(
@@ -493,6 +496,7 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 
 impl Handles<TileIs> for Pointer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.told.push(tile.tile);
@@ -503,6 +507,7 @@ impl Handles<TileIs> for Pointer {
 
 impl Handles<HeldReply> for Pointer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, reply: HeldReply, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.held.push(reply.refused);
@@ -556,7 +561,7 @@ impl Actor for Seeker {
     }
 }
 
-impl Handles<Answer<TileIs, Looking>> for Seeker {
+impl Receives<Answer<TileIs, Looking>> for Seeker {
     type Sends = ();
 
     fn handle(
@@ -614,6 +619,7 @@ impl Actor for Keeper {
 
 impl Handles<Orders> for Keeper {
     type Sends = (Asks<Tiles, WhichTile, Kept>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Orders, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(blob) = turn.put(vec![9; 3]) else {
@@ -626,7 +632,7 @@ impl Handles<Orders> for Keeper {
     }
 }
 
-impl Handles<Answer<TileIs, Kept>> for Keeper {
+impl Receives<Answer<TileIs, Kept>> for Keeper {
     type Sends = ();
 
     fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

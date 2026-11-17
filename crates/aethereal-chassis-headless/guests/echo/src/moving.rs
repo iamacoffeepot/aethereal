@@ -5,8 +5,8 @@
 
 use crate::Shut;
 use aethereal_actor::{
-    Actor, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Handles, Portability, ToSender, Top, Turn, Upgrade,
-    Upgrades,
+    Actor, Anyone, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Handles, Portability, ToSender, Top, Turn,
+    Upgrade, Upgrades,
 };
 #[cfg(echo_v2)]
 use aethereal_actor::{Portable, TakeOverError};
@@ -152,6 +152,7 @@ impl Carries<Probe> for Mover {
 
 impl Handles<Probe> for Mover {
     type Sends = (ToSender<Report>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
@@ -165,6 +166,7 @@ impl Handles<Probe> for Mover {
 
 impl Handles<Keep> for Mover {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, keep: Keep, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.kept.push(keep.blob);
@@ -175,6 +177,7 @@ impl Handles<Keep> for Mover {
 
 impl Handles<LetGo> for Mover {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.holds = false;
@@ -185,6 +188,7 @@ impl Handles<LetGo> for Mover {
 
 impl Handles<Shut> for Mover {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.close();
@@ -233,6 +237,7 @@ impl Carries<Probe> for Keeper {
 
 impl Handles<Probe> for Keeper {
     type Sends = (ToSender<Report>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
@@ -336,6 +341,7 @@ impl Carries<Probe> for Stubborn {
 
 impl Handles<Probe> for Stubborn {
     type Sends = (ToSender<Report>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.answer();
@@ -347,6 +353,7 @@ impl Handles<Probe> for Stubborn {
 
 impl Handles<LetGo> for Stubborn {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.holds = false;
@@ -418,6 +425,7 @@ impl Carries<Probe> for Breaker {
 
 impl Handles<Probe> for Breaker {
     type Sends = (ToSender<Report>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.count += 1;
@@ -429,6 +437,7 @@ impl Handles<Probe> for Breaker {
 
 impl Handles<LetGo> for Breaker {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.holds = false;

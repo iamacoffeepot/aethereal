@@ -21,7 +21,7 @@ use std::task::Waker;
 /// checked as it is made, as every root is, which is what a root made once the engine runs is checked by.
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -58,6 +58,7 @@ use std::task::Waker;
 /// #
 /// #         impl Handles<Note> for $name {
 /// #             type Sends = ();
+/// #             type From = Anyone;
 /// #
 /// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -81,7 +82,7 @@ use std::task::Waker;
 /// A setup whose root reaches one made after it does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -118,6 +119,7 @@ use std::task::Waker;
 /// #
 /// #         impl Handles<Note> for $name {
 /// #             type Sends = ();
+/// #             type From = Anyone;
 /// #
 /// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())

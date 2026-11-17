@@ -7,7 +7,7 @@
 //! actor is made, as every path is.
 //!
 //! ```
-//! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
+//! # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Receives, Tells, Top, Turn};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -43,6 +43,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
+//! #             type From = Anyone;
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
@@ -67,7 +68,7 @@
 //! as it begins does:
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
+//! # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -103,6 +104,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
+//! #             type From = Anyone;
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
@@ -122,7 +124,7 @@
 //! ```
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
+//! # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Path, Tells, Top, Turn};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -158,6 +160,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
+//! #             type From = Anyone;
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
@@ -177,7 +180,7 @@
 //! ```
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles};
+//! # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Receives};
 //! # use aethereal_actor::{Ordered, Path, Tells, Top, Turn};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
@@ -214,6 +217,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type Sends = $handler;
+//! #             type From = Anyone;
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
 //! #                 Ok(())
@@ -256,7 +260,7 @@
 //! #     }
 //! # }
 //! #
-//! # impl Handles<Answer<Note, Note>> for Querent {
+//! # impl Receives<Answer<Note, Note>> for Querent {
 //! #     type Sends = ();
 //! #
 //! #     fn handle(&mut self, _: (Answered<Note>, Note), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -267,8 +271,8 @@
 //! ready(PhantomData::<(Lighthouse, (Querent, ()))>);
 //! ```
 
-use crate::{Actor, Asks, ChildOf, Handles, Path, Protocol, Tells, ToAny, ToSender, ToType};
-use crate::{Handled, Top};
+use crate::{Actor, Asks, ChildOf, Path, Protocol, Tells, ToAny, ToSender, ToType};
+use crate::{Reached, Top};
 use aethereal_data::{ActorKey, Instanced, Singleton};
 use core::marker::PhantomData;
 
@@ -363,9 +367,9 @@ macro_rules! tuples {
     ($( [$($name:ident $is:ident)*] )*) => {$(
         impl<S, $($name: NeedsIn<S, $is>, $is),*> NeedsIn<S, ($($is,)*)> for ($($name,)*) {}
 
-        impl<A, S, $($name: Handled, $is),*> HandlersNeedIn<A, S, ($($is,)*)> for ($($name,)*)
+        impl<A: Actor, S, $($name: Reached<A>, $is),*> HandlersNeedIn<A, S, ($($is,)*)> for ($($name,)*)
         where
-            $(A: Handles<$name>, <A as Handles<$name>>::Sends: NeedsIn<S, $is>,)*
+            $(<$name as Reached<A>>::Sends: NeedsIn<S, $is>,)*
         {
         }
     )*};

@@ -18,7 +18,7 @@ use super::asked::Waiting;
 use super::asks::{Archived, Opened, Said, State};
 use super::transcript::{Entry, Numbered, Speaker};
 use super::{Acts, Does, Sessions};
-use aethereal_actor::{Carries, Ended, Fault, Handles, Held, Level, Protocol, ProtocolRef, Turn};
+use aethereal_actor::{Anyone, Carries, Ended, Fault, Handles, Held, Level, Protocol, ProtocolRef, Receives, Turn};
 use aethereal_data::{Bound, Plain, write_json_string};
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
@@ -172,6 +172,7 @@ impl Sessions {
 
 impl Handles<Joined> for Sessions {
     type Sends = Acts;
+    type From = Anyone;
 
     /// A trusted engine linked: it is watched, and shown every session and each ask that waits at once.
     fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
@@ -187,7 +188,7 @@ impl Handles<Joined> for Sessions {
     }
 }
 
-impl Handles<Ended> for Sessions {
+impl Receives<Ended> for Sessions {
     type Sends = ();
 
     /// An engine that joined has ended: its tabs end with it. A turn running carries on, and an ask waits on.
@@ -201,6 +202,7 @@ impl Handles<Ended> for Sessions {
 
 impl Handles<Chatted> for Sessions {
     type Sends = Acts;
+    type From = Anyone;
 
     /// What a trusted engine's owner did: taken only from the actor that joined as that engine, and done once the
     /// capability has found its sessions.

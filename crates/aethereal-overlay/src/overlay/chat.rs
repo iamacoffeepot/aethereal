@@ -7,7 +7,7 @@ use super::Overlay;
 use super::console::Offering;
 use crate::chat::{Typed, typed};
 use crate::console::Command;
-use aethereal_actor::{ActorRef, Allows, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
+use aethereal_actor::{ActorRef, Allows, Anyone, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_link::{Link, Listen};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
@@ -132,6 +132,7 @@ fn cut(printed: &str) -> &str {
 /// chat's words, as only an engine the hub trusts is shown the sessions.
 impl Handles<ShowTabs> for Overlay {
     type Sends = (ToType<Link, Chat>, Asks<Path<Tools>, Offer, Offering>);
+    type From = Anyone;
 
     fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let first = !self.chats.is_listed();
@@ -148,6 +149,7 @@ impl Handles<ShowTabs> for Overlay {
 /// Events of a tab open, taken into its transcript.
 impl Handles<ShowEvents> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, shown: ShowEvents, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.chats.shown(shown.session, &shown.events);
@@ -159,6 +161,7 @@ impl Handles<ShowEvents> for Overlay {
 /// An ask that waits on the owner, kept until answered.
 impl Handles<ShowAsk> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("session {} asks: {}", ask.session, ask.what));

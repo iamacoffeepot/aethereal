@@ -18,7 +18,7 @@ use aethereal_data::Kind;
 /// An asker that asks an actor that replies, and does not handle the answer, does not build:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, ToSender, ToType, Turn};
+/// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, ToSender, ToType, Turn};
 /// use aethereal_data::Plain;
 ///
 /// # #[derive(Plain)]
@@ -52,6 +52,7 @@ use aethereal_data::Kind;
 /// /// Answers each question it is asked.
 /// impl Handles<Ask> for Answerer {
 ///     type Sends = (ToSender<Answer>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Answer)?)
@@ -83,7 +84,7 @@ use aethereal_data::Kind;
 /// So does one that asks from a handler,
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -116,6 +117,7 @@ use aethereal_data::Kind;
 /// #
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)
@@ -154,6 +156,7 @@ use aethereal_data::Kind;
 ///
 /// impl Handles<Ask> for Asker {
 ///     type Sends = (ToType<Answerer, Ask>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Ask, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(())
@@ -164,7 +167,7 @@ use aethereal_data::Kind;
 /// one that asks as it ends,
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -197,6 +200,7 @@ use aethereal_data::Kind;
 /// #
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)
@@ -237,7 +241,7 @@ use aethereal_data::Kind;
 /// and one that asks through a named protocol that answers what it does not handle:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, Carries, Ending, Fault, Handles, Protocol, ToAny, ToSender, ToType, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -270,6 +274,7 @@ use aethereal_data::Kind;
 /// #
 /// # impl Handles<Ask> for Answerer {
 /// #     type Sends = (ToSender<Answer>,);
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Ask, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Answer)?)

@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Entry, Handles, Job, Running, Seated, Services, Sleep, Slept,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Entry, Job, Receives, Running, Seated, Services, Sleep, Slept,
     Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
@@ -243,7 +243,7 @@ fn seen(engine: &mut Engine) -> Vec<Seen> {
     engine.take_turned().iter().filter_map(Seen::of).collect()
 }
 
-impl Handles<Answer<Ran, Nothing>> for Quitter {
+impl Receives<Answer<Ran, Nothing>> for Quitter {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -251,7 +251,7 @@ impl Handles<Answer<Ran, Nothing>> for Quitter {
     }
 }
 
-impl Handles<Answer<Slept, GivesUp>> for Quitter {
+impl Receives<Answer<Slept, GivesUp>> for Quitter {
     type Sends = ();
 
     fn handle(
@@ -338,7 +338,7 @@ impl Actor for Staller {
     }
 }
 
-impl Handles<Answer<Ran, Nothing>> for Staller {
+impl Receives<Answer<Ran, Nothing>> for Staller {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

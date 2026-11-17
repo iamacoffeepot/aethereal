@@ -8,8 +8,8 @@ use crate::{
     CheckIn, CheckInDropped, CheckedIn, DROP_BOX, DropName, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -146,6 +146,7 @@ impl Handles<Call> for StoreTools {
         Asks<Path<Store>, Unpin, Asking>,
         ToSender<Called>,
     );
+    type From = Anyone;
 
     /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
     /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
@@ -174,7 +175,7 @@ impl Handles<Call> for StoreTools {
     }
 }
 
-impl Handles<Answer<CheckedIn, Asking>> for StoreTools {
+impl Receives<Answer<CheckedIn, Asking>> for StoreTools {
     type Sends = ();
 
     /// The check-in's hash, size, and freshness, or its refusal.
@@ -201,7 +202,7 @@ impl Handles<Answer<CheckedIn, Asking>> for StoreTools {
     }
 }
 
-impl Handles<Answer<Stored, Asking>> for StoreTools {
+impl Receives<Answer<Stored, Asking>> for StoreTools {
     type Sends = ();
 
     /// Every entry the store lists.
@@ -223,7 +224,7 @@ impl Handles<Answer<Stored, Asking>> for StoreTools {
     }
 }
 
-impl Handles<Answer<Pinned, Asking>> for StoreTools {
+impl Receives<Answer<Pinned, Asking>> for StoreTools {
     type Sends = ();
 
     /// That the pin was set or cleared, or the refusal of a hash the store does not hold.

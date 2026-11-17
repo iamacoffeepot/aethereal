@@ -8,8 +8,8 @@ use crate::Renderer;
 use crate::frame::{Frame, TargetKind};
 use crate::readback::{ReadFrameTarget, ReadRefused, Region, TargetPixels};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -135,6 +135,7 @@ impl Tool for TargetTool {
 /// Holds the call, and asks the renderer for the region around the pixel.
 impl Handles<Call> for TargetTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<ReadTarget>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -158,7 +159,7 @@ impl Handles<Call> for TargetTool {
 }
 
 /// The renderer read the region, or would not: the call is answered with its values, or why.
-impl Handles<Answer<TargetPixels, Targeting>> for TargetTool {
+impl Receives<Answer<TargetPixels, Targeting>> for TargetTool {
     type Sends = Sends;
 
     fn handle(

@@ -13,8 +13,8 @@ mod tests;
 pub(crate) use listen::listen;
 
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Source, Subscribers, ToAny, Top,
-    Turn,
+    Actor, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Receives, Source,
+    Subscribers, ToAny, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -98,6 +98,7 @@ impl Actor for Controls {
 /// Adds the sender, and sends it every control as it stands: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Controls {
     type Sends = (ToAny<(Control,), Control>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -120,6 +121,7 @@ impl Handles<Subscribe> for Controls {
 
 impl Handles<Unsubscribe> for Controls {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.listeners.unsubscribe(turn.sender());
@@ -132,6 +134,7 @@ impl Handles<Unsubscribe> for Controls {
 /// another actor sends is not the page's, and is neither kept nor sent on.
 impl Handles<Control> for Controls {
     type Sends = (ToAny<(Control,), Control>,);
+    type From = Anyone;
 
     fn handle(&mut self, control: Control, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let me = turn.me();
@@ -147,7 +150,7 @@ impl Handles<Control> for Controls {
     }
 }
 
-impl Handles<Ended> for Controls {
+impl Receives<Ended> for Controls {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

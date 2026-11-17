@@ -2,7 +2,7 @@
 //! it said, live and after it has ended, the test asking the tool's worker each call as a holder would.
 
 use aethereal_actor::{
-    Actor, Answered, Beginning, ChildOf, Ending, Fault, Handles, Level, ProtocolRef, Top, Turn, path,
+    Actor, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, ProtocolRef, Top, Turn, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_data::{ActorPath, Budget, Plain, from_bytes, to_bytes};
@@ -56,6 +56,7 @@ impl Actor for Talker {
 
 impl Handles<Say> for Talker {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let level = match level {
@@ -72,6 +73,7 @@ impl Handles<Say> for Talker {
 
 impl Handles<GiveUp> for Talker {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.log(Level::Error, "giving up");

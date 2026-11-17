@@ -3,8 +3,8 @@
 
 use super::{Engines, Spawn};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level, Path,
-    Sleep, Slept, ToType, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level,
+    Path, Receives, Sleep, Slept, ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_process::{Environment, Exited, Process, Processes, Start, Started, Stdio, Stop};
@@ -113,7 +113,7 @@ impl Actor for Spawned {
     }
 }
 
-impl Handles<Answer<Launched, Fetching>> for Spawned {
+impl Receives<Answer<Launched, Fetching>> for Spawned {
     type Sends = (ToType<Engines, Runs>, Asks<Path<Processes>, Start, Booting>, ToType<Engines, Spawn>);
 
     /// A launch copy made: `Engines` is told the build it runs, and `Processes` asked to start it. Nothing stored, or
@@ -151,7 +151,7 @@ impl Handles<Answer<Launched, Fetching>> for Spawned {
     }
 }
 
-impl Handles<Answer<Started, Booting>> for Spawned {
+impl Receives<Answer<Started, Booting>> for Spawned {
     type Sends = (ToType<Engines, Spawn>,);
 
     /// Its program running, it waits for it to link, for `link_within_millis` at most; refused, it answers the spawn,
@@ -176,7 +176,7 @@ impl Handles<Answer<Started, Booting>> for Spawned {
     }
 }
 
-impl Handles<Answer<Slept, Patience>> for Spawned {
+impl Receives<Answer<Slept, Patience>> for Spawned {
     type Sends = (ToType<Engines, Spawn>, ToType<Process, Stop>);
 
     /// Its program has not linked in its time, or this would have been cancelled: the spawn is answered `Unlinked`,
@@ -195,6 +195,7 @@ impl Handles<Answer<Slept, Patience>> for Spawned {
 
 impl Handles<Exited> for Spawned {
     type Sends = (ToType<Engines, Spawn>, ToType<Engines, Exited>);
+    type From = Anyone;
 
     /// Its program has exited, as its own process tells it: a spawn not yet answered is answered `Exited`, `Engines`
     /// is told how it exited, and it ends. From any other actor, it is passed over.
@@ -222,6 +223,7 @@ impl Handles<Exited> for Spawned {
 
 impl Handles<LinkedAs> for Spawned {
     type Sends = (ToType<Engines, Spawn>,);
+    type From = Anyone;
 
     /// Its engine linked, as `Engines` tells it: the spawn is answered `Linked`, unless it was answered already. From
     /// any other actor, it is passed over.
@@ -243,6 +245,7 @@ impl Handles<LinkedAs> for Spawned {
 
 impl Handles<Stop> for Spawned {
     type Sends = (ToType<Process, Stop>,);
+    type From = Anyone;
 
     /// `Engines` asks it to stop its engine: its process is asked to. A spawn not yet answered stays so, and is
     /// answered `Exited` once the program has. From any other actor, it is passed over.

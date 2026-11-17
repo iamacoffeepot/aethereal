@@ -11,8 +11,8 @@ use crate::perform::{Perform, Performed, unperformable};
 use crate::pointing::{Cascade, Hearer, Picked, Pointed, Probed, SubscribeProbes};
 use crate::windows::Windows;
 use aethereal_actor::{
-    Actor, Allows, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level, Subscribers,
-    ToAny, ToSender, ToType, Turn,
+    Actor, Allows, Anyone, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level, Receives,
+    Subscribers, ToAny, ToSender, ToType, Turn,
 };
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
 use core::mem;
@@ -187,6 +187,7 @@ impl Window {
 /// Adds the sender, and sends it the surface, mode, and focus as they stand: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Window {
     type Sends = (ToAny<(Event,), Event>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -206,6 +207,7 @@ impl Handles<Subscribe> for Window {
 
 impl Handles<Unsubscribe> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.listeners.unsubscribe(turn.sender());
@@ -220,6 +222,7 @@ impl Handles<Unsubscribe> for Window {
 /// sent, and the actor ends.
 impl Handles<Event> for Window {
     type Sends = (ToAny<(Event,), Event>, ToAny<KeyHearer, Keyed>, ToAny<(Probed,), Probed>);
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let root = turn.parent();
@@ -251,6 +254,7 @@ impl Handles<Event> for Window {
 /// only its host may. Inputs that cannot be performed are refused, and none is sent.
 impl Handles<Perform> for Window {
     type Sends = (ToAny<(Event,), Event>, ToAny<KeyHearer, Keyed>, ToAny<(Probed,), Probed>, ToSender<Performed>);
+    type From = Anyone;
 
     fn handle(&mut self, perform: Perform, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Some(why) = unperformable(&perform.inputs) {
@@ -274,6 +278,7 @@ impl Handles<Perform> for Window {
 /// the window hears: nothing more, when it is subscribed already. An actor that does not handle [`Probed`] is not.
 impl Handles<SubscribeProbes> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: SubscribeProbes, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -293,6 +298,7 @@ impl Handles<SubscribeProbes> for Window {
 /// dropped.
 impl Handles<Picked> for Window {
     type Sends = (ToAny<Hearer, Pointed>, ToType<Windows, ShowCursor>);
+    type From = Anyone;
 
     fn handle(&mut self, picked: Picked, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_prober = self.is_prober(turn.sender());
@@ -318,6 +324,7 @@ impl Handles<Picked> for Window {
 /// Entries from an actor that does not subscribe to the window's probes are not the renderer's, and are dropped.
 impl Handles<KeysListed> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, listed: KeysListed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let is_prober = self.is_prober(turn.sender());
@@ -332,7 +339,7 @@ impl Handles<KeysListed> for Window {
 }
 
 /// A subscriber that ended leaves the list, and a subscriber of its probes too.
-impl Handles<Ended> for Window {
+impl Receives<Ended> for Window {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

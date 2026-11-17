@@ -13,7 +13,7 @@
 use super::{Link, Sending};
 use crate::Up;
 use crate::frames::{self, Written};
-use aethereal_actor::{Allows, Asks, Ended, Fault, Handles, Level, ToAny, Turn};
+use aethereal_actor::{Allows, Anyone, Asks, Ended, Fault, Handles, Level, Receives, ToAny, Turn};
 use aethereal_data::Plain;
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs, Tab};
 use aethereal_tcp::{Write, Writing};
@@ -102,6 +102,7 @@ impl Link {
 /// hub has shown nothing.
 impl Handles<Listen> for Link {
     type Sends = (ToAny<Listening, ShowTabs>, ToAny<Listening, ShowAsk>);
+    type From = Anyone;
 
     fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -129,6 +130,7 @@ impl Handles<Listen> for Link {
 /// engine. A frame too large for the link is not written, and logged.
 impl Handles<Chat> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
+    type From = Anyone;
 
     fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let written = frames::written(&Up::from(chat), self.config.most_bytes)?;
@@ -142,7 +144,7 @@ impl Handles<Chat> for Link {
 }
 
 /// A listener has ended, and is let go.
-impl Handles<Ended> for Link {
+impl Receives<Ended> for Link {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

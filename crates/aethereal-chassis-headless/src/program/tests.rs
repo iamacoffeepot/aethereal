@@ -3,7 +3,7 @@
 use crate::Headless;
 use crate::waiting::{self, BUDGET};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Tick, Top, Turn,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Job, Receives, Runner, Running, Tick, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::harness::{Harness, Turned, Unheard};
@@ -76,7 +76,7 @@ impl<H: Host> Bootstrap<H> for Counter {
     }
 }
 
-impl Handles<Answer<Counted, NothingKept>> for Counter {
+impl Receives<Answer<Counted, NothingKept>> for Counter {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Counted>, NothingKept), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

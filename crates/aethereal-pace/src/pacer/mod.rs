@@ -10,11 +10,11 @@ use asked::SIXTIETH_NANOS;
 pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, Unadvanced};
 
 use crate::host::Clockwork;
-use aethereal_actor::Requests;
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, On, Source,
     Stop, ToSender, Top, Turn,
 };
+use aethereal_actor::{Anyone, Receives, Requests};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Feed;
 use core::time::Duration;
@@ -151,6 +151,7 @@ impl Actor for Pacer {
 /// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
 impl Handles<SetPace> for Pacer {
     type Sends = (ToSender<PaceSet>,);
+    type From = Anyone;
 
     fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let was = self.pace();
@@ -178,6 +179,7 @@ impl Handles<SetPace> for Pacer {
 /// cycle has finished. One the clock cannot run is refused at once.
 impl Handles<Advance> for Pacer {
     type Sends = (ToSender<Advanced>,);
+    type From = Anyone;
 
     fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Advance { cycles, delta_nanos } = advance;
@@ -214,6 +216,7 @@ impl Handles<Advance> for Pacer {
 /// Answers how the clock moves.
 impl Handles<ReadPace> for Pacer {
     type Sends = (ToSender<PaceRead>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: ReadPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&PaceRead { pace: self.pace() })?;
@@ -227,6 +230,7 @@ impl Handles<ReadPace> for Pacer {
 /// cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
 impl Handles<Paced> for Pacer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let me = turn.me();
@@ -261,7 +265,7 @@ impl Handles<Paced> for Pacer {
 }
 
 /// The program is stopping: every advance held is refused, and so is every one asked from now on.
-impl Handles<On<Stop>> for Pacer {
+impl Receives<On<Stop>> for Pacer {
     type Sends = ();
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {

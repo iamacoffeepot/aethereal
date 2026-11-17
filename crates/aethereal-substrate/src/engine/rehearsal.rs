@@ -1,7 +1,7 @@
 //! An engine for a host to time steps on, to measure what splitting one among workers costs (ADR-0011).
 
 use super::Engine;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToType, Top, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToType, Top, Turn};
 use aethereal_data::Plain;
 use std::num::NonZeroUsize;
 
@@ -39,6 +39,7 @@ impl Actor for Echo {
 
 impl Handles<Again> for Echo {
     type Sends = (ToType<Self, Again>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Again)?;

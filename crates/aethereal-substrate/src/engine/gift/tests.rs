@@ -1,9 +1,9 @@
 //! Resources as a step's turns keep, give, and take them, and as the engine drops them (ADR-0010).
 
 use super::super::*;
-use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, ToAny, ToType, Turn, child};
+use aethereal_actor::{Anyone, Entry};
 use aethereal_data::{Bound, Kind, Plain};
 use std::any;
 use std::mem;
@@ -206,6 +206,7 @@ impl Actor for Keeper {
 
 impl Handles<Order> for Keeper {
     type Sends = (ToType<Self, Order>, ToType<Self, Pass>, ToAny<(Pass,), Pass>);
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match order {
@@ -287,6 +288,7 @@ impl Handles<Order> for Keeper {
 
 impl Handles<Pass> for Keeper {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let refuses = self.takes == Takes::None;
@@ -305,6 +307,7 @@ impl Handles<Pass> for Keeper {
 
 impl Handles<Last> for Keeper {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, last: Last, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.did.push(Did::Last { number: last.number, light: last.light });

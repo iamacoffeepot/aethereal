@@ -91,7 +91,7 @@ impl<P> CarriedBy<P> for () {}
 /// A board whose handler replies with a kind the protocol does not answer with does not conform:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, ActorRef, Beginning, Carries, Ending, Fault, Handles, Protocol, ProtocolRef, ToSender, Turn};
+/// # use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Carries, Ending, Fault, Handles, Protocol, ProtocolRef, ToSender, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -139,6 +139,7 @@ impl<P> CarriedBy<P> for () {}
 /// /// Answers which tile, or that it is lost: a reply the protocol does not answer with.
 /// impl Handles<WhichTile> for Board {
 ///     type Sends = (ToSender<TileIs>, ToSender<Lost>);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Lost)?)

@@ -3,8 +3,8 @@
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
-    Protocol, ProtocolRef, Sleep, Slept, Time, ToSender, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault,
+    Handles, Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Time, ToSender, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -115,6 +115,7 @@ impl Actor for Mute {
 
 impl Handles<Query> for Mute {
     type Sends = (ToSender<Reply>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -127,6 +128,7 @@ impl Handles<Query> for Mute {
 
 impl Handles<Release> for Mute {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         for held in self.held.drain(..) {
@@ -178,6 +180,7 @@ impl Actor for Relay {
 
 impl Handles<Query> for Relay {
     type Sends = (ToSender<Reply>, Asks<Queries, Query, Pending>);
+    type From = Anyone;
 
     fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -199,6 +202,7 @@ impl Handles<Query> for Relay {
 
 impl Handles<Forward> for Relay {
     type Sends = (Asks<Queries, Query, Pending>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Forward, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for held in &self.held {
@@ -209,7 +213,7 @@ impl Handles<Forward> for Relay {
     }
 }
 
-impl Handles<Answer<Reply, Pending>> for Relay {
+impl Receives<Answer<Reply, Pending>> for Relay {
     type Sends = ();
 
     fn handle(
@@ -227,7 +231,7 @@ impl Handles<Answer<Reply, Pending>> for Relay {
     }
 }
 
-impl Handles<Answer<Slept, Pending>> for Relay {
+impl Receives<Answer<Slept, Pending>> for Relay {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Slept>, Pending), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -299,6 +303,7 @@ impl Actor for Asker {
 
 impl Handles<Order> for Asker {
     type Sends = (Asks<Queries, Query, Pending>,);
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let to: ProtocolRef<Queries> = match order.whom {
@@ -319,7 +324,7 @@ impl Handles<Order> for Asker {
     }
 }
 
-impl Handles<Answer<Reply, Pending>> for Asker {
+impl Receives<Answer<Reply, Pending>> for Asker {
     type Sends = ();
 
     fn handle(
