@@ -5,7 +5,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -314,7 +314,7 @@ fn program(wgsl: Bytes, depth: Depth) -> CreateProgram {
     }
 }
 
-impl Handles<On<Start>> for Framer {
+impl Receives<On<Start>> for Framer {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -327,7 +327,7 @@ impl Handles<On<Start>> for Framer {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Framer {
+impl Receives<Answer<Shaped, Nothing>> for Framer {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -354,7 +354,7 @@ impl Handles<Answer<Shaped, Nothing>> for Framer {
     }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Framer {
+impl Receives<Answer<Meshed, Learned>> for Framer {
     type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>,);
 
     fn handle(
@@ -387,7 +387,7 @@ impl Handles<Answer<Meshed, Learned>> for Framer {
     }
 }
 
-impl Handles<Answer<Effected, Effecting>> for Framer {
+impl Receives<Answer<Effected, Effecting>> for Framer {
     type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>, Asks<Path<Renderer>, CreateProgram, Making>);
 
     fn handle(
@@ -468,7 +468,7 @@ impl Handles<Answer<Effected, Effecting>> for Framer {
     }
 }
 
-impl Handles<Answer<Programmed, Making>> for Framer {
+impl Receives<Answer<Programmed, Making>> for Framer {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateFrame, MadePrograms>);
 
     fn handle(
@@ -516,7 +516,7 @@ impl Handles<Answer<Programmed, Making>> for Framer {
     }
 }
 
-impl Handles<Answer<Framed, MadePrograms>> for Framer {
+impl Receives<Answer<Framed, MadePrograms>> for Framer {
     type Sends = (Asks<Path<Renderer>, Place, Placing>,);
 
     fn handle(
@@ -541,7 +541,7 @@ impl Handles<Answer<Framed, MadePrograms>> for Framer {
 }
 
 /// The surface placed, the splat is asked for; the splat placed, both are listed.
-impl Handles<Answer<Placed, Placing>> for Framer {
+impl Receives<Answer<Placed, Placing>> for Framer {
     type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
@@ -575,7 +575,7 @@ impl Handles<Answer<Placed, Placing>> for Framer {
     }
 }
 
-impl Handles<On<Tick>> for Framer {
+impl Receives<On<Tick>> for Framer {
     type Sends = (Asks<Path<Renderer>, ReadBack, Nothing>, Asks<Path<Renderer>, TimeFrame, Nothing>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -603,7 +603,7 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
     channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
 }
 
-impl Handles<Answer<Pixels, Nothing>> for Framer {
+impl Receives<Answer<Pixels, Nothing>> for Framer {
     type Sends = ();
 
     fn handle(
@@ -634,7 +634,7 @@ impl Handles<Answer<Pixels, Nothing>> for Framer {
     }
 }
 
-impl Handles<Answer<Timed, Nothing>> for Framer {
+impl Receives<Answer<Timed, Nothing>> for Framer {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

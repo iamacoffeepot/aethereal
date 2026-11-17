@@ -5,7 +5,7 @@ use super::{Credit, Exchange, Owed, Parts, Phase, Refusal, SourceStop, Writes, u
 use crate::body::{Body, Decoded, Progress};
 use crate::{BodyBytes, BodyRead, RequestBody};
 use aethereal_actor::{
-    Allows, Ended, Enough, Fault, Handles, Level, More, Open, StreamKey, Time, ToSender, Turn, Unsent,
+    Allows, Anyone, Ended, Enough, Fault, Handles, Level, More, Open, Receives, StreamKey, Time, ToSender, Turn, Unsent,
 };
 use aethereal_data::Plain;
 use aethereal_tcp::HungUp;
@@ -56,6 +56,7 @@ impl Inflow {
 
 impl Handles<Open<RequestBody>> for Exchange {
     type Sends = (ToSender<BodyRead>, Credit, Writes, Parts);
+    type From = Anyone;
 
     /// A handler opens the stream that reads a body: the body of the streamed request out, when no stream reads it
     /// yet, or none, answered `Busy` at once.
@@ -78,6 +79,7 @@ impl Handles<Open<RequestBody>> for Exchange {
 
 impl Handles<More> for Exchange {
     type Sends = (Credit, Writes, Parts);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(_) = self.serving.more(turn, &more) else {
@@ -90,6 +92,7 @@ impl Handles<More> for Exchange {
 
 impl Handles<Enough> for Exchange {
     type Sends = ();
+    type From = Anyone;
 
     /// The handler stops the stream before the body ends: the rest of it is not read, and the exchange waits for the
     /// handler's answer, then closes.
@@ -103,7 +106,7 @@ impl Handles<Enough> for Exchange {
     }
 }
 
-impl Handles<Ended> for Exchange {
+impl Receives<Ended> for Exchange {
     type Sends = ();
 
     /// The actor reading a body has ended: nothing more of it is read, and the exchange waits for the handler's answer,

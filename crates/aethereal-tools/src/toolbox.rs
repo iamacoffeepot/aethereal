@@ -2,8 +2,8 @@
 
 use crate::{Holder, Offer, Offered, Tool, ToolList, ToolSheet, Withdraw};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, RepliesTo, Tells, Top,
-    Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, Receives, RepliesTo, Tells,
+    Top, Turn, path,
 };
 use aethereal_data::{
     Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindName, Plain, Reader, Schema, Shape, Writer,
@@ -121,7 +121,7 @@ where
     }
 }
 
-impl<L: ToolList, R: Holder> Handles<Answer<Offered, Offering>> for Toolbox<L, R>
+impl<L: ToolList, R: Holder> Receives<Answer<Offered, Offering>> for Toolbox<L, R>
 where
     <R as Handles<Withdraw>>::Sends: RepliesTo<Self>,
 {

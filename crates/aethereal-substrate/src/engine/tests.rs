@@ -4,12 +4,12 @@ use super::outside::{Handed, Turned};
 use super::*;
 use crate::watch::Notice;
 use crate::{ByActor, child_id, path_id};
-use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How,
     Level, Path, Recursive, Table, Tells, ToAny, ToSender, ToType, Top, Turn, Unanswered, Why, child, path,
 };
+use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Kind, KindName, Plain};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -659,6 +659,7 @@ impl Actor for Node {
 
 impl Handles<Note> for Node {
     type Sends = (ToType<Self, Note>, ToSender<Note>, ToAny<(Note,), Note>);
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
@@ -745,7 +746,7 @@ impl Handles<Note> for Node {
     }
 }
 
-impl Handles<Ended> for Node {
+impl Receives<Ended> for Node {
     type Sends = ();
 
     fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -1644,6 +1645,7 @@ impl Actor for Holder {
 
 impl Handles<Note> for Holder {
     type Sends = (ToType<Self, Note>, ToType<Self, Given>);
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
@@ -1690,6 +1692,7 @@ impl Handles<Note> for Holder {
 
 impl Handles<Given> for Holder {
     type Sends = (ToType<Self, Given>,);
+    type From = Anyone;
 
     fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = length(turn.read(&given.blob));
@@ -2039,6 +2042,7 @@ impl Actor for Clocked {
 
 impl Handles<Note> for Clocked {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.turns.push(turn.now().nanos());
@@ -2058,6 +2062,7 @@ impl Handles<Note> for Clocked {
 
 impl Handles<Finished> for Clocked {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Finished, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -2252,6 +2257,7 @@ macro_rules! listening {
 
         impl Handles<Note> for $name {
             type Sends = ();
+            type From = Anyone;
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())
@@ -2395,6 +2401,7 @@ macro_rules! answering {
 
         impl Handles<Question> for $name {
             type Sends = (ToSender<Reply>,);
+            type From = Anyone;
 
             fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
                 Ok(turn.reply(&$answers)?)
@@ -2435,7 +2442,7 @@ impl Actor for Seer {
     }
 }
 
-impl Handles<Answer<Reply, Wondering>> for Seer {
+impl Receives<Answer<Reply, Wondering>> for Seer {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -2443,7 +2450,7 @@ impl Handles<Answer<Reply, Wondering>> for Seer {
     }
 }
 
-impl Handles<Ended> for Seer {
+impl Receives<Ended> for Seer {
     type Sends = ();
 
     fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -2533,6 +2540,7 @@ macro_rules! lighthouse {
 
         impl Handles<Note> for $name {
             type Sends = ();
+            type From = Anyone;
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())
@@ -2574,6 +2582,7 @@ macro_rules! reaching {
 
         impl Handles<Note> for $name {
             type Sends = $handler;
+            type From = Anyone;
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
                 Ok(())
@@ -2662,6 +2671,7 @@ impl Actor for Harbor {
 
 impl Handles<Note> for Harbor {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -2771,6 +2781,7 @@ impl Actor for Barracks {
 
 impl Handles<Note> for Barracks {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -2806,6 +2817,7 @@ impl Actor for Squad {
 
 impl Handles<Note> for Squad {
     type Sends = (ToType<Barracks, Note>,);
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.to(turn.parent()).send(&said(Word::Squad).and(note))?;

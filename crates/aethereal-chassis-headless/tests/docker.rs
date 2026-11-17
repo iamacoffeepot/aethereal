@@ -3,8 +3,8 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
-    ProtocolRef, Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
+    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -149,6 +149,7 @@ impl Handles<Order> for Session {
         Asks<Streamed<Watching>, Open<Watching>, Number>,
         ToAny<Streamed<Watching>, More>,
     );
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match order {
@@ -176,6 +177,7 @@ impl Handles<Order> for Session {
 
 impl Handles<Part<Attaching>> for Session {
     type Sends = (ToAny<Streamed<Attaching>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.attaching.part(turn, part)? else {
@@ -193,6 +195,7 @@ impl Handles<Part<Attaching>> for Session {
 
 impl Handles<Part<Logging>> for Session {
     type Sends = (ToAny<Streamed<Logging>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let taken = match self.pace {
@@ -214,6 +217,7 @@ impl Handles<Part<Logging>> for Session {
 
 impl Handles<Part<Watching>> for Session {
     type Sends = (ToAny<Streamed<Watching>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.watching.part(turn, part)? else {
@@ -225,7 +229,7 @@ impl Handles<Part<Watching>> for Session {
     }
 }
 
-impl Handles<Answer<Detached, Number>> for Session {
+impl Receives<Answer<Detached, Number>> for Session {
     type Sends = ();
 
     fn handle(
@@ -242,7 +246,7 @@ impl Handles<Answer<Detached, Number>> for Session {
     }
 }
 
-impl Handles<Answer<LogsDone, Number>> for Session {
+impl Receives<Answer<LogsDone, Number>> for Session {
     type Sends = ();
 
     fn handle(
@@ -259,7 +263,7 @@ impl Handles<Answer<LogsDone, Number>> for Session {
     }
 }
 
-impl Handles<Answer<EventsDone, Number>> for Session {
+impl Receives<Answer<EventsDone, Number>> for Session {
     type Sends = ();
 
     fn handle(

@@ -3,8 +3,8 @@
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Anywhere, Beginning, ChildOf, Ending, Entry, Fault, Handles, Level, ProtocolRef,
-    Recent, ToSender, Turn,
+    Actor, ActorName, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Entry, Fault, Handles, Level,
+    ProtocolRef, Recent, ToSender, Turn,
 };
 use aethereal_data::{
     ActorPath, Bare, Budget, Encode, EncodeError, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
@@ -447,6 +447,7 @@ impl Tool for LogsTool {
 
 impl Handles<Call> for LogsTool {
     type Sends = (ToSender<Called>,);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if call.tool == READ_RECENT {

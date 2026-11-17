@@ -14,9 +14,9 @@ use crate::frames::{self, Written};
 use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Level,
-    More, Number, Open, Part, Path, Streamed, Streams, Subscribers, Taken, Tells, ToAny, ToType, Top, Turn, Unanswered,
-    path,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles,
+    Level, More, Number, Open, Part, Path, Receives, Streamed, Streams, Subscribers, Taken, Tells, ToAny, ToType, Top,
+    Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
@@ -175,6 +175,7 @@ impl Actor for Link {
 
 impl Handles<Sheets> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
+    type From = Anyone;
 
     /// The engine's tools as `Tools` now holds them: kept, and written to the hub when connected.
     fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -184,7 +185,7 @@ impl Handles<Sheets> for Link {
     }
 }
 
-impl Handles<Answer<Connected, Connecting>> for Link {
+impl Receives<Answer<Connected, Connecting>> for Link {
     type Sends =
         (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>);
 
@@ -219,6 +220,7 @@ impl Handles<Part<Reading>> for Link {
         ToAny<Listening, ShowEvents>,
         ToAny<Listening, ShowAsk>,
     );
+    type From = Anyone;
 
     /// A frame from the hub: a call, asked of the engine's tools; the chat it shows a trusted engine, handed to each
     /// listener; or a refusal, which ends the link, as a frame that does not read does.
@@ -260,7 +262,7 @@ impl Handles<Part<Reading>> for Link {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Link {
+impl Receives<Answer<HungUp, Number>> for Link {
     type Sends = ();
 
     /// The connection's stream has ended: when it is the open connection's, the link has ended.
@@ -280,7 +282,7 @@ impl Handles<Answer<HungUp, Number>> for Link {
     }
 }
 
-impl Handles<Answer<Wrote, Sending>> for Link {
+impl Receives<Answer<Wrote, Sending>> for Link {
     type Sends = (ToType<Dialed, Shut>,);
 
     /// A write to the open connection that was not sent ends the link.
@@ -301,7 +303,7 @@ impl Handles<Answer<Wrote, Sending>> for Link {
     }
 }
 
-impl Handles<Answer<Called, Calling>> for Link {
+impl Receives<Answer<Called, Calling>> for Link {
     type Sends = (Asks<Writing, Write, Sending>,);
 
     /// What `Tools` answered, written to the hub: one that comes once the link has ended is dropped.

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{Output, Tool, ToolFlag, ToolSheet, Toolbox, ToolboxConfig, Typed};
-use aethereal_actor::{ActorRef, Anywhere, ProtocolRef};
+use aethereal_actor::{ActorRef, Anyone, Anywhere, ProtocolRef};
 use aethereal_data::{Budget, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
@@ -66,6 +66,7 @@ impl Tool for Length {
 
 impl Handles<Call> for Length {
     type Sends = (ToSender<Called>,);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let said = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1 << 16))

@@ -74,6 +74,8 @@ pub enum Unreadable {
     /// Reading them would take `requested` bytes at once, more than the `remaining` left of what the read may take:
     /// mail past the engine's limit, whose large parts belong in blobs.
     Limit { requested: u64, remaining: u64 },
+    /// The handler's guard did not admit its sender, and the default `refused` ran (ADR-0058).
+    Refused,
 }
 
 impl From<DecodeError> for Unreadable {

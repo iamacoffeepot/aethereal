@@ -4,8 +4,8 @@ use super::*;
 use crate::Monotonic;
 use crate::waiting::{self, BUDGET};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Handles, Job, Runner, Running, Seated, Services, Sleep,
-    Slept, Time, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Job, Receives, Runner, Running, Seated, Services,
+    Sleep, Slept, Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_substrate::harness::{Turned, Unheard};
@@ -73,7 +73,7 @@ impl Actor for Asker {
     }
 }
 
-impl Handles<Answer<Ran, Nothing>> for Asker {
+impl Receives<Answer<Ran, Nothing>> for Asker {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -187,7 +187,7 @@ impl Actor for Sleeper {
     }
 }
 
-impl Handles<Answer<Ran, Nothing>> for Sleeper {
+impl Receives<Answer<Ran, Nothing>> for Sleeper {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -197,7 +197,7 @@ impl Handles<Answer<Ran, Nothing>> for Sleeper {
     }
 }
 
-impl Handles<Answer<Slept, Woke>> for Sleeper {
+impl Receives<Answer<Slept, Woke>> for Sleeper {
     type Sends = ();
 
     fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

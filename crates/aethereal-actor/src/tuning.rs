@@ -17,6 +17,7 @@ pub const MOST_TUNING_BYTES: usize = 64 * 1024;
 /// ```text
 /// impl Handles<ReadTuning> for Painter {
 ///     type Sends = (ToSender<Tuning>,);
+///     type From = Anyone;
 ///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         tuning::read(self, turn)
 ///     }
@@ -24,6 +25,7 @@ pub const MOST_TUNING_BYTES: usize = 64 * 1024;
 ///
 /// impl Handles<Tune> for Painter {
 ///     type Sends = (ToSender<Tuned>,);
+///     type From = Anyone;
 ///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         tuning::tune(self, &tune, turn)
 ///     }

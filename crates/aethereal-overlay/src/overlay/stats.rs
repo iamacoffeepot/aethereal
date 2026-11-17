@@ -11,7 +11,7 @@ use crate::console::Logged;
 use crate::gpu::{GpuFigures, GpuTiming};
 use crate::layout::Scale;
 use crate::meters::{EngineMemory, MOST_METER_COLUMNS, Meter};
-use aethereal_actor::{Fault, Handles, Level, On, Tick, ToType, Turn};
+use aethereal_actor::{Anyone, Fault, Handles, Level, On, Receives, Tick, ToType, Turn};
 use aethereal_data::Plain;
 use aethereal_link::{Link, Listen};
 use aethereal_render::stats::{FrameDrawing, FrameStats, GpuTimes};
@@ -52,6 +52,7 @@ impl Columns {
 /// raw.
 impl Handles<Event> for Overlay {
     type Sends = aethereal_ui::Sends;
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
@@ -114,7 +115,7 @@ impl Overlay {
 /// is open its line is given its screen's focus back, should a press have taken it elsewhere, so the console goes on
 /// typing into it; but not while a selection stands in the scrollback or a transcript, or is being dragged out, so the
 /// copy chord reaches what has the focus. Heard only while the overlay is shown.
-impl Handles<On<Tick>> for Overlay {
+impl Receives<On<Tick>> for Overlay {
     type Sends = (ToType<Link, Listen>,);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -168,6 +169,7 @@ impl Handles<On<Tick>> for Overlay {
 /// meter. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.budget = stats.budget;
@@ -185,6 +187,7 @@ impl Handles<FrameStats> for Overlay {
 /// says. Heard only while the overlay is shown.
 impl Handles<GpuTimes> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, told: GpuTimes, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.gpu.heard(told);

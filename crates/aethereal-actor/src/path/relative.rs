@@ -20,7 +20,7 @@ pub struct Parent<P> {
 /// dropped.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -76,6 +76,7 @@ pub struct Parent<P> {
 ///
 /// impl Handles<Poke> for Squad {
 ///     type Sends = (ToAny<(Poke,), Poke>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         turn.to(parent()).send(&Poke)?;
@@ -86,6 +87,7 @@ pub struct Parent<P> {
 /// #
 /// # impl Handles<Poke> for Army {
 /// #     type Sends = ();
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
@@ -202,7 +204,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// live or not; a place beneath one as a typed path is, live in the table as the step began.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -258,6 +260,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 ///
 /// impl Handles<Poke> for Squad {
 ///     type Sends = (ToType<Squad, Poke>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         turn.to(child::<Squad>(())).send(&Poke)?;
@@ -268,6 +271,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #
 /// # impl Handles<Poke> for Army {
 /// #     type Sends = ();
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())
@@ -278,7 +282,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// Nor does a place whose types do not stand each beneath the one before:
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -334,6 +338,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// // A squad stands beneath an army, so no squad stands beneath the army's squad.
 /// impl Handles<Poke> for Army {
 ///     type Sends = (ToType<Squad, Poke>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         turn.to(child::<(Squad, Squad)>(())).send(&Poke)?;
@@ -344,6 +349,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #
 /// # impl Handles<Poke> for Squad {
 /// #     type Sends = ();
+/// #     type From = Anyone;
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #         Ok(())

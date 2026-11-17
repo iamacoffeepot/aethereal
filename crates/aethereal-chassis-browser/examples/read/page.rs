@@ -3,7 +3,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -264,7 +264,7 @@ fn program(
     }
 }
 
-impl Handles<On<Start>> for Reader {
+impl Receives<On<Start>> for Reader {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -277,7 +277,7 @@ impl Handles<On<Start>> for Reader {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Reader {
+impl Receives<Answer<Shaped, Nothing>> for Reader {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -303,7 +303,7 @@ impl Handles<Answer<Shaped, Nothing>> for Reader {
     }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Reader {
+impl Receives<Answer<Meshed, Learned>> for Reader {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
@@ -331,7 +331,7 @@ impl Handles<Answer<Meshed, Learned>> for Reader {
     }
 }
 
-impl Handles<Answer<Programmed, Making>> for Reader {
+impl Receives<Answer<Programmed, Making>> for Reader {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateStorage, MadePrograms>);
 
     fn handle(
@@ -371,7 +371,7 @@ impl Handles<Answer<Programmed, Making>> for Reader {
     }
 }
 
-impl Handles<Answer<Stored, MadePrograms>> for Reader {
+impl Receives<Answer<Stored, MadePrograms>> for Reader {
     type Sends = (Asks<Path<Renderer>, Place, Placing>,);
 
     fn handle(
@@ -399,7 +399,7 @@ impl Handles<Answer<Stored, MadePrograms>> for Reader {
     }
 }
 
-impl Handles<Answer<Placed, Placing>> for Reader {
+impl Receives<Answer<Placed, Placing>> for Reader {
     type Sends = (
         Asks<Path<Renderer>, Place, Placing>,
         Tells<Path<Renderer>, DrawList>,
@@ -446,7 +446,7 @@ impl Handles<Answer<Placed, Placing>> for Reader {
     }
 }
 
-impl Handles<Answer<Textured, Splatted>> for Reader {
+impl Receives<Answer<Textured, Splatted>> for Reader {
     type Sends = ();
 
     fn handle(
@@ -468,7 +468,7 @@ impl Handles<Answer<Textured, Splatted>> for Reader {
     }
 }
 
-impl Handles<On<Tick>> for Reader {
+impl Receives<On<Tick>> for Reader {
     type Sends = (
         Asks<Path<Renderer>, ReadBack, Of>,
         Asks<Path<Renderer>, ReadStorage, Nothing>,
@@ -502,7 +502,7 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
     channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
 }
 
-impl Handles<Answer<Pixels, Of>> for Reader {
+impl Receives<Answer<Pixels, Of>> for Reader {
     type Sends = ();
 
     fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -533,7 +533,7 @@ impl Handles<Answer<Pixels, Of>> for Reader {
     }
 }
 
-impl Handles<Answer<StorageContents, Nothing>> for Reader {
+impl Receives<Answer<StorageContents, Nothing>> for Reader {
     type Sends = ();
 
     fn handle(
@@ -554,7 +554,7 @@ impl Handles<Answer<StorageContents, Nothing>> for Reader {
     }
 }
 
-impl Handles<Answer<Timed, Nothing>> for Reader {
+impl Receives<Answer<Timed, Nothing>> for Reader {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

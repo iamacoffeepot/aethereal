@@ -3,9 +3,9 @@
 
 use Name::{A, B, L};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault,
-    Handles, More, Number, Open, Part, Seated, Serving, Stream, StreamKey, Streamed, Streams, Taken, Time, ToAny,
-    ToSender, ToType, Top, Turn, Unanswered, Unsent,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough,
+    Fault, Handles, More, Number, Open, Part, Receives, Seated, Serving, Stream, StreamKey, Streamed, Streams, Taken,
+    Time, ToAny, ToSender, ToType, Top, Turn, Unanswered, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -354,6 +354,7 @@ fn stop<S: Ends, Sends>(
 
 impl Handles<Open<Files>> for Library {
     type Sends = (ToSender<ReadDone>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         serve(&mut self.files, &mut self.files_left, turn, open)
@@ -362,6 +363,7 @@ impl Handles<Open<Files>> for Library {
 
 impl Handles<Open<Logs>> for Library {
     type Sends = (ToSender<LogDone>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         serve(&mut self.logs, &mut self.logs_left, turn, open)
@@ -370,6 +372,7 @@ impl Handles<Open<Logs>> for Library {
 
 impl Handles<More> for Library {
     type Sends = (ToAny<(Part<Files>,), Part<Files>>, ToAny<(Part<Logs>,), Part<Logs>>);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Some(key) = self.files.more(turn, &more) {
@@ -385,6 +388,7 @@ impl Handles<More> for Library {
 
 impl Handles<Enough> for Library {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let stopped = stop(&mut self.files, &mut self.files_left, &mut self.served, turn, &enough)?;
@@ -396,7 +400,7 @@ impl Handles<Enough> for Library {
     }
 }
 
-impl Handles<Ended> for Library {
+impl Receives<Ended> for Library {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -545,6 +549,7 @@ impl Handles<Order> for Reader {
         Asks<Streamed<Logs>, Open<Logs>, Number>,
         ToAny<Streamed<Logs>, More>,
     );
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match order.which {
@@ -591,6 +596,7 @@ where
 
 impl Handles<Part<Files>> for Reader {
     type Sends = (ToAny<Streamed<Files>, More>, ToAny<Streamed<Files>, Enough>);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Files>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         take(&mut self.files, &mut self.took, turn, part)
@@ -599,6 +605,7 @@ impl Handles<Part<Files>> for Reader {
 
 impl Handles<Part<Logs>> for Reader {
     type Sends = (ToAny<Streamed<Logs>, More>, ToAny<Streamed<Logs>, Enough>);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Logs>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         take(&mut self.logs, &mut self.took, turn, part)
@@ -616,7 +623,7 @@ fn ended<S: Ends>(tag: Option<Tag>, answered: Answered<S::Done>) -> Took {
     Took::Done { name, how }
 }
 
-impl Handles<Answer<ReadDone, Number>> for Reader {
+impl Receives<Answer<ReadDone, Number>> for Reader {
     type Sends = ();
 
     fn handle(
@@ -630,7 +637,7 @@ impl Handles<Answer<ReadDone, Number>> for Reader {
     }
 }
 
-impl Handles<Answer<LogDone, Number>> for Reader {
+impl Receives<Answer<LogDone, Number>> for Reader {
     type Sends = ();
 
     fn handle(

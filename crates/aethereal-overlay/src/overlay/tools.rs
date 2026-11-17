@@ -10,7 +10,9 @@ use super::console::Offering;
 use crate::tools::{
     ChatWord, Choice, Marked, OverlayTools, OverlayToolsConfig, ThemesShown, Worded, chat_sheets, chosen,
 };
-use aethereal_actor::{ActorRef, Allows, Asks, Beginning, Carries, Fault, Handles, Path, ToSender, ToType, Turn, path};
+use aethereal_actor::{
+    ActorRef, Allows, Anyone, Asks, Beginning, Carries, Fault, Handles, Path, ToSender, ToType, Turn, path,
+};
 use aethereal_data::Kind;
 use aethereal_link::Link;
 use aethereal_sessions::Chat;
@@ -50,6 +52,7 @@ impl Overlay {
 /// in the mark's ink then.
 impl Handles<Marked> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, marked: Marked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.marks.wait(marked.text);
@@ -66,6 +69,7 @@ impl Carries<Choice> for Overlay {
 /// answered the themes and the one in use.
 impl Handles<Choice> for Overlay {
     type Sends = (ToSender<ThemesShown>,);
+    type From = Anyone;
 
     fn handle(&mut self, choice: Choice, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (palette, shown) = chosen(&self.palette, choice);
@@ -84,6 +88,7 @@ impl Carries<ChatWord> for Overlay {
 /// for a session the chat does not list.
 impl Handles<ChatWord> for Overlay {
     type Sends = (ToSender<Worded>, ToType<Link, Chat>);
+    type From = Anyone;
 
     fn handle(&mut self, word: ChatWord, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let chat = match word {

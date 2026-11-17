@@ -20,8 +20,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
-    Tick, Top, Turn, child, path,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Receives,
+    Render, Start, Tells, Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -256,7 +256,7 @@ impl Actor for Director {
 
 /// Asks for a second window as the program starts, when it runs for a time, so a timed run shows a window
 /// opened on request.
-impl Handles<On<Start>> for Director {
+impl Receives<On<Start>> for Director {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -271,6 +271,7 @@ impl Handles<On<Start>> for Director {
 /// `N` in any window asks for another; Escape in any quits.
 impl Handles<Keyed> for Director {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
+    type From = Anyone;
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let KeyEvent::KeyDown { code, repeat: false, .. } = keyed.event else {
@@ -289,7 +290,7 @@ impl Handles<Keyed> for Director {
 }
 
 /// The window asked for, printed as it is answered, and a scene made for it once it is open.
-impl Handles<Answer<Opened, Nothing>> for Director {
+impl Receives<Answer<Opened, Nothing>> for Director {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -541,6 +542,7 @@ impl Scene {
 
 impl Handles<Keyed> for Scene {
     type Sends = (Asks<Path<Windows>, SetMode, Nothing>,);
+    type From = Anyone;
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let window = self.window.to_name();
@@ -570,6 +572,7 @@ impl Handles<Keyed> for Scene {
 
 impl Handles<Event> for Scene {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let window = self.window.to_name();
@@ -616,7 +619,7 @@ impl Handles<Event> for Scene {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Scene {
+impl Receives<Answer<Shaped, Nothing>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -649,7 +652,7 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Scene {
+impl Receives<Answer<Meshed, Learned>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
 
     fn handle(
@@ -683,7 +686,7 @@ impl Handles<Answer<Meshed, Learned>> for Scene {
     }
 }
 
-impl Handles<Answer<Programmed, MadeMesh>> for Scene {
+impl Receives<Answer<Programmed, MadeMesh>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
 
     fn handle(
@@ -706,7 +709,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Scene {
     }
 }
 
-impl Handles<Answer<Instanced, MadeProgram>> for Scene {
+impl Receives<Answer<Instanced, MadeProgram>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
 
     fn handle(
@@ -729,7 +732,7 @@ impl Handles<Answer<Instanced, MadeProgram>> for Scene {
     }
 }
 
-impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
+impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
     type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
 
     fn handle(
@@ -753,7 +756,7 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
     }
 }
 
-impl Handles<Answer<Placed, MadeAll>> for Scene {
+impl Receives<Answer<Placed, MadeAll>> for Scene {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -777,7 +780,7 @@ impl Handles<Answer<Placed, MadeAll>> for Scene {
 }
 
 /// The mode asked for on F11, printed as it is answered.
-impl Handles<Answer<ModeSet, Nothing>> for Scene {
+impl Receives<Answer<ModeSet, Nothing>> for Scene {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -795,7 +798,7 @@ impl Handles<Answer<ModeSet, Nothing>> for Scene {
     }
 }
 
-impl Handles<On<Tick>> for Scene {
+impl Receives<On<Tick>> for Scene {
     type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {

@@ -15,7 +15,8 @@ use crate::tree::{KeyPath, Node, Segment, Tree};
 use crate::widget::{Anchor, Stand};
 use crate::widgets::{Button, Opened, Popup, Scroll, Stack};
 use aethereal_actor::{
-    Actor, ActorRef, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, SeatNumber, Seated, Turn, child,
+    Actor, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, SeatNumber, Seated,
+    Turn, child,
 };
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -50,6 +51,7 @@ impl Actor for Minimap {
 
 impl Handles<Resize> for Minimap {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Resize, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())

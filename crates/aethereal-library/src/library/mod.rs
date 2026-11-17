@@ -7,8 +7,8 @@ mod start;
 
 use crate::{Defaulted, Defaults, ModulePublished, PublishModule};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Given, Handle, Handles, Held,
-    Path, Publisher, Refused, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Given, Handle, Held, Path,
+    Publisher, Receives, Refused, Top, Turn, path,
 };
 use aethereal_data::{Bound, FilePath, KindName, Plain};
 use aethereal_files::{FileRead, Files, FilesListed, ListFiles, Namespace};
@@ -143,7 +143,7 @@ impl Actor for Library {
 }
 
 /// A module of `Code` read, for what it was read for.
-impl Handles<Answer<FileRead, ReadingModule>> for Library {
+impl Receives<Answer<FileRead, ReadingModule>> for Library {
     type Sends = ();
 
     fn handle(

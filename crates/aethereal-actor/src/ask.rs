@@ -4,7 +4,7 @@
 use crate::Bytes;
 use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
 use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target, Untaken};
-use crate::{Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Within, Written};
+use crate::{Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Receives, Within, Written};
 use aethereal_data::{Decode, DecodeError, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -17,7 +17,7 @@ use core::marker::PhantomData;
 /// [`Answer<A, C>`](Answer). An asker that does not handle the answer does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Handles, Protocol, Turn};
+/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Protocol, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -78,7 +78,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// handles an answer kind with two does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Handles, Protocol, Turn};
+/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Protocol, Receives, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -127,7 +127,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 ///     }
 /// }
 ///
-/// impl Handles<Answer<TileIs, Looking>> for Pointer {
+/// impl Receives<Answer<TileIs, Looking>> for Pointer {
 ///     type Sends = ();
 ///
 ///     fn handle(&mut self, _: (Answered<TileIs>, Looking), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -135,7 +135,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 ///     }
 /// }
 ///
-/// impl Handles<Answer<TileIs, Glancing>> for Pointer {
+/// impl Receives<Answer<TileIs, Glancing>> for Pointer {
 ///     type Sends = ();
 ///
 ///     fn handle(&mut self, _: (Answered<TileIs>, Glancing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -207,7 +207,7 @@ pub struct Asking {
 /// A type asked at a typed path says what it answers each kind it can be asked with [`Carries`], beside its handler:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
@@ -272,7 +272,7 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// # impl Receives<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
 /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -286,6 +286,7 @@ pub struct Asking {
 ///
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Hi>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
@@ -296,7 +297,7 @@ pub struct Asking {
 /// A type that does not say what it answers the kind is not asked it at a typed path:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
@@ -361,7 +362,7 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// # impl Receives<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
 /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -373,6 +374,7 @@ pub struct Asking {
 ///
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Hi>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
@@ -383,7 +385,7 @@ pub struct Asking {
 /// Nor is one whose handler replies with a kind it does not say it answers with:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path};
+/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
 /// # use aethereal_actor::{ToSender, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
@@ -448,7 +450,7 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// # impl Handles<Answer<Hi, Waiting>> for Visitor {
+/// # impl Receives<Answer<Hi, Waiting>> for Visitor {
 /// #     type Sends = ();
 /// #
 /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -462,6 +464,7 @@ pub struct Asking {
 ///
 /// impl Handles<Hello> for Greeter {
 ///     type Sends = (ToSender<Bye>,);
+///     type From = Anyone;
 ///
 ///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Bye)?)
@@ -509,7 +512,7 @@ where
     K: Kind,
     A: Kind + Decode<Actors> + 'static,
     C: Kind + Decode<Within> + 'static,
-    T: Handles<Answer<A, C>>,
+    T: Receives<Answer<A, C>>,
 {
 }
 
@@ -521,7 +524,7 @@ where
     K: Kind + Handled,
     A: Kind + Decode<Actors> + 'static,
     C: Kind + Decode<Within> + 'static,
-    T: Handles<Answer<A, C>>,
+    T: Receives<Answer<A, C>>,
     <L as Handles<K>>::Sends: RepliesWith<A>,
 {
 }

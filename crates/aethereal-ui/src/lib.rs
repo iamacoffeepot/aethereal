@@ -184,7 +184,7 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use aethereal_actor::{
-        Answer, Answered, Asks, Fault, Handles, On, Path, Prepare, Slept, ToAny, ToSender, Turn,
+        Answer, Answered, Anyone, Asks, Fault, Handles, On, Path, Prepare, Receives, Slept, ToAny, ToSender, Turn,
     };
     pub use aethereal_render::frame::Shaped;
     pub use aethereal_render::instances::Instanced;
@@ -265,7 +265,7 @@ macro_rules! sends {
 #[macro_export]
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
-        impl $crate::__private::Handles<$crate::__private::On<$crate::__private::Prepare>> for $screen {
+        impl $crate::__private::Receives<$crate::__private::On<$crate::__private::Prepare>> for $screen {
             type Sends = $crate::Sends;
 
             fn handle(
@@ -283,6 +283,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::__private::Pointed> for $screen {
             type Sends = <Self as $crate::Controls>::Sends;
+            type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
@@ -296,6 +297,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::__private::Keyed> for $screen {
             type Sends = <Self as $crate::Controls>::Sends;
+            type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
@@ -307,7 +309,7 @@ macro_rules! screen {
             }
         }
 
-        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::FontMetrics, $crate::MetricsAsked>>
+        impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::FontMetrics, $crate::MetricsAsked>>
             for $screen
         {
             type Sends = $crate::Sends;
@@ -334,7 +336,7 @@ macro_rules! screen {
         $crate::screen!(@answer $screen, $field, ImeAllowed, ImeAsked, ime_answered);
         $crate::screen!(@answer $screen, $field, Slept, Tipping, slept);
 
-        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::Pasted, $crate::Pasting>>
+        impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::Pasted, $crate::Pasting>>
             for $screen
         {
             type Sends = <Self as $crate::Controls>::Sends;
@@ -349,7 +351,7 @@ macro_rules! screen {
             }
         }
 
-        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::Copied, $crate::Copying>>
+        impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::Copied, $crate::Copying>>
             for $screen
         {
             type Sends = <Self as $crate::Controls>::Sends;
@@ -366,6 +368,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::Resize> for $screen {
             type Sends = $crate::Sends;
+            type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
@@ -378,6 +381,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::Dropped> for $screen {
             type Sends = <Self as $crate::Controls>::Sends;
+            type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
@@ -394,6 +398,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::DropRefused> for $screen {
             type Sends = <Self as $crate::Controls>::Sends;
+            type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
@@ -422,7 +427,7 @@ macro_rules! screen {
         Ok(())
     }};
     (@answer $screen:ty, $field:ident, $answer:ident, $context:ident, $method:ident) => {
-        impl $crate::__private::Handles<$crate::__private::Answer<$crate::__private::$answer, $crate::$context>>
+        impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::$answer, $crate::$context>>
             for $screen
         {
             type Sends = $crate::Sends;

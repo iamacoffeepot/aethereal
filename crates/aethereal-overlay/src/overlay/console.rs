@@ -5,7 +5,9 @@
 use super::Overlay;
 use super::chat::Reports;
 use crate::console::Command;
-use aethereal_actor::{Allows, Answer, Answered, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
+use aethereal_actor::{
+    Allows, Answer, Answered, Anyone, Asks, Fault, Handles, Level, Path, Receives, ToType, Turn, path,
+};
 use aethereal_data::Plain;
 use aethereal_link::Link;
 use aethereal_sessions::Chat;
@@ -66,6 +68,7 @@ impl Overlay {
 /// change.
 impl Handles<Sheets> for Overlay {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.console.hear(sheets);
@@ -77,7 +80,7 @@ impl Handles<Sheets> for Overlay {
 /// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
 /// refusal in the error's ink, and reported to the session whose tab was open as it was typed. The call stops showing as running,
 /// whichever came.
-impl Handles<Answer<Called, Calling>> for Overlay {
+impl Receives<Answer<Called, Calling>> for Overlay {
     type Sends = (ToType<Link, Chat>,);
 
     fn handle(
@@ -106,7 +109,7 @@ impl Handles<Answer<Called, Calling>> for Overlay {
 
 /// An offer of the overlay's own tools, or the chat's words, that the tools root refused is logged: the console works
 /// on without them.
-impl Handles<Answer<Offered, Offering>> for Overlay {
+impl Receives<Answer<Offered, Offering>> for Overlay {
     type Sends = ();
 
     fn handle(

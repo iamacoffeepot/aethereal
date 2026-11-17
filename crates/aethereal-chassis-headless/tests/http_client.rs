@@ -3,8 +3,8 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
-    ProtocolRef, Streamed, Streams, ToAny, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
+    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -116,6 +116,7 @@ impl Bootstrap<Headless> for Follower {
 
 impl Handles<Order> for Follower {
     type Sends = (Asks<Streamed<Receiving>, Open<Receiving>, Number>, ToAny<Streamed<Receiving>, More>);
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match order {
@@ -137,6 +138,7 @@ impl Handles<Order> for Follower {
 
 impl Handles<Part<Receiving>> for Follower {
     type Sends = (ToAny<Streamed<Receiving>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let taken = match self.pace {
@@ -160,7 +162,7 @@ impl Handles<Part<Receiving>> for Follower {
     }
 }
 
-impl Handles<Answer<Finished, Number>> for Follower {
+impl Receives<Answer<Finished, Number>> for Follower {
     type Sends = ();
 
     fn handle(

@@ -4,7 +4,9 @@
 use super::write::Frame;
 use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, Timing, chunk, put, unstored};
 use crate::{Header, ResponseLength, ResponseSource, SendBody, SourceEnd, Status, StreamedBody};
-use aethereal_actor::{Answer, Answered, Bytes, Fault, Handles, Level, Number, Part, Taken, Time, Turn};
+use aethereal_actor::{
+    Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Number, Part, Receives, Taken, Time, Turn,
+};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Write, Wrote};
 use core::time::Duration;
@@ -57,6 +59,7 @@ impl Outflow {
 
 impl Handles<Part<ResponseSource>> for Exchange {
     type Sends = Responding;
+    type From = Anyone;
 
     /// A part of a streamed response's body is taken without granting for it, and written once the write before it is
     /// sent. A source that sends past its length closes the connection.
@@ -85,7 +88,7 @@ impl Handles<Part<ResponseSource>> for Exchange {
     }
 }
 
-impl Handles<Answer<SourceEnd, Number>> for Exchange {
+impl Receives<Answer<SourceEnd, Number>> for Exchange {
     type Sends = Responding;
 
     /// A source ends its stream: once every byte it sent is written, a whole body is ended as its framing says. A

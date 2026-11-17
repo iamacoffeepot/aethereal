@@ -2,8 +2,8 @@
 //! ADR-0036).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Number, Open, Part,
-    Serving, StreamKey, Streamed, Streams, ToAny, ToSender, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Number,
+    Open, Part, Receives, Serving, StreamKey, Streamed, Streams, ToAny, ToSender, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -405,6 +405,7 @@ impl Handles<StreamedRequest> for Reader {
         Asks<Streamed<RequestBody>, Open<RequestBody>, Number>,
         ToAny<Streamed<RequestBody>, More>,
     );
+    type From = Anyone;
 
     fn handle(&mut self, request: StreamedRequest, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -416,6 +417,7 @@ impl Handles<StreamedRequest> for Reader {
 
 impl Handles<Part<RequestBody>> for Reader {
     type Sends = (ToAny<Streamed<RequestBody>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<RequestBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.bodies.part(turn, part)? else {
@@ -427,7 +429,7 @@ impl Handles<Part<RequestBody>> for Reader {
     }
 }
 
-impl Handles<Answer<BodyRead, Number>> for Reader {
+impl Receives<Answer<BodyRead, Number>> for Reader {
     type Sends = ();
 
     fn handle(
@@ -683,6 +685,7 @@ impl Bootstrap<Headless> for Source {
 
 impl Handles<Plan> for Source {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, plan: Plan, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.plan = plan;
@@ -693,6 +696,7 @@ impl Handles<Plan> for Source {
 
 impl Handles<Open<ResponseSource>> for Source {
     type Sends = (ToSender<SourceEnd>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<ResponseSource>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.serving.open(turn, open)?;
@@ -704,6 +708,7 @@ impl Handles<Open<ResponseSource>> for Source {
 
 impl Handles<More> for Source {
     type Sends = (ToAny<(Part<ResponseSource>,), Part<ResponseSource>>,);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(key) = self.serving.more(turn, &more) else {
@@ -739,6 +744,7 @@ impl Handles<More> for Source {
 
 impl Handles<Enough> for Source {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let Some(stopped) = self.serving.stop(turn, &enough) else {
@@ -751,7 +757,7 @@ impl Handles<Enough> for Source {
     }
 }
 
-impl Handles<Ended> for Source {
+impl Receives<Ended> for Source {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

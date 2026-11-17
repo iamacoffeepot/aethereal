@@ -16,8 +16,8 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Allows, Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Handles, Held, More,
-    Open, Part, Protocol, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
+    Allows, Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, More, Open, Part,
+    Protocol, Receives, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -239,7 +239,11 @@ impl Connection {
 
     /// Opens the stream `open` asks for: the connection's reader, or a second, finished at once as `Busy`. The reader's
     /// credit follows the request, and its `More` is what reads.
-    pub fn open<A: Handles<Ended>, S, I>(&mut self, turn: &mut Turn<'_, A, S>, open: Open<Reading>) -> Result<(), Fault>
+    pub fn open<A: Receives<Ended>, S, I>(
+        &mut self,
+        turn: &mut Turn<'_, A, S>,
+        open: Open<Reading>,
+    ) -> Result<(), Fault>
     where
         S: Allows<ToSender<HungUp>, I>,
     {
@@ -256,7 +260,7 @@ impl Connection {
     }
 
     /// Adds the credit `more` grants to the reader's stream, and reads with it.
-    pub fn more<A: Handles<Answer<Readied, Interest>>, S, I>(
+    pub fn more<A: Receives<Answer<Readied, Interest>>, S, I>(
         &mut self,
         turn: &mut Turn<'_, A, S>,
         more: &More,
@@ -294,7 +298,7 @@ impl Connection {
     /// Takes `write` to send, and writes what the socket takes of it now; or answers `Full` when it would put the
     /// connection past what it holds unsent, `Finished` once it was asked to finish, and `HungUp` once its socket
     /// failed a write.
-    pub fn write<A: Handles<Answer<Readied, Interest>>, S, I>(
+    pub fn write<A: Receives<Answer<Readied, Interest>>, S, I>(
         &mut self,
         turn: &mut Turn<'_, A, S>,
         write: Write,
@@ -329,7 +333,10 @@ impl Connection {
 
     /// Asked to finish writing: it shuts its write half once what it holds unsent is written, and at once when nothing
     /// is. A second ask, or one after a write failed, changes nothing.
-    pub fn finish<A: Handles<Answer<Readied, Interest>>, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    pub fn finish<A: Receives<Answer<Readied, Interest>>, S>(
+        &mut self,
+        turn: &mut Turn<'_, A, S>,
+    ) -> Result<(), Fault> {
         if self.write_half != WriteHalf::Open {
             return Ok(());
         }
@@ -340,7 +347,7 @@ impl Connection {
 
     /// What a wait for the socket came to: it is ready for `interest`, or may be, so the calls that waited on it are
     /// made again; or the host has no poller, and the socket can never be waited on, so the connection hangs up.
-    pub fn readied<A: Handles<Answer<Readied, Interest>>, S, I>(
+    pub fn readied<A: Receives<Answer<Readied, Interest>>, S, I>(
         &mut self,
         turn: &mut Turn<'_, A, S>,
         (readied, interest): (Answered<Readied>, Interest),
@@ -378,7 +385,7 @@ impl Connection {
     /// the socket would not take waits for it to be writable. Once all is written, a connection finishing shuts its
     /// write half. What it then holds unsent, it tells the engine when that has changed, for the engine's backlog
     /// (ADR-0053).
-    fn send<A: Handles<Answer<Readied, Interest>>, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    fn send<A: Receives<Answer<Readied, Interest>>, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
         let mut sent = Vec::new();
         let written = self.write_unsent(turn, &mut sent);
         for held in sent {
@@ -442,7 +449,7 @@ impl Connection {
 
     /// Reads, frames, and sends its reader as many frames as its credit allows. A read that would wait waits for the
     /// socket to be readable; one stopped for want of credit waits for the reader's `More`.
-    fn read<A: Handles<Answer<Readied, Interest>>, S, I>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault>
+    fn read<A: Receives<Answer<Readied, Interest>>, S, I>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault>
     where
         S: Allows<Parts, I>,
     {
@@ -492,7 +499,7 @@ impl Connection {
     }
 
     /// Runs a [`Ready`] for `interest`, unless one is in flight already.
-    fn wait<A: Handles<Answer<Readied, Interest>>, S>(
+    fn wait<A: Receives<Answer<Readied, Interest>>, S>(
         &mut self,
         turn: &mut Turn<'_, A, S>,
         interest: Interest,

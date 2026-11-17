@@ -14,8 +14,8 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to one place loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, Answered, Beginning, Bytes, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part, Serving,
-    ToAny, ToSender, Top, Turn,
+    Actor, Answered, Anyone, Beginning, Bytes, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part,
+    Receives, Serving, ToAny, ToSender, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_data::{Bound, Plain};
@@ -104,6 +104,7 @@ impl Bootstrap<Headless> for Source {
 
 impl Handles<Open<ResponseSource>> for Source {
     type Sends = (ToSender<SourceEnd>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<ResponseSource>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.serving.open(turn, open)?;
@@ -115,6 +116,7 @@ impl Handles<Open<ResponseSource>> for Source {
 
 impl Handles<More> for Source {
     type Sends = (ToAny<(Part<ResponseSource>,), Part<ResponseSource>>,);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(key) = self.serving.more(turn, &more) else {
@@ -149,6 +151,7 @@ impl Handles<More> for Source {
 
 impl Handles<Enough> for Source {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         if let Some(stopped) = self.serving.stop(turn, &enough) {
@@ -159,7 +162,7 @@ impl Handles<Enough> for Source {
     }
 }
 
-impl Handles<Ended> for Source {
+impl Receives<Ended> for Source {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

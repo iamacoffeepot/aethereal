@@ -3,8 +3,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Tells, Tick,
-    Top, Turn, child, path,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Receives,
+    Render, Tells, Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
@@ -341,6 +341,7 @@ impl Scene {
 /// which a page answers `NoHost`.
 impl Handles<Keyed> for Scene {
     type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
+    type From = Anyone;
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match keyed.event {
@@ -367,6 +368,7 @@ impl Handles<Keyed> for Scene {
 /// resized is seen to be its window alone.
 impl Handles<Event> for Scene {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match event {
@@ -401,7 +403,7 @@ impl Handles<Event> for Scene {
 
 /// What the window root answered the window asked for, said beside the window whose scene asked: a page opens no
 /// window on request, so it is refused, `NoHost`.
-impl Handles<Answer<Opened, Nothing>> for Scene {
+impl Receives<Answer<Opened, Nothing>> for Scene {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Opened>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -418,7 +420,7 @@ impl Handles<Answer<Opened, Nothing>> for Scene {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Scene {
+impl Receives<Answer<Shaped, Nothing>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -451,7 +453,7 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Scene {
+impl Receives<Answer<Meshed, Learned>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
 
     fn handle(
@@ -485,7 +487,7 @@ impl Handles<Answer<Meshed, Learned>> for Scene {
     }
 }
 
-impl Handles<Answer<Programmed, MadeMesh>> for Scene {
+impl Receives<Answer<Programmed, MadeMesh>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
 
     fn handle(
@@ -508,7 +510,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Scene {
     }
 }
 
-impl Handles<Answer<Instanced, MadeProgram>> for Scene {
+impl Receives<Answer<Instanced, MadeProgram>> for Scene {
     type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
 
     fn handle(
@@ -531,7 +533,7 @@ impl Handles<Answer<Instanced, MadeProgram>> for Scene {
     }
 }
 
-impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
+impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
     type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
 
     fn handle(
@@ -555,7 +557,7 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Scene {
     }
 }
 
-impl Handles<Answer<Placed, MadeAll>> for Scene {
+impl Receives<Answer<Placed, MadeAll>> for Scene {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -578,7 +580,7 @@ impl Handles<Answer<Placed, MadeAll>> for Scene {
     }
 }
 
-impl Handles<On<Tick>> for Scene {
+impl Receives<On<Tick>> for Scene {
     type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {

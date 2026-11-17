@@ -4,8 +4,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Path, Receives,
+    Render, Start, Tells, Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -283,7 +283,7 @@ fn main_frame(window: WindowId) -> Result<CreateFrame, FrameRefused> {
     FrameBuilder::on(Ends::Window(window)).finish(Main, Onto(depth::Write, ()))
 }
 
-impl Handles<On<Start>> for Mapper {
+impl Receives<On<Start>> for Mapper {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -296,7 +296,7 @@ impl Handles<On<Start>> for Mapper {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Mapper {
+impl Receives<Answer<Shaped, Nothing>> for Mapper {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -323,7 +323,7 @@ impl Handles<Answer<Shaped, Nothing>> for Mapper {
     }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Mapper {
+impl Receives<Answer<Meshed, Learned>> for Mapper {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
@@ -349,7 +349,7 @@ impl Handles<Answer<Meshed, Learned>> for Mapper {
     }
 }
 
-impl Handles<Answer<Programmed, Making>> for Mapper {
+impl Receives<Answer<Programmed, Making>> for Mapper {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateFrame, Framing>);
 
     fn handle(
@@ -395,7 +395,7 @@ impl Handles<Answer<Programmed, Making>> for Mapper {
     }
 }
 
-impl Handles<Answer<Framed, Framing>> for Mapper {
+impl Receives<Answer<Framed, Framing>> for Mapper {
     type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Claimer>, Claim>);
 
     fn handle(
@@ -433,7 +433,7 @@ impl Handles<Answer<Framed, Framing>> for Mapper {
 }
 
 /// The map placed, the window's main frame is asked for; the quad placed, both are listed.
-impl Handles<Answer<Placed, Placing>> for Mapper {
+impl Receives<Answer<Placed, Placing>> for Mapper {
     type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>, Tells<Path<Renderer>, DrawList>);
 
     fn handle(
@@ -471,7 +471,7 @@ impl Handles<Answer<Placed, Placing>> for Mapper {
     }
 }
 
-impl Handles<On<Tick>> for Mapper {
+impl Receives<On<Tick>> for Mapper {
     type Sends = (Asks<Path<Renderer>, ReadBack, Of>, Tells<Path<Renderer>, Release>);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -510,7 +510,7 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
     channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
 }
 
-impl Handles<Answer<Pixels, Of>> for Mapper {
+impl Receives<Answer<Pixels, Of>> for Mapper {
     type Sends = ();
 
     fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -579,6 +579,7 @@ impl Actor for Claimer {
 
 impl Handles<Claim> for Claimer {
     type Sends = (Asks<Path<Renderer>, CreateFrame, Told>,);
+    type From = Anyone;
 
     fn handle(&mut self, claim: Claim, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let by = turn.sender().id().bits();
@@ -595,7 +596,7 @@ impl Handles<Claim> for Claimer {
     }
 }
 
-impl Handles<Answer<Framed, Told>> for Claimer {
+impl Receives<Answer<Framed, Told>> for Claimer {
     type Sends = ();
 
     fn handle(&mut self, (answered, told): (Answered<Framed>, Told), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -720,7 +721,7 @@ fn effect(wgsl: Bytes, fragment: &str, bindings: Vec<Binding>, colour: ColourFor
     }
 }
 
-impl Handles<On<Start>> for Glower {
+impl Receives<On<Start>> for Glower {
     type Sends = (Asks<Path<Renderer>, CreateEffect, Glowing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -738,7 +739,7 @@ impl Handles<On<Start>> for Glower {
     }
 }
 
-impl Handles<Answer<Effected, Glowing>> for Glower {
+impl Receives<Answer<Effected, Glowing>> for Glower {
     type Sends = (Asks<Path<Renderer>, CreateFrame, Glowing>,);
 
     fn handle(
@@ -782,7 +783,7 @@ impl Handles<Answer<Effected, Glowing>> for Glower {
     }
 }
 
-impl Handles<Answer<Framed, Glowing>> for Glower {
+impl Receives<Answer<Framed, Glowing>> for Glower {
     type Sends = (Asks<Path<Renderer>, CreateEffect, Glowing>,);
 
     fn handle(
@@ -821,7 +822,7 @@ impl Handles<Answer<Framed, Glowing>> for Glower {
     }
 }
 
-impl Handles<On<Tick>> for Glower {
+impl Receives<On<Tick>> for Glower {
     type Sends = (Asks<Path<Renderer>, ReadBack, Glowed>,);
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -862,7 +863,7 @@ fn half(pixels: &[u8]) -> f32 {
     }
 }
 
-impl Handles<Answer<Pixels, Glowed>> for Glower {
+impl Receives<Answer<Pixels, Glowed>> for Glower {
     type Sends = ();
 
     fn handle(

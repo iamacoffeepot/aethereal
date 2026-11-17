@@ -3,8 +3,8 @@
 use super::*;
 use crate::waiting;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles, Held, On,
-    Services, Sleep, Slept, Start, Stop, Tick, ToSender, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles,
+    Held, On, Receives, Services, Sleep, Slept, Start, Stop, Tick, ToSender, Top, Turn,
 };
 use aethereal_actor::{ActorName, Asks, Path, ToType, path};
 use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
@@ -66,7 +66,7 @@ impl Actor for Quitter {
     }
 }
 
-impl Handles<On<Start>> for Quitter {
+impl Receives<On<Start>> for Quitter {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -106,6 +106,7 @@ impl Actor for Unready {
 
 impl Handles<Nothing> for Unready {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Nothing, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.quit();
@@ -114,7 +115,7 @@ impl Handles<Nothing> for Unready {
     }
 }
 
-impl Handles<On<Start>> for Unready {
+impl Receives<On<Start>> for Unready {
     type Sends = ();
 
     fn handle(&mut self, _: Start, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -192,7 +193,7 @@ impl Actor for Metronome {
     }
 }
 
-impl Handles<On<Tick>> for Metronome {
+impl Receives<On<Tick>> for Metronome {
     type Sends = ();
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -258,7 +259,7 @@ impl Actor for Holdout {
     }
 }
 
-impl Handles<On<Start>> for Holdout {
+impl Receives<On<Start>> for Holdout {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -268,7 +269,7 @@ impl Handles<On<Start>> for Holdout {
     }
 }
 
-impl Handles<On<Stop>> for Holdout {
+impl Receives<On<Stop>> for Holdout {
     type Sends = (ToSender<Drained>,);
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -345,7 +346,7 @@ impl Actor for Napper {
     }
 }
 
-impl Handles<On<Start>> for Napper {
+impl Receives<On<Start>> for Napper {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -355,7 +356,7 @@ impl Handles<On<Start>> for Napper {
     }
 }
 
-impl Handles<On<Tick>> for Napper {
+impl Receives<On<Tick>> for Napper {
     type Sends = ();
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -370,7 +371,7 @@ impl Handles<On<Tick>> for Napper {
     }
 }
 
-impl Handles<Answer<Slept, Nothing>> for Napper {
+impl Receives<Answer<Slept, Nothing>> for Napper {
     type Sends = ();
 
     fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -442,7 +443,7 @@ impl Actor for Dozer {
     }
 }
 
-impl Handles<On<Start>> for Dozer {
+impl Receives<On<Start>> for Dozer {
     type Sends = ();
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -452,7 +453,7 @@ impl Handles<On<Start>> for Dozer {
     }
 }
 
-impl Handles<Answer<Slept, Nothing>> for Dozer {
+impl Receives<Answer<Slept, Nothing>> for Dozer {
     type Sends = ();
 
     fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -539,6 +540,7 @@ impl Actor for Silent {
 
 impl Handles<Hush> for Silent {
     type Sends = (ToSender<Hush>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Hush, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.held.push(turn.hold()?);
@@ -596,7 +598,7 @@ impl Actor for Waiter {
     }
 }
 
-impl Handles<On<Start>> for Waiter {
+impl Receives<On<Start>> for Waiter {
     type Sends = (Asks<Hushes, Hush, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -607,7 +609,7 @@ impl Handles<On<Start>> for Waiter {
     }
 }
 
-impl Handles<Answer<Hush, Nothing>> for Waiter {
+impl Receives<Answer<Hush, Nothing>> for Waiter {
     type Sends = ();
 
     fn handle(&mut self, (answered, _): (Answered<Hush>, Nothing), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -700,7 +702,7 @@ impl Actor for Stepper {
     }
 }
 
-impl Handles<On<Tick>> for Stepper {
+impl Receives<On<Tick>> for Stepper {
     type Sends = ();
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -710,7 +712,7 @@ impl Handles<On<Tick>> for Stepper {
     }
 }
 
-impl Handles<Answer<Advanced, Nothing>> for Stepper {
+impl Receives<Answer<Advanced, Nothing>> for Stepper {
     type Sends = ();
 
     fn handle(

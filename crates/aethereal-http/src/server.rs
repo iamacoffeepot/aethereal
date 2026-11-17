@@ -3,8 +3,8 @@
 
 use crate::{Exchange, ExchangeConfig, Handling, Http, Limits, Mount};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Fault, Handles, More, Number,
-    Open, Part, ProtocolRef, Streamed, Streams, ToAny, ToType, Turn,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ended, Ending, Fault, Handles, More,
+    Number, Open, Part, ProtocolRef, Receives, Streamed, Streams, ToAny, ToType, Turn,
 };
 use aethereal_data::Bound;
 use aethereal_tcp::{Accept, Accepted, Accepting, Listener, Shut, Unbound};
@@ -80,7 +80,7 @@ impl Actor for Server {
     }
 }
 
-impl Handles<Ended> for Server {
+impl Receives<Ended> for Server {
     type Sends = (ToType<Listener, Shut>, ToType<Exchange, Shut>);
 
     fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -98,6 +98,7 @@ impl Handles<Ended> for Server {
 
 impl Handles<Shut> for Server {
     type Sends = (ToType<Listener, Shut>, ToType<Exchange, Shut>);
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.shut(turn)
@@ -106,6 +107,7 @@ impl Handles<Shut> for Server {
 
 impl Handles<Part<Accepting>> for Server {
     type Sends = (ToAny<Streamed<Accepting>, More>, ToType<Accepted, Shut>);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.accepting.part(turn, part)? else {
@@ -138,7 +140,7 @@ impl Handles<Part<Accepting>> for Server {
     }
 }
 
-impl Handles<Answer<Unbound, Number>> for Server {
+impl Receives<Answer<Unbound, Number>> for Server {
     type Sends = (ToType<Listener, Shut>, ToType<Exchange, Shut>);
 
     fn handle(

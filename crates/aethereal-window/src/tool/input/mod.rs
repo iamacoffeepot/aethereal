@@ -6,8 +6,8 @@ mod tests;
 use crate::perform::{Input, MOST_INPUTS, Perform, Performed, Unperformed, unperformable};
 use crate::window::{Window, WindowId};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -115,6 +115,7 @@ impl Tool for InputTool {
 /// is. A call of no inputs is answered at once, as there is nothing to perform.
 impl Handles<Call> for InputTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<SendInput>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -146,7 +147,7 @@ impl Handles<Call> for InputTool {
 /// The window's actor performed an input, refused it, or was not there: the call is answered once its last input is
 /// performed, or with the first refusal, and the answers after that are dropped. A window whose actor had ended, or
 /// never was, is not open.
-impl Handles<Answer<Performed, Sending>> for InputTool {
+impl Receives<Answer<Performed, Sending>> for InputTool {
     type Sends = Sends;
 
     fn handle(

@@ -3,8 +3,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Actors, Answer, Answered, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Render, Seated,
-    Services, Sleep, Slept, Source, Tick, Top, Turn, Unanswered,
+    Actor, Actors, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Receives,
+    Render, Seated, Services, Sleep, Slept, Source, Tick, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Encode, Kind, KindId, Plain};
 use aethereal_substrate::harness::{Turned, Unheard};
@@ -90,7 +90,7 @@ impl Actor for Painter {
     }
 }
 
-impl Handles<On<Tick>> for Painter {
+impl Receives<On<Tick>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -100,7 +100,7 @@ impl Handles<On<Tick>> for Painter {
     }
 }
 
-impl Handles<On<Render>> for Painter {
+impl Receives<On<Render>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, _: Render, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -108,7 +108,7 @@ impl Handles<On<Render>> for Painter {
     }
 }
 
-impl Handles<Answer<Slept, Nothing>> for Painter {
+impl Receives<Answer<Slept, Nothing>> for Painter {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Slept>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -186,6 +186,7 @@ impl Actor for Pointer {
 
 impl Handles<Moved> for Pointer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Moved, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())

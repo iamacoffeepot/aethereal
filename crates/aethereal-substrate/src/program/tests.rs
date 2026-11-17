@@ -3,7 +3,8 @@
 use super::*;
 use crate::{Bootstrap, root_id};
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Path, Publisher, Root, Seated, Tells, Top, Turn,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Path, Publisher, Root, Seated, Tells,
+    Top, Turn,
 };
 use aethereal_data::config::{ConfigError, ConfigFault};
 use aethereal_data::{ActorId, ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
@@ -406,6 +407,7 @@ macro_rules! drawing {
 
         impl Handles<Stroke> for $name {
             type Sends = $sends;
+            type From = Anyone;
 
             fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, $sends>) -> Result<(), Fault> {
                 Ok(())
@@ -450,6 +452,7 @@ impl Actor for Canvas {
 
 impl Handles<Stroke> for Canvas {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())

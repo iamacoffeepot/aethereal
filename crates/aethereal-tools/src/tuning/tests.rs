@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{Caller, CommandLine, FlagsFault};
-use aethereal_actor::{Top, tuning};
+use aethereal_actor::{Anyone, Top, tuning};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use std::num::NonZeroUsize;
@@ -78,6 +78,7 @@ impl Tunable for Dial {
 
 impl Handles<ReadTuning> for Dial {
     type Sends = (ToSender<Tuning>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         tuning::read(self, turn)
@@ -86,6 +87,7 @@ impl Handles<ReadTuning> for Dial {
 
 impl Handles<Tune> for Dial {
     type Sends = (ToSender<Tuned>,);
+    type From = Anyone;
 
     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         tuning::tune(self, &tune, turn)

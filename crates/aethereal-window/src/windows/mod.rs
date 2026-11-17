@@ -17,7 +17,7 @@ use crate::cursor::{Cursor, ShowCursor};
 use crate::event::{Event, Mode, Surface};
 use crate::window::{Window, WindowConfig, WindowId};
 use aethereal_actor::{
-    Actor, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, Source,
+    Actor, Anyone, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, Source,
     ToSender, ToType, Top, Turn, child,
 };
 use aethereal_data::{Bound, Plain};
@@ -274,6 +274,7 @@ impl Actor for Windows {
 /// it did.
 impl Handles<OpenWindow> for Windows {
     type Sends = (ToSender<Opened>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: OpenWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -291,6 +292,7 @@ impl Handles<OpenWindow> for Windows {
 /// says whether it did. A window that is not open, as one still opening, is refused.
 impl Handles<CloseWindow> for Windows {
     type Sends = (ToSender<Closed>,);
+    type From = Anyone;
 
     fn handle(&mut self, close: CloseWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let window = close.window;
@@ -313,6 +315,7 @@ impl Handles<CloseWindow> for Windows {
 /// that one leaves. A window that is not open, as one still opening or closing, is refused.
 impl Handles<SetMode> for Windows {
     type Sends = (ToSender<ModeSet>,);
+    type From = Anyone;
 
     fn handle(&mut self, set: SetMode, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let SetMode { window, mode } = set;
@@ -336,6 +339,7 @@ impl Handles<SetMode> for Windows {
 /// Answers every open window, as the root last heard from its host, with nothing asked of the host.
 impl Handles<ListWindows> for Windows {
     type Sends = (ToSender<WindowList>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: ListWindows, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let windows = self
@@ -357,6 +361,7 @@ impl Handles<ListWindows> for Windows {
 /// sets (ADR-0047).
 impl Handles<ResizeWindow> for Windows {
     type Sends = (ToSender<Resized>,);
+    type From = Anyone;
 
     fn handle(&mut self, resize: ResizeWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let ResizeWindow { window, size } = resize;
@@ -378,6 +383,7 @@ impl Handles<ResizeWindow> for Windows {
 /// resize is (ADR-0047).
 impl Handles<MoveWindow> for Windows {
     type Sends = (ToSender<Moved>,);
+    type From = Anyone;
 
     fn handle(&mut self, moving: MoveWindow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let MoveWindow { window, at } = moving;
@@ -400,6 +406,7 @@ impl Handles<MoveWindow> for Windows {
 /// window that is not open, as one still opening or closing, is refused.
 impl Handles<AllowIme> for Windows {
     type Sends = (ToSender<ImeAllowed>,);
+    type From = Anyone;
 
     fn handle(&mut self, allow: AllowIme, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let AllowIme { window, allowed } = allow;
@@ -419,6 +426,7 @@ impl Handles<AllowIme> for Windows {
 /// the draw lists, never set by whoever asks last; and a window that is not open shows none.
 impl Handles<ShowCursor> for Windows {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, show: ShowCursor, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let ShowCursor { window, cursor } = show;
@@ -442,6 +450,7 @@ impl Handles<ShowCursor> for Windows {
 /// is not the host's, and is not acted on; what was heard in a window with no actor reaches nothing.
 impl Handles<Heard> for Windows {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let me = turn.me();

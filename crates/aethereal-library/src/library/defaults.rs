@@ -2,7 +2,7 @@
 
 use super::{Deferred, Library, Reading, Stage};
 use crate::{Defaulted, Defaults};
-use aethereal_actor::{Bytes, Fault, Handles, Level, ToSender, Turn};
+use aethereal_actor::{Anyone, Bytes, Fault, Handles, Level, ToSender, Turn};
 use aethereal_data::KindName;
 use std::collections::BTreeMap;
 
@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 /// and answered that it stopped once it has.
 impl Handles<Defaults> for Library {
     type Sends = (ToSender<Defaulted>,);
+    type From = Anyone;
 
     fn handle(&mut self, Defaults { modules }: Defaults, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let deferred = match &mut self.stage {

@@ -2,6 +2,7 @@
 //! its own under the system's temporary directory.
 
 use super::*;
+use aethereal_actor::{Anyone, Receives};
 use aethereal_tcp::{ConnectUnix, ConnectedUnix, SocketPath};
 use std::fs;
 use std::io::{Read as _, Write as _};
@@ -207,6 +208,7 @@ impl Bootstrap<Headless> for Holder {
 
 impl Handles<Hold> for Holder {
     type Sends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
+    type From = Anyone;
 
     fn handle(&mut self, hold: Hold, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match hold {
@@ -227,6 +229,7 @@ impl Handles<Hold> for Holder {
 
 impl Handles<Part<Reading>> for Holder {
     type Sends = (ToAny<Streamed<Reading>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let taken = match self.pace {
@@ -245,7 +248,7 @@ impl Handles<Part<Reading>> for Holder {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Holder {
+impl Receives<Answer<HungUp, Number>> for Holder {
     type Sends = ();
 
     fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
