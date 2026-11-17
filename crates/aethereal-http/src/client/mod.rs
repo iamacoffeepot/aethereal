@@ -437,7 +437,7 @@ impl Client {
             return Ok(Step::Again);
         }
         let waits = match *asker {
-            Asker::Following { key, .. } => !has_credit(&mut self.serving, key),
+            Asker::Following { key, .. } => !self.serving.has_credit(key),
             Asker::Fetching(_) => false,
         };
         if waits {
@@ -538,7 +538,7 @@ impl Client {
         S: Allows<Parts, I>,
     {
         let has_bytes = !self.buffer.is_empty();
-        let is_held = has_bytes && !has_credit(&mut self.serving, key);
+        let is_held = has_bytes && !self.serving.has_credit(key);
         if is_held {
             return Ok(Step::Stop(Stalled::Credit));
         }
@@ -579,7 +579,7 @@ impl Client {
         if self.buffer.is_empty() {
             return Ok(Step::Stop(Stalled::Bytes));
         }
-        if !has_credit(&mut self.serving, key) {
+        if !self.serving.has_credit(key) {
             return Ok(Step::Stop(Stalled::Credit));
         }
         let mut raw = turn.buffer(self.buffer.len());
@@ -700,9 +700,4 @@ impl Client {
 
         Ok(())
     }
-}
-
-/// Whether the stream `key` of those `serving` holds may be sent another part.
-fn has_credit(serving: &mut Serving<Receiving>, key: StreamKey) -> bool {
-    serving.get_mut(key).is_some_and(|stream| stream.credit() > 0)
 }

@@ -31,9 +31,14 @@ pub struct HttpSettings {
     /// The chunks an exchange's read stream is granted ahead.
     #[flag]
     pub window: u32,
-    /// The milliseconds a request may take to arrive whole, from its first byte.
+    /// The milliseconds a request may take to arrive whole, from its first byte. A body streamed to a mount's handler
+    /// is timed by `stall_within_millis` instead.
     #[flag]
     pub request_within_millis: u32,
+    /// The milliseconds a body streamed to a mount's handler may go without progress, past which it ends stalled and
+    /// the connection closes.
+    #[flag]
+    pub stall_within_millis: u32,
     /// The milliseconds a connection may wait between one response and the next request.
     #[flag]
     pub idle_within_millis: u32,
@@ -64,6 +69,7 @@ impl Default for HttpSettings {
             chunk_bytes: 64 * 1024,
             window: 4,
             request_within_millis: 10_000,
+            stall_within_millis: 60_000,
             idle_within_millis: 60_000,
             answer_within_millis: 300_000,
             most_clients: 64,
@@ -147,6 +153,7 @@ pub struct Limits {
     pub most_body_bytes: u32,
     pub window: u32,
     pub request_within_millis: u32,
+    pub stall_within_millis: u32,
     pub idle_within_millis: u32,
     pub answer_within_millis: u32,
 }
@@ -160,6 +167,7 @@ impl HttpSettings {
             most_body_bytes: self.most_body_bytes,
             window: self.window,
             request_within_millis: self.request_within_millis,
+            stall_within_millis: self.stall_within_millis,
             idle_within_millis: self.idle_within_millis,
             answer_within_millis: self.answer_within_millis,
         }

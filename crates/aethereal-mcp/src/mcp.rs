@@ -140,10 +140,10 @@ impl Actor for Mcp {
     /// Asks `Http` to serve its own port on the loopback, and the route where the settings say.
     fn begin(settings: McpSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
         let handler = turn.me().protocol::<Handling, _>();
-        let own = Serve { port: settings.port, interface: Interface::Loopback, handler };
+        let own = Serve { port: settings.port, interface: Interface::Loopback, handler, mounts: Vec::new() };
         turn.to(path::<Http>(())).ask(&own, &Serving::Own)?;
         let interface = Interface::At(settings.route_interface.clone());
-        let route = Serve { port: settings.route_port, interface, handler };
+        let route = Serve { port: settings.route_port, interface, handler, mounts: Vec::new() };
         turn.to(path::<Http>(())).ask(&route, &Serving::Route)?;
 
         Ok(Self {

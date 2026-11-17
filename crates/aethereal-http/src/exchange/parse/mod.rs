@@ -2,7 +2,8 @@
 
 use crate::body::{Body, Broken, Chunk};
 use crate::head::{self, Ends, Malformed};
-use crate::{Header, Limits, Method, Status};
+use crate::mount::mounted;
+use crate::{BodyLength, Header, Limits, Method, Mount, Status};
 use aethereal_data::Plain;
 
 /// A request's head, parsed: what the handler is given of it, and what the exchange reads of it to frame the body
@@ -26,13 +27,22 @@ pub struct Head {
 pub enum Framing {
     /// It has none: neither a `Transfer-Encoding` nor a `Content-Length`, or a `Content-Length` of 0.
     Empty,
-    /// Its `Content-Length`, more than 0 and within `most_body_bytes`.
+    /// Its `Content-Length`, more than 0 and within the most bytes of its body: its mount's, or the server's.
     Length(u64),
-    /// `Transfer-Encoding: chunked`, its decoded length bounded by `most_body_bytes` as it is read.
+    /// `Transfer-Encoding: chunked`, its decoded length bounded by the most bytes of its body as it is read.
     Chunked,
 }
 
 impl Framing {
+    /// How long the body it frames is, as a streamed request tells its handler.
+    pub const fn length(self) -> BodyLength {
+        match self {
+            Self::Empty => BodyLength::Known(0),
+            Self::Length(length) => BodyLength::Known(length),
+            Self::Chunked => BodyLength::Chunked,
+        }
+    }
+
     /// The body it frames: one with none is read as a length of nothing, which ends at once.
     pub const fn body(self) -> Body {
         match self {
@@ -61,7 +71,7 @@ pub enum Refusal {
     Malformed,
     /// Its head is past `most_head_bytes`: `431`.
     HeadTooLarge,
-    /// Its body is past `most_body_bytes`: `413`.
+    /// Its body is past the most bytes of its body, its mount's or the server's: `413`.
     BodyTooLarge,
     /// A method no server takes, or a transfer coding other than `chunked` alone: `501`.
     Unimplemented,
@@ -82,12 +92,13 @@ impl Refusal {
     }
 }
 
-/// The head at the front of `buffer`, past any empty lines before it, as `limits` allow it.
-pub fn head(buffer: &[u8], limits: &Limits) -> Parsed {
+/// The head at the front of `buffer`, past any empty lines before it, as `limits` allow it, and as its mount among
+/// `mounts` allows its body.
+pub fn head(buffer: &[u8], limits: &Limits, mounts: &[Mount]) -> Parsed {
     match head::ends(buffer, limits.most_head_bytes) {
         Ends::More => Parsed::More,
         Ends::TooLarge => Parsed::Refused(Refusal::HeadTooLarge),
-        Ends::Whole { text, consumed } => match parsed(&buffer[text], limits) {
+        Ends::Whole { text, consumed } => match parsed(&buffer[text], limits, mounts) {
             Ok(head) => Parsed::Head { head, consumed },
             Err(refusal) => Parsed::Refused(refusal),
         },
@@ -95,7 +106,7 @@ pub fn head(buffer: &[u8], limits: &Limits) -> Parsed {
 }
 
 /// The head whose lines are `text`, its ending cut off.
-fn parsed(text: &[u8], limits: &Limits) -> Result<Head, Refusal> {
+fn parsed(text: &[u8], limits: &Limits, mounts: &[Mount]) -> Result<Head, Refusal> {
     let mut lines = head::lines(text)?;
     let request_line = lines.next().ok_or(Refusal::Malformed)?;
     let (method, target, version) = request_line_of(request_line)?;
@@ -103,7 +114,9 @@ fn parsed(text: &[u8], limits: &Limits) -> Result<Head, Refusal> {
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     let (path, query) = (String::from(path), String::from(query));
 
-    let framing = framing(&headers, version, limits)?;
+    let most_body =
+        mounted(mounts, &path).map_or_else(|| u64::from(limits.most_body_bytes), |mount| mount.most_body_bytes);
+    let framing = framing(&headers, version, most_body)?;
     let asks_close = head::lists(&headers, "connection", "close");
     let is_old = version == Version::Http10;
     let expects_continue =
@@ -164,17 +177,17 @@ fn request_line_of(line: &[u8]) -> Result<(Method, String, Version), Refusal> {
     Ok((method, target, version))
 }
 
-/// How the body of a request of `version` with `headers` is framed (RFC 9112 §6.1, §6.3), as `limits` allow it. A body
-/// past `most_body_bytes` by its `Content-Length` is refused before it is read. A `Transfer-Encoding` beside a
+/// How the body of a request of `version` with `headers` is framed (RFC 9112 §6.1, §6.3). A body past `most_body` bytes
+/// by its `Content-Length` is refused before it is read. A `Transfer-Encoding` beside a
 /// `Content-Length`, or in HTTP/1.0, which has none, frames the body two ways, which is how a request is smuggled, and
 /// does not parse. A transfer coding other than `chunked` alone is one the exchange does not decode.
-fn framing(headers: &[Header], version: Version, limits: &Limits) -> Result<Framing, Refusal> {
+fn framing(headers: &[Header], version: Version, most_body: u64) -> Result<Framing, Refusal> {
     let codings: Vec<&Header> = headers.iter().filter(|header| header.name == "transfer-encoding").collect();
     let length = head::content_length(headers)?;
 
     match (codings.as_slice(), length) {
         ([], None | Some(0)) => Ok(Framing::Empty),
-        ([], Some(length)) if length > u64::from(limits.most_body_bytes) => Err(Refusal::BodyTooLarge),
+        ([], Some(length)) if length > most_body => Err(Refusal::BodyTooLarge),
         ([], Some(length)) => Ok(Framing::Length(length)),
         (_, Some(_)) => Err(Refusal::Malformed),
         (_, None) if version == Version::Http10 => Err(Refusal::Malformed),

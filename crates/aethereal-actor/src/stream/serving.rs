@@ -111,6 +111,14 @@ impl<S: Stream> Serving<S> {
         self.streams.get_mut(&key.asker())?.get_mut(&key.number())
     }
 
+    /// Whether the stream `key` names is served here and may be sent another part.
+    #[must_use]
+    pub fn has_credit(&self, key: StreamKey) -> bool {
+        let streaming = self.streams.get(&key.asker()).and_then(|streams| streams.get(&key.number()));
+
+        streaming.is_some_and(|streaming| streaming.credit > 0)
+    }
+
     /// The stream `key` names, taken out to be finished: none when it is not served here.
     pub fn take(&mut self, key: StreamKey) -> Option<Streaming<S>> {
         let streams = self.streams.get_mut(&key.asker())?;

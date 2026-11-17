@@ -1,7 +1,7 @@
 //! A server: the listener `Tcp` bound for it, and an exchange for each connection it accepts, each asking the
 //! server's handler its requests (ADR-0035).
 
-use crate::{Exchange, ExchangeConfig, Handling, Http, Limits};
+use crate::{Exchange, ExchangeConfig, Handling, Http, Limits, Mount};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Fault, Handles, More, Number,
     Open, Part, ProtocolRef, Streamed, Streams, ToAny, ToType, Turn,
@@ -11,14 +11,15 @@ use aethereal_tcp::{Accept, Accepted, Accepting, Listener, Shut, Unbound};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-/// What a server is made from: the listener `Tcp` bound for it, the port it bound, the handler its exchanges ask, and
-/// its limits.
+/// What a server is made from: the listener `Tcp` bound for it, the port it bound, the handler its exchanges ask, the
+/// mounts whose requests they stream to handlers of their own, and its limits.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.server_config")]
 pub struct ServerConfig {
     pub listener: ActorRef<Listener>,
     pub port: u16,
     pub handler: ProtocolRef<Handling>,
+    pub mounts: Vec<Mount>,
     pub most_exchanges: u32,
     pub limits: Limits,
 }
@@ -32,6 +33,7 @@ pub struct Server {
     listener: ActorRef<Listener>,
     port: u16,
     handler: ProtocolRef<Handling>,
+    mounts: Vec<Mount>,
     most_exchanges: u32,
     limits: Limits,
     accepting: Streams<Accepting, ()>,
@@ -64,6 +66,7 @@ impl Actor for Server {
             listener: config.listener,
             port: config.port,
             handler: config.handler,
+            mounts: config.mounts,
             most_exchanges: config.most_exchanges,
             limits: config.limits,
             accepting,
@@ -119,6 +122,7 @@ impl Handles<Part<Accepting>> for Server {
             peer: incoming.peer,
             port: self.port,
             handler: self.handler,
+            mounts: self.mounts.clone(),
             limits: self.limits,
         };
         let number = self.next;

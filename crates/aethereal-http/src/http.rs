@@ -1,6 +1,8 @@
 //! The HTTP capability's root (ADR-0035).
 
-use crate::{BlobBytesTooLow, Client, ClientConfig, Handling, HttpSettings, ReadLimitTooLow, Server, ServerConfig};
+use crate::{
+    BlobBytesTooLow, Client, ClientConfig, Handling, HttpSettings, Mount, ReadLimitTooLow, Server, ServerConfig,
+};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
     Path, ProtocolRef, ToSender, ToType, Top, Turn, path,
@@ -13,15 +15,17 @@ use aethereal_tcp::{
 };
 use std::collections::BTreeMap;
 
-/// What an actor asks the root to serve on: a port, 0 for any the host picks, the interface `Tcp` binds it on, and the
-/// handler each request is asked of, usually the asker itself (`turn.me().protocol()`). Each request names the port it
-/// came in on, so one handler of two serves tells them apart.
+/// What an actor asks the root to serve on: a port, 0 for any the host picks, the interface `Tcp` binds it on, the
+/// handler each request is asked of, usually the asker itself (`turn.me().protocol()`), and the mounts whose requests
+/// are streamed to handlers of their own instead, empty for none. Each request names the port it came in on, so one
+/// handler of two serves tells them apart.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.serve")]
 pub struct Serve {
     pub port: u16,
     pub interface: Interface,
     pub handler: ProtocolRef<Handling>,
+    pub mounts: Vec<Mount>,
 }
 
 /// What a serve came to.
@@ -111,20 +115,21 @@ pub struct ReachingUnix {
     number: u64,
 }
 
-/// A serve the root holds until `Tcp` answers its listen, the handler it names, and the actor that asked it.
+/// A serve the root holds until `Tcp` answers its listen, the handler and mounts it names, and the actor that asked it.
 #[derive(Bound)]
 struct Waiting {
     held: Held<Served>,
     handler: ProtocolRef<Handling>,
+    mounts: Vec<Mount>,
     asker: u64,
 }
 
-/// A listener `Tcp` bound, its port, and the serve's handler and asker: what a server is stood up from.
-#[derive(Clone, Copy)]
+/// A listener `Tcp` bound, its port, and the serve's handler, mounts, and asker: what a server is stood up from.
 struct Opening {
     listener: ActorRef<Listener>,
     port: u16,
     handler: ProtocolRef<Handling>,
+    mounts: Vec<Mount>,
     asker: u64,
 }
 
@@ -250,7 +255,7 @@ impl Handles<Serve> for Http {
         let framing = Framing::Chunks { most_bytes: self.settings.chunk_bytes };
         let listen = Listen { port: serve.port, interface: serve.interface, framing };
         turn.to(path::<Tcp>(())).ask(&listen, &Binding { number })?;
-        self.waiting.insert(number, Waiting { held, handler: serve.handler, asker });
+        self.waiting.insert(number, Waiting { held, handler: serve.handler, mounts: serve.mounts, asker });
 
         Ok(())
     }
@@ -264,12 +269,12 @@ impl Handles<Answer<Listening, Binding>> for Http {
         (answered, binding): (Answered<Listening>, Binding),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Some(Waiting { held, handler, asker }) = self.waiting.remove(&binding.number) else {
+        let Some(Waiting { held, handler, mounts, asker }) = self.waiting.remove(&binding.number) else {
             return Ok(());
         };
         let served = match answered {
             Answered::Yes(Listening::Bound { listener, port }) => {
-                self.stand_up(turn, Opening { listener, port, handler, asker })?
+                self.stand_up(turn, Opening { listener, port, handler, mounts, asker })?
             }
             Answered::Yes(Listening::Taken) => Served::Taken,
             Answered::Yes(Listening::Full | Listening::Refused) => Served::Refused,
@@ -404,7 +409,7 @@ impl Http {
     where
         S: Allows<ToType<Listener, Shut>, I>,
     {
-        let Opening { listener, port, handler, asker } = opening;
+        let Opening { listener, port, handler, mounts, asker } = opening;
         let is_asked = self.askers.contains(&asker);
         if !is_asked {
             // Its asker has ended: no one is left to handle what the server would take.
@@ -415,6 +420,7 @@ impl Http {
             listener,
             port,
             handler,
+            mounts,
             most_exchanges: self.settings.most_exchanges,
             limits: self.settings.limits(),
         };

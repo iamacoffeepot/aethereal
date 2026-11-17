@@ -323,7 +323,7 @@ fn a_response_is_read_whole_by_its_length_and_the_connection_is_kept_for_the_nex
     let mut harness = host(HttpSettings::default())?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler })?;
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts: Vec::new() })?;
     let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
         panic!("the port is bound");
     };

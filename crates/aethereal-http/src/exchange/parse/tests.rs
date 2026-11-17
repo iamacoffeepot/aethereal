@@ -6,13 +6,14 @@ const LIMITS: Limits = Limits {
     most_body_bytes: 16,
     window: 4,
     request_within_millis: 1000,
+    stall_within_millis: 1000,
     idle_within_millis: 1000,
     answer_within_millis: 1000,
 };
 
 /// What the front of `bytes` parses as.
 fn front(bytes: &[u8]) -> Parsed {
-    head(bytes, &LIMITS)
+    head(bytes, &LIMITS, &[])
 }
 
 #[test]
