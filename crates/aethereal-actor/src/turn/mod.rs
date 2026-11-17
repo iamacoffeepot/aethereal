@@ -2515,6 +2515,16 @@ impl<'a, Me, S> Beginning<'a, Me, S> {
 }
 
 impl<Me, S> Beginning<'_, Me, S> {
+    /// A reference to the live actor the typed path `path` names, as this `begin` sees the engine, proven of its type:
+    /// none when nothing live stands there, or an actor of another type does, as a turn's [`found`](Doing::found)
+    /// answers. A stack's `begin` keeps each root it reaches so (ADR-0035). A host makes its roots one at a time, in
+    /// its setup's order, each begun and live before the next is made, so a root finds a root its setup makes before
+    /// it and none for one made after it (ADR-0022).
+    #[must_use]
+    pub fn found<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>> {
+        self.seat.found(path.names(), KindId::of::<L>()).map(ActorRef::new)
+    }
+
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
     /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
