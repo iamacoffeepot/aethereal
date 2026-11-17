@@ -50,7 +50,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 
 **An ending belongs to the chain of the mail that brought it about.** When an actor closes or fails while handling a piece of mail, the mail sent from its closing turn (ADR-0009's `end`) has that piece of mail as its cause, and its root. A child that closes because its parent told it to closes while handling that mail, so its ending is in the same chain. A chain has therefore not finished until the closing turns it led to have run. An ending makes no mail for the actors that watch it (ADR-0009): a watcher reacts to the ending in a turn of its own, and what it sends there belongs to the chain of the mail that brought the ending about.
 
-**A root's `begin` starts a chain of its own.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is the id made of that root actor and a count of zero, which no piece of sent mail has.
+**A root's `begin` sends on `Boot`, the chain of bootstrapping's mail.** Nothing caused it and it is handling no mail. The mail it sends has no cause, and its root is `Boot`'s, which the engine makes as it makes a stage's, and which no piece of sent mail has (ADR-0020). So every root's `begin`, and every `begin` it runs, sends on one chain, and `Start` waits for it to finish.
 
 **What an actor keeps about the mail it sent is its own, kept under a chain's root and a depth.** An actor that sends mail and wants to know later what it sent it for keeps that in a field of its own, under the root of the chain and the depth of the mail it sent. A request is the exception: the engine keeps what its asker hands it, and gives it back with the answer (ADR-0017). A handler reads both from its mail: `mail.root()` and `mail.depth()`.
 
@@ -69,7 +69,7 @@ The engine keeps a piece of mail under the actor it is for, with its id beside i
 - Whether a chain has finished is read by its root: whether any item of it waits to be handed, or any actor it ended is still to run its closing turn (ADR-0020).
 - What happened is followed back by causes in a record of the run, to the resource that began it. A piece of mail alone names only its chain's root.
 - Every piece of mail carries two ids, of sixteen bytes each, its own and its root's, and its depth.
-- Every chain but a root's first begins at a resource, so the engine can say for any piece of mail what from outside set it off.
+- Every chain but `Boot` and a stage's begins at a resource, so the engine can say for any piece of mail what from outside set it off.
 - **Not decided here:** how a `begin` and a closing turn, which handle no mail, read the chain and depth they send at; the chain of an ending that nothing inside the engine brought about, such as the host shutting down; large payloads; and how a record of the run keeps causes.
 
 ## Alternatives considered

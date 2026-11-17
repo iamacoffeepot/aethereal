@@ -11,14 +11,16 @@ An actor is a state machine, and stages are how the program keeps every actor at
 
 What "finished" means is ADR-0011's planned view, "whether a chain of mail has finished", which is not built. ADR-0012 counts it by root: mail sent, less mail handled. It says what belongs to a chain: mail sent while handling a piece of mail takes its root (`Envelope::root`), a closing turn's mail and what the watchers of an ending send belong to the chain that brought the ending about, and what a source brings in is the root of a chain of its own.
 
+A root's `begin` can only ask: what it sets up is answered once the program is bootstrapped, in ordinary handlers. That mail was on no stage's chain, so `Start` could finish while it still ran, and an answer that refused a setup was met ad hoc: an actor quit, which ends the run as a clean stop does, or faulted, which ends only that actor, or logged and went on.
+
 The earlier engine let an application declare its stages as a graph, with a driver actor that broadcast each and advanced when the stage's chain settled (its ADR-0082). Custom stages never found a use there; every program it hosted drew, and ran start, then tick, render, and present repeated, then shutdown. A program that does not draw runs another cycle: a game's server takes in what its players sent, steps its world, and sends them what changed, at a fixed rate; a server for requests and a tool run once repeat nothing at all. Its `Tick` came to carry the frame's delta and the time elapsed, and every other stage nothing: what a frame's actors need of one another rides their own mail. Its desktop driver limited each frame's delta, so a long stall slowed the program's time and skipped nothing.
 
 ## Decision
 
-**The engine runs the program's lifecycle: `Start`, a cycle of stages its chassis chooses, repeated, and then `Stop`.**
+**The engine runs the program's lifecycle: `Boot`, the chain of its bootstrapping's mail, then `Start`, a cycle of stages its chassis chooses, repeated, and then `Stop`.**
 
 ```text
-Start → ( a cycle of stages )* → Stop
+Boot → Start → ( a cycle of stages )* → Stop
 ```
 
 ```rust
@@ -90,21 +92,31 @@ impl Handles<Spawned> for Renderer {
 
 ```rust
 impl Engine {
-    pub fn start(&mut self);              // the roots are made
+    pub fn start(&mut self);              // the roots are made: the program boots
     pub fn cycle(&mut self);              // a cycle is due: on an animation frame, a display's refresh, a timer
     pub fn quit(&mut self);               // the window closed, the process was told to end, the page was hidden
-    pub fn lifecycle(&self) -> Lifecycle; // Lifecycle::Waiting | Running | Stopping | Stopped
+    pub fn lifecycle(&self) -> Lifecycle; // Lifecycle::Waiting | Booting | Running | Stopping | Stopped | Unbooted
 }
 ```
 
-- **Start is sent when the host calls `engine.start()`**, to every subscriber folded by then, whether or not its cycle holds any stage. A root's `begin` is folded as `add_root` makes it, so a chassis that makes its roots before it starts has every root, and every child their `begin`s stood up, subscribed. An actor made after `Start` was sent is not sent it: its `begin` is its start. The first `cycle` after `Start` has finished sends the cycle's first stage.
-- **The headless chassis runs a program to its end** with `Headless::run(every, stop_within) -> Exit`, which takes the chassis and drops it when it returns. It starts the program, says a cycle is due every `every`, and steps while any actor has anything to run. When nothing has, it parks its workers and sleeps until the next cycle is due, or until a source is pushed or a job finishes, which wakes it (ADR-0010: `Engine::with_wake`). An engine whose cycle holds no stage has no cycle to wake for, and sleeps until something comes in. It does not sleep through what comes in until the next cycle, and an engine with no stage does not wake every `every` to do nothing. Once the program is asked to stop, it gives `Stop` at most `stop_within` to finish, and ends `Exit::Stopped` or `Exit::OutOfTime`.
+- **`engine.start()` makes the lifecycle `Booting`, and `Start` is sent once `Boot` has finished** (below), to every subscriber folded by then, whether or not its cycle holds any stage. A root's `begin` is folded as `add_root` makes it, so a chassis that makes its roots before it starts has every root, every child their `begin`s stood up, and every actor `Boot`'s mail stood up, subscribed. An actor made after `Start` was sent is not sent it: its `begin` is its start. The first `cycle` after `Start` has finished sends the cycle's first stage.
+- **The headless chassis runs a program to its end** with `Headless::run(every, stop_within) -> Exit`, which takes the chassis and drops it when it returns. It boots and starts the program, says a cycle is due every `every`, and steps while any actor has anything to run. When nothing has, it parks its workers and sleeps until the next cycle is due, or until a source is pushed or a job finishes, which wakes it (ADR-0010: `Engine::with_wake`). An engine whose cycle holds no stage has no cycle to wake for, and sleeps until something comes in. It does not sleep through what comes in until the next cycle, and an engine with no stage does not wake every `every` to do nothing. Once the program is asked to stop, it gives `Stop` at most `stop_within` to finish, and ends `Exit::Stopped` or `Exit::OutOfTime`. A program whose boot failed ends `Exit::Unbooted`, holding why.
 - **A stage nothing subscribes to is passed at once**, as it is sent, so a program with nothing to run still moves on and stops.
 - **A `cycle` while a cycle is under way is not queued.** The next `Tick` covers the time since the last one, however many cycles were due between. A cycle that runs long makes the cycles fewer, never late in a queue.
 - `Tick`'s delta is measured on the host's time for each cycle, which the host passes in when it says a cycle is due (`Engine::cycle(at)`): a browser's animation frame's timestamp, a display's refresh, a timer's firing. It is the time the cycle was said due, less that of the cycle before, or the steps' time when `Start` was sent, before the first; when the host says a cycle is due more than once while one runs, the last it said counts. It is counted once a cycle, wherever `Tick` stands in it, so a run replays with the same deltas. It is not the steps' time (ADR-0018), which an earlier draft used: the step a cycle begins in comes after the last cycle's work, so its time moves with how long that work took, and what moved by such a delta lurched on a display that showed each frame evenly, by more the faster the display. The engine limits each delta to a most the host gives (`Engine::with_delta_limit`, a quarter of a second unless set), so a long stall slows the program's time and skips none of it.
-- **An actor may ask to stop**, with `turn.quit()`, an effect, as the host does with `engine.quit()`. The engine lets a cycle under way finish, sends `Stop`, and once it has finished, its lifecycle is `Stopped`, and the host drops the engine. Cycles due after a quit are not run.
+- **An actor may ask to stop**, with `turn.quit()`, an effect, as the host does with `engine.quit()`. The engine lets a cycle under way finish, sends `Stop`, and once it has finished, its lifecycle is `Stopped`, and the host drops the engine. Cycles due after a quit are not run. An actor's quit while the lifecycle is `Booting` fails the boot instead (below). The host's `engine.quit()` while `Booting` is a clean stop, as at any other time: the program was told to end, not built wrong, so `Start` is not sent, `Stop` is, and the run ends `Stopped`.
 - **`Stop` is the one stage a subscriber may hold open.** It is sent as a request, answered with `Drained`, and a subscriber that has work in flight to finish holds it (ADR-0017: `turn.hold`) and answers once it has: a server closes its listener, answers the requests it holds, and then answers its `Stop`. `Stop` has finished when its chain has, and every subscriber has answered its `Stop`, let it go, or ended. This is the one place a held request holds back a stage, and it is named here: a program that is stopping has no frame to keep moving, and what it owes others is what it most needs to finish. A host gives a stop the time it will wait, and drops the engine when that has passed, so a subscriber that never answers cannot keep a program from ending.
 - **Each subscriber asks its `Stop` of itself**, as every stage is mail from the subscriber to itself, under its own count of the request. So its answer, and what the engine says of a `Stop` left unanswered, come back to it as answers to nothing it waits on, and are dropped. The engine keeps which subscribers it asked, under which counts, and reads whether each still holds that request, as it reads whether a chain has finished. The engine is not the asker: an engine that asked would need mail routed to an id that no actor has, and a count of the answers that came, which the held requests already say. A `Stop` left unanswered holds the program one step longer, while what the engine says of it is handed back and dropped.
+
+**Bootstrapping's mail is one chain, `Boot`, and `Start` waits for it.**
+
+- **Every piece of mail a root's `begin` sends is on `Boot`**, and so is the mail of every `begin` it runs: its children's, and theirs (ADR-0012). What that mail sets off takes `Boot`'s root, as in any stage, and a held request or a job leaves it as it leaves any stage but `Stop`. `Boot`'s root is a `MailId` the engine makes as it makes a stage's, of the id at `aether.lifecycle` and a count of zero, which no stage's has, so no actor holds it.
+- **`Boot` is a chain, not a stage.** Nothing is sent as `Boot`, and nothing subscribes to it: it is only the chain of bootstrapping's mail.
+- **Once the roots have bootstrapped and the host runs the program, the lifecycle is `Booting`.** After each fold the engine reads whether `Boot` has finished, with the check every stage's chain is read with (`Engine::has_finished`), and when it has, sends `Start`. A program whose roots sent nothing has a `Boot` that has finished already, and is sent `Start` at once.
+- **Only a root's `begin` is put on `Boot`**, since no turn runs it. A child's `begin` sends on the chain of the turn that stood it up, during `Boot` and after it, so an actor spawned after `Boot` is as it was.
+- **A quit or a fault while `Booting` fails the boot.** An actor's `turn.quit()`, or a turn that fails (ADR-0009: `Failed`, a fault returned or a guest trapped), on whatever chain, ends the run unbooted: the lifecycle is `Unbooted`, holding why, the actor and its fault, or the actor that quit. Neither `Start` nor `Stop` is sent. The host drops the engine and reports it as it reports a bootstrap that failed (ADR-0029), naming the actor, with a failing exit status. A child whose `begin` fails is refused to its parent, which handles it (ADR-0009), and fails the boot only when its parent then quits or faults.
+- **A quit or a fault once `Start` is sent is what it was**: a quit stops the program, and a fault ends its actor.
+- **`Start` is sent only to a program that booted.** Every root began, what rode `Boot` was answered, and nothing quit or failed while it ran, so a subscriber handling `Start` knows the setup its program asked for by mail was granted: ports bound, offers taken. Work that assumes a whole program, and saying the program is ready, belong there.
 
 ## Consequences
 
@@ -120,6 +132,9 @@ impl Engine {
 - A declared stage that nothing subscribes to finishes with an empty chain, and costs no step.
 - A browser hides a page with little time left to run, so a browser's `Stop` is best effort: what does not run before the page goes is not run.
 - Any actor may stop the program. A program that wants fewer to is written so they do not.
+- A program starts only once what its roots set up by mail has run, and one whose setup was refused says so as a bootstrap that failed does, never as a clean stop. No actor writes a starting state of its own, or chooses between quitting, faulting, and logging when its setup is refused.
+- Setup answered from a job or a held request leaves `Boot`, as such work leaves any stage: its answer may come after `Start`, where a quit is an ordinary stop.
+- While `Booting`, any actor's fault ends the program, where after `Start` it ends only that actor. An actor whose setup may pass a failure meets it without a fault.
 
 ## Alternatives considered
 
@@ -134,3 +149,8 @@ impl Engine {
 - **Each subscriber answering its stage, as a request.** No view of chains. A stage would end when its subscribers had handled it, not when what they set off had: the renderer could be sent `Render` before the camera's view reached it.
 - **Each chain's count, mail sent less mail handled, kept as a view.** A finished chain is known without a look at what waits. Every turn that does not send exactly one piece writes a record, and every place an item is made or taken must change the count, where one missed stops the frames for good.
 - **Every due cycle queued.** No cycle skipped. A program slower than the display falls further behind every frame, and catches up by running stale frames back to back.
+- **An async `begin`**, awaiting its setup's answers. An actor has no mailbox until its `begin` returns, so nothing could answer it.
+- **A starting state each actor writes by hand**, refusing work until its setup is answered. Every root writes the same machine again, and how a refused setup ends the program stays each one's own.
+- **A `wire` phase after `begin`**, in which mail may be sent. A second first turn, and its answers still come in ordinary handlers after it, as `begin`'s do.
+- **Each root's mail settled inside its own bootstrap**, before the next root bootstraps. Job runners and the clock are made only once every root has bootstrapped (ADR-0029), so a setup that runs a job or waits on a deadline would never be answered.
+- **Only the mail `begin` sends tracked**, not its whole chain. An answer that comes by way of another actor would be missed, and `Start` sent with setup still running.
