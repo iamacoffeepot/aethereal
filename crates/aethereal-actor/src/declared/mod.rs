@@ -9,6 +9,7 @@
 //! from those types when the program is built.
 
 mod handles;
+mod lists;
 mod protocols;
 mod replies;
 mod sends;
@@ -17,6 +18,7 @@ mod state;
 mod tests;
 
 pub use handles::{Handled, HandledList, Handles, Others, Reached, Received, Receives, Untaken};
+pub use lists::Lists;
 pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
 pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
 pub use sends::Last;
