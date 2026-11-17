@@ -45,8 +45,8 @@ pub trait Handles<K: Kind>: Actor {
     /// Mail of `K` from a sender `From` refused: logged, naming the sender, and a request answered
     /// `Unanswered::Unreadable`; other mail is dropped. Its turn holds the sender as an `ErasedActorRef`, as the guard
     /// checked nothing to hand on.
-    fn refused(&mut self, refused: Refused<K>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.refuse(&refused)
+    fn refused(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.refuse(&mail)
     }
 }
 
@@ -249,10 +249,7 @@ let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &sender);
 
 match admitted {
     Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::Sends, A::From>(declared, from)),
-    None => {
-        let refused = Refused { sender: sender.reference(), mail };
-        A::refused(actor, refused, &mut turning.declaring::<A, A::Sends, Anyone>(declared, sender.reference()))
-    }
+    None => A::refused(actor, mail, &mut turning.declaring::<A, A::Sends, Anyone>(declared, sender.reference())),
 }
 ```
 
@@ -281,14 +278,9 @@ type Admitted<T, K> = <<T as Handles<K>>::From as Guard<T>>::Sent;
 
 ### A refusal goes to the handler's `refused`
 
-```rust
-pub struct Refused<K> {
-    pub sender: ErasedActorRef,                             // who sent it: a sender its handler's guard refused
-    pub mail: K,                                            // what it sent, read as its kind
-}
-```
+`refused` is handed the mail, read as its kind, and the plain turn. The sender is the turn's: `turn.from()` is its `ErasedActorRef`, and a reply, `turn.reply` or `turn.hold`, reaches it, so no wrapper restates it. `turn.refuse(&mail)` reads the sender from the turn it is called on.
 
-- **A refusal is the handler's to answer, beside the handler.** It shares the handler's `Sends`, so an override may answer a request with a kind of its own, or tell whoever the handler may, and the behaviour of one kind stays in one impl.
+- **A refusal is the handler's to answer, beside the handler.** It shares the handler's `Sends`, so an override may answer a request with a kind of its own, or tell whoever the handler may, and the behaviour of one kind stays in one impl. A kind only a refusal answers with, such as a `Denied`, is listed in the handler's `Sends` (`ToSender<Denied>`), which lets `handle` send it too.
 - **The default** logs a reason of its own, `Unreadable::Refused`, naming the sender's path and type, and answers a request `Unanswered::Unreadable`, as mail that did not read is answered (ADR-0017). A tell is dropped.
 
 ### A kind is listed once
