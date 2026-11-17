@@ -20,6 +20,8 @@ pub struct Head {
     pub closes: bool,
     /// Whether the client waits for `100 Continue` before it sends the body.
     pub expects_continue: bool,
+    /// Whether the client reads a chunked response: it is HTTP/1.1.
+    pub chunks: bool,
 }
 
 /// How a request's body is framed (RFC 9112 §6.3).
@@ -122,7 +124,7 @@ fn parsed(text: &[u8], limits: &Limits, mounts: &[Mount]) -> Result<Head, Refusa
     let expects_continue =
         headers.iter().any(|header| header.name == "expect" && header.value.eq_ignore_ascii_case("100-continue"));
 
-    Ok(Head { method, path, query, headers, framing, closes: asks_close || is_old, expects_continue })
+    Ok(Head { method, path, query, headers, framing, closes: asks_close || is_old, expects_continue, chunks: !is_old })
 }
 
 /// A head, or a line of one, that does not parse is answered `400`.

@@ -1,7 +1,7 @@
 //! A streamed request's body, served to its mount's handler as a [`RequestBody`] stream as it arrives, paced by the
 //! handler's credit, as a client streams a response to its asker (ADR-0035, ADR-0017).
 
-use super::{Credit, Exchange, Parts, Phase, Refusal, Writes, unstored};
+use super::{Credit, Exchange, Owed, Parts, Phase, Refusal, SourceStop, Writes, unstored};
 use crate::body::{Body, Decoded, Progress};
 use crate::{BodyBytes, BodyRead, RequestBody};
 use aethereal_actor::{
@@ -127,7 +127,7 @@ impl Exchange {
         S: Allows<Credit, IC> + Allows<Writes, IW> + Allows<Parts, IB>,
     {
         let most_line = self.limits.most_head_bytes;
-        let Phase::Inflow { ref mut inflow, closes, head_only } = self.phase else {
+        let Phase::Inflow { ref mut inflow, owed } = self.phase else {
             return Ok(());
         };
         let Reader::Open(key) = inflow.reader else {
@@ -163,7 +163,7 @@ impl Exchange {
             Progress::More => self.release::<_, IC>(turn),
             Progress::Done => {
                 self.end_body(turn, key, BodyRead::Whole)?;
-                self.phase = Phase::Awaiting { closes, head_only, since: turn.now() };
+                self.phase = Phase::Awaiting { owed, since: turn.now() };
                 self.time(turn)
             }
         }
@@ -198,12 +198,16 @@ impl Exchange {
         Ok(())
     }
 
-    /// The connection has hung up, as `how` says, or the exchange is shut: a body being read ends `HungUp`, and the
-    /// exchange closes.
-    pub(super) fn hang_up<S>(&mut self, turn: &mut Turn<'_, Self, S>, how: HungUp) -> Result<(), Fault> {
+    /// The connection has hung up, as `how` says, or the exchange is shut: a body being read ends `HungUp`, a response's
+    /// source is stopped, and the exchange closes.
+    pub(super) fn hang_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, how: HungUp) -> Result<(), Fault>
+    where
+        S: Allows<SourceStop, I>,
+    {
         if let Phase::Inflow { inflow: Inflow { reader: Reader::Open(key), .. }, .. } = self.phase {
             self.end_body(turn, key, BodyRead::HungUp(how))?;
         }
+        self.stop_source::<_, I>(turn)?;
         turn.close();
 
         Ok(())
@@ -212,10 +216,10 @@ impl Exchange {
     /// Leaves the body of the streamed request out unread: the exchange waits for the handler's answer, and closes
     /// once it is sent.
     fn abandon<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
-        let Phase::Inflow { head_only, .. } = self.phase else {
+        let Phase::Inflow { owed, .. } = self.phase else {
             return Ok(());
         };
-        self.phase = Phase::Awaiting { closes: true, head_only, since: turn.now() };
+        self.phase = Phase::Awaiting { owed: Owed { closes: true, ..owed }, since: turn.now() };
 
         self.time(turn)
     }

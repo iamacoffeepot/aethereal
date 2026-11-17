@@ -2,6 +2,7 @@
 
 use crate::head::is_token;
 use crate::{Header, Status};
+use aethereal_data::Plain;
 
 /// What an exchange writes before it reads a body whose client waits to be told to send it.
 pub const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
@@ -9,11 +10,26 @@ pub const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
 /// The headers the exchange writes itself, and drops from a handler's response.
 const FRAMING: [&str; 3] = ["content-length", "transfer-encoding", "connection"];
 
-/// Room enough for a head's status line, its `Content-Length` and `Connection`, and the blank line that ends it.
+/// Room enough for a head's status line, its `Content-Length` or `Transfer-Encoding` and `Connection`, and the blank
+/// line that ends it.
 const FRAME_BYTES: usize = 96;
 
 /// The line ending HTTP writes, and the bytes of a header's `: `.
 const SEPARATORS_BYTES: usize = 4;
+
+/// What ends the last chunk of a chunked body, and its empty trailer.
+pub const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
+
+/// How a response's body is delimited on the connection (RFC 9112 §6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Frame {
+    /// By its `Content-Length`.
+    Length(u64),
+    /// In chunks, its length not known, to an HTTP/1.1 client.
+    Chunked,
+    /// By the connection's close, its length not known, to an HTTP/1.0 client, which reads no chunks.
+    Close,
+}
 
 /// What became of a response's head as it was written.
 pub struct Written {
@@ -30,14 +46,14 @@ pub fn room(headers: &[Header]) -> usize {
     FRAME_BYTES + lines
 }
 
-/// Writes the head of a response of `status` with `headers` and a body of `body_length` bytes into `head`: its
-/// status line, its headers, `Content-Length` and, when the connection `closes`, `Connection: close`, then the blank
-/// line. The body is not written here: the exchange writes it after the head as a part of its own, unless the
-/// response answers a `HEAD`, which is `head_only`.
+/// Writes the head of a response of `status` with `headers` and a body delimited as `frame` says into `head`: its
+/// status line, its headers, `Content-Length` or `Transfer-Encoding: chunked` and, when the connection `closes`,
+/// `Connection: close`, then the blank line. The body is not written here: the exchange writes it after the head in
+/// parts of its own, unless the response answers a `HEAD`, which is `head_only`.
 pub fn head(
     status: Status,
     headers: &[Header],
-    body_length: usize,
+    frame: Frame,
     closes: bool,
     head_only: bool,
     head: &mut Vec<u8>,
@@ -55,8 +71,10 @@ pub fn head(
         }
         head.extend_from_slice(format!("{}: {}\r\n", header.name, header.value).as_bytes());
     }
-    if has_body {
-        head.extend_from_slice(format!("content-length: {body_length}\r\n").as_bytes());
+    match frame {
+        Frame::Length(length) if has_body => head.extend_from_slice(format!("content-length: {length}\r\n").as_bytes()),
+        Frame::Chunked if has_body => head.extend_from_slice(b"transfer-encoding: chunked\r\n"),
+        Frame::Length(_) | Frame::Chunked | Frame::Close => {}
     }
     if closes {
         head.extend_from_slice(b"connection: close\r\n");
@@ -64,6 +82,30 @@ pub fn head(
     head.extend_from_slice(b"\r\n");
 
     Written { dropped, sends_body: has_body && !head_only }
+}
+
+/// The line before a chunk of `length` bytes, more than none: its size in hex, after the line ending of the chunk
+/// before it when one `follows`.
+pub fn chunk_line(length: usize, follows: bool) -> Vec<u8> {
+    let ending = if follows {
+        "\r\n"
+    } else {
+        ""
+    };
+
+    format!("{ending}{length:x}\r\n").into_bytes()
+}
+
+/// What ends a chunked body: the last chunk and its empty trailer, after the line ending of the chunk before it when
+/// one `follows`.
+pub fn last_chunk(follows: bool) -> Vec<u8> {
+    let ending: &[u8] = if follows {
+        b"\r\n"
+    } else {
+        b""
+    };
+
+    [ending, LAST_CHUNK].concat()
 }
 
 /// Whether a handler's header `name: value` is written: its name is a token the exchange does not write itself, and
@@ -79,7 +121,7 @@ fn writes(name: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{head, room};
+    use super::{Frame, chunk_line, head, last_chunk, room};
     use crate::{Header, Status};
 
     #[test]
@@ -89,13 +131,27 @@ mod tests {
         let headers = [Header::new("content-type", "text/plain")];
         let mut written = Vec::with_capacity(room(&headers));
 
-        let ok = head(Status::Ok, &headers, 5, true, false, &mut written);
+        let ok = head(Status::Ok, &headers, Frame::Length(5), true, false, &mut written);
 
         let expected = b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 5\r\nconnection: close\r\n\r\n";
         assert_eq!(written, expected);
         assert!(written.capacity() == room(&headers), "the head fit the room it was given");
         assert!(ok.sends_body);
-        assert!(!head(Status::Ok, &headers, 5, false, true, &mut Vec::new()).sends_body);
-        assert!(!head(Status::NoContent, &[], 0, false, false, &mut Vec::new()).sends_body);
+        assert!(!head(Status::Ok, &headers, Frame::Length(5), false, true, &mut Vec::new()).sends_body);
+        assert!(!head(Status::NoContent, &[], Frame::Length(0), false, false, &mut Vec::new()).sends_body);
+    }
+
+    #[test]
+    fn chunk_lines_end_the_chunk_before_them_and_the_last_ends_the_body() {
+        // Catches a chunk's size written in decimal, the line ending after a chunk's data lost or written before the
+        // first chunk, and a body ended without its empty trailer, any of which a client reads as a broken body.
+        let mut body = chunk_line(26, false);
+        body.extend_from_slice(b"abcdefghijklmnopqrstuvwxyz");
+        body.extend_from_slice(&chunk_line(1, true));
+        body.extend_from_slice(b"!");
+        body.extend_from_slice(&last_chunk(true));
+
+        assert_eq!(body, b"1a\r\nabcdefghijklmnopqrstuvwxyz\r\n1\r\n!\r\n0\r\n\r\n");
+        assert_eq!(last_chunk(false), b"0\r\n\r\n");
     }
 }
