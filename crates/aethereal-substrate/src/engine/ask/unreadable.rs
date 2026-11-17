@@ -4,8 +4,8 @@
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
-    ToSender, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
+    Receives, ToSender, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
@@ -83,6 +83,7 @@ impl Carries<Parcel> for Weigher {
 
 impl Handles<Parcel> for Weigher {
     type Sends = (ToSender<Receipt>,);
+    type From = Anyone;
 
     fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.asked += 1;
@@ -100,6 +101,7 @@ struct Told {
 
 impl Handles<Told> for Weigher {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Told, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.told += 1;
@@ -185,6 +187,7 @@ impl Actor for Sender {
 
 impl Handles<Send> for Sender {
     type Sends = (Asks<Weighing, Parcel, Sent>,);
+    type From = Anyone;
 
     fn handle(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.to(self.of).ask(&parcel(WITHIN), &Sent { at })?;
@@ -193,7 +196,7 @@ impl Handles<Send> for Sender {
     }
 }
 
-impl Handles<Answer<Receipt, Sent>> for Sender {
+impl Receives<Answer<Receipt, Sent>> for Sender {
     type Sends = ();
 
     fn handle(

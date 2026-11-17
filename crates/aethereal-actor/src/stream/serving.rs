@@ -2,7 +2,7 @@
 //! their parts, and their answers (ADR-0017).
 
 use super::{Enough, More, Open, Part, Stream, StreamKey, Unreachable};
-use crate::{Allows, Ended, Fault, Handles, Held, ProtocolRef, ToAny, ToSender, Turn};
+use crate::{Allows, Ended, Fault, Held, ProtocolRef, Receives, ToAny, ToSender, Turn};
 use aethereal_data::{Bound, EncodeError};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -62,7 +62,7 @@ impl<S: Stream> Serving<S> {
         open: Open<S>,
     ) -> Result<(StreamKey, S::Open), Fault>
     where
-        A: Handles<Ended>,
+        A: Receives<Ended>,
         Sends: Allows<ToSender<S::Done>, I>,
     {
         let Some(asker) = turn.cast::<(Part<S>,)>(turn.sender()) else {

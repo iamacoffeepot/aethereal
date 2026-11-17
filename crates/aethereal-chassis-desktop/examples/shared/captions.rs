@@ -5,7 +5,7 @@
 //! (ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Top,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Start, Tells, Top,
     Turn, path,
 };
 use aethereal_data::{Bound, Plain};
@@ -145,7 +145,7 @@ fn lines() -> Vec<Line> {
     ]
 }
 
-impl Handles<On<Start>> for Captions {
+impl Receives<On<Start>> for Captions {
     type Sends = (Asks<Path<Renderer>, CreateText, Caption>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -157,7 +157,7 @@ impl Handles<On<Start>> for Captions {
     }
 }
 
-impl Handles<Answer<TextMade, Caption>> for Captions {
+impl Receives<Answer<TextMade, Caption>> for Captions {
     type Sends = (Asks<Path<Renderer>, PlaceText, Caption>,);
 
     fn handle(
@@ -187,7 +187,7 @@ impl Handles<Answer<TextMade, Caption>> for Captions {
 }
 
 /// A line placed is listed in its place among the others, top to bottom.
-impl Handles<Answer<TextPlaced, Caption>> for Captions {
+impl Receives<Answer<TextPlaced, Caption>> for Captions {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(

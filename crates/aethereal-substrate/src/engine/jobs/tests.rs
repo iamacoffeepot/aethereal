@@ -4,11 +4,11 @@
 use super::super::*;
 use super::*;
 use crate::harness::Jobbed;
-use aethereal_actor::Entry;
 use aethereal_actor::{
     Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Path, Resource, Runner,
     Running, Services, Tells, Time, Top, Turn, Unanswered, path,
 };
+use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Plain};
 use std::any;
 use std::future;
@@ -428,6 +428,7 @@ impl Actor for Worker {
 
 impl Handles<Go> for Worker {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let which = Which { at: go.at };
@@ -527,7 +528,7 @@ impl Handles<Go> for Worker {
     }
 }
 
-impl Handles<Answer<Doubled, Which>> for Worker {
+impl Receives<Answer<Doubled, Which>> for Worker {
     type Sends = ();
 
     fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -541,7 +542,7 @@ impl Handles<Answer<Doubled, Which>> for Worker {
     }
 }
 
-impl Handles<Answer<Rang, GiveUp>> for Worker {
+impl Receives<Answer<Rang, GiveUp>> for Worker {
     type Sends = ();
 
     fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -552,7 +553,7 @@ impl Handles<Answer<Rang, GiveUp>> for Worker {
     }
 }
 
-impl Handles<Answer<Shrunk, Which>> for Worker {
+impl Receives<Answer<Shrunk, Which>> for Worker {
     type Sends = ();
 
     fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -570,7 +571,7 @@ impl Handles<Answer<Shrunk, Which>> for Worker {
     }
 }
 
-impl Handles<Answer<Lit, Which>> for Worker {
+impl Receives<Answer<Lit, Which>> for Worker {
     type Sends = ();
 
     fn handle(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -588,7 +589,7 @@ impl Handles<Answer<Lit, Which>> for Worker {
     }
 }
 
-impl Handles<Answer<Bumped, Which>> for Worker {
+impl Receives<Answer<Bumped, Which>> for Worker {
     type Sends = ();
 
     fn handle(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -636,7 +637,7 @@ impl Actor for Failing {
     }
 }
 
-impl Handles<Answer<Doubled, Which>> for Failing {
+impl Receives<Answer<Doubled, Which>> for Failing {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -673,7 +674,7 @@ impl Actor for Newborn {
     }
 }
 
-impl Handles<Answer<Doubled, Which>> for Newborn {
+impl Receives<Answer<Doubled, Which>> for Newborn {
     type Sends = ();
 
     fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

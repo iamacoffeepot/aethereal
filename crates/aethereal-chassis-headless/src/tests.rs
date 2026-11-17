@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, Turn,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, Turn,
 };
 use aethereal_data::{ActorId, Kind, PathSegment, Plain};
 use aethereal_substrate::child_id;
@@ -66,6 +66,7 @@ impl Actor for Fan {
 
 impl Handles<Count> for Fan {
     type Sends = (ToType<Self, Count>,);
+    type From = Anyone;
 
     fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_root = turn.parent().is_none();

@@ -26,7 +26,7 @@ use crate::text::{
     self, Align, CreateFont, CreateText, FontId, FontMade, FontMetrics, FontNotMade, FontSource, MetricsRefused,
     MoveText, Outline, PlaceText, ReadMetrics, TextId, TextMade, TextPlaced, Wrap, WriteText,
 };
-use aethereal_actor::{Answer, Answered, Bytes, Fault, Handles, Level, ToSender, Turn};
+use aethereal_actor::{Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Receives, ToSender, Turn};
 use aethereal_data::ActorId;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
@@ -604,6 +604,7 @@ impl aethereal_actor::Carries<ReadMetrics> for Renderer {
 /// with its fallbacks' faces as they are now. Answers it, or why it was refused.
 impl Handles<CreateFont> for Renderer {
     type Sends = (ToSender<FontMade>,);
+    type From = Anyone;
 
     fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let CreateFont { source, fallbacks } = create;
@@ -644,6 +645,7 @@ fn read<S>(turn: &mut Turn<'_, Renderer, S>, bytes: &Bytes) -> Result<Own, FontN
 /// Answers the font's metrics and its fallbacks', as the blobs kept since each face was read.
 impl Handles<ReadMetrics> for Renderer {
     type Sends = (ToSender<FontMetrics>,);
+    type From = Anyone;
 
     fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let metrics = turn.open(&mut self.kept)?.text.metrics(read.font);
@@ -659,6 +661,7 @@ impl Handles<ReadMetrics> for Renderer {
 /// rather than the text a frame or more after the rest (ADR-0052).
 impl Handles<CreateText> for Renderer {
     type Sends = (ToSender<TextMade>,);
+    type From = Anyone;
 
     fn handle(&mut self, create: CreateText, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let made = turn.open(&mut self.kept)?.text.text(create);
@@ -692,6 +695,7 @@ impl Handles<CreateText> for Renderer {
 /// what it is now is in the atlas. A write refused is logged, and the text keeps what it had.
 impl Handles<WriteText> for Renderer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, write: WriteText, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let by = turn.sender().id();
@@ -716,6 +720,7 @@ impl Handles<WriteText> for Renderer {
 /// before, and keeps it.
 impl Handles<PlaceText> for Renderer {
     type Sends = (ToSender<TextPlaced>,);
+    type From = Anyone;
 
     fn handle(&mut self, place: PlaceText, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let device = turn.open(&mut self.gpu)?.device().clone();
@@ -737,6 +742,7 @@ impl Handles<PlaceText> for Renderer {
 /// Moves the sender's placed text, laying nothing out. A move refused is logged, and the placement stays where it was.
 impl Handles<MoveText> for Renderer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, moved: MoveText, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let by = turn.sender().id();
@@ -760,7 +766,7 @@ impl Handles<MoveText> for Renderer {
 
 /// Writes the glyphs the job generated into the atlas, logging each that fitted nowhere, and answers each new text
 /// that now waits on nothing; a job that failed lets its glyphs go, to be asked for again.
-impl Handles<Answer<GlyphsGenerated, Generating>> for Renderer {
+impl Receives<Answer<GlyphsGenerated, Generating>> for Renderer {
     type Sends = ();
 
     fn handle(

@@ -9,8 +9,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Prepare, Render, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Prepare,
+    Receives, Render, Tells, Tick, Top, Turn, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -212,6 +212,7 @@ impl Actor for Reply {
 
 impl Handles<Event> for Reply {
     type Sends = aethereal_ui::Sends;
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
@@ -224,7 +225,7 @@ impl Handles<Event> for Reply {
     }
 }
 
-impl Handles<On<Tick>> for Reply {
+impl Receives<On<Tick>> for Reply {
     type Sends = (Asks<Path<Renderer>, ReadBack, Shooting>,);
 
     /// Streams the next characters of the reply in; once it has come and settled, reads the frame back when a file is
@@ -248,7 +249,7 @@ impl Handles<On<Tick>> for Reply {
     }
 }
 
-impl Handles<Answer<Read, Shooting>> for Reply {
+impl Receives<Answer<Read, Shooting>> for Reply {
     type Sends = ();
 
     /// Writes the frame read back as a PPM to the file named: its red, green, and blue, row by row from the top.

@@ -1,8 +1,8 @@
 //! The MCP capability served on the native host over real HTTP, the test its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles,
-    Path, ProtocolRef, ToSender, Top, Turn, Unanswered, path,
+    Actor, ActorName, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault,
+    Handles, Path, ProtocolRef, Receives, ToSender, Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
@@ -80,6 +80,7 @@ impl Actor for Once {
 
 impl Handles<Call> for Once {
     type Sends = (ToSender<Called>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Called::Refused(String::from("once is enough")))?;
@@ -857,6 +858,7 @@ macro_rules! listed {
 
         impl Handles<Call> for $actor {
             type Sends = (ToSender<Called>,);
+            type From = Anyone;
 
             fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
                 let say = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1024))?;
@@ -920,6 +922,7 @@ impl Actor for Absent {
 
 impl Handles<AbsentAsk> for Absent {
     type Sends = (ToSender<AbsentAsk>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: AbsentAsk, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&AbsentAsk)?;
@@ -955,6 +958,7 @@ impl Actor for Reaching {
 
 impl Handles<Call> for Reaching {
     type Sends = (Asks<Path<Absent>, AbsentAsk, ListedConfig>, ToSender<Called>);
+    type From = Anyone;
 
     fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.to(path::<Absent>(())).ask(&AbsentAsk, &ListedConfig)?;
@@ -964,7 +968,7 @@ impl Handles<Call> for Reaching {
     }
 }
 
-impl Handles<Answer<AbsentAsk, ListedConfig>> for Reaching {
+impl Receives<Answer<AbsentAsk, ListedConfig>> for Reaching {
     type Sends = ();
 
     fn handle(&mut self, _: (Answered<AbsentAsk>, ListedConfig), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

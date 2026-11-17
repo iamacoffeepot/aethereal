@@ -808,6 +808,7 @@ impl UnreadRecord {
                 out[16..24].copy_from_slice(&remaining.to_le_bytes());
                 1
             }
+            Unreadable::Refused => 2,
         };
         out[4..8].copy_from_slice(&reason.to_le_bytes());
 
@@ -820,6 +821,7 @@ impl UnreadRecord {
         let reason = match u32_at(bytes, 4)? {
             0 => Unreadable::Malformed,
             1 => Unreadable::Limit { requested: u64_at(bytes, 8)?, remaining: u64_at(bytes, 16)? },
+            2 => Unreadable::Refused,
             _ => return None,
         };
 

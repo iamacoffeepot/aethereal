@@ -5,7 +5,7 @@ use crate::engines::ExitedEngine;
 use crate::engines::randomness::Draw;
 use crate::engines::tokens::Purpose;
 use crate::{Token, Trust};
-use aethereal_actor::{ActorRef, Fault, Handles, Held, Level, ToSender, ToType, Turn};
+use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Held, Level, ToSender, ToType, Turn};
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Stop};
 use aethereal_store::Binary;
@@ -106,6 +106,7 @@ enum Terminating {
 
 impl Handles<SpawnFor> for Engines {
     type Sends = (ToSender<Spawn>,);
+    type From = Anyone;
 
     /// Holds the request, and draws its engine's token from the host's randomness.
     fn handle(&mut self, asked: SpawnFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -118,6 +119,7 @@ impl Handles<SpawnFor> for Engines {
 
 impl Handles<Runs> for Engines {
     type Sends = ();
+    type From = Anyone;
 
     /// One of its spawns runs a build: the token its engine links with is taken from now on. From any other actor, it
     /// is passed over.
@@ -139,6 +141,7 @@ impl Handles<Runs> for Engines {
 
 impl Handles<Spawn> for Engines {
     type Sends = ();
+    type From = Anyone;
 
     /// What one of its spawns came to: the request for it is answered, the first time. From any other actor, it is
     /// passed over.
@@ -158,6 +161,7 @@ impl Handles<Spawn> for Engines {
 
 impl Handles<Exited> for Engines {
     type Sends = ();
+    type From = Anyone;
 
     /// How one of its spawns' programs exited, as the spawn ends: kept, with its binary, among the last `most_exited`,
     /// and the spawn let go of at once, its token with it. From any other actor, it is passed over.
@@ -177,6 +181,7 @@ impl Handles<Exited> for Engines {
 
 impl Handles<TerminateEngine> for Engines {
     type Sends = (ToSender<Terminated>, ToType<Spawned, Stop>, ToType<Engine, Shut>);
+    type From = Anyone;
 
     /// A spawned engine's spawn is asked to stop its process; an engine started outside the hub is asked to shut its
     /// link, and ends as its link does. An engine whose token has not been taken is not linked.

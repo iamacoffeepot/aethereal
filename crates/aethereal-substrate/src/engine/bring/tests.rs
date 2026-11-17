@@ -2,11 +2,11 @@
 
 use super::super::*;
 use crate::{Closed, Feed};
-use aethereal_actor::Entry;
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,
 };
+use aethereal_actor::{Anyone, Entry};
 use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
 use std::sync::Arc;
@@ -106,6 +106,7 @@ impl Actor for Window {
 
 impl Handles<Moved> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let is_from_me = turn.sender() == turn.me().erase();
@@ -119,6 +120,7 @@ impl Handles<Moved> for Window {
 
 impl Handles<Order> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match order {
@@ -137,6 +139,7 @@ impl Handles<Order> for Window {
 
 impl Handles<Lit> for Window {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let took = lit.take && turn.take(lit.lamp).is_ok();
@@ -378,6 +381,7 @@ impl Actor for Windows {
 
 impl Handles<Asking> for Windows {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, asking: Asking, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         match asking {

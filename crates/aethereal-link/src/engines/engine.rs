@@ -4,9 +4,9 @@ use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, To
 use crate::frames::{self, Written};
 use crate::{Down, REVISION, Refusal, Token, Trust, Up, Within};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
-    JobId, Level, More, Number, Open, Part, Path, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, ToSender,
-    ToType, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles,
+    Held, JobId, Level, More, Number, Open, Part, Path, Receives, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny,
+    ToSender, ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_sessions::{Chat, Chatted, Joined, Numbered, Sessions, ShowAsk, ShowEvents, ShowTabs};
@@ -197,6 +197,7 @@ impl Handles<Part<Reading>> for Engine {
         Asks<Path<Engines>, TakeToken, Vouching>,
         ToType<Sessions, Chatted>,
     );
+    type From = Anyone;
 
     /// A frame from the engine, in the order the link has them: `Hello` first, then sets, answers, and chat. A set that
     /// comes while its token is being taken is kept, and told once it is.
@@ -249,7 +250,7 @@ impl Handles<Part<Reading>> for Engine {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Engine {
+impl Receives<Answer<HungUp, Number>> for Engine {
     type Sends = ();
 
     /// The connection hung up: the engine has gone.
@@ -261,7 +262,7 @@ impl Handles<Answer<HungUp, Number>> for Engine {
     }
 }
 
-impl Handles<Answer<Wrote, Sent>> for Engine {
+impl Receives<Answer<Wrote, Sent>> for Engine {
     type Sends = (ToType<Accepted, Shut>,);
 
     /// A write that was not sent ends the connection, as one sent that closes it does.
@@ -280,7 +281,7 @@ impl Handles<Answer<Wrote, Sent>> for Engine {
     }
 }
 
-impl Handles<Answer<TokenFor, Vouching>> for Engine {
+impl Receives<Answer<TokenFor, Vouching>> for Engine {
     type Sends = (Asks<Writing, Write, Sent>, ToType<Engines, Shown>, ToType<Sessions, Joined>);
 
     /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a trusted
@@ -315,6 +316,7 @@ impl Handles<Answer<TokenFor, Vouching>> for Engine {
 
 impl Handles<ShowTabs> for Engine {
     type Sends = (Asks<Writing, Write, Sent>,);
+    type From = Anyone;
 
     /// Every session, written down as `Sessions`, to a trusted engine alone.
     fn handle(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -329,6 +331,7 @@ impl Handles<ShowTabs> for Engine {
 
 impl Handles<ShowAsk> for Engine {
     type Sends = (Asks<Writing, Write, Sent>,);
+    type From = Anyone;
 
     /// An ask that waits for the owner, written down as `Ask`, to a trusted engine alone.
     fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -344,6 +347,7 @@ impl Handles<ShowAsk> for Engine {
 
 impl Handles<ShowEvents> for Engine {
     type Sends = (Asks<Writing, Write, Sent>,);
+    type From = Anyone;
 
     /// Events of a session's transcript, written down as `Show`, to a trusted engine alone: as many to a frame as fit
     /// in one, and an event that fits in none, which a long tool's output can be, left out and logged.
@@ -373,7 +377,7 @@ impl Handles<ShowEvents> for Engine {
     }
 }
 
-impl Handles<Answer<Slept, Lapsing>> for Engine {
+impl Receives<Answer<Slept, Lapsing>> for Engine {
     type Sends = ();
 
     /// A call's deadline has come before the engine answered it, or this would have been cancelled: its slot is freed.
@@ -399,6 +403,7 @@ impl Handles<Answer<Slept, Lapsing>> for Engine {
 
 impl Handles<DescribeEngine> for Engine {
     type Sends = (ToSender<Described>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: DescribeEngine, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let described = match &self.said {
@@ -413,6 +418,7 @@ impl Handles<DescribeEngine> for Engine {
 
 impl Handles<CallEngine> for Engine {
     type Sends = (ToSender<Called>, Asks<Writing, Write, Sent>);
+    type From = Anyone;
 
     /// Holds the call and writes it with the time it has left, running a sleep to its deadline when it has one, or
     /// refuses it at once: before the engine has sent its tools, past the most calls out, or when it would not fit in
@@ -443,6 +449,7 @@ impl Handles<CallEngine> for Engine {
 
 impl Handles<Shut> for Engine {
     type Sends = (ToType<Accepted, Shut>,);
+    type From = Anyone;
 
     /// `Engines` asks it to end its link, as the agent terminates an engine started outside the hub: its connection is
     /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any

@@ -15,9 +15,9 @@ use crate::{
     SourceEnd, Status, StreamHandling, StreamedRequest,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Due, Ended, Ending, Enough, Fault,
-    Handles, JobId, Level, More, Number, Open, Part, ProtocolRef, Refused, Serving, Sleep, Slept, Streamed, Streams,
-    Taken, Time, ToAny, Turn, Unanswered,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Bytes, ChildOf, Due, Ended, Ending, Enough,
+    Fault, Handles, JobId, Level, More, Number, Open, Part, ProtocolRef, Receives, Refused, Serving, Sleep, Slept,
+    Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -275,6 +275,7 @@ type Parts = ToAny<(Part<RequestBody>,), Part<RequestBody>>;
 
 impl Handles<Part<Reading>> for Exchange {
     type Sends = Advancing;
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_out = !matches!(self.phase, Phase::Idle { .. } | Phase::Head { .. } | Phase::Body { .. });
@@ -295,7 +296,7 @@ impl Handles<Part<Reading>> for Exchange {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Exchange {
+impl Receives<Answer<HungUp, Number>> for Exchange {
     type Sends = (SourceStop,);
 
     fn handle(
@@ -313,7 +314,7 @@ impl Handles<Answer<HungUp, Number>> for Exchange {
     }
 }
 
-impl Handles<Answer<Wrote, Sending>> for Exchange {
+impl Receives<Answer<Wrote, Sending>> for Exchange {
     type Sends = Responding;
 
     fn handle(
@@ -338,7 +339,7 @@ impl Handles<Answer<Wrote, Sending>> for Exchange {
     }
 }
 
-impl Handles<Answer<Response, Asking>> for Exchange {
+impl Receives<Answer<Response, Asking>> for Exchange {
     type Sends = Responding;
 
     fn handle(
@@ -381,13 +382,14 @@ impl Handles<Answer<Response, Asking>> for Exchange {
 
 impl Handles<Shut> for Exchange {
     type Sends = (SourceStop,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.hang_up(turn, HungUp::Shut)
     }
 }
 
-impl Handles<Answer<Slept, Deadline>> for Exchange {
+impl Receives<Answer<Slept, Deadline>> for Exchange {
     type Sends = Timing;
 
     /// The phase it slept for is late, when it still stands: a request that did not come, or came too slowly, is owed

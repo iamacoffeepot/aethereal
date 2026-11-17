@@ -9,8 +9,8 @@ pub use record::{BehindGuest, GuestStanding, HeadRecord, PublishRecord, Upgradin
 
 use crate::{Library, ModulePublished, Numbered, PublishModule, Unloaded};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves,
+    Path, ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -118,6 +118,7 @@ impl Tool for LibraryTool {
 /// `publish` is held and asked of the library; `upgrades` is answered at once.
 impl Handles<Call> for LibraryTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
@@ -152,7 +153,7 @@ impl Handles<Call> for LibraryTool {
 }
 
 /// The library published the module, or did not: the publish is answered either way.
-impl Handles<Answer<ModulePublished, Calling>> for LibraryTool {
+impl Receives<Answer<ModulePublished, Calling>> for LibraryTool {
     type Sends = ();
 
     fn handle(

@@ -5,7 +5,8 @@ use crate::save::Save;
 use crate::scan::Scan;
 use crate::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, ToSender, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Receives, ToSender,
+    Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -102,6 +103,7 @@ impl Actor for Files {
 
 impl Handles<ReadFile> for Files {
     type Sends = (ToSender<FileRead>,);
+    type From = Anyone;
 
     fn handle(&mut self, read: ReadFile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -115,6 +117,7 @@ impl Handles<ReadFile> for Files {
 
 impl Handles<WriteFile> for Files {
     type Sends = (ToSender<FileWritten>,);
+    type From = Anyone;
 
     fn handle(&mut self, write: WriteFile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if !write.namespace.is_written() {
@@ -130,7 +133,7 @@ impl Handles<WriteFile> for Files {
     }
 }
 
-impl Handles<Answer<FileWritten, Saving>> for Files {
+impl Receives<Answer<FileWritten, Saving>> for Files {
     type Sends = ();
 
     fn handle(
@@ -153,6 +156,7 @@ impl Handles<Answer<FileWritten, Saving>> for Files {
 
 impl Handles<ListFiles> for Files {
     type Sends = (ToSender<FilesListed>,);
+    type From = Anyone;
 
     fn handle(&mut self, list: ListFiles, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if !list.namespace.is_listed() {
@@ -168,7 +172,7 @@ impl Handles<ListFiles> for Files {
     }
 }
 
-impl Handles<Answer<FilesListed, Scanning>> for Files {
+impl Receives<Answer<FilesListed, Scanning>> for Files {
     type Sends = ();
 
     fn handle(
@@ -200,7 +204,7 @@ impl Files {
     }
 }
 
-impl Handles<Answer<FileRead, Reading>> for Files {
+impl Receives<Answer<FileRead, Reading>> for Files {
     type Sends = ();
 
     fn handle(

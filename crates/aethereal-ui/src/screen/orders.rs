@@ -14,7 +14,7 @@ use crate::child::{Resize, Resizes};
 use crate::draw::{FRAME_BYTES, PLACE, SHADE, corner_layout, corners, fill_layout, record_layout, triangles};
 use crate::pixels::Pixels;
 use aethereal_actor::{
-    Allows, Answer, Asks, Fault, Handles, Level, Path, ProtocolRef, Sleep, Slept, Tells, ToAny, Turn, path,
+    Allows, Answer, Asks, Fault, Level, Path, ProtocolRef, Receives, Sleep, Slept, Tells, ToAny, Turn, path,
 };
 use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::instances::{CreateInstances, InstancesId, WriteInstances};
@@ -210,7 +210,7 @@ impl Orders {
         turn: &mut Turn<'_, A, S>,
     ) -> Result<(), Fault>
     where
-        A: Handles<Answer<Slept, Tipping>>,
+        A: Receives<Answer<Slept, Tipping>>,
         S: Allows<Asks<Path<Renderer>, CreateMesh, Meshing>, I0>
             + Allows<Asks<Path<Renderer>, CreateProgram, Programming>, I1>
             + Allows<Asks<Path<Renderer>, CreateUniforms, Uniforming>, I2>

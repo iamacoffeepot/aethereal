@@ -27,8 +27,9 @@ pub use words::{CHAT_WORDS, ChatWord, NewSession, Worded, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Against, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, EngineStats,
-    Fault, Figures, Handles, Held, LARGEST, Path, Process, ProtocolRef, Tells, ToSender, Turn, path,
+    Actor, ActorName, ActorRef, Against, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending,
+    EngineStats, Fault, Figures, Handles, Held, LARGEST, Path, Process, ProtocolRef, Receives, Tells, ToSender, Turn,
+    path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -198,6 +199,7 @@ impl Tool for OverlayTools {
 /// word a session calls, is refused.
 impl Handles<Call> for OverlayTools {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
@@ -243,7 +245,7 @@ impl Handles<Call> for OverlayTools {
 }
 
 /// The overlay chose the theme, and answered the themes and the one in use; or no overlay answered.
-impl Handles<Answer<ThemesShown, Answering>> for OverlayTools {
+impl Receives<Answer<ThemesShown, Answering>> for OverlayTools {
     type Sends = ();
 
     fn handle(
@@ -261,7 +263,7 @@ impl Handles<Answer<ThemesShown, Answering>> for OverlayTools {
 }
 
 /// The overlay told the link the chat a word came to, or said why it told nothing; or no overlay answered.
-impl Handles<Answer<Worded, Answering>> for OverlayTools {
+impl Receives<Answer<Worded, Answering>> for OverlayTools {
     type Sends = ();
 
     fn handle(

@@ -13,7 +13,7 @@ use crate::stats::{
     self, Alive, DescribeGpu, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuDescribed, GpuMemory, GpuTimes,
     SubscribeFrameStats, SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
-use aethereal_actor::{Ended, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny, ToSender, Turn};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny, ToSender, Turn};
 use aethereal_data::Bound;
 use std::mem;
 
@@ -170,6 +170,7 @@ impl Last {
 /// drawn, the renderer counts what it draws and writes for them.
 impl Handles<SubscribeFrameStats> for Renderer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: SubscribeFrameStats, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -186,6 +187,7 @@ impl Handles<SubscribeFrameStats> for Renderer {
 /// Removes the sender from those sent each frame's statistics: once none is left, nothing is counted.
 impl Handles<UnsubscribeFrameStats> for Renderer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: UnsubscribeFrameStats, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -199,6 +201,7 @@ impl Handles<UnsubscribeFrameStats> for Renderer {
 /// on a device without timestamps it is told so, and not added.
 impl Handles<SubscribeGpuTimes> for Renderer {
     type Sends = (ToAny<(GpuTimes,), GpuTimes>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: SubscribeGpuTimes, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -223,6 +226,7 @@ impl Handles<SubscribeGpuTimes> for Renderer {
 /// [`TimeFrame`]: crate::timing::TimeFrame
 impl Handles<UnsubscribeGpuTimes> for Renderer {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: UnsubscribeGpuTimes, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -235,6 +239,7 @@ impl Handles<UnsubscribeGpuTimes> for Renderer {
 /// Answers the adapter the renderer draws on.
 impl Handles<DescribeGpu> for Renderer {
     type Sends = (ToSender<GpuDescribed>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: DescribeGpu, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let described = GpuDescribed::of(&turn.open(&mut self.gpu)?.device().adapter_info());

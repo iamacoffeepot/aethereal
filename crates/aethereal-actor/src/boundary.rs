@@ -44,6 +44,18 @@ pub trait Table {
         self.declared(id).is_some_and(|declared| declared.lists_all(kinds))
     }
 
+    /// Whether the actor `id` stands for is of the type whose id is `actor_type`, as [`Self::declared`] finds it: what
+    /// a handler's guard reads of a sender (ADR-0058). A table that holds no other actor's type asks whoever does.
+    fn is_of(&self, id: ActorId, actor_type: KindId) -> bool {
+        self.declared(id).is_some_and(|declared| declared.id() == actor_type)
+    }
+
+    /// The path the actor `id` stands for, when the table can name it: what a refusal names its sender by (ADR-0058).
+    /// A table that holds no paths, as a guest's does, names none.
+    fn path_of(&self, _id: ActorId) -> Option<ActorPath> {
+        None
+    }
+
     /// Whether the table held the actor `id` stands for as the step began, or it was stood up since in this part of
     /// the engine: whether, for whoever holds a reference to it, its ending is still to come (ADR-0008).
     fn held(&self, id: ActorId) -> bool;

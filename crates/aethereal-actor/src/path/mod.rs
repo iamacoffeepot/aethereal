@@ -22,7 +22,7 @@ use core::marker::PhantomData;
 /// A send at a path is declared with it, and builds only for a kind the path's type handles:
 ///
 /// ```
-/// use aethereal_actor::{ChildOf, Path, Tells, Top};
+/// use aethereal_actor::{Anyone, ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
 /// # use aethereal_data::Plain;
 /// #
@@ -58,6 +58,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type Sends = ();
+/// #             type From = Anyone;
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -80,7 +81,7 @@ use core::marker::PhantomData;
 /// One of a kind it does not handle does not build:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{ChildOf, Path, Tells, Top};
+/// use aethereal_actor::{Anyone, ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
 /// # use aethereal_data::Plain;
 /// #
@@ -116,6 +117,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type Sends = ();
+/// #             type From = Anyone;
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -138,7 +140,7 @@ use core::marker::PhantomData;
 /// Nor does a path to a type that stands in no one place:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{Anywhere, ChildOf, Path, Tells, Top};
+/// use aethereal_actor::{Anyone, Anywhere, ChildOf, Path, Tells, Top};
 /// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
 /// # use aethereal_data::Plain;
 /// #
@@ -174,6 +176,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type Sends = ();
+/// #             type From = Anyone;
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
 /// #                 Ok(())

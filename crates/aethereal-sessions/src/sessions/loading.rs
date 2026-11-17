@@ -10,7 +10,7 @@ use super::session::{Life, Session};
 use super::transcript::{Ended, Entry, Note, Transcript};
 use super::{Acts, Phase, Reconciling, Recorded, Sessions, Unfound};
 use crate::{ContainerId, Docker, Events, List, Listed, Listing, Phase as DockerPhase};
-use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Turn, path};
+use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
 use aethereal_data::{Budget, Plain, from_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 use core::mem;
@@ -31,7 +31,7 @@ pub(super) struct Reading {
     out: u32,
 }
 
-impl Handles<Answer<FileRead, Loading>> for Sessions {
+impl Receives<Answer<FileRead, Loading>> for Sessions {
     type Sends = Acts;
 
     /// A file of the sessions read: the index asks for each session's record and transcript, and once every one is
@@ -162,7 +162,7 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<Listed, Reconciling>> for Sessions {
+impl Receives<Answer<Listed, Reconciling>> for Sessions {
     type Sends = Acts;
 
     /// The containers carrying the hub's label: each a record says may run is re-attached when it runs, and noted

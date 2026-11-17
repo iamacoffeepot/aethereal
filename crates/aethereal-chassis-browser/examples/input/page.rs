@@ -2,7 +2,9 @@
 //! key of the window in its draw list, and notes each event, key, and control it is sent.
 
 use crate::said::{Program, say};
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Path, Render, Tells, Tick, Top, Turn, path};
+use aethereal_actor::{
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Render, Tells, Tick, Top, Turn, path,
+};
 use aethereal_chassis_browser::Browser;
 use aethereal_chassis_browser::controls::{self, Control, Controls};
 use aethereal_data::{Bound, Plain};
@@ -95,6 +97,7 @@ impl Actor for Reporter {
 
 impl Handles<Event> for Reporter {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("window {event:?}"));
@@ -105,6 +108,7 @@ impl Handles<Event> for Reporter {
 
 impl Handles<Keyed> for Reporter {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, keyed: Keyed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("window {:?}", keyed.event));
@@ -115,6 +119,7 @@ impl Handles<Keyed> for Reporter {
 
 impl Handles<Control> for Reporter {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         say(format!("control {control:?}"));
