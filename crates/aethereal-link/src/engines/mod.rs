@@ -457,22 +457,26 @@ impl Handles<TakeToken> for Engines {
 
     /// Takes the token out of the table: what it was for and whether its engine is trusted, or that it is unknown,
     /// once used, expired, or its spawn ended too. The engine that asked is linked from then on, with where it came
-    /// from, and a spawn's told its id.
+    /// from, and a spawn's told its id. Only an engine connected here takes a token: any other sender is answered
+    /// that it is unknown, and the token stays in the table for its engine.
     fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let sender = turn.sender().id();
+        let linked = self.linked.iter_mut().find(|(_, linked)| linked.engine.id() == sender);
+        let Some((&engine, linked)) = linked else {
+            turn.log(Level::Warn, format_args!("{sender:?}, which is no engine connected here, asked to take a token"));
+            turn.reply(&TokenFor::Unknown)?;
+            return Ok(());
+        };
         let Some(purpose) = self.tokens.take(take.token, turn.now()) else {
             turn.reply(&TokenFor::Unknown)?;
             return Ok(());
         };
         let came = Came::from(purpose);
         let token_for = came.token_for();
-        let linked = self.linked.iter_mut().find(|(_, linked)| linked.engine.id() == sender);
-        if let Some((&engine, linked)) = linked {
-            if let Came::Spawned { spawned, .. } = &came {
-                turn.to(*spawned).send(&LinkedAs { engine })?;
-            }
-            linked.standing = Standing::Linked { came, shows: Shows::Nothing };
+        if let Came::Spawned { spawned, .. } = &came {
+            turn.to(*spawned).send(&LinkedAs { engine })?;
         }
+        linked.standing = Standing::Linked { came, shows: Shows::Nothing };
         turn.reply(&token_for)?;
 
         Ok(())
