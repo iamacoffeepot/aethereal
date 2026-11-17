@@ -38,7 +38,7 @@ impl Handles<Stop> for Spawned {
 ```rust
 pub trait Handles<K: Kind>: Actor {
     type Sends: Sends + DeclaredBy<Self>;
-    type From: Guard<Self, K>;
+    type From: Checks<Self, K>;
 
     fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault>;
 
@@ -50,10 +50,13 @@ pub trait Handles<K: Kind>: Actor {
     }
 }
 
-pub trait Guard<A: Actor, K>: 'static {
+pub trait Guard<A: Actor>: 'static {
     /// What the handler is handed for a sender it admits.
     type Sent: Sent;
+}
 
+/// The guard's check of mail of `K`, which may read the mail.
+pub trait Checks<A: Actor, K>: Guard<A> {
     /// The sender, checked, when `actor` takes `mail` from it; `None` when it does not, and the mail goes to `refused`.
     fn admits(actor: &A, mail: &K, sender: &Sender<'_>) -> Option<Self::Sent>;
 }
@@ -90,11 +93,11 @@ pub enum SenderTypes {
 }
 ```
 
-A guard is handed the receiver, the mail read as its kind, and the sender, decides from any of them, and answers the sender as its `Sent`, or `None`. There is one trait and one call: the forms below are types the library writes impls of, and a handler writes its own as it writes any impl. Each of `Sender`'s checks answers the reference a guard hands on, typed, so a guard never casts; a seat's check reads the type too, so `receiver` of another type than the receiver's answers `None`.
+A guard is handed the receiver, the mail read as its kind, and the sender, decides from any of them, and answers the sender as its `Sent`, or `None`. What a guard hands on depends on the actor (`Itself` hands an `ActorRef<A>`, `Parent` an `ActorRef<A::Parent>`, the stream library's parts guard a reference generic over its stream `S`), never on the mail's kind, so `Sent` sits on `Guard<A>`, which the turn can name, and the check that reads the mail on `Checks<A, K>`. A guard that admits several kinds writes one `Guard` impl and one `Checks` impl for each kind. There is one call: the forms below are types the library writes impls of, and a handler writes its own as it writes any impl. Each of `Sender`'s checks answers the reference a guard hands on, typed, so a guard never casts; a seat's check reads the type too, so `receiver` of another type than the receiver's answers `None`.
 
 ### The handler reads the sender its guard checked
 
-Dispatch keeps what `admits` answered on the turn, `Turn<'a, Me, S, F = Anyone>`, read with `turn.from()`, which answers `&F::Sent`. A guarded handler names its guard in its turn, `Turn<'_, Self, Self::Sends, Self::From>`. A handler with `Anyone` keeps its three-parameter signature, as `F` is defaulted, and `Anyone`'s `Sent` is the `ErasedActorRef`.
+Dispatch keeps what `admits` answered on the turn, `Turn<'a, Me, S, F: Guard<Me> = Anyone>`, read with `turn.from()`, which answers `&F::Sent`. A guarded handler names its guard in its turn, `Turn<'_, Self, Self::Sends, Self::From>`. A handler with `Anyone` keeps its three-parameter signature, as `F` is defaulted, and `Anyone`'s `Sent` is the `ErasedActorRef`.
 
 ### The library's guards
 
@@ -108,9 +111,11 @@ Dispatch keeps what `admits` answered on the turn, `Turn<'a, Me, S, F = Anyone>`
 | `Speaks<P>` | an actor whose type lists every kind of `P`, a tuple of kinds or a named protocol | `ProtocolRef<P>` |
 
 ```rust
-impl<A: Actor, K> Guard<A, K> for Itself {
+impl<A: Actor> Guard<A> for Itself {
     type Sent = ActorRef<A>;
+}
 
+impl<A: Actor, K> Checks<A, K> for Itself {
     fn admits(_: &A, _: &K, sender: &Sender<'_>) -> Option<ActorRef<A>> {
         sender.receiver::<A>()
     }
@@ -136,9 +141,11 @@ impl Sent for Peer {
     const TYPES: SenderTypes = SenderTypes::Types(&[KindId::of::<Exchange>(), KindId::of::<Client>()]);
 }
 
-impl Guard<Server, Request> for Peer {
+impl Guard<Server> for Peer {
     type Sent = Peer;
+}
 
+impl Checks<Server, Request> for Peer {
     fn admits(_: &Server, _: &Request, sender: &Sender<'_>) -> Option<Peer> {
         let exchange = sender.actor::<Exchange>().map(Peer::Exchange);
         exchange.or_else(|| sender.actor::<Client>().map(Peer::Client))
@@ -166,9 +173,11 @@ The match is exhaustive: a third peer is a case added to `Peer`, and a match tha
 /// The process its spawn runs: the one `Spawned` holds, once it has one.
 pub struct ItsProcess;
 
-impl Guard<Spawned, Exited> for ItsProcess {
+impl Guard<Spawned> for ItsProcess {
     type Sent = ActorRef<Process>;
+}
 
+impl Checks<Spawned, Exited> for ItsProcess {
     fn admits(spawned: &Spawned, _: &Exited, sender: &Sender<'_>) -> Option<ActorRef<Process>> {
         spawned.process().filter(|process| sender.reference() == process.erase())
     }
@@ -203,7 +212,7 @@ pub trait Receives<H: Received>: Actor {
 
 ```rust
 let sender = turning.sender(declared);
-let admitted = <A::From as Guard<A, K>>::admits(actor, &mail, &sender);
+let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &sender);
 
 match admitted {
     Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::Sends, A::From>(declared, from)),
@@ -227,7 +236,7 @@ A native send that names its receiver's type declares it: `ToType<T, K>` (`decla
 
 ```rust
 /// What `T`'s handler of `K` is handed for a sender its guard admits.
-type Admitted<T, K> = <<T as Handles<K>>::From as Guard<T, K>>::Sent;
+type Admitted<T, K> = <<T as Handles<K>>::From as Guard<T>>::Sent;
 ```
 
 `Declared::checked` (`declared/mod.rs:281`), which already refuses a type that handles one kind twice, then checks each send the type declares, as it begins, in each handler, and as it ends, against its receiver's `SenderTypes`: `Types` must hold the declaring type's id, the declaring type must list each of `Speaking`'s kinds, `AnyOf` passes when any of its cases does, and `Every` passes. A send that cannot be admitted panics in the constant, which stops the build and names the declaring type. Delivery is the guarantee, for every sender; the build check tells a native sender early what delivery would refuse.
@@ -279,7 +288,7 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - A refused sender is logged, and a refused request answered, where a check by hand often did neither.
 - A native send that names its receiver's type does not build when the receiver's guard's `Sent` type would refuse it, a handler's own guard included. A send through a protocol reference, a reply, and a guest are checked at delivery.
 - The types a guard admits are stated once, by its `Sent` type, and cannot disagree with `admits`.
-- `Handles<K>` gains `From` and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard` names a `Sent`, `Turn` gains its guard as a fourth, defaulted parameter, `Sending`'s typed targets carry `SenderTypes`, and `Table` gains `is_of`.
+- `Handles<K>` gains `From` and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard<A>` names a `Sent` and `Checks<A, K>` its check, `Turn` gains its guard as a fourth, defaulted parameter, `Sending`'s typed targets carry `SenderTypes`, and `Table` gains `is_of`.
 - A test that hands a guarded handler its mail from the outside (ADR-0036), whose type is its own, stands up the type the guard admits.
 
 ## Alternatives considered
@@ -288,6 +297,7 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - **The rule on the kind,** `#[kind(senders = …)]`. A kind is data in the data layer and names no actor, and a kind several receivers take from different senders, `Shut`, `Stop`, `Event`, `Control`, would have to be split.
 - **A `SentBy<S, K>` wrapper in the actor's list, with senders restating it** (`ToType<T, K, Only<S>>`). The rule is written in two places, and every sender's declaration changes when a receiver adds one.
 - **A `Senders` trait whose forms each have a check of their own,** with a derive for enums. Every form is a type that implements `Guard`, checked by one call; a form the library lacks is an impl a handler writes.
+- **`Sent` on the keyed trait,** one `Guard<A, K>` holding both. The turn knows its actor and guard but not the kind, so to name `F::Sent` it would have to carry the mail's kind as a parameter too, on every guarded handler's signature, for a type that never depends on it.
 - **`admits` answers `bool`.** The guard has already found which sender it is, and `bool` throws that away: the handler asks again and casts by hand, and no match over senders is exhaustive.
 - **`TYPES` on each guard,** a constant beside `admits`. It states the rule a second time, and the two statements can disagree; a handler's own guard left it `Read` and went unchecked when built.
 - **Tuples of guards,** `(G1, G2)` admitting what either does. With the checked sender handed on, guards with different `Sent` types have no one type to hand the handler; an enum such as `Peer` names each case.
