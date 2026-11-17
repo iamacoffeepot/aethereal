@@ -151,6 +151,9 @@ pub struct Reads<'a> {
     /// What the actor holds of resources, which a child of other code a turn computed ahead spawns may be handed in
     /// its config (ADR-0010).
     pub holds: Holds<'a>,
+    /// The most bytes of buffers each actor keeps, which a buffer a child begun apart drops unput is kept under
+    /// (ADR-0042).
+    pub most_kept_bytes: usize,
 }
 
 impl<'a> Preparing<'a> {

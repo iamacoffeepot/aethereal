@@ -158,7 +158,7 @@ fn contents<S>(turn: &mut Turn<'_, ReadTool, S>, bytes: &Bytes) -> Result<Called
     if length > MOST_BYTES {
         return Ok(refused("the file is too large"));
     }
-    let buffer = turn.buffer(COUNT_BYTES + length);
+    let buffer = Vec::from(turn.buffer(COUNT_BYTES + length));
     let Ok(text) = str::from_utf8(turn.read(bytes)) else {
         return Ok(refused("the file is not text"));
     };

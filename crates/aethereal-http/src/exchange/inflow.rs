@@ -142,19 +142,28 @@ impl Exchange {
         if is_held {
             return Ok(());
         }
-        let mut out = turn.buffer(self.buffer.len());
+        // The body is decoded into a buffer the pool hands out, which goes back to it, emptied, as it is dropped
+        // whenever it is not put: before the turn is used whole again.
+        let (doing, pool) = turn.split();
+        let mut out = pool.buffer(self.buffer.len());
         let Decoded { consumed, progress } = match inflow.left.decode(&self.buffer, &mut out, most_line) {
             Ok(decoded) => decoded,
-            Err(broken) => return self.refuse_body::<_, IW>(turn, key, Refusal::from(broken)),
+            Err(broken) => {
+                drop(out);
+                return self.refuse_body::<_, IW>(turn, key, Refusal::from(broken));
+            }
         };
         self.buffer.drain(..consumed);
         inflow.read = inflow.read.saturating_add(u64::try_from(out.len()).unwrap_or(u64::MAX));
         if inflow.read > inflow.most {
+            drop(out);
             return self.refuse_body::<_, IW>(turn, key, Refusal::BodyTooLarge);
         }
-        if !out.is_empty() {
-            inflow.moved = turn.now();
-            let Ok(bytes) = turn.put(out) else {
+        if out.is_empty() {
+            drop(out);
+        } else {
+            inflow.moved = doing.now();
+            let Ok(bytes) = doing.put(out) else {
                 // The stream is let go of with the exchange, and the engine answers it for the exchange.
                 unstored(turn);
                 return Ok(());

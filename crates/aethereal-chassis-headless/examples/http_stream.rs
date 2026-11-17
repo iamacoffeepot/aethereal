@@ -77,7 +77,7 @@ impl Actor for Source {
 
     fn begin(plan: Plan, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         let part_bytes = usize::try_from(plan.part_bytes).unwrap_or(usize::MAX);
-        let mut part = turn.buffer(part_bytes);
+        let mut part = Vec::from(turn.buffer(part_bytes));
         part.resize(part_bytes, b'x');
         let Ok(part) = turn.put(part) else {
             panic!("the source's part fits the engine's blobs");

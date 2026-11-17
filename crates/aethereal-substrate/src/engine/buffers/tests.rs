@@ -1,5 +1,6 @@
-//! The buffers of freed blobs, handed back to the actors that put them and handed out again by `turn.buffer`, and
-//! the buffer a job that fills buffers is lent (ADR-0042).
+//! The buffers of freed blobs, handed back to the actors that put them and handed out again by `turn.buffer`, the
+//! buffers a turn or a job drops unput, which go back as they drop, and the buffer a job that fills buffers is lent
+//! (ADR-0042).
 
 use super::super::*;
 use aethereal_actor::{
@@ -12,8 +13,12 @@ use std::collections::BTreeSet;
 /// What a builder does in one of its turns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 enum Order {
-    /// Takes a buffer with room for this many bytes, notes what it took, and drops it.
+    /// Takes a buffer with room for this many bytes, notes what it took, and takes it out as its own, so it frees it
+    /// rather than giving it back.
     Take(u64),
+    /// Takes a buffer with room for this many bytes, notes what it took, writes three bytes into it, and drops it
+    /// unput, so it goes back.
+    Drop(u64),
     /// Takes a buffer with room for this many bytes, writes three bytes into it, puts it, and keeps the blob.
     Put(u64),
     /// Puts as `Put` does, and lends the blob to the builder keyed `to`, keeping none of it.
@@ -25,6 +30,8 @@ enum Order {
     Draw(u64),
     /// Runs a [`Peek`], a job that fills nothing, as `Draw` runs a draw.
     Peek(u64),
+    /// Runs a [`Scratch`], a job that fills nothing and drops the buffer it takes unput, as `Draw` runs a draw.
+    Scratch(u64),
     /// Runs a [`Draw`] of a buffer with room for this many bytes and cancels it in the same turn, before it is handed
     /// out.
     DrawCancelled(u64),
@@ -93,6 +100,14 @@ struct Peek {
     room: u64,
 }
 
+/// A job that takes a buffer with room for `room` bytes, writes three bytes into it, and drops it unput, so it goes
+/// back with the job's answer.
+#[derive(Plain)]
+#[kind(name = "aether.test.scratch")]
+struct Scratch {
+    room: u64,
+}
+
 /// What a draw or a peek took: the capacity of its buffer.
 #[derive(Plain)]
 #[kind(name = "aether.test.drew")]
@@ -106,7 +121,7 @@ impl Job for Draw {
     const FILLS: Fills = Fills::Buffers;
 
     async fn run(self, job: &mut Running) -> Result<Drew, Fault> {
-        Ok(Drew { capacity: count(job.buffer(size(self.room)).capacity()) })
+        Ok(Drew { capacity: count(Vec::from(job.buffer(size(self.room))).capacity()) })
     }
 }
 
@@ -115,7 +130,19 @@ impl Job for Peek {
     const RUNNER: Runner = Runner::Compute;
 
     async fn run(self, job: &mut Running) -> Result<Drew, Fault> {
-        Ok(Drew { capacity: count(job.buffer(size(self.room)).capacity()) })
+        Ok(Drew { capacity: count(Vec::from(job.buffer(size(self.room))).capacity()) })
+    }
+}
+
+impl Job for Scratch {
+    type Done = Drew;
+    const RUNNER: Runner = Runner::Compute;
+
+    async fn run(self, job: &mut Running) -> Result<Drew, Fault> {
+        let mut buffer = job.buffer(size(self.room));
+        buffer.extend_from_slice(&[7; 3]);
+
+        Ok(Drew { capacity: count(buffer.capacity()) })
     }
 }
 
@@ -162,8 +189,13 @@ impl Handles<Plan> for Builder {
         for order in orders {
             match order {
                 Order::Take(room) => {
-                    let buffer = turn.buffer(size(room));
+                    let buffer = Vec::from(turn.buffer(size(room)));
                     self.took.push(Took { capacity: count(buffer.capacity()), len: count(buffer.len()) });
+                }
+                Order::Drop(room) => {
+                    let mut buffer = turn.buffer(size(room));
+                    self.took.push(Took { capacity: count(buffer.capacity()), len: count(buffer.len()) });
+                    buffer.extend_from_slice(&[7; 3]);
                 }
                 Order::Put(room) => {
                     let blob = put(turn, room)?;
@@ -183,6 +215,10 @@ impl Handles<Plan> for Builder {
                 }
                 Order::Peek(room) => {
                     turn.run(&Peek { room }, &plan)?;
+                    return Ok(());
+                }
+                Order::Scratch(room) => {
+                    turn.run(&Scratch { room }, &plan)?;
                     return Ok(());
                 }
                 Order::DrawCancelled(room) => {
@@ -245,7 +281,8 @@ impl Receives<Answer<Drew, Plan>> for Builder {
 
 /// Takes a buffer with room for `room` bytes, writes three bytes into it, and puts it.
 fn put<S>(turn: &mut Turn<'_, Builder, S>, room: u64) -> Result<Bytes, Fault> {
-    let mut buffer = turn.buffer(size(room));
+    let (turn, pool) = turn.split();
+    let mut buffer = pool.buffer(size(room));
     buffer.extend_from_slice(&[7; 3]);
 
     turn.put(buffer).map_err(|_| Fault::of_parts(KindId::of::<Lent>(), Vec::new()))
@@ -425,4 +462,56 @@ fn a_job_cancelled_before_it_is_handed_out_gives_back_what_it_was_lent() {
     settle(&mut engine);
 
     assert_eq!(took(&engine, builder), [empty(8192)]);
+}
+
+#[test]
+fn a_buffer_dropped_unput_is_the_one_the_next_fitting_take_hands_out() {
+    // Catches a buffer a turn takes and drops unput freed rather than given back, which the next take then allocates
+    // afresh, and one given back with the bytes written into it still in it. A take of 3000 bytes is handed a new
+    // buffer of 3000 unless the dropped one of 4096, within twice of it, came back.
+    let mut engine = engine(|setup| setup);
+    let builder = build(&mut engine, 1, &[&[Order::Drop(4096), Order::Take(3000)]]);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(4096), empty(4096)]);
+}
+
+#[test]
+fn a_buffer_dropped_unput_past_what_its_actor_keeps_is_freed() {
+    // Catches a dropped buffer kept past `most_kept_bytes`: a builder keeping a freed blob's buffer of 4096 drops one
+    // of 5000 unput, which would take it past 6000, so it is freed where one that keeps the default keeps it. The last
+    // take, of 4500, is handed the dropped 5000 only when it was kept.
+    let turns: &[&[Order]] =
+        &[&[Order::Put(4096)], &[Order::LetGo], &[Order::Drop(5000)], &[Order::Take(3000), Order::Take(4500)]];
+    let mut kept = engine(|setup| setup.with_most_kept_bytes(6000));
+    let mut unbounded = engine(|setup| setup);
+    let (bounded, both) = (build(&mut kept, 1, turns), build(&mut unbounded, 1, turns));
+    settle(&mut kept);
+    settle(&mut unbounded);
+
+    assert_eq!(took(&kept, bounded), [empty(5000), empty(4096), empty(4500)]);
+    assert_eq!(took(&unbounded, both), [empty(5000), empty(4096), empty(5000)]);
+}
+
+#[test]
+fn a_put_buffer_comes_back_once() {
+    // Catches a buffer handed back twice, as its guard drops and again as its blob is freed, which hands two takes
+    // one buffer.
+    let mut engine = engine(|setup| setup);
+    let turns: &[&[Order]] = &[&[Order::Put(4096)], &[Order::LetGo], &[Order::Take(3000), Order::Take(3000)]];
+    let builder = build(&mut engine, 1, turns);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(4096), empty(3000)]);
+}
+
+#[test]
+fn a_buffer_a_job_drops_unput_goes_back_with_its_answer() {
+    // Catches a buffer a job takes and drops unput freed with the job rather than given back to its actor with what
+    // it was lent. The job fills nothing, so it is lent nothing and makes its buffer new.
+    let mut engine = engine(|setup| setup);
+    let builder = build(&mut engine, 1, &[&[Order::Scratch(4096)], &[Order::Take(3000)]]);
+    settle(&mut engine);
+
+    assert_eq!(took(&engine, builder), [empty(4096), empty(4096)]);
 }

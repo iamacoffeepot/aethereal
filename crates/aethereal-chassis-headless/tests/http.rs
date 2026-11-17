@@ -443,9 +443,10 @@ impl Receives<Answer<BodyRead, Number>> for Reader {
         if let Answered::Yes(read) = answered {
             self.read.push(read);
         }
-        let mut body = turn.buffer(self.parts.iter().map(Vec::len).sum());
+        let (doing, pool) = turn.split();
+        let mut body = pool.buffer(self.parts.iter().map(Vec::len).sum());
         body.extend(self.parts.iter().flatten());
-        let Ok(body) = turn.put(body) else {
+        let Ok(body) = doing.put(body) else {
             return Ok(());
         };
         turn.answer(held, &Response::new(Status::Ok, "application/octet-stream", body))?;

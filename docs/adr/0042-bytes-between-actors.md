@@ -41,17 +41,24 @@ pub struct Response { pub status: Status, pub headers: Vec<Header>, pub body: By
 **Each actor keeps the buffers its blobs were made in, and the engine hands them back.**
 
 ```rust
-impl Turn<'_> {
+impl<'a> Turn<'a> {
+    /// What the turn does, and the buffers its actor keeps, borrowed apart.
+    pub fn split(&mut self) -> (&mut Doing<'a>, &mut Pool<'a>);
+}
+impl Pool<'_> {
     /// A buffer with room for at least `room` bytes: the smallest this actor keeps that is big enough and at most
-    /// twice `room`, else a new one.
-    pub fn buffer(&mut self, room: usize) -> Vec<u8>;
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused>;   // as ADR-0014, under its new name
-    pub fn read(&self, bytes: &Bytes) -> &[u8];                         // as ADR-0014
+    /// twice `room`, else a new one. It goes back to the pool as it drops, unless it is put.
+    pub fn buffer(&mut self, room: usize) -> Buffer<'_>;               // reads and writes as a `Vec<u8>`
+}
+impl Doing<'_> {
+    pub fn put(&mut self, bytes: impl Into<Vec<u8>>) -> Result<Bytes, Refused>; // as ADR-0014; takes a `Buffer`
+    pub fn read(&self, bytes: &Bytes) -> &[u8];                                // as ADR-0014
 }
 ```
 
 - **The engine keeps an actor's buffers beside it,** as it keeps its resources and the requests it holds. A turn takes from them on the worker running the actor's part, and the fold's sweep hands buffers back on the thread that steps the engine, while it holds every part; so only one thread reaches them at a time, and nothing in them is locked or atomic.
 - **A put notes the actor that made it.** When the fold frees a blob, its buffer goes back to that actor, emptied, instead of to the allocator, and the actor's next `turn.buffer` can hand it out again. A kept buffer is handed out only when it is at most twice the room asked, since the budget charges a buffer by its capacity and a small put should not take a large one. A buffer is allocated only when the actor keeps none that fits, and freed only when keeping it would take the actor past `most_kept_bytes`, or when the actor ends. This replaces ADR-0014's handing back to the worker.
+- **A buffer not put goes back as it drops.** A turn is two parts borrowed apart, as a slice is with `split_at_mut`: what it does, which sends, reads, and puts, and its pool, the buffers its actor keeps. A buffer the pool hands out is a guard that borrows the pool alone, so the turn goes on while it is held. A put takes the guard's bytes out of it, and they come back once the blob is freed; a guard dropped unput gives its buffer back to the pool at once, emptied, by the same rule and under the same budget as a freed blob's. A job's lent buffers are its pool, split from it the same way, and what it drops goes back with them. So every transient buffer an actor takes, sent or not, is the engine's to reuse. Only the thread holding the actor's part reaches the pool, through the `&mut` the turn holds, so nothing is locked, atomic, or a cell. A buffer kept in the actor's state is taken out of its guard with `Vec::from`, and is then the actor's own.
 - **`most_kept_bytes`** is an engine setting, 16 MiB by default: what each actor may keep. An actor that puts nothing keeps nothing.
 - **A job's puts are made by the actor that ran the job,** so their buffers go back to it. A job type says whether it fills buffers, `const FILLS: Fills = Fills::Buffers`, and fills nothing unless it says so. One that fills buffers is lent its actor's largest kept buffer in the turn that runs it, and takes it with `job.buffer(room)` by the rule `turn.buffer` keeps; one it does not take goes back to its actor with its answer, or as it is dropped when it is cancelled before it is handed out. Files' `Load` reads into one: only the storage learns the file's size, so the job hands it what it was lent, and the storage takes a buffer from it by the same rule and gives back the rest. A guest's job is lent nothing yet: the turn that files it knows only its kind, and the type it runs with is found as it is handed out.
 - **A guest puts by handing its bytes to its host** (ADR-0014, ADR-0015). The host copies them into a buffer it takes from the actor's, so a guest's buffers are reused as a native actor's are. A guest still reads by a copy into its own memory.

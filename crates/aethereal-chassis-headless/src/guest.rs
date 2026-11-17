@@ -168,6 +168,9 @@ struct Answering<'a> {
     holds: Holds<'a>,
     /// The actor whose turns or `begin` the call runs, which makes the blobs the call puts (ADR-0042).
     me: Seated,
+    /// The most bytes of buffers each actor keeps, which a child of other code begun for the call keeps its buffers
+    /// under (ADR-0042).
+    most_kept_bytes: usize,
 }
 
 /// What the host gave a call into a guest that is still to be handed to the engine: the seats it gave the guest's
@@ -639,14 +642,14 @@ impl<'a> Answering<'a> {
     /// What answers the calls out of a call that runs the turns or `begin` of the actor `me`, from what its batch was
     /// lent, the instances of its part, and the code its runtime holds.
     fn of(
-        Reads { table, made, seats, puts, holds }: Reads<'a>,
+        Reads { table, made, seats, puts, holds, most_kept_bytes }: Reads<'a>,
         instances: &'a mut Instances,
         codes: &'a Weak<Codes>,
         given: &'a mut Given,
         holdings: &'a Holdings,
         me: Seated,
     ) -> Self {
-        Self { table, made, seats, puts, instances, codes, given, holdings, holds, me }
+        Self { table, made, seats, puts, instances, codes, given, holdings, holds, me, most_kept_bytes }
     }
 
     /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
@@ -720,7 +723,7 @@ impl<'a> Answering<'a> {
             };
             refers.push((at, pin));
         }
-        let mut asked = Asked::writing(Arena::default(), Seats::default(), Puts::new(0, 0, 0));
+        let mut asked = Asked::writing(Arena::default(), Seats::default(), Puts::new(0, 0, 0), self.most_kept_bytes);
         // Each resource the config holds is handed to the child as it begins, from what its spawner holds: given by
         // it, as natively.
         let mut handed = Vec::with_capacity(spawning.carried.len());
@@ -1145,9 +1148,10 @@ impl Guests for Runtime {
 
         let read_limit = instances.read_limit();
         let mut held = instances.lend(code.key, |number| Instance::load(code, read_limit, number))?;
+        let most_kept_bytes = asked.most_kept_bytes();
         let (seats, puts, _, gifts) = asked.lent_gifts();
         let holds = Holds { keeping: &mut *keeping, gifts };
-        let reads = Reads { table, made: &(), seats, puts, holds };
+        let reads = Reads { table, made: &(), seats, puts, holds, most_kept_bytes };
         // What the config refers to is offered to the call, as the child takes references of its own to it.
         let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
         let mut given = Given { offered, ..Given::default() };
@@ -1452,8 +1456,8 @@ impl Runs for Guest {
         };
         let (items, len) = held.hand_in(batch, &mut self.given.offered);
         let mut holdings = mem::take(&mut held.holdings);
-        let Reads { table, made, seats, puts, holds } = reads;
-        let lent = Reads { table, made, seats: &mut *seats, puts, holds };
+        let Reads { table, made, seats, puts, holds, most_kept_bytes } = reads;
+        let lent = Reads { table, made, seats: &mut *seats, puts, holds, most_kept_bytes };
         let codes = &self.running.code.codes;
         let mut answering = Answering::of(lent, &mut *instances, codes, &mut self.given, &holdings, self.me);
         let Instance { store, turns, .. } = &mut *held;
@@ -1562,11 +1566,12 @@ impl Runs for Guest {
         };
         let mut given = Given::default();
         let mut holdings = mem::take(&mut held.holdings);
+        let most_kept_bytes = hosted.most_kept_bytes();
         let (table, seats, puts) = hosted.lent();
         // A closing turn spawns nothing, so no resource is handed on in a call out of it.
         let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
         let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
-        let reads = Reads { table, made: &(), seats, puts, holds };
+        let reads = Reads { table, made: &(), seats, puts, holds, most_kept_bytes };
         let mut answering = Answering::of(reads, instances, &self.running.code.codes, &mut given, &holdings, self.me);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));

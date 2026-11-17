@@ -39,7 +39,7 @@ impl Job for Encode {
         let rgb = image::cut(job.read(&self.pixels), self.frame_width, self.region);
         let rgb = image::shrunk(&rgb, self.region.width, self.region.height, self.width, self.height);
         // A guess at the PNG's size, which it grows past when it must.
-        let buffer = job.buffer(rgb.len() / 2);
+        let buffer = Vec::from(job.buffer(rgb.len() / 2));
         let Ok(png) = image::png(&rgb, self.width, self.height, buffer) else {
             return Err(Fault::new(&Unencoded)?);
         };

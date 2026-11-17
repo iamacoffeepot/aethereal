@@ -581,13 +581,13 @@ impl Connection {
         let hands_over = is_all && fills;
         if hands_over {
             let room = self.framing.most().min(CHUNK);
-            return mem::replace(&mut self.read, turn.buffer(room));
+            return mem::replace(&mut self.read, Vec::from(turn.buffer(room)));
         }
         let mut frame = turn.buffer(bytes);
         frame.extend_from_slice(&self.read[skip..end]);
         self.read.drain(..end);
 
-        frame
+        Vec::from(frame)
     }
 
     /// Ends the reader's stream with `why`, answers every write not sent, stops its waits for the socket, and closes
