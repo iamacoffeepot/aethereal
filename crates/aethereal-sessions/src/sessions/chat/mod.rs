@@ -187,15 +187,15 @@ impl Handles<Joined> for Sessions {
     /// as another engine already are each refused, and nothing joined changes.
     fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
         let Joined { engine } = joined;
-        let sender = turn.sender().id();
-        let Some(shown) = turn.cast::<Showing>(turn.sender()) else {
+        let sender = turn.sender();
+        let Some(shown) = turn.cast::<Showing>(sender) else {
             turn.log(
                 Level::Warn,
                 format_args!("{sender:?}, which takes nothing an engine is shown, joined as {engine}"),
             );
             return Ok(());
         };
-        match self.chats.joining(engine, sender) {
+        match self.chats.joining(engine, sender.id()) {
             Joining::New => turn.watch(shown),
             Joining::Again => {}
             Joining::Taken { by } => {
@@ -236,9 +236,9 @@ impl Handles<Chatted> for Sessions {
     /// capability has found its sessions.
     fn handle(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
         let Chatted { engine, chat } = chatted;
-        let sender = turn.sender().id();
+        let sender = turn.sender();
         let joined = self.chats.engines.get(&engine).map(|watcher| watcher.shown.id());
-        if joined != Some(sender) {
+        if joined != Some(sender.id()) {
             turn.log(
                 Level::Warn,
                 format_args!("a chat frame from {sender:?} said to be engine {engine}'s was passed over"),
