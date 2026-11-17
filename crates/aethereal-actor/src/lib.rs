@@ -78,9 +78,9 @@ pub use buffer::{Buffer, Pool};
 pub use controller::{Controller, Requests};
 pub use declared::{
     Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
-    HandledList, Handler, Handles, Kinds, Listed, Marker, Others, Protocol, Reached, Received, Receives, RepliesTo,
-    RepliesWith, RepliesWithin, ReplyWithin, Role, Sending, Sends, StateSchema, Target, Tells, ToAny, ToSender, ToType,
-    Untaken,
+    HandledList, Handler, Handles, Kinds, Listed, Lists, Marker, Others, Protocol, Reached, Received, Receives,
+    RepliesTo, RepliesWith, RepliesWithin, ReplyWithin, Role, Sending, Sends, StateSchema, Target, Tells, ToAny,
+    ToSender, ToType, Untaken,
 };
 pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
