@@ -1,16 +1,25 @@
 //! The process capability on the native host (ADR-0040, ADR-0036): a real program, the root asked through the harness,
 //! and its launcher the real one, starting real programs. Each program is this test binary itself, run again with the
-//! one test, `program`, picked, and told what to do by a [`Behaviour`], which it reads back from its arguments.
+//! one test, `program`, picked, and told what to do by a [`Behaviour`], which it reads back from its arguments. A
+//! program whose stdin or stdout is piped is a system one, `cat` or `sh`, read by a [`Reader`].
 #![cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 
-use aethereal_actor::{Actor, ActorRef, Answered, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn};
+use aethereal_actor::{
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
+    ProtocolRef, Streamed, Streams, ToAny, Top, Turn,
+};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
-use aethereal_process::{ExitStatus, Exited, Exits, Process, Processes, ProcessesSettings, Start, Started, Stop};
+use aethereal_process::{
+    Environment, ExitStatus, Exited, Exits, Pipe, Piped, Process, Processes, ProcessesSettings, Start, Started, Stdio,
+    Stop, Variable,
+};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host};
-use std::io::{self, Write};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use aethereal_tcp::{Finish, HungUp, Read, Reading, Write, Writing, Wrote};
+use std::io::{self, Write as _};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{env, fs, process, thread};
@@ -156,15 +165,16 @@ const fn settings(kill_after_millis: u32) -> ProcessesSettings {
     ProcessesSettings { kill_after_millis }
 }
 
-/// What starting `program` with `args` comes to, its exit told to `starter`.
-fn start(
-    harness: &mut Harness<Headless>,
-    program: String,
-    args: Vec<String>,
-    starter: ProtocolRef<Exits>,
-) -> Result<Started, Unheard> {
+/// A start of `program` with `args`, its environment the host's and its stdin and stdout closed, its exit told to
+/// `starter`.
+fn closed(program: String, args: Vec<String>, starter: ProtocolRef<Exits>) -> Start {
+    Start { program, args, environment: Environment::Inherited, stdin: Stdio::Closed, stdout: Stdio::Closed, starter }
+}
+
+/// What `start` comes to.
+fn start(harness: &mut Harness<Headless>, start: &Start) -> Result<Started, Unheard> {
     let root = harness.root::<Processes>();
-    let asked = harness.ask(root, &Start { program, args, starter })?;
+    let asked = harness.ask(root, start)?;
     let Answered::Yes(answer) = harness.answer(asked)? else {
         panic!("the root answers a start");
     };
@@ -179,7 +189,8 @@ fn running(
     extra: &[String],
 ) -> Result<ActorRef<Process>, Unheard> {
     let starter = harness.protocol::<Exits>();
-    let Started::Running { process } = start(harness, this_binary(), args(behaviour, extra), starter)? else {
+    let Started::Running { process, .. } = start(harness, &closed(this_binary(), args(behaviour, extra), starter))?
+    else {
         panic!("this binary starts, as {behaviour:?}");
     };
 
@@ -319,8 +330,8 @@ fn a_starter_that_ends_stops_its_program() -> Result<(), Unheard> {
     let mut harness = processes(settings(60_000))?;
     harness.add_root::<Starter>(&(), StarterConfig)?;
     let starter = harness.root::<Starter>();
-    let Started::Running { process } =
-        start(&mut harness, this_binary(), args(Behaviour::Lingers, &[]), starter.protocol())?
+    let Started::Running { process, .. } =
+        start(&mut harness, &closed(this_binary(), args(Behaviour::Lingers, &[]), starter.protocol()))?
     else {
         panic!("this binary starts");
     };
@@ -343,7 +354,7 @@ fn a_missing_program_is_refused() -> Result<(), Unheard> {
     let mut harness = processes(settings(60_000))?;
     let outside = harness.protocol::<Exits>();
 
-    let started = start(&mut harness, dir.path("no-such-program").display().to_string(), Vec::new(), outside)?;
+    let started = start(&mut harness, &closed(dir.path("no-such-program").display().to_string(), Vec::new(), outside))?;
 
     assert!(matches!(started, Started::Refused), "a missing program is refused: {started:?}");
 
@@ -357,4 +368,232 @@ fn a_headless_program_listing_processes_names_each_flag_once() {
     let flags = Headless::program().root::<Processes>().flag_table();
 
     assert!(flags.is_ok(), "the program's flags are read: {flags:?}");
+}
+
+/// How many parts of a pipe's stream a reader is kept ahead of it.
+const WINDOW: u32 = 4;
+
+/// What the test tells its reader: read this pipe.
+#[derive(Bound)]
+#[kind(name = "aether.test.processes.follow")]
+struct Follow(ActorRef<Pipe>);
+
+/// A root that reads the pipe the test hands it, and keeps every byte and how the pipe hung up: a stream is opened and
+/// its parts taken only by [`Streams`], which only an actor holds.
+#[derive(Bound)]
+#[kind(name = "aether.test.processes.reader")]
+struct Reader {
+    reading: Streams<Reading, ()>,
+    bytes: Vec<u8>,
+    hung_up: Vec<HungUp>,
+}
+
+impl ChildOf for Reader {
+    type Parent = Top;
+}
+
+impl Actor for Reader {
+    type Config = StarterConfig;
+    type Key = ();
+    type Handles = (Follow, Part<Reading>, Answer<HungUp, Number>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        let Some(window) = NonZeroU32::new(WINDOW) else {
+            return Err(Fault::new(&StarterConfig)?);
+        };
+
+        Ok(Self { reading: Streams::new(window), bytes: Vec::new(), hung_up: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Reader {
+    const SECTION: &'static str = "reader";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), StarterConfig)
+    }
+}
+
+impl Handles<Follow> for Reader {
+    type Sends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
+
+    fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.reading.open(turn, pipe.protocol(), Read, ())?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Part<Reading>> for Reader {
+    type Sends = (ToAny<Streamed<Reading>, More>,);
+
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Some(taken) = self.reading.part(turn, part)? else {
+            return Ok(());
+        };
+        self.bytes.extend_from_slice(turn.read(&taken.value.bytes));
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<HungUp, Number>> for Reader {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, number): (Answered<HungUp>, Number),
+        _: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        self.reading.answered(number);
+        if let Answered::Yes(hung_up) = answered {
+            self.hung_up.push(hung_up);
+        }
+
+        Ok(())
+    }
+}
+
+/// A program holding the process capability and a reader of pipes.
+fn piping() -> Result<Harness<Headless>, Unheard> {
+    let engine = EngineSettings { read_limit: 64 * 1024, ..EngineSettings::default() };
+
+    Harness::of(Headless::program().with_engine(engine).root_with::<Processes>(settings(60_000)).root::<Reader>())
+}
+
+/// The process and the pipe of `start`, which connects the program's stdin, its stdout, or both.
+fn piped(harness: &mut Harness<Headless>, start: &Start) -> Result<(ActorRef<Process>, ActorRef<Pipe>), Unheard> {
+    let started = self::start(harness, start)?;
+    let Started::Running { process, pipe: Piped::Connected(pipe) } = started else {
+        panic!("{} starts with a pipe: {started:?}", start.program);
+    };
+
+    Ok((process, pipe))
+}
+
+/// What the reader has read once its pipe has hung up, and how it did.
+fn read_to_the_end(harness: &mut Harness<Headless>) -> Result<(Vec<u8>, Vec<HungUp>), Unheard> {
+    let reader = harness.root::<Reader>();
+    waiting::until(BUDGET, || {
+        harness.step();
+        harness.state(reader).is_ok_and(|state| !state.hung_up.is_empty())
+    });
+    let state = harness.state(reader)?;
+
+    Ok((state.bytes.clone(), state.hung_up.clone()))
+}
+
+/// What `sh` prints of the variable `AETHEREAL_GIVEN` and of `CARGO_PKG_NAME`, which the test's runner sets in the
+/// test's own environment, started with `environment`.
+fn printed(environment: Environment) -> Result<Vec<u8>, Unheard> {
+    let mut harness = piping()?;
+    let starter = harness.protocol::<Exits>();
+    let args = ["-c", "printf %s \"$AETHEREAL_GIVEN/$CARGO_PKG_NAME\""].map(String::from).into();
+    let start = Start {
+        program: String::from("/bin/sh"),
+        args,
+        environment,
+        stdin: Stdio::Closed,
+        stdout: Stdio::Connected,
+        starter,
+    };
+    let (_, pipe) = piped(&mut harness, &start)?;
+    let reader = harness.root::<Reader>();
+    harness.tell(reader, &Follow(pipe))?;
+
+    let exited = harness.heard::<Exited>()?;
+    let (printed, hung_up) = read_to_the_end(&mut harness)?;
+
+    assert_eq!(exited.status, ExitStatus::Code(0), "sh printed: {}", exited.stderr);
+    assert_eq!(hung_up, [HungUp::Peer]);
+
+    Ok(printed)
+}
+
+#[test]
+fn bytes_written_to_cat_come_back_and_finish_ends_its_stdin_before_the_pipe_is_read() -> Result<(), Unheard> {
+    // Catches a stdin or stdout not wired to the pipe, so nothing comes back; a `Finish` that never reaches the program
+    // as the end of its stdin, so `cat` never exits within the harness's budget; and a pipe that ends with its
+    // program's process, so what the program wrote before it exited is lost to a reader that comes after.
+    let mut harness = piping()?;
+    let starter = harness.protocol::<Exits>();
+    let start = Start {
+        program: String::from("/bin/cat"),
+        args: Vec::new(),
+        environment: Environment::Inherited,
+        stdin: Stdio::Connected,
+        stdout: Stdio::Connected,
+        starter,
+    };
+    let (process, pipe) = piped(&mut harness, &start)?;
+
+    let parts = vec![harness.put(b"through ".to_vec())?, harness.put(b"cat".to_vec())?];
+    let wrote = harness.ask(pipe.protocol::<Writing, _>(), &Write { parts })?;
+    assert_eq!(harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
+    harness.tell(pipe.protocol::<Writing, _>(), &Finish)?;
+    let exited = harness.heard::<Exited>()?;
+    harness.settle();
+    assert_eq!(exited.status, ExitStatus::Code(0), "cat read its stdin to its end: {}", exited.stderr);
+    assert!(harness.state(process).is_err(), "the process has ended");
+
+    let reader = harness.root::<Reader>();
+    harness.tell(reader, &Follow(pipe))?;
+    let (bytes, hung_up) = read_to_the_end(&mut harness)?;
+
+    assert_eq!(bytes, b"through cat");
+    assert_eq!(hung_up, [HungUp::Peer], "the pipe reads to its end once the program has exited");
+
+    Ok(())
+}
+
+#[test]
+fn an_environment_of_only_given_variables_leaves_out_the_hosts_own() -> Result<(), Unheard> {
+    // Catches `Only` that adds its variables to the host's rather than replacing them, one whose variables are never
+    // set, and `Inherited` that passes the host's environment on no longer, as every engine the hub spawns needs it.
+    let given = Variable { name: String::from("AETHEREAL_GIVEN"), value: String::from("given") };
+
+    let only = printed(Environment::Only(vec![given]))?;
+    let inherited = printed(Environment::Inherited)?;
+
+    assert_eq!(only, b"given/", "only the given variable is set");
+    assert_eq!(inherited, b"/aethereal-chassis-headless", "the host's own environment is passed on");
+
+    Ok(())
+}
+
+#[test]
+fn a_closed_stdin_reads_to_its_end_at_once_while_stdout_is_piped() -> Result<(), Unheard> {
+    // Catches a closed stdin wired to the pipe all the same, or left as the engine's own, so `cat` waits on it and
+    // never exits within the harness's budget; and a pipe that never hangs up once its program has exited.
+    let mut harness = piping()?;
+    let starter = harness.protocol::<Exits>();
+    let start = Start {
+        program: String::from("/bin/cat"),
+        args: Vec::new(),
+        environment: Environment::Inherited,
+        stdin: Stdio::Closed,
+        stdout: Stdio::Connected,
+        starter,
+    };
+    let (_, pipe) = piped(&mut harness, &start)?;
+    let reader = harness.root::<Reader>();
+    harness.tell(reader, &Follow(pipe))?;
+
+    let exited = harness.heard::<Exited>()?;
+    let (bytes, hung_up) = read_to_the_end(&mut harness)?;
+
+    assert_eq!(exited.status, ExitStatus::Code(0), "cat read an empty stdin: {}", exited.stderr);
+    assert!(bytes.is_empty(), "cat had nothing to write: {bytes:?}");
+    assert_eq!(hung_up, [HungUp::Peer]);
+
+    Ok(())
 }

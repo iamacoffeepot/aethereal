@@ -1,9 +1,10 @@
-//! The process capability bootstrapped on the desktop: the native host's launcher, served to the host for its runners
-//! (ADR-0034, ADR-0040).
+//! The process capability bootstrapped on the desktop: the native host's launcher and its poller, served to the host
+//! for its runners (ADR-0034, ADR-0040).
 
 use crate::running::Desktop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 use aethereal_actor::Service;
+use aethereal_chassis_headless::Poller;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 use aethereal_chassis_headless::ProcessGroups;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
@@ -14,7 +15,7 @@ use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use std::sync::Arc;
 
 /// The process capability on the desktop, as on the headless host: each program in a process group of its own, where
-/// the host has them, and every start refused where it has none.
+/// the host has them, and every start refused where it has none; its pipes wait in the host's poller.
 impl Bootstrap<Desktop> for Processes {
     const SECTION: &'static str = "processes";
     type Settings = ProcessesSettings;
@@ -28,6 +29,10 @@ impl Bootstrap<Desktop> for Processes {
     ) -> Result<(), Unbuilt> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
         cx.serve(Service::<dyn Launcher>::of(Arc::new(ProcessGroups::default())));
+        if Poller::WATCHES_SOCKETS {
+            let readiness = cx.host().readiness();
+            cx.serve(readiness);
+        }
         cx.begin(&(), settings.config())
     }
 }
