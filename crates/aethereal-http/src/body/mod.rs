@@ -1,13 +1,12 @@
-//! A response's body, decoded from the bytes a client has read as its framing says (RFC 9112 §6, §7.1): by its
-//! length, in chunks, or until the connection closes. It decodes whatever has arrived, and keeps where it stopped, so a
-//! chunk's size line or its data may be cut anywhere between reads.
+//! A message's body, decoded from the bytes read as its framing says (RFC 9112 §6, §7.1): by its length, in chunks,
+//! or until the connection closes. A client decodes a response's body with it, and an exchange a request's. It decodes
+//! whatever has arrived, and keeps where it stopped, so a chunk's size line or its data may be cut anywhere between
+//! reads.
 
-use super::parse::Framing;
 use crate::head::{self, CRLF};
-use crate::{Failure, Limit};
 use aethereal_data::Plain;
 
-/// What is left to read of a response's body.
+/// What is left to read of a message's body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Body {
     /// `left` bytes, by its `Content-Length`.
@@ -47,6 +46,15 @@ pub struct Decoded {
     pub progress: Progress,
 }
 
+/// Why a body cannot be read on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Broken {
+    /// A chunk's line does not parse, or a chunk's data is not followed by its line ending.
+    Malformed,
+    /// A chunk's size line, or a trailer's field, runs past the most bytes a line may take.
+    LineTooLarge,
+}
+
 /// Where a line at the front of some bytes ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
@@ -57,16 +65,6 @@ enum Line {
 }
 
 impl Body {
-    /// The body a head's `framing` frames: one with none is read as a length of nothing, which ends at once.
-    pub const fn framed(framing: Framing) -> Self {
-        match framing {
-            Framing::Empty => Self::Length { left: 0 },
-            Framing::Length(left) => Self::Length { left },
-            Framing::Chunked => Self::Chunked { at: Chunk::Size },
-            Framing::Close => Self::Close,
-        }
-    }
-
     /// Reads what it can of the body from the front of `buffer`, appending the body's bytes to `out`, and says how
     /// many bytes of `buffer` it took and whether the body has ended. A chunk's size line or a trailer's field past
     /// `most_line` bytes is too large.
@@ -75,7 +73,7 @@ impl Body {
     ///
     /// Why the body cannot be read on: a chunk's line that does not parse, data not followed by its line ending, or a
     /// line past `most_line`.
-    pub fn decode(&mut self, buffer: &[u8], out: &mut Vec<u8>, most_line: u32) -> Result<Decoded, Failure> {
+    pub fn decode(&mut self, buffer: &[u8], out: &mut Vec<u8>, most_line: u32) -> Result<Decoded, Broken> {
         let mut at = 0;
         loop {
             let rest = &buffer[at..];
@@ -125,7 +123,7 @@ impl Body {
                         return Ok(Decoded { consumed: at, progress: Progress::More });
                     }
                     if !rest.starts_with(CRLF) {
-                        return Err(Failure::Malformed);
+                        return Err(Broken::Malformed);
                     }
                     at += CRLF.len();
                     *self = Self::Chunked { at: Chunk::Size };
@@ -140,8 +138,8 @@ impl Body {
                         *self = Self::Length { left: 0 };
                         return Ok(Decoded { consumed: at, progress: Progress::Done });
                     }
-                    // A trailer's field is checked and passed over: nothing a client hands on is read from it.
-                    head::header(&rest[..length]).map_err(|_| Failure::Malformed)?;
+                    // A trailer's field is checked and passed over: nothing handed on is read from it.
+                    head::header(&rest[..length]).map_err(|_| Broken::Malformed)?;
                 }
             }
         }
@@ -155,13 +153,13 @@ fn taken(rest: &[u8], left: u64) -> usize {
 
 /// Where the line at the front of `rest` ends, within `most` bytes. A carriage return or line feed inside it does not
 /// parse.
-fn line(rest: &[u8], most: u32) -> Result<Line, Failure> {
+fn line(rest: &[u8], most: u32) -> Result<Line, Broken> {
     let most = usize::try_from(most).unwrap_or(usize::MAX);
     let searched = &rest[..rest.len().min(most.saturating_add(CRLF.len()))];
     let Some(length) = head::find(searched, CRLF) else {
         let is_past = rest.len() >= most.saturating_add(CRLF.len());
         let partial = if is_past {
-            Err(Failure::TooLarge(Limit::Head))
+            Err(Broken::LineTooLarge)
         } else {
             Ok(Line::Partial)
         };
@@ -169,25 +167,25 @@ fn line(rest: &[u8], most: u32) -> Result<Line, Failure> {
     };
     let is_bare = rest[..length].iter().any(|&byte| byte == b'\r' || byte == b'\n');
     if is_bare {
-        return Err(Failure::Malformed);
+        return Err(Broken::Malformed);
     }
 
     Ok(Line::Whole { length })
 }
 
 /// The size a chunk's size line gives, in hexadecimal digits, past which its extensions are passed over.
-fn size_of(line: &[u8]) -> Result<u64, Failure> {
+fn size_of(line: &[u8]) -> Result<u64, Broken> {
     let digits = line.iter().take_while(|byte| byte.is_ascii_hexdigit()).count();
     let (size, extensions) = line.split_at(digits);
     let extended = extensions.first().is_none_or(|&byte| byte == b';' || byte == b' ' || byte == b'\t');
     let clean = extensions.iter().all(|&byte| byte == b'\t' || !byte.is_ascii_control());
     let is_sized = digits > 0 && extended && clean;
     if !is_sized {
-        return Err(Failure::Malformed);
+        return Err(Broken::Malformed);
     }
-    let size = str::from_utf8(size).map_err(|_| Failure::Malformed)?;
+    let size = str::from_utf8(size).map_err(|_| Broken::Malformed)?;
 
-    u64::from_str_radix(size, 16).map_err(|_| Failure::Malformed)
+    u64::from_str_radix(size, 16).map_err(|_| Broken::Malformed)
 }
 
 #[cfg(test)]

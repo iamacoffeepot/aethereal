@@ -1,6 +1,7 @@
 //! A response's head, parsed from the bytes a client has read, with every limit on it checked before anything goes
 //! further (ADR-0035): its status line, its headers, and how its body is framed.
 
+use crate::body::{Body, Chunk};
 use crate::head::{self, Ends, Malformed};
 use crate::{Failure, Header, Limit};
 
@@ -27,6 +28,18 @@ pub enum Framing {
     Chunked,
     /// Neither: it runs until the connection closes.
     Close,
+}
+
+impl Framing {
+    /// The body it frames: one with none is read as a length of nothing, which ends at once.
+    pub const fn body(self) -> Body {
+        match self {
+            Self::Empty => Body::Length { left: 0 },
+            Self::Length(left) => Body::Length { left },
+            Self::Chunked => Body::Chunked { at: Chunk::Size },
+            Self::Close => Body::Close,
+        }
+    }
 }
 
 /// What the front of a client's buffer holds.

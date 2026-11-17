@@ -29,7 +29,7 @@ fn a_head_parses_to_its_method_path_query_and_lowercased_headers_and_says_where_
     assert_eq!(head.method, Method::Post);
     assert_eq!((head.path.as_str(), head.query.as_str()), ("/mcp", "session=7"));
     assert_eq!(head.headers, [Header::new("host", "here"), Header::new("content-length", "4")]);
-    assert_eq!(head.length, 4);
+    assert_eq!(head.framing, Framing::Length(4));
     assert_eq!(&bytes[consumed..], b"body");
     assert!(!head.closes, "HTTP/1.1 keeps the connection");
 }
@@ -53,6 +53,17 @@ fn a_head_says_when_its_connection_closes_and_when_its_client_waits_to_send_the_
 }
 
 #[test]
+fn a_chunked_request_is_framed_by_its_chunks() {
+    // Catches `chunked` missed in another case, so the request is refused, or framed as having no body, so its chunks
+    // are read as the next request.
+    let Parsed::Head { head, .. } = front(b"POST / HTTP/1.1\r\nTransfer-Encoding: Chunked\r\n\r\n") else {
+        panic!("a chunked head parses");
+    };
+
+    assert_eq!(head.framing, Framing::Chunked);
+}
+
+#[test]
 fn a_head_not_yet_whole_waits_and_one_past_the_limit_is_refused() {
     // Catches a partial head parsed as whole, and a head that never ends held without bound.
     let partial = front(b"GET / HTTP/1.1\r\nHost: here\r\n");
@@ -64,11 +75,15 @@ fn a_head_not_yet_whole_waits_and_one_past_the_limit_is_refused() {
 
 #[test]
 fn each_head_a_server_must_not_take_is_refused_with_its_reason() {
-    // Catches each rule of the limits table let through: request smuggling by `Transfer-Encoding` or a doubled
-    // `Content-Length`, a body past its limit read before it is refused, a header line that a folding or bare line feed
+    // Catches each rule of the limits table let through: request smuggling by a `Transfer-Encoding` beside a
+    // `Content-Length`, one in HTTP/1.0, or a doubled `Content-Length`; a coding the exchange does not decode, alone or
+    // before `chunked`, read as if the body were not coded; a body past its limit read before it is refused; a header line that a folding or bare line feed
     // would splice, a target in absolute form, and a method or version answered as if malformed.
     let refused = [
-        (b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(), Refusal::Unimplemented),
+        (b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n".as_slice(), Refusal::Malformed),
+        (b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n", Refusal::Malformed),
+        (b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n", Refusal::Unimplemented),
+        (b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", Refusal::Unimplemented),
         (b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n", Refusal::Malformed),
         (b"POST / HTTP/1.1\r\nContent-Length: +1\r\n\r\n", Refusal::Malformed),
         (b"POST / HTTP/1.1\r\nContent-Length: 17\r\n\r\n", Refusal::BodyTooLarge),
