@@ -55,4 +55,6 @@ pub enum Gathered {
     /// It names no body waiting to be read: another gather reads it, it has been read, or its request is not its
     /// connection's request out.
     Busy,
+    /// An actor layer did not answer a part of it, and the stack answers the request itself.
+    Unpassed,
 }

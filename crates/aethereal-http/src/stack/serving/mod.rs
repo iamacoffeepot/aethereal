@@ -1,10 +1,13 @@
 //! What a stack holds and does (ADR-0035): its listener, an entry for each open connection, and its pure layers'
-//! template. Each of the stack's handlers of HTTP's and TCP's kinds is one call into it.
+//! template. Each of the stack's handlers of HTTP's and TCP's kinds, and of its actor layers' answers, is one call into
+//! it.
 
 mod body;
 mod connection;
+mod parked;
 mod respond;
 
+use super::actor::{InboundPart, InboundParts, OutboundPart, OutboundParts, Parked, ParkedPart, held};
 use super::{
     BodyHandle, Credentials, Entered, Gathered, Gathering, Head, Layer, LayerList, Layers, Request, Response, Slot,
     Stack, StackSettings,
@@ -13,23 +16,28 @@ use crate::head::Malformed;
 use crate::request_head::{self, Framing, Parsed, Refusal, RequestHead};
 use crate::{Method, Status};
 use aethereal_actor::{
-    ActorRef, Actors, Answer, Answered, AnswersByType, Asks, Beginning, Conforms, Due, Fault, Handled, Handles, Level,
-    Lists, More, Number, Open, Part, Path, Receives, Slept, Streamed, Streams, Taken, ToAny, ToSender, ToType, Turn,
-    Unanswered, path,
+    ActorRef, Actors, Answer, Answered, AnswersByType, Asks, At, Beginning, Conforms, Due, Fault, Handled, Handles,
+    Level, Lists, More, Number, Open, Part, Path, Receives, Slept, Streamed, Streams, Taken, Time, ToAny, ToSender,
+    ToType, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Encode, Kind, Plain};
 use aethereal_tcp::{
     Accept, Accepted, Accepting, Framing as Chunking, HungUp, Incoming, Listen, Listener, Listening, Read, Reading,
     Shut, Tcp, Unbound, Write, Writing, Wrote,
 };
-use connection::{Connection, Inflow, Out, Phase};
+use connection::{Connection, Entering, Inflow, Out, Passing, Phase, Returning};
 use core::mem;
 use core::time::Duration;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 /// What a stack's handlers send, for its layers `T`: what one call into [`Serving`] may send, from any of them. Each of
-/// the stack's handlers of HTTP's and TCP's kinds, and its `begin`, lists it as its sends.
+/// the stack's handlers of HTTP's and TCP's kinds, and of its actor layers' answers, and its `begin`, lists it as its
+/// sends.
+///
+/// Its actor layers' asks of a head, in and out, stand at a place for each layer, as [`LayerList::Asked`] lists them.
+/// A body's part is asked through a cast, as whether a layer takes it is found as it reaches the layer, so every stack
+/// lists those two asks, and with them the answer [`Answer<PartStep, ParkedPart>`](super::PartStep).
 pub type StackSends<T> = (
     Asks<Path<Tcp>, Listen, Binding>,
     Asks<Streamed<Accepting>, Open<Accepting>, Number>,
@@ -41,7 +49,22 @@ pub type StackSends<T> = (
     Asks<Writing, Write, Sending>,
     Asks<ActorRef<<T as LayerList>::Handler>, Request<<T as LayerList>::Attached, ()>, Answering>,
     ToSender<Gathered>,
+    Asks<InboundParts, InboundPart, ParkedPart>,
+    Asks<OutboundParts, OutboundPart, ParkedPart>,
+    AskedAt<T, 0>,
+    AskedAt<T, 1>,
+    AskedAt<T, 2>,
+    AskedAt<T, 3>,
+    AskedAt<T, 4>,
+    AskedAt<T, 5>,
+    AskedAt<T, 6>,
+    AskedAt<T, 7>,
+    AskedAt<T, 8>,
+    AskedAt<T, 9>,
 );
+
+/// What a stack's sends list at `PLACE` among its actor layers' asks.
+type AskedAt<T, const PLACE: usize> = <<T as LayerList>::Asked as Slot<At<PLACE>>>::Item;
 
 /// The turn of one of a stack's handlers.
 type Stepping<'t, S, T> = Turn<'t, S, StackSends<T>>;
@@ -129,8 +152,8 @@ pub struct Serving<S, T: LayerList> {
     connections: BTreeMap<u64, Connection<T::Forms>>,
     /// How many connections it has accepted: the number of the next.
     accepted: u64,
-    /// How many requests it has asked its handler: the number of the next.
-    asked: u64,
+    /// How many requests it has taken in through its layers: the number of the next.
+    requests: u64,
 }
 
 /// The connections a stack's listener may accept ahead of the stack taking them: four.
@@ -173,7 +196,7 @@ where
             reading: Streams::new(window),
             connections: BTreeMap::new(),
             accepted: 0,
-            asked: 0,
+            requests: 0,
         })
     }
 
@@ -332,7 +355,7 @@ where
         self.close(connection, &Gathered::HungUp(HungUp::Shut), turn)
     }
 
-    /// The handler answered a request: its response goes out through every pure layer, in reverse, and is written. A
+    /// The handler answered a request: its response goes out through every layer, in reverse, and is written. A
     /// handler that has ended is `503`, and one that failed, let the request go, or did not answer, `500`. An answer to
     /// a request the connection no longer waits on is passed over.
     ///
@@ -359,7 +382,8 @@ where
             return Ok(());
         };
 
-        // A body its handler did not read whole is left unread, so where the next request starts is not known.
+        // A body its handler did not read whole, or whose part an actor layer holds, is left unread, so where the next
+        // request starts is not known.
         let cut = match body {
             Inflow::Bodiless { .. } | Inflow::Read { .. } => false,
             Inflow::Unread { .. } => true,
@@ -377,10 +401,9 @@ where
                 Response::empty(Status::InternalServerError)
             }
         };
-        self.respond(number, T::PURE, &head, response, owed, turn)?;
+        self.respond(number, Returning::new(request, head, response, owed, T::LAYERS), turn)?;
 
-        self.release(number, turn)?;
-        self.advance(number, turn)
+        self.settle(number, turn)
     }
 
     /// The sleep that times a connection's phase has come, when it still stands: a request that did not come, or came
@@ -412,6 +435,12 @@ where
         // not yet come to: it sleeps again until then.
         let stall = Duration::from_millis(u64::from(self.settings.stall_within_millis));
         let late = match &connection.phase {
+            // A request parked at an actor layer is timed by its ask.
+            Phase::Entering(_)
+            | Phase::Returning(_)
+            | Phase::Out(Out { body: Inflow::Gathering { passing: Passing::Parked { .. }, .. }, .. }) => {
+                return Ok(());
+            }
             Phase::Out(Out { body: Inflow::Gathering { moved, .. }, .. }) if turn.now() < *moved + stall => Late::Not,
             Phase::Idle { .. }
             | Phase::Head { .. }
@@ -463,7 +492,7 @@ where
             match connection.phase {
                 Phase::Idle { .. } | Phase::Head { .. } => {}
                 Phase::Out(Out { body: Inflow::Gathering { .. }, .. }) => return self.gathered(number, turn),
-                Phase::Out(_) | Phase::Closing => return Ok(()),
+                Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Closing => return Ok(()),
             }
 
             // A stack takes no limit on a body: its reader's gather names one.
@@ -484,9 +513,9 @@ where
         }
     }
 
-    /// Passes the request `parsed` in through the pure layers of the connection numbered `number`: on to the handler
-    /// when every layer passes it, or back out from the layer that answers it. Credentials sent twice, or that do not
-    /// decode, are refused.
+    /// Passes the request `parsed` in through the layers of the connection numbered `number`: on to the handler when
+    /// every layer passes it, back out from the layer that answers it, or parked at the actor layer asked about it.
+    /// Credentials sent twice, or that do not decode, are refused.
     fn enter<Is>(&mut self, number: u64, parsed: RequestHead, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault>
     where
         S: Conforms<Gathering, Is>,
@@ -495,33 +524,73 @@ where
         let Ok(credentials) = Credentials::taken(&mut headers) else {
             return self.refuse(number, Refusal::from(Malformed), turn);
         };
+        let due = self.due(turn);
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
+        let request = self.requests;
+        self.requests += 1;
         let head = Head { method, path, query, headers, credentials, peer: connection.peer };
         let has_body = framing != Framing::Empty;
         let owed = Owed { closes, head_only: method == Method::Head, continues: expects_continue && has_body };
+        let entered = T::inbound(&mut connection.layers, &head, turn, Parked::new(number, request), due)?;
 
-        match T::inbound(&mut connection.layers, &head) {
-            Entered::Passed(attached) => self.ask(number, head, framing, attached, owed, turn),
+        self.went_in(number, Entering { request, head, framing, owed, at: 0 }, entered, turn)
+    }
+
+    /// The request `entering` has walked in as far as `entered` says: on to the handler, back out from the layer that
+    /// answered it, or parked at the actor layer asked about it.
+    fn went_in<Is>(
+        &mut self,
+        number: u64,
+        entering: Entering,
+        entered: Entered<T::Attached>,
+        turn: &mut Stepping<'_, S, T>,
+    ) -> Result<(), Fault>
+    where
+        S: Conforms<Gathering, Is>,
+    {
+        match entered {
+            Entered::Passed(attached) => self.ask(number, entering, attached, turn),
             Entered::Answered { at, response } => {
+                let Entering { request, head, framing, owed, .. } = entering;
                 // The body a layer answered before is not read, so where the next request starts is not known.
-                let owed = Owed { closes: owed.closes || has_body, ..owed };
-                self.respond(number, at, &head, response, owed, turn)
+                let owed = Owed { closes: owed.closes || framing != Framing::Empty, ..owed };
+                self.respond(number, Returning::new(request, head, response, owed, at), turn)
+            }
+            Entered::Parked { at } => {
+                let Some(connection) = self.connections.get_mut(&number) else {
+                    return Ok(());
+                };
+                let parked = Entering { at: held(at), ..entering };
+                connection.enter(Phase::Entering(parked), number, &self.settings, turn)
             }
         }
     }
 
-    /// Asks the handler the request whose head is `head`, its body framed as `framing`, with what the layers
-    /// `attached`, within no deadline: a body may take as long as it keeps moving, which the stack times itself, and
-    /// once it is read the stack times the answer (ADR-0041).
+    /// Settles the connection numbered `number` once a step of its request is taken: when its response is written and
+    /// it is kept, it is granted the credit withheld while the request was out, and what it buffered is parsed.
+    fn settle<Is>(&mut self, number: u64, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault>
+    where
+        S: Conforms<Gathering, Is>,
+    {
+        let is_idle = self.connections.get(&number).is_some_and(Connection::is_idle);
+        if !is_idle {
+            return Ok(());
+        }
+        self.release(number, turn)?;
+
+        self.advance(number, turn)
+    }
+
+    /// Asks the handler the request `entering` names, with what the layers `attached`, within no deadline: a body may
+    /// take as long as it keeps moving, which the stack times itself, and once it is read the stack times the answer
+    /// (ADR-0041).
     fn ask<Is>(
         &mut self,
         number: u64,
-        head: Head,
-        framing: Framing,
+        entering: Entering,
         attached: T::Attached,
-        owed: Owed,
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
@@ -530,8 +599,7 @@ where
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
-        let request = self.asked;
-        self.asked += 1;
+        let Entering { request, head, framing, owed, .. } = entering;
         let body = BodyHandle::new(framing.length(), self.me.protocol(), request);
         let asked = Request {
             method: head.method,
@@ -584,12 +652,19 @@ where
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
-        let Phase::Out(Out { head, owed, .. }) = mem::replace(&mut connection.phase, Phase::Closing) else {
+        let Phase::Out(Out { request, head, owed, .. }) = mem::replace(&mut connection.phase, Phase::Closing) else {
             return Ok(());
         };
         let response = Response::empty(Status::GatewayTimeout);
 
-        self.respond(number, T::PURE, &head, response, Owed { closes: true, ..owed }, turn)
+        let owed = Owed { closes: true, ..owed };
+
+        self.respond(number, Returning::new(request, head, response, owed, T::LAYERS), turn)
+    }
+
+    /// When an ask of an actor layer made now is due: `answer_within_millis` from now.
+    pub(super) fn due(&self, turn: &Stepping<'_, S, T>) -> Time {
+        turn.now() + Duration::from_millis(u64::from(self.settings.answer_within_millis))
     }
 
     /// Grants the connection numbered `number` the credit withheld while a request was out.

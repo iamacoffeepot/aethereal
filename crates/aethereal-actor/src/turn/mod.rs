@@ -24,10 +24,10 @@ use crate::resource::Reach;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf, Parented,
-    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber, Seated, Seats,
-    Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Unreadable, Untaken, Watchable, What, Within,
-    Written,
+    Keeping, Keeps, Kinds, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
+    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
+    Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Unreadable, Untaken, Watchable,
+    What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -684,14 +684,13 @@ impl Seat<'_> {
         self.table.moves()
     }
 
-    /// The reference, to the tuple of kinds `P`, when the declaration of its actor's type lists every kind of `P`:
-    /// none when one is missing, or the table holds no such actor (ADR-0016). A type this turn cannot read itself is
-    /// read by the table.
-    fn cast<P: Kinds>(&self, reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
+    /// The reference, to `P`, whose kinds are `kinds`, when the declaration of its actor's type lists every one of
+    /// them: none when one is missing, or the table holds no such actor (ADR-0016). A type this turn cannot read
+    /// itself is read by the table.
+    fn cast<P>(&self, kinds: &[KindId], reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
         let id = reference.id();
-        let lists = self
-            .declared_at(id)
-            .map_or_else(|| self.table.lists(id, P::KINDS), |declared| declared.lists_all(P::KINDS));
+        let lists =
+            self.declared_at(id).map_or_else(|| self.table.lists(id, kinds), |declared| declared.lists_all(kinds));
 
         lists.then(|| ProtocolRef::new(reference.seated()))
     }
@@ -2388,12 +2387,12 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
         self.seat.moves()
     }
 
-    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
-    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
-    /// checked again.
+    /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
+    /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
+    /// answers with is not checked again.
     #[must_use]
-    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(reference.into())
+    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
     }
 }
 
@@ -2834,12 +2833,12 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.resolve(path)
     }
 
-    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
-    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
-    /// checked again.
+    /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
+    /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
+    /// answers with is not checked again.
     #[must_use]
-    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(reference.into())
+    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
     }
 }
 
@@ -3145,11 +3144,11 @@ impl<Me, S> Ending<'_, Me, S> {
         self.seat.resolve(path)
     }
 
-    /// The actor `reference` refers to, as a reference to the tuple of kinds `P`, when its type lists every kind of
-    /// `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it answers with is not
-    /// checked again.
+    /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
+    /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
+    /// answers with is not checked again.
     #[must_use]
-    pub fn cast<P: Kinds>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(reference.into())
+    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
     }
 }
