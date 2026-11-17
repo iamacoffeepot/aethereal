@@ -20,7 +20,7 @@ So every test so far writes an actor of its own to stand in for the caller, and 
 
 The obvious fix, one harness actor that runs whatever a test orders, fails on that last point. An actor handles each answer kind through its own `Handles<Answer<O, C>>` impl, fixed when it is compiled, so one generic actor cannot receive whatever answer kind a test asks for.
 
-A test also needs to be asked. HTTP hands each request to a handler named by a `ProtocolRef<Handling>` (ADR-0035: `Serve::handler`), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
+A test also needs to be asked. An HTTP stack asks its handler, the last of its stages, a `Request<A, C>` (ADR-0035), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
 
 ## Decision
 
@@ -33,14 +33,16 @@ Because it sits in a seat (`Holding::Here`), everything the engine keeps for an 
 **A harness is a host and its outside, which a test owns and steps.**
 
 ```rust
-let mut harness = Harness::of(Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root::<Http>())?;
-let http = harness.root::<Http>();                                    // ActorRef<Http>, proven when the program was built
-let handler = harness.protocol::<Handling>();                         // ProtocolRef<Handling> naming the outside
+let program = Headless::program().with_cycle::<(Tick,)>().root::<Tcp>();
+let mut harness = Harness::of(program)?;
+let tcp = harness.root::<Tcp>();                                      // ActorRef<Tcp>, proven when the program was built
+let listen = Listen { port: 0, interface: Interface::Loopback, framing: Framing::Chunks { most_bytes: 1024 } };
 
-let serving = harness.ask(http, &Serve { port: 0, handler })?;        // Asked<Served>: a ticket typed by the answer
-let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else { panic!("bound") };
+let listening = harness.ask(tcp, &listen)?;                           // Asked<Listening>: a ticket typed by the answer
+let Answered::Yes(Listening::Bound { port, .. }) = harness.answer(listening)? else { panic!("bound") };
 
-let request = harness.asked::<Request>()?;                            // Held<Request>: a request asked of the outside
+// .. a stack of the test's own, whose last stage is the handler the outside stands in for (ADR-0035)
+let request = harness.asked::<Request<(), ()>>()?;                    // Held<Request<(), ()>>: a request asked of the outside
 harness.reply(request, &Response::new(Status::Ok, "text/plain", b"hi".to_vec()))?;
 ```
 
