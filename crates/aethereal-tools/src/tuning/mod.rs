@@ -7,8 +7,8 @@ mod tests;
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, PathTo,
-    ProtocolRef, ReadTuning, ToSender, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held,
+    PathTo, ProtocolRef, ReadTuning, Receives, ToSender, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
 };
 use aethereal_data::config::{Declared, Settings};
 use aethereal_data::{
@@ -279,6 +279,7 @@ impl<L: TunableList> Tool for TuningTool<L> {
 /// Reads each root's tuning for `list_tuning`, or the one root's for `tune`, and holds the call.
 impl<L: TunableList> Handles<Call> for TuningTool<L> {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let number = self.calls.next;
@@ -333,7 +334,7 @@ impl<L: TunableList> Handles<Call> for TuningTool<L> {
 }
 
 /// A root's tuning, read: kept toward a `list_tuning`, or laid under the fields a `tune` sets and sent back whole.
-impl<L: TunableList> Handles<Answer<Tuning, Reading>> for TuningTool<L> {
+impl<L: TunableList> Receives<Answer<Tuning, Reading>> for TuningTool<L> {
     type Sends = Sends;
 
     fn handle(
@@ -349,7 +350,7 @@ impl<L: TunableList> Handles<Answer<Tuning, Reading>> for TuningTool<L> {
 }
 
 /// A tuning sent whole was taken, or refused: the `tune` is answered with the fields it set as they stand, or why.
-impl<L: TunableList> Handles<Answer<Tuned, Setting>> for TuningTool<L> {
+impl<L: TunableList> Receives<Answer<Tuned, Setting>> for TuningTool<L> {
     type Sends = Sends;
 
     fn handle(

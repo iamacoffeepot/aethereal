@@ -3,8 +3,8 @@
 use super::{Harness, Ran, Unheard};
 use crate::Engine;
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef, ToAny,
-    ToSender, ToType, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
+    Receives, ToAny, ToSender, ToType, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
@@ -75,6 +75,7 @@ impl Carries<Silence> for Doubler {
 
 impl Handles<Ping> for Doubler {
     type Sends = (ToSender<Pong>,);
+    type From = Anyone;
 
     fn handle(&mut self, Ping(value): Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.reply(&Pong(value * 2))?)
@@ -83,6 +84,7 @@ impl Handles<Ping> for Doubler {
 
 impl Handles<Silence> for Doubler {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Silence, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -130,6 +132,7 @@ impl Actor for Relay {
 
 impl Handles<Note> for Relay {
     type Sends = (ToAny<Listening, Note>,);
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.to(self.report).send(&note).map(|_| ())?)
@@ -138,13 +141,14 @@ impl Handles<Note> for Relay {
 
 impl Handles<Ping> for Relay {
     type Sends = (Asks<Listening, Ping, Waiting>,);
+    type From = Anyone;
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         Ok(turn.to(self.report).ask(&ping, &Waiting).map(|_| ())?)
     }
 }
 
-impl Handles<Answer<Pong, Waiting>> for Relay {
+impl Receives<Answer<Pong, Waiting>> for Relay {
     type Sends = (ToAny<Listening, Note>,);
 
     fn handle(
@@ -372,6 +376,7 @@ impl Actor for Passer {
 
 impl Handles<Pass> for Passer {
     type Sends = (ToType<Self, Pass>,);
+    type From = Anyone;
 
     fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.seen.push(left);
@@ -520,6 +525,7 @@ impl Actor for Caster {
 
 impl Handles<Note> for Caster {
     type Sends = (ToAny<(Note,), Note>,);
+    type From = Anyone;
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if let Some(sender) = turn.cast(turn.sender()) {

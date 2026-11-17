@@ -3,7 +3,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Render, Start, Tells,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Render, Start, Tells,
     Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -210,7 +210,7 @@ fn look(millis: u64) -> Vec<u8> {
     bytes([scale.to_bits(), 0, 0, 0])
 }
 
-impl Handles<On<Start>> for Drawer {
+impl Receives<On<Start>> for Drawer {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -223,7 +223,7 @@ impl Handles<On<Start>> for Drawer {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Drawer {
+impl Receives<Answer<Shaped, Nothing>> for Drawer {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
 
     fn handle(
@@ -259,7 +259,7 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Handles<Answer<Meshed, Learned>> for Drawer {
+impl Receives<Answer<Meshed, Learned>> for Drawer {
     type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
 
     fn handle(
@@ -296,7 +296,7 @@ impl Handles<Answer<Meshed, Learned>> for Drawer {
     }
 }
 
-impl Handles<Answer<Programmed, MadeMesh>> for Drawer {
+impl Receives<Answer<Programmed, MadeMesh>> for Drawer {
     type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
 
     fn handle(
@@ -322,7 +322,7 @@ impl Handles<Answer<Programmed, MadeMesh>> for Drawer {
     }
 }
 
-impl Handles<Answer<Instanced, MadeProgram>> for Drawer {
+impl Receives<Answer<Instanced, MadeProgram>> for Drawer {
     type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
 
     fn handle(
@@ -348,7 +348,7 @@ impl Handles<Answer<Instanced, MadeProgram>> for Drawer {
     }
 }
 
-impl Handles<Answer<Uniformed, MadeInstances>> for Drawer {
+impl Receives<Answer<Uniformed, MadeInstances>> for Drawer {
     type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
 
     fn handle(
@@ -375,7 +375,7 @@ impl Handles<Answer<Uniformed, MadeInstances>> for Drawer {
     }
 }
 
-impl Handles<Answer<Placed, MadeAll>> for Drawer {
+impl Receives<Answer<Placed, MadeAll>> for Drawer {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(
@@ -398,7 +398,7 @@ impl Handles<Answer<Placed, MadeAll>> for Drawer {
     }
 }
 
-impl Handles<On<Tick>> for Drawer {
+impl Receives<On<Tick>> for Drawer {
     type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
 
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {

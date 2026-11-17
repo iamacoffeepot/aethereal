@@ -18,7 +18,9 @@ use crate::drag::{Dropped, Drops};
 use crate::input::{Event, First, Key, Raised};
 use crate::screen::{Clipping, Copying, Heard, ImeAsked, Pasting};
 use crate::tree::Tree;
-use aethereal_actor::{Actor, Allows, Answer, Asks, DeclaredBy, Fault, Handles, Level, Path, Sends, ToAny, Turn, path};
+use aethereal_actor::{
+    Actor, Allows, Answer, Asks, DeclaredBy, Fault, Level, Path, Receives, Sends, ToAny, Turn, path,
+};
 use aethereal_window::{AllowIme, Copied, Pasted, ReadClipboard, Windows, WriteClipboard};
 
 /// What a screen writes by hand beside the methods its events call: what those methods and its `key` may send, the
@@ -137,7 +139,7 @@ pub fn take_in<A, I, J>(
     turn: &mut Turn<'_, A, <A as Controls>::Sends>,
 ) -> Result<Took, Fault>
 where
-    A: View + Handles<Answer<Pasted, Pasting>> + Handles<Answer<Copied, Copying>>,
+    A: View + Receives<Answer<Pasted, Pasting>> + Receives<Answer<Copied, Copying>>,
     <A as Controls>::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
 {
     // A copy of the selection is taken in before, where the view is built again to copy it (`screen!`).

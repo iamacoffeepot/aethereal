@@ -6,7 +6,7 @@
 use super::*;
 use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, Opening, WindowFeed};
-use aethereal_actor::{ActorRef, Actors, Answered, Path, Table, Tells, Time, path};
+use aethereal_actor::{ActorRef, Actors, Answered, Anyone, Path, Table, Tells, Time, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
 use aethereal_substrate::{Clock, Engine, Setup};
@@ -74,6 +74,7 @@ impl Actor for Listener {
 
 impl Handles<Event> for Listener {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())

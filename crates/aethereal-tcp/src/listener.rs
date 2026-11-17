@@ -5,8 +5,8 @@
 use crate::ready::{Ready, Wait};
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
-    Handles, More, Open, Part, Serving, Stream, StreamKey, ToAny, ToSender, ToType, Turn, Unsent,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
+    Handles, More, Open, Part, Receives, Serving, Stream, StreamKey, ToAny, ToSender, ToType, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -121,6 +121,7 @@ impl Actor for Listener {
 
 impl Handles<Open<Accepting>> for Listener {
     type Sends = (ToSender<Unbound>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, Accept) = self.accepting.open(turn, open)?;
@@ -138,6 +139,7 @@ impl Handles<Open<Accepting>> for Listener {
 
 impl Handles<More> for Listener {
     type Sends = (Parts,);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.accepting.more(turn, &more);
@@ -148,6 +150,7 @@ impl Handles<More> for Listener {
 
 impl Handles<Enough> for Listener {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         if let Some(stopped) = self.accepting.stop(turn, &enough) {
@@ -159,7 +162,7 @@ impl Handles<Enough> for Listener {
     }
 }
 
-impl Handles<Ended> for Listener {
+impl Receives<Ended> for Listener {
     type Sends = (Parts,);
 
     /// An acceptor that ended accepts no more; a connection that ended leaves room for another, which it accepts.
@@ -177,6 +180,7 @@ impl Handles<Ended> for Listener {
 
 impl Handles<Shut> for Listener {
     type Sends = (ToType<Accepted, Shut>,);
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         for connection in self.accepted.values() {
@@ -187,7 +191,7 @@ impl Handles<Shut> for Listener {
     }
 }
 
-impl Handles<Answer<Readied, Interest>> for Listener {
+impl Receives<Answer<Readied, Interest>> for Listener {
     type Sends = (Parts,);
 
     /// Its socket has a connection to accept, or may have; or the host has no poller, and it can never wait for one,

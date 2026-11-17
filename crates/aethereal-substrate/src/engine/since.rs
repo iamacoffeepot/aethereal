@@ -128,6 +128,10 @@ impl Table for Since<'_> {
         stood.or_else(|| Table::declared(self.table, id))
     }
 
+    fn path_of(&self, id: ActorId) -> Option<ActorPath> {
+        self.table.path(id)
+    }
+
     fn blob(&self, id: BlobId) -> Option<&[u8]> {
         self.blobs.read(id)
     }

@@ -6,8 +6,8 @@ mod tests;
 
 use crate::windows::{ListWindows, ModeSet, MoveWindow, Moved, ResizeWindow, Resized, SetMode, WindowList, Windows};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -111,6 +111,7 @@ impl Tool for WindowTool {
 /// Holds the call, and asks the window root what it was called with: answered once the root has answered.
 impl Handles<Call> for WindowTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let placing = Placing { call: self.next };
@@ -154,7 +155,7 @@ impl Handles<Call> for WindowTool {
     }
 }
 
-impl Handles<Answer<WindowList, Placing>> for WindowTool {
+impl Receives<Answer<WindowList, Placing>> for WindowTool {
     type Sends = Sends;
 
     fn handle(
@@ -166,7 +167,7 @@ impl Handles<Answer<WindowList, Placing>> for WindowTool {
     }
 }
 
-impl Handles<Answer<Resized, Placing>> for WindowTool {
+impl Receives<Answer<Resized, Placing>> for WindowTool {
     type Sends = Sends;
 
     fn handle(
@@ -178,7 +179,7 @@ impl Handles<Answer<Resized, Placing>> for WindowTool {
     }
 }
 
-impl Handles<Answer<Moved, Placing>> for WindowTool {
+impl Receives<Answer<Moved, Placing>> for WindowTool {
     type Sends = Sends;
 
     fn handle(
@@ -190,7 +191,7 @@ impl Handles<Answer<Moved, Placing>> for WindowTool {
     }
 }
 
-impl Handles<Answer<ModeSet, Placing>> for WindowTool {
+impl Receives<Answer<ModeSet, Placing>> for WindowTool {
     type Sends = Sends;
 
     fn handle(

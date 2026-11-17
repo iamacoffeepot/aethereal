@@ -7,12 +7,13 @@ use super::session::{Activity, Flow, Life, Stdin};
 use super::transcript::{Ended, Entry, Note};
 use super::{Acts, Does, Feed, Sessions, Typing};
 use crate::{Attached, Attaching, Detached, Event, EventsDone, Logging, LogsDone, Output, Watching};
-use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Number, Part, Taken, Turn};
+use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, Level, Number, Part, Receives, Taken, Turn};
 use aethereal_tcp::{Write, Wrote};
 use core::mem;
 
 impl Handles<Part<Logging>> for Sessions {
     type Sends = Acts;
+    type From = Anyone;
 
     /// A piece of a container's output: each line it ends goes into the session's transcript, and says what it says
     /// of the session's turns.
@@ -47,7 +48,7 @@ impl Handles<Part<Logging>> for Sessions {
     }
 }
 
-impl Handles<Answer<LogsDone, Number>> for Sessions {
+impl Receives<Answer<LogsDone, Number>> for Sessions {
     type Sends = Acts;
 
     /// A container's logs ended, as they do once it stops: its state is asked for.
@@ -68,6 +69,7 @@ impl Handles<Answer<LogsDone, Number>> for Sessions {
 
 impl Handles<Part<Attaching>> for Sessions {
     type Sends = Acts;
+    type From = Anyone;
 
     /// The container's stdin, attached: each line waiting is written. Its output is read from its logs instead, so
     /// what the attach carries is taken and let go.
@@ -100,7 +102,7 @@ impl Handles<Part<Attaching>> for Sessions {
     }
 }
 
-impl Handles<Answer<Detached, Number>> for Sessions {
+impl Receives<Answer<Detached, Number>> for Sessions {
     type Sends = Acts;
 
     /// A container's attach ended: its state is asked for.
@@ -273,7 +275,7 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<Wrote, Typing>> for Sessions {
+impl Receives<Answer<Wrote, Typing>> for Sessions {
     type Sends = Acts;
 
     /// A write to a session's stdin: one that did not go is noted in its transcript.
@@ -295,6 +297,7 @@ impl Handles<Answer<Wrote, Typing>> for Sessions {
 
 impl Handles<Part<Watching>> for Sessions {
     type Sends = Acts;
+    type From = Anyone;
 
     /// An event of a container carrying the hub's label: a session's that died has ended.
     fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
@@ -321,7 +324,7 @@ impl Handles<Part<Watching>> for Sessions {
     }
 }
 
-impl Handles<Answer<EventsDone, Number>> for Sessions {
+impl Receives<Answer<EventsDone, Number>> for Sessions {
     type Sends = Acts;
 
     /// Docker's events ended: a container that dies is then found as its logs end.

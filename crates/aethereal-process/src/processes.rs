@@ -3,8 +3,8 @@
 use crate::jobs::{Launch, Launched, Launching, Raise, Raised, Raising};
 use crate::{Environment, Exits, Invocation, Pipe, PipeConfig, Process, ProcessConfig, Signal, Stdio};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level, ProtocolRef,
-    ToSender, ToType, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
+    ProtocolRef, Receives, ToSender, ToType, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::Shut;
@@ -100,6 +100,7 @@ impl Actor for Processes {
 
 impl Handles<Start> for Processes {
     type Sends = (ToSender<Started>,);
+    type From = Anyone;
 
     fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let held = turn.hold()?;
@@ -119,7 +120,7 @@ impl Handles<Start> for Processes {
     }
 }
 
-impl Handles<Answer<Launched, Launching>> for Processes {
+impl Receives<Answer<Launched, Launching>> for Processes {
     type Sends = (ToType<Pipe, Shut>,);
 
     /// Stands the pipe up over the launcher's end of a program's pipe, then the process over the program, and answers
@@ -153,7 +154,7 @@ impl Handles<Answer<Launched, Launching>> for Processes {
     }
 }
 
-impl Handles<Answer<Raised, Raising>> for Processes {
+impl Receives<Answer<Raised, Raising>> for Processes {
     type Sends = ();
 
     /// The program of a process not stood up was sent its kill: its exit is the launcher's to keep.

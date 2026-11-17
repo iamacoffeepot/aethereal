@@ -187,6 +187,8 @@ pub struct Calls {
     /// Whether the type of the actor of the id lists every kind of the ids written at the address, of the length:
     /// one when it does.
     pub lists: extern "C" fn(u64, u32, u32) -> u32,
+    /// Whether the actor of the id is of the type of the second id: one when it is (ADR-0058).
+    pub is_of: extern "C" fn(u64, u64) -> u32,
     /// Whether the table held the actor of the id as the step began, or it was stood up since in the part: one when
     /// it was.
     pub held: extern "C" fn(u64) -> u32,
@@ -1627,6 +1629,11 @@ impl Table for Host {
         (self.calls.lists)(id.bits(), address(kinds.as_ptr()), count(kinds.len())) == 1
     }
 
+    /// Whether the actor `id` stands for is of the type, asked of the host, which holds its type (ADR-0058).
+    fn is_of(&self, id: ActorId, actor_type: KindId) -> bool {
+        (self.calls.is_of)(id.bits(), u64::from_le_bytes(actor_type.plain_bytes())) == 1
+    }
+
     /// Nothing: the guest holds no other actor's type, and leaves every check of a send to its host, which fails the
     /// turn of a send its declaration does not reach where a native one stops the engine (ADR-0013, ADR-0015).
     fn declared(&self, _: ActorId) -> Option<&'static Declared> {
@@ -1729,6 +1736,7 @@ macro_rules! guest {
                 safe fn aethereal_reach_child(parent: u64, naming: u32, len: u32, kind: u64, seated: u32) -> u32;
                 safe fn aethereal_is_live(id: u64) -> u32;
                 safe fn aethereal_lists(id: u64, kinds: u32, len: u32) -> u32;
+                safe fn aethereal_is_of(id: u64, actor_type: u64) -> u32;
                 safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
@@ -1764,6 +1772,7 @@ macro_rules! guest {
                 reach_child: aethereal_reach_child,
                 is_live: aethereal_is_live,
                 lists: aethereal_lists,
+                is_of: aethereal_is_of,
                 held: aethereal_held,
                 take,
                 give_back,

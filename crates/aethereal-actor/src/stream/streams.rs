@@ -1,7 +1,7 @@
 //! The asker's side of its streams: opening them, taking their parts, stopping them, and their answers (ADR-0017).
 
 use super::{Enough, More, Number, Open, Part, Stream, Streamed};
-use crate::{Allows, Answer, Asks, Handles, Mailing, ProtocolRef, ToAny, Turn};
+use crate::{Allows, Answer, Asks, Handles, Mailing, ProtocolRef, Receives, ToAny, Turn};
 use aethereal_data::{ActorId, Bound, EncodeError, Plain};
 use alloc::collections::BTreeMap;
 use core::num::NonZeroU32;
@@ -80,7 +80,7 @@ impl<S: Stream, C> Streams<S, C> {
     ) -> Result<Number, EncodeError>
     where
         T: Mailing<'a, A, Sends>,
-        A: Handles<Part<S>> + Handles<Answer<S::Done, Number>>,
+        A: Handles<Part<S>> + Receives<Answer<S::Done, Number>>,
         Sends: Allows<Asks<Streamed<S>, Open<S>, Number>, IA> + Allows<ToAny<Streamed<S>, More>, IM>,
     {
         let number = Number::new(self.next);

@@ -15,8 +15,8 @@ use crate::{
     Minted, Outcome, Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated, TrustOf,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles,
+    Held, Path, ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
@@ -257,6 +257,7 @@ impl Handles<Call> for EngineTools {
         Asks<Path<Engines>, TerminateEngine, Asking>,
         ToSender<Called>,
     );
+    type From = Anyone;
 
     /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
     /// spawn is asked for the call's caller, which decides whether the engine is trusted, and a session's call of one
@@ -298,7 +299,7 @@ impl Handles<Call> for EngineTools {
     }
 }
 
-impl Handles<Answer<EngineList, Asking>> for EngineTools {
+impl Receives<Answer<EngineList, Asking>> for EngineTools {
     type Sends = ();
 
     fn handle(
@@ -330,7 +331,7 @@ impl Handles<Answer<EngineList, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<EngineTrust, Asking>> for EngineTools {
+impl Receives<Answer<EngineTrust, Asking>> for EngineTools {
     type Sends = (Asks<Path<Engine>, DescribeEngine, Asking>, Asks<Path<Engines>, TerminateEngine, Asking>);
 
     /// The trust of the engine a session's call names: the engine is reached when the session started it, and the
@@ -371,7 +372,7 @@ impl Handles<Answer<EngineTrust, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<Described, Asking>> for EngineTools {
+impl Receives<Answer<Described, Asking>> for EngineTools {
     type Sends = (Asks<Path<Engine>, CallEngine, Asking>,);
 
     /// For `describe_engine`, answers the engine's tools; for `call_tool`, converts the input by the tool's sheet and
@@ -415,7 +416,7 @@ impl Handles<Answer<Described, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<Called, Asking>> for EngineTools {
+impl Receives<Answer<Called, Asking>> for EngineTools {
     type Sends = ();
 
     /// The engine's answer: its output converted to JSON by the tool's output schema, or its refusal as it gave it.
@@ -444,7 +445,7 @@ impl Handles<Answer<Called, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<Minted, Asking>> for EngineTools {
+impl Receives<Answer<Minted, Asking>> for EngineTools {
     type Sends = ();
 
     /// `Engines`' token, answered as it gave it.
@@ -477,7 +478,7 @@ impl Handles<Answer<Minted, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<Spawn, Asking>> for EngineTools {
+impl Receives<Answer<Spawn, Asking>> for EngineTools {
     type Sends = ();
 
     /// The spawned engine's id once it has linked, or the refusal saying how the spawn failed.
@@ -506,7 +507,7 @@ impl Handles<Answer<Spawn, Asking>> for EngineTools {
     }
 }
 
-impl Handles<Answer<Terminated, Asking>> for EngineTools {
+impl Receives<Answer<Terminated, Asking>> for EngineTools {
     type Sends = ();
 
     /// That the engine is being stopped, or the refusal of an id no engine is linked under.

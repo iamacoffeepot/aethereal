@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::{
-    Above, Actor, Anywhere, Asked, Beginning, Chain, ChildOf, Due, Ending, ErasedActorRef, Fault, Instances, Item,
-    Keeps, Level, Mail, MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning,
-    section,
+    Above, Actor, Anyone, Anywhere, Asked, Beginning, Chain, ChildOf, Due, Ending, ErasedActorRef, Fault, Instances,
+    Item, Keeps, Level, Mail, MailId, Mailed, Receives, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn,
+    Turning, section,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -122,6 +122,7 @@ impl Actor for Keeper {
 
 impl Handles<Kept> for Keeper {
     type Sends = (ToType<Self, Kept>, ToAny<(Kept,), Kept>, ToSender<Kept>);
+    type From = Anyone;
 
     fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
@@ -130,7 +131,7 @@ impl Handles<Kept> for Keeper {
     }
 }
 
-impl Handles<Others> for Keeper {
+impl Receives<Others> for Keeper {
     type Sends = ();
 
     fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -167,6 +168,7 @@ impl Actor for Strict {
 
 impl Handles<Kept> for Strict {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -198,7 +200,7 @@ impl Actor for Sink {
     }
 }
 
-impl Handles<Others> for Sink {
+impl Receives<Others> for Sink {
     type Sends = ();
 
     fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -258,7 +260,8 @@ fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Han
         Tie::TELL,
         Due::Never,
     );
-    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends>(Declared::of::<Keeper>()));
+    let sender = ErasedActorRef::new(OTHER);
+    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends, Anyone>(Declared::of::<Keeper>(), sender));
 
     asked.into_parts().0.mailed
 }

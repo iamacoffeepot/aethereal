@@ -3,14 +3,15 @@
 
 use super::{Fetching, Library, ReadingModule, Stage};
 use crate::{ModulePublished, Numbered, PublishModule, Unloaded};
-use aethereal_actor::Level;
 use aethereal_actor::{Answered, Asks, Bytes, Fault, Handles, Path, ToSender, Turn, path};
+use aethereal_actor::{Anyone, Level};
 use aethereal_data::{FilePath, to_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 
 /// Reads the module, once `Code` is published: answered once it is read.
 impl Handles<PublishModule> for Library {
     type Sends = (Asks<Path<Files>, ReadFile, ReadingModule>, ToSender<ModulePublished>);
+    type From = Anyone;
 
     fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let is_open = matches!(self.stage, Stage::Open);

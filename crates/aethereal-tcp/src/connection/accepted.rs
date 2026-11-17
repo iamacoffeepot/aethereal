@@ -4,8 +4,8 @@ use super::{Connection, ConnectionConfig, Finish, HungUp, Reading, Shut, Write, 
 use crate::Listener;
 use crate::{Interest, Readied};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part, ToAny,
-    ToSender, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part,
+    Receives, ToAny, ToSender, Turn,
 };
 use aethereal_data::Bound;
 
@@ -39,6 +39,7 @@ impl Actor for Accepted {
 
 impl Handles<Open<Reading>> for Accepted {
     type Sends = (ToSender<HungUp>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.open(turn, open)
@@ -47,6 +48,7 @@ impl Handles<Open<Reading>> for Accepted {
 
 impl Handles<More> for Accepted {
     type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
@@ -55,13 +57,14 @@ impl Handles<More> for Accepted {
 
 impl Handles<Enough> for Accepted {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
     }
 }
 
-impl Handles<Ended> for Accepted {
+impl Receives<Ended> for Accepted {
     type Sends = ();
 
     fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -71,6 +74,7 @@ impl Handles<Ended> for Accepted {
 
 impl Handles<Write> for Accepted {
     type Sends = (ToSender<Wrote>,);
+    type From = Anyone;
 
     fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.write(turn, write)
@@ -79,6 +83,7 @@ impl Handles<Write> for Accepted {
 
 impl Handles<Finish> for Accepted {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.connection.finish(turn)
@@ -87,13 +92,14 @@ impl Handles<Finish> for Accepted {
 
 impl Handles<Shut> for Accepted {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.connection.shut(turn)
     }
 }
 
-impl Handles<Answer<Readied, Interest>> for Accepted {
+impl Receives<Answer<Readied, Interest>> for Accepted {
     type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
 
     fn handle(

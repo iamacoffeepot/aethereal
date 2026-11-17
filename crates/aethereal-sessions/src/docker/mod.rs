@@ -50,8 +50,8 @@ pub use streams::{
 };
 
 use aethereal_actor::{
-    Actor, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, Handles, More,
-    Number, Open, Part, Path, Protocol, Serving, Streamed, Streams, ToAny, ToType, Top, Turn, path,
+    Actor, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, More, Number,
+    Open, Part, Path, Protocol, Receives, Serving, Streamed, Streams, ToAny, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Client, Connect, Connected, Fetch, Fetched, Finished, Http, Peer, Receiving, Unreached};
@@ -204,7 +204,7 @@ impl Actor for Docker {
     }
 }
 
-impl Handles<Answer<Connected, Dialing>> for Docker {
+impl Receives<Answer<Connected, Dialing>> for Docker {
     type Sends = Connecting;
 
     /// A connection `Http` dialed: the request it was for is asked on it, or the stream opened, and a connection
@@ -237,7 +237,7 @@ impl Handles<Answer<Connected, Dialing>> for Docker {
     }
 }
 
-impl Handles<Ended> for Docker {
+impl Receives<Ended> for Docker {
     type Sends = (Stopping,);
 
     /// An actor that opened streams has ended: each of its streams' connections is hung up, as nothing will take what

@@ -3,7 +3,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Job, JobId, On, Path, Render, Runner,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Job, JobId, On, Path, Receives, Render, Runner,
     Running, Sleep, Slept, Start, Tells, Tick, Time, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
@@ -249,7 +249,7 @@ fn program<S>(turn: &mut Turn<'_, Prober, S>, wgsl: String, shape: Shape) -> Res
     Ok(program)
 }
 
-impl Handles<On<Start>> for Prober {
+impl Receives<On<Start>> for Prober {
     type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -259,7 +259,7 @@ impl Handles<On<Start>> for Prober {
     }
 }
 
-impl Handles<On<Tick>> for Prober {
+impl Receives<On<Tick>> for Prober {
     type Sends = ();
 
     fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -269,7 +269,7 @@ impl Handles<On<Tick>> for Prober {
     }
 }
 
-impl Handles<Answer<Shaped, Nothing>> for Prober {
+impl Receives<Answer<Shaped, Nothing>> for Prober {
     type Sends = (Asks<Path<Renderer>, CreateMesh, Shape>,);
 
     fn handle(
@@ -295,7 +295,7 @@ impl Handles<Answer<Shaped, Nothing>> for Prober {
     }
 }
 
-impl Handles<Answer<Meshed, Shape>> for Prober {
+impl Receives<Answer<Meshed, Shape>> for Prober {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
@@ -327,7 +327,7 @@ const CHECKED: Duration = Duration::from_secs(3);
 /// How long the sleep given up on would sleep: past the sum's answer, which gives up on it.
 const GIVEN_UP: Duration = Duration::from_secs(2);
 
-impl Handles<Answer<Programmed, Making>> for Prober {
+impl Receives<Answer<Programmed, Making>> for Prober {
     type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
 
     fn handle(
@@ -401,7 +401,7 @@ const fn millis(time: Time) -> u64 {
     time.nanos() / 1_000_000
 }
 
-impl Handles<Answer<Summed, Summing>> for Prober {
+impl Receives<Answer<Summed, Summing>> for Prober {
     type Sends = Places;
 
     fn handle(
@@ -424,7 +424,7 @@ impl Handles<Answer<Summed, Summing>> for Prober {
     }
 }
 
-impl Handles<Answer<Slept, Sleeping>> for Prober {
+impl Receives<Answer<Slept, Sleeping>> for Prober {
     type Sends = Places;
 
     fn handle(
@@ -467,7 +467,7 @@ impl Handles<Answer<Slept, Sleeping>> for Prober {
 }
 
 /// A square placed is listed after those placed before it.
-impl Handles<Answer<Placed, Nothing>> for Prober {
+impl Receives<Answer<Placed, Nothing>> for Prober {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(

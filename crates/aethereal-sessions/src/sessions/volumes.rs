@@ -11,7 +11,7 @@ use super::credential::{Crediting, Provision};
 use super::session::{Life, Step};
 use super::{Acts, Does, Sessions};
 use crate::{Docker, DockerError, Unwritable, VolumeCreated};
-use aethereal_actor::{Answer, Answered, Fault, Handles, Turn, path};
+use aethereal_actor::{Answer, Answered, Fault, Receives, Turn, path};
 use aethereal_data::Plain;
 
 /// What the capability keeps for a request of Docker that makes a volume of a session's: the session, and the run it
@@ -75,7 +75,7 @@ impl Sessions {
     }
 }
 
-impl Handles<Answer<VolumeCreated, Homing>> for Sessions {
+impl Receives<Answer<VolumeCreated, Homing>> for Sessions {
     type Sends = Acts;
 
     /// A volume of the session's is made: the next is, or once each is, the credential is read.

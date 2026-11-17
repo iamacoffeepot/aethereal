@@ -2,8 +2,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, On, Path, Refused, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Receives, Refused, Render, Start,
+    Tells, Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -154,7 +154,7 @@ impl Requests {
     }
 }
 
-impl Handles<On<Start>> for Maker {
+impl Receives<On<Start>> for Maker {
     type Sends = (
         Asks<Path<Renderer>, CreateMesh, Asked>,
         Asks<Path<Renderer>, CreateTexture, Asked>,
@@ -181,7 +181,7 @@ impl Handles<On<Start>> for Maker {
     }
 }
 
-impl Handles<Answer<Meshed, Asked>> for Maker {
+impl Receives<Answer<Meshed, Asked>> for Maker {
     type Sends = (Tells<Path<Renderer>, Release>,);
 
     fn handle(
@@ -202,7 +202,7 @@ impl Handles<Answer<Meshed, Asked>> for Maker {
     }
 }
 
-impl Handles<Answer<Textured, Asked>> for Maker {
+impl Receives<Answer<Textured, Asked>> for Maker {
     type Sends = ();
 
     fn handle(
@@ -220,7 +220,7 @@ impl Handles<Answer<Textured, Asked>> for Maker {
     }
 }
 
-impl Handles<Answer<Programmed, Asked>> for Maker {
+impl Receives<Answer<Programmed, Asked>> for Maker {
     type Sends = ();
 
     fn handle(

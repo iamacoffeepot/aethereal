@@ -4,7 +4,7 @@
 //! list, beneath the overlay (ADR-0021, ADR-0023, ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Start, Tells, Top,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Start, Tells, Top,
     Turn, path,
 };
 use aethereal_data::{Bound, Plain};
@@ -126,7 +126,7 @@ fn corner() -> VertexLayout {
     VertexLayout { stride: 8, attributes: vec![Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 }] }
 }
 
-impl Handles<On<Start>> for Backdrop {
+impl Receives<On<Start>> for Backdrop {
     type Sends = (Asks<Path<Renderer>, ShapeOf, BackdropAsked>,);
 
     fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -136,7 +136,7 @@ impl Handles<On<Start>> for Backdrop {
     }
 }
 
-impl Handles<Answer<Shaped, BackdropAsked>> for Backdrop {
+impl Receives<Answer<Shaped, BackdropAsked>> for Backdrop {
     type Sends = (Asks<Path<Renderer>, CreateMesh, BackdropShaped>,);
 
     fn handle(
@@ -162,7 +162,7 @@ impl Handles<Answer<Shaped, BackdropAsked>> for Backdrop {
     }
 }
 
-impl Handles<Answer<Meshed, BackdropShaped>> for Backdrop {
+impl Receives<Answer<Meshed, BackdropShaped>> for Backdrop {
     type Sends = (Asks<Path<Renderer>, CreateProgram, BackdropMeshed>,);
 
     fn handle(
@@ -195,7 +195,7 @@ impl Handles<Answer<Meshed, BackdropShaped>> for Backdrop {
     }
 }
 
-impl Handles<Answer<Programmed, BackdropMeshed>> for Backdrop {
+impl Receives<Answer<Programmed, BackdropMeshed>> for Backdrop {
     type Sends = (Asks<Path<Renderer>, Place, BackdropPlacing>,);
 
     fn handle(
@@ -215,7 +215,7 @@ impl Handles<Answer<Programmed, BackdropMeshed>> for Backdrop {
     }
 }
 
-impl Handles<Answer<Placed, BackdropPlacing>> for Backdrop {
+impl Receives<Answer<Placed, BackdropPlacing>> for Backdrop {
     type Sends = (Tells<Path<Renderer>, DrawList>,);
 
     fn handle(

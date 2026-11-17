@@ -3,8 +3,8 @@
 use crate::jobs::{Raise, Raised, Raising, Wait, Waited, Waiting};
 use crate::{Processes, Signal, Unwaited};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, JobId, Level, Protocol,
-    ProtocolRef, Sleep, Slept, ToAny, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, JobId, Level,
+    Protocol, ProtocolRef, Receives, Sleep, Slept, ToAny, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -116,13 +116,14 @@ impl Actor for Process {
 
 impl Handles<Stop> for Process {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.stop(turn)
     }
 }
 
-impl Handles<Ended> for Process {
+impl Receives<Ended> for Process {
     type Sends = ();
 
     /// Its starter has ended, which is the one actor it watches: no one wants the program any more.
@@ -136,7 +137,7 @@ impl Handles<Ended> for Process {
     }
 }
 
-impl Handles<Answer<Waited, Waiting>> for Process {
+impl Receives<Answer<Waited, Waiting>> for Process {
     type Sends = (ToAny<Exits, Exited>,);
 
     /// The program has exited: its starter is told how, and the process ends.
@@ -159,7 +160,7 @@ impl Handles<Answer<Waited, Waiting>> for Process {
     }
 }
 
-impl Handles<Answer<Slept, Grace>> for Process {
+impl Receives<Answer<Slept, Grace>> for Process {
     type Sends = ();
 
     /// The program's time to end has passed, and it has not exited, or this would have been cancelled: its group is
@@ -171,7 +172,7 @@ impl Handles<Answer<Slept, Grace>> for Process {
     }
 }
 
-impl Handles<Answer<Raised, Raising>> for Process {
+impl Receives<Answer<Raised, Raising>> for Process {
     type Sends = ();
 
     /// A signal was sent: what it came to is told by the program's exit.

@@ -1,6 +1,6 @@
 use super::*;
-use crate::section;
 use crate::{Actor, Beginning, Declared, Ending, Fault, Handles, Tells, Turn};
+use crate::{Anyone, section};
 use aethereal_data::Plain;
 use alloc::vec::Vec;
 
@@ -39,6 +39,7 @@ macro_rules! actor {
 
         impl Handles<Order> for $name {
             type Sends = ();
+            type From = Anyone;
 
             fn handle(&mut self, _: Order, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
                 Ok(())

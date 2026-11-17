@@ -7,8 +7,8 @@ mod unix;
 use super::*;
 use crate::waiting;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
-    Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
+    Part, Receives, Streamed, Streams, ToAny, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Host;
@@ -186,6 +186,7 @@ impl Handles<Follow> for Streamer {
         Asks<Streamed<Reading>, Open<Reading>, Number>,
         ToAny<Streamed<Reading>, More>,
     );
+    type From = Anyone;
 
     fn handle(&mut self, follow: Follow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         match follow {
@@ -203,6 +204,7 @@ impl Handles<Part<Accepting>> for Streamer {
         Asks<Streamed<Reading>, Open<Reading>, Number>,
         ToAny<Streamed<Reading>, More>,
     );
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.accepting.part(turn, part)? else {
@@ -218,6 +220,7 @@ impl Handles<Part<Accepting>> for Streamer {
 
 impl Handles<Part<Reading>> for Streamer {
     type Sends = (ToAny<Streamed<Reading>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {
@@ -230,7 +233,7 @@ impl Handles<Part<Reading>> for Streamer {
     }
 }
 
-impl Handles<Answer<Unbound, Number>> for Streamer {
+impl Receives<Answer<Unbound, Number>> for Streamer {
     type Sends = ();
 
     fn handle(&mut self, (_, number): (Answered<Unbound>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -240,7 +243,7 @@ impl Handles<Answer<Unbound, Number>> for Streamer {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Streamer {
+impl Receives<Answer<HungUp, Number>> for Streamer {
     type Sends = ();
 
     fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {

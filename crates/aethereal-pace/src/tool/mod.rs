@@ -6,8 +6,8 @@ mod tests;
 
 use crate::pacer::{Advance, Advanced, PaceSet, Pacer, SetPace};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
+    ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -91,6 +91,7 @@ impl Tool for PaceTool {
 /// Holds the call, and asks the pacer what it was called with: answered once the pacer has answered.
 impl Handles<Call> for PaceTool {
     type Sends = Sends;
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
         let calling = Calling { call: self.next };
@@ -124,7 +125,7 @@ impl Handles<Call> for PaceTool {
 }
 
 /// The pacer set the pace, or no pacer answered.
-impl Handles<Answer<PaceSet, Calling>> for PaceTool {
+impl Receives<Answer<PaceSet, Calling>> for PaceTool {
     type Sends = Sends;
 
     fn handle(
@@ -137,7 +138,7 @@ impl Handles<Answer<PaceSet, Calling>> for PaceTool {
 }
 
 /// The pacer ran the cycles, or refused them, or no pacer answered.
-impl Handles<Answer<Advanced, Calling>> for PaceTool {
+impl Receives<Answer<Advanced, Calling>> for PaceTool {
     type Sends = Sends;
 
     fn handle(

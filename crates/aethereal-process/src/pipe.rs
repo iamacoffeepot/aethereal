@@ -2,8 +2,8 @@
 
 use crate::{Exits, Processes};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, More, Open, Part,
-    ProtocolRef, ToAny, ToSender, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, More, Open,
+    Part, ProtocolRef, Receives, ToAny, ToSender, Turn,
 };
 use aethereal_data::Bound;
 use aethereal_tcp::{
@@ -68,6 +68,7 @@ impl Actor for Pipe {
 
 impl Handles<Open<Reading>> for Pipe {
     type Sends = (ToSender<HungUp>,);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.open(turn, open)
@@ -76,6 +77,7 @@ impl Handles<Open<Reading>> for Pipe {
 
 impl Handles<More> for Pipe {
     type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
@@ -84,13 +86,14 @@ impl Handles<More> for Pipe {
 
 impl Handles<Enough> for Pipe {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
     }
 }
 
-impl Handles<Ended> for Pipe {
+impl Receives<Ended> for Pipe {
     type Sends = ();
 
     /// The program's starter has ended, so no one wants its pipe, and it hangs up; or its reader has, which the
@@ -106,6 +109,7 @@ impl Handles<Ended> for Pipe {
 
 impl Handles<Write> for Pipe {
     type Sends = (ToSender<Wrote>,);
+    type From = Anyone;
 
     fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.write(turn, write)
@@ -114,6 +118,7 @@ impl Handles<Write> for Pipe {
 
 impl Handles<Finish> for Pipe {
     type Sends = ();
+    type From = Anyone;
 
     /// Ends the program's stdin, once what was written is: the program reads to its end.
     fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -123,13 +128,14 @@ impl Handles<Finish> for Pipe {
 
 impl Handles<Shut> for Pipe {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.connection.shut(turn)
     }
 }
 
-impl Handles<Answer<Readied, Interest>> for Pipe {
+impl Receives<Answer<Readied, Interest>> for Pipe {
     type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
 
     fn handle(

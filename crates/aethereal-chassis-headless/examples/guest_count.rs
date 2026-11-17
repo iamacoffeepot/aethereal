@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -73,6 +73,7 @@ impl Actor for Counter {
 
 impl Handles<Pong> for Counter {
     type Sends = (ToSender<Increment>, ToSender<Ping>);
+    type From = Anyone;
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if pong.n > 0 {
@@ -119,6 +120,7 @@ impl Actor for Echo {
 
 impl Handles<Ping> for Echo {
     type Sends = (ToSender<Pong>,);
+    type From = Anyone;
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         turn.reply(&Pong { n: ping.n })?;
@@ -129,6 +131,7 @@ impl Handles<Ping> for Echo {
 
 impl Handles<Increment> for Echo {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.counted += 1;

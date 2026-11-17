@@ -5,8 +5,8 @@
 #![cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part,
-    ProtocolRef, Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
+    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -307,6 +307,7 @@ impl Actor for Starter {
 
 impl Handles<Exited> for Starter {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         Ok(())
@@ -315,6 +316,7 @@ impl Handles<Exited> for Starter {
 
 impl Handles<Leave> for Starter {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         turn.close();
@@ -425,6 +427,7 @@ impl Bootstrap<Headless> for Reader {
 
 impl Handles<Follow> for Reader {
     type Sends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
+    type From = Anyone;
 
     fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.reading.open(turn, pipe.protocol(), Read, ())?;
@@ -435,6 +438,7 @@ impl Handles<Follow> for Reader {
 
 impl Handles<Part<Reading>> for Reader {
     type Sends = (ToAny<Streamed<Reading>, More>,);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {
@@ -446,7 +450,7 @@ impl Handles<Part<Reading>> for Reader {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Reader {
+impl Receives<Answer<HungUp, Number>> for Reader {
     type Sends = ();
 
     fn handle(

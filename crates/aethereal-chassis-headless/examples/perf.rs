@@ -14,7 +14,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, ToType, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, ToType, Turn};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::Plain;
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -137,6 +137,7 @@ impl Actor for Counter {
 
 impl Handles<Count> for Counter {
     type Sends = (ToType<Self, Count>,);
+    type From = Anyone;
 
     fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));

@@ -15,8 +15,9 @@ pub use message::{
 use crate::body::{Body, Decoded, Progress};
 use crate::{ClientLimits, Http, Method};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held,
-    Level, More, Number, Open, Part, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender, Turn, Unsent,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
+    Held, Level, More, Number, Open, Part, Receives, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender,
+    Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Dialed, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
@@ -187,6 +188,7 @@ impl Actor for Client {
 
 impl Handles<Fetch> for Client {
     type Sends = (ToSender<Fetched>, Asks<Writing, Write, Requesting>);
+    type From = Anyone;
 
     fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let head_only = fetch.request.method == Method::Head;
@@ -205,6 +207,7 @@ impl Handles<Fetch> for Client {
 
 impl Handles<Open<Receiving>> for Client {
     type Sends = (ToSender<Finished>, Asks<Writing, Write, Requesting>);
+    type From = Anyone;
 
     fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, Follow { request, switch }) = self.serving.open(turn, open)?;
@@ -222,6 +225,7 @@ impl Handles<Open<Receiving>> for Client {
 
 impl Handles<More> for Client {
     type Sends = (Parts, Credit);
+    type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(_) = self.serving.more(turn, &more) else {
@@ -234,6 +238,7 @@ impl Handles<More> for Client {
 
 impl Handles<Enough> for Client {
     type Sends = ();
+    type From = Anyone;
 
     /// Its asker stops the stream: the connection is left mid-response, or switched, so it closes.
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
@@ -247,7 +252,7 @@ impl Handles<Enough> for Client {
     }
 }
 
-impl Handles<Ended> for Client {
+impl Receives<Ended> for Client {
     type Sends = ();
 
     /// The asker of a stream it serves has ended: when the stream was still open, the connection is left
@@ -265,6 +270,7 @@ impl Handles<Ended> for Client {
 
 impl Handles<Shut> for Client {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.fail(turn, Failure::HungUp(HungUp::Shut))
@@ -273,6 +279,7 @@ impl Handles<Shut> for Client {
 
 impl Handles<Part<Reading>> for Client {
     type Sends = (Parts, Credit);
+    type From = Anyone;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part_held(turn, part) else {
@@ -285,7 +292,7 @@ impl Handles<Part<Reading>> for Client {
     }
 }
 
-impl Handles<Answer<HungUp, Number>> for Client {
+impl Receives<Answer<HungUp, Number>> for Client {
     type Sends = (Parts, Credit);
 
     /// The connection's stream has ended: what the buffer holds is read on as far as it goes, and then the client
@@ -306,7 +313,7 @@ impl Handles<Answer<HungUp, Number>> for Client {
     }
 }
 
-impl Handles<Answer<Wrote, Requesting>> for Client {
+impl Receives<Answer<Wrote, Requesting>> for Client {
     type Sends = ();
 
     /// A request the connection would not take is answered so, and the client takes the next: nothing of it was

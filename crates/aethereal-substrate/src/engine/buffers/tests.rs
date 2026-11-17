@@ -3,8 +3,8 @@
 
 use super::super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, ChildOf, Ending, Fills, Handles, Job, Path, Runner, Running, Services, Tells, ToType, Top,
-    Turn, path,
+    Actor, Answer, Answered, Anyone, ChildOf, Ending, Fills, Handles, Job, Path, Receives, Runner, Running, Services,
+    Tells, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeSet;
@@ -152,6 +152,7 @@ impl Actor for Builder {
 
 impl Handles<Plan> for Builder {
     type Sends = (ToType<Self, Plan>, Tells<Path<Self>, Lent>);
+    type From = Anyone;
 
     fn handle(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         if plan.turns.is_empty() {
@@ -199,6 +200,7 @@ impl Handles<Plan> for Builder {
 
 impl Handles<Lent> for Builder {
     type Sends = ();
+    type From = Anyone;
 
     fn handle(&mut self, lent: Lent, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.held.push(lent.blob);
@@ -207,7 +209,7 @@ impl Handles<Lent> for Builder {
     }
 }
 
-impl Handles<Answer<Filled, Plan>> for Builder {
+impl Receives<Answer<Filled, Plan>> for Builder {
     type Sends = (ToType<Self, Plan>,);
 
     fn handle(
@@ -224,7 +226,7 @@ impl Handles<Answer<Filled, Plan>> for Builder {
     }
 }
 
-impl Handles<Answer<Drew, Plan>> for Builder {
+impl Receives<Answer<Drew, Plan>> for Builder {
     type Sends = (ToType<Self, Plan>,);
 
     fn handle(

@@ -5,7 +5,7 @@
 //! order made.
 
 use super::{Does, Sessions, Unfound};
-use aethereal_actor::{Answer, Answered, Fault, Handles, Level, Turn, path};
+use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
 use aethereal_data::{DecodeError, FilePath, Plain, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
 use core::mem;
@@ -70,7 +70,7 @@ pub(super) enum Indexed {
     Changed,
 }
 
-impl Handles<Answer<FileWritten, Keeping>> for Sessions {
+impl Receives<Answer<FileWritten, Keeping>> for Sessions {
     type Sends = super::Acts;
 
     /// A write is done: the next is sent, and once none waits, those of what changed meanwhile.

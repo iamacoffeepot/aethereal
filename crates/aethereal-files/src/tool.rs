@@ -2,8 +2,8 @@
 
 use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile, Writes};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held,
+    Path, ProtocolRef, Receives, ToSender, Turn, path,
 };
 use aethereal_data::{
     Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
@@ -104,6 +104,7 @@ impl Tool for ReadTool {
 
 impl Handles<Call> for ReadTool {
     type Sends = (Asks<Path<Files>, ReadFile, Calling>, ToSender<Called>);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Ok(read) = from_bytes::<ReadFile>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
@@ -121,7 +122,7 @@ impl Handles<Call> for ReadTool {
     }
 }
 
-impl Handles<Answer<FileRead, Calling>> for ReadTool {
+impl Receives<Answer<FileRead, Calling>> for ReadTool {
     type Sends = ();
 
     fn handle(
@@ -230,6 +231,7 @@ impl Tool for WriteTool {
 
 impl Handles<Call> for WriteTool {
     type Sends = (Asks<Path<Files>, WriteFile, Calling>, ToSender<Called>);
+    type From = Anyone;
 
     fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
@@ -260,7 +262,7 @@ impl Handles<Call> for WriteTool {
     }
 }
 
-impl Handles<Answer<FileWritten, Calling>> for WriteTool {
+impl Receives<Answer<FileWritten, Calling>> for WriteTool {
     type Sends = ();
 
     fn handle(
