@@ -172,8 +172,8 @@ enum Next {
     /// Waits on the windows' events until this time on the host's clock, in nanoseconds, then looks again: when a
     /// capped frame is next due, or when the time a program asked to stop gives `Stop` has passed.
     LookAt(u64),
-    /// Ends, the program having ended as this says.
-    End(Exit),
+    /// Ends, the program having ended as this says: it ran to its end, or did not boot.
+    End(Result<Exit, Failed>),
 }
 
 impl ApplicationHandler<Woken> for App {
@@ -223,8 +223,8 @@ impl ApplicationHandler<Woken> for App {
                 let wake = Instant::now() + rest;
                 event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
             }
-            Next::End(exit) => {
-                self.stage = Stage::Ended(Ok(exit));
+            Next::End(ended) => {
+                self.stage = Stage::Ended(ended);
                 event_loop.exit();
             }
         }
@@ -296,9 +296,15 @@ impl Running {
     /// is drawn no cycle runs: the loop then waits on the windows' events, and the frame is asked for again once one
     /// is. The windows the window root asks for are opened and closed between its steps, on `event_loop`.
     fn frame(&mut self, event_loop: &ActiveEventLoop, clock: Monotonic) {
-        let running = self.headless.engine().lifecycle() == Lifecycle::Running;
-        if !running {
-            return;
+        match self.headless.engine().lifecycle() {
+            Lifecycle::Running => {}
+            // A redraw that came while the program boots draws nothing, and is asked for again, so a frame is asked for
+            // once it has started.
+            Lifecycle::Booting => {
+                self.drawing.ask_next();
+                return;
+            }
+            Lifecycle::Waiting | Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Unbooted(_) => return,
         }
         // Taken before the clock is read: a program that starts held asked to be as its pacer began, before the first
         // frame, and a cycle run on the chassis's clock first would put a delta no advance chose into its clock.
@@ -380,17 +386,19 @@ impl Running {
         self.step_until_idle(event_loop);
         let within = u64::try_from(stop_within.as_nanos()).unwrap_or(u64::MAX);
         match (self.headless.engine().lifecycle(), self.stopping) {
-            (Lifecycle::Stopped, _) => Next::End(Exit::Stopped),
+            (Lifecycle::Stopped, _) => Next::End(Ok(Exit::Stopped)),
+            // A program that did not boot is reported as one that did not start (ADR-0029).
+            (Lifecycle::Unbooted(why), _) => Next::End(Err(Failed::Unstarted(ProgramError::Unbooted(why)))),
             (Lifecycle::Stopping, Stopping::Not) => {
                 let by = now.saturating_add(within);
                 self.stopping = Stopping::By(by);
                 Next::LookAt(by)
             }
-            (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Exit::OutOfTime),
+            (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Ok(Exit::OutOfTime)),
             (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by),
             (Lifecycle::Running, _) if !self.clockwork.runs() => self.owed(event_loop, now),
             (Lifecycle::Running, _) => self.paced(event_loop, now),
-            (Lifecycle::Waiting, _) => Next::Wait,
+            (Lifecycle::Waiting | Lifecycle::Booting, _) => Next::Wait,
         }
     }
 

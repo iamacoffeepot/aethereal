@@ -6,31 +6,47 @@
 //! one root, so a stage is one chain, however far its mail goes. Whether it
 //! has finished is read between steps from what the engine still holds of it
 //! (`Engine::has_finished`).
+//!
+//! Before `Start`, the engine waits on `Boot`, the chain of the mail every root's `begin` sent, which is read as a
+//! stage's is: `Start` is sent once it has finished, and an actor that quits or a turn that fails while it runs fails
+//! the boot.
 
 #[cfg(test)]
 mod tests;
+mod unbooted;
+
+pub use unbooted::Unbooted;
 
 use super::{Engine, ROOTS, parity};
 use crate::id::root_id;
 use crate::lives;
-use crate::stages::{self, key};
+use crate::stages::{self, Halt, key};
 // A request's deadline, named apart from the lifecycle's own `Due`, which says when a cycle is.
 use aethereal_actor::Due as RequestDue;
-use aethereal_actor::{Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time};
+use aethereal_actor::{
+    ActorName, Cycle, Cycled, Cycling, Declared, MailId, Mailed, Refused, Seated, Start, Stop, Tie, Time,
+};
 use aethereal_data::{ActorId, KindId, KindName, PathSegment};
 use core::time::Duration;
 
 /// Where the program's lifecycle stands (ADR-0020).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lifecycle {
     /// The host has not started it: no stage has been sent.
     Waiting,
+    /// The host has started it, and the mail its roots' `begin`s sent, `Boot`'s chain, still runs: `Start` is sent
+    /// once it has finished.
+    Booting,
     /// It has started, and nothing has asked it to stop.
     Running,
-    /// The host or an actor asked it to stop: `Stop` is sent, or will be once a cycle under way has finished.
+    /// The host or an actor asked it to stop: `Stop` is sent, or will be once a cycle under way, or `Boot`, has
+    /// finished.
     Stopping,
     /// `Stop` has finished: the host drops the engine.
     Stopped,
+    /// An actor quit, or a turn failed, while it booted: neither `Start` nor `Stop` is sent, and the host drops the
+    /// engine and reports it as a program that did not start.
+    Unbooted(Unbooted),
 }
 
 /// What the engine keeps of its lifecycle between steps.
@@ -73,13 +89,15 @@ enum Due {
 enum UnderWay {
     /// None: the lifecycle waits on the host, or has stopped.
     Nothing,
-    /// A stage, standing `at` in the lifecycle, whose chain begins at `root`.
+    /// A stage, or `Boot`, standing `at` in the lifecycle, whose chain begins at `root`.
     Stage { root: MailId, at: At },
 }
 
 /// Where a stage under way stands in the lifecycle.
 #[derive(Clone, Copy)]
 enum At {
+    /// `Boot`, the chain of bootstrapping's mail, which is sent as no stage.
+    Boot,
     Start,
     /// The cycle's stage of this place in it.
     Cycle(usize),
@@ -138,6 +156,12 @@ pub(super) fn lifecycle_id() -> ActorId {
     root_id(&PathSegment::new(LIFECYCLE, &()))
 }
 
+/// The root of `Boot`'s chain, which every root's `begin` sends on: the lifecycle's id and a count of zero, which no
+/// stage's chain has, as the first stage's count is one (ADR-0012, ADR-0020).
+pub(super) fn boot() -> MailId {
+    MailId { sender: lifecycle_id(), count: 0 }
+}
+
 impl Engine {
     /// The engine, running the cycle `C` between `Start` and `Stop`: its stages in order, each a barrier (ADR-0020).
     /// Set as the engine is made, before the host starts it. With none set, the lifecycle runs `Start` and `Stop`
@@ -156,16 +180,16 @@ impl Engine {
         self
     }
 
-    /// Starts the program's lifecycle, for the host, once it has made its roots: sends `Start` to every actor
-    /// subscribed to it by then (ADR-0020). It does nothing once the lifecycle has started.
+    /// Starts the program's lifecycle, for the host, once it has made its roots: the program boots, and once `Boot`,
+    /// the chain of the mail its roots' `begin`s sent, has finished, `Start` is sent to every actor subscribed to it
+    /// by then, at once when the roots sent nothing (ADR-0020). It does nothing once the lifecycle has started.
     pub fn start(&mut self) {
-        let is_waiting = self.staging.lifecycle == Lifecycle::Waiting;
-        if !is_waiting {
+        if self.staging.lifecycle != Lifecycle::Waiting {
             return;
         }
-        self.staging.lifecycle = Lifecycle::Running;
-        self.staging.ticked = self.now;
-        self.send_stage(Cycling::of::<Start>(), At::Start);
+        self.staging.lifecycle = Lifecycle::Booting;
+        self.staging.under_way = UnderWay::Stage { root: boot(), at: At::Boot };
+        self.advance();
     }
 
     /// Says a cycle is due, for the host, at `at`, the host's time for it: a browser's animation frame's timestamp, a
@@ -217,7 +241,8 @@ impl Engine {
 
     /// Asks the program to stop, for the host: when its window closed, the process was told to end, or the page was
     /// hidden. The engine lets a cycle under way finish, sends `Stop`, and once that has finished its lifecycle is
-    /// [`Lifecycle::Stopped`] (ADR-0020). Asking again changes nothing.
+    /// [`Lifecycle::Stopped`] (ADR-0020). Asked while the program boots, it is a clean stop as well: `Start` is not
+    /// sent, and `Stop` is once `Boot` has finished. Asking again changes nothing.
     pub fn quit(&mut self) {
         self.stopping();
         self.advance();
@@ -225,8 +250,8 @@ impl Engine {
 
     /// Where the program's lifecycle stands.
     #[must_use]
-    pub const fn lifecycle(&self) -> Lifecycle {
-        self.staging.lifecycle
+    pub fn lifecycle(&self) -> Lifecycle {
+        self.staging.lifecycle.clone()
     }
 
     /// Whether the chassis's cycle holds any stage: a host whose engine's does not has no cycle to wake for, and sleeps
@@ -256,11 +281,7 @@ impl Engine {
 
     /// Moves the lifecycle on one stage, as [`Self::advance`] says, and answers whether it sent one.
     fn move_on(&mut self) -> bool {
-        // A part's request left untaken here is taken at the next look, and asking twice changes nothing.
-        let asked_to_stop = self.stages.shards_mut().any(stages::Shard::take_quit);
-        if asked_to_stop {
-            self.stopping();
-        }
+        self.halted();
         if let UnderWay::Stage { root, at } = self.staging.under_way {
             let is_stop = matches!(at, At::Stop);
             let is_draining = is_stop && self.is_draining();
@@ -280,17 +301,49 @@ impl Engine {
                         return true;
                     }
                 }
-                At::Start => {}
+                At::Boot | At::Start => {}
             }
         }
         match self.staging.lifecycle {
+            Lifecycle::Booting => {
+                self.staging.lifecycle = Lifecycle::Running;
+                self.staging.ticked = self.now;
+                self.send_stage(Cycling::of::<Start>(), At::Start);
+                true
+            }
             Lifecycle::Stopping => {
                 self.send_stage(Cycling::of::<Stop>(), At::Stop);
                 true
             }
             Lifecycle::Running => self.begin_cycle(),
-            Lifecycle::Waiting | Lifecycle::Stopped => false,
+            Lifecycle::Waiting | Lifecycle::Stopped | Lifecycle::Unbooted(_) => false,
         }
+    }
+
+    /// Takes in what actors asked of the lifecycle since it last looked, a quit or a turn that failed (ADR-0020).
+    /// While the program boots, either fails the boot, and the first, by the actor's id, is what the lifecycle holds
+    /// of why. Otherwise a quit asks the program to stop, and a failure has ended only its actor.
+    fn halted(&mut self) {
+        let halts: Vec<Halt> = self.stages.shards_mut().flat_map(stages::Shard::take_halts).collect();
+        if self.staging.lifecycle == Lifecycle::Booting {
+            let first = halts.into_iter().min_by_key(Halt::order);
+            if let Some(first) = first {
+                self.unbooted(first);
+            }
+            return;
+        }
+        if halts.iter().any(Halt::is_quit) {
+            self.stopping();
+        }
+    }
+
+    /// Fails the boot for `halt`: the lifecycle holds why, naming the actor, and waits on no chain, so neither `Start`
+    /// nor `Stop` is sent (ADR-0020, ADR-0029).
+    fn unbooted(&mut self, halt: Halt) {
+        let id = halt.actor().id;
+        let actor = self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path);
+        self.staging.lifecycle = Lifecycle::Unbooted(Unbooted::of(halt, actor));
+        self.staging.under_way = UnderWay::Nothing;
     }
 
     /// Sends the cycle's first stage, when one is due and the cycle holds any, and answers whether it did.
@@ -319,9 +372,9 @@ impl Engine {
         })
     }
 
-    /// Marks the lifecycle as asked to stop, unless it has stopped already.
+    /// Marks the lifecycle as asked to stop, unless it has stopped already or did not boot.
     fn stopping(&mut self) {
-        let is_live = matches!(self.staging.lifecycle, Lifecycle::Waiting | Lifecycle::Running);
+        let is_live = matches!(self.staging.lifecycle, Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running);
         if is_live {
             self.staging.lifecycle = Lifecycle::Stopping;
         }
@@ -379,7 +432,7 @@ impl Engine {
                     self.staging.draining.push((subscriber, count));
                     Tie::asks(count)
                 }
-                At::Start | At::Cycle(_) => Tie::TELL,
+                At::Boot | At::Start | At::Cycle(_) => Tie::TELL,
             };
             mailed.push(Mailed {
                 by: subscriber,

@@ -4,6 +4,7 @@
 use aethereal_chassis_browser::Started;
 use core::cell::RefCell;
 use core::mem;
+use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 thread_local! {
@@ -31,8 +32,12 @@ impl From<Started> for Program {
 #[wasm_bindgen]
 impl Program {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds.
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.started.frame(timestamp_millis);
+    ///
+    /// # Errors
+    ///
+    /// When the program did not boot: the page shows why and calls no more frames.
+    pub fn frame(&mut self, timestamp_millis: f64) -> Result<(), JsError> {
+        Ok(self.started.frame(timestamp_millis)?)
     }
 
     /// What the example's roots said since this was last asked, a line each.

@@ -2132,16 +2132,11 @@ fn sorted(mut seen: Vec<Seen>) -> Vec<Seen> {
     seen
 }
 
-/// The chain the `begin` of the root `root` set off (ADR-0012).
-const fn begun(root: ActorId) -> MailId {
-    MailId { sender: root, count: 0 }
-}
-
 #[test]
-fn a_root_s_chain_finishes_once_nothing_it_set_off_is_left_to_run() {
+fn boot_s_chain_finishes_once_nothing_the_roots_set_off_is_left_to_run() {
     // Catches a chain taken for finished while mail of it waits, while an actor it ended is still to run its closing
     // turn, or while one watching that actor is still to be shown the ending, and a chain taken for open once all of
-    // it has run. Everything here follows from the root's `begin`, so its chain is open exactly while a step would
+    // it has run. Everything here follows from the root's `begin`, on `Boot`, so it is open exactly while a step would
     // run a turn. A node leaving failing fails its closing turn, so what it sends is dropped and only the turn itself
     // is left to run.
     let chains = [
@@ -2152,10 +2147,10 @@ fn a_root_s_chain_finishes_once_nothing_it_set_off_is_left_to_run() {
         vec![bounce(3), pair()],
     ];
     for notes in chains {
-        let (mut engine, root) = engine(&notes);
+        let (mut engine, _) = engine(&notes);
         let mut steps = 0;
         loop {
-            let finished = engine.has_finished(begun(root));
+            let finished = engine.has_finished(lifecycle::boot());
             assert_eq!(finished, engine.is_idle(), "{notes:?} after {steps} steps");
             if finished {
                 break;
@@ -2177,35 +2172,45 @@ fn a_chain_carried_past_its_receivers_slice_has_not_finished() {
     };
     for hops in [0, 64] {
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, hops).ready();
-        let Ok(holder) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
+        let Ok(_) = engine.add_root::<Holder>(&(), HolderConfig { to_self: Vec::new(), gives: 3000 }) else {
             panic!("the holder begins");
         };
         let clock = Ticking::default();
         let mut steps = 0;
         while !engine.is_idle() {
-            assert!(!engine.has_finished(begun(holder)), "hops={hops} after {steps} steps");
+            assert!(!engine.has_finished(lifecycle::boot()), "hops={hops} after {steps} steps");
             step_on(&mut engine, 2, &clock);
             steps += 1;
         }
         assert!(steps > 10, "the holder is cut off at its slice and carries what it was given, hops={hops}");
-        assert!(engine.has_finished(begun(holder)), "hops={hops}");
+        assert!(engine.has_finished(lifecycle::boot()), "hops={hops}");
     }
 }
 
 #[test]
 fn one_chain_finishes_while_another_runs_on() {
-    // Catches whether a chain has finished answered for every chain at once: the second root's chain ends with its
-    // closing turn while the first's mail is still going.
-    let (mut engine, first) = engine(&[spawn(2, spawn(3, up(hello())))]);
-    let config = NodeConfig { to_self: vec![close()], ..NodeConfig::quiet(2) };
-    let Ok(second) = engine.add_root::<Node>(&2, config) else {
+    // Catches whether a chain has finished answered for every chain at once: the chain of the outside's close to the
+    // second root ends with its closing turn while `Boot`'s, which the first root's `begin` set off, is still going.
+    let (mut engine, _) = engine(&[spawn(2, spawn(3, up(hello())))]);
+    let Ok(second) = engine.add_root::<Node>(&2, NodeConfig::quiet(2)) else {
         panic!("the second root begins");
     };
+    let Ok((outside, _)) = engine.seat_outside() else {
+        panic!("the outside is seated");
+    };
+    let Some(seat) = engine.table().seat(second) else {
+        panic!("the second root is live");
+    };
+    let Ok(count) = engine.send_outside(outside, Seated { id: second, seat }, &close(), |_| Tie::TELL) else {
+        panic!("the close is sent");
+    };
+    let closing = MailId { sender: outside.id, count };
+
     step(&mut engine);
-    assert!(!engine.has_finished(begun(second)), "the second root is still to run its closing turn");
+    assert!(!engine.has_finished(closing), "the second root is still to run its closing turn");
     step(&mut engine);
-    assert!(engine.has_finished(begun(second)));
-    assert!(!engine.has_finished(begun(first)), "3 has yet to say hello");
+    assert!(engine.has_finished(closing));
+    assert!(!engine.has_finished(lifecycle::boot()), "3 has yet to say hello");
 }
 
 /// A root that takes what it is told, at the listener's name.

@@ -29,7 +29,12 @@
     await init();
     const program = await start();
     const frame = (timestamp) => {
-      program.frame(timestamp);
+      try {
+        program.frame(timestamp);
+      } catch (error) {
+        said.textContent += `${error}\n`;
+        throw error;
+      }
       for (const line of program.said()) {
         said.textContent += `${line}\n`;
       }

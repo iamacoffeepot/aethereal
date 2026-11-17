@@ -94,7 +94,7 @@ pub use wasm_bindgen_futures;
 
 use aethereal_actor::Time;
 use aethereal_pace::Clockwork;
-use aethereal_substrate::{Clock, Engine};
+use aethereal_substrate::{Clock, Engine, Lifecycle, Unbooted};
 
 /// An engine run on the page's thread, timed by the clock `C`: the page's own, [`Performance`], in a browser, with
 /// what it serves the renderer and what it answers the window root with.
@@ -110,7 +110,7 @@ pub struct Browser<C> {
 
 impl<C: Clock> Browser<C> {
     /// `engine`, with its roots made, started on `clock`, serving its renderer as `serving` says, and answering its
-    /// window root through `hosted`: its `Start` runs in the first frame (ADR-0020).
+    /// window root through `hosted`: it boots, and its `Start` runs in the frame that finishes `Boot` (ADR-0020).
     #[must_use]
     pub fn new(mut engine: Engine, clock: C, serving: Serving, hosted: Hosted) -> Self {
         engine.start();
@@ -148,10 +148,15 @@ impl<C: Clock> Browser<C> {
     /// of a cycle at the frame's time, and no canvas's frame is handed to the renderer when none runs. A held cycle
     /// that finished is said to the pacer within the frame, so it asks for the next by the frame after (ADR-0045).
     ///
+    /// # Errors
+    ///
+    /// [`Unbooted`] once the program's boot has failed: an actor quit, or a turn failed, before `Start` (ADR-0020). The
+    /// page calls no more frames, and reports it as a program that did not start (ADR-0029).
+    ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
-    pub fn frame(&mut self, timestamp_millis: f64) {
+    pub fn frame(&mut self, timestamp_millis: f64) -> Result<(), Unbooted> {
         let at = frame_time(timestamp_millis);
         self.serving.measure(at);
         // The page draws on and on, so a clock set running needs no frame asked for.
@@ -170,6 +175,13 @@ impl<C: Clock> Browser<C> {
         let _ = self.clockwork.settle(&self.engine);
         self.run_until_idle();
         self.serving.serve();
+
+        match self.engine.lifecycle() {
+            Lifecycle::Unbooted(why) => Err(why),
+            Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running | Lifecycle::Stopping | Lifecycle::Stopped => {
+                Ok(())
+            }
+        }
     }
 
     /// Brings in what was pushed and finished and steps, until no actor has anything to run, answering what the window

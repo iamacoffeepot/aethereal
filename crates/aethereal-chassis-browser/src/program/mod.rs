@@ -106,11 +106,16 @@ impl Started {
     /// Runs one frame, at the timestamp `requestAnimationFrame` handed its callback, in milliseconds, as
     /// [`Browser::frame`] does.
     ///
+    /// # Errors
+    ///
+    /// [`ProgramError::Unbooted`] once the program's boot has failed, reported as a failed bootstrap is (ADR-0029):
+    /// the page calls no more frames.
+    ///
     /// # Panics
     ///
     /// Panics with a turn's panic, and when a turn makes an actor under an id the table already holds (ADR-0008).
-    pub fn frame(&mut self, timestamp_millis: f64) {
-        self.browser.frame(timestamp_millis);
+    pub fn frame(&mut self, timestamp_millis: f64) -> Result<(), ProgramError> {
+        self.browser.frame(timestamp_millis).map_err(ProgramError::Unbooted)
     }
 
     /// The engine, as of the last frame.

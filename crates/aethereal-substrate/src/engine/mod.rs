@@ -63,8 +63,8 @@ use debts::Debts;
 use due::{Alarm, Deadlines, Expiring};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
-pub use lifecycle::Lifecycle;
 use lifecycle::{LIFECYCLE, Staging};
+pub use lifecycle::{Lifecycle, Unbooted};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
@@ -929,7 +929,8 @@ impl Engine {
         // A root is made between steps, when nothing reads the store, so what its `begin` put is taken in at once.
         self.blobs.take_in(&mut puts);
         self.puts[ROOTS] = puts;
-        let context = Context { root: MailId { sender: id, count: 0 }, depth: 1 };
+        // A root's `begin` sends on `Boot`, which `Start` waits for (ADR-0012, ADR-0020).
+        let context = Context { root: lifecycle::boot(), depth: 1 };
         let root = match made {
             Ok(root) => root,
             Err(refused) => {

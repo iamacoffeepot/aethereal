@@ -1,12 +1,14 @@
 //! The MCP capability served on the native host over real HTTP, the test its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path,
-    ProtocolRef, ToSender, Top, Turn, Unanswered, path,
+    Actor, ActorName, ActorRef, Answer, Answered, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles,
+    Path, ProtocolRef, ToSender, Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
-use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json};
+use aethereal_data::{
+    ActorPath, Budget, Kind, PathSegment, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json,
+};
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{
@@ -15,7 +17,7 @@ use aethereal_link::{
 };
 use aethereal_mcp::{Admit, Bearer, Dismiss, Mcp, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
+use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program, Unbooted};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{
     Call, Called, Caller, Offer, Offered, Output, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
@@ -1067,21 +1069,25 @@ fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
 }
 
 #[test]
-fn a_name_held_already_stops_the_program() -> Result<(), Unheard> {
-    // Catches a refused offer ignored, and one that ends only the toolbox, which left its tools running, reached by
-    // nothing, for as long as the program ran (#356).
+fn a_name_held_already_fails_the_boot_naming_the_toolbox() -> Result<(), Unheard> {
+    // Catches a refused offer ignored, one that ends only the toolbox, which left its tools running, reached by
+    // nothing, for as long as the program ran (#356), and one taken for a clean stop: the toolbox's offer rides `Boot`,
+    // so its quit is a program that did not start (ADR-0020, ADR-0037).
     let mut harness = Harness::of(program())?;
     let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Booting);
 
     harness.add_root::<Toolbox<(Other, Say1), Mcp>>(&(), ToolboxConfig)?;
     waiting::until(BUDGET, || {
         harness.step();
-        harness.host().engine().lifecycle() == Lifecycle::Stopped
+        matches!(harness.host().engine().lifecycle(), Lifecycle::Unbooted(_))
     });
 
-    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped, "the program stops");
+    let toolbox = PathSegment::new(Toolbox::<(Other, Say1), Mcp>::NAME, &());
+    let quit = Unbooted::Quit(ActorName::Path(ActorPath::from_root(&toolbox)));
+    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Unbooted(quit), "the program does not start");
 
     Ok(())
 }

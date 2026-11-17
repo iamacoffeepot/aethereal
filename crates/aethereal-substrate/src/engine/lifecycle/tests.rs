@@ -5,8 +5,8 @@ use super::super::outside::{Handed, Turned};
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Own, Path, Present, Render, Stage,
-    Start, Stop, Tells, Tick, Time, ToSender, ToType, Top, Turn, path,
+    Actor, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Own,
+    Path, Present, Render, Stage, Start, Stop, Tells, Tick, Time, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
@@ -29,17 +29,24 @@ enum Seen {
     Rendered,
     /// A cycler was sent `Present`.
     Presented,
+    /// The actor was answered its grant.
+    Granted(u64),
+    /// The actor's turn failed.
+    Failed(u64),
 }
 
 impl Seen {
-    /// What `turned`, which did not fail, shows: nothing for a turn over no stage and no note.
+    /// What `turned` shows: nothing for a turn over no stage, no note, and no grant that did not fail.
     fn of(turned: &Turned) -> Option<Self> {
-        assert!(!turned.failed(), "no turn of these tests fails");
         let Handed::Mail(_) = turned.handed else {
             return None;
         };
         let last = turned.path.last();
         let number = last.key().and_then(|key| key.to_string().parse().ok()).unwrap_or_default();
+
+        if turned.failed() {
+            return Some(Self::Failed(number));
+        }
 
         if let Ok(note) = turned.read() {
             return Some(Self::Got(number, note));
@@ -61,6 +68,9 @@ impl Seen {
         }
         if turned.read::<Present>().is_ok() {
             return Some(Self::Presented);
+        }
+        if turned.read::<Granted>().is_ok() {
+            return Some(Self::Granted(number));
         }
 
         None
@@ -250,9 +260,10 @@ fn stop_is_sent_only_once_every_turn_start_set_off_has_run() {
 
 #[test]
 fn an_actor_that_asks_to_stop_stops_the_program_once_its_stage_has_finished() {
-    // Catches an actor's request to stop that the engine never reads, and one that cuts the stage under way short:
-    // the second root asks in a turn of `Start`'s chain, which runs on two steps more. One asked before the host
-    // started the lifecycle stops it as well.
+    // Catches an actor's request to stop that the engine never reads, one that cuts the stage under way short, and
+    // one once `Start` was sent taken for a failed boot: the second root asks in a turn of `Start`'s chain, which runs
+    // on two steps more, and the program ends `Stopped`. One asked before the host started the lifecycle stops it as
+    // well.
     let mut early = engine(&[(1, OnStart::Passes, &[Note::Quit])]);
     assert_eq!(step(&mut early), [got(1, Note::Quit)]);
     assert_eq!(early.lifecycle(), Lifecycle::Stopping, "asked before the host started it");
@@ -796,8 +807,9 @@ fn a_subscriber_that_holds_stop_keeps_the_program_from_stopping_until_it_answers
 
 #[test]
 fn a_stage_nothing_subscribes_to_is_passed_at_once() {
-    // Catches a stage sent to no subscriber left under way until a step's fold looks again: an engine with nothing to
-    // run never stops, as no step will run to move it on.
+    // Catches a stage sent to no subscriber left under way until a step's fold looks again, and a `Boot` its roots
+    // sent nothing on waited on for a step: an engine with nothing to run never stops, as no step will run to move it
+    // on.
     let Some(parts) = NonZeroUsize::new(1) else {
         panic!("one is not zero");
     };
@@ -884,4 +896,239 @@ fn a_root_refused_both_for_a_stage_and_for_a_typed_path_is_refused_for_the_stage
     let unstaged = Err(Refused::Unstaged(KindId::of::<Receive>()));
     assert_eq!(drawing.add_root::<Castaway>(&(), Note::Nothing).map(|_| ()), unstaged);
     assert_eq!(full.add_root::<Castaway>(&(), Note::Nothing).map(|_| ()), Err(Refused::Missing(Shore::NAME)));
+}
+
+/// What an asker asks of the granter as it begins.
+#[derive(Plain)]
+#[kind(name = "aether.test.grant")]
+struct Grant;
+
+/// The granter's answer to a grant.
+#[derive(Plain)]
+#[kind(name = "aether.test.granted")]
+struct Granted;
+
+/// What the granter sends itself on a grant, and answers it on.
+#[derive(Plain)]
+#[kind(name = "aether.test.grant_hop")]
+struct Hop;
+
+/// What an asker keeps while its grant is out.
+#[derive(Plain)]
+#[kind(name = "aether.test.asking")]
+struct Asking;
+
+/// The reason an asker fails with, made to fail on its grant.
+#[derive(Plain)]
+#[kind(name = "aether.test.ungranted")]
+struct Ungranted;
+
+/// A root that answers each grant a hop later: it holds the request and sends itself a hop, which answers it, so the
+/// answer rides the chain of the grant two turns on.
+#[derive(Bound)]
+#[kind(name = "aether.test.granter")]
+struct Granter {
+    /// The grants it holds until its hop.
+    held: Vec<Held<Granted>>,
+}
+
+impl ChildOf for Granter {
+    type Parent = Top;
+}
+
+impl Actor for Granter {
+    type Config = Note;
+    type Key = ();
+    type Handles = (Grant, Hop);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Note, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        Ok(Self { held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Grant> for Granter {
+    type Answers = (Granted,);
+}
+
+impl Handles<Grant> for Granter {
+    type Sends = (ToSender<Granted>, ToType<Self, Hop>);
+
+    fn handle(&mut self, _: Grant, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.held.push(turn.hold()?);
+        turn.to(turn.me()).send(&Hop)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Hop> for Granter {
+    type Sends = ();
+
+    fn handle(&mut self, _: Hop, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        for held in self.held.drain(..) {
+            turn.answer(held, &Granted)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// What an asker does once its grant is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.on_granted")]
+enum OnGranted {
+    /// Nothing more.
+    Keeps,
+    /// Asks the program to stop.
+    Quits,
+    /// Fails the turn, with [`Ungranted`].
+    Fails,
+}
+
+/// A root that, as it begins, subscribes to `Start` and `Stop` and asks the granter, listed before it, for a grant,
+/// and on the answer does what it was made with.
+#[derive(Bound)]
+#[kind(name = "aether.test.asker")]
+struct Asker {
+    on_granted: OnGranted,
+}
+
+impl ChildOf for Asker {
+    type Parent = Top;
+}
+
+impl Actor for Asker {
+    type Config = OnGranted;
+    type Key = ();
+    type Handles = (Answer<Granted, Asking>, On<Start>, On<Stop>);
+    type BeginSends = (Asks<Path<Granter>, Grant, Asking>,);
+    type EndSends = ();
+
+    fn begin(on_granted: OnGranted, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+        turn.subscribe::<Stop>();
+        turn.to(path::<Granter>(())).ask(&Grant, &Asking)?;
+
+        Ok(Self { on_granted })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Answer<Granted, Asking>> for Asker {
+    type Sends = ();
+
+    fn handle(&mut self, _: (Answered<Granted>, Asking), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        match self.on_granted {
+            OnGranted::Keeps => {}
+            OnGranted::Quits => turn.quit(),
+            OnGranted::Fails => return Err(Fault::new(&Ungranted)?),
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Asker {
+    type Sends = ();
+
+    fn handle(&mut self, _: Start, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<On<Stop>> for Asker {
+    type Sends = ();
+
+    fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// An engine with the granter and an asker made to do `on_granted`, the granter listed first, started: booting.
+fn booting(on_granted: OnGranted) -> Engine {
+    let mut engine = engine(&[]);
+    let Ok(_) = engine.add_root::<Granter>(&(), Note::Nothing) else {
+        panic!("the granter begins");
+    };
+    let Ok(_) = engine.add_root::<Asker>(&(), on_granted) else {
+        panic!("the asker begins");
+    };
+    engine.start();
+
+    engine
+}
+
+/// Steps until no actor has anything to run, and answers with what the turns showed, step by step.
+fn settled(engine: &mut Engine) -> Vec<Seen> {
+    let mut shown = Vec::new();
+    while !engine.is_idle() {
+        shown.extend(step(engine));
+    }
+
+    shown
+}
+
+/// The asker's name, as a failed boot names it.
+fn asker() -> ActorName {
+    ActorName::Path(ActorPath::from_root(&PathSegment::new(Asker::NAME, &())))
+}
+
+#[test]
+fn start_waits_for_every_turn_the_roots_begins_set_off() {
+    // Catches `Start` sent as the host starts the program, before what the roots' `begin`s asked is answered, and
+    // `Boot` taken for only the mail a `begin` sent: the grant is answered a hop after the granter took it, so `Start`
+    // sent once the request was held, or once the grant was handled, comes a step or two early.
+    let mut engine = booting(OnGranted::Keeps);
+    assert_eq!(engine.lifecycle(), Lifecycle::Booting);
+
+    assert!(step(&mut engine).is_empty(), "the granter holds the grant and sends itself a hop");
+    assert!(step(&mut engine).is_empty(), "the hop answers the grant");
+    assert_eq!(engine.lifecycle(), Lifecycle::Booting);
+    assert_eq!(step(&mut engine), [Seen::Granted(0)]);
+    assert_eq!(engine.lifecycle(), Lifecycle::Running);
+    assert_eq!(step(&mut engine), [Seen::Started(0)]);
+}
+
+#[test]
+fn an_actor_that_quits_while_the_program_boots_fails_the_boot_naming_it() {
+    // Catches a quit before `Start` taken for a clean stop, which sends `Stop` and ends `Stopped`, `Start` sent to a
+    // program whose boot failed, and a failed boot that does not name the actor.
+    let mut engine = booting(OnGranted::Quits);
+
+    assert_eq!(settled(&mut engine), [Seen::Granted(0)], "neither `Start` nor `Stop` is sent");
+    assert_eq!(engine.lifecycle(), Lifecycle::Unbooted(Unbooted::Quit(asker())));
+}
+
+#[test]
+fn a_turn_that_fails_while_the_program_boots_fails_the_boot_naming_the_actor_and_its_fault() {
+    // Catches a fault before `Start` that ends only its actor, so the program starts without the setup it asked
+    // for, and a failed boot that does not hold the actor or its fault.
+    let mut engine = booting(OnGranted::Fails);
+    let Ok(fault) = Fault::new(&Ungranted) else {
+        panic!("the reason is written");
+    };
+
+    assert_eq!(settled(&mut engine), [Seen::Failed(0)], "neither `Start` nor `Stop` is sent");
+    assert_eq!(engine.lifecycle(), Lifecycle::Unbooted(Unbooted::Failed(asker(), fault)));
+}
+
+#[test]
+fn the_host_s_quit_while_the_program_boots_stops_it_cleanly() {
+    // Catches the host's quit while booting taken for a failed boot, `Start` sent to a program the host told to end,
+    // and `Stop` sent while `Boot` still runs.
+    let mut engine = booting(OnGranted::Keeps);
+    engine.quit();
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
+
+    assert_eq!(settled(&mut engine), [Seen::Granted(0), Seen::Stopping(0)]);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
 }

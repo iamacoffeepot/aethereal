@@ -6,7 +6,7 @@ mod timer;
 
 use crate::Headless;
 use aethereal_actor::Time;
-use aethereal_substrate::{Clock, Lifecycle};
+use aethereal_substrate::{Clock, Lifecycle, Unbooted};
 use core::time::Duration;
 use std::sync::Arc;
 use std::task::{Wake, Waker};
@@ -14,13 +14,16 @@ use std::thread::{self, Thread};
 pub use timer::Timer;
 
 /// How a program run to its end ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
     /// `Stop` finished: every turn it set off ran, and every subscriber answered it, let it go, or ended.
     Stopped,
     /// `Stop` had not finished in the time the host gave it once the program was asked to stop: a subscriber still
     /// held it, or its chain still ran.
     OutOfTime,
+    /// The program did not boot: an actor quit, or a turn failed, before `Start`, as this says. Neither `Start` nor
+    /// `Stop` was sent (ADR-0020).
+    Unbooted(Unbooted),
 }
 
 /// How long the host rests between steps with nothing to run.
@@ -55,10 +58,11 @@ enum Stopping {
 }
 
 impl Headless {
-    /// Runs the program through its lifecycle, then drops it (ADR-0020): starts it, says a cycle is due every
+    /// Runs the program through its lifecycle, then drops it (ADR-0020): boots and starts it, says a cycle is due every
     /// `every`, brings in what its sources were pushed and its jobs finished before each step (ADR-0010, ADR-0018),
     /// steps while any actor has anything to run, and once it is asked to stop, by an actor's
-    /// [`quit`](aethereal_actor::Turn::quit), waits at most `stop_within` for `Stop` to finish.
+    /// [`quit`](aethereal_actor::Turn::quit), waits at most `stop_within` for `Stop` to finish. A program whose boot
+    /// failed ends at once, [`Exit::Unbooted`].
     ///
     /// Between steps with nothing to run it parks its workers and sleeps until the next cycle is due, or until the
     /// time it gives `Stop` has passed. A source pushed, or a job finished, while it sleeps wakes it, and what came in
@@ -84,9 +88,10 @@ impl Headless {
             let now = self.clock.nanos();
             match (self.engine.lifecycle(), stopping) {
                 (Lifecycle::Stopped, _) => break Exit::Stopped,
+                (Lifecycle::Unbooted(why), _) => break Exit::Unbooted(why),
                 (Lifecycle::Stopping, Stopping::Not) => stopping = Stopping::By(now.saturating_add(stop_within)),
                 (Lifecycle::Stopping, Stopping::By(by)) if now >= by => break Exit::OutOfTime,
-                (Lifecycle::Waiting | Lifecycle::Running | Lifecycle::Stopping, _) => {}
+                (Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running | Lifecycle::Stopping, _) => {}
             }
             // The timer's grid goes on through a hold, so a clock set running needs nothing asked of it here.
             let _ = self.clockwork.take(&mut self.engine, Time::from_nanos(now));

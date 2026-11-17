@@ -1,6 +1,7 @@
-//! Why a program did not start: a refusal as it is put together, a setting, or a root's bootstrap (ADR-0029).
+//! Why a program did not start: a refusal as it is put together, a setting, a root's bootstrap, or its boot
+//! (ADR-0020, ADR-0029).
 
-use crate::{CodeRefused, SecondPublisher};
+use crate::{CodeRefused, SecondPublisher, Unbooted};
 use aethereal_actor::Refused;
 use aethereal_data::KindName;
 use aethereal_data::config::{ConfigError, FlagError};
@@ -79,8 +80,9 @@ impl fmt::Display for Reader {
     }
 }
 
-/// Why a program did not start (ADR-0029): each is found before the program runs, and the engine and any roots
-/// begun before it are dropped.
+/// Why a program did not start (ADR-0029): each but a failed boot is found before the program runs, and the engine
+/// and any roots begun before it are dropped. A failed boot is found once it runs, before `Start`, and its engine is
+/// dropped as well (ADR-0020).
 #[derive(Debug)]
 pub enum ProgramError {
     /// Two sections of one name, refused before anything is made.
@@ -103,6 +105,8 @@ pub enum ProgramError {
         /// Why.
         why: Unbuilt,
     },
+    /// An actor quit, or a turn failed, as the program booted, before `Start` (ADR-0020).
+    Unbooted(Unbooted),
 }
 
 impl From<ConfigError> for ProgramError {
@@ -130,6 +134,7 @@ impl fmt::Display for ProgramError {
             Self::Configuration(error) => write!(f, "program: {error}"),
             Self::Flags(error) => write!(f, "program: {error}"),
             Self::Root { root, why } => write!(f, "program: {root} did not bootstrap: {why}"),
+            Self::Unbooted(why) => write!(f, "program: did not boot: {why}"),
         }
     }
 }
