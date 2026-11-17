@@ -1,7 +1,7 @@
 //! A request and its response (ADR-0035), their bodies blobs (ADR-0042).
 
-use crate::Status;
-use aethereal_actor::{Bytes, Carries, Protocol};
+use crate::{ResponseLength, ResponseSource, Status};
+use aethereal_actor::{Bytes, Carries, Protocol, ProtocolRef, Streamed};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;
 
@@ -107,26 +107,47 @@ impl Carries<Request> for Handling {
     type Answers = (Response,);
 }
 
-/// What a handler answers a request with. The exchange writes `Content-Length` and `Connection` itself, and passes
-/// the body to its connection without reading it.
+/// What a handler answers a request with. The exchange writes `Content-Length`, `Transfer-Encoding`, and `Connection`
+/// itself, and passes a whole body to its connection without reading it.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.http.response")]
 pub struct Response {
     pub status: Status,
     pub headers: Vec<Header>,
-    pub body: Bytes,
+    pub body: ResponseBody,
 }
 
 impl Response {
     /// A response of `status`, whose body is `body`, of the type `content_type`.
     #[must_use]
     pub fn new(status: Status, content_type: &str, body: Bytes) -> Self {
-        Self { status, headers: vec![Header::new("content-type", content_type)], body }
+        Self { status, headers: vec![Header::new("content-type", content_type)], body: ResponseBody::Whole(body) }
     }
 
     /// A response of `status` with no header, whose body is `body`: an empty blob for one that says nothing more.
     #[must_use]
     pub const fn bare(status: Status, body: Bytes) -> Self {
-        Self { status, headers: Vec::new(), body }
+        Self { status, headers: Vec::new(), body: ResponseBody::Whole(body) }
     }
+}
+
+/// A response's body: whole, or streamed from a source as the connection takes it.
+#[derive(Debug, Clone, PartialEq, Eq, Bound)]
+#[kind(name = "aether.http.response_body")]
+pub enum ResponseBody {
+    /// Put whole, written after the head as it is, with its `Content-Length`.
+    Whole(Bytes),
+    /// Read from a source as it comes, and written as the connection takes it.
+    Streamed(StreamedBody),
+}
+
+/// A response's body streamed from `source` through a [`ResponseSource`] stream the exchange opens with `body`, the
+/// handler's number for it, and written as it comes: with its `Content-Length` when its `length` is known, in chunks
+/// when it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+#[kind(name = "aether.http.streamed_body")]
+pub struct StreamedBody {
+    pub source: ProtocolRef<Streamed<ResponseSource>>,
+    pub body: u64,
+    pub length: ResponseLength,
 }

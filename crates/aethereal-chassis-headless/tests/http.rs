@@ -2,20 +2,22 @@
 //! ADR-0036).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part, Streamed,
-    Streams, ToAny, ToSender, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Number, Open, Part,
+    Serving, StreamKey, Streamed, Streams, ToAny, ToSender, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{
     BlobBytesTooLow, BodyRead, Handling, Header, Http, HttpSettings, Mount, ReadLimitTooLow, Request, RequestBody,
-    Response, Serve, Served, Status, StreamedRequest,
+    Response, ResponseBody, ResponseBytes, ResponseLength, ResponseSource, Serve, Served, SourceEnd, Status,
+    StreamedBody, StreamedRequest,
 };
 use aethereal_substrate::harness::{Harness, Held, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::{Interface, Tcp};
 use std::io::{Read as _, Write as _};
+use std::mem;
 use std::net::TcpStream;
 use std::num::NonZeroU32;
 use std::thread::{self, JoinHandle};
@@ -595,6 +597,456 @@ fn a_request_after_a_streamed_body_waits_for_its_answer_and_one_outside_every_mo
     assert_eq!(answered[1].body, b"whole");
     assert!(closed, "the request after the streamed one asked to close");
     assert_eq!(reader(&mut harness)?.read, [BodyRead::Whole]);
+
+    Ok(())
+}
+
+/// What a source sends for each body it is opened for: `parts` parts of `part_bytes` bytes, each part its place's
+/// letter, then the end `ends` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.http.plan")]
+struct Plan {
+    parts: u32,
+    part_bytes: u32,
+    ends: Ends,
+}
+
+/// How a source ends a body it sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.http.ends")]
+enum Ends {
+    /// Whole, once every part is sent.
+    Whole,
+    /// Failed, once this many parts are sent.
+    FailsAfter(u32),
+}
+
+impl Plan {
+    /// The body it sends whole.
+    fn body(self) -> Vec<u8> {
+        (0..self.parts).flat_map(|place| part(place, self.part_bytes)).collect()
+    }
+}
+
+/// The part a source sends at `place`, of `bytes` bytes.
+fn part(place: u32, bytes: u32) -> Vec<u8> {
+    let letter = b'a' + u8::try_from(place % 26).unwrap_or(0);
+
+    vec![letter; usize::try_from(bytes).unwrap_or(0)]
+}
+
+/// A root that sends streamed responses' bodies: each [`ResponseSource`] stream opened on it is sent as its plan says,
+/// a part for each credit it has. It keeps the most credit it was ever granted ahead, and how each stream ended.
+#[derive(Bound)]
+#[kind(name = "aether.test.http.source")]
+struct Source {
+    plan: Plan,
+    serving: Serving<ResponseSource>,
+    /// The parts sent of the stream open.
+    sent: u32,
+    /// The most parts it was ever let send ahead.
+    most_credit: u32,
+    /// How each stream ended, in order.
+    ended: Vec<SourceEnd>,
+}
+
+impl ChildOf for Source {
+    type Parent = Top;
+}
+
+impl Actor for Source {
+    type Config = Plan;
+    type Key = ();
+    type Handles = (Plan, Open<ResponseSource>, More, Enough, Ended);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(plan: Plan, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { plan, serving: Serving::new(), sent: 0, most_credit: 0, ended: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Source {
+    const SECTION: &'static str = "source";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Plan { parts: 0, part_bytes: 0, ends: Ends::Whole })
+    }
+}
+
+impl Handles<Plan> for Source {
+    type Sends = ();
+
+    fn handle(&mut self, plan: Plan, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.plan = plan;
+
+        Ok(())
+    }
+}
+
+impl Handles<Open<ResponseSource>> for Source {
+    type Sends = (ToSender<SourceEnd>,);
+
+    fn handle(&mut self, open: Open<ResponseSource>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.open(turn, open)?;
+        self.sent = 0;
+
+        Ok(())
+    }
+}
+
+impl Handles<More> for Source {
+    type Sends = (ToAny<(Part<ResponseSource>,), Part<ResponseSource>>,);
+
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Some(key) = self.serving.more(turn, &more) else {
+            return Ok(());
+        };
+        loop {
+            let Some(stream) = self.serving.get_mut(key) else {
+                return Ok(());
+            };
+            self.most_credit = self.most_credit.max(stream.credit());
+            let has_credit = stream.credit() > 0;
+            let has_parts = self.sent < self.plan.parts;
+            let sends = has_credit && has_parts;
+            if !sends {
+                break;
+            }
+            let Ok(bytes) = turn.put(part(self.sent, self.plan.part_bytes)) else {
+                return Ok(());
+            };
+            assert!(stream.send(turn, ResponseBytes { bytes }).is_ok(), "a part within credit sends");
+            self.sent += 1;
+            if self.plan.ends == Ends::FailsAfter(self.sent) {
+                return self.finish(turn, key, SourceEnd::Failed);
+            }
+        }
+        if self.sent == self.plan.parts {
+            return self.finish(turn, key, SourceEnd::Whole);
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Enough> for Source {
+    type Sends = ();
+
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let Some(stopped) = self.serving.stop(turn, &enough) else {
+            return Ok(());
+        };
+        stopped.finish(turn, &SourceEnd::Stopped)?;
+        self.ended.push(SourceEnd::Stopped);
+
+        Ok(())
+    }
+}
+
+impl Handles<Ended> for Source {
+    type Sends = ();
+
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.serving.ended(&ended);
+
+        Ok(())
+    }
+}
+
+impl Source {
+    /// Ends the stream `key` with `end`.
+    fn finish<S>(&mut self, turn: &mut Turn<'_, Self, S>, key: StreamKey, end: SourceEnd) -> Result<(), Fault> {
+        if let Some(stream) = self.serving.take(key) {
+            stream.finish(turn, &end)?;
+            self.ended.push(end);
+        }
+
+        Ok(())
+    }
+}
+
+/// A host running `settings` with a source, which serves a port to the test, and the port.
+fn sourced(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
+    let engine = EngineSettings {
+        read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX),
+        ..EngineSettings::default()
+    };
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings).root::<Source>();
+    let mut harness = Harness::of(program)?;
+    let http = harness.root::<Http>();
+    let handler = harness.protocol::<Handling>();
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts: Vec::new() })?;
+    let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
+        panic!("the port is bound");
+    };
+
+    Ok((harness, port))
+}
+
+/// The response to the next request asked of the test: `200`, its body streamed from the source as `plan` says, of
+/// `length`.
+fn stream_next(harness: &mut Harness<Headless>, plan: Plan, length: ResponseLength) -> Result<(), Unheard> {
+    let source = harness.root::<Source>();
+    harness.tell(source, &plan)?;
+    let request = harness.asked::<Request>()?;
+    let body = StreamedBody { source: source.protocol(), body: 1, length };
+    let response = Response {
+        status: Status::Ok,
+        headers: vec![Header::new("content-type", "application/octet-stream")],
+        body: ResponseBody::Streamed(body),
+    };
+
+    harness.reply(request, &response)
+}
+
+/// The source once it has ended `count` streams, the harness stepping the host until it has or the wait is spent.
+fn source(harness: &mut Harness<Headless>, count: usize) -> Result<&Source, Unheard> {
+    let source = harness.root::<Source>();
+    waiting::until(BUDGET, || {
+        harness.step();
+
+        harness.state(source).is_ok_and(|source| source.ended.len() >= count)
+    });
+
+    harness.state(source)
+}
+
+/// A response as a client of any framing reads it: its head's text, its body decoded, and whether the body ended where
+/// its framing said, not cut short by the connection's close.
+#[derive(Debug)]
+struct Framed {
+    head: String,
+    body: Vec<u8>,
+    whole: bool,
+}
+
+/// More of `stream` into `buffer`: false once the server has closed it.
+fn more(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> bool {
+    let mut chunk = [0; 4096];
+    let Ok(count) = stream.read(&mut chunk) else {
+        panic!("the server sends within ten seconds");
+    };
+    buffer.extend_from_slice(&chunk[..count]);
+
+    count > 0
+}
+
+/// The next response on `stream`, `buffer` holding what was read past the last one: its body by its
+/// `Content-Length`, in chunks, or until the close, and none when it answers a `HEAD`, which is `head_only`. A plain
+/// decoder of its own, to check the exchange's framing against.
+fn framed(stream: &mut TcpStream, buffer: &mut Vec<u8>, head_only: bool) -> Framed {
+    let end = loop {
+        let ended = buffer.windows(4).position(|window| window == b"\r\n\r\n");
+        if let Some(end) = ended {
+            break end;
+        }
+        assert!(more(stream, buffer), "the server closed before a whole head");
+    };
+    let head = String::from_utf8_lossy(&buffer[..end]).into_owned();
+    buffer.drain(..end + 4);
+    let length = head.lines().find_map(|line| line.strip_prefix("content-length: ")).map(str::parse::<usize>);
+    let chunked = head.lines().any(|line| line == "transfer-encoding: chunked");
+    if head_only {
+        return Framed { head, body: Vec::new(), whole: true };
+    }
+
+    if let Some(Ok(length)) = length {
+        while buffer.len() < length {
+            if !more(stream, buffer) {
+                let body = mem::take(buffer);
+                return Framed { head, body, whole: false };
+            }
+        }
+        let body = buffer.drain(..length).collect();
+        return Framed { head, body, whole: true };
+    }
+    if !chunked {
+        while more(stream, buffer) {}
+        let body = mem::take(buffer);
+        return Framed { head, body, whole: true };
+    }
+    let mut body = Vec::new();
+    loop {
+        let line_end = loop {
+            let ended = buffer.windows(2).position(|window| window == b"\r\n");
+            if let Some(line_end) = ended {
+                break line_end;
+            }
+            if !more(stream, buffer) {
+                return Framed { head, body, whole: false };
+            }
+        };
+        let size = str::from_utf8(&buffer[..line_end]).ok().and_then(|size| usize::from_str_radix(size, 16).ok());
+        let Some(size) = size else {
+            panic!("a chunk's size line parses: {:?}", String::from_utf8_lossy(&buffer[..line_end]));
+        };
+        let needed = line_end + 2 + size + 2;
+        while buffer.len() < needed {
+            if !more(stream, buffer) {
+                body.extend_from_slice(&buffer[(line_end + 2).min(buffer.len())..]);
+                return Framed { head, body, whole: false };
+            }
+        }
+        assert_eq!(&buffer[needed - 2..needed], b"\r\n", "a chunk's data ends its line");
+        body.extend_from_slice(&buffer[line_end + 2..line_end + 2 + size]);
+        buffer.drain(..needed);
+        if size == 0 {
+            return Framed { head, body, whole: true };
+        }
+    }
+}
+
+/// A client on a thread of its own that sends `sent` to `port` and reads a response framed any way for each of
+/// `heads_only`, a `HEAD`'s when true, and whether the server then closed.
+fn framed_client(port: u16, sent: &'static [u8], heads_only: &'static [bool]) -> JoinHandle<(Vec<Framed>, bool)> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(sent).is_ok(), "the client writes");
+        let mut buffer = Vec::new();
+        let read = heads_only.iter().map(|&head_only| framed(&mut stream, &mut buffer, head_only)).collect();
+        let is_read = buffer.is_empty();
+        let closed = is_read && closes(&mut stream);
+
+        (read, closed)
+    })
+}
+
+/// What `client` read, the harness stepping the host until it has.
+fn heard_framed(harness: &mut Harness<Headless>, client: JoinHandle<(Vec<Framed>, bool)>) -> (Vec<Framed>, bool) {
+    while !client.is_finished() {
+        harness.step();
+    }
+    let Ok(read) = client.join() else {
+        panic!("the client finished");
+    };
+
+    read
+}
+
+#[test]
+fn a_streamed_response_of_unknown_length_arrives_whole_in_order_and_chunked() -> Result<(), Unheard> {
+    // Catches a streamed body's parts written out of order, lost, or framed wrong (a size in decimal, a chunk's line
+    // ending missing, no last chunk), and credit granted as a part is taken as well as once it is sent, which lets the
+    // source run past its window (checked by mutation: granting with `part` in place of `part_held` fails this test).
+    let settings = HttpSettings { window: 2, ..HttpSettings::default() };
+    let (mut harness, port) = sourced(settings)?;
+    let plan = Plan { parts: 60, part_bytes: 100, ends: Ends::Whole };
+    let client = framed_client(port, b"GET /stream HTTP/1.1\r\nConnection: close\r\n\r\n", &[false]);
+
+    stream_next(&mut harness, plan, ResponseLength::Unknown)?;
+
+    let (read, closed) = heard_framed(&mut harness, client);
+    assert!(read[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", read[0].head);
+    assert!(read[0].head.contains("transfer-encoding: chunked"), "{:?}", read[0].head);
+    assert!(!read[0].head.contains("content-length"), "{:?}", read[0].head);
+    assert!(read[0].whole, "the body ended with its last chunk");
+    assert_eq!(read[0].body, plan.body());
+    assert!(closed, "a request that asked to close is closed once its streamed response is written");
+    let source = source(&mut harness, 1)?;
+    assert_eq!(source.ended, [SourceEnd::Whole]);
+    assert!(source.most_credit <= 2, "the source ran {} parts ahead of a window of 2", source.most_credit);
+
+    Ok(())
+}
+
+#[test]
+fn a_streamed_response_of_known_length_or_to_http_1_0_is_written_without_chunks() -> Result<(), Unheard> {
+    // Catches a known length written as chunks, or its `Content-Length` missing; and chunks written to an HTTP/1.0
+    // client, which cannot read them, where its body runs until the connection closes.
+    let plan = Plan { parts: 30, part_bytes: 70, ends: Ends::Whole };
+    let (mut harness, port) = sourced(HttpSettings::default())?;
+    let client = framed_client(port, b"GET /stream HTTP/1.1\r\nConnection: close\r\n\r\n", &[false]);
+
+    stream_next(&mut harness, plan, ResponseLength::Known(2100))?;
+
+    let (read, closed) = heard_framed(&mut harness, client);
+    assert!(read[0].head.contains("content-length: 2100"), "{:?}", read[0].head);
+    assert!(!read[0].head.contains("transfer-encoding"), "{:?}", read[0].head);
+    assert_eq!(read[0].body, plan.body());
+    assert!(closed);
+
+    let (mut harness, port) = sourced(HttpSettings::default())?;
+    let client = framed_client(port, b"GET /stream HTTP/1.0\r\n\r\n", &[false]);
+
+    stream_next(&mut harness, plan, ResponseLength::Unknown)?;
+
+    let (read, _) = heard_framed(&mut harness, client);
+    assert!(read[0].head.contains("connection: close"), "{:?}", read[0].head);
+    assert!(!read[0].head.contains("transfer-encoding"), "{:?}", read[0].head);
+    assert!(!read[0].head.contains("content-length"), "{:?}", read[0].head);
+    assert_eq!(read[0].body, plan.body(), "the body runs until the close");
+
+    Ok(())
+}
+
+#[test]
+fn a_source_that_fails_midway_closes_the_connection_without_ending_the_body() -> Result<(), Unheard> {
+    // Catches a failed source's body ended with its last chunk, which a client would take for the whole body, and a
+    // connection kept open after a head whose status can no longer say the body broke.
+    let (mut harness, port) = sourced(HttpSettings::default())?;
+    let plan = Plan { parts: 10, part_bytes: 50, ends: Ends::FailsAfter(3) };
+    let client = framed_client(port, b"GET /stream HTTP/1.1\r\n\r\n", &[false]);
+
+    stream_next(&mut harness, plan, ResponseLength::Unknown)?;
+
+    let (read, _) = heard_framed(&mut harness, client);
+    assert!(read[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", read[0].head);
+    assert!(!read[0].whole, "the body is cut short by the close, not ended");
+    assert!(plan.body().starts_with(&read[0].body), "what came is the body's start");
+    assert_eq!(source(&mut harness, 1)?.ended, [SourceEnd::Failed]);
+
+    Ok(())
+}
+
+#[test]
+fn a_head_request_gets_a_streamed_responses_head_and_its_source_is_stopped_unread() -> Result<(), Unheard> {
+    // Catches a streamed body written in answer to a `HEAD`, its `Content-Length` dropped from the head, and a source
+    // left open and waiting to be read for a body that is never sent.
+    let (mut harness, port) = sourced(HttpSettings::default())?;
+    let plan = Plan { parts: 30, part_bytes: 70, ends: Ends::Whole };
+    let client = framed_client(port, b"HEAD /stream HTTP/1.1\r\nConnection: close\r\n\r\n", &[true]);
+
+    stream_next(&mut harness, plan, ResponseLength::Known(2100))?;
+
+    let (read, closed) = heard_framed(&mut harness, client);
+    assert!(read[0].head.contains("content-length: 2100"), "{:?}", read[0].head);
+    assert!(closed, "nothing follows the head before the close");
+    assert_eq!(source(&mut harness, 1)?.ended, [SourceEnd::Stopped]);
+
+    Ok(())
+}
+
+#[test]
+fn a_request_pipelined_after_a_streamed_response_is_answered_after_it() -> Result<(), Unheard> {
+    // Catches the request after a streamed response asked, and its response written, while the streamed body is still
+    // being written, which interleaves the two on the connection; and a connection that does not take the next request
+    // once a streamed response ends.
+    let (mut harness, port) = sourced(HttpSettings::default())?;
+    let plan = Plan { parts: 40, part_bytes: 100, ends: Ends::Whole };
+    let ahead =
+        b"GET /stream HTTP/1.1\r\n\r\nPOST /echo HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+    let client = framed_client(port, ahead, &[false, false]);
+
+    stream_next(&mut harness, plan, ResponseLength::Unknown)?;
+    let echo = harness.asked::<Request>()?;
+    let answer = echoed(&echo);
+    harness.reply(echo, &answer)?;
+
+    let (read, closed) = heard_framed(&mut harness, client);
+    assert!(read[0].whole, "{:?}", read[0].head);
+    assert_eq!(read[0].body, plan.body());
+    assert!(read[1].head.contains("x-method: Post"), "{:?}", read[1].head);
+    assert_eq!(read[1].body, b"hello");
+    assert!(closed);
 
     Ok(())
 }
