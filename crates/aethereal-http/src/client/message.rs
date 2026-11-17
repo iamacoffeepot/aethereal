@@ -2,6 +2,7 @@
 //! arrives, and a connection switched to another protocol.
 
 use super::Client;
+use crate::body::Broken;
 use crate::{Header, Method};
 use aethereal_actor::{Bytes, Carries, ProtocolRef, Stream};
 use aethereal_data::{Bound, Plain};
@@ -144,6 +145,16 @@ pub enum Failure {
     /// The engine had no room to hold what the client wrote, and nothing was sent; or what it read, and the client has
     /// closed (ADR-0014).
     NoRoom,
+}
+
+/// A body that breaks its framing does not parse, and a line of it past the most bytes of a head is too large.
+impl From<Broken> for Failure {
+    fn from(broken: Broken) -> Self {
+        match broken {
+            Broken::Malformed => Self::Malformed,
+            Broken::LineTooLarge => Self::TooLarge(Limit::Head),
+        }
+    }
 }
 
 /// Why a request would not write.

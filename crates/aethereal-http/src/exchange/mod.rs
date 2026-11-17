@@ -4,6 +4,7 @@
 mod parse;
 mod write;
 
+use crate::body::{Body, Decoded, Progress};
 use crate::{Handling, Limits, Method, Request, Response, Server, Status};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Due, Ending, Fault, Handles, JobId,
@@ -14,7 +15,7 @@ use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
 use core::mem;
 use core::time::Duration;
-use parse::{Head, Parsed as Front, Refusal};
+use parse::{Framing, Head, Parsed as Front, Refusal};
 use std::num::NonZeroU32;
 
 /// What an exchange is made from: the connection it reads, where it came from, the port it came in on, the handler it
@@ -66,9 +67,9 @@ enum Phase {
     Idle { since: Time },
     /// Part of a head has come, its first byte at `since`.
     Head { since: Time },
-    /// A head is parsed, and its body is coming, into a buffer the turn handed out with room for all of it; the
-    /// request's first byte came at `since`.
-    Body { head: Head, body: Vec<u8>, since: Time },
+    /// A head is parsed, and its body is coming, decoded as `left` says is left of it into a buffer the turn handed
+    /// out, with room for all of it when its length is known; the request's first byte came at `since`.
+    Body { head: Head, left: Body, body: Vec<u8>, since: Time },
     /// The request is asked of the handler, within its deadline, and its answer is waited for. The connection then
     /// closes when it `closes`, and a response to a `HEAD` is written with no body.
     Answering { closes: bool, head_only: bool },
@@ -333,7 +334,7 @@ impl Exchange {
                                 Phase::Head { since } => since,
                                 _ => turn.now(),
                             };
-                            let continues = head.expects_continue && head.length > 0;
+                            let continues = head.expects_continue && head.framing != Framing::Empty;
                             if continues {
                                 let Ok(go_on) = put(turn, write::CONTINUE) else {
                                     unstored(turn);
@@ -341,17 +342,30 @@ impl Exchange {
                                 };
                                 self.write::<_, IW>(turn, vec![go_on], false)?;
                             }
-                            let body = turn.buffer(usize::try_from(head.length).unwrap_or(usize::MAX));
-                            self.phase = Phase::Body { head, body, since };
+                            let room = match head.framing {
+                                Framing::Length(length) => usize::try_from(length).unwrap_or(usize::MAX),
+                                Framing::Empty | Framing::Chunked => 0,
+                            };
+                            let body = turn.buffer(room);
+                            let left = head.framing.body();
+                            self.phase = Phase::Body { head, left, body, since };
                         }
                     }
                 }
-                Phase::Body { ref head, ref mut body, .. } => {
-                    let length = usize::try_from(head.length).unwrap_or(usize::MAX);
-                    let taking = (length - body.len()).min(self.buffer.len());
-                    body.extend(self.buffer.drain(..taking));
-                    let is_whole = body.len() == length;
-                    if !is_whole {
+                Phase::Body { ref mut left, ref mut body, .. } => {
+                    let most_body = usize::try_from(self.limits.most_body_bytes).unwrap_or(usize::MAX);
+                    let Decoded { consumed, progress } =
+                        match left.decode(&self.buffer, body, self.limits.most_head_bytes) {
+                            Ok(decoded) => decoded,
+                            Err(broken) => return self.refuse(turn, Refusal::from(broken)),
+                        };
+                    self.buffer.drain(..consumed);
+
+                    // A chunked body has no length to check before it is read, so it is checked as it is decoded.
+                    if body.len() > most_body {
+                        return self.refuse(turn, Refusal::BodyTooLarge);
+                    }
+                    if progress == Progress::More {
                         return Ok(());
                     }
                     return self.ask::<_, IW, IP>(turn);

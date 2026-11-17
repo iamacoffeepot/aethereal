@@ -3,7 +3,6 @@
 //! response is answered whole, or streamed to its asker as it arrives, paced by the asker's credit; and a connection
 //! that switches protocols is handed to its asker as raw bytes.
 
-mod body;
 mod message;
 mod parse;
 mod write;
@@ -13,6 +12,7 @@ pub use message::{
     Unwritable,
 };
 
+use crate::body::{Body, Decoded, Progress};
 use crate::{ClientLimits, Http, Method};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held,
@@ -20,7 +20,6 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Dialed, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
-use body::{Body, Decoded, Progress};
 use core::mem;
 use parse::{Framing, Head, Parsed};
 use std::num::NonZeroU32;
@@ -464,7 +463,7 @@ impl Client {
         let is_success = (200..300).contains(&status);
         let takes_over = switched || (is_success && framing == Framing::Close);
         let reply = ReplyHead { status, headers };
-        let body = Body::framed(framing);
+        let body = framing.body();
         match asker {
             Asker::Following { key, switches: true } if takes_over => {
                 self.phase = Phase::Switched { key };
@@ -517,8 +516,8 @@ impl Client {
                 self.buffer.drain(..consumed);
                 progress
             }
-            Err(failure) => {
-                self.fail(turn, failure)?;
+            Err(broken) => {
+                self.fail(turn, Failure::from(broken))?;
                 return Ok(Step::Stop(Stalled::Closed));
             }
         };
@@ -553,8 +552,8 @@ impl Client {
                 self.buffer.drain(..consumed);
                 progress
             }
-            Err(failure) => {
-                self.fail(turn, failure)?;
+            Err(broken) => {
+                self.fail(turn, Failure::from(broken))?;
                 return Ok(Step::Stop(Stalled::Closed));
             }
         };

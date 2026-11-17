@@ -7,7 +7,7 @@ const MOST_LINE: u32 = 32;
 const CHUNKED: &[u8] = b"5;name=value\r\nhello\r\n7\r\n, world\r\n0\r\nx-trailer: passed\r\n\r\n";
 
 /// What reading `body` from `buffer` came to: the body's bytes, how many of `buffer` it took, and whether it ended.
-fn read(body: &mut Body, buffer: &[u8]) -> Result<(Vec<u8>, usize, Progress), Failure> {
+fn read(body: &mut Body, buffer: &[u8]) -> Result<(Vec<u8>, usize, Progress), Broken> {
     let mut out = Vec::new();
     let Decoded { consumed, progress } = body.decode(buffer, &mut out, MOST_LINE)?;
 
@@ -59,9 +59,9 @@ fn a_chunked_body_that_breaks_its_framing_fails() {
 
     for bytes in malformed {
         let mut body = Body::Chunked { at: Chunk::Size };
-        assert_eq!(read(&mut body, bytes), Err(Failure::Malformed), "{}", String::from_utf8_lossy(bytes));
+        assert_eq!(read(&mut body, bytes), Err(Broken::Malformed), "{}", String::from_utf8_lossy(bytes));
     }
     let mut body = Body::Chunked { at: Chunk::Size };
     let endless = [b"5;".as_slice(), &[b'x'; 64]].concat();
-    assert_eq!(read(&mut body, &endless), Err(Failure::TooLarge(Limit::Head)));
+    assert_eq!(read(&mut body, &endless), Err(Broken::LineTooLarge));
 }

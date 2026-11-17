@@ -19,6 +19,7 @@
 //! The root needs nothing of its host but `Tcp`, so it is bootstrapped for
 //! every host. Its settings, the section `http`, are its config.
 
+mod body;
 mod client;
 mod exchange;
 mod head;

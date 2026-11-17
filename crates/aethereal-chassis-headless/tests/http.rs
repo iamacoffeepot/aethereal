@@ -151,11 +151,63 @@ fn requests_sent_ahead_are_answered_in_order() -> Result<(), Unheard> {
 }
 
 #[test]
+fn a_chunked_request_cut_across_reads_is_handed_on_whole_and_the_request_after_it_follows() -> Result<(), Unheard> {
+    // Catches a chunked body handed on before its last chunk, or with its size lines and trailer left in it; the bytes
+    // after its trailer lost or taken into the body, so the pipelined request after it is never answered; and
+    // `100 Continue` written only for a `Content-Length`, so a client that waits to send a chunked body stalls.
+    // Chunks of 16 bytes, so the body's size lines, data, and trailer are cut across reads.
+    let settings = HttpSettings { chunk_bytes: 16, window: 1, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    let ahead = b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n\
+        5\r\nhello\r\n7;name=value\r\n, world\r\n0\r\nx-trailer: passed\r\n\r\n\
+        GET /echo HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let client = client(port, ahead, 3);
+
+    let first = harness.asked::<Request>()?;
+    assert_eq!(harness.read(&first.request.body), Some(&b"hello, world"[..]));
+    let answer = echoed(&first);
+    harness.reply(first, &answer)?;
+    let second = harness.asked::<Request>()?;
+    let answer = echoed(&second);
+    harness.reply(second, &answer)?;
+
+    let (answered, closed) = heard(&mut harness, client);
+    assert!(answered[0].head.starts_with("HTTP/1.1 100 Continue"), "{answered:?}");
+    assert!(answered[1].head.contains("x-method: Post"), "{answered:?}");
+    assert_eq!(answered[1].body, b"hello, world");
+    assert!(answered[2].head.contains("x-method: Get"), "{answered:?}");
+    assert!(closed, "the request after the chunked one asked to close");
+
+    Ok(())
+}
+
+#[test]
+fn a_chunked_request_decoded_past_the_most_body_bytes_is_refused() -> Result<(), Unheard> {
+    // Catches a chunked body, which has no length to check before it is read, gathered past `most_body_bytes`
+    // and handed on, where a body with a `Content-Length` that long is refused.
+    let settings = HttpSettings { most_body_bytes: 8, ..HttpSettings::default() };
+    let (mut harness, port) = served(settings)?;
+    let client = client(
+        port,
+        b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+        1,
+    );
+
+    let (refused, closed) = heard(&mut harness, client);
+
+    assert!(refused[0].head.starts_with("HTTP/1.1 413"), "{refused:?}");
+    assert!(closed, "a refused request's connection closes once its response is sent");
+    assert_eq!(harness.rest(), Vec::new());
+
+    Ok(())
+}
+
+#[test]
 fn a_refused_request_reaches_no_handler_and_closes_once_its_response_is_sent() -> Result<(), Unheard> {
-    // Catches a request that must be refused handed on to the handler, and a refused request closed before its response
-    // is sent or never closed.
+    // Catches a request that must be refused handed on to the handler, a refused request closed before its response
+    // is sent or never closed, and a transfer coding the exchange does not decode read as if it were chunked.
     let (mut harness, port) = served(HttpSettings::default())?;
-    let client = client(port, b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 1);
+    let client = client(port, b"POST /echo HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n", 1);
 
     let (refused, closed) = heard(&mut harness, client);
 
