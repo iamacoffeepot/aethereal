@@ -1,6 +1,6 @@
 //! A connection a listener accepted (ADR-0033).
 
-use super::{Connection, ConnectionConfig, HungUp, Reading, Shut, Write, Wrote};
+use super::{Connection, ConnectionConfig, Finish, HungUp, Reading, Shut, Write, Wrote};
 use crate::Listener;
 use crate::{Interest, Readied};
 use aethereal_actor::{
@@ -9,7 +9,7 @@ use aethereal_actor::{
 };
 use aethereal_data::Bound;
 
-/// A connection beneath the listener that accepted it, keyed by that listener's count: read through a [`Reading`] stream, written with [`Write`], hung up with [`Shut`] (ADR-0033).
+/// A connection beneath the listener that accepted it, keyed by that listener's count: read through a [`Reading`] stream, written with [`Write`], finished with [`Finish`], hung up with [`Shut`] (ADR-0033).
 /// Holding a reference to it is what lets an actor read, write, or hang it up.
 #[derive(Bound)]
 #[kind(name = "aether.tcp.accepted")]
@@ -24,7 +24,7 @@ impl ChildOf for Accepted {
 impl Actor for Accepted {
     type Config = ConnectionConfig;
     type Key = u64;
-    type Handles = (Open<Reading>, More, Enough, Ended, Write, Shut, Answer<Readied, Interest>);
+    type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -74,6 +74,14 @@ impl Handles<Write> for Accepted {
 
     fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.connection.write(turn, write)
+    }
+}
+
+impl Handles<Finish> for Accepted {
+    type Sends = ();
+
+    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.connection.finish(turn)
     }
 }
 

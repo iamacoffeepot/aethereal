@@ -322,3 +322,30 @@ fn a_unix_connection_whose_reader_holds_its_credit_holds_its_peer_back_until_it_
 
     Ok(())
 }
+
+#[test]
+fn a_unix_connection_whose_write_fails_still_reads_what_its_peer_sent() -> Result<(), Unheard> {
+    // Catches a failed write that hangs the whole connection up, so what the peer sent before it went is never read
+    // and the connection is gone; and a write half that has failed taking a later write, made on the socket that
+    // refused the last, or never answered.
+    let sockets = Sockets::new("failed");
+    let listener = sockets.listen("failed.sock");
+    let mut harness = Harness::of(Headless::program().root::<Tcp>().root::<Streamer>())?;
+    let (tcp, streamer) = (harness.root::<Tcp>(), harness.root::<Streamer>());
+    let connection = opened(&connect(&mut harness, tcp, sockets.path("failed.sock"), FRAMING)?);
+    let mut peer = peer(&listener);
+    assert!(peer.write_all(b"\0\0\0\x04last").is_ok(), "the peer sends a frame");
+    drop(peer);
+
+    let parts = vec![harness.put(b"gone".to_vec())?];
+    let failed = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    assert_eq!(harness.answer(failed)?, Answered::Yes(Wrote::HungUp), "the peer is gone, so the write fails");
+    let parts = vec![harness.put(b"later".to_vec())?];
+    let later = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    assert_eq!(harness.answer(later)?, Answered::Yes(Wrote::HungUp), "a write half that failed takes no more");
+
+    harness.tell(streamer, &Follow::Reading(connection))?;
+    assert_eq!(heard(&mut harness, streamer, 1)?, [frame(Side::Client, b"last")]);
+
+    Ok(())
+}
