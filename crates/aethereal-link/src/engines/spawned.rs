@@ -7,7 +7,7 @@ use aethereal_actor::{
     Sleep, Slept, ToType, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_process::{Exited, Process, Processes, Start, Started, Stop};
+use aethereal_process::{Environment, Exited, Process, Processes, Start, Started, Stdio, Stop};
 use aethereal_store::{Binary, Launch, Launched, Store, StoreHash};
 use core::mem;
 use core::time::Duration;
@@ -137,7 +137,14 @@ impl Handles<Answer<Launched, Fetching>> for Spawned {
             }
         };
         turn.to(turn.parent()).send(&Runs { hash })?;
-        let start = Start { program, args, starter: turn.me().protocol() };
+        let start = Start {
+            program,
+            args,
+            environment: Environment::Inherited,
+            stdin: Stdio::Closed,
+            stdout: Stdio::Closed,
+            starter: turn.me().protocol(),
+        };
         turn.to(path::<Processes>(())).ask(&start, &Booting)?;
 
         Ok(())
@@ -157,7 +164,7 @@ impl Handles<Answer<Started, Booting>> for Spawned {
         let Stage::Booting { link_within_millis } = self.stage else {
             return Ok(());
         };
-        let Answered::Yes(Started::Running { process }) = answered else {
+        let Answered::Yes(Started::Running { process, .. }) = answered else {
             turn.log(Level::Warn, format_args!("the engine's program was not started: {answered:?}"));
             return answer_and_end(turn, &Spawn::Refused);
         };

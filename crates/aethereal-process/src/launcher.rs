@@ -1,8 +1,9 @@
 //! The host's launcher, which starts, waits on, and signals the capability's programs: a service the host serves its
 //! jobs (ADR-0034, ADR-0040).
 
-use crate::Exited;
+use crate::{Exited, Invocation};
 use aethereal_data::Plain;
+use aethereal_tcp::Socket;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -26,21 +27,31 @@ pub struct Unstarted;
 #[kind(name = "aether.process.unwaited")]
 pub struct Unwaited;
 
-/// A start, as its launcher does it: the program running, or why it is not.
-pub type Starting<'a> = Pin<Box<dyn Future<Output = Result<(), Unstarted>> + 'a>>;
+/// The launcher's end of the pipe a program was started with.
+pub enum PipeEnd {
+    /// Its start connected neither its stdin nor its stdout: there is no pipe.
+    Closed,
+    /// One end of a socket pair, set not to block, whose other end is the program's stdin, its stdout, or both, as its
+    /// start connected them.
+    Connected(Socket),
+}
+
+/// A start, as its launcher does it: the program running, with the launcher's end of its pipe, or why it is not.
+pub type Starting<'a> = Pin<Box<dyn Future<Output = Result<PipeEnd, Unstarted>> + 'a>>;
 
 /// A wait, as its launcher does it: how the program exited, once it has, and the head and tail of its stderr.
 pub type Exiting<'a> = Pin<Box<dyn Future<Output = Result<Exited, Unwaited>> + 'a>>;
 
-/// The host's launcher (ADR-0040): it starts each program in a process group of its own, with no stdin and its stdout
-/// discarded, keeps the head and the tail of its stderr, each bounded, and signals its group. A host serves it into the services its
-/// runners hand every job (ADR-0034); a host that serves none, as a browser, refuses every start.
+/// The host's launcher (ADR-0040): it starts each program in a process group of its own, with the environment its
+/// invocation states, its stdin and its stdout each closed or connected to one socket pair whose other end it answers,
+/// keeps the head and the tail of its stderr, each bounded, and signals its group. A host serves it into the services
+/// its runners hand every job (ADR-0034); a host that serves none, as a browser, refuses every start.
 ///
 /// Each program is named by the number the root gave its process. Nothing it does blocks the thread that polls it: a
 /// launcher whose waits block does them on threads of its own, and wakes the start or the wait once it is done.
 pub trait Launcher: Send + Sync {
-    /// Starts `program`, a path on the host's machine, with `args`, as the program numbered `process`.
-    fn start(&self, process: u64, program: String, args: Vec<String>) -> Starting<'_>;
+    /// Starts the program `invocation` names, as the program numbered `process`.
+    fn start(&self, process: u64, invocation: Invocation) -> Starting<'_>;
 
     /// Waits for the program numbered `process` to exit, and answers with how it did and the head and tail of its stderr. The
     /// exit is told once: the launcher then forgets the program.

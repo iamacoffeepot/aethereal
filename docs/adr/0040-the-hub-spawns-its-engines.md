@@ -52,27 +52,44 @@ agent ── mint_token {} ──> Engines ── answers a token, and the argum
 
 ```
 Processes      root, singleton, asked at path::<Processes>(()); native hosts only, in aethereal-process
- └─ Process:m  one program running, keyed by the root's count
+ ├─ Process:m  one program running, keyed by the root's count
+ └─ Pipe:m     the engine's end of that program's stdin and stdout, when its start connected either
 ```
 
 ```rust
 impl Carries<Start> for Processes { type Answers = (Started,); }
 
-pub struct Start { pub program: String, pub args: Vec<String>, pub starter: ProtocolRef<Exits> }  // `program`: a path on the host's machine
+pub struct Start {
+    pub program: String,                                           // a path on the host's machine
+    pub args: Vec<String>,
+    pub environment: Environment,
+    pub stdin: Stdio,
+    pub stdout: Stdio,
+    pub starter: ProtocolRef<Exits>,
+}
+pub enum Environment { Inherited, Only(Vec<Variable>) }            // `Only`: exactly these, nothing of the host's
+pub struct Variable { pub name: String, pub value: String }
+pub enum Stdio { Closed, Connected }                               // `Closed`: an empty stdin, a discarded stdout
 pub enum Started {
-    Running { process: ActorRef<Process> },
+    Running { process: ActorRef<Process>, pipe: Piped },
     Refused,                                                       // the host would not start it
 }
+pub enum Piped { Closed, Connected(ActorRef<Pipe>) }               // `Closed`: neither stdin nor stdout connected
 
 pub struct Exited { pub status: ExitStatus, pub stderr: String }   // told to whoever started it, as the process ends
 pub enum ExitStatus { Code(i32), Signal(i32) }
 pub struct Stop;                                                   // asks a process to end
 ```
 
-- **A process is an actor that owns nothing the engine keeps.** The host's service (`Launcher`, a service of this crate's) starts the program in a process group of its own, with no stdin and its stdout discarded, and keeps the head and the tail of its stderr. A job, `Wait`, run by the `Process` as it begins and only by it, answers once the program has exited, with its status and that stderr. The `Process` then tells `Exited` to the starter, and ends. `Start` names the starter, usually its asker, by a reference of the protocol `Exits`, as `Serve` names its handler (ADR-0035), so an actor that cannot take `Exited` cannot start a program.
+- **A process is an actor that owns nothing the engine keeps.** The host's service (`Launcher`, a service of this crate's) starts the program in a process group of its own, with the environment and the stdin and stdout its start states, and keeps the head and the tail of its stderr. A job, `Wait`, run by the `Process` as it begins and only by it, answers once the program has exited, with its status and that stderr. The `Process` then tells `Exited` to the starter, and ends. `Start` names the starter, usually its asker, by a reference of the protocol `Exits`, as `Serve` names its handler (ADR-0035), so an actor that cannot take `Exited` cannot start a program.
 - **A program's stderr is kept as its head and its tail, each bounded.** Every line past 200 characters is cut and ends in `…`, then the first 1 KiB and the last 512 bytes of what remains are kept, the head ended and the tail begun at a line's end and never inside a character, with a line between them saying how many lines and bytes were left out (`… 412 lines, 41233 bytes, left out …`, counted after the line cuts); a stderr that fits is kept whole. A panic's first `panicked at` line is near the head, and how the program ended is in the tail, where a backtrace of nested generic type names would otherwise fill the whole of what is kept. The bounds are the launcher's constants, `HEAD_BYTES`, `TAIL_BYTES`, and `LONGEST_LINE_CHARACTERS`, not settings. Keeping only the last few kilobytes loses the panic's first line, and `list_engines` would answer tens of kilobytes of type names.
 - **`Stop` is asked of the `Process`,** which signals its group to end (SIGTERM), runs a `Sleep` for the setting `kill_after_millis`, and kills the group (SIGKILL) if it is still running when the sleep is answered. Either way, `Exited` follows, from `Wait`.
 - **A `Process` whose starter ends stops its program.** It watches the starter, as `Tcp`'s root watches who asked it (ADR-0033), so a program never outlives the actor that wanted it.
+- **A start states the program's environment.** `Inherited` passes the host's own on, as an engine the hub spawns needs; `Only` clears it and sets exactly the variables given, so a program run for an untrusted request, as `git http-backend` behind the hub's HTTP, sees only what its starter chose. Neither is a default: every start says which.
+- **A start states whether the program's stdin and its stdout are connected.** `Closed` is an empty stdin, or a discarded stdout. When either is `Connected`, the launcher makes one Unix socket pair, gives the program one end as each stream connected, and answers the other, set not to block; the root takes it from the `Launch` job's answer (ADR-0018: `Running::hand`) and gives it to a `Pipe` beneath it, keyed as the process is, before it stands the process up. The `Pipe` reads and writes it with the TCP capability's `Connection` (ADR-0033): the program's stdout is read through a `Reading` stream paced by its reader's credit, and its stdin written with `Write`, ended with `Finish`, which shuts the socket's write half so the program reads to its end, and hung up with `Shut`, all through the protocol `Writing`. `Started::Running` hands the starter the `Pipe` by its `ActorRef`.
+- **One socket pair, not two pipes, carries both streams.** A program reads and writes a socket as it does a pipe, and a socket's write half shuts apart from its read half, so one pair and one actor serve both, with the reader, the writer, and the poller a connection already has. Two pairs would be two actors and two answers for one program. A start that connects only one stream still gets the pair: what a stdout-only pipe is written goes nowhere the program reads, and a stdin-only pipe's reading ends when the program exits. stderr stays the launcher's, as its head and tail.
+- **A program's exit and its pipe's end are two events, each told by its own actor.** The `Process` tells `Exited` and ends; the `Pipe`, its sibling, reads on, so what the program wrote before it exited reaches a reader that comes later, and it ends once its reading reaches the end, once its reader stops, once it is shut, or once the starter ends, which it watches as the `Process` does. The launcher closes its own copies of the program's ends as soon as the program has started, so the pipe reaches its end when the program, and whatever it started, has closed them.
+- **The process capability serves the host's poller,** as the TCP capability does (ADR-0033), since a `Pipe` waits for its socket through `Readiness`; a host that lists both serves the same poller twice.
 - **`Processes` starts any program it is asked to.** It is a capability a program lists, as `Tcp` is; what a hub lets an agent start is `Engines`' rule, below, not this crate's.
 
 ### Spawning from the store

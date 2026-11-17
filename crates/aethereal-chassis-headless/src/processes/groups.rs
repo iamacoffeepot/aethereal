@@ -1,16 +1,22 @@
-//! The native host's launcher: each program in a process group of its own, started and waited on by a thread of its
-//! own, its stderr's head and tail kept by another (ADR-0040).
+//! The native host's launcher: each program in a process group of its own, its stdin and stdout closed or on a socket
+//! pair, started and waited on by a thread of its own, its stderr's head and tail kept by another (ADR-0040).
 
 use super::head_and_tail::HeadAndTail;
-use aethereal_process::{ExitStatus, Exited, Exiting, Launcher, Signal, Starting, Unstarted, Unwaited};
+use aethereal_process::{
+    Environment, ExitStatus, Exited, Exiting, Invocation, Launcher, PipeEnd, Signal, Starting, Stdio, Unstarted,
+    Unwaited,
+};
+use aethereal_tcp::Socket;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::future::{self, Future};
 use std::io::{self, ErrorKind};
 use std::mem::{self, MaybeUninit};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::pin::Pin;
-use std::process::{Child, Command, ExitStatus as WaitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus as WaitStatus, Stdio as ChildStdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread;
@@ -21,8 +27,9 @@ use std::time::Duration;
 const DRAIN_WITHIN: Duration = Duration::from_secs(1);
 
 /// The native host's launcher (ADR-0040): each program started by a thread of its own in a process group of its own,
-/// with no stdin and its stdout discarded, the thread then waiting for it to exit while another keeps the head and the
-/// tail of its stderr, each bounded. A start and a wait never block the thread that polls them, and are woken once done.
+/// with the environment its invocation states and its stdin and stdout each closed or on one socket pair, the thread
+/// then waiting for it to exit while another keeps the head and the tail of its stderr, each bounded. A start and a
+/// wait never block the thread that polls them, and are woken once done.
 ///
 /// Dropping it kills the group of every program still running, so no program outlives the engine that started it;
 /// each program's threads end once it has exited.
@@ -75,7 +82,10 @@ enum Delivery<T> {
 struct Lost;
 
 impl Launcher for ProcessGroups {
-    fn start(&self, process: u64, program: String, args: Vec<String>) -> Starting<'_> {
+    fn start(&self, process: u64, invocation: Invocation) -> Starting<'_> {
+        let Ok((command, kept)) = command(invocation) else {
+            return Box::pin(future::ready(Err(Unstarted)));
+        };
         let started = Arc::new(Mutex::new(Delivery::Asked));
         let exit = Arc::new(Mutex::new(Delivery::Asked));
         let is_new = self.shared.admit(process, Program { group: Group::Starting, exit: Arc::clone(&exit) });
@@ -88,13 +98,17 @@ impl Launcher for ProcessGroups {
         #[allow(clippy::disallowed_methods)] // The native host owns the real threads (ADR-0001).
         let spawned = thread::Builder::new()
             .name(format!("aethereal-process-{process}"))
-            .spawn(move || keep(&shared, process, command(program, args), &starting, &exit));
+            .spawn(move || keep(&shared, process, command, &starting, &exit));
         if spawned.is_err() {
             self.shared.programs().remove(&process);
             return Box::pin(future::ready(Err(Unstarted)));
         }
 
-        Box::pin(async move { Awaited { delivery: started }.await.unwrap_or(Err(Unstarted)) })
+        Box::pin(async move {
+            let started = Awaited { delivery: started }.await.unwrap_or(Err(Unstarted));
+
+            started.map(|()| kept)
+        })
     }
 
     fn wait(&self, process: u64) -> Exiting<'_> {
@@ -154,13 +168,41 @@ impl Shared {
     }
 }
 
-/// The command that starts `program` with `args` in a process group of its own, its stdin empty, its stdout
-/// discarded, and its stderr piped to the launcher.
-fn command(program: String, args: Vec<String>) -> Command {
-    let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).process_group(0);
+/// The command that starts the program `invocation` names in a process group of its own, with the environment it
+/// states and its stderr piped to the launcher, and the launcher's end of its pipe. A stdin closed is empty and a
+/// stdout closed discarded; those connected are both one end of a socket pair, whose other end, set not to block, is
+/// the launcher's: refused when the host cannot make the pair.
+fn command(invocation: Invocation) -> Result<(Command, PipeEnd), Unstarted> {
+    let mut command = Command::new(invocation.program);
+    command.args(invocation.args).stderr(ChildStdio::piped()).process_group(0);
+    if let Environment::Only(variables) = invocation.environment {
+        command.env_clear().envs(variables.into_iter().map(|variable| (variable.name, variable.value)));
+    }
+    let kept = match (invocation.stdin, invocation.stdout) {
+        (Stdio::Closed, Stdio::Closed) => {
+            command.stdin(ChildStdio::null()).stdout(ChildStdio::null());
+            PipeEnd::Closed
+        }
+        (stdin, stdout) => {
+            let (kept, given) = UnixStream::pair().map_err(|_| Unstarted)?;
+            kept.set_nonblocking(true).map_err(|_| Unstarted)?;
+            command.stdin(wired(stdin, &given)?).stdout(wired(stdout, &given)?);
+            PipeEnd::Connected(Socket::Unix(kept))
+        }
+    };
 
-    command
+    Ok((command, kept))
+}
+
+/// What a program's stdin or stdout is, as `stdio` asks: nothing, or a descriptor of `given`, the program's end of its
+/// socket pair.
+fn wired(stdio: Stdio, given: &UnixStream) -> Result<ChildStdio, Unstarted> {
+    match stdio {
+        Stdio::Closed => Ok(ChildStdio::null()),
+        Stdio::Connected => {
+            given.try_clone().map(|given| ChildStdio::from(OwnedFd::from(given))).map_err(|_| Unstarted)
+        }
+    }
 }
 
 /// Starts the program numbered `process` with `command`, delivers whether it started, then waits for it to exit,
@@ -174,7 +216,11 @@ fn keep(
     exit: &Mutex<Delivery<Result<Exited, Unwaited>>>,
 ) {
     let stderr = Arc::new(HeadAndTail::default());
-    let running = command.spawn().map_err(|_| Unstarted).and_then(|child| read_stderr(child, &stderr));
+    let spawned = command.spawn();
+    // The program's ends of its pipe are its own now: the launcher's copies close, so the pipe reads to its end once
+    // the program, and whatever it started, has exited.
+    drop(command);
+    let running = spawned.map_err(|_| Unstarted).and_then(|child| read_stderr(child, &stderr));
     let mut child = match running {
         Ok(child) => child,
         Err(unstarted) => {
