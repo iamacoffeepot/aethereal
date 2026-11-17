@@ -306,7 +306,7 @@ impl Receives<Answer<TokenFor, Vouching>> for Engine {
         turn.to(turn.parent()).send(&shown)?;
         let sessions = turn.found(&path::<Sessions>(()));
         if let (true, Some(sessions)) = (trust.is_trusted(), sessions) {
-            let joined = Joined { engine: self.id, shown: turn.me().protocol() };
+            let joined = Joined { engine: self.id };
             turn.to(sessions).send(&joined)?;
         }
 
