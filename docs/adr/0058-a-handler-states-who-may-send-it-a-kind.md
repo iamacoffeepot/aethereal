@@ -196,7 +196,7 @@ The match is exhaustive: a third peer is a case added to `Peer`, and a match tha
 
 - **Cases are tried in the order written, and the first that takes the sender wins.** The order matters only when a sender fits two cases, such as an `ActorRef<Exchange>` case beside a `ProtocolRef<P>` case for a protocol `P` that `Exchange` speaks: an exchange is handed as the case written first.
 - **`#[derive(Sent)]` writes the `Sent` impl alone,** for an enum a guard of a handler's own hands back: one that also reads the receiver's state or the mail, and writes its own `Guard` and `Checks`.
-- **The derives live beside the workspace's others,** in `aethereal-data-derive` (`src/lib.rs:82`, where `Portability` is derived), and `aethereal-actor` re-exports them beside the traits, as it re-exports `Portability` (`aethereal-actor/src/lib.rs:156`).
+- **The derives live in a new crate, `aethereal-actor-derive`,** beside `aethereal-actor` as `aethereal-data-derive` is beside `aethereal-data`: they derive the actor crate's traits, not the data layer's. `aethereal-actor` re-exports them beside the traits, as it re-exports `Portability` (`aethereal-actor/src/lib.rs:156`). The derives refuse, at compile time, a generic enum and a case that does not hold exactly one field.
 - **There are no tuples of guards:** a named case says who sent the mail, where a position does not.
 
 ### A handler's own guard reads its state or the mail
