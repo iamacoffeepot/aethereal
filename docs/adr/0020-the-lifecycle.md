@@ -116,6 +116,7 @@ impl Engine {
 - **Only a root's `begin` is put on `Boot`**, since no turn runs it. A child's `begin` sends on the chain of the turn that stood it up, during `Boot` and after it, so an actor spawned after `Boot` is as it was.
 - **A quit or a fault while `Booting` fails the boot.** An actor's `turn.quit()`, or a turn that fails (ADR-0009: `Failed`, a fault returned or a guest trapped), on whatever chain, ends the run unbooted: the lifecycle is `Unbooted`, holding why, the actor and its fault, or the actor that quit. Neither `Start` nor `Stop` is sent. The host drops the engine and reports it as it reports a bootstrap that failed (ADR-0029), naming the actor, with a failing exit status. A child whose `begin` fails is refused to its parent, which handles it (ADR-0009), and fails the boot only when its parent then quits or faults.
 - **A quit or a fault once `Start` is sent is what it was**: a quit stops the program, and a fault ends its actor.
+- **`Start` is sent only to a program that booted.** Every root began, what rode `Boot` was answered, and nothing quit or failed while it ran, so a subscriber handling `Start` knows the setup its program asked for by mail was granted: ports bound, offers taken. Work that assumes a whole program, and saying the program is ready, belong there.
 
 ## Consequences
 
