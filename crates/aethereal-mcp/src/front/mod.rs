@@ -1,13 +1,12 @@
 //! The front of the root: what a request is and what it is answered, with no actor in it (ADR-0037).
 
-mod base64;
 mod origin;
 mod reply;
 #[cfg(test)]
 mod tests;
 
 use aethereal_data::{Budget, JsonTree, JsonValue, from_json, from_value, read_json};
-use aethereal_http::{Method, Request, Status};
+use aethereal_http::{Method, Request, Status, base64};
 use aethereal_tools::Table;
 use core::str;
 pub use reply::{Reply, image, image_room, output, output_room, refused, value};

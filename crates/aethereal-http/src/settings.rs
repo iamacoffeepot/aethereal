@@ -88,10 +88,7 @@ impl HttpSettings {
     /// body and each chunk read are blobs, which no mail's limit weighs (ADR-0042).
     #[must_use]
     pub fn most_read_bytes(&self) -> usize {
-        let head = size(self.most_head_bytes.max(self.most_reply_head_bytes));
-        let headers = (head / LEAST_HEADER_BYTES).saturating_mul(size_of::<Header>());
-
-        head.saturating_add(headers)
+        head_read_bytes(self.most_head_bytes.max(self.most_reply_head_bytes))
     }
 
     /// The most bytes of blobs a request to a server, or a response to a client, of these settings holds at once: its
@@ -102,13 +99,22 @@ impl HttpSettings {
     }
 }
 
+/// The most bytes a turn reads into one piece of mail that holds a head of `most_head_bytes`: the head, and its most
+/// headers, as reading a list charges each of its elements whole.
+pub fn head_read_bytes(most_head_bytes: u32) -> usize {
+    let head = size(most_head_bytes);
+    let headers = (head / LEAST_HEADER_BYTES).saturating_mul(size_of::<Header>());
+
+    head.saturating_add(headers)
+}
+
 /// `bytes` as a `usize`, or the most one holds.
-fn size(bytes: u32) -> usize {
+pub fn size(bytes: u32) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
-/// Why `Http` did not start: mail it would send could not be read, so a request within its limits would never reach
-/// its handler, nor a response its asker (ADR-0017).
+/// Why `Http`, or a stack, did not start: mail it would send could not be read, so a request within its limits would
+/// never reach its handler, nor a response its asker (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadLimitTooLow {
     /// The most bytes a turn reads into one piece of mail.
@@ -120,14 +126,14 @@ pub struct ReadLimitTooLow {
 impl fmt::Display for ReadLimitTooLow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { read_limit, needed } = self;
-        write!(f, "the engine's `read_limit` is {read_limit}, and `http`'s settings need {needed}")
+        write!(f, "the engine's `read_limit` is {read_limit}, and the HTTP settings need {needed}")
     }
 }
 
 impl Error for ReadLimitTooLow {}
 
-/// Why `Http` did not start: the engine's blobs could not hold a request's body, so a request within its limits would be
-/// answered `503` (ADR-0014, ADR-0042).
+/// Why `Http`, or a stack, did not start: the engine's blobs could not hold a request's body, or a chunk a connection
+/// reads, so a request within its limits would be answered `503`, or never read (ADR-0014, ADR-0042).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlobBytesTooLow {
     /// The most bytes the engine's blobs hold.
@@ -139,7 +145,7 @@ pub struct BlobBytesTooLow {
 impl fmt::Display for BlobBytesTooLow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { blob_bytes, needed } = self;
-        write!(f, "the engine's `blob_bytes` is {blob_bytes}, and `http`'s settings need {needed}")
+        write!(f, "the engine's `blob_bytes` is {blob_bytes}, and the HTTP settings need {needed}")
     }
 }
 

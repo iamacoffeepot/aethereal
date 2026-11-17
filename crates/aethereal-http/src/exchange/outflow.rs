@@ -1,8 +1,8 @@
 //! A streamed response's body, read from its source through a [`ResponseSource`] stream and written to the connection
 //! as it comes, paced by what the connection has sent (ADR-0035, ADR-0017).
 
-use super::write::Frame;
 use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, Timing, chunk, put, unstored};
+use crate::response_head::Frame;
 use crate::{Header, ResponseLength, ResponseSource, SendBody, SourceEnd, Status, StreamedBody};
 use aethereal_actor::{
     Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Number, Part, Receives, Taken, Time, Turn,

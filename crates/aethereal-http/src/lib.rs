@@ -21,7 +21,12 @@
 //!
 //! The root needs nothing of its host but `Tcp`, so it is bootstrapped for
 //! every host. Its settings, the section `http`, are its config.
+//!
+//! A program serves a port with a [`stack`] of its own instead: an actor that
+//! listens through `Tcp` itself, and passes each request through its layers
+//! to its handler.
 
+pub mod base64;
 mod body;
 mod client;
 mod exchange;
@@ -29,9 +34,13 @@ mod head;
 mod http;
 mod message;
 mod mount;
+mod pooled;
+mod request_head;
+mod response_head;
 mod server;
 mod settings;
 mod source;
+pub mod stack;
 mod status;
 
 pub use client::{

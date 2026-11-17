@@ -1,9 +1,11 @@
-//! Base64 (RFC 4648, section 4), which `Mcp-Name` may be written in, and an image's bytes are.
+//! Base64 (RFC 4648, section 4): what `Basic` credentials are written in (RFC 7617), and MCP's `Mcp-Name` may be, and
+//! an image's bytes are.
 
 /// The digits, each where its bits put it.
 const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// The length of `bytes` bytes written in padded Base64.
+#[must_use]
 pub const fn encoded_len(bytes: usize) -> usize {
     bytes.div_ceil(3) * 4
 }
@@ -42,6 +44,7 @@ const fn sextet(digit: u8) -> Option<u32> {
 }
 
 /// The bytes `text` states: none when it is not padded Base64.
+#[must_use]
 pub fn decode(text: &str) -> Option<Vec<u8>> {
     let digits = text.as_bytes();
     if !digits.len().is_multiple_of(4) {
@@ -69,4 +72,48 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
     }
 
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode, encode, encoded_len};
+
+    #[test]
+    fn it_reads_every_padding_and_refuses_what_is_not_it() {
+        // Catches a group's bits shifted short, padding counted as data, and a stray digit or length taken.
+        assert_eq!(decode(""), Some(Vec::new()));
+        assert_eq!(decode("Zg=="), Some(b"f".to_vec()));
+        assert_eq!(decode("Zm8="), Some(b"fo".to_vec()));
+        assert_eq!(decode("Zm9v"), Some(b"foo".to_vec()));
+        assert_eq!(decode("Zm9vYg=="), Some(b"foob".to_vec()));
+        assert_eq!(decode("Zm9"), None);
+        assert_eq!(decode("Zm9*"), None);
+        assert_eq!(decode("Z==="), None);
+        assert_eq!(decode("Zh=="), None);
+    }
+
+    #[test]
+    fn it_writes_every_padding_and_reads_back_what_it_wrote() {
+        // Catches a digit taken from the wrong bits, padding left off or written in place of a digit, and a last group
+        // of one or two bytes written as three. The vectors are RFC 4648's.
+        let vectors = [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (bytes, text) in vectors {
+            let mut written = String::new();
+            encode(bytes.as_bytes(), &mut written);
+            assert_eq!(written, text);
+            assert_eq!(written.len(), encoded_len(bytes.len()));
+        }
+        let every: Vec<u8> = (0..=255).collect();
+        let mut written = String::new();
+        encode(&every, &mut written);
+        assert_eq!(decode(&written), Some(every));
+    }
 }
