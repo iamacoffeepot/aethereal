@@ -130,9 +130,9 @@ fn a_frame_runs_its_cycle_through_to_its_end_and_is_answered_for_the_jobs_it_ran
     engine.record_turns();
     let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
 
-    browser.frame(16.0);
+    assert_eq!(browser.frame(16.0), Ok(()));
     let first = painted(&mut browser);
-    browser.frame(32.0);
+    assert_eq!(browser.frame(32.0), Ok(()));
     let second = painted(&mut browser);
 
     // A stage does not wait for the jobs it ran (ADR-0020), so the answer comes after the render, in the same frame.
@@ -203,12 +203,12 @@ fn a_frame_brings_in_what_the_page_pushed_before_it_though_its_cycle_runs_no_sta
     };
     engine.record_turns();
     let mut browser = Browser::new(engine, Still, Serving::Nothing, Hosted::Nothing);
-    browser.frame(48.0);
+    assert_eq!(browser.frame(48.0), Ok(()));
 
     let Ok(()) = feed.push(Moved { x: 7 }) else {
         panic!("the pointer holds its source");
     };
-    browser.frame(64.0);
+    assert_eq!(browser.frame(64.0), Ok(()));
 
     let turned = browser.engine.take_turned();
     let brought: Vec<u64> = turned.iter().filter_map(|turn| turn.read::<Moved>().ok()).map(|moved| moved.x).collect();
@@ -255,7 +255,7 @@ fn a_window_asked_to_open_close_or_show_in_a_mode_is_answered_no_host_within_the
     let fullscreen = SetMode { window: canvas.window(), mode: Mode::Fullscreen };
     ask::<_, ModeSet>(&mut browser, outside, windows, &fullscreen);
     ask::<_, Closed>(&mut browser, outside, windows, &CloseWindow { window: canvas.window() });
-    browser.frame(16.0);
+    assert_eq!(browser.frame(16.0), Ok(()));
 
     let turned = browser.engine.take_turned();
     let answers: Vec<&Turned> = turned.iter().filter(|turn| turn.actor == outside).collect();

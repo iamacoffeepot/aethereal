@@ -90,13 +90,13 @@ fn a_subscriber_is_sent_what_the_page_pushed_in_the_order_pushed_and_nothing_ano
     page.tell(&forged);
     let read = number("speed", 0.25);
     assert_eq!(page.feed.push(read.clone()), Ok(()));
-    page.browser.frame(16.0);
+    assert_eq!(page.browser.frame(16.0), Ok(()));
 
     let pushed = [number("speed", 0.5), Control { name: String::from("shown"), value: Value::Checked(true) }];
     for control in pushed.clone() {
         assert_eq!(page.feed.push(control), Ok(()));
     }
-    page.browser.frame(32.0);
+    assert_eq!(page.browser.frame(32.0), Ok(()));
 
     // The control read before the listener subscribed is heard first, once, whichever the controls root handled first.
     let [moved, shown] = pushed;
@@ -116,12 +116,12 @@ fn an_actor_that_subscribes_after_a_control_last_moved_is_sent_it_as_it_stands_o
 
     let pushes = [page.feed.push(number("speed", 0.25)), page.feed.push(moved.clone())];
     assert_eq!(pushes, [Ok(()), Ok(())]);
-    page.browser.frame(48.0);
+    assert_eq!(page.browser.frame(48.0), Ok(()));
     page.tell(&Subscribe);
     page.tell(&Subscribe);
-    page.browser.frame(64.0);
+    assert_eq!(page.browser.frame(64.0), Ok(()));
     assert_eq!(page.feed.push(later.clone()), Ok(()));
-    page.browser.frame(80.0);
+    assert_eq!(page.browser.frame(80.0), Ok(()));
 
     assert_eq!(page.heard(), [moved, later]);
 

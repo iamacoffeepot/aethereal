@@ -6,8 +6,8 @@ use aethereal_actor::{
     Actor, Answer, Answered, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles, Held, On,
     Services, Sleep, Slept, Start, Stop, Tick, ToSender, Top, Turn,
 };
-use aethereal_actor::{Asks, Path, path};
-use aethereal_data::{Bound, Plain};
+use aethereal_actor::{ActorName, Asks, Path, ToType, path};
+use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
 use aethereal_pace::{Advance, Advanced, Pace, Pacer, PacerConfig};
 use aethereal_substrate::{Engine, Jobs};
 use std::num::NonZeroUsize;
@@ -74,6 +74,67 @@ impl Handles<On<Start>> for Quitter {
 
         Ok(())
     }
+}
+
+/// An actor that sends itself a note as it begins, and asks the program to stop on it: before `Start`.
+#[derive(Bound)]
+#[kind(name = "aether.test.unready")]
+struct Unready;
+
+impl ChildOf for Unready {
+    type Parent = Top;
+}
+
+impl Actor for Unready {
+    type Config = Nothing;
+    type Key = ();
+    type Handles = (Nothing, On<Start>);
+    type BeginSends = (ToType<Self, Nothing>,);
+    type EndSends = ();
+
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+        turn.to(turn.me()).send(&Nothing)?;
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Handles<Nothing> for Unready {
+    type Sends = ();
+
+    fn handle(&mut self, _: Nothing, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+impl Handles<On<Start>> for Unready {
+    type Sends = ();
+
+    fn handle(&mut self, _: Start, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_program_whose_actor_quits_as_it_boots_ends_unbooted_naming_it() {
+    // Catches a host that reports a failed boot as a clean stop, or that waits on a `Start` that never comes: the
+    // run would end `Stopped`, or not at all.
+    let (headless, ()) = headless::<(), _>(|engine| {
+        let Ok(_) = engine.add_root::<Unready>(&(), Nothing) else {
+            panic!("the unready root begins");
+        };
+    });
+    let exit = headless.run(Duration::from_secs(30), Duration::from_secs(30));
+
+    let unready = ActorName::Path(ActorPath::from_root(&PathSegment::new(Unready::NAME, &())));
+    assert_eq!(exit, Exit::Unbooted(Unbooted::Quit(unready)));
 }
 
 #[test]

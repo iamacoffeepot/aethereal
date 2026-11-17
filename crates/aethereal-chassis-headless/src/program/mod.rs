@@ -91,12 +91,16 @@ impl Host for Headless {
     type Error = ProgramError;
 
     /// Bootstraps the program, then runs it as [`Headless::run`] does, every `every_millis`, giving `Stop`
-    /// `stop_within_millis`.
+    /// `stop_within_millis`. A program whose boot failed is reported as one that did not start,
+    /// [`ProgramError::Unbooted`], as a failed bootstrap is (ADR-0029).
     fn run(settled: Settled<Self>) -> Result<Exit, ProgramError> {
         let every = Duration::from_millis(settled.running().every_millis);
         let stop_within = Duration::from_millis(settled.running().stop_within_millis);
 
-        Ok(Self::build(settled)?.run(every, stop_within))
+        match Self::build(settled)?.run(every, stop_within) {
+            Exit::Unbooted(why) => Err(ProgramError::Unbooted(why)),
+            exit @ (Exit::Stopped | Exit::OutOfTime) => Ok(exit),
+        }
     }
 }
 
