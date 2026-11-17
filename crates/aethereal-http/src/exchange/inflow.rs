@@ -200,14 +200,13 @@ impl Exchange {
 
     /// The connection has hung up, as `how` says, or the exchange is shut: a body being read ends `HungUp`, a response's
     /// source is stopped, and the exchange closes.
-    pub(super) fn hang_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, how: HungUp) -> Result<(), Fault>
-    where
-        S: Allows<SourceStop, I>,
-    {
+    pub(super) fn hang_up(&mut self, turn: &mut Turn<'_, Self, (SourceStop,)>, how: HungUp) -> Result<(), Fault> {
         if let Phase::Inflow { inflow: Inflow { reader: Reader::Open(key), .. }, .. } = self.phase {
             self.end_body(turn, key, BodyRead::HungUp(how))?;
         }
-        self.stop_source::<_, I>(turn)?;
+        if let Some(source) = self.source() {
+            self.sourcing.stop(turn, source)?;
+        }
         turn.close();
 
         Ok(())

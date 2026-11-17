@@ -2,6 +2,7 @@
 //! it of the server's handler, or of its mount's handler with the body streamed, and writes the response the handler
 //! answers with, whole or streamed from its source (ADR-0035).
 
+mod chunk;
 mod inflow;
 mod outflow;
 mod parse;
@@ -250,6 +251,10 @@ type Responding = (
     SourceStop,
 );
 
+/// What an exchange sends as a phase's deadline comes: the response that says a handler was too slow, and the stop of a
+/// stalled response's source.
+type Timing = (Writes, SourceStop);
+
 /// What an exchange sends its connection as it reads: credit.
 type Credit = ToAny<Streamed<Reading>, More>;
 
@@ -323,7 +328,9 @@ impl Handles<Answer<Wrote, Sending>> for Exchange {
         let is_sent = answered == Answered::Yes(Wrote::Sent);
         let stays = is_sent && !closes;
         if !stays {
-            self.stop_source(turn)?;
+            if let Some(source) = self.source() {
+                self.sourcing.stop(turn, source)?;
+            }
             turn.close();
         }
 
@@ -381,7 +388,7 @@ impl Handles<Shut> for Exchange {
 }
 
 impl Handles<Answer<Slept, Deadline>> for Exchange {
-    type Sends = (Writes, SourceStop);
+    type Sends = Timing;
 
     /// The phase it slept for is late, when it still stands: a request that did not come, or came too slowly, is owed
     /// no response. A request waiting on the handler is timed by its ask's deadline, which runs no sleep (ADR-0041).
@@ -537,7 +544,7 @@ impl Exchange {
         let Head { method, path, query, headers, .. } = head;
         let Ok(body) = turn.put(body) else {
             let why = "the server has no room for the request's body";
-            return self.tell::<_, IW>(turn, Status::ServiceUnavailable, why, Owed { closes: true, ..owed });
+            return self.tell(turn, Status::ServiceUnavailable, why, Owed { closes: true, ..owed });
         };
         self.phase = Phase::Answering { owed };
         self.time(turn)?;
@@ -590,7 +597,7 @@ impl Exchange {
     {
         let owed = Owed { head_only, ..Owed::CLOSING };
 
-        self.tell::<_, I>(turn, Status::GatewayTimeout, "the handler did not respond in time", owed)
+        self.tell(turn, Status::GatewayTimeout, "the handler did not respond in time", owed)
     }
 
     /// Answers a request refused before it reached the handler, and closes once the answer is sent.
@@ -601,7 +608,7 @@ impl Exchange {
         turn.log(Level::Info, format!("a request was refused: {refusal:?}"));
         let (status, text) = refusal.said();
 
-        self.tell::<_, I>(turn, status, text, Owed::CLOSING)
+        self.tell(turn, status, text, Owed::CLOSING)
     }
 
     /// Writes a response of the exchange's own, as `owed` says: `status`, saying `why`, its body put from a buffer the
@@ -617,7 +624,7 @@ impl Exchange {
         };
         let headers = [Header::new("content-type", "text/plain; charset=utf-8")];
 
-        self.respond::<_, I>(turn, status, &headers, body, owed)
+        self.respond(turn, status, &headers, body, owed)
     }
 
     /// Writes a response of `status` with `headers` and the whole `body`, as `owed` says, and closes once it is sent
@@ -644,7 +651,7 @@ impl Exchange {
             vec![head]
         };
 
-        self.write::<_, I>(turn, parts, owed.closes)
+        self.write(turn, parts, owed.closes)
     }
 
     /// The head of a response of `status` with `headers` and a body delimited as `frame` says, written as `owed` says
@@ -677,22 +684,15 @@ impl Exchange {
     }
 
     /// The response to the request out is written: the exchange takes the next request, unless it is closing.
-    fn answered<S, IC, IW, IP, IS, IB>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<Credit, IC>
-            + Allows<Writes, IW>
-            + Allows<Asks<Handling, Request, Asking>, IP>
-            + Allows<Asks<StreamHandling, StreamedRequest, Asking>, IS>
-            + Allows<Parts, IB>,
-    {
+    fn answered(&mut self, turn: &mut Turn<'_, Self, Responding>) -> Result<(), Fault> {
         if matches!(self.phase, Phase::Closing) {
             return Ok(());
         }
         self.phase = Phase::Idle { since: turn.now() };
         self.time(turn)?;
-        self.release::<_, IC>(turn)?;
+        self.release(turn)?;
 
-        self.advance::<_, IC, IW, IP, IS, IB>(turn)
+        self.advance(turn)
     }
 
     /// Asks the connection to write `parts`, in order, noting whether it closes once they are sent.
@@ -701,9 +701,14 @@ impl Exchange {
         S: Allows<Asks<Writing, Write, Sending>, I>,
     {
         let sending = Sending { carries: Carries::Whole { closes } };
-        turn.to(self.connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { parts }, &sending)?;
+        turn.to(self.writing()).ask(&Write { parts }, &sending)?;
 
         Ok(())
+    }
+
+    /// The connection, as the writes the exchange asks of it.
+    fn writing(&self) -> ProtocolRef<Writing> {
+        self.connection.protocol()
     }
 }
 

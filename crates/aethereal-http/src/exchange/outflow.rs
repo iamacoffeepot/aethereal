@@ -1,12 +1,12 @@
 //! A streamed response's body, read from its source through a [`ResponseSource`] stream and written to the connection
 //! as it comes, paced by what the connection has sent (ADR-0035, ADR-0017).
 
-use super::write::{self, Frame};
-use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, SourceStop, put, unstored};
+use super::write::Frame;
+use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, Timing, chunk, put, unstored};
 use crate::{Header, ResponseLength, ResponseSource, SendBody, SourceEnd, Status, StreamedBody};
-use aethereal_actor::{Allows, Answer, Answered, Bytes, Fault, Handles, Level, Number, Part, Taken, Time, Turn};
+use aethereal_actor::{Answer, Answered, Bytes, Fault, Handles, Level, Number, Part, Taken, Time, Turn};
 use aethereal_data::{Bound, Plain};
-use aethereal_tcp::{Write, Writing, Wrote};
+use aethereal_tcp::{Write, Wrote};
 use core::time::Duration;
 use std::num::NonZeroU32;
 
@@ -193,7 +193,7 @@ impl Exchange {
         self.phase = Phase::Outflow { outflow, closes: owed.closes };
         self.time(turn)?;
         let flowing = Sending { carries: Carries::Flow { parts: 0 } };
-        turn.to(self.connection.protocol::<Writing, _>()).ask(&Write { parts: vec![head] }, &flowing)?;
+        turn.to(self.writing()).ask(&Write { parts: vec![head] }, &flowing)?;
 
         Ok(())
     }
@@ -220,7 +220,7 @@ impl Exchange {
         }
         let follows = outflow.written > 0;
         if outflow.frame == Frame::Chunked {
-            let Ok(last) = put(turn, &write::last_chunk(follows)) else {
+            let Ok(last) = put(turn, chunk::last(follows)) else {
                 self.phase = Phase::Closing;
                 unstored(turn);
                 return Ok(());
@@ -249,7 +249,9 @@ impl Exchange {
         for (place, part) in outflow.queued.iter().take(parts).enumerate() {
             if outflow.frame == Frame::Chunked {
                 let follows = outflow.written > 0 || place > 0;
-                let Ok(line) = put(turn, &write::chunk_line(turn.read(part).len(), follows)) else {
+                let mut line = turn.buffer(chunk::LINE_BYTES);
+                chunk::line(turn.read(part).len(), follows, &mut line);
+                let Ok(line) = turn.put(line) else {
                     unstored(turn);
                     return Ok(());
                 };
@@ -260,17 +262,15 @@ impl Exchange {
         let parts = u32::try_from(parts).unwrap_or(u32::MAX);
         outflow.wire = Wire::Out { parts };
         let flowing = Sending { carries: Carries::Flow { parts } };
-        turn.to(self.connection.protocol::<Writing, _>()).ask(&Write { parts: written }, &flowing)?;
+        turn.to(self.writing()).ask(&Write { parts: written }, &flowing)?;
 
         Ok(())
     }
 
     /// The sleep for a streamed response's stall has come: it is stalled when it has not moved since
-    /// `stall_within_millis` before now, and the connection closes; otherwise it sleeps again until it would be.
-    pub(super) fn stall_out<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<SourceStop, I>,
-    {
+    /// `stall_within_millis` before now, its source is stopped, and the connection closes; otherwise it sleeps again
+    /// until it would be.
+    pub(super) fn stall_out(&mut self, turn: &mut Turn<'_, Self, Timing>) -> Result<(), Fault> {
         let Phase::Outflow { ref outflow, .. } = self.phase else {
             return Ok(());
         };
@@ -278,33 +278,41 @@ impl Exchange {
         if turn.now() < late {
             return self.time(turn);
         }
+        self.sourcing.stop(turn, outflow.source)?;
+        self.break_off(turn, "a streamed response stalled");
 
-        self.abort::<_, I>(turn, "a streamed response stalled")
+        Ok(())
     }
 
-    /// Ends a streamed response before its body ends, as `why` says: its source is stopped, and the connection closes,
-    /// since the head is already written and only the close can tell the client the body broke.
-    fn abort<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, why: &str) -> Result<(), Fault>
-    where
-        S: Allows<SourceStop, I>,
-    {
+    /// Ends a streamed response before its body ends, as `why` says: its source is stopped, and the connection closes.
+    fn abort(&mut self, turn: &mut Turn<'_, Self, Responding>, why: &str) -> Result<(), Fault> {
+        if let Some(source) = self.source() {
+            self.sourcing.stop(turn, source)?;
+        }
+        self.break_off(turn, why);
+
+        Ok(())
+    }
+
+    /// Closes the connection on a streamed response whose body broke, as `why` says: the head is already written, so
+    /// only the close can tell the client the body broke.
+    fn break_off<S>(&mut self, turn: &mut Turn<'_, Self, S>, why: &str) {
         turn.log(Level::Info, format!("{why}, and the connection closes"));
-        self.stop_source::<_, I>(turn)?;
         self.phase = Phase::Closing;
         turn.close();
-
-        Ok(())
     }
 
-    /// Stops the source of the streamed response being written, when one is.
-    pub(super) fn stop_source<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<SourceStop, I>,
-    {
-        if let Phase::Outflow { ref outflow, .. } = self.phase {
-            self.sourcing.stop::<_, _, I>(turn, outflow.source)?;
+    /// The stream the source of the streamed response being written sends through: none when none is being written.
+    pub(super) const fn source(&self) -> Option<Number> {
+        match self.phase {
+            Phase::Outflow { ref outflow, .. } => Some(outflow.source),
+            Phase::Idle { .. }
+            | Phase::Head { .. }
+            | Phase::Body { .. }
+            | Phase::Inflow { .. }
+            | Phase::Answering { .. }
+            | Phase::Awaiting { .. }
+            | Phase::Closing => None,
         }
-
-        Ok(())
     }
 }

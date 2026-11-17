@@ -17,9 +17,6 @@ const FRAME_BYTES: usize = 96;
 /// The line ending HTTP writes, and the bytes of a header's `: `.
 const SEPARATORS_BYTES: usize = 4;
 
-/// What ends the last chunk of a chunked body, and its empty trailer.
-pub const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
-
 /// How a response's body is delimited on the connection (RFC 9112 §6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Frame {
@@ -84,30 +81,6 @@ pub fn head(
     Written { dropped, sends_body: has_body && !head_only }
 }
 
-/// The line before a chunk of `length` bytes, more than none: its size in hex, after the line ending of the chunk
-/// before it when one `follows`.
-pub fn chunk_line(length: usize, follows: bool) -> Vec<u8> {
-    let ending = if follows {
-        "\r\n"
-    } else {
-        ""
-    };
-
-    format!("{ending}{length:x}\r\n").into_bytes()
-}
-
-/// What ends a chunked body: the last chunk and its empty trailer, after the line ending of the chunk before it when
-/// one `follows`.
-pub fn last_chunk(follows: bool) -> Vec<u8> {
-    let ending: &[u8] = if follows {
-        b"\r\n"
-    } else {
-        b""
-    };
-
-    [ending, LAST_CHUNK].concat()
-}
-
 /// Whether a handler's header `name: value` is written: its name is a token the exchange does not write itself, and
 /// its value holds no line ending or other control byte, which would let a handler's value write a header of its
 /// own.
@@ -121,7 +94,7 @@ fn writes(name: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, chunk_line, head, last_chunk, room};
+    use super::{Frame, head, room};
     use crate::{Header, Status};
 
     #[test]
@@ -139,19 +112,5 @@ mod tests {
         assert!(ok.sends_body);
         assert!(!head(Status::Ok, &headers, Frame::Length(5), false, true, &mut Vec::new()).sends_body);
         assert!(!head(Status::NoContent, &[], Frame::Length(0), false, false, &mut Vec::new()).sends_body);
-    }
-
-    #[test]
-    fn chunk_lines_end_the_chunk_before_them_and_the_last_ends_the_body() {
-        // Catches a chunk's size written in decimal, the line ending after a chunk's data lost or written before the
-        // first chunk, and a body ended without its empty trailer, any of which a client reads as a broken body.
-        let mut body = chunk_line(26, false);
-        body.extend_from_slice(b"abcdefghijklmnopqrstuvwxyz");
-        body.extend_from_slice(&chunk_line(1, true));
-        body.extend_from_slice(b"!");
-        body.extend_from_slice(&last_chunk(true));
-
-        assert_eq!(body, b"1a\r\nabcdefghijklmnopqrstuvwxyz\r\n1\r\n!\r\n0\r\n\r\n");
-        assert_eq!(last_chunk(false), b"0\r\n\r\n");
     }
 }
