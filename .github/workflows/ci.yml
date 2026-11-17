@@ -1,9 +1,13 @@
 name: CI
 
+# A change to documents alone compiles nothing, so it runs no CI. No check is
+# required to merge, so a pull request that skips CI is not held waiting.
 on:
   push:
     branches: [main]
+    paths-ignore: ['docs/**', '**.md']
   pull_request:
+    paths-ignore: ['docs/**', '**.md']
 
 permissions:
   contents: read
