@@ -367,8 +367,8 @@ impl Handles<Shown> for Engines {
 
     /// What one of its own engines shows, once its token is taken: from any other actor, it is passed over.
     fn handle(&mut self, shown: Shown, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        let sender = turn.sender().id();
-        let linked = self.linked.values_mut().find(|linked| linked.engine.id() == sender);
+        let sender = turn.sender();
+        let linked = self.linked.values_mut().find(|linked| linked.engine.id() == sender.id());
         if let Some(Linked { standing: Standing::Linked { shows, .. }, .. }) = linked {
             *shows = Shows::Named { name: shown.name, tools: shown.tools };
         }
@@ -460,8 +460,8 @@ impl Handles<TakeToken> for Engines {
     /// from, and a spawn's told its id. Only an engine connected here takes a token: any other sender is answered
     /// that it is unknown, and the token stays in the table for its engine.
     fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let sender = turn.sender().id();
-        let linked = self.linked.iter_mut().find(|(_, linked)| linked.engine.id() == sender);
+        let sender = turn.sender();
+        let linked = self.linked.iter_mut().find(|(_, linked)| linked.engine.id() == sender.id());
         let Some((&engine, linked)) = linked else {
             turn.log(Level::Warn, format_args!("{sender:?}, which is no engine connected here, asked to take a token"));
             turn.reply(&TokenFor::Unknown)?;
