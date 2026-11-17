@@ -8,8 +8,9 @@
 //! ```
 //!
 //! Only an `Engine` whose engine the hub trusts joins, and the capability takes a frame from an engine only from the
-//! actor that joined as it, so no engine speaks as another. What each engine is shown is worked out as each turn
-//! flushes, so nothing that changes the list or a transcript goes unshown.
+//! actor that joined as it, so no engine speaks as another. An actor joins as itself, the sender of its [`Joined`],
+//! as one engine, and never under a number another actor holds, so no engine is shown as another either. What each
+//! engine is shown is worked out as each turn flushes, so nothing that changes the list or a transcript goes unshown.
 
 #[cfg(test)]
 mod tests;
@@ -18,8 +19,8 @@ use super::asked::Waiting;
 use super::asks::{Archived, Opened, Said, State};
 use super::transcript::{Entry, Numbered, Speaker};
 use super::{Acts, Does, Sessions};
-use aethereal_actor::{Anyone, Carries, Ended, Fault, Handles, Held, Level, Protocol, ProtocolRef, Receives, Turn};
-use aethereal_data::{Bound, Plain, write_json_string};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Held, Level, ProtocolRef, Receives, Turn};
+use aethereal_data::{ActorId, Bound, Plain, write_json_string};
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
 
@@ -29,25 +30,9 @@ const EVENTS_PER_SHOW: usize = 32;
 /// What the owner said no to, as Claude Code reads it.
 const DENIED: &str = "The owner did not allow it.";
 
-/// What a trusted engine's `Engine` is told to show it, each written down the link as a frame of its own.
-pub struct Showing;
-
-impl Protocol for Showing {
-    type Kinds = (ShowTabs, ShowEvents, ShowAsk);
-}
-
-/// Each is told, and answered nothing.
-impl Carries<ShowTabs> for Showing {
-    type Answers = ();
-}
-
-impl Carries<ShowEvents> for Showing {
-    type Answers = ();
-}
-
-impl Carries<ShowAsk> for Showing {
-    type Answers = ();
-}
+/// What a trusted engine's `Engine` is told to show it, each written down the link as a frame of its own: tells
+/// alone, so the kinds themselves, which the sender of a [`Joined`] is cast to.
+pub type Showing = (ShowTabs, ShowEvents, ShowAsk);
 
 /// Every session, as the tabs a trusted engine lists: sent whole on every change, and as the engine joins.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
@@ -114,13 +99,25 @@ pub struct Chatted {
     pub chat: Chat,
 }
 
-/// Told by the `Engine` of `engine` as it links trusted: where what the engine is shown goes. The capability watches
-/// it, and lets the engine go as it ends.
-#[derive(Debug, Bound)]
+/// Told by the `Engine` of `engine` as it links trusted: its sender is where what the engine is shown goes, so an
+/// actor joins only as itself. The capability watches it, and lets the engine go as it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.joined")]
 pub struct Joined {
     pub engine: u32,
-    pub shown: ProtocolRef<Showing>,
+}
+
+/// Where an actor that joins as an engine stands among those joined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Joining {
+    /// Neither the engine nor the actor has joined: it joins.
+    New,
+    /// The actor joined as the engine already: it is shown everything again.
+    Again,
+    /// Another actor, `by`, joined as the engine: it is refused.
+    Taken { by: ActorId },
+    /// The actor joined as another engine, `engine`: it is refused.
+    Elsewhere { engine: u32 },
 }
 
 /// A trusted engine joined: where it is shown, and the number of the last event shown of each tab it has open.
@@ -160,6 +157,18 @@ impl Chats {
     pub(super) fn forget(&mut self, session: u32) {
         self.questions.retain(|_, question| question.session != session);
     }
+
+    /// Where the actor `by` stands, joining as `engine`.
+    fn joining(&self, engine: u32, by: ActorId) -> Joining {
+        let holder = self.engines.get(&engine).map(|watcher| watcher.shown.id());
+        let joined_as = self.engines.iter().find(|(_, watcher)| watcher.shown.id() == by).map(|(&number, _)| number);
+        match (holder, joined_as) {
+            (Some(holder), _) if holder == by => Joining::Again,
+            (Some(holder), _) => Joining::Taken { by: holder },
+            (None, Some(number)) => Joining::Elsewhere { engine: number },
+            (None, None) => Joining::New,
+        }
+    }
 }
 
 impl Sessions {
@@ -174,10 +183,31 @@ impl Handles<Joined> for Sessions {
     type Sends = Acts;
     type From = Anyone;
 
-    /// A trusted engine linked: it is watched, and shown every session and each ask that waits at once.
+    /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
+    /// sender that takes nothing an engine is shown, one that names an engine another actor joined as, and one joined
+    /// as another engine already are each refused, and nothing joined changes.
     fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
-        let Joined { engine, shown } = joined;
-        turn.watch(shown);
+        let Joined { engine } = joined;
+        let sender = turn.sender();
+        let Some(shown) = turn.cast::<Showing>(sender) else {
+            turn.log(
+                Level::Warn,
+                format_args!("{sender:?}, which takes nothing an engine is shown, joined as {engine}"),
+            );
+            return Ok(());
+        };
+        match self.chats.joining(engine, sender.id()) {
+            Joining::New => turn.watch(shown),
+            Joining::Again => {}
+            Joining::Taken { by } => {
+                turn.log(Level::Warn, format_args!("{sender:?} joined as engine {engine}, which {by:?} joined as"));
+                return Ok(());
+            }
+            Joining::Elsewhere { engine: joined } => {
+                turn.log(Level::Warn, format_args!("{sender:?} joined as engine {engine}, already engine {joined}"));
+                return Ok(());
+            }
+        }
         turn.to(shown).send(&ShowTabs { tabs: self.tabs() })?;
         for (&ask, question) in &self.chats.questions {
             turn.to(shown).send(&ShowAsk { ask, session: question.session, what: question.what.clone() })?;
@@ -208,10 +238,13 @@ impl Handles<Chatted> for Sessions {
     /// capability has found its sessions.
     fn handle(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
         let Chatted { engine, chat } = chatted;
-        let sender = turn.sender().id();
+        let sender = turn.sender();
         let joined = self.chats.engines.get(&engine).map(|watcher| watcher.shown.id());
-        if joined != Some(sender) {
-            turn.log(Level::Warn, format_args!("a chat frame said to be engine {engine}'s was passed over"));
+        if joined != Some(sender.id()) {
+            turn.log(
+                Level::Warn,
+                format_args!("a chat frame from {sender:?} said to be engine {engine}'s was passed over"),
+            );
             return Ok(());
         }
 

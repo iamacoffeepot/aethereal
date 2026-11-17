@@ -13,7 +13,7 @@ use crate::{
     Within,
 };
 #[cfg(feature = "std")]
-use crate::{Given, NotHeld, Resource, Services, pins};
+use crate::{Buffer, Given, NotHeld, Pool, Resource, Services, pins};
 use aethereal_data::{
     ActorId, Boundary, Budget, Decode, DecodeError, Element, Encode, EncodeError, Field, Kind, KindId, Reader, Schema,
     Shape, Writer,
@@ -24,6 +24,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::future::{self, Future};
 use core::mem;
+#[cfg(feature = "std")]
+use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
@@ -71,13 +73,24 @@ pub enum Fills {
     Buffers,
 }
 
-/// What a running job reads and makes beside its own bytes: a copy of each blob it refers to, the buffers it was lent
-/// to fill, the resources it was given, the blobs it puts, and the resources it hands (ADR-0018, ADR-0042).
+/// What a running job reads and makes beside its own bytes: what it works with, a [`Working`], which it reads and is
+/// called as, and the buffers it was lent to fill, which hand out buffers as a turn's pool does. The two are borrowed
+/// apart with [`Self::split`], so the job puts while it holds a buffer (ADR-0018, ADR-0042).
 pub struct Running {
-    blobs: Vec<Copied>,
+    working: Working,
     /// The buffers it was lent to fill and has not taken: the largest its actor kept, for a job that fills buffers,
     /// and none for one that fills none, or whose actor kept none. What is left goes back to its actor with its answer.
     buffers: Spares,
+    /// The most bytes of buffers its actor keeps, which a buffer it drops unput is kept under, to go back with what it
+    /// was lent.
+    most_kept_bytes: usize,
+}
+
+/// What a running job works with: a copy of each blob it refers to, the resources it was given, the blobs it puts,
+/// and the resources it hands (ADR-0018). A job is called as this, and split into it and its buffers with
+/// [`Running::split`].
+pub struct Working {
+    blobs: Vec<Copied>,
     /// The engine that ran it, which the blobs it puts are numbered for.
     engine: u32,
     /// The bytes of each blob it has put, in the order put.
@@ -96,6 +109,55 @@ pub struct Running {
 
 #[cfg(feature = "std")]
 impl Running {
+    /// What the job works with, and the buffers it was lent as a pool, borrowed apart: a buffer the pool hands out
+    /// borrows the buffers alone, so the job puts while it holds one (ADR-0042).
+    pub fn split(&mut self) -> (&mut Working, Pool<'_>) {
+        (&mut self.working, Pool::kept(&mut self.buffers, self.most_kept_bytes))
+    }
+
+    /// A buffer with room for at least `room` bytes, to fill and put: the one this job was lent when it is big enough
+    /// and at most twice `room`, by the rule `turn.buffer` keeps, else a new one; dropped unput, it goes back to what
+    /// the job holds of its actor's buffers, to go back to its actor with its answer. A job lent nothing, as one whose
+    /// type fills nothing is, is always handed a new one (ADR-0042). It borrows the whole job: to put while it is held,
+    /// take it from the pool [`Self::split`] lends apart.
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Buffer<'_> {
+        self.split().1.buffer_kept(room)
+    }
+
+    /// Takes out the buffers this job was lent and has not taken, for code that learns the room it needs only as it
+    /// fills, such as a storage's read, to take one by the same rule with [`Spares::take`]. The job gives back what is
+    /// left with [`Self::give_back`], to go back to its actor with its answer; until then it holds none (ADR-0042).
+    #[must_use]
+    pub fn lent(&mut self) -> Spares {
+        mem::take(&mut self.buffers)
+    }
+
+    /// Holds `lent` again, the buffers taken out with [`Self::lent`] that were left, to hand out or to go back to the
+    /// job's actor with its answer (ADR-0042).
+    pub fn give_back(&mut self, lent: Spares) {
+        self.buffers.keep_all(lent, usize::MAX);
+    }
+}
+
+#[cfg(feature = "std")]
+impl Deref for Running {
+    type Target = Working;
+
+    fn deref(&self) -> &Working {
+        &self.working
+    }
+}
+
+#[cfg(feature = "std")]
+impl DerefMut for Running {
+    fn deref_mut(&mut self) -> &mut Working {
+        &mut self.working
+    }
+}
+
+#[cfg(feature = "std")]
+impl Working {
     /// The bytes of the blob `blob` refers to: a copy made as the job was handed out, or one the job put. Every
     /// reference a job holds was read out of its bytes or made by its puts, so a reference to any other, which no job
     /// can come to hold, reads as no bytes.
@@ -124,36 +186,14 @@ impl Running {
         self.services.get::<S>()
     }
 
-    /// A buffer with room for at least `room` bytes, to fill and put: the one this job was lent when it is big enough
-    /// and at most twice `room`, by the rule `turn.buffer` keeps, else a new one. A job lent nothing, as one whose type
-    /// fills nothing is, is always handed a new one (ADR-0042).
-    #[must_use]
-    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
-        self.buffers.take(room)
-    }
-
-    /// Takes out the buffers this job was lent and has not taken, for code that learns the room it needs only as it
-    /// fills, such as a storage's read, to take one by the same rule with [`Spares::take`]. The job gives back what is
-    /// left with [`Self::give_back`], to go back to its actor with its answer; until then it holds none (ADR-0042).
-    #[must_use]
-    pub fn lent(&mut self) -> Spares {
-        mem::take(&mut self.buffers)
-    }
-
-    /// Holds `lent` again, the buffers taken out with [`Self::lent`] that were left, to hand out or to go back to the
-    /// job's actor with its answer (ADR-0042).
-    pub fn give_back(&mut self, lent: Spares) {
-        self.buffers.keep_all(lent, usize::MAX);
-    }
-
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with a reference to it, to hold in what
     /// the job answers with. The engine puts it in its store when the job is answered, out of its budget for blobs,
     /// and writes the blob's own reference over this one where it lies in the answer; a blob that does not fit
     /// answers the job [`Faulted`](crate::Unanswered::Faulted). So no reference a job made reaches an actor before its
     /// blob is in the store.
-    pub fn put(&mut self, bytes: Vec<u8>) -> crate::Bytes {
+    pub fn put(&mut self, bytes: impl Into<Vec<u8>>) -> crate::Bytes {
         let index = u64::try_from(self.put.len()).unwrap_or(u64::MAX);
-        self.put.push(bytes);
+        self.put.push(bytes.into());
 
         crate::Bytes::pin(BlobId::made(self.engine, index))
     }
@@ -261,15 +301,24 @@ pub struct Lending {
     engine: u32,
     /// Where the changes to that engine's pins go while it runs.
     queue: pins::Queue,
+    /// The most bytes of buffers its actor keeps, which a buffer it drops unput is kept under (ADR-0042).
+    most_kept_bytes: usize,
 }
 
 #[cfg(feature = "std")]
 impl Lending {
     /// The copies `blobs`, the buffers `buffers`, and the resources `given`, lent by the engine numbered `engine`,
-    /// the changes to whose pins go onto `queue`.
+    /// the changes to whose pins go onto `queue`, by an actor that keeps at most `most_kept_bytes` of buffers.
     #[must_use]
-    pub const fn new(engine: u32, blobs: Vec<Copied>, buffers: Spares, given: Vec<Kept>, queue: pins::Queue) -> Self {
-        Self { blobs, buffers, given, engine, queue }
+    pub const fn new(
+        engine: u32,
+        blobs: Vec<Copied>,
+        buffers: Spares,
+        given: Vec<Kept>,
+        queue: pins::Queue,
+        most_kept_bytes: usize,
+    ) -> Self {
+        Self { blobs, buffers, given, engine, queue, most_kept_bytes }
     }
 }
 
@@ -525,15 +574,16 @@ fn drive<J: Job>(
     timer: Arc<dyn Timer>,
     services: Arc<Services>,
 ) -> Driven {
-    let Lending { blobs, buffers, given, engine, queue } = lent;
+    let Lending { blobs, buffers, given, engine, queue, most_kept_bytes } = lent;
     let running = Box::pin(async move {
         let mut budget = Budget::new(limit);
         let pins = crate::PinSource::job(&blobs);
         let job = J::decode(&mut Reader::<Actors>::new(&bytes, &mut budget, ActorsReader::of(&pins)))?;
         let (put, handed) = (Vec::new(), Vec::new());
-        let mut running = Running { blobs, buffers, engine, put, handed, given, timer, services };
+        let working = Working { blobs, engine, put, handed, given, timer, services };
+        let mut running = Running { working, buffers, most_kept_bytes };
         let done = job.run(&mut running).await?;
-        let Running { put, handed, given, buffers, .. } = running;
+        let Running { working: Working { put, handed, given, .. }, buffers, .. } = running;
         let produced = Produced::handing(&done, handed)?;
         let untaken = given.iter().map(Kept::name).collect();
 

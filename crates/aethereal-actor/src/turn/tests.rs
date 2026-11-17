@@ -916,7 +916,7 @@ fn a_host_holds_a_guest_to_what_it_claims_of_resources() {
     let mut keeping = Keeping::default();
     keeping.arrive(other, MailId { sender: other.id, count: 1 }, Kept::new(7, Lamp));
     keeping.arrive(stranger, MailId { sender: stranger.id, count: 1 }, Kept::new(8, Lamp));
-    let keeps = Keeps::Here(&mut keeping);
+    let keeps = keeping.keeps();
     let turning = Turning::new(
         ME,
         &ROOT,

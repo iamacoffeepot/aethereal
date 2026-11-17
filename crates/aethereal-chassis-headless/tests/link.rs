@@ -11,7 +11,8 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_link::{
     CallEngine, DescribeEngine, Described, Down, Engine, EngineList, EngineListing, Engines, EnginesSettings, Link,
-    LinkSettings, ListEngines, MintFor, Minted, Origin, Outcome, REVISION, Refusal, Token, Trust, Up, Within,
+    LinkSettings, ListEngines, MintFor, Minted, Origin, Outcome, REVISION, Refusal, TakeToken, Token, TokenFor, Trust,
+    Up, Within,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
@@ -403,6 +404,29 @@ fn a_token_is_good_for_one_hello_and_refused_the_second_time() -> Result<(), Unh
             trust: Trust::Trusted
         }]
     );
+
+    Ok(())
+}
+
+#[test]
+fn a_token_asked_for_by_an_actor_that_is_no_engine_is_refused_and_left_for_its_engine() -> Result<(), Unheard> {
+    // Catches `Engines` taking a token for any sender: an actor that is no engine, holding the token, would spend it
+    // and learn what it was for and whether its engine is trusted, and the engine that brings it would be refused
+    // (#586).
+    let (mut harness, port) = hub()?;
+    let token = minted(&mut harness)?;
+    let engines = harness.root::<Engines>();
+
+    let asking = harness.ask(engines, &TakeToken { token })?;
+    let answered = harness.answer(asking)?;
+    let mut stream = dialed(port);
+    send(&mut stream, &hello("scene", token));
+    send(&mut stream, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
+
+    assert_eq!(answered, Answered::Yes(TokenFor::Unknown));
+    let list = listed_once(&mut harness, |list| holds_one_with(list, 1))?;
+    let names: Vec<&str> = list.engines.iter().map(|listed| listed.name.as_str()).collect();
+    assert_eq!(names, vec!["scene"], "the engine links with the token the stranger asked for");
 
     Ok(())
 }

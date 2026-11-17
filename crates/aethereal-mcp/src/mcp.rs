@@ -277,7 +277,7 @@ impl Receives<Answer<Called, Calling>> for Mcp {
             (Answered::Yes(Called::Output(bytes)), Output::Value(schema) | Output::ValueOrImage(schema)) => {
                 match front::value(&id, &schema, turn.read(&bytes)) {
                     Ok(value) => {
-                        let buffer = turn.buffer(front::output_room(&id, &value));
+                        let buffer = Vec::from(turn.buffer(front::output_room(&id, &value)));
                         front::output(&id, &value, buffer)
                     }
                     Err(refused) => refused,
@@ -285,7 +285,7 @@ impl Receives<Answer<Called, Calling>> for Mcp {
             }
             (Answered::Yes(Called::Image { png, text }), Output::Image | Output::ValueOrImage(_)) => {
                 let length = turn.read(&png).len();
-                let buffer = turn.buffer(front::image_room(&id, length, &text));
+                let buffer = Vec::from(turn.buffer(front::image_room(&id, length, &text)));
                 front::image(&id, turn.read(&png), &text, buffer)
             }
             (Answered::Yes(Called::Output(_)), Output::Image) => {

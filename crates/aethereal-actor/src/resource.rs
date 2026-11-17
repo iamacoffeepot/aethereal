@@ -1,6 +1,7 @@
 //! An actor's resources: values that are not data, each with exactly one owner (ADR-0010).
 
 use crate::Spares;
+use crate::buffer::Pool;
 use crate::{Above, Actors, Fault, MailId, Seated, Within};
 use aethereal_data::{
     Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Plain, Reader, Schema, Shape, Writer,
@@ -195,29 +196,38 @@ const fn any_type(_: &Kept) -> bool {
 /// yet (ADR-0010), and the buffers of the blobs it put, handed back to put in again (ADR-0042). Dropped with the
 /// actor, after its closing turn.
 ///
-/// Most actors keep nothing ever, and every actor's seat holds one, so one that has kept nothing holds no more than
-/// a pointer's width.
+/// A turn reaches its resources and its buffers apart, through two `&mut` borrows of their own, so a buffer it hands
+/// out borrows the buffers alone and the turn stays free to use while it is held.
 #[derive(Default)]
 pub struct Keeping {
+    resources: Resources,
+    /// The buffers it keeps to put blobs in again, emptied (ADR-0042).
+    spares: Spares,
+}
+
+/// The resources an actor keeps: what it owns, and what has arrived for it with mail it has not handled yet.
+///
+/// Most actors hold none ever, and every actor's seat holds one, so one that has held none holds no more than a
+/// pointer's width.
+#[derive(Default)]
+pub struct Resources {
     holding: Holding,
 }
 
-/// Whether an actor has kept anything yet.
+/// Whether an actor has held a resource yet.
 #[derive(Default)]
 enum Holding {
-    /// It has never owned a resource, been given one, nor kept a buffer.
+    /// It has never owned a resource nor been given one.
     #[default]
     Never,
     /// It has: what it holds now, behind a pointer, so an actor that never held anything holds no more than one.
     Holds(Box<Holdings>),
 }
 
-/// What an actor that has held a resource or kept a buffer holds now.
+/// What an actor that has held a resource holds now.
 #[derive(Default)]
 struct Holdings {
     held: Vec<Keep>,
-    /// The buffers it keeps to put blobs in again (ADR-0042).
-    spares: Spares,
 }
 
 /// One resource an actor keeps.
@@ -238,12 +248,90 @@ impl Keep {
 }
 
 impl Keeping {
+    /// What a turn of the actor reaches of what it keeps: its resources, and its buffers, borrowed apart.
+    pub fn keeps(&mut self) -> Keeps<'_> {
+        Keeps::Here(&mut self.resources, &mut self.spares)
+    }
+
+    /// Its resources, for a guest's host to hold its guest's claims to (ADR-0015).
+    pub(crate) const fn resources(&mut self) -> &mut Resources {
+        &mut self.resources
+    }
+
+    /// A buffer with room for at least `room` bytes: the smallest it keeps that is big enough and at most twice `room`,
+    /// emptied, else a new one (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
+        self.spares.take(room)
+    }
+
+    /// Keeps `buffer`, the buffer of a blob the actor put that has been freed, to hand out again: dropped instead when
+    /// keeping it would take the buffers it keeps past `most_bytes` (ADR-0042).
+    pub fn keep_buffer(&mut self, buffer: Vec<u8>, most_bytes: usize) {
+        self.spares.keep(buffer, most_bytes);
+    }
+
+    /// Lends out the largest buffer it keeps, to a job it runs that fills buffers: none when it keeps none (ADR-0042).
+    #[must_use]
+    pub fn lend(&mut self) -> Spares {
+        self.spares.lend()
+    }
+
+    /// Keeps each of `lent`, the buffers a job the actor ran was lent and did not take, to hand out again, as
+    /// [`Self::keep_buffer`] keeps one (ADR-0042).
+    pub fn keep_buffers(&mut self, lent: Spares, most_bytes: usize) {
+        self.spares.keep_all(lent, most_bytes);
+    }
+
+    /// Keeps `kept`, a resource given to the actor, as its own, under the ticket it came with.
+    pub fn adopt(&mut self, kept: Kept) {
+        self.resources.adopt(kept);
+    }
+
+    /// Lets go of the resource `ticket` names, its own or one arriving for it: what a guest's host hands to a child
+    /// of other code in its config, before the guest's claims of the turn are read (ADR-0015).
+    pub fn give_up_any(&mut self, ticket: u64) -> Option<(Kept, Was)> {
+        self.resources.give_up_any(ticket)
+    }
+
+    /// Keeps `kept`, given by the actor `by` with the mail `mail`, until the actor handles that mail: for the engine,
+    /// as the mail's step folds.
+    pub fn arrive(&mut self, by: Seated, mail: MailId, kept: Kept) {
+        self.resources.arrive(by, mail, kept);
+    }
+
+    /// Whether it holds the resource `ticket` names, its own or arriving for it.
+    #[must_use]
+    pub fn holds(&self, ticket: u64) -> bool {
+        self.resources.holds(ticket)
+    }
+
+    /// Whether it holds no resource, its own or arriving for it: the buffers it keeps are not counted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.resources.is_empty()
+    }
+
+    /// Drops what arrived with the mail `mail` that the actor did not take as it handled it, and answers with the name
+    /// of each: for the engine, after the turn of that mail.
+    pub fn drop_untaken(&mut self, mail: MailId) -> Vec<&'static str> {
+        self.resources.drop_untaken(mail)
+    }
+
+    /// Takes out what arrived for the actor with mail it never handled, each with the actor that gave it: for the
+    /// engine, as the actor leaves its seat. What it owns stays, and is dropped with it.
+    pub fn take_arriving(&mut self) -> Vec<(Seated, Kept)> {
+        self.resources.take_arriving()
+    }
+}
+
+impl Resources {
     /// What it holds, holding nothing yet when it never has.
     fn holdings(&mut self) -> &mut Vec<Keep> {
         &mut self.all().held
     }
 
-    /// Everything it keeps, keeping nothing yet when it never has.
+    /// Everything it holds, holding nothing yet when it never has.
     fn all(&mut self) -> &mut Holdings {
         let has_never_held = matches!(self.holding, Holding::Never);
         if has_never_held {
@@ -254,37 +342,6 @@ impl Keeping {
         };
 
         holdings
-    }
-
-    /// A buffer with room for at least `room` bytes: the smallest it keeps that is big enough and at most twice `room`,
-    /// emptied, else a new one (ADR-0042).
-    #[must_use]
-    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
-        match &mut self.holding {
-            Holding::Holds(holdings) => holdings.spares.take(room),
-            Holding::Never => Vec::with_capacity(room),
-        }
-    }
-
-    /// Keeps `buffer`, the buffer of a blob the actor put that has been freed, to hand out again: dropped instead when
-    /// keeping it would take the buffers it keeps past `most_bytes` (ADR-0042).
-    pub fn keep_buffer(&mut self, buffer: Vec<u8>, most_bytes: usize) {
-        self.all().spares.keep(buffer, most_bytes);
-    }
-
-    /// Lends out the largest buffer it keeps, to a job it runs that fills buffers: none when it keeps none (ADR-0042).
-    #[must_use]
-    pub fn lend(&mut self) -> Spares {
-        match &mut self.holding {
-            Holding::Holds(holdings) => holdings.spares.lend(),
-            Holding::Never => Spares::new(),
-        }
-    }
-
-    /// Keeps each of `lent`, the buffers a job the actor ran was lent and did not take, to hand out again, as
-    /// [`Self::keep_buffer`] keeps one (ADR-0042).
-    pub fn keep_buffers(&mut self, lent: Spares, most_bytes: usize) {
-        self.all().spares.keep_all(lent, most_bytes);
     }
 
     /// What it holds, when it has ever held anything.
@@ -311,7 +368,7 @@ impl Keeping {
     }
 
     /// Keeps `kept`, a resource given to the actor, as its own, under the ticket it came with.
-    pub fn adopt(&mut self, kept: Kept) {
+    pub(crate) fn adopt(&mut self, kept: Kept) {
         self.holdings().push(Keep::Mine(kept));
     }
 
@@ -372,19 +429,19 @@ impl Keeping {
 
     /// Lets go of the resource of its own `ticket` names, whatever its type: what a guest gives, as its host holds it
     /// to the claim (ADR-0015).
-    pub fn give_up_claimed(&mut self, ticket: u64) -> Option<Kept> {
+    pub(crate) fn give_up_claimed(&mut self, ticket: u64) -> Option<Kept> {
         self.give_up(ticket, any_type)
     }
 
     /// Takes the resource `ticket` names, which arrived from the actor `by` with the mail being handled, as the
     /// actor's own, whatever its type: what a guest takes, as its host holds it to the claim (ADR-0015).
-    pub fn take_claimed(&mut self, ticket: u64, by: Seated) -> bool {
+    pub(crate) fn take_claimed(&mut self, ticket: u64, by: Seated) -> bool {
         self.take_arrived(ticket, by, any_type)
     }
 
     /// Lets go of the resource `ticket` names, its own or one arriving for it: what a guest's host hands to a child
     /// of other code in its config, before the guest's claims of the turn are read (ADR-0015).
-    pub fn give_up_any(&mut self, ticket: u64) -> Option<(Kept, Was)> {
+    pub(crate) fn give_up_any(&mut self, ticket: u64) -> Option<(Kept, Was)> {
         let held = self.held()?;
         let index = held.iter().position(|keep| match keep {
             Keep::Mine(kept) | Keep::Arriving { kept, .. } => kept.ticket == ticket,
@@ -399,13 +456,13 @@ impl Keeping {
 
     /// Keeps `kept`, given by the actor `by` with the mail `mail`, until the actor handles that mail: for the engine,
     /// as the mail's step folds.
-    pub fn arrive(&mut self, by: Seated, mail: MailId, kept: Kept) {
+    pub(crate) fn arrive(&mut self, by: Seated, mail: MailId, kept: Kept) {
         self.holdings().push(Keep::Arriving { by, mail, kept });
     }
 
     /// Whether it holds the resource `ticket` names, its own or arriving for it.
     #[must_use]
-    pub fn holds(&self, ticket: u64) -> bool {
+    pub(crate) fn holds(&self, ticket: u64) -> bool {
         match &self.holding {
             Holding::Never => false,
             Holding::Holds(holdings) => holdings.held.iter().any(|keep| keep.ticket() == ticket),
@@ -414,7 +471,7 @@ impl Keeping {
 
     /// Whether it holds no resource, its own or arriving for it: the buffers it keeps are not counted.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match &self.holding {
             Holding::Never => true,
             Holding::Holds(holdings) => holdings.held.is_empty(),
@@ -423,7 +480,7 @@ impl Keeping {
 
     /// Drops what arrived with the mail `mail` that the actor did not take as it handled it, and answers with the name
     /// of each: for the engine, after the turn of that mail.
-    pub fn drop_untaken(&mut self, mail: MailId) -> Vec<&'static str> {
+    pub(crate) fn drop_untaken(&mut self, mail: MailId) -> Vec<&'static str> {
         let mut untaken = Vec::new();
         if let Some(held) = self.held() {
             held.retain(|keep| match keep {
@@ -440,7 +497,7 @@ impl Keeping {
 
     /// Takes out what arrived for the actor with mail it never handled, each with the actor that gave it: for the
     /// engine, as the actor leaves its seat. What it owns stays, and is dropped with it.
-    pub fn take_arriving(&mut self) -> Vec<(Seated, Kept)> {
+    pub(crate) fn take_arriving(&mut self) -> Vec<(Seated, Kept)> {
         let mut arriving = Vec::new();
         let Some(held) = self.held() else {
             return arriving;
@@ -633,16 +690,45 @@ impl Holds<'_> {
     }
 }
 
-/// What a turn's calls on resources reach: what the engine keeps for the actor, or, in a guest's code, which holds
-/// tickets and no values, the claims it makes of its host (ADR-0010, ADR-0015).
+/// What a turn reaches of what its actor keeps: its resources and its buffers, which the engine keeps for it, or, in a
+/// guest's code, which holds tickets and no values, the claims it makes of its host (ADR-0010, ADR-0015, ADR-0042).
 pub enum Keeps<'a> {
-    /// What the engine keeps for the actor.
-    Here(&'a mut Keeping),
+    /// What the engine keeps for the actor: its resources, and its buffers, borrowed apart.
+    Here(&'a mut Resources, &'a mut Spares),
     /// A guest's claims, kept in what its turn asked for, which its host holds it to.
     Claimed,
 }
 
-impl Keeps<'_> {
+impl<'a> Keeps<'a> {
+    /// The actor's resources, as its turn's calls reach them, and its buffers, kept under `most_bytes`, as its turn's
+    /// pool: borrowed apart, so a buffer the pool hands out leaves the turn free to use (ADR-0042). In a guest's code,
+    /// which keeps none of the engine's buffers, the pool makes each buffer new and frees it as it drops.
+    pub(crate) fn split(self, most_bytes: usize) -> (Reach<'a>, Pool<'a>) {
+        match self {
+            Self::Here(resources, spares) => (Reach::Here(resources), Pool::kept(spares, most_bytes)),
+            Self::Claimed => (Reach::Claimed, Pool::unkept()),
+        }
+    }
+
+    /// The actor's resources alone, as a turn that takes no buffer and runs no job reaches them.
+    pub(crate) fn reach(self) -> Reach<'a> {
+        match self {
+            Self::Here(resources, _) => Reach::Here(resources),
+            Self::Claimed => Reach::Claimed,
+        }
+    }
+}
+
+/// What a turn's calls on resources reach: the resources the engine keeps for the actor, or, in a guest's code, the
+/// claims it makes of its host (ADR-0010, ADR-0015).
+pub enum Reach<'a> {
+    /// The resources the engine keeps for the actor.
+    Here(&'a mut Resources),
+    /// A guest's claims, kept in what its turn asked for, which its host holds it to.
+    Claimed,
+}
+
+impl Reach<'_> {
     /// Keeps `value` as the actor's own, under `ticket`: refused in a guest's code, which makes no resource.
     pub(crate) fn keep<R: Resource>(&mut self, ticket: u64, value: R) -> Result<Handle<R>, Fault> {
         match self {
@@ -664,25 +750,6 @@ impl Keeps<'_> {
         match self {
             Self::Here(keeping) => keeping.resource(handle),
             Self::Claimed => Err(Fault::bare::<KeepsNothing>()),
-        }
-    }
-
-    /// A buffer with room for at least `room` bytes: the smallest the actor keeps that is big enough and at most twice
-    /// `room`, else a new one (ADR-0042). A guest's code keeps none of the engine's, and makes its own.
-    pub(crate) fn buffer(&mut self, room: usize) -> Vec<u8> {
-        match self {
-            Self::Here(keeping) => keeping.buffer(room),
-            Self::Claimed => Vec::with_capacity(room),
-        }
-    }
-
-    /// The largest buffer the actor keeps, lent to a job it runs that fills buffers (ADR-0042). A guest's code keeps
-    /// none of the engine's, and lends none.
-    #[cfg(feature = "std")]
-    pub(crate) fn lend(&mut self) -> Spares {
-        match self {
-            Self::Here(keeping) => keeping.lend(),
-            Self::Claimed => Spares::new(),
         }
     }
 

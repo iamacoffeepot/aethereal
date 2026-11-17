@@ -50,9 +50,9 @@ use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
     Above, ActorName, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing,
     Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances, JobId,
-    JobType, Keeping, Keeps, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
-    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
-    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process, Publisher,
+    Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood, Submitted, Tie,
+    Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -345,6 +345,8 @@ pub struct Reading<'a> {
     stats: &'a Stats,
     /// The heads as the step began, which a spawn from a head reads (ADR-0054).
     heads: &'a Folded<Heads>,
+    /// The most bytes of buffers each actor keeps, which a buffer its turns drop unput is kept under (ADR-0042).
+    most_kept_bytes: usize,
 }
 
 /// What a step hands out and takes back, kept empty between steps for its room.
@@ -749,7 +751,7 @@ impl Engine {
 
         let declared = Declared::of::<A>();
         self.add_root_made(&segment, Code::Linked(declared), gifts, |me, path, table, asked, instances, keeping| {
-            let mut beginning = Beginning::new(me, path, table, asked, instances, Keeps::Here(keeping));
+            let mut beginning = Beginning::new(me, path, table, asked, instances, keeping.keeps());
             let root = A::begin(config, &mut beginning).map_err(Refused::Began)?;
 
             Ok(Box::new(root))
@@ -903,7 +905,8 @@ impl Engine {
         let mut seats = self.lend_seats(home);
         let me = Seated { id, seat: seats.own() };
         let blob_room = self.blobs.room();
-        let mut asked = Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room));
+        let mut asked =
+            Asked::writing(self.arena(parity, ROOTS, 0), seats, self.puts(ROOTS, blob_room), self.most_kept_bytes);
         asked.buffers_mut().gifts = gifts;
         let stood_before = ByActor::default();
         let table = Since {
@@ -1051,7 +1054,8 @@ impl Engine {
     pub fn run_whole(&mut self, whole: Whole, clock: &impl Clock) -> Whole {
         let Whole { arena, puts, mut lists } = whole;
         let mut tally = mem::take(&mut lists.tally);
-        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts);
+        let mut asked =
+            Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts, self.most_kept_bytes);
         pins::open(self.number.0, mem::take(&mut lists.pins));
         let mail = &self.arenas[parity(self.step + 1)];
         let reading = Reading {
@@ -1069,6 +1073,7 @@ impl Engine {
             log: &self.log,
             stats: &self.stats,
             heads: &self.heads,
+            most_kept_bytes: self.most_kept_bytes,
         };
         for (part, _) in &self.packing.parts {
             let room = Room {
@@ -1296,6 +1301,7 @@ impl Engine {
             log: &self.log,
             stats: &self.stats,
             heads: &self.heads,
+            most_kept_bytes: self.most_kept_bytes,
         }
     }
 
@@ -1682,7 +1688,8 @@ impl Reading<'_> {
         let mut tally = mem::take(&mut lists.tally);
         // One list of what turns ask for, over the share: each turn adds to it, and its effects are routed out of it
         // as it finishes.
-        let mut asked = Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts);
+        let mut asked =
+            Asked::continuing(mem::take(&mut lists.buffers), arena, Seats::default(), puts, self.most_kept_bytes);
         pins::open(self.engine, mem::take(&mut lists.pins));
         for parcel in &mut parcels {
             self.run_part(parcel.room(), clock, &mut tally, &mut asked, &mut lists);
@@ -1872,7 +1879,14 @@ impl Reading<'_> {
                         };
                         let (seats, puts, _, gifts) = asked.lent_gifts();
                         let holds = Holds { keeping: &mut *keeping, gifts };
-                        let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
+                        let reads = Reads {
+                            table: &table,
+                            made: &seat.made,
+                            seats,
+                            puts,
+                            holds,
+                            most_kept_bytes: self.most_kept_bytes,
+                        };
                         actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
                     }
                     // A turn is timed whole, from the item handed to what it asked for routed: what it costs the
@@ -1908,7 +1922,7 @@ impl Reading<'_> {
                             &seat.made,
                             asked,
                             instances,
-                            Keeps::Here(keeping),
+                            keeping.keeps(),
                             stepped.sent,
                             source,
                             chain,
@@ -1992,7 +2006,7 @@ impl Reading<'_> {
         tally.time(CostKey { actor: sitting.kind, item: ItemKind::Closing }, clock, || {
             asked.next_turn();
             let why = why(how);
-            let (path, above, keeps) = (&sitting.path, sitting.above, Keeps::Here(keeping));
+            let (path, above, keeps) = (&sitting.path, sitting.above, keeping.keeps());
             // A closing turn reads the step as any turn of it does: its blobs and its time.
             let table = Since {
                 table: self.table,
@@ -2098,7 +2112,8 @@ impl Reading<'_> {
         if seat.prepares {
             let (seats, puts, arena, gifts) = asked.lent_gifts();
             let holds = Holds { keeping: &mut *keeping, gifts };
-            let reads = Reads { table: &table, made: &seat.made, seats, puts, holds };
+            let reads =
+                Reads { table: &table, made: &seat.made, seats, puts, holds, most_kept_bytes: self.most_kept_bytes };
             let batch = batch::OneHop { reading: self, waits: waiting, hop: &hop, lists, arena };
             actor.prepare(Preparing::new(&batch, instances, reads, stepped.sent));
         }
@@ -2140,7 +2155,7 @@ impl Reading<'_> {
                     &seat.made,
                     asked,
                     instances,
-                    Keeps::Here(keeping),
+                    keeping.keeps(),
                     sent_before,
                     hop.from,
                     chain,

@@ -177,7 +177,7 @@ impl Job for Shrink {
 
     async fn run(self, job: &mut Running) -> Result<Shrunk, Fault> {
         let read = job.read(&self.blob).to_vec();
-        let first = job.put(read.into_iter().rev().collect());
+        let first = job.put(read.into_iter().rev().collect::<Vec<u8>>());
         let count = vec![u8::try_from(job.read(&first).len()).unwrap_or(u8::MAX)];
         let second = if self.big {
             job.put(vec![0; 2 << 20])

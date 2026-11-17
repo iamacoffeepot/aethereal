@@ -2,11 +2,12 @@
 
 use super::{Closing, Owing, Seat, Stood, Turning, Why};
 use crate::records::Staging;
+use crate::resource::{Reach, Resources};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
-    Instances, JobCode, JobId, Keeping, Keeps, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
-    Puts, Role, Runs, SeatNumber, Seated, Seats, Sending, Spares, Submitted, Table, Target, Tie, Unreadable, What,
-    Written, carry, take_claimed,
+    Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role,
+    Runs, SeatNumber, Seated, Seats, Sending, Spares, Submitted, Table, Target, Tie, Unreadable, What, Written, carry,
+    take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -160,6 +161,9 @@ impl<'a> Turning<'a> {
         let handler = declared.handlers().iter().find(|handler| handler.role() == role);
         let sends = handler.map_or(&[][..], |handler| handler.sends());
         let owing = Owing::Item(tie);
+        // A guest puts by handing its bytes to its host, and its jobs are lent nothing, so its host's turn reaches the
+        // actor's resources alone (ADR-0042).
+        let keeps = keeps.reach();
         let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due };
 
         (
@@ -177,6 +181,7 @@ impl<'a> Closing<'a> {
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
         let (owing, due) = (Owing::NOTHING, Due::Never);
+        let keeps = keeps.reach();
         let seat =
             Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing, due };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
@@ -214,7 +219,7 @@ impl<'a> Hosted<'a> {
             table,
             made: &(),
             asked,
-            keeps: Keeps::Here(keeping),
+            keeps: keeping.keeps().reach(),
             sent: 0,
             sent_before: 0,
             declared,
@@ -532,15 +537,15 @@ impl<'a> Hosted<'a> {
     }
 
     /// What `by` keeps: the actor whose turn this is, or a child its guest's code stood up in it.
-    fn keeping_of(&mut self, by: Seated) -> Option<&mut Keeping> {
+    fn keeping_of(&mut self, by: Seated) -> Option<&mut Resources> {
         if by == self.seat.me {
             return match &mut self.seat.keeps {
-                Keeps::Here(keeping) => Some(&mut **keeping),
-                Keeps::Claimed => None,
+                Reach::Here(resources) => Some(&mut **resources),
+                Reach::Claimed => None,
             };
         }
 
-        self.seat.asked.stood.iter_mut().find(|child| child.me == by).map(|child| &mut child.keeping)
+        self.seat.asked.stood.iter_mut().find(|child| child.me == by).map(|child| child.keeping.resources())
     }
 
     /// What stands above `by`: the actor whose turn this is, or a child its guest's code stood up in it.
@@ -743,6 +748,12 @@ impl<'a> Hosted<'a> {
         let (seats, puts, _) = self.seat.asked.lent();
 
         (self.seat.table, seats, puts)
+    }
+
+    /// The most bytes of buffers each actor keeps, which a buffer a turn drops unput is kept under (ADR-0042).
+    #[must_use]
+    pub const fn most_kept_bytes(&self) -> usize {
+        self.seat.asked.most_kept_bytes()
     }
 
     /// Gives back `seat`, one the turn's host took for a child that was never stood up.
