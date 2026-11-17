@@ -4,7 +4,7 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn, path,
 };
 use aethereal_actor::{Service, Spares};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -15,9 +15,10 @@ use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{Down, Engines, EnginesSettings, ListEngines, MintFor, Minted, REVISION, Up};
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_sessions::{
-    Archive, Archived, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt, Interrupted, ListSessions,
-    NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, Sessions, SessionsListed,
-    SessionsSettings, Speaker, Standing, State, Transcribed, Transcript,
+    Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
+    Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say,
+    Sessions, SessionsListed, SessionsSettings, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State, Transcribed,
+    Transcript,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -1538,8 +1539,105 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
 /// The most bytes of a link's frame in the chat's hubs.
 const LINK_BYTES: u32 = 1 << 16;
 
+/// What the test tells the impostor to send the sessions as engine `engine`.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.sessions.pose")]
+enum Pose {
+    Join { engine: u32 },
+    Say { engine: u32, session: u32, text: String },
+}
+
+/// A root that takes everything an engine is shown, as an `Engine` does, but is none: it joins and chats as whichever
+/// engine the test tells it, and counts what it is shown.
+#[derive(Plain)]
+#[kind(name = "aether.test.sessions.impostor")]
+struct Impostor {
+    shown: u32,
+}
+
+impl ChildOf for Impostor {
+    type Parent = Top;
+}
+
+impl Actor for Impostor {
+    type Config = Unset;
+    type Key = ();
+    type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { shown: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Impostor {
+    const SECTION: &'static str = "impostor";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Unset)
+    }
+}
+
+impl Handles<Pose> for Impostor {
+    type Sends = (Tells<Path<Sessions>, Joined>, Tells<Path<Sessions>, Chatted>);
+
+    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let sessions = path::<Sessions>(());
+        match pose {
+            Pose::Join { engine } => {
+                turn.to(sessions).send(&Joined { engine })?;
+            }
+            Pose::Say { engine, session, text } => {
+                turn.to(sessions).send(&Chatted { engine, chat: Chat::Say { session, text } })?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+macro_rules! counts {
+    ($($shown:ty),*) => {$(
+        impl Handles<$shown> for Impostor {
+            type Sends = ();
+
+            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+                self.shown += 1;
+
+                Ok(())
+            }
+        }
+    )*};
+}
+
+counts!(ShowTabs, ShowEvents, ShowAsk);
+
+/// Tells the impostor `pose`, and steps until the engine has nothing left to run of it.
+fn pose(harness: &mut Harness<Headless>, pose: &Pose) -> Result<(), Unheard> {
+    let impostor: ActorRef<Impostor> = harness.root::<Impostor>();
+    harness.tell(impostor, pose)?;
+    harness.settle();
+
+    Ok(())
+}
+
+/// How many frames the impostor has been shown.
+fn impostor_shown(harness: &mut Harness<Headless>) -> Result<u32, Unheard> {
+    let impostor: ActorRef<Impostor> = harness.root::<Impostor>();
+
+    Ok(harness.state(impostor)?.shown)
+}
+
 /// A hub as `hub` makes one, with `Engines` too, on a port of its choosing, so engines link and chat over the real
-/// link (ADR-0057).
+/// link (ADR-0057), and the impostor.
 fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
     let engines = EnginesSettings { port: 0, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
     let program = Headless::program()
@@ -1552,7 +1650,8 @@ fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
         .root_with::<Docker>(daemon.docker())
         .root_with::<Engines>(engines)
         .root_with::<Sessions>(daemon.sessions(4, 3600))
-        .root::<Caller>();
+        .root::<Caller>()
+        .root::<Impostor>();
 
     Harness::of(program)
 }
@@ -1795,6 +1894,83 @@ fn an_ask_of_claude_s_is_shown_to_trusted_engines_and_their_answer_is_written_as
         r#""response":{"behavior":"allow","updatedInput":{"command":"ls"}}}}"#
     );
     assert_eq!(written, vec![String::from(expected)]);
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_that_joins_as_a_joined_engine_takes_nothing_of_its_place() -> Result<(), Unheard> {
+    // Catches a `Joined` that names an engine another actor joined as replacing it: the impostor would be shown the
+    // engine's tabs and asks in its place, the engine shown none, and a chat frame the impostor sends as the engine
+    // taken as the engine's owner's (#585).
+    let mut daemon = Daemon::new("chat-impostor");
+    let mut harness = chat_hub(&daemon)?;
+    let session = open(&mut harness, &mut daemon, "chat")?;
+    let id = daemon.made(0);
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+    let (_, stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+
+    pose(&mut harness, &Pose::Join { engine: 0 })?;
+    let request = r#"{"type":"control_request","request_id":"r-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}"#;
+    daemon.emit(&id, request);
+    let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Ask { .. }));
+    pose(&mut harness, &Pose::Say { engine: 0, session, text: String::from("as the owner") })?;
+
+    let sessions = harness.root::<Sessions>();
+    assert_eq!(harness.state(sessions)?.joined(), vec![0]);
+    assert!(matches!(downs.last(), Some(Down::Ask { .. })), "the engine is still shown the ask: {downs:?}");
+    assert_eq!(impostor_shown(&mut harness)?, 0, "the impostor is shown nothing");
+    let entries = read(&mut harness, &mut daemon, session, 0)?;
+    let said = entries.iter().filter(|numbered| matches!(numbered.entry, Entry::Said { .. }));
+    assert_eq!(said.count(), 0, "nothing the impostor said reached the session: {entries:?}");
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_joined_as_one_engine_does_not_join_as_another() -> Result<(), Unheard> {
+    // Catches one actor holding two engines' numbers, so it is shown everything twice and its chat frames are taken
+    // as either engine's.
+    let daemon = Daemon::new("chat-twice");
+    let mut harness = chat_hub(&daemon)?;
+
+    pose(&mut harness, &Pose::Join { engine: 7 })?;
+    let shown = impostor_shown(&mut harness)?;
+    pose(&mut harness, &Pose::Join { engine: 8 })?;
+
+    let sessions = harness.root::<Sessions>();
+    assert_eq!(harness.state(sessions)?.joined(), vec![7]);
+    assert_eq!(shown, 1, "joined, it is shown the tabs");
+    assert_eq!(impostor_shown(&mut harness)?, shown, "joining again as another engine shows it nothing more");
+
+    Ok(())
+}
+
+#[test]
+fn an_engine_that_ends_is_let_go_and_one_linked_after_it_joins() -> Result<(), Unheard> {
+    // Catches an engine joined without being watched, whose entry outlives it, so the sessions show and take frames
+    // as a gone engine, and an engine that links after one ended refused or shown nothing.
+    let mut daemon = Daemon::new("chat-rejoin");
+    let mut harness = chat_hub(&daemon)?;
+    open(&mut harness, &mut daemon, "chat")?;
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "first", 1)?;
+    let (_, stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+
+    drop(stream);
+    let sessions = harness.root::<Sessions>();
+    let mut joined = vec![0];
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+        joined = harness.state(sessions).map(Sessions::joined).unwrap_or_default();
+        joined.is_empty()
+    });
+    assert_eq!(joined, Vec::<u32>::new(), "the engine that ended is let go");
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "second", 1)?;
+    let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+
+    assert!(matches!(downs.last(), Some(Down::Sessions { .. })), "the engine linked after is shown the sessions");
+    assert_eq!(harness.state(sessions)?.joined(), vec![1]);
 
     Ok(())
 }
