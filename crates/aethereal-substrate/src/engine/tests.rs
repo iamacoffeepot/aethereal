@@ -2501,6 +2501,107 @@ fn an_ask_and_a_watch_at_a_typed_path_reach_only_a_live_actor_of_the_paths_type(
     assert_eq!(nobody, gone);
 }
 
+/// An oracle a pilgrim spawns beneath itself, so no path names it alone: it is asked through the reference its spawn
+/// answered, by what its type carries.
+#[derive(Plain)]
+#[kind(name = "aether.test.sibyl")]
+struct Sibyl;
+
+impl ChildOf for Sibyl {
+    type Parent = Pilgrim;
+}
+
+impl Actor for Sibyl {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Question,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(sibyl: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(sibyl)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Question> for Sibyl {
+    type Answers = (Reply,);
+}
+
+impl Handles<Question> for Sibyl {
+    type Sends = (ToSender<Reply>,);
+    type From = Anyone;
+
+    fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        Ok(turn.reply(&Reply::Truth)?)
+    }
+}
+
+/// A root that, as it begins, spawns a sibyl and asks it a question through the reference to it, and takes what it
+/// hears.
+#[derive(Plain)]
+#[kind(name = "aether.test.pilgrim")]
+struct Pilgrim;
+
+impl ChildOf for Pilgrim {
+    type Parent = Top;
+}
+
+impl Actor for Pilgrim {
+    type Config = Self;
+    type Key = ();
+    type Handles = (Answer<Reply, Wondering>,);
+    type BeginSends = (Asks<ActorRef<Sibyl>, Question, Wondering>,);
+    type EndSends = ();
+
+    fn begin(pilgrim: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let Ok(sibyl) = turn.spawn::<Sibyl>(&(), Sibyl) else {
+            return Err(Fault::new(&pilgrim)?);
+        };
+        turn.to(sibyl).ask(&Question, &Wondering)?;
+
+        Ok(pilgrim)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Receives<Answer<Reply, Wondering>> for Pilgrim {
+    type Sends = ();
+
+    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+#[test]
+fn an_actor_asked_through_a_reference_to_it_answers_as_its_type_says() {
+    // Catches an ask through a typed reference filed to wait for another kind than the one its receiver's type
+    // carries, so the answer reaches no handler and the asker's turn fails, and one whose answer never comes
+    // (ADR-0022).
+    let mut engine = Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).ready();
+    engine.record_turns();
+    let Ok(_) = engine.add_root::<Pilgrim>(&(), Pilgrim) else {
+        panic!("the pilgrim begins");
+    };
+    for _ in 0..3 {
+        engine.step(Time::ZERO, &Stopped);
+    }
+
+    // The record notes an item before it is decoded, so a turn that heard it is one that did not fail.
+    let turns = engine.take_turned();
+    let all_ran = turns.iter().all(|turn| !turn.failed());
+    assert!(all_ran);
+
+    let heard: Vec<Seen> = turns.iter().flat_map(Seen::of).collect();
+    assert_eq!(heard, [told(Reply::Truth)]);
+}
+
 /// A root, a singleton, that other types reach at its typed path.
 #[derive(Plain)]
 struct Lighthouse;

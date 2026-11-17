@@ -84,8 +84,9 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
     ///
     /// It builds only when the turn's sends list what the target is [`Askable`] by: [`Asks<P, K, C>`](crate::Asks)
     /// for a [`ProtocolRef<P>`](crate::ProtocolRef), where `P` answers `K` with one kind, and `Asks<Path<L>, K, C>`
-    /// for a [`Path<L>`](crate::Path), where `L` does; and the actor handles that answer with `C`. A path that held no
-    /// live actor of its type is asked as an actor that has gone: the request is answered
+    /// for a [`Path<L>`](crate::Path) and `Asks<ActorRef<L>, K, C>` for an [`ActorRef<L>`](crate::ActorRef), where
+    /// `L` does, as [`AnswersByType`](crate::AnswersByType) says; and the actor handles that answer with `C`. A path
+    /// that held no live actor of its type is asked as an actor that has gone: the request is answered
     /// [`Unanswered::Ended`](crate::Unanswered::Ended).
     ///
     /// It is due as this target says: what [`within`](Self::within) stated, or the deadline of the request the turn
