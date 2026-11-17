@@ -117,6 +117,7 @@ A section belongs to the root that reads it, so a composed section that nothing 
 | two sections of one name | phase 1, before anything opens, naming both roots |
 | a flag, variable, file, or page that sets what does not exist or the wrong shape | phase 1, naming the path and the layer (ADR-0028) |
 | a window or a GPU that does not open, a root refused as it begins | phase 2, naming the root |
+| an actor that quits, or a turn that fails, before `Start` | `Booting`, once the program runs, naming the actor (ADR-0020) |
 
 **A bootstrap that fails stops the program as it is set up.** `Unbuilt` says why:
 - the root was refused as it began (`Refused`);
@@ -124,6 +125,8 @@ A section belongs to the root that reads it, so a composed section that nothing 
 - the bootstrap's own failure, such as a module file that could not be read, carried as an error of its own.
 
 `run` and `build` report it naming the root whose bootstrap failed. The engine and the roots begun before it are dropped, as a setup whose `add_root` is refused is dropped now.
+
+**A boot that fails stops the program as a bootstrap that fails does.** What the roots' `begin`s ask is answered once the program runs, on `Boot`'s chain, before `Start` (ADR-0020). An actor that quits then, or a turn that fails, is a program that did not start: the host reports it as `ProgramError`, as it reports a failed bootstrap, naming the actor and its fault or that it quit, and exits failing. The headless host's run ends `Exit::Unbooted`.
 
 **Needs and provides are found by type.** A root's `Needs` and `Provides` are tuples of types; each need is found among what roots before it provided, as `Ordered<I>` finds a root, and handed over as a clone. The check is made at `run` / `build`, not at `.root`: finding a need there takes an index the compiler infers, which a turbofish would make every `.root::<A, _>()` spell out. A type is provided once in a program; two roots that provide one type are refused only where a later root needs it, as an ambiguous type. A root that needs two values of one kind needs two types.
 
