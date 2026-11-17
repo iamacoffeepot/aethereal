@@ -1,13 +1,14 @@
-//! A response's head, written as the bytes an exchange sends its connection before the body (ADR-0035, ADR-0042).
+//! A response's head, written as the bytes a server sends its connection before the body (ADR-0035, ADR-0042): what an
+//! exchange and a stack share of writing a response.
 
 use crate::head::is_token;
 use crate::{Header, Status};
 use aethereal_data::Plain;
 
-/// What an exchange writes before it reads a body whose client waits to be told to send it.
+/// What a server writes before it reads a body whose client waits to be told to send it.
 pub const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
 
-/// The headers the exchange writes itself, and drops from a handler's response.
+/// The headers a server writes itself, and drops from a handler's response.
 const FRAMING: [&str; 3] = ["content-length", "transfer-encoding", "connection"];
 
 /// Room enough for a head's status line, its `Content-Length` or `Transfer-Encoding` and `Connection`, and the blank
@@ -30,7 +31,7 @@ pub enum Frame {
 
 /// What became of a response's head as it was written.
 pub struct Written {
-    /// Each header dropped, by name: one the exchange writes itself, or one whose name or value would not write.
+    /// Each header dropped, by name: one the server writes itself, or one whose name or value would not write.
     pub dropped: Vec<String>,
     /// Whether the body is written after the head: the status has one, and it does not answer a `HEAD`.
     pub sends_body: bool,
@@ -45,7 +46,7 @@ pub fn room(headers: &[Header]) -> usize {
 
 /// Writes the head of a response of `status` with `headers` and a body delimited as `frame` says into `head`: its
 /// status line, its headers, `Content-Length` or `Transfer-Encoding: chunked` and, when the connection `closes`,
-/// `Connection: close`, then the blank line. The body is not written here: the exchange writes it after the head in
+/// `Connection: close`, then the blank line. The body is not written here: the server writes it after the head in
 /// parts of its own, unless the response answers a `HEAD`, which is `head_only`.
 pub fn head(
     status: Status,
@@ -81,7 +82,7 @@ pub fn head(
     Written { dropped, sends_body: has_body && !head_only }
 }
 
-/// Whether a handler's header `name: value` is written: its name is a token the exchange does not write itself, and
+/// Whether a handler's header `name: value` is written: its name is a token the server does not write itself, and
 /// its value holds no line ending or other control byte, which would let a handler's value write a header of its
 /// own.
 fn writes(name: &str, value: &str) -> bool {

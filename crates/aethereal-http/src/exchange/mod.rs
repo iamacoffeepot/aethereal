@@ -5,19 +5,20 @@
 mod chunk;
 mod inflow;
 mod outflow;
-mod parse;
-mod write;
 
 use crate::body::{Body, Decoded, Progress};
 use crate::mount::mounted;
+use crate::pooled::put;
+use crate::request_head::{self, Framing, Parsed as Front, Refusal, RequestHead as Head};
+use crate::response_head::{self, Frame};
 use crate::{
     Handling, Header, Limits, Method, Mount, Request, RequestBody, Response, ResponseBody, ResponseSource, Server,
     SourceEnd, Status, StreamHandling, StreamedRequest,
 };
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Bytes, ChildOf, Due, Ended, Ending, Enough,
-    Fault, Handles, JobId, Level, More, Number, Open, Part, ProtocolRef, Receives, Refused, Serving, Sleep, Slept,
-    Streamed, Streams, Taken, Time, ToAny, Turn, Unanswered,
+    Fault, Handles, JobId, Level, More, Number, Open, Part, ProtocolRef, Receives, Serving, Sleep, Slept, Streamed,
+    Streams, Taken, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
@@ -25,9 +26,7 @@ use core::mem;
 use core::time::Duration;
 use inflow::Inflow;
 use outflow::Outflow;
-use parse::{Framing, Head, Parsed as Front, Refusal};
 use std::num::NonZeroU32;
-use write::Frame;
 
 /// What an exchange is made from: the connection it reads, where it came from, the port it came in on, the handler it
 /// asks each request of, the mounts it streams requests to instead, and the limits on each request.
@@ -464,7 +463,8 @@ impl Exchange {
         loop {
             match self.phase {
                 Phase::Idle { .. } | Phase::Head { .. } => {
-                    let front = parse::head(&self.buffer, &self.limits, &self.mounts);
+                    let most_body = |path: &str| most_body(&self.mounts, &self.limits, path);
+                    let front = request_head::parse(&self.buffer, self.limits.most_head_bytes, most_body);
                     match front {
                         Front::More => {
                             let started = matches!(self.phase, Phase::Idle { .. }) && !self.buffer.is_empty();
@@ -483,7 +483,7 @@ impl Exchange {
                             };
                             let continues = head.expects_continue && head.framing != Framing::Empty;
                             if continues {
-                                let Ok(go_on) = put(turn, write::CONTINUE) else {
+                                let Ok(go_on) = put(turn, response_head::CONTINUE) else {
                                     unstored(turn);
                                     return Ok(());
                                 };
@@ -668,8 +668,8 @@ impl Exchange {
         owed: Owed,
     ) -> Result<Headed, Fault> {
         let (doing, pool) = turn.split();
-        let mut head = pool.buffer(write::room(headers));
-        let written = write::head(status, headers, frame, owed.closes, owed.head_only, &mut head);
+        let mut head = pool.buffer(response_head::room(headers));
+        let written = response_head::head(status, headers, frame, owed.closes, owed.head_only, &mut head);
         let put = doing.put(head);
 
         for name in &written.dropped {
@@ -734,13 +734,9 @@ fn due(phase: &Phase, limits: &Limits) -> Due {
     Due::Before(since + Duration::from_millis(u64::from(within)))
 }
 
-/// `bytes`, copied into a buffer the turn hands out, and put.
-fn put<S>(turn: &mut Turn<'_, Exchange, S>, bytes: &[u8]) -> Result<Bytes, Refused> {
-    let (turn, pool) = turn.split();
-    let mut buffer = pool.buffer(bytes.len());
-    buffer.extend_from_slice(bytes);
-
-    turn.put(buffer)
+/// The most bytes of a body to `path` a server with `mounts` and `limits` reads: its mount's, or the server's.
+fn most_body(mounts: &[Mount], limits: &Limits, path: &str) -> u64 {
+    mounted(mounts, path).map_or_else(|| u64::from(limits.most_body_bytes), |mount| mount.most_body_bytes)
 }
 
 /// Closes an exchange that had no room to hold what it would write (ADR-0014): the client is told nothing more.

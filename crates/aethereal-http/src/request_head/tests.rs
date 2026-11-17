@@ -1,19 +1,8 @@
 use super::*;
 
-/// The limits the tests parse under: a head of at most 128 bytes, and a body of at most 16.
-const LIMITS: Limits = Limits {
-    most_head_bytes: 128,
-    most_body_bytes: 16,
-    window: 4,
-    request_within_millis: 1000,
-    stall_within_millis: 1000,
-    idle_within_millis: 1000,
-    answer_within_millis: 1000,
-};
-
-/// What the front of `bytes` parses as.
+/// What the front of `bytes` parses as, a head of at most 128 bytes, and a body of at most 16.
 fn front(bytes: &[u8]) -> Parsed {
-    head(bytes, &LIMITS, &[])
+    parse(bytes, 128, |_| 16)
 }
 
 #[test]
@@ -77,7 +66,7 @@ fn a_head_not_yet_whole_waits_and_one_past_the_limit_is_refused() {
 #[test]
 fn each_head_a_server_must_not_take_is_refused_with_its_reason() {
     // Catches each rule of the limits table let through: request smuggling by a `Transfer-Encoding` beside a
-    // `Content-Length`, one in HTTP/1.0, or a doubled `Content-Length`; a coding the exchange does not decode, alone or
+    // `Content-Length`, one in HTTP/1.0, or a doubled `Content-Length`; a coding a server does not decode, alone or
     // before `chunked`, read as if the body were not coded; a body past its limit read before it is refused; a header line that a folding or bare line feed
     // would splice, a target in absolute form, and a method or version answered as if malformed.
     let refused = [

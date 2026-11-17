@@ -147,12 +147,19 @@ fn over_boundary(generics: &Generics) -> Generics {
     over
 }
 
-/// The generics with `bound` required of every field's type, each spanned at that type.
+/// The generics with `bound` required of every field's type, once for each type, spanned at the first field of it.
 fn with_field_bounds(generics: &Generics, field_types: &[&Type], bound: &TokenStream2) -> Generics {
     let mut bounded = generics.clone();
     let predicates = &mut bounded.make_where_clause().predicates;
 
+    let mut bounded_types = Vec::new();
     for field_type in field_types {
+        // A type two fields share is bounded once: a bound written twice reads as a slip, as Clippy says.
+        let written = quote! { #field_type }.to_string();
+        if bounded_types.contains(&written) {
+            continue;
+        }
+        bounded_types.push(written);
         let span = field_type.span();
         let spanned_bound: TokenStream2 = bound.clone().into_iter().map(|token| respan(token, span)).collect();
         predicates.push(syn::parse_quote_spanned!(span => #field_type: #spanned_bound));

@@ -1,15 +1,15 @@
-//! A request's head, parsed from the bytes an exchange has read, with every limit on it checked (ADR-0035).
+//! A request's head, parsed from the bytes a server has read, with every limit on it checked (ADR-0035): what an
+//! exchange and a stack share of reading a request.
 
 use crate::body::{Body, Broken, Chunk};
 use crate::head::{self, Ends, Malformed};
-use crate::mount::mounted;
-use crate::{BodyLength, Header, Limits, Method, Mount, Status};
+use crate::{BodyLength, Header, Method, Status};
 use aethereal_data::Plain;
 
-/// A request's head, parsed: what the handler is given of it, and what the exchange reads of it to frame the body
-/// and the connection.
+/// A request's head, parsed: what its handler is given of it, and what the server reads of it to frame the body and
+/// the connection.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-pub struct Head {
+pub struct RequestHead {
     pub method: Method,
     pub path: String,
     pub query: String,
@@ -29,7 +29,7 @@ pub struct Head {
 pub enum Framing {
     /// It has none: neither a `Transfer-Encoding` nor a `Content-Length`, or a `Content-Length` of 0.
     Empty,
-    /// Its `Content-Length`, more than 0 and within the most bytes of its body: its mount's, or the server's.
+    /// Its `Content-Length`, more than 0 and within the most bytes its server takes of the body.
     Length(u64),
     /// `Transfer-Encoding: chunked`, its decoded length bounded by the most bytes of its body as it is read.
     Chunked,
@@ -55,14 +55,14 @@ impl Framing {
     }
 }
 
-/// What the front of an exchange's buffer holds.
+/// What the front of a server's buffer holds.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     /// Not a whole head yet.
     More,
     /// A whole head, which with the line endings before it took `consumed` bytes.
-    Head { head: Head, consumed: usize },
-    /// A head the exchange refuses, and answers before it closes.
+    Head { head: RequestHead, consumed: usize },
+    /// A head the server refuses, and answers before it closes.
     Refused(Refusal),
 }
 
@@ -73,7 +73,7 @@ pub enum Refusal {
     Malformed,
     /// Its head is past `most_head_bytes`: `431`.
     HeadTooLarge,
-    /// Its body is past the most bytes of its body, its mount's or the server's: `413`.
+    /// Its body is past the most bytes its server takes, or a chunk's line is past the most bytes of a head: `413`.
     BodyTooLarge,
     /// A method no server takes, or a transfer coding other than `chunked` alone: `501`.
     Unimplemented,
@@ -94,13 +94,13 @@ impl Refusal {
     }
 }
 
-/// The head at the front of `buffer`, past any empty lines before it, as `limits` allow it, and as its mount among
-/// `mounts` allows its body.
-pub fn head(buffer: &[u8], limits: &Limits, mounts: &[Mount]) -> Parsed {
-    match head::ends(buffer, limits.most_head_bytes) {
+/// The head at the front of `buffer`, past any empty lines before it, within `most_head_bytes`, its body's
+/// `Content-Length` within what `most_body` answers for its path.
+pub fn parse(buffer: &[u8], most_head_bytes: u32, most_body: impl FnOnce(&str) -> u64) -> Parsed {
+    match head::ends(buffer, most_head_bytes) {
         Ends::More => Parsed::More,
         Ends::TooLarge => Parsed::Refused(Refusal::HeadTooLarge),
-        Ends::Whole { text, consumed } => match parsed(&buffer[text], limits, mounts) {
+        Ends::Whole { text, consumed } => match parsed(&buffer[text], most_body) {
             Ok(head) => Parsed::Head { head, consumed },
             Err(refusal) => Parsed::Refused(refusal),
         },
@@ -108,7 +108,7 @@ pub fn head(buffer: &[u8], limits: &Limits, mounts: &[Mount]) -> Parsed {
 }
 
 /// The head whose lines are `text`, its ending cut off.
-fn parsed(text: &[u8], limits: &Limits, mounts: &[Mount]) -> Result<Head, Refusal> {
+fn parsed(text: &[u8], most_body: impl FnOnce(&str) -> u64) -> Result<RequestHead, Refusal> {
     let mut lines = head::lines(text)?;
     let request_line = lines.next().ok_or(Refusal::Malformed)?;
     let (method, target, version) = request_line_of(request_line)?;
@@ -116,15 +116,22 @@ fn parsed(text: &[u8], limits: &Limits, mounts: &[Mount]) -> Result<Head, Refusa
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
     let (path, query) = (String::from(path), String::from(query));
 
-    let most_body =
-        mounted(mounts, &path).map_or_else(|| u64::from(limits.most_body_bytes), |mount| mount.most_body_bytes);
-    let framing = framing(&headers, version, most_body)?;
+    let framing = framing(&headers, version, most_body(&path))?;
     let asks_close = head::lists(&headers, "connection", "close");
     let is_old = version == Version::Http10;
     let expects_continue =
         headers.iter().any(|header| header.name == "expect" && header.value.eq_ignore_ascii_case("100-continue"));
 
-    Ok(Head { method, path, query, headers, framing, closes: asks_close || is_old, expects_continue, chunks: !is_old })
+    Ok(RequestHead {
+        method,
+        path,
+        query,
+        headers,
+        framing,
+        closes: asks_close || is_old,
+        expects_continue,
+        chunks: !is_old,
+    })
 }
 
 /// A head, or a line of one, that does not parse is answered `400`.
@@ -182,7 +189,7 @@ fn request_line_of(line: &[u8]) -> Result<(Method, String, Version), Refusal> {
 /// How the body of a request of `version` with `headers` is framed (RFC 9112 §6.1, §6.3). A body past `most_body` bytes
 /// by its `Content-Length` is refused before it is read. A `Transfer-Encoding` beside a
 /// `Content-Length`, or in HTTP/1.0, which has none, frames the body two ways, which is how a request is smuggled, and
-/// does not parse. A transfer coding other than `chunked` alone is one the exchange does not decode.
+/// does not parse. A transfer coding other than `chunked` alone is one a server does not decode.
 fn framing(headers: &[Header], version: Version, most_body: u64) -> Result<Framing, Refusal> {
     let codings: Vec<&Header> = headers.iter().filter(|header| header.name == "transfer-encoding").collect();
     let length = head::content_length(headers)?;
