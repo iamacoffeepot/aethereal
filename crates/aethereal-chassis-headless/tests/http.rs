@@ -1,16 +1,23 @@
 //! The HTTP capability served on the native host, the test its handler, to clients on threads of their own (ADR-0035,
 //! ADR-0036).
 
-use aethereal_actor::{Answered, Unanswered};
+use aethereal_actor::{
+    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open, Part, Streamed,
+    Streams, ToAny, ToSender, Top, Turn, Unanswered,
+};
 use aethereal_chassis_headless::Headless;
+use aethereal_chassis_headless::waiting::{self, BUDGET};
+use aethereal_data::{Bound, Plain};
 use aethereal_http::{
-    BlobBytesTooLow, Handling, Header, Http, HttpSettings, ReadLimitTooLow, Request, Response, Serve, Served, Status,
+    BlobBytesTooLow, BodyRead, Handling, Header, Http, HttpSettings, Mount, ReadLimitTooLow, Request, RequestBody,
+    Response, Serve, Served, Status, StreamedRequest,
 };
 use aethereal_substrate::harness::{Harness, Held, Unheard};
-use aethereal_substrate::{EngineSettings, Host};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::{Interface, Tcp};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
+use std::num::NonZeroU32;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -30,7 +37,7 @@ fn served(settings: HttpSettings) -> Result<(Harness<Headless>, u16), Unheard> {
     let mut harness = Harness::of(Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings))?;
     let http = harness.root::<Http>();
     let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler })?;
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts: Vec::new() })?;
     let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
         panic!("the port is bound");
     };
@@ -84,11 +91,11 @@ fn closes(stream: &mut TcpStream) -> bool {
 
 /// A client on a thread of its own, outside the engine, which sends `sent` to `port` and reads `responses` responses,
 /// and whether the server then closed.
-fn client(port: u16, sent: &'static [u8], responses: usize) -> JoinHandle<(Vec<Read>, bool)> {
+fn client(port: u16, sent: impl AsRef<[u8]> + Send + 'static, responses: usize) -> JoinHandle<(Vec<Read>, bool)> {
     #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
     thread::spawn(move || {
         let mut stream = connect(port);
-        assert!(stream.write_all(sent).is_ok(), "the client writes");
+        assert!(stream.write_all(sent.as_ref()).is_ok(), "the client writes");
         let mut buffer = Vec::new();
         let read = (0..responses).map(|_| response(&mut stream, &mut buffer)).collect();
         let closed = closes(&mut stream);
@@ -338,4 +345,256 @@ fn http_does_not_start_where_a_requests_body_could_not_be_held() {
     };
 
     assert!(why.contains(&BlobBytesTooLow { blob_bytes: 1 << 20, needed }.to_string()), "{why}");
+}
+
+/// What a reader's begin is given: nothing.
+#[derive(Plain)]
+#[kind(name = "aether.test.http.unset")]
+struct Unset;
+
+/// A root that handles a mount's requests: it opens each body's stream, kept one part ahead, keeps each part as it
+/// comes, and once the body ends answers the request `200` with every byte it took. A stream is opened and its parts
+/// taken only by [`Streams`], which only an actor holds.
+#[derive(Bound)]
+#[kind(name = "aether.test.http.reader")]
+struct Reader {
+    /// Each body's stream, and the request it answers once the body ends.
+    bodies: Streams<RequestBody, aethereal_actor::Held<Response>>,
+    /// Each part taken, in order.
+    parts: Vec<Vec<u8>>,
+    /// How each body was read.
+    read: Vec<BodyRead>,
+}
+
+impl ChildOf for Reader {
+    type Parent = Top;
+}
+
+impl Actor for Reader {
+    type Config = Unset;
+    type Key = ();
+    type Handles = (StreamedRequest, Part<RequestBody>, Answer<BodyRead, Number>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { bodies: Streams::new(NonZeroU32::MIN), parts: Vec::new(), read: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Reader {
+    const SECTION: &'static str = "reader";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Unset)
+    }
+}
+
+impl Handles<StreamedRequest> for Reader {
+    type Sends = (
+        ToSender<Response>,
+        Asks<Streamed<RequestBody>, Open<RequestBody>, Number>,
+        ToAny<Streamed<RequestBody>, More>,
+    );
+
+    fn handle(&mut self, request: StreamedRequest, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let held = turn.hold()?;
+        self.bodies.open(turn, request.body, request.read_body(), held)?;
+
+        Ok(())
+    }
+}
+
+impl Handles<Part<RequestBody>> for Reader {
+    type Sends = (ToAny<Streamed<RequestBody>, More>,);
+
+    fn handle(&mut self, part: Part<RequestBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let Some(taken) = self.bodies.part(turn, part)? else {
+            return Ok(());
+        };
+        self.parts.push(turn.read(&taken.value.bytes).to_vec());
+
+        Ok(())
+    }
+}
+
+impl Handles<Answer<BodyRead, Number>> for Reader {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (answered, number): (Answered<BodyRead>, Number),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.bodies.answered(number) else {
+            return Ok(());
+        };
+        if let Answered::Yes(read) = answered {
+            self.read.push(read);
+        }
+        let mut body = turn.buffer(self.parts.iter().map(Vec::len).sum());
+        body.extend(self.parts.iter().flatten());
+        let Ok(body) = turn.put(body) else {
+            return Ok(());
+        };
+        turn.answer(held, &Response::new(Status::Ok, "application/octet-stream", body))?;
+
+        Ok(())
+    }
+}
+
+/// A host running `settings` with a reader, which serves a port to the test, and streams what is under `/upload` to
+/// the reader, up to `most_body_bytes` of each body.
+fn mounted(settings: HttpSettings, most_body_bytes: u64) -> Result<(Harness<Headless>, u16), Unheard> {
+    let engine = EngineSettings {
+        read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX),
+        ..EngineSettings::default()
+    };
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings).root::<Reader>();
+    let mut harness = Harness::of(program)?;
+    let http = harness.root::<Http>();
+    let handler = harness.protocol::<Handling>();
+    let reader = harness.root::<Reader>().protocol();
+    let mounts = vec![Mount { prefix: String::from("/upload"), most_body_bytes, handler: reader }];
+
+    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts })?;
+    let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
+        panic!("the port is bound");
+    };
+
+    Ok((harness, port))
+}
+
+/// The reader once it has been told how a body was read, the harness stepping the host until it has or the wait is
+/// spent.
+fn reader(harness: &mut Harness<Headless>) -> Result<&Reader, Unheard> {
+    let reader = harness.root::<Reader>();
+    waiting::until(BUDGET, || {
+        harness.step();
+
+        harness.state(reader).is_ok_and(|reader| !reader.read.is_empty())
+    });
+
+    harness.state(reader)
+}
+
+/// A body of `length` bytes, each its place's letter.
+fn letters(length: u8) -> Vec<u8> {
+    (0..length).map(|place| b'a' + place % 26).collect()
+}
+
+/// `body` written in chunks of seven bytes, the last chunk and an empty trailer after them.
+fn chunked(body: &[u8]) -> Vec<u8> {
+    let mut written = Vec::new();
+    for chunk in body.chunks(7) {
+        written.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        written.extend_from_slice(chunk);
+        written.extend_from_slice(b"\r\n");
+    }
+    written.extend_from_slice(b"0\r\n\r\n");
+
+    written
+}
+
+#[test]
+fn a_body_streams_to_its_mount_whole_and_in_order_across_small_reads() -> Result<(), Unheard> {
+    // Catches a mount's body gathered whole before it is handed on, a part sent past the reader's credit of one and
+    // dropped, bytes lost or reordered where a read cuts a chunk's size line or data, a chunk's framing left in what
+    // the reader is sent, and the server's `most_body_bytes` held to in place of the mount's, which would refuse both.
+    // Chunks of 16 bytes, one granted at a time, so the body comes in many reads.
+    let settings = HttpSettings { chunk_bytes: 16, window: 1, most_body_bytes: 8, ..HttpSettings::default() };
+    let body = letters(200);
+    let by_length =
+        [b"POST /upload/pack HTTP/1.1\r\nContent-Length: 200\r\nConnection: close\r\n\r\n".to_vec(), body.clone()]
+            .concat();
+    let in_chunks = [
+        b"POST /upload/pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec(),
+        chunked(&body),
+    ]
+    .concat();
+    for sent in [by_length, in_chunks] {
+        let (mut harness, port) = mounted(settings.clone(), 1 << 20)?;
+        let client = client(port, sent, 1);
+
+        let (answered, closed) = heard(&mut harness, client);
+        let reader = reader(&mut harness)?;
+        assert_eq!(reader.read, [BodyRead::Whole]);
+        assert_eq!(reader.parts.concat(), body);
+        assert!(reader.parts.len() > 1, "the body came in parts as it was read: {}", reader.parts.len());
+        assert!(answered[0].head.starts_with("HTTP/1.1 200"), "{answered:?}");
+        assert_eq!(answered[0].body, body);
+        assert!(closed, "a request that asked to close is closed once answered");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn a_chunked_body_past_its_mounts_limit_ends_too_large_and_is_refused() -> Result<(), Unheard> {
+    // Catches a mount's limit not checked as its chunked body is decoded, so a body without a length runs past it
+    // unbounded, and a body refused without telling the reader why its stream ended.
+    let (mut harness, port) = mounted(HttpSettings::default(), 8)?;
+    let client = client(
+        port,
+        b"POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+        1,
+    );
+
+    let (refused, closed) = heard(&mut harness, client);
+
+    assert!(refused[0].head.starts_with("HTTP/1.1 413"), "{refused:?}");
+    assert!(closed, "a refused request's connection closes once its response is sent");
+    assert_eq!(reader(&mut harness)?.read, [BodyRead::TooLarge]);
+
+    Ok(())
+}
+
+#[test]
+fn a_body_that_stops_coming_ends_stalled_and_the_connection_closes() -> Result<(), Unheard> {
+    // Catches a streamed body left without a deadline, so a peer that stops sending holds the exchange and the reader
+    // for good, and one closed without telling the reader why its stream ended.
+    let settings = HttpSettings { stall_within_millis: 200, ..HttpSettings::default() };
+    let (mut harness, port) = mounted(settings, 1 << 20)?;
+    let client = client(port, b"POST /upload HTTP/1.1\r\nContent-Length: 100\r\n\r\nonly some", 0);
+
+    let (_, closed) = heard(&mut harness, client);
+
+    assert!(closed, "the server closes a body that stopped coming");
+    let reader = reader(&mut harness)?;
+    assert_eq!(reader.read, [BodyRead::Stalled]);
+    assert_eq!(reader.parts.concat(), b"only some");
+
+    Ok(())
+}
+
+#[test]
+fn a_request_after_a_streamed_body_waits_for_its_answer_and_one_outside_every_mount_is_asked_whole()
+-> Result<(), Unheard> {
+    // Catches the bytes after a streamed body read into it or lost, so the request after it is never answered; that
+    // request asked before the streamed one is answered, so responses go out of order; and a request under no mount
+    // streamed, or held to the mount's limit, where it is asked of the server's handler whole.
+    let (mut harness, port) = mounted(HttpSettings::default(), 1 << 20)?;
+    let ahead = b"POST /upload HTTP/1.1\r\nContent-Length: 6\r\n\r\nstreamPOST /echo HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nwhole";
+    let client = client(port, ahead, 2);
+
+    let whole = harness.asked::<Request>()?;
+    assert_eq!(harness.read(&whole.request.body), Some(&b"whole"[..]));
+    let answer = echoed(&whole);
+    harness.reply(whole, &answer)?;
+
+    let (answered, closed) = heard(&mut harness, client);
+    assert_eq!(answered[0].body, b"stream");
+    assert!(answered[1].head.contains("x-method: Post"), "{answered:?}");
+    assert_eq!(answered[1].body, b"whole");
+    assert!(closed, "the request after the streamed one asked to close");
+    assert_eq!(reader(&mut harness)?.read, [BodyRead::Whole]);
+
+    Ok(())
 }

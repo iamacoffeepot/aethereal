@@ -6,7 +6,9 @@
 //! [`Exchange`] beneath the server reads one connection `Tcp` accepted,
 //! parses its requests, checking every limit before a request goes further,
 //! asks the handler each [`Request`], and writes the [`Response`] it is
-//! answered with.
+//! answered with. A request under one of the serve's [`Mount`]s is asked of
+//! the mount's handler as a [`StreamedRequest`] instead, its body streamed to
+//! the handler as it arrives, paced by the handler's credit.
 //!
 //! An actor asks the root to [`Connect`] to a server, over TCP or to a Unix
 //! socket, and is answered with a [`Client`] beneath the root, on one
@@ -25,6 +27,7 @@ mod exchange;
 mod head;
 mod http;
 mod message;
+mod mount;
 mod server;
 mod settings;
 mod status;
@@ -36,6 +39,7 @@ pub use client::{
 pub use exchange::{Asking, Deadline, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Connect, Connected, Http, Peer, Reaching, ReachingUnix, Serve, Served, Unreached};
 pub use message::{Handling, Header, Method, Request, Response};
+pub use mount::{BodyBytes, BodyLength, BodyRead, Mount, ReadBody, RequestBody, StreamHandling, StreamedRequest};
 pub use server::{Server, ServerConfig};
 pub use settings::{BlobBytesTooLow, ClientLimits, HttpSettings, Limits, ReadLimitTooLow};
 pub use status::Status;

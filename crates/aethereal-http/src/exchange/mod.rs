@@ -1,25 +1,31 @@
 //! An exchange: the server's side of one accepted connection, which parses each request as its chunks arrive, asks
-//! it of the server's handler, and writes the response the handler answers with (ADR-0035).
+//! it of the server's handler, or of its mount's handler with the body streamed, and writes the response the handler
+//! answers with (ADR-0035).
 
+mod inflow;
 mod parse;
 mod write;
 
 use crate::body::{Body, Decoded, Progress};
-use crate::{Handling, Limits, Method, Request, Response, Server, Status};
+use crate::mount::mounted;
+use crate::{
+    Handling, Limits, Method, Mount, Request, RequestBody, Response, Server, Status, StreamHandling, StreamedRequest,
+};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Due, Ending, Fault, Handles, JobId,
-    Level, More, Number, Open, Part, ProtocolRef, Refused, Sleep, Slept, Streamed, Streams, Taken, Time, ToAny, Turn,
-    Unanswered,
+    Actor, ActorRef, Allows, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Due, Ended, Ending, Enough, Fault,
+    Handles, JobId, Level, More, Number, Open, Part, ProtocolRef, Refused, Serving, Sleep, Slept, Streamed, Streams,
+    Taken, Time, ToAny, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, SocketAddress, Write, Writing, Wrote};
 use core::mem;
 use core::time::Duration;
+use inflow::Inflow;
 use parse::{Framing, Head, Parsed as Front, Refusal};
 use std::num::NonZeroU32;
 
 /// What an exchange is made from: the connection it reads, where it came from, the port it came in on, the handler it
-/// asks each request of, and the limits on each request.
+/// asks each request of, the mounts it streams requests to instead, and the limits on each request.
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.exchange_config")]
 pub struct ExchangeConfig {
@@ -27,10 +33,12 @@ pub struct ExchangeConfig {
     pub peer: SocketAddress,
     pub port: u16,
     pub handler: ProtocolRef<Handling>,
+    pub mounts: Vec<Mount>,
     pub limits: Limits,
 }
 
-/// What an exchange keeps for a request it asked of the handler: nothing, since it has one out at a time.
+/// What an exchange keeps for a request it asked of the handler, or of a mount's: nothing, since it has one out at a
+/// time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.asking")]
 pub struct Asking;
@@ -70,17 +78,24 @@ enum Phase {
     /// A head is parsed, and its body is coming, decoded as `left` says is left of it into a buffer the turn handed
     /// out, with room for all of it when its length is known; the request's first byte came at `since`.
     Body { head: Head, left: Body, body: Vec<u8>, since: Time },
+    /// A head under a mount is asked of the mount's handler, with no deadline, and its body is read to the handler as
+    /// `inflow` says. The connection then closes when it `closes`, and a response to a `HEAD` is written with no body.
+    Inflow { inflow: Inflow, closes: bool, head_only: bool },
     /// The request is asked of the handler, within its deadline, and its answer is waited for. The connection then
     /// closes when it `closes`, and a response to a `HEAD` is written with no body.
     Answering { closes: bool, head_only: bool },
+    /// A streamed request's body has been read, or will not be, and its answer is waited for from `since`: its ask
+    /// carried no deadline, so the exchange times it itself, `answer_within_millis` after `since`.
+    Awaiting { closes: bool, head_only: bool, since: Time },
     /// A last response is written: the exchange closes once it is sent.
     Closing,
 }
 
 /// The server's side of one accepted connection, beneath the server, keyed by its count (ADR-0035): reads it through
-/// a [`Reading`] stream, parses each request, asks it of the handler, and writes the [`Response`] answered. It
-/// takes one request at a time: while one is out it grants its connection no credit, so requests sent ahead wait in
-/// the kernel.
+/// a [`Reading`] stream, parses each request, asks it of the handler, and writes the [`Response`] answered. A request
+/// under a [`Mount`] is asked of the mount's handler as a [`StreamedRequest`], and its body served to the handler as a
+/// [`RequestBody`] stream, paced by its credit. It takes one request at a time: while one is out it grants its
+/// connection no credit but what a streamed body needs, so requests sent ahead wait in the kernel.
 #[derive(Bound)]
 #[kind(name = "aether.http.exchange")]
 pub struct Exchange {
@@ -88,14 +103,20 @@ pub struct Exchange {
     peer: SocketAddress,
     port: u16,
     handler: ProtocolRef<Handling>,
+    mounts: Vec<Mount>,
     limits: Limits,
     reading: Streams<Reading, ()>,
     /// The stream it reads its connection through, opened as it begins.
     reader: Number,
     /// What has been read and not yet parsed.
     buffer: Vec<u8>,
-    /// The chunks taken while a request was out, whose credit is granted once it is answered.
+    /// The chunks taken while a request was out, whose credit is granted once it is answered, or once a streamed body
+    /// needs more bytes.
     withheld: u32,
+    /// The stream a mount's handler reads a body through.
+    serving: Serving<RequestBody>,
+    /// How many requests it has asked of a mount's handler: the number of the last.
+    streamed: u64,
     phase: Phase,
     /// How many phases with a deadline it has entered: the number of the one it is in.
     phases: u64,
@@ -116,6 +137,10 @@ impl Actor for Exchange {
         Answer<Response, Asking>,
         Answer<Slept, Deadline>,
         Shut,
+        Open<RequestBody>,
+        More,
+        Enough,
+        Ended,
     );
     type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type EndSends = ();
@@ -136,11 +161,14 @@ impl Actor for Exchange {
             peer: config.peer,
             port: config.port,
             handler: config.handler,
+            mounts: config.mounts,
             limits: config.limits,
             reading,
             reader,
             buffer: Vec::new(),
             withheld: 0,
+            serving: Serving::new(),
+            streamed: 0,
             phase,
             phases: 0,
             sleeping,
@@ -152,11 +180,25 @@ impl Actor for Exchange {
     }
 }
 
+/// What an exchange sends as it reads its connection: credit, writes, the requests it asks, and the parts of a body it
+/// streams.
+type Advancing =
+    (Credit, Writes, Asks<Handling, Request, Asking>, Asks<StreamHandling, StreamedRequest, Asking>, Parts);
+
+/// What an exchange sends its connection as it reads: credit.
+type Credit = ToAny<Streamed<Reading>, More>;
+
+/// What an exchange asks its connection: a write.
+type Writes = Asks<Writing, Write, Sending>;
+
+/// What an exchange sends as it streams a body: the parts of the stream a mount's handler reads it through.
+type Parts = ToAny<(Part<RequestBody>,), Part<RequestBody>>;
+
 impl Handles<Part<Reading>> for Exchange {
-    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, Asks<Handling, Request, Asking>);
+    type Sends = Advancing;
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let is_out = matches!(self.phase, Phase::Answering { .. } | Phase::Closing);
+        let is_out = !matches!(self.phase, Phase::Idle { .. } | Phase::Head { .. } | Phase::Body { .. });
         let taken = if is_out {
             self.reading.part_held(turn, part)
         } else {
@@ -177,11 +219,18 @@ impl Handles<Part<Reading>> for Exchange {
 impl Handles<Answer<HungUp, Number>> for Exchange {
     type Sends = ();
 
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        (answered, number): (Answered<HungUp>, Number),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
         self.reading.answered(number);
-        turn.close();
+        let how = match answered {
+            Answered::Yes(how) => how,
+            Answered::No(_) => HungUp::Reset,
+        };
 
-        Ok(())
+        self.hang_up(turn, how)
     }
 }
 
@@ -204,31 +253,29 @@ impl Handles<Answer<Wrote, Sending>> for Exchange {
 }
 
 impl Handles<Answer<Response, Asking>> for Exchange {
-    type Sends = (ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>, Asks<Handling, Request, Asking>);
+    type Sends = Advancing;
 
     fn handle(
         &mut self,
         (answered, Asking): (Answered<Response>, Asking),
         turn: &mut Turn<'_, Self, Self::Sends>,
     ) -> Result<(), Fault> {
-        let Phase::Answering { closes, head_only } = self.phase else {
-            // No request waits on the handler: an answer after its request's deadline is dropped by the engine, so
-            // only one to a request the exchange no longer waits on comes here.
-            turn.log(Level::Info, "an answer came to no request waiting, and was passed over");
-            return Ok(());
+        let (closes, head_only) = match self.phase {
+            Phase::Answering { closes, head_only } | Phase::Awaiting { closes, head_only, .. } => (closes, head_only),
+            Phase::Inflow { inflow, closes, head_only } => (self.cut(turn, inflow)? || closes, head_only),
+            Phase::Idle { .. } | Phase::Head { .. } | Phase::Body { .. } | Phase::Closing => {
+                // No request waits on the handler: an answer after its request's deadline is dropped by the engine,
+                // so only one to a request the exchange no longer waits on comes here.
+                turn.log(Level::Info, "an answer came to no request waiting, and was passed over");
+                return Ok(());
+            }
         };
         let response = match answered {
             Answered::Yes(response) => Ok(response),
             Answered::No(Unanswered::Ended) => said(turn, Status::ServiceUnavailable, "the handler has ended"),
             // The request's deadline came first: the engine stopped waiting for the handler, and the connection closes
             // once the client is told (ADR-0041).
-            Answered::No(Unanswered::Expired) => {
-                let Ok(timed_out) = said(turn, Status::GatewayTimeout, "the handler did not respond in time") else {
-                    unstored(turn);
-                    return Ok(());
-                };
-                return self.respond(turn, timed_out, true, head_only);
-            }
+            Answered::No(Unanswered::Expired) => return self.time_out(turn, head_only),
             Answered::No(why) => {
                 turn.log(Level::Warn, format!("the handler did not answer a request: {why:?}"));
                 said(turn, Status::InternalServerError, "the handler did not answer")
@@ -244,10 +291,7 @@ impl Handles<Answer<Response, Asking>> for Exchange {
         }
         self.phase = Phase::Idle { since: turn.now() };
         self.time(turn)?;
-        if let Some(withheld) = NonZeroU32::new(self.withheld) {
-            self.reading.grant(turn, self.reader, withheld)?;
-        }
-        self.withheld = 0;
+        self.release(turn)?;
 
         self.advance(turn)
     }
@@ -257,9 +301,7 @@ impl Handles<Shut> for Exchange {
     type Sends = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        turn.close();
-
-        Ok(())
+        self.hang_up(turn, HungUp::Shut)
     }
 }
 
@@ -287,6 +329,8 @@ impl Handles<Answer<Slept, Deadline>> for Exchange {
                 turn.close();
                 Ok(())
             }
+            Phase::Inflow { inflow, .. } => self.stall(turn, inflow),
+            Phase::Awaiting { head_only, .. } => self.time_out(turn, head_only),
             Phase::Answering { .. } | Phase::Closing => Ok(()),
         }
     }
@@ -308,16 +352,34 @@ impl Exchange {
         Ok(())
     }
 
-    /// Parses what the buffer holds, as far as it goes: a head, then its body, then the request asked of the handler.
-    /// A request refused is answered, and the exchange closes once the answer is sent.
-    fn advance<S, IW, IP>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    /// Grants the connection the credit withheld while a request was out.
+    fn release<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
     where
-        S: Allows<Asks<Writing, Write, Sending>, IW> + Allows<Asks<Handling, Request, Asking>, IP>,
+        S: Allows<Credit, I>,
+    {
+        if let Some(withheld) = NonZeroU32::new(self.withheld) {
+            self.reading.grant::<_, _, I>(turn, self.reader, withheld)?;
+        }
+        self.withheld = 0;
+
+        Ok(())
+    }
+
+    /// Parses what the buffer holds, as far as it goes: a head, then its body, then the request asked of the handler;
+    /// or a head under a mount, asked of the mount's handler, and its body streamed to it. A request refused is
+    /// answered, and the exchange closes once the answer is sent.
+    fn advance<S, IC, IW, IP, IS, IB>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    where
+        S: Allows<Credit, IC>
+            + Allows<Writes, IW>
+            + Allows<Asks<Handling, Request, Asking>, IP>
+            + Allows<Asks<StreamHandling, StreamedRequest, Asking>, IS>
+            + Allows<Parts, IB>,
     {
         loop {
             match self.phase {
                 Phase::Idle { .. } | Phase::Head { .. } => {
-                    let front = parse::head(&self.buffer, &self.limits);
+                    let front = parse::head(&self.buffer, &self.limits, &self.mounts);
                     match front {
                         Front::More => {
                             let started = matches!(self.phase, Phase::Idle { .. }) && !self.buffer.is_empty();
@@ -341,6 +403,12 @@ impl Exchange {
                                     return Ok(());
                                 };
                                 self.write::<_, IW>(turn, vec![go_on], false)?;
+                            }
+                            let mount =
+                                mounted(&self.mounts, &head.path).map(|mount| (mount.handler, mount.most_body_bytes));
+                            if let Some((handler, most)) = mount {
+                                self.stream::<_, IS>(turn, head, handler, most)?;
+                                continue;
                             }
                             let room = match head.framing {
                                 Framing::Length(length) => usize::try_from(length).unwrap_or(usize::MAX),
@@ -370,7 +438,8 @@ impl Exchange {
                     }
                     return self.ask::<_, IW, IP>(turn);
                 }
-                Phase::Answering { .. } | Phase::Closing => return Ok(()),
+                Phase::Inflow { .. } => return self.flow::<_, IC, IW, IB>(turn),
+                Phase::Answering { .. } | Phase::Awaiting { .. } | Phase::Closing => return Ok(()),
             }
         }
     }
@@ -403,6 +472,53 @@ impl Exchange {
         turn.to(self.handler).within(due).ask::<_, _, IP>(&request, &Asking)?;
 
         Ok(())
+    }
+
+    /// Asks `head` of the mount's `handler`, its body to be streamed to it up to `most` bytes, with no deadline: the
+    /// body may take as long as it keeps moving, and once it is read the answer is timed by the exchange (ADR-0041). A
+    /// stream the handler opens in the turn it is asked inherits the same, so a long body is not cut off.
+    fn stream<S, I>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        head: Head,
+        handler: ProtocolRef<StreamHandling>,
+        most: u64,
+    ) -> Result<(), Fault>
+    where
+        S: Allows<Asks<StreamHandling, StreamedRequest, Asking>, I>,
+    {
+        let Head { method, path, query, headers, framing, closes, .. } = head;
+        self.streamed += 1;
+        let request = StreamedRequest {
+            method,
+            path,
+            query,
+            headers,
+            length: framing.length(),
+            body: turn.me().protocol(),
+            request: self.streamed,
+            peer: self.peer,
+            port: self.port,
+        };
+        let inflow = Inflow::new(self.streamed, framing.body(), most, turn.now());
+        self.phase = Phase::Inflow { inflow, closes, head_only: method == Method::Head };
+        self.time(turn)?;
+        turn.to(handler).within(Due::Never).ask::<_, _, I>(&request, &Asking)?;
+
+        Ok(())
+    }
+
+    /// Answers `504` to a request its handler did not answer in time, and closes once it is sent.
+    fn time_out<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, head_only: bool) -> Result<(), Fault>
+    where
+        S: Allows<Writes, I>,
+    {
+        let Ok(timed_out) = said(turn, Status::GatewayTimeout, "the handler did not respond in time") else {
+            unstored(turn);
+            return Ok(());
+        };
+
+        self.respond::<_, I>(turn, timed_out, true, head_only)
     }
 
     /// Answers a request refused before it reached the handler, and closes once the answer is sent.
@@ -468,12 +584,15 @@ impl Exchange {
 }
 
 /// When `phase` is late under `limits`, as the exchange sleeps until it: a request's head and body share the deadline
-/// of its first byte. A request waiting on the handler is timed by its ask's deadline instead, and a closing exchange
-/// by none.
+/// of its first byte, a streamed body is late once it has not moved for `stall_within_millis`, and a streamed request
+/// whose body is done is answered within `answer_within_millis`. A request waiting on the handler is timed by its ask's
+/// deadline instead, and a closing exchange by none.
 fn due(phase: &Phase, limits: &Limits) -> Due {
     let (since, within) = match phase {
         Phase::Idle { since } => (*since, limits.idle_within_millis),
         Phase::Head { since } | Phase::Body { since, .. } => (*since, limits.request_within_millis),
+        Phase::Inflow { inflow, .. } => (inflow.moved(), limits.stall_within_millis),
+        Phase::Awaiting { since, .. } => (*since, limits.answer_within_millis),
         Phase::Answering { .. } | Phase::Closing => return Due::Never,
     };
 
