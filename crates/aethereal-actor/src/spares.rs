@@ -38,16 +38,22 @@ impl Spares {
     /// A buffer with room for at least `room` bytes: the smallest kept that is big enough and at most twice `room`,
     /// else a new one. A buffer is charged to the budget by its capacity, so a small put is never handed a large one.
     pub fn take(&mut self, room: usize) -> Vec<u8> {
+        self.kept(room).unwrap_or_else(|| Vec::with_capacity(room))
+    }
+
+    /// The smallest buffer kept that is big enough for `room` and at most twice it, no longer kept: none when none
+    /// fits.
+    pub(crate) fn kept(&mut self, room: usize) -> Option<Vec<u8>> {
         let first = self.buffers.partition_point(|buffer| buffer.capacity() < room);
         let most = room.saturating_mul(FITS);
         let fits = self.buffers.get(first).is_some_and(|buffer| buffer.capacity() <= most);
         if !fits {
-            return Vec::with_capacity(room);
+            return None;
         }
         let buffer = self.buffers.remove(first);
         self.bytes -= buffer.capacity();
 
-        buffer
+        Some(buffer)
     }
 
     /// Lends out the largest buffer kept, to a job that fills buffers, as what that job holds: none when none is kept.

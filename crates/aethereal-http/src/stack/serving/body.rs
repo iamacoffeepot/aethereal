@@ -13,17 +13,23 @@ use aethereal_tcp::{HungUp, Write, Writing};
 use core::mem;
 
 /// What a body's bytes came to once every layer passed them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Passage {
     /// They are as they came: no layer wrote anything in their place.
     AsCame,
-    /// What the layers passed on in their place.
-    Rewritten(Vec<u8>),
+    /// The layers passed on what they wrote in their place, which is in the buffer at [`PASSED`].
+    Rewritten,
 }
+
+/// Which of the buffers [`pass`] works in holds, once it returns [`Passage::Rewritten`], what the layers passed on in
+/// place of a body's bytes.
+pub(super) const PASSED: usize = 0;
 
 /// Passes `bytes`, a part of a body, and then, when `ends`, the body's end, through each layer `order` names, in that
 /// order, each handed it by `run`: each layer reads what the one before passed. What a layer writes at the end passes
-/// the layers after it as a part, before their end. Each layer writes into `spare`; what one writes is taken out of it,
-/// so the next writes into a buffer of its own.
+/// the layers after it as a part, before their end. It works in `buffers`, which the stack takes together from its pool:
+/// each layer writes into a spare one, which then changes places with the one it read, so nothing is allocated once
+/// they are big enough. When the bytes are rewritten, what the layers passed is left in `buffers[PASSED]`.
 ///
 /// # Errors
 ///
@@ -33,56 +39,58 @@ pub(super) fn pass<F>(
     ends: bool,
     order: impl Iterator<Item = usize> + Clone,
     mut run: F,
-    spare: &mut Vec<u8>,
+    buffers: &mut [Vec<u8>; 3],
 ) -> Result<Passage, Refused>
 where
     F: FnMut(usize, &mut BodyPart<'_>),
 {
+    let [passed, carried, spare] = buffers;
     let mut passage = Passage::AsCame;
     for at in order.clone() {
-        let current = match &passage {
+        let current = match passage {
             Passage::AsCame => bytes,
-            Passage::Rewritten(rewritten) => rewritten.as_slice(),
+            Passage::Rewritten => passed.as_slice(),
         };
         if current.is_empty() {
             continue;
         }
-        if let Passage::Rewritten(written) = step(current, false, at, &mut run, spare)? {
-            passage = Passage::Rewritten(written);
+        if step(current, false, at, &mut run, spare)? == Passage::Rewritten {
+            mem::swap(passed, spare);
+            passage = Passage::Rewritten;
         }
     }
     if !ends {
         return Ok(passage);
     }
 
-    let mut carried = Vec::new();
+    // What a layer writes at the end is carried through the layers after it, each reading what the one before passed:
+    // a layer is handed it only when there is some, as it is handed no empty part.
+    carried.clear();
     for at in order {
-        let carried_on = if carried.is_empty() {
-            Passage::AsCame
-        } else {
-            step(&carried, false, at, &mut run, spare)?
-        };
-        if let Passage::Rewritten(written) = carried_on {
-            carried = written;
+        if !carried.is_empty() {
+            let carried_on = step(carried, false, at, &mut run, spare)?;
+            if carried_on == Passage::Rewritten {
+                mem::swap(carried, spare);
+            }
         }
-        if let Passage::Rewritten(written) = step(&[], true, at, &mut run, spare)? {
-            carried.extend_from_slice(&written);
+        if step(&[], true, at, &mut run, spare)? == Passage::Rewritten {
+            carried.extend_from_slice(spare);
         }
     }
     if carried.is_empty() {
         return Ok(passage);
     }
-    let mut whole = match passage {
-        Passage::AsCame => bytes.to_vec(),
-        Passage::Rewritten(rewritten) => rewritten,
-    };
-    whole.extend_from_slice(&carried);
+    if passage == Passage::AsCame {
+        passed.clear();
+        passed.extend_from_slice(bytes);
+    }
+    passed.extend_from_slice(carried);
 
-    Ok(Passage::Rewritten(whole))
+    Ok(Passage::Rewritten)
 }
 
-/// Hands the layer at `at` the part `bytes`, or the end when `end`, through `run`: what it passed on, as they came, or
-/// what it wrote in their place, taken out of `spare`.
+/// Hands the layer at `at` the part `bytes`, or the end when `end`, through `run`: whether it passed them on as they
+/// came, or wrote in their place what `spare` then holds.
 fn step<F>(bytes: &[u8], end: bool, at: usize, run: &mut F, spare: &mut Vec<u8>) -> Result<Passage, Refused>
 where
     F: FnMut(usize, &mut BodyPart<'_>),
@@ -93,7 +101,7 @@ where
 
     match part.passed() {
         Passed::AsCame => Ok(Passage::AsCame),
-        Passed::Written => Ok(Passage::Rewritten(mem::take(spare))),
+        Passed::Written => Ok(Passage::Rewritten),
         Passed::Refused(refused) => Err(refused),
     }
 }
@@ -205,17 +213,16 @@ where
                     *moved = turn.now();
                 }
                 let (_, pool) = turn.split();
-                let mut spare = pool.buffer(0);
+                let mut buffers = pool.buffers::<3>(gathered.len() - start);
                 let run = |at, part: &mut BodyPart<'_>| T::inbound_body(&mut connection.layers, at, part);
-                let passed = pass(&gathered[start..], progress == Progress::Done, 0..T::PURE, run, &mut spare);
-                drop(spare);
+                let passed = pass(&gathered[start..], progress == Progress::Done, 0..T::PURE, run, &mut buffers);
                 match passed {
                     Err(Refused::TooLarge) => Read::Stopped(Gathered::TooLarge),
                     Err(Refused::Malformed) => Read::Stopped(Gathered::Malformed),
                     Ok(passage) => {
-                        if let Passage::Rewritten(rewritten) = passage {
+                        if passage == Passage::Rewritten {
                             gathered.truncate(start);
-                            gathered.extend_from_slice(&rewritten);
+                            gathered.extend_from_slice(&buffers[PASSED]);
                         }
                         let past = u64::try_from(gathered.len()).unwrap_or(u64::MAX) > *most;
                         Read::of(progress, past)
@@ -297,5 +304,46 @@ where
         let (status, _) = refusal.said();
 
         self.respond(number, T::PURE, &head, Response::empty(status), Owed { closes: true, ..owed }, turn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes each byte of a part twice, and `<0>` at the end.
+    fn double(part: &mut BodyPart<'_>) {
+        if part.is_end() {
+            part.out().extend_from_slice(b"<0>");
+            return;
+        }
+        let doubled: Vec<u8> = part.bytes().iter().flat_map(|&byte| [byte, byte]).collect();
+        part.out().extend_from_slice(&doubled);
+    }
+
+    /// Passes every part and the end as they came.
+    fn unchanged(_part: &mut BodyPart<'_>) {}
+
+    /// Writes each part with `!` after it, and `<2>` at the end.
+    fn shout(part: &mut BodyPart<'_>) {
+        if part.is_end() {
+            part.out().extend_from_slice(b"<2>");
+            return;
+        }
+        let shouted = [part.bytes(), b"!"].concat();
+        part.out().extend_from_slice(&shouted);
+    }
+
+    #[test]
+    fn each_layer_reads_what_the_one_before_wrote_and_end_writes_follow() {
+        // Catches a layer handed the part as it came, or what a layer before the last that wrote passed, instead of
+        // what the one just before it passed, as a mix-up of the buffers that change places would; and what a layer
+        // writes at the end not passed through the layers after it, or not following the body's last part.
+        let layers: [fn(&mut BodyPart<'_>); 3] = [double, unchanged, shout];
+        let mut buffers: [Vec<u8>; 3] = Default::default();
+
+        let passed = pass(b"ab", true, 0..layers.len(), |at, part| layers[at](part), &mut buffers);
+
+        assert_eq!((passed, buffers[PASSED].as_slice()), (Ok(Passage::Rewritten), &b"aabb!<0>!<2>"[..]));
     }
 }

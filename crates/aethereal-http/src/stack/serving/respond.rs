@@ -1,13 +1,14 @@
 //! A response on its way out of a stack (ADR-0035): back through the pure layers before where it turned, its head and
 //! then its body, and written to its connection, its head by the stack, its body after it as it is.
 
-use super::body::{Passage, pass};
+use super::body::{PASSED, Passage, pass};
 use super::connection::Phase;
 use super::{Deadline, Owed, Sending, Serving, Stepping};
 use crate::response_head::{self, Frame};
 use crate::stack::{BodyPart, Gathered, Head, LayerList, Leaving, Response, ResponseBody, ResponseHead};
 use aethereal_actor::{Answer, Fault, Level, ProtocolRef, Receives, Slept};
 use aethereal_tcp::{HungUp, Write, Writing};
+use core::mem;
 
 impl<S, T: LayerList> Serving<S, T>
 where
@@ -39,26 +40,31 @@ where
         }
 
         let (doing, pool) = turn.split();
-        let mut spare = pool.buffer(0);
         let bytes = match &body {
             ResponseBody::Empty => &[][..],
             ResponseBody::Whole(bytes) => doing.read(bytes),
         };
+        let mut buffers = pool.buffers::<3>(bytes.len());
         let run = |at, part: &mut BodyPart<'_>| T::outbound_body(&mut connection.layers, at, part);
-        let passed = pass(bytes, true, (0..body_before).rev(), run, &mut spare);
-        drop(spare);
+        let passed = pass(bytes, true, (0..body_before).rev(), run, &mut buffers);
+        // The buffers go back to the pool before the turn goes on: what the layers passed is put first.
         let body = match passed {
             Ok(Passage::AsCame) => body,
-            Ok(Passage::Rewritten(rewritten)) => match doing.put(rewritten) {
-                Ok(bytes) => ResponseBody::Whole(bytes),
-                Err(_) => return self.unstored(number, turn),
-            },
+            Ok(Passage::Rewritten) => {
+                let Ok(bytes) = doing.put(mem::take(&mut buffers[PASSED])) else {
+                    drop(buffers);
+                    return self.unstored(number, turn);
+                };
+                ResponseBody::Whole(bytes)
+            }
             Err(refused) => {
+                drop(buffers);
                 // Its head goes out with its length, which the refused body no longer has: it is cut short, as none.
                 turn.log(Level::Info, format!("a layer refused a response's body: {refused:?}"));
                 return self.close(number, &Gathered::HungUp(HungUp::Shut), turn);
             }
         };
+        drop(buffers);
 
         self.write(number, (leaving, body), owed, turn)
     }
