@@ -271,7 +271,7 @@
 //! ready(PhantomData::<(Lighthouse, (Querent, ()))>);
 //! ```
 
-use crate::{Actor, Asks, ChildOf, Path, Protocol, Tells, ToAny, ToSender, ToType};
+use crate::{Actor, ActorRef, Asks, ChildOf, Path, Protocol, Tells, ToAny, ToSender, ToType};
 use crate::{Reached, Top};
 use aethereal_data::{ActorKey, Instanced, Singleton};
 use core::marker::PhantomData;
@@ -328,6 +328,10 @@ impl<S, L: ChildOf, K, C, I> NeedsIn<S, I> for Asks<Path<L>, K, C> where
 }
 
 impl<S, P: Protocol, K, C> NeedsIn<S, ()> for Asks<P, K, C> {}
+
+/// A reference was proven when it was made, so an ask through one needs no root made before, as a send through one
+/// does not.
+impl<S, L, K, C> NeedsIn<S, ()> for Asks<ActorRef<L>, K, C> {}
 
 impl<S, T, K> NeedsIn<S, ()> for ToType<T, K> {}
 
