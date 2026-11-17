@@ -463,7 +463,7 @@ impl Handles<Call> for LogsTool {
         let since = read.since.unwrap_or(0);
         let filter = read.filter();
         let planned = plan(turn.logged(&read.actor).since(since), &filter);
-        let buffer = turn.buffer(planned.room);
+        let buffer = Vec::from(turn.buffer(planned.room));
         let logged = turn.logged(&read.actor);
         let skipped = logged.first().saturating_sub(since);
         let next = match planned.ended {

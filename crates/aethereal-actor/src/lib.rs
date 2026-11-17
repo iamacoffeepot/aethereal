@@ -19,6 +19,7 @@ mod arena;
 mod ask;
 mod blob;
 mod boundary;
+mod buffer;
 #[cfg(feature = "std")]
 mod controller;
 mod declared;
@@ -72,6 +73,7 @@ pub use blob::{BlobHash, BlobId, Maker, Puts};
 #[cfg(feature = "std")]
 pub use blob::{Bytes, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
+pub use buffer::{Buffer, Pool};
 #[cfg(feature = "std")]
 pub use controller::{Controller, Requests};
 pub use declared::{
@@ -93,7 +95,7 @@ pub use held::holders;
 pub use held::{Held, NotOwed, Owed, Owes};
 pub use instances::{Instances, Lent, Loadable, Memory};
 pub use item::Item;
-pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun};
+pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun, Working};
 #[cfg(feature = "std")]
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
@@ -111,7 +113,7 @@ pub use randomness::{Randomness, Unfilled};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
-    Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
+    Resources, Was, carry, is_loose_claim, take_claimed, take_loose_ticket,
 };
 pub use seat::{SeatNumber, Seated, Seats};
 pub use services::{Service, Services};
@@ -134,7 +136,7 @@ pub use tuning::{ReadTuning, Tunable, Tune, Tuned, Tunes, Tuning};
 #[cfg(feature = "std")]
 pub use turn::Origin;
 pub use turn::{
-    Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
+    Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Doing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
     Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,
     Unspawned, Vantage, Why,
 };

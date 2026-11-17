@@ -499,7 +499,7 @@ impl Exchange {
                                 Framing::Length(length) => usize::try_from(length).unwrap_or(usize::MAX),
                                 Framing::Empty | Framing::Chunked => 0,
                             };
-                            let body = turn.buffer(room);
+                            let body = Vec::from(turn.buffer(room));
                             let left = head.framing.body();
                             self.phase = Phase::Body { head, left, body, since };
                         }
@@ -667,8 +667,11 @@ impl Exchange {
         frame: Frame,
         owed: Owed,
     ) -> Result<Headed, Fault> {
-        let mut head = turn.buffer(write::room(headers));
+        let (doing, pool) = turn.split();
+        let mut head = pool.buffer(write::room(headers));
         let written = write::head(status, headers, frame, owed.closes, owed.head_only, &mut head);
+        let put = doing.put(head);
+
         for name in &written.dropped {
             turn.log(Level::Warn, format!("the response's header {name} was not written"));
         }
@@ -676,7 +679,7 @@ impl Exchange {
             self.phase = Phase::Closing;
             self.time(turn)?;
         }
-        let Ok(head) = turn.put(head) else {
+        let Ok(head) = put else {
             self.phase = Phase::Closing;
             unstored(turn);
             return Ok(Headed::Unstored);
@@ -733,7 +736,8 @@ fn due(phase: &Phase, limits: &Limits) -> Due {
 
 /// `bytes`, copied into a buffer the turn hands out, and put.
 fn put<S>(turn: &mut Turn<'_, Exchange, S>, bytes: &[u8]) -> Result<Bytes, Refused> {
-    let mut buffer = turn.buffer(bytes.len());
+    let (turn, pool) = turn.split();
+    let mut buffer = pool.buffer(bytes.len());
     buffer.extend_from_slice(bytes);
 
     turn.put(buffer)

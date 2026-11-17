@@ -352,11 +352,12 @@ impl Client {
         }
         let lines = Lines::from(&request);
         let body_length = turn.read(&request.body).len();
-        let mut head = turn.buffer(write::room(lines, &self.host, switch));
+        let (doing, pool) = turn.split();
+        let mut head = pool.buffer(write::room(lines, &self.host, switch));
         if let Err(why) = write::head(lines, body_length, &self.host, switch, &mut head) {
             return Ok(Written::Unsent(Failure::Unwritable(why)));
         }
-        let Ok(head) = turn.put(head) else {
+        let Ok(head) = doing.put(head) else {
             return Ok(Written::Unsent(Failure::NoRoom));
         };
         let parts = if body_length == 0 {
@@ -488,7 +489,7 @@ impl Client {
                 let most = u64::from(self.limits.most_body_bytes);
                 let is_past = matches!(framing, Framing::Length(length) if length > most);
                 let gathered = match framing {
-                    Framing::Length(length) if !is_past => turn.buffer(usize::try_from(length).unwrap_or(0)),
+                    Framing::Length(length) if !is_past => Vec::from(turn.buffer(usize::try_from(length).unwrap_or(0))),
                     _ => Vec::new(),
                 };
                 let taker = Taker::Gathering { held, head: reply, body: gathered };
@@ -550,7 +551,10 @@ impl Client {
             return Ok(Step::Stop(Stalled::Credit));
         }
         let most_line = self.limits.most_head_bytes;
-        let mut out = turn.buffer(self.buffer.len());
+        // The body is decoded into a buffer the pool hands out, which goes back to it, emptied, as it is dropped
+        // whenever it is not put: before the turn is used whole again.
+        let (doing, pool) = turn.split();
+        let mut out = pool.buffer(self.buffer.len());
         let Phase::Body { ref mut body, .. } = self.phase else {
             return Ok(Step::Again);
         };
@@ -560,12 +564,15 @@ impl Client {
                 progress
             }
             Err(broken) => {
+                drop(out);
                 self.fail(turn, Failure::from(broken))?;
                 return Ok(Step::Stop(Stalled::Closed));
             }
         };
-        if !out.is_empty() {
-            let Ok(bytes) = turn.put(out) else {
+        if out.is_empty() {
+            drop(out);
+        } else {
+            let Ok(bytes) = doing.put(out) else {
                 self.fail(turn, Failure::NoRoom)?;
                 return Ok(Step::Stop(Stalled::Closed));
             };
@@ -589,10 +596,11 @@ impl Client {
         if !self.serving.has_credit(key) {
             return Ok(Step::Stop(Stalled::Credit));
         }
-        let mut raw = turn.buffer(self.buffer.len());
+        let (doing, pool) = turn.split();
+        let mut raw = pool.buffer(self.buffer.len());
         raw.extend_from_slice(&self.buffer);
         self.buffer.clear();
-        let Ok(bytes) = turn.put(raw) else {
+        let Ok(bytes) = doing.put(raw) else {
             self.fail(turn, Failure::NoRoom)?;
             return Ok(Step::Stop(Stalled::Closed));
         };

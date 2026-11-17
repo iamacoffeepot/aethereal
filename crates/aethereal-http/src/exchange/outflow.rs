@@ -252,9 +252,10 @@ impl Exchange {
         for (place, part) in outflow.queued.iter().take(parts).enumerate() {
             if outflow.frame == Frame::Chunked {
                 let follows = outflow.written > 0 || place > 0;
-                let mut line = turn.buffer(chunk::LINE_BYTES);
-                chunk::line(turn.read(part).len(), follows, &mut line);
-                let Ok(line) = turn.put(line) else {
+                let (doing, pool) = turn.split();
+                let mut line = pool.buffer(chunk::LINE_BYTES);
+                chunk::line(doing.read(part).len(), follows, &mut line);
+                let Ok(line) = doing.put(line) else {
                     unstored(turn);
                     return Ok(());
                 };

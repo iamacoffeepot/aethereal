@@ -20,6 +20,7 @@ use crate::guard::{Anyone, Guard, Sender};
 #[cfg(feature = "std")]
 use crate::job::{WrittenJob, lending_given};
 use crate::resource;
+use crate::resource::Reach;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
     Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
@@ -32,7 +33,7 @@ use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
 use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, Unfit, config_bytes};
 #[cfg(feature = "std")]
-use crate::{Fills, JobCode, JobType, Kept, Spares};
+use crate::{Buffer, JobCode, JobType, Kept, Pool};
 #[cfg(feature = "std")]
 use aethereal_data::KindName;
 use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
@@ -44,6 +45,7 @@ use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem;
+use core::ops::{Deref, DerefMut};
 use core::str;
 
 /// What one turn has asked for, in the lists it fills as it runs: the mail it sent, the lines it logged, its effects,
@@ -78,6 +80,9 @@ pub struct Asked {
     /// How many publishes the turns that fill it have asked: kept over a worker's whole share of a step, so each is
     /// numbered on from the last the heads view had folded as the step began (ADR-0054).
     published: u64,
+    /// The most bytes of buffers each actor keeps, the engine's setting: what a buffer a turn gives back is kept under,
+    /// as a freed blob's is (ADR-0042).
+    most_kept_bytes: usize,
 }
 
 /// The buffers of what turns ask for: kept by a worker over its share of a step, and filled by each turn in turn.
@@ -138,29 +143,46 @@ impl Buffers {
 
 impl Asked {
     /// Nothing asked for yet, with mail written to an arena of its own, children seated as in an engine kept in one
-    /// part, and blobs put with no bound on their bytes, for no engine: none numbers itself `u32::MAX`.
+    /// part, and blobs put and buffers kept with no bound on their bytes, for no engine: none numbers itself
+    /// `u32::MAX`.
     #[must_use]
     pub fn new() -> Self {
-        Self::writing(Arena::default(), Seats::one_part(), Puts::new(u32::MAX, 0, usize::MAX))
+        Self::writing(Arena::default(), Seats::one_part(), Puts::new(u32::MAX, 0, usize::MAX), usize::MAX)
     }
 
     /// Nothing asked for yet, with mail written to `arena`, after what it already holds, children seated from
-    /// `seats`, and blobs put into `puts`.
+    /// `seats`, blobs put into `puts`, and each actor keeping at most `most_kept_bytes` of buffers.
     #[must_use]
-    pub fn writing(arena: Arena, seats: Seats, puts: Puts) -> Self {
-        Self::continuing(Buffers::default(), arena, seats, puts)
+    pub fn writing(arena: Arena, seats: Seats, puts: Puts, most_kept_bytes: usize) -> Self {
+        Self::continuing(Buffers::default(), arena, seats, puts, most_kept_bytes)
     }
 
     /// Nothing asked for yet, in `buffers`, emptied and kept for their room, with mail written to `arena`, after what
-    /// it already holds, children seated from `seats`, and blobs put into `puts`, after what it already holds.
+    /// it already holds, children seated from `seats`, blobs put into `puts`, after what it already holds, and each
+    /// actor keeping at most `most_kept_bytes` of buffers.
     #[must_use]
-    pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts) -> Self {
+    pub fn continuing(buffers: Buffers, arena: Arena, seats: Seats, puts: Puts, most_kept_bytes: usize) -> Self {
         debug_assert!(buffers.is_empty(), "a turn begins with its buffers emptied");
 
         let (carrying, claims, asks, owes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (stood, stood_seats) = (Vec::new(), BTreeMap::new());
 
-        Self { buffers, stood, stood_seats, arena, seats, puts, carrying, claims, asks, owes, published: 0 }
+        let published = 0;
+
+        Self {
+            buffers,
+            stood,
+            stood_seats,
+            arena,
+            seats,
+            puts,
+            carrying,
+            claims,
+            asks,
+            owes,
+            published,
+            most_kept_bytes,
+        }
     }
 
     /// Begins the next turn, once what the last asked for has been taken out of the buffers. The children the last
@@ -333,6 +355,12 @@ impl Asked {
     /// The seats children are given, the blobs' puts, and the arena mail is written to, lent together: to a batch
     /// prepared ahead, whose turns' children and blobs its host asks for in calls out, and whose hop's pins lie in
     /// the arena (ADR-0015), and to a child its host begins apart.
+    /// The most bytes of buffers each actor keeps, which a buffer a turn drops unput is kept under (ADR-0042).
+    #[must_use]
+    pub const fn most_kept_bytes(&self) -> usize {
+        self.most_kept_bytes
+    }
+
     pub fn lent(&mut self) -> (&mut Seats, &mut Puts, &Arena) {
         (&mut self.seats, &mut self.puts, &self.arena)
     }
@@ -551,8 +579,8 @@ struct Seat<'a> {
     /// The children the actor made before this turn's step, whose keys it may not use again.
     made: &'a dyn Children,
     asked: &'a mut Asked,
-    /// What the actor keeps, which its resource calls and its buffers reach (ADR-0010, ADR-0042).
-    keeps: Keeps<'a>,
+    /// The resources the actor keeps, which its resource calls reach (ADR-0010).
+    keeps: Reach<'a>,
     /// How many pieces of mail this actor has sent, this turn's included, and jobs it has run, which each take a
     /// count among what it sends (ADR-0018).
     sent: u64,
@@ -677,14 +705,8 @@ impl Seat<'_> {
     /// with the first pin on it: refused when they would take this worker past its share of the budget for blobs
     /// (ADR-0014, ADR-0042).
     #[cfg(feature = "std")]
-    fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
-        self.asked.puts.pinned(bytes, Maker::Actor(self.me))
-    }
-
-    /// A buffer with room for at least `room` bytes: the smallest this actor keeps that is big enough and at most twice
-    /// `room`, emptied, else a new one (ADR-0042).
-    fn buffer(&mut self, room: usize) -> Vec<u8> {
-        self.keeps.buffer(room)
+    fn put(&mut self, bytes: impl Into<Vec<u8>>) -> Result<Bytes, Refused> {
+        self.asked.puts.pinned(bytes.into(), Maker::Actor(self.me))
     }
 
     /// The bytes of the blob `blob` pins: put by this worker in this step, or in the store.
@@ -794,17 +816,14 @@ impl Seat<'_> {
     /// Runs `job`, keeping `context` until it is answered with a `J::Done` (ADR-0018): it takes the next count of what
     /// this actor sends, as a piece of mail would, which with the actor is the job's id. Each resource the job holds,
     /// one this turn gave, goes with it, as a gift goes with mail. A job whose type fills buffers is lent the largest
-    /// buffer this actor keeps (ADR-0042). In a guest's code, its host reads the job from its records and files it as
+    /// buffer this actor keeps, out of `pool` (ADR-0042). In a guest's code, its host reads the job from its records and files it as
     /// it is filed here (ADR-0015).
     #[cfg(feature = "std")]
-    fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun> {
+    fn run<J: Job, C: Encode<Within>>(&mut self, job: &J, context: &C, pool: &mut Pool<'_>) -> Result<JobId, Unrun> {
         let WrittenJob { bytes, lent, carried } = lending_given(job).map_err(Unrun::Unwritten)?;
         let context = Written::of(context).map_err(Unrun::Unwritten)?;
         let given = self.give_to_job(&carried).map_err(Unrun::Unwritten)?;
-        let buffers = match J::FILLS {
-            Fills::Buffers => self.keeps.lend(),
-            Fills::Nothing => Spares::new(),
-        };
+        let buffers = pool.lend(J::FILLS);
         self.sent += 1;
         let count = self.sent;
         let id = JobId::new(MailId { sender: self.me.id, count });
@@ -829,8 +848,8 @@ impl Seat<'_> {
             return Ok(Vec::new());
         }
         match self.keeps {
-            Keeps::Here(_) => resource::carry_to_job(&mut self.asked.buffers.gifts, carried, self.me),
-            Keeps::Claimed => Err(EncodeError::NotCarried { name: "Given" }),
+            Reach::Here(..) => resource::carry_to_job(&mut self.asked.buffers.gifts, carried, self.me),
+            Reach::Claimed => Err(EncodeError::NotCarried { name: "Given" }),
         }
     }
 
@@ -956,12 +975,12 @@ impl Seat<'_> {
             return Ok(());
         }
         let carried = match self.keeps {
-            Keeps::Here(_) => {
+            Reach::Here(..) => {
                 let mail = MailId { sender: self.me.id, count: self.sent + 1 };
                 resource::carry(&mut self.asked.buffers.gifts, &self.asked.carrying, self.me, to, mail)
             }
             // A guest's sends are counted by its host, so what it claims names the send by its place in the call.
-            Keeps::Claimed => {
+            Reach::Claimed => {
                 let send = self.asked.buffers.mailed.iter().map(|mailed| mailed.bytes.pieces()).sum();
                 self.claim_carried(Claimed::Carried { send })
             }
@@ -995,7 +1014,7 @@ impl Seat<'_> {
             return Ok(());
         }
         match self.keeps {
-            Keeps::Here(_) => {
+            Reach::Here(..) => {
                 let by = Giver::Actor(self.me);
                 let gifts = &self.asked.buffers.gifts;
                 let every = carried.iter().all(|ticket| gifts.iter().any(|gift| gift.is_loose(by, *ticket)));
@@ -1005,7 +1024,7 @@ impl Seat<'_> {
                     Err(EncodeError::NotCarried { name: "Given" })
                 }
             }
-            Keeps::Claimed => {
+            Reach::Claimed => {
                 self.asked.carrying.clear();
                 self.asked.carrying.extend_from_slice(carried);
                 let claimed = self.claim_carried(Claimed::Configured);
@@ -1135,9 +1154,10 @@ impl Seat<'_> {
         let mut keeping = Keeping::default();
         // A child begun in a guest's code claims what it keeps, as its parent does (ADR-0015).
         let keeps = match self.keeps {
-            Keeps::Here(_) => Keeps::Here(&mut keeping),
-            Keeps::Claimed => Keeps::Claimed,
+            Reach::Here(..) => keeping.keeps(),
+            Reach::Claimed => Keeps::Claimed,
         };
+        let (keeps, pool) = keeps.split(asked.most_kept_bytes);
         let child = Seat {
             me,
             path: &path,
@@ -1152,7 +1172,7 @@ impl Seat<'_> {
             owing: Owing::NOTHING,
             due: Due::Never,
         };
-        let began = C::begin(config, &mut Beginning { seat: child, instances, of: PhantomData });
+        let began = C::begin(config, &mut Beginning { seat: child, instances, pool, of: PhantomData });
         match began {
             Ok(actor) => {
                 self.stand(me, path, above, declared, Box::new(actor), keeping);
@@ -1497,6 +1517,7 @@ impl<'a> Turning<'a> {
         from: F::Sent,
     ) -> Turn<'a, A, S, F> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
+        let (keeps, pool) = keeps.split(asked.most_kept_bytes);
         let seat = Seat {
             me,
             path,
@@ -1512,7 +1533,7 @@ impl<'a> Turning<'a> {
             due,
         };
 
-        Turn { seat, instances, source, from, chain, of: PhantomData }
+        Turn { doing: Doing { seat, instances, source, from, chain, of: PhantomData }, pool }
     }
 }
 
@@ -1522,7 +1543,181 @@ impl<'a> Turning<'a> {
 /// Each ask adds an effect to the turn's buffer of its class, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
 /// actors as it stood when the turn's step began.
+///
+/// It is two parts, borrowed apart with [`Self::split`] as a slice is with `split_at_mut`: what the turn does, a
+/// [`Doing`], which it reads and is called as, and the buffers its actor keeps, a [`Pool`], which hands out buffers to
+/// fill and put (ADR-0042). A buffer borrows the pool and not the turn, so the turn sends, reads, and puts while one is
+/// held.
 pub struct Turn<'a, Me, S, F: Guard<Me> = Anyone> {
+    doing: Doing<'a, Me, S, F>,
+    pool: Pool<'a>,
+}
+
+impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
+    /// What the turn does, and the buffers its actor keeps, borrowed apart: a buffer the pool hands out borrows the
+    /// pool alone, so what the turn does stays free to use, and put it, while the buffer is held (ADR-0042).
+    ///
+    /// ```
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Bytes, Ending, Fault, Handles, Turn};
+    /// use aethereal_data::Plain;
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.greet")]
+    /// struct Greet;
+    ///
+    /// # #[derive(aethereal_data::Bound)]
+    /// # #[kind(name = "aether.doc.greeter")]
+    /// struct Greeter {
+    ///     greeting: Vec<Bytes>,
+    /// }
+    /// # impl aethereal_actor::ChildOf for Greeter { type Parent = aethereal_actor::Top; }
+    /// # impl Actor for Greeter {
+    /// #     type Config = Greet;
+    /// #     type Key = ();
+    /// #     type Handles = (Greet,);
+    /// #     type BeginSends = ();
+    /// #     type EndSends = ();
+    /// #     fn begin(_: Greet, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
+    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> { Ok(()) }
+    /// # }
+    ///
+    /// impl Handles<Greet> for Greeter {
+    ///     type Sends = ();
+    ///     type From = Anyone;
+    ///
+    ///     fn handle(&mut self, _: Greet, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         let (turn, pool) = turn.split();
+    ///         let mut buffer = pool.buffer(5);
+    ///         buffer.extend_from_slice(b"hello");
+    ///         if let Ok(greeting) = turn.put(buffer) {
+    ///             self.greeting.push(greeting);
+    ///         }
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub const fn split(&mut self) -> (&mut Doing<'a, Me, S, F>, &mut Pool<'a>) {
+        (&mut self.doing, &mut self.pool)
+    }
+
+    /// A buffer with room for at least `room` bytes from the turn's [`Pool`], as [`Pool::buffer`] hands one out. It
+    /// borrows the whole turn: to send, read, or put while it is held, take it from the pool [`Self::split`] lends
+    /// apart instead (ADR-0042).
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Buffer<'_> {
+        self.pool.buffer(room)
+    }
+
+    /// The actor `target` refers to, as [`Doing::to`] answers, called on the turn whole so a target the turn reads
+    /// itself is read in the call, as in `turn.to(turn.me())`.
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        self.doing.to(target)
+    }
+
+    /// Replies `mail` to the source of the item this turn handles, as [`Doing::reply`] does, called on the turn whole
+    /// so the mail may be built from what the turn reads.
+    ///
+    /// # Errors
+    ///
+    /// As [`Doing::reply`].
+    pub fn reply<K: Kind + Encode<Actors>, I>(&mut self, mail: &K) -> Result<(), EncodeError>
+    where
+        S: Allows<ToSender<K>, I>,
+    {
+        self.doing.reply(mail)
+    }
+
+    /// Answers the request `held` with `mail`, as [`Doing::answer`] does, called on the turn whole so the mail may be
+    /// built from what the turn reads.
+    ///
+    /// # Errors
+    ///
+    /// As [`Doing::answer`].
+    pub fn answer<A: Kind + Encode<Actors>>(&mut self, held: Held<A>, mail: &A) -> Result<(), EncodeError> {
+        self.doing.answer(held, mail)
+    }
+
+    /// Runs `job` outside the steps, on its host, keeping `context` until it is answered: the actor is handed what
+    /// became of it with the context, as [`Answer<J::Done, C>`](crate::Answer), in a later step, as for a request it
+    /// asked (ADR-0018). The job's id is its mail's: it takes the next count of what this actor sends.
+    ///
+    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer). Running a job sends no mail to an
+    /// actor, so the turn's sends do not list it:
+    ///
+    /// ```compile_fail,E0277
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Sleep, Turn};
+    /// use aethereal_data::Plain;
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.nap")]
+    /// struct Nap;
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.napper")]
+    /// struct Napper;
+    ///
+    /// // Handles no `Answer<Slept, Nap>`.
+    /// impl Actor for Napper {
+    ///     type Config = Napper;
+    ///     type Key = ();
+    ///     type Handles = (Nap,);
+    ///     type BeginSends = ();
+    ///     type EndSends = ();
+    ///
+    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///         Ok(napper)
+    ///     }
+    ///
+    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// impl Handles<Nap> for Napper {
+    ///     type Sends = ();
+    ///     type From = Anyone;
+    ///
+    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///         let until = turn.now();
+    ///         turn.run(&Sleep { until }, &nap)?;
+    ///
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Unrun`] when the job or its context could not be written.
+    #[cfg(feature = "std")]
+    pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
+    where
+        J: Job,
+        C: Kind + Encode<Within> + Decode<Within> + 'static,
+        Me: Receives<Answer<J::Done, C>>,
+    {
+        self.doing.seat.run(job, context, &mut self.pool)
+    }
+}
+
+impl<'a, Me, S, F: Guard<Me>> Deref for Turn<'a, Me, S, F> {
+    type Target = Doing<'a, Me, S, F>;
+
+    fn deref(&self) -> &Doing<'a, Me, S, F> {
+        &self.doing
+    }
+}
+
+impl<'a, Me, S, F: Guard<Me>> DerefMut for Turn<'a, Me, S, F> {
+    fn deref_mut(&mut self) -> &mut Doing<'a, Me, S, F> {
+        &mut self.doing
+    }
+}
+
+/// What a turn does: every ask and read of a [`Turn`] but those of its buffers, which its [`Pool`] answers. A turn
+/// is called as this, and is split into it and its pool with [`Turn::split`] (ADR-0042).
+pub struct Doing<'a, Me, S, F: Guard<Me> = Anyone> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
@@ -1535,7 +1730,7 @@ pub struct Turn<'a, Me, S, F: Guard<Me> = Anyone> {
 }
 
 /// The target of a turn's sends and asks, chosen once.
-impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
+impl<'a, Me, S, F: Guard<Me>> Doing<'a, Me, S, F> {
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
     /// the sends and asks that chain on what this answers (ADR-0016, ADR-0022). A path is found here, once, as a
     /// resolve sees it: each send and ask through it goes to the actor found then, and to none when the path held no
@@ -1587,7 +1782,7 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     }
 }
 
-impl<Me, S, F: Guard<Me>> Turn<'_, Me, S, F> {
+impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
     /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
@@ -1799,68 +1994,6 @@ impl<Me, S, F: Guard<Me>> Turn<'_, Me, S, F> {
         S: Allows<ToSender<K>, I>,
     {
         self.seat.reply(self.source, mail)
-    }
-
-    /// Runs `job` outside the steps, on its host, keeping `context` until it is answered: the actor is handed what
-    /// became of it with the context, as [`Answer<J::Done, C>`](crate::Answer), in a later step, as for a request it
-    /// asked (ADR-0018). The job's id is its mail's: it takes the next count of what this actor sends.
-    ///
-    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer). Running a job sends no mail to an
-    /// actor, so the turn's sends do not list it:
-    ///
-    /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Sleep, Turn};
-    /// use aethereal_data::Plain;
-    ///
-    /// #[derive(Plain)]
-    /// #[kind(name = "aether.doc.nap")]
-    /// struct Nap;
-    ///
-    /// #[derive(Plain)]
-    /// #[kind(name = "aether.doc.napper")]
-    /// struct Napper;
-    ///
-    /// // Handles no `Answer<Slept, Nap>`.
-    /// impl Actor for Napper {
-    ///     type Config = Napper;
-    ///     type Key = ();
-    ///     type Handles = (Nap,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
-    ///
-    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-    ///         Ok(napper)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Nap> for Napper {
-    ///     type Sends = ();
-    ///     type From = Anyone;
-    ///
-    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-    ///         let until = turn.now();
-    ///         turn.run(&Sleep { until }, &nap)?;
-    ///
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// [`Unrun`] when the job or its context could not be written.
-    #[cfg(feature = "std")]
-    pub fn run<J, C>(&mut self, job: &J, context: &C) -> Result<JobId, Unrun>
-    where
-        J: Job,
-        C: Kind + Encode<Within> + Decode<Within> + 'static,
-        Me: Receives<Answer<J::Done, C>>,
-    {
-        self.seat.run(job, context)
     }
 
     /// Cancels the job `job` this actor ran: once the turn has run, the context it kept is let go of, so no turn is
@@ -2110,19 +2243,11 @@ impl<Me, S, F: Guard<Me>> Turn<'_, Me, S, F> {
         self.seat.logger()
     }
 
-    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
-    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
-    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
-    #[must_use]
-    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
-        self.seat.buffer(room)
-    }
-
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
     /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
+    pub fn put(&mut self, bytes: impl Into<Vec<u8>>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 
@@ -2281,6 +2406,8 @@ pub struct Beginning<'a, Me, S> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
+    /// The buffers the actor keeps, which a job it runs that fills buffers is lent from (ADR-0042).
+    pool: Pool<'a>,
     of: PhantomData<fn() -> (Me, S)>,
 }
 
@@ -2300,6 +2427,7 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
         keeps: Keeps<'a>,
     ) -> Self {
         let declared = Declared::of::<Me>();
+        let (keeps, pool) = keeps.split(asked.most_kept_bytes);
         let seat = Seat {
             me,
             path,
@@ -2315,7 +2443,7 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
             due: Due::Never,
         };
 
-        Self { seat, instances, of: PhantomData }
+        Self { seat, instances, pool, of: PhantomData }
     }
 
     /// The `begin` of an actor of type `Me` that `me` names, at `path`, beneath `above`, reading `table`, adding to
@@ -2348,9 +2476,15 @@ pub trait Mailing<'a, Me, S> {
     fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives>;
 }
 
-impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Turn<'a, Me, S, F> {
+impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Doing<'a, Me, S, F> {
     fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
         self.to(target)
+    }
+}
+
+impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Turn<'a, Me, S, F> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+        self.doing.to(target)
     }
 }
 
@@ -2362,6 +2496,13 @@ impl<'a, Me, S> Mailing<'a, Me, S> for Beginning<'a, Me, S> {
 
 /// The target of a `begin`'s sends and asks, chosen once.
 impl<'a, Me, S> Beginning<'a, Me, S> {
+    /// A buffer with room for at least `room` bytes from the buffers the actor keeps, as [`Pool::buffer`] hands one
+    /// out (ADR-0042). It borrows the whole `begin`: a buffer to put is taken out of it with `Vec::from` first.
+    #[must_use]
+    pub fn buffer(&mut self, room: usize) -> Buffer<'_> {
+        self.pool.buffer(room)
+    }
+
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
     /// the sends and asks that chain on what this answers, as a turn's [`to`](Turn::to) is. Its mail goes with the mail
     /// of the turn this `begin` runs in, and what it asks is answered in a turn after this `begin`; a `begin` that
@@ -2445,7 +2586,7 @@ impl<Me, S> Beginning<'_, Me, S> {
         C: Kind + Encode<Within> + Decode<Within> + 'static,
         Me: Receives<Answer<J::Done, C>>,
     {
-        self.seat.run(job, context)
+        self.seat.run(job, context, &mut self.pool)
     }
 
     /// Keeps `value`, a resource this actor made, as its own, and answers with the handle to it (ADR-0010). If this
@@ -2641,19 +2782,11 @@ impl<Me, S> Beginning<'_, Me, S> {
         self.seat.logger()
     }
 
-    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
-    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
-    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
-    #[must_use]
-    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
-        self.seat.buffer(room)
-    }
-
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
     /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
+    pub fn put(&mut self, bytes: impl Into<Vec<u8>>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 
@@ -2747,6 +2880,8 @@ impl<'a> Closing<'a> {
     /// The closing turn of an actor of type `A`.
     pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A, A::EndSends> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
+        // A closing turn runs no job and takes no buffer, so it reaches its actor's resources alone.
+        let keeps = keeps.reach();
         let declared = Declared::of::<A>();
         let seat = Seat {
             me,
@@ -2958,19 +3093,11 @@ impl<Me, S> Ending<'_, Me, S> {
         self.seat.logger()
     }
 
-    /// A buffer with room for at least `room` bytes, to fill and put: the smallest this actor keeps that is big
-    /// enough and at most twice `room`, emptied, else a new one. The buffer of each blob this actor puts comes back to it once the blob is
-    /// freed, so an actor that puts what it builds here allocates only when it keeps none big enough (ADR-0042).
-    #[must_use]
-    pub fn buffer(&mut self, room: usize) -> Vec<u8> {
-        self.seat.buffer(room)
-    }
-
     /// Puts `bytes` as a blob, which nobody changes from then on, and answers with the first reference to it
     /// (ADR-0014). It is refused when the bytes would take this worker past its share of the budget for blobs, which
     /// counts the buffer's capacity: the buffer is kept whole, to come back to this actor (ADR-0042).
     #[cfg(feature = "std")]
-    pub fn put(&mut self, bytes: Vec<u8>) -> Result<Bytes, Refused> {
+    pub fn put(&mut self, bytes: impl Into<Vec<u8>>) -> Result<Bytes, Refused> {
         self.seat.put(bytes)
     }
 

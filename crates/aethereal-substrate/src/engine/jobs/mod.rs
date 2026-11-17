@@ -253,7 +253,14 @@ impl Engine {
             finish.done(Err(fault::<NoRunner>()));
             return;
         };
-        let lent = Lending::new(self.number.0, self.copied(refers), buffers, given, Arc::clone(&self.job_pins));
+        let lent = Lending::new(
+            self.number.0,
+            self.copied(refers),
+            buffers,
+            given,
+            Arc::clone(&self.job_pins),
+            self.most_kept_bytes,
+        );
         if let Runner::Made(jobs) = &self.runner {
             jobs.start(id, of, Taken { bytes, lent, limit: self.read_limit, finish });
             #[cfg(any(test, feature = "harness"))]
@@ -412,7 +419,14 @@ impl Engine {
             unreachable!("a sleep is a time, and refers to nothing");
         };
         let id = JobId::new(MailId { sender: lifecycle_id(), count: at.nanos() });
-        let lent = Lending::new(self.number.0, Vec::new(), Spares::new(), Vec::new(), Arc::clone(&self.job_pins));
+        let lent = Lending::new(
+            self.number.0,
+            Vec::new(),
+            Spares::new(),
+            Vec::new(),
+            Arc::clone(&self.job_pins),
+            self.most_kept_bytes,
+        );
         let finish = Finish { to: Finishing::Alarm(at), feed: Arc::clone(&self.finished), bell: self.bell.clone() };
         jobs.start(id, JobType::of::<Sleep>(), Taken { bytes, lent, limit: self.read_limit, finish });
 
