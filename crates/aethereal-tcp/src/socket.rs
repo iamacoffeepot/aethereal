@@ -2,7 +2,7 @@
 
 use aethereal_actor::Resource;
 use std::io::{self, IoSlice, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
@@ -32,6 +32,15 @@ impl Socket {
             Self::Tcp(stream) => descriptor(stream),
             #[cfg(unix)]
             Self::Unix(stream) => descriptor(stream),
+        }
+    }
+
+    /// Shuts its write half: the peer reads to its end, and this side reads on.
+    pub(crate) fn shut_writing(&self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.shutdown(Shutdown::Write),
+            #[cfg(unix)]
+            Self::Unix(stream) => stream.shutdown(Shutdown::Write),
         }
     }
 }

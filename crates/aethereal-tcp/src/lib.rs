@@ -7,7 +7,8 @@
 //! [`Accepting`] stream; a connection dialed out, over TCP or to a Unix
 //! socket, is a [`Dialed`] actor beneath the root. Every connection is read
 //! through a [`Reading`] stream, whose credit holds the socket back, and
-//! written by asking it to [`Write`], whichever kind of socket it holds. Each
+//! written by asking it to [`Write`], whichever kind of socket it holds; a
+//! holder done writing asks it to [`Finish`], and reads on. Each
 //! makes each call on its socket, which never blocks, in the handler that
 //! makes it possible, and waits for the socket through the host's poller
 //! when a call would wait.
@@ -29,7 +30,9 @@ mod socket;
 mod tcp;
 
 pub use address::{SocketAddress, SocketPath, Unaddressable};
-pub use connection::{Accepted, ConnectionConfig, Dialed, Frame, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
+pub use connection::{
+    Accepted, Connection, ConnectionConfig, Dialed, Finish, Frame, HungUp, Read, Reading, Shut, Write, Writing, Wrote,
+};
 #[cfg(unix)]
 pub use dialer::UnixDialing;
 pub use dialer::{Dialer, Dialing, Undialed};

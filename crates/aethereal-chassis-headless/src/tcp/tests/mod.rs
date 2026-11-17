@@ -1,5 +1,6 @@
 //! The TCP capability on the native host (ADR-0033).
 
+mod finish;
 #[cfg(unix)]
 mod unix;
 
