@@ -20,7 +20,7 @@ So every test so far writes an actor of its own to stand in for the caller, and 
 
 The obvious fix, one harness actor that runs whatever a test orders, fails on that last point. An actor handles each answer kind through its own `Handles<Answer<O, C>>` impl, fixed when it is compiled, so one generic actor cannot receive whatever answer kind a test asks for.
 
-A test also needs to be asked. An HTTP stack asks a route's handler through a `ProtocolRef<Handling<A, C>>` (ADR-0035: `ActorStage`), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
+A test also needs to be asked. An HTTP stack asks its handler, the last of its stages, a `Request<A, C>` (ADR-0035), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
 
 ## Decision
 
@@ -41,8 +41,7 @@ let listen = Listen { port: 0, interface: Interface::Loopback, framing: Framing:
 let listening = harness.ask(tcp, &listen)?;                           // Asked<Listening>: a ticket typed by the answer
 let Answered::Yes(Listening::Bound { port, .. }) = harness.answer(listening)? else { panic!("bound") };
 
-let handler = harness.protocol::<Handling<(), ()>>();                 // ProtocolRef<Handling<(), ()>> naming the outside
-// .. a stack of the test's own routes `GET /` to `ActorStage::new(handler)` (ADR-0035)
+// .. a stack of the test's own, whose last stage is the handler the outside stands in for (ADR-0035)
 let request = harness.asked::<Request<(), ()>>()?;                    // Held<Request<(), ()>>: a request asked of the outside
 harness.reply(request, &Response::new(Status::Ok, "text/plain", b"hi".to_vec()))?;
 ```

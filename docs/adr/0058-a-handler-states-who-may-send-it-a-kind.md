@@ -302,7 +302,7 @@ Dispatch takes the first listing whose role matches, so the declaration's consta
 
 A check that passed the mail over silently, or logged a warning of its own, now goes to the default `refused`.
 
-**HTTP (ADR-0035).** A handler takes `Request<A, C>`, and an authenticator `Authenticate`, from `FromStack`, `Speaks<(Incoming,)>`, written as `type From` in each one's impl; a stack takes `Incoming` from `Child<Exchange<Self>>`.
+**HTTP (ADR-0035).** A handler takes `Request<A, C>`, and an actor stage `Inbound<In>`, from `FromStack`, `Speaks<(Incoming,)>`, written as `type From` in each one's impl; a stack takes `Incoming` from `Child<Exchange<Self>>`.
 
 **Untouched.** `Engines` answers `TakeToken` (`aethereal-link/src/engines/mod.rs:462`) for any asker, and links only an engine of its own: that is what the token is for, not who may ask. The renderer keys what it makes by its maker (`renderer/mod.rs:1379`, `:1442`, `:1502`, `:1679`, `:1720`; `renderer/text/mod.rs:697`, `:742`), and casts its sender for what it will tell it (`CreateDispatch` at `:1567`, `DrawList` at `:1611`), each taking from anyone. An unsubscribe removes its own sender, and a store, a connection, or HTTP holds whoever asked.
 
