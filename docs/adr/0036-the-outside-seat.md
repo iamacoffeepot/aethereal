@@ -20,7 +20,7 @@ So every test so far writes an actor of its own to stand in for the caller, and 
 
 The obvious fix, one harness actor that runs whatever a test orders, fails on that last point. An actor handles each answer kind through its own `Handles<Answer<O, C>>` impl, fixed when it is compiled, so one generic actor cannot receive whatever answer kind a test asks for.
 
-A test also needs to be asked. HTTP hands each request to a handler named by a `ProtocolRef<Routing<S>>` (ADR-0035: `Mount::handler`), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
+A test also needs to be asked. An HTTP server asks a route's handler through a `ProtocolRef<Handling<A, C>>` (ADR-0035: `ActorStage`), and a test of it wants to be that handler: take the request, decide, and answer with a typed `Response`.
 
 ## Decision
 
@@ -33,16 +33,17 @@ Because it sits in a seat (`Holding::Here`), everything the engine keeps for an 
 **A harness is a host and its outside, which a test owns and steps.**
 
 ```rust
-let program = Headless::program().with_cycle::<(Tick,)>().root::<Tcp>().root_with::<Http>(settings); // a listener `test`, port 0
+let program = Headless::program().with_cycle::<(Tick,)>().root::<Tcp>();
 let mut harness = Harness::of(program)?;
-let http = harness.root::<Http>();                                    // ActorRef<Http>, proven when the program was built
-let handler = harness.protocol::<Routing<Public>>();                  // ProtocolRef<Routing<Public>> naming the outside
-let mount = Mount { listener: "test".into(), prefix: "/".into(), body: Body::Whole { most_bytes: 1024 }, guard: Guard::As(Anonymous), handler };
+let tcp = harness.root::<Tcp>();                                      // ActorRef<Tcp>, proven when the program was built
+let listen = Listen { port: 0, interface: Interface::Loopback, framing: Framing::Chunks { most_bytes: 1024 } };
 
-let mounting = harness.ask(http, &mount)?;                            // Asked<Mounted>: a ticket typed by the answer
-let Answered::Yes(Mounted::Yes { port }) = harness.answer(mounting)? else { panic!("mounted") };
+let listening = harness.ask(tcp, &listen)?;                           // Asked<Listening>: a ticket typed by the answer
+let Answered::Yes(Listening::Bound { port, .. }) = harness.answer(listening)? else { panic!("bound") };
 
-let request = harness.asked::<Routed<Public>>()?;                     // Held<Routed<Public>>: a request asked of the outside
+let handler = harness.protocol::<Handling<(), ()>>();                 // ProtocolRef<Handling<(), ()>> naming the outside
+// .. a server of the test's own routes `GET /` to `ActorStage::new(handler)` (ADR-0035)
+let request = harness.asked::<Request<(), ()>>()?;                    // Held<Request<(), ()>>: a request asked of the outside
 harness.reply(request, &Response::new(Status::Ok, "text/plain", b"hi".to_vec()))?;
 ```
 

@@ -12,7 +12,7 @@ A handler knows the sender of what it handles only as an `ErasedActorRef` (`Turn
 - **A subscription.** `Window`, `Tools`, `Controls`, `Link`, and `Renderer` take a subscribe from anyone, cast its sender to the protocol they will send it, and log and pass over one whose type does not list it.
 - **A check against the receiver's state or the mail.** `Spawned` takes `Exited` only from the process it holds, `Engines` takes `Runs` only from a spawn it keeps a record of, and `Windows` takes `ShowCursor` only from the window the mail names.
 
-Each is a few lines that the handler's signature does not show. A reader learns whom a handler takes a kind from by reading its body, a sender that is passed over is told nothing, and the next handler of the same shape is written again by hand. HTTP needs the same: a handler takes a request with its principal only from an exchange (ADR-0035).
+Each is a few lines that the handler's signature does not show. A reader learns whom a handler takes a kind from by reading its body, a sender that is passed over is told nothing, and the next handler of the same shape is written again by hand. HTTP needs the same: a handler takes a request with its principal only from a server (ADR-0035).
 
 What the engine already has:
 
@@ -302,7 +302,7 @@ Dispatch takes the first listing whose role matches, so the declaration's consta
 
 A check that passed the mail over silently, or logged a warning of its own, now goes to the default `refused`.
 
-**HTTP (ADR-0035).** A handler takes `Routed<S>`, and an authenticator `Authenticate`, from `ActorRef<Exchange>`, written as `type From` in each one's impl, and is handed the exchange as an `ActorRef<Exchange>`.
+**HTTP (ADR-0035).** A handler takes `Request<A, C>`, and an authenticator `Authenticate`, from `FromServer`, `Speaks<(Incoming,)>`, written as `type From` in each one's impl; a server takes `Incoming` from `Child<Exchange<Self>>`.
 
 **Untouched.** `Engines` answers `TakeToken` (`aethereal-link/src/engines/mod.rs:462`) for any asker, and links only an engine of its own: that is what the token is for, not who may ask. The renderer keys what it makes by its maker (`renderer/mod.rs:1379`, `:1442`, `:1502`, `:1679`, `:1720`; `renderer/text/mod.rs:697`, `:742`), and casts its sender for what it will tell it (`CreateDispatch` at `:1567`, `DrawList` at `:1611`), each taking from anyone. An unsubscribe removes its own sender, and a store, a connection, or HTTP holds whoever asked.
 
@@ -329,6 +329,6 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - **A hand-written `Sent` impl for an enum.** It restates the cases, and a case added without it drifts from the check; the derive reads them.
 - **`From` on every `Handles` impl,** answers, endings, stages, and fallbacks included: 348 more lines that each say `Anyone`, of items no sender chooses.
 - **The build check as a trait bound,** a bound on `ToType`'s `DeclaredBy<A>` that `<T as Handles<K>>::From` admits `A`. It holds for one type, but `Speaks<P>` and an enum guard need an index, the places of `P`'s kinds or the case whose type matches, which an impl cannot leave unconstrained. At the send, where `Allows` infers its index, `Toward` would have to carry the sender's type, and a send declared and never made would go unchecked.
-- **The check at the send alone.** It sees no guest, no reply, and no send through a protocol reference, which is how HTTP's exchange reaches its handler.
+- **The check at the send alone.** It sees no guest, no reply, and no send through a protocol reference, which is how an HTTP server reaches its handler.
 - **The check at delivery alone.** It holds, but a native sender learns only from a log at run time what its build could have told it.
 - **Rust privacy on a kind's constructor.** A native sender must build a value to send it, but a guest writes bytes, whatever kind they claim.
