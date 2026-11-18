@@ -222,17 +222,21 @@ fn stop_is_sent_only_once_every_turn_start_set_off_has_run() {
     assert_eq!(engine.lifecycle(), Lifecycle::Waiting);
     engine.start();
     engine.quit();
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping(Halted::Quit));
 
     assert_eq!(step(&mut engine), [Seen::Started(1)]);
     assert_eq!(step(&mut engine), [got(1, Note::Pass(2))]);
     assert_eq!(step(&mut engine), [got(1, Note::Pass(1))]);
     assert_eq!(step(&mut engine), [got(1, Note::Pass(0))]);
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping(Halted::Quit));
     assert_eq!(step(&mut engine), [Seen::Stopping(1)]);
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopping, "what the engine says of `Stop` left unanswered is to come");
+    assert_eq!(
+        engine.lifecycle(),
+        Lifecycle::Stopping(Halted::Quit),
+        "what the engine says of `Stop` left unanswered is to come"
+    );
     assert!(step(&mut engine).is_empty());
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped(Halted::Quit));
     assert!(engine.is_idle());
 }
 
@@ -244,18 +248,18 @@ fn an_actor_that_asks_to_stop_stops_the_program_once_its_stage_has_finished() {
     // well.
     let mut early = engine(&[(1, OnStart::Passes, &[Note::Quit])]);
     assert_eq!(step(&mut early), [got(1, Note::Quit)]);
-    assert_eq!(early.lifecycle(), Lifecycle::Stopping, "asked before the host started it");
+    assert_eq!(early.lifecycle(), Lifecycle::Stopping(Halted::Quit), "asked before the host started it");
 
     let mut engine = engine(&[(1, OnStart::Passes, &[]), (2, OnStart::PassesThenQuits, &[])]);
     engine.start();
     assert_eq!(step(&mut engine), [Seen::Started(1), Seen::Started(2)]);
     assert_eq!(step(&mut engine), [got(1, Note::Pass(2)), got(2, Note::Pass(2)), got(2, Note::Quit)]);
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping(Halted::Quit));
     assert_eq!(step(&mut engine), [got(1, Note::Pass(1)), got(2, Note::Pass(1))]);
     assert_eq!(step(&mut engine), [got(1, Note::Pass(0)), got(2, Note::Pass(0))]);
     assert_eq!(step(&mut engine), [Seen::Stopping(1), Seen::Stopping(2)]);
     assert!(step(&mut engine).is_empty());
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped(Halted::Quit));
 }
 
 #[test]
@@ -484,7 +488,7 @@ fn a_program_asked_to_stop_mid_cycle_finishes_the_cycle_first() {
     // The cycler neither answered `Stop` nor held it, and what the engine says of that comes back to it, and is
     // dropped, in the next step.
     assert!(step_at(&mut engine, 70).is_empty());
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped(Halted::Quit));
 }
 
 /// What became of a spawn, as a nest can keep it: [`Refused`] does not encode.
@@ -686,10 +690,10 @@ fn a_subscriber_that_holds_stop_keeps_the_program_from_stopping_until_it_answers
     // Catches `Stop` sent as no request, so it cannot be held, `Stop` finished once its chain has though a subscriber
     // still holds it, and a held `Stop` that keeps the program from stopping once it was answered, let go, or its
     // holder closed.
-    assert_eq!(drained(Note::Answer), (Lifecycle::Stopping, Lifecycle::Stopped));
-    assert_eq!(drained(Note::LetGo), (Lifecycle::Stopping, Lifecycle::Stopped));
-    assert_eq!(drained(Note::Close), (Lifecycle::Stopping, Lifecycle::Stopped));
-    assert_eq!(drained(Note::Nothing), (Lifecycle::Stopping, Lifecycle::Stopping));
+    assert_eq!(drained(Note::Answer), (Lifecycle::Stopping(Halted::Quit), Lifecycle::Stopped(Halted::Quit)));
+    assert_eq!(drained(Note::LetGo), (Lifecycle::Stopping(Halted::Quit), Lifecycle::Stopped(Halted::Quit)));
+    assert_eq!(drained(Note::Close), (Lifecycle::Stopping(Halted::Quit), Lifecycle::Stopped(Halted::Quit)));
+    assert_eq!(drained(Note::Nothing), (Lifecycle::Stopping(Halted::Quit), Lifecycle::Stopping(Halted::Quit)));
 }
 
 #[test]
@@ -704,7 +708,7 @@ fn a_stage_nothing_subscribes_to_is_passed_at_once() {
     engine.start();
     engine.quit();
 
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped(Halted::Quit));
     assert_eq!(engine.step_number(), 0);
 }
 
@@ -938,8 +942,8 @@ fn the_host_s_quit_while_the_program_boots_stops_it_cleanly() {
     // and `Stop` sent while `Boot` still runs.
     let mut engine = booting(OnGranted::Keeps);
     engine.quit();
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopping);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopping(Halted::Quit));
 
     assert_eq!(settled(&mut engine), [Seen::Granted(0), Seen::Stopping(0)]);
-    assert_eq!(engine.lifecycle(), Lifecycle::Stopped);
+    assert_eq!(engine.lifecycle(), Lifecycle::Stopped(Halted::Quit));
 }

@@ -43,6 +43,11 @@ type Reaches<T> = <<T as LayerList>::Last as LastLayer<<T as LayerList>::Attache
 #[kind(name = "aether.http.stack.binding")]
 pub struct Binding;
 
+/// Why a stack failed: its listener stopped without being asked to, so its port is closed and it serves nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.http.stack.unlistened")]
+pub struct Unlistened;
+
 /// What a stack keeps for a write: the connection it is on, and what it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.stack.sending")]
@@ -284,14 +289,24 @@ where
         Ok(())
     }
 
-    /// The listener's stream has ended: the stack shuts every connection, and closes.
+    /// The listener's stream has ended. Asked to stop, it shuts every connection, and closes. Otherwise its socket
+    /// failed, or it stopped unanswered, and the stack's port is closed: the stack fails, so a stack that is a root
+    /// stops its program as failed (ADR-0020).
     ///
     /// # Errors
     ///
-    /// The fault of mail that does not encode.
-    pub fn unbound(&mut self, (_, number): (Answered<Unbound>, Number), turn: &mut Turn<'_, S>) -> Result<(), Fault> {
+    /// [`Unlistened`] when the listener stopped without being asked to, and the fault of mail that does not encode.
+    pub fn unbound(
+        &mut self,
+        (answered, number): (Answered<Unbound>, Number),
+        turn: &mut Turn<'_, S>,
+    ) -> Result<(), Fault> {
         self.accepting.answered(number);
         self.bind = Bind::Unbound;
+        if answered != Answered::Yes(Unbound::Shut) {
+            turn.log(Level::Error, format_args!("the stack's listener stopped: {answered:?}"));
+            return Err(Fault::new(&Unlistened)?);
+        }
 
         self.shut(turn)
     }

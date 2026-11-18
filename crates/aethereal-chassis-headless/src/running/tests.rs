@@ -4,8 +4,8 @@ use super::*;
 use crate::waiting;
 use aethereal_actor::{ActorName, actor, path, protocol};
 use aethereal_actor::{
-    Answered, Beginning, Controller, Drained, Fault, Given, Handle, Held, Later, Services, Sleep, Slept, Start, Stop,
-    Tick, Turn,
+    Answered, Beginning, Controller, Drained, Ended, Fault, Given, Handle, Held, Later, Services, Sleep, Slept, Start,
+    Stop, Tick, Turn,
 };
 use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
 use aethereal_pace::{Advance, Advanced, Pace, Pacer, PacerConfig};
@@ -113,8 +113,103 @@ fn a_program_that_asks_to_stop_as_it_starts_stops_without_waiting_for_a_cycle() 
     });
     let (took, exit) = timed(headless, Duration::from_secs(30), Duration::from_secs(30));
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     assert!(took < Duration::from_secs(10), "took {took:?}");
+}
+
+/// Why a breaker's turn fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.broke")]
+struct Broke;
+
+/// A root that fails its turn of `Start`.
+#[derive(Bound)]
+#[kind(name = "aether.test.breaker")]
+struct Breaker;
+
+#[actor]
+impl Breaker {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+
+        Ok(Self)
+    }
+
+    #[on]
+    fn start(&mut self, _: Start) -> Result<(), Fault> {
+        Err(Fault::new(&Broke)?)
+    }
+}
+
+/// A root that stands up a fledgling as it begins, watches it, and asks the program to stop once it has ended.
+#[derive(Bound)]
+#[kind(name = "aether.test.brood")]
+struct Brood;
+
+#[actor(spawns(Fledgling))]
+impl Brood {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        let Ok(fledgling) = turn.spawn::<Fledgling>(&(), Nothing) else {
+            return Err(Fault::new(&Broke)?);
+        };
+        turn.watch(fledgling);
+
+        Ok(Self)
+    }
+
+    #[ended]
+    fn ended(&mut self, _: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.quit();
+
+        Ok(())
+    }
+}
+
+/// A brood's child, which fails its turn of `Start`, as a breaker does.
+#[derive(Bound)]
+#[kind(name = "aether.test.fledgling")]
+struct Fledgling;
+
+#[actor(parent = Brood)]
+impl Fledgling {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        turn.subscribe::<Start>();
+
+        Ok(Self)
+    }
+
+    #[on]
+    fn start(&mut self, _: Start) -> Result<(), Fault> {
+        Err(Fault::new(&Broke)?)
+    }
+}
+
+#[test]
+fn a_program_whose_root_fails_once_started_stops_as_failed_naming_it_and_a_child_s_failure_stops_nothing() {
+    // Catches a host that ends a program a root's failure stopped as a clean stop, so its process exits as if asked
+    // to, or that runs on with the root gone; and one that stops the program for any actor's failure, where a child's
+    // ends only the child, which its parent hears of, as the brood does here before it asks the program to stop.
+    let (breaking, ()) = headless::<(), _>(|engine| {
+        let Ok(_) = engine.add_root::<Breaker>(&(), Nothing) else {
+            panic!("the breaker begins");
+        };
+    });
+    let exit = breaking.run(Duration::from_secs(30), Duration::from_secs(30));
+
+    let breaker = ActorName::Path(ActorPath::from_root(&PathSegment::new(Breaker::NAME, &())));
+    let Ok(broke) = Fault::new(&Broke) else {
+        panic!("the reason encodes");
+    };
+    assert_eq!(exit, Exit::Stopped(Halted::Failed(breaker, broke)));
+
+    let (brooding, ()) = headless::<(), _>(|engine| {
+        let Ok(_) = engine.add_root::<Brood>(&(), Nothing) else {
+            panic!("the brood begins");
+        };
+    });
+    let exit = brooding.run(Duration::from_secs(30), Duration::from_secs(30));
+
+    assert_eq!(exit, Exit::Stopped(Halted::Quit), "the fledgling's failure ends only the fledgling");
 }
 
 /// What a metronome is made from: what it tells the test through. The run drops the engine and every actor's state
@@ -171,7 +266,7 @@ fn a_program_cycles_on_its_timer_until_an_actor_asks_it_to_stop() {
     });
     let (took, exit) = timed(headless, Duration::from_millis(2), Duration::from_secs(30));
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     assert_eq!(deltas.take().len(), 3, "no cycle begins once asked to stop");
     assert!(took >= Duration::from_millis(4), "the third cycle is two periods after the start: {took:?}");
 }
@@ -220,7 +315,7 @@ fn a_stop_held_past_the_time_the_host_gives_it_ends_the_program_out_of_time() {
     });
     let (took, exit) = timed(headless, Duration::from_secs(30), Duration::from_millis(50));
 
-    assert_eq!(exit, Exit::OutOfTime);
+    assert_eq!(exit, Exit::OutOfTime(Halted::Quit));
     assert!(took >= Duration::from_millis(50), "took {took:?}");
     assert!(took < Duration::from_secs(10), "took {took:?}");
 }
@@ -308,7 +403,7 @@ fn a_program_is_answered_for_its_jobs_while_it_runs() {
     };
     let (took, exit) = timed(headless, Duration::from_millis(5), Duration::from_secs(30));
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     assert_eq!(naps.take(), [Nap::Slept]);
     assert!(took >= Duration::from_millis(20), "it slept for its time: {took:?}");
 }
@@ -379,7 +474,7 @@ fn a_program_with_no_cycle_is_woken_by_a_job_that_finishes_while_it_sleeps() {
         panic!("the host's loop ran to its end");
     };
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     assert_eq!(naps.take(), [Nap::Slept]);
     assert!(took >= Duration::from_millis(20), "it slept for its time: {took:?}");
 }
@@ -494,7 +589,7 @@ fn a_program_with_no_cycle_is_woken_by_a_deadline_that_comes_while_it_sleeps() {
         panic!("the host's loop ran to its end");
     };
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     assert_eq!(waited.take(), [Waited::No(aethereal_actor::Unanswered::Expired)]);
     assert!(took >= Duration::from_millis(20), "it waited until the deadline: {took:?}");
 }
@@ -578,7 +673,7 @@ fn a_held_clock_cycles_only_as_its_pacer_advances_it_each_tick_of_the_delta_aske
     });
     let (_, exit) = timed(headless.with_clockwork(clockwork), Duration::from_millis(1), Duration::from_secs(30));
 
-    assert_eq!(exit, Exit::Stopped);
+    assert_eq!(exit, Exit::Stopped(Halted::Quit));
     let step = nanos(STEP);
     let advanced = Stepped::Advanced(Advanced::Advanced { elapsed_nanos: 3 * step });
     assert_eq!(told.take(), [Stepped::Ticked(step), Stepped::Ticked(step), Stepped::Ticked(step), advanced]);

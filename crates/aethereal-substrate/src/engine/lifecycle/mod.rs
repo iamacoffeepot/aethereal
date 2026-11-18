@@ -9,12 +9,15 @@
 //!
 //! Before `Start`, the engine waits on `Boot`, the chain of the mail every root's `begin` sent, which is read as a
 //! stage's is: `Start` is sent once it has finished, and an actor that quits or a turn that fails while it runs fails
-//! the boot.
+//! the boot. Once the program has booted, a quit stops it, and so does a root's failure, which the lifecycle holds as
+//! why it stops.
 
+mod halted;
 #[cfg(test)]
 mod tests;
 mod unbooted;
 
+pub use halted::Halted;
 pub use unbooted::Unbooted;
 
 use super::{Engine, ROOTS, parity};
@@ -39,11 +42,11 @@ pub enum Lifecycle {
     Booting,
     /// It has started, and nothing has asked it to stop.
     Running,
-    /// The host or an actor asked it to stop: `Stop` is sent, or will be once a cycle under way, or `Boot`, has
-    /// finished.
-    Stopping,
-    /// `Stop` has finished: the host drops the engine.
-    Stopped,
+    /// The host or an actor asked it to stop, or a root failed, as this says: `Stop` is sent, or will be once a cycle
+    /// under way, or `Boot`, has finished.
+    Stopping(Halted),
+    /// `Stop` has finished, the program stopping as this says: the host drops the engine, and ends as it says.
+    Stopped(Halted),
     /// An actor quit, or a turn failed, while it booted: neither `Start` nor `Stop` is sent, and the host drops the
     /// engine and reports it as a program that did not start.
     Unbooted(Unbooted),
@@ -241,10 +244,10 @@ impl Engine {
 
     /// Asks the program to stop, for the host: when its window closed, the process was told to end, or the page was
     /// hidden. The engine lets a cycle under way finish, sends `Stop`, and once that has finished its lifecycle is
-    /// [`Lifecycle::Stopped`] (ADR-0020). Asked while the program boots, it is a clean stop as well: `Start` is not
-    /// sent, and `Stop` is once `Boot` has finished. Asking again changes nothing.
+    /// [`Lifecycle::Stopped`], with [`Halted::Quit`] (ADR-0020). Asked while the program boots, it is a clean stop as
+    /// well: `Start` is not sent, and `Stop` is once `Boot` has finished. Asking again changes nothing.
     pub fn quit(&mut self) {
-        self.stopping();
+        self.stopping(Halted::Quit);
         self.advance();
     }
 
@@ -291,7 +294,10 @@ impl Engine {
             self.staging.under_way = UnderWay::Nothing;
             match at {
                 At::Stop => {
-                    self.staging.lifecycle = Lifecycle::Stopped;
+                    // `Stop` is under way only while the program stops, so it stops as it was stopping.
+                    if let Lifecycle::Stopping(halted) = &self.staging.lifecycle {
+                        self.staging.lifecycle = Lifecycle::Stopped(halted.clone());
+                    }
                     return false;
                 }
                 At::Cycle(place) => {
@@ -311,18 +317,20 @@ impl Engine {
                 self.send_stage(Cycling::of::<Start>(), At::Start);
                 true
             }
-            Lifecycle::Stopping => {
+            Lifecycle::Stopping(_) => {
                 self.send_stage(Cycling::of::<Stop>(), At::Stop);
                 true
             }
             Lifecycle::Running => self.begin_cycle(),
-            Lifecycle::Waiting | Lifecycle::Stopped | Lifecycle::Unbooted(_) => false,
+            Lifecycle::Waiting | Lifecycle::Stopped(_) | Lifecycle::Unbooted(_) => false,
         }
     }
 
     /// Takes in what actors asked of the lifecycle since it last looked, a quit or a turn that failed (ADR-0020).
     /// While the program boots, either fails the boot, and the first, by the actor's id, is what the lifecycle holds
-    /// of why. Otherwise a quit asks the program to stop, and a failure has ended only its actor.
+    /// of why. Otherwise a quit asks the program to stop, and so does a root's failure, the first by the root's id,
+    /// which the lifecycle holds as why it stops; the failure of any other actor has ended only that actor, whose
+    /// parent hears of it (ADR-0009).
     fn halted(&mut self) {
         let halts: Vec<Halt> = self.stages.shards_mut().flat_map(stages::Shard::take_halts).collect();
         if self.staging.lifecycle == Lifecycle::Booting {
@@ -332,18 +340,29 @@ impl Engine {
             }
             return;
         }
-        if halts.iter().any(Halt::is_quit) {
-            self.stopping();
+        let is_quit = halts.iter().any(Halt::is_quit);
+        let failed = halts.into_iter().filter_map(Halt::failure).filter(|(actor, _)| self.table.holds_root(actor.id));
+        let first_failed = failed.min_by_key(|(actor, _)| actor.id.bits());
+        if let Some((root, fault)) = first_failed {
+            self.stopping(Halted::Failed(self.actor_name(root.id), fault));
+        }
+        if is_quit {
+            self.stopping(Halted::Quit);
         }
     }
 
     /// Fails the boot for `halt`: the lifecycle holds why, naming the actor, and waits on no chain, so neither `Start`
     /// nor `Stop` is sent (ADR-0020, ADR-0029).
     fn unbooted(&mut self, halt: Halt) {
-        let id = halt.actor().id;
-        let actor = self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path);
+        let actor = self.actor_name(halt.actor().id);
         self.staging.lifecycle = Lifecycle::Unbooted(Unbooted::of(halt, actor));
         self.staging.under_way = UnderWay::Nothing;
+    }
+
+    /// The actor `id` stands for, as a report names it: by its path, or by its id once the table no longer remembers
+    /// the path.
+    fn actor_name(&self, id: ActorId) -> ActorName {
+        self.table.name(id).map_or(ActorName::Unnamed(id), ActorName::Path)
     }
 
     /// Sends the cycle's first stage, when one is due and the cycle holds any, and answers whether it did.
@@ -372,12 +391,16 @@ impl Engine {
         })
     }
 
-    /// Marks the lifecycle as asked to stop, unless it has stopped already or did not boot.
-    fn stopping(&mut self) {
-        let is_live = matches!(self.staging.lifecycle, Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running);
-        if is_live {
-            self.staging.lifecycle = Lifecycle::Stopping;
-        }
+    /// Marks the lifecycle as stopping for `halted`, unless it has stopped already or did not boot. A program asked to
+    /// stop that then meets a root's failure stops as failed, and the first failure is the one it holds.
+    fn stopping(&mut self, halted: Halted) {
+        let stopping = match (&self.staging.lifecycle, halted) {
+            (Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running, halted) => Lifecycle::Stopping(halted),
+            (Lifecycle::Stopping(Halted::Quit), failed @ Halted::Failed(..)) => Lifecycle::Stopping(failed),
+            (Lifecycle::Stopping(Halted::Quit), Halted::Quit)
+            | (Lifecycle::Stopping(Halted::Failed(..)) | Lifecycle::Stopped(_) | Lifecycle::Unbooted(_), _) => return,
+        };
+        self.staging.lifecycle = stopping;
     }
 
     /// The time a cycle the host said was due `at` carries: since the last began, limited, and the sum with it.

@@ -81,7 +81,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(Launched::Ran(exit)) => {
             println!("exit={exit:?}");
-            ExitCode::SUCCESS
+            exit.status()
         }
         Ok(Launched::Printed) => ExitCode::SUCCESS,
         Err(failed) => {

@@ -27,7 +27,7 @@ pub struct Shard {
 }
 
 /// What an actor did that the lifecycle reads: asked the program to stop, or failed a turn (ADR-0020). Once the
-/// program has started only a quit moves it; while it boots, either fails the boot.
+/// program has started a quit stops it, and so does a root's failure; while it boots, either fails the boot.
 #[derive(Debug, Clone)]
 pub enum Halt {
     /// The actor asked the program to stop.
@@ -49,6 +49,15 @@ impl Halt {
     #[must_use]
     pub const fn is_quit(&self) -> bool {
         matches!(self, Self::Quit(_))
+    }
+
+    /// The actor whose turn failed, and the fault, when it is a failure.
+    #[must_use]
+    pub fn failure(self) -> Option<(Seated, Fault)> {
+        match self {
+            Self::Quit(_) => None,
+            Self::Failed(actor, fault) => Some((actor, fault)),
+        }
     }
 
     /// Where it stands among the halts of one look: by its actor's id, so which fails a boot does not hang on the
