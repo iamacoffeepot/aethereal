@@ -1,19 +1,16 @@
-//! What a line typed with a session's tab open comes to (ADR-0057: The console is the chat): a line goes to Claude, a
-//! line starting with `/` runs the engine's own tool at once and is noted in the session, the chat's own words run
-//! here alone, and a few `/` words are Claude Code's own.
+//! What a line typed with a session's tab open comes to (ADR-0057: The console is the chat), by the tab's mode: in chat
+//! mode a line is said to Claude, a `/` line among them, which Claude Code reads as its own command; in `!` mode a line
+//! runs the engine's own tool here, and it and what it printed are sent to the session.
 //!
 //! ```text
-//! "what do you see?"            ──> Say
-//! "/capture_frame"              ──> Run "capture_frame", as the console runs a line, then Ran
-//! "/new_session work"           ──> Own "new_session work": the chat's words, the engine's tools, run here, not noted
-//! "/new work", "/stop"          ──> Run "new work": not one of the chat's words, so run and noted as any other
-//! "/compact", "/context"        ──> Say, the line as typed: Claude Code's own commands
+//! chat  "what do you see?"            ──> Say, as typed
+//! chat  "/compact", "/clear"          ──> Say, as typed: Claude Code's
+//! !     "capture_frame", "clear"      ──> Run, as the console runs a line, then Ran
+//! !     "new_session work"            ──> Run: the chat's words too, one rule
+//! any   "   "                         ──> Blank
 //! ```
 
-use crate::tools::CHAT_WORDS;
-
-/// The `/` words that are Claude Code's own commands, sent to the session as a line rather than run here.
-pub const CLAUDE_COMMANDS: &[&str] = &["compact", "context", "cost"];
+use crate::console::Mode;
 
 /// What a line typed with a session's tab open comes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,26 +19,20 @@ pub enum Typed {
     Blank,
     /// A line to the session, as typed.
     Say(String),
-    /// A line of the console's, the `/` taken off, to run here as the console runs a line, and note in the session.
+    /// A line of the console's, trimmed, to run here as the console runs a line, and send to the session with what it
+    /// printed.
     Run(String),
-    /// One of the chat's own words, the `/` taken off, to run here as the console runs a line: it is about the
-    /// sessions, so it is not noted in one.
-    Own(String),
 }
 
-/// What `line` comes to.
-pub fn typed(line: &str) -> Typed {
+/// What `line`, typed in `mode`, comes to.
+pub fn typed(line: &str, mode: Mode) -> Typed {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Typed::Blank;
     }
-    let Some(command) = trimmed.strip_prefix('/') else {
-        return Typed::Say(String::from(line));
-    };
-    let word = command.split_whitespace().next().unwrap_or_default();
-    match word {
-        claude if CLAUDE_COMMANDS.contains(&claude) => Typed::Say(String::from(trimmed)),
-        own if CHAT_WORDS.contains(&own) => Typed::Own(String::from(command)),
-        _ => Typed::Run(String::from(command)),
+
+    match mode {
+        Mode::Chat => Typed::Say(String::from(line)),
+        Mode::Bang => Typed::Run(String::from(trimmed)),
     }
 }

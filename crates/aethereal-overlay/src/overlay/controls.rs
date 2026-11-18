@@ -1,21 +1,24 @@
 //! What the overlay's keys and its line's events do (ADR-0053: The three stops, Commands are tools; ADR-0056: Focus and
 //! keys). The backtick, a hotkey of its screen, steps the overlay through its stops; at the console's stop the screen
 //! takes every key of the window, whatever has its focus, and the line's text input has the focus, so the backtick,
-//! Escape, and Tab come to the overlay before the line hears them, as the console's own: the backtick steps on, Escape
-//! closes the console, and Tab completes the word before the caret. Up and Down, which the line passes, step its history, and Page
-//! Up and Page Down are handed to the scroll shown. The line's edits keep its text, and Enter runs it. With a session's
-//! tab open (ADR-0057), Escape empties the line, or on an empty one stops the session's turn; the tabs, a subagent's
-//! fold, and an ask's answers are pressed; and the grip is dragged to size the console. Control and Tab open the next
-//! tab, and with Shift the one before, round from the last to the first; Alt and a digit, 1 to 9, the tab at that
-//! place, Alt-1 the console's own, while the digit alone types into the line. A press on a row of the scrollback, or on
-//! any text of a transcript, takes the focus from the line and starts a selection, which a drag runs across the rows;
-//! Control or Command with C copies it, and with A selects the whole scrollback or transcript. The line takes the focus
-//! back at the next `Tick` once nothing is selected, or at the next key that types.
+//! Escape, Backspace, and Tab come to the overlay before the line hears them, as the console's own: the backtick steps
+//! on, Escape closes the console, and Tab completes the word before the caret. Up and Down, which the line passes, step
+//! its history, and Page Up and Page Down are handed to the scroll shown. The line's edits keep its text, and Enter
+//! runs it. With a session's tab open (ADR-0057), `!` typed on an empty line puts the tab in `!` mode rather than
+//! typing, and Backspace on an empty line, which the overlay takes before the line and otherwise hands it, puts it back
+//! in chat mode; Escape empties the line, or on an empty one leaves `!` mode, or in chat mode stops the session's turn;
+//! the tabs, a subagent's fold, and an ask's answers are pressed; and the grip is dragged to size the console. Control
+//! and Tab open the next tab, and with Shift the one before, round from the last to the first; Alt and a digit, 1 to 9,
+//! the tab at that place, Alt-1 the console's own, while the digit alone types into the line. A press on a row of the
+//! scrollback, or on any text of a transcript, takes the focus from the line and starts a selection, which a drag runs
+//! across the rows; Control or Command with C copies it, and with A selects the whole scrollback or transcript. The
+//! line takes the focus back at the next `Tick` once nothing is selected, or at the next key that types.
 
 use super::Overlay;
 use super::chat::Reports;
 use super::view::{OverlayNode, OverlaySends};
 use crate::chat::Open;
+use crate::console::Mode;
 use crate::layout::{LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE};
 use crate::stop::Stop;
 use aethereal_actor::{Fault, Tick, Turn, path};
@@ -28,6 +31,12 @@ const STEP_KEY: &str = "Backquote";
 
 /// The key that closes the console back to the band.
 const CLOSE_KEY: &str = "Escape";
+
+/// The key that deletes back in the line, and on an empty one puts a session's tab back in chat mode.
+const ERASE_KEY: &str = "Backspace";
+
+/// What typed on a session tab's empty line in chat mode puts it in `!` mode.
+const BANG: &str = "!";
 
 /// The key that completes the word before the caret, and with Control opens the next tab.
 const COMPLETE_KEY: &str = "Tab";
@@ -44,6 +53,7 @@ impl Controls for Overlay {
     const FIRST: &'static [First] = &[
         First::Key(STEP_KEY),
         First::Key(CLOSE_KEY),
+        First::Key(ERASE_KEY),
         First::Key(COMPLETE_KEY),
         First::Alt(TAB_KEYS[0]),
         First::Alt(TAB_KEYS[1]),
@@ -70,6 +80,7 @@ impl Controls for Overlay {
         match key.code.as_str() {
             STEP_KEY => self.step(turn),
             CLOSE_KEY if console => self.escape(turn),
+            ERASE_KEY if console => self.erase(&key, turn),
             COMPLETE_KEY if switching => {
                 let chat = self.chats.step(key.held.shift);
                 self.tell(turn, chat)
@@ -102,17 +113,41 @@ impl Controls for Overlay {
 }
 
 impl Overlay {
-    /// Takes in the line as its text input edited it.
+    /// Takes in the line as its text input edited it: `!` typed on an empty line in chat mode puts the session's tab
+    /// in `!` mode instead, and leaves the line empty.
     #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
     pub(super) fn edit(&mut self, _: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
-        self.console.edited(line);
+        let was_empty = self.console.line().is_empty();
+        let bang = line == BANG;
+        let chatting = self.chats.mode() == Mode::Chat;
+        let switches = was_empty && bang && chatting;
+
+        if switches {
+            self.chats.switch(Mode::Bang);
+            self.console.clear_line();
+        } else {
+            self.console.edited(line);
+        }
+
+        Ok(())
+    }
+
+    /// Backspace: on an empty line puts a session's tab back in chat mode, and otherwise is handed to the line, as
+    /// though it had the screen's focus.
+    fn erase(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+        if self.console.line().is_empty() {
+            self.chats.switch(Mode::Chat);
+            return Ok(());
+        }
+        let heard = self.ui.press_key(&OverlayNode::Prompt.path(), key);
+        take_in(self, heard, turn)?;
 
         Ok(())
     }
 
     /// Runs the line its text input submitted: with the console's own tab open, echoed into the scrollback, and a
-    /// command that names a tool asked of the engine's tools root; with a session's open, said to it, or run here and
-    /// noted in it (ADR-0057). The scroll shown goes to its newest row.
+    /// command that names a tool asked of the engine's tools root; with a session's open, said to it in chat mode, or
+    /// in `!` mode run here and sent to it (ADR-0057). The scroll shown goes to its newest row.
     #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
     pub(super) fn enter(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
         let (command, reports) = match self.chats.open() {
@@ -125,7 +160,7 @@ impl Overlay {
     }
 
     /// Escape: with the console's own tab open, closes the console; with a session's, empties the line typed, or with
-    /// none typed stops the session's turn.
+    /// none typed leaves `!` mode, or in chat mode stops the session's turn.
     fn escape(&mut self, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
         if self.chats.open() == Open::Console {
             self.close();
@@ -133,6 +168,10 @@ impl Overlay {
         }
         if !self.console.line().is_empty() {
             self.console.clear_line();
+            return Ok(());
+        }
+        if self.chats.mode() == Mode::Bang {
+            self.chats.switch(Mode::Chat);
             return Ok(());
         }
         let interrupt = self.chats.interrupt();

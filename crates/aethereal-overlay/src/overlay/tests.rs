@@ -142,7 +142,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
     assert_eq!(state.stop, Stop::Console);
     assert_eq!(typed_line, "memory");
     assert_eq!(state.console.line(), "", "the line is left for the next");
-    assert!(rows.iter().any(|row| row == "local > memory"), "the line is echoed: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local ! memory"), "the line is echoed: {rows:?}");
     let answered = rows.iter().any(|row| row.starts_with("process: "));
     assert!(answered, "the answer is printed: {rows:?}");
 
@@ -210,11 +210,14 @@ fn the_scrollback_keeps_to_its_end_as_rows_are_printed_and_pages_back_and_down_t
 }
 
 #[test]
-fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_keeps_the_console() -> Result<(), Unheard>
-{
-    // Catches a console that shows no chat once the hub lists the sessions, a line typed at a session's tab run as one
-    // of the engine's tools, a `/` line not run here, a transcript that does not build in the console's view, and
-    // Escape that closes the console rather than emptying the line or stopping the turn.
+fn with_a_session_listed_a_line_goes_to_it_and_in_bang_mode_runs_here_and_escape_keeps_the_console()
+-> Result<(), Unheard> {
+    // Catches a console that shows no chat once the hub lists the sessions; a line typed in chat mode run as one of the
+    // engine's tools; `!` on an empty line typed into it rather than putting the tab in `!` mode, or a mode that does
+    // not show as the prompt's mark or does not last past a line; a line in `!` mode not run here; a transcript that
+    // does not build in the console's view; Escape that closes the console rather than emptying the line, leaving
+    // `!` mode, or stopping the turn; and Backspace, which the overlay takes first, that no longer deletes, or that
+    // leaves `!` mode while the line holds text.
     let (mut harness, held) = program()?;
     let on = held.window.window();
     run(&mut harness, 3);
@@ -224,6 +227,7 @@ fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_kee
         run(&mut harness, 3);
     }
     let overlay = harness.root::<Overlay>();
+    let console_sign = harness.state(overlay)?.sign();
     let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };
     harness.tell(overlay, &ShowTabs { tabs: vec![tab] })?;
     let reply = Json::parse(
@@ -235,26 +239,50 @@ fn with_a_session_listed_a_line_goes_to_it_a_slash_line_runs_here_and_escape_kee
     let events = vec![Numbered { number: 1, entry: said }, Numbered { number: 2, entry: Entry::Claude(reply) }];
     harness.tell(overlay, &ShowEvents { session: 1, events })?;
     run(&mut harness, 3);
+    let chat_sign = harness.state(overlay)?.sign();
 
     key(&mut harness, on, typed("hello"))?;
     key(&mut harness, on, down("Enter", "Enter"))?;
-    key(&mut harness, on, typed("/memory"))?;
+    key(&mut harness, on, typed("!"))?;
+    let bang_line = String::from(harness.state(overlay)?.console.line());
+    let bang_sign = harness.state(overlay)?.sign();
+    key(&mut harness, on, typed("memory"))?;
     key(&mut harness, on, down("Enter", "Enter"))?;
     run(&mut harness, 3);
+    let kept_sign = harness.state(overlay)?.sign();
     key(&mut harness, on, typed("half"))?;
     key(&mut harness, on, down("Escape", "Escape"))?;
     let emptied = String::from(harness.state(overlay)?.console.line());
+    let emptied_sign = harness.state(overlay)?.sign();
+    key(&mut harness, on, down("Escape", "Escape"))?;
+    let left_sign = harness.state(overlay)?.sign();
     key(&mut harness, on, down("Escape", "Escape"))?;
     run(&mut harness, 3);
 
     let state = harness.state(overlay)?;
     let rows: Vec<String> = state.console.rows().map(super::super::console::Row::text).collect();
+    assert_eq!((console_sign, chat_sign, bang_sign, kept_sign), ("!", ">", "!", "!"));
+    assert_eq!(bang_line, "", "the `!` that puts the tab in `!` mode is not typed");
     assert_eq!(state.chats.open(), Open::Session(1));
     assert_eq!(state.chats.rows().len(), 2, "the line and the reply are rows");
-    assert!(!rows.iter().any(|row| row == "local > hello"), "a line said is not run here: {rows:?}");
-    assert!(rows.iter().any(|row| row == "local > memory"), "a `/` line runs here: {rows:?}");
-    assert_eq!(emptied, "", "Escape empties the line typed");
+    assert!(!rows.iter().any(|row| row.ends_with(" hello")), "a line said is not run here: {rows:?}");
+    assert!(rows.iter().any(|row| row == "local ! memory"), "a line in `!` mode runs here: {rows:?}");
+    assert_eq!((emptied.as_str(), emptied_sign), ("", "!"), "Escape empties the line typed, and keeps the mode");
+    assert_eq!(left_sign, ">", "Escape on an empty line leaves `!` mode");
     assert_eq!(state.stop, Stop::Console, "Escape keeps the console open with a session's tab open");
+
+    key(&mut harness, on, down("KeyN", "n"))?;
+    key(&mut harness, on, typed("!"))?;
+    key(&mut harness, on, typed("ab"))?;
+    key(&mut harness, on, down("Backspace", "Backspace"))?;
+    let erased = String::from(harness.state(overlay)?.console.line());
+    let erased_sign = harness.state(overlay)?.sign();
+    key(&mut harness, on, down("Backspace", "Backspace"))?;
+    key(&mut harness, on, down("Backspace", "Backspace"))?;
+    let back_sign = harness.state(overlay)?.sign();
+
+    assert_eq!((erased.as_str(), erased_sign), ("a", "!"), "Backspace deletes while the line holds text");
+    assert_eq!(back_sign, ">", "Backspace on an empty line leaves `!` mode");
 
     Ok(())
 }

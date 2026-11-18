@@ -17,6 +17,7 @@ mod command;
 mod completion;
 mod history;
 mod logs;
+mod mode;
 mod running;
 mod scrollback;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod tests;
 
 pub use command::Command;
 pub use logs::{Alerts, Logged};
+pub use mode::Mode;
 pub use scrollback::{Piece, Row, Shade};
 
 use crate::colour::Ink;
@@ -33,9 +35,6 @@ use completion::Completion;
 use history::History;
 use running::Running;
 use scrollback::Scrollback;
-
-/// The prompt mark after an owner's line's tag: who typed it, then this, then what they typed.
-pub const PROMPT_MARK: &str = " >";
 
 /// What an engine calls itself as it tags the owner's lines: those typed at it. In a transcript, every other engine is
 /// called by its name.
@@ -84,7 +83,8 @@ impl Console {
         self.line = line;
     }
 
-    /// Empties the line, as Escape does with a session's tab open.
+    /// Empties the line, as Escape does with a session's tab open, and `!` typed on an empty one does as it puts a
+    /// session's tab in `!` mode.
     pub fn clear_line(&mut self) {
         self.line.clear();
     }
@@ -95,17 +95,11 @@ impl Console {
         self.history.keep(typed);
     }
 
-    /// Enters `entered`, the line as its text input submitted it: it is kept in the history and echoed as the owner's
-    /// line, the line is left empty, and what its command comes to is printed, or answered for the overlay to call.
+    /// Enters `entered`, the line as its text input submitted it, as the `!` mode reads a line: it is kept in the
+    /// history and echoed as the owner's line, the line is left empty, and what its command comes to is printed, or
+    /// answered for the overlay to call.
     pub fn submitted(&mut self, entered: &str) -> Command {
         self.kept(entered);
-
-        self.ran(entered)
-    }
-
-    /// Runs `entered` as [`Self::submitted`] does, keeping nothing in the history: a `/` command typed with a session's
-    /// tab open runs without its `/`, and its caller keeps it with it.
-    pub fn ran(&mut self, entered: &str) -> Command {
         self.echo(entered);
 
         let command = command::command(entered, &self.sheets);
@@ -120,11 +114,12 @@ impl Console {
     }
 
     /// Echoes `entered` as the owner's line, as a session's transcript shows one typed here: on the raised band, its
-    /// tag, `local`, in the label's ink, and the prompt mark and its text in lichen, a row for each of its lines.
+    /// tag, `local`, in the label's ink, and the `!` mode's mark and its text in lichen, a row for each of its lines.
     fn echo(&mut self, entered: &str) {
         let mut lines = entered.split('\n');
         let first = lines.next().unwrap_or_default();
-        let tagged = vec![Piece::new(LOCAL, Ink::Label), Piece::new(&format!("{PROMPT_MARK} {first}"), Ink::Lichen)];
+        let marked = format!("{} {first}", Mode::Bang.tag_mark());
+        let tagged = vec![Piece::new(LOCAL, Ink::Label), Piece::new(&marked, Ink::Lichen)];
         self.scrollback.push(tagged, Shade::Raised);
         for line in lines {
             self.scrollback.push(vec![Piece::new(line, Ink::Lichen)], Shade::Raised);

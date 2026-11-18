@@ -77,7 +77,7 @@ fn a_line_becomes_a_call_of_its_tool() -> Result<(), Box<dyn Error>> {
     let read: ReadRecent = from_bytes(&input, &mut Budget::new(1024))?;
     assert_eq!((tool.as_str(), revision), ("read_recent", 3));
     assert_eq!(read, ReadRecent { since: None, level: Some(LogLevel::Warn), contains: None, most: Some(5) });
-    assert_eq!(shown(&console), vec![(String::from("local > read_recent --level warn --most 5"), Ink::Lichen)]);
+    assert_eq!(shown(&console), vec![(String::from("local ! read_recent --level warn --most 5"), Ink::Lichen)]);
     assert_eq!(console.line(), "", "the line is left for the next");
 
     Ok(())
@@ -98,7 +98,7 @@ fn refusals_print_in_the_error_s_ink_after_the_owner_s_line() {
     let rows = shown(&console);
     assert!(matches!(unknown, Command::Refused(_)), "{unknown:?}");
     let echo = console.rows().next();
-    assert_eq!(rows[0], (String::from("local > memroy"), Ink::Lichen));
+    assert_eq!(rows[0], (String::from("local ! memroy"), Ink::Lichen));
     assert_eq!(echo.map(|row| (row.shade, row.pieces[0].ink)), Some((Shade::Raised, Ink::Label)));
     assert_eq!(rows[1].1, Ink::Error);
     assert!(rows[1].0.contains("`memory`"), "{:?} does not name the nearest tool", rows[1].0);

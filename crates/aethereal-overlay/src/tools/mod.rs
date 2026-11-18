@@ -23,7 +23,7 @@ mod theme;
 mod words;
 
 pub use theme::{Choice, ChooseTheme, ThemesShown, chosen};
-pub use words::{CHAT_WORDS, ChatWord, NewSession, Worded, chat_sheets};
+pub use words::{ChatWord, NewSession, Worded, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{

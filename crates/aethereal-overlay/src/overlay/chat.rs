@@ -13,8 +13,8 @@ use aethereal_link::{Link, Listen};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
 use aethereal_tools::{Offer, Tools};
 
-/// The most bytes of what a `/` command printed that are noted in the session: what a tool prints can be large, and the
-/// line folded into the owner's next is read by Claude.
+/// The most bytes of what a command run in `!` mode printed that are sent to the session: what a tool prints can be
+/// large, and the line it is sent as is read by Claude.
 const MOST_RAN_BYTES: usize = 16 * 1024;
 
 /// Whether the overlay has looked for the engine's link, and what it found.
@@ -72,7 +72,8 @@ impl Overlay {
         Ok(())
     }
 
-    /// Notes in the session `reports` names what a command run here printed: nothing when it reports here alone.
+    /// Sends the session `reports` names a command run here and what it printed, as a line, which starts a turn:
+    /// nothing when it reports here alone.
     pub(super) fn report<S, I>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -90,8 +91,9 @@ impl Overlay {
         self.tell::<_, I>(turn, vec![ran])
     }
 
-    /// Runs the line `line` typed with a session's tab open: said to it, run here and noted in it, or run here alone,
-    /// one of the chat's own words. Answers the command a line run here comes to, for the overlay to call.
+    /// Runs the line `line` typed with a session's tab open, by the tab's mode: said to it in chat mode, or in `!` mode
+    /// run here and sent to it with what it printed. Answers the command a line run here comes to, for the overlay to
+    /// call.
     pub(super) fn chatted<S, I>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -101,18 +103,19 @@ impl Overlay {
     where
         S: Allows<ToType<Link, Chat>, I>,
     {
-        let typed = typed(line);
-        let reports = match &typed {
-            Typed::Run(command) => Reports::Session { session, line: command.clone() },
-            Typed::Blank | Typed::Say(_) | Typed::Own(_) => Reports::Here,
+        let (command, reports) = match typed(line, self.chats.mode()) {
+            Typed::Blank => {
+                self.console.kept(line);
+                (Command::Blank, Reports::Here)
+            }
+            Typed::Say(text) => {
+                self.console.kept(line);
+                let chat = self.chats.say(text);
+                self.tell::<_, I>(turn, chat)?;
+                (Command::Blank, Reports::Here)
+            }
+            Typed::Run(command) => (self.console.submitted(&command), Reports::Session { session, line: command }),
         };
-        let (chat, command) = match typed {
-            Typed::Blank => (Vec::new(), Command::Blank),
-            Typed::Say(text) => (self.chats.say(text), Command::Blank),
-            Typed::Run(command) | Typed::Own(command) => (Vec::new(), self.console.ran(&command)),
-        };
-        self.console.kept(line);
-        self.tell::<_, I>(turn, chat)?;
 
         Ok((command, reports))
     }

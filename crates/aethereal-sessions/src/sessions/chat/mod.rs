@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! Up::Say ──> Engine(37) ──> Chatted { engine: 37, chat } ──> Sessions: the line, tagged, into the transcript and stdin
+//! Up::Ran ──> likewise: the command and what it printed, tagged and marked `!`, as a line of its own
 //! Sessions: any change ──> ShowTabs / ShowEvents / ShowAsk ──> each joined Engine ──> Down::Sessions / Show / Ask
 //! ```
 //!
@@ -73,9 +74,10 @@ pub struct ShowAsk {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.chat")]
 pub enum Chat {
-    /// A line typed without `/`.
+    /// A line typed in chat mode, a `/` line among them.
     Say { session: u32, text: String },
-    /// A `/` command the owner ran at the engine, with `session`'s tab open, and what it printed.
+    /// A command the owner ran in `!` mode at the engine, with `session`'s tab open, and what it printed: a line to the
+    /// session, as `Say` is.
     Ran { session: u32, line: String, printed: String },
     /// An answer to the ask numbered `ask`.
     Answer { ask: u64, allow: bool },
@@ -264,8 +266,9 @@ impl Sessions {
                 }
             }
             Chat::Ran { session, line, printed } => {
-                if self.held.contains_key(&session) {
-                    self.note(session, Entry::Ran { engine, line, printed });
+                let ran = self.ran(turn, session, engine, line, printed)?;
+                if let Said::Refused(why) = ran {
+                    turn.log(Level::Warn, format_args!("engine {engine}'s command to session {session}: {why:?}"));
                 }
             }
             Chat::Answer { ask, allow } => self.answer(turn, engine, ask, allow)?,

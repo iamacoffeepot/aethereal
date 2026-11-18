@@ -27,10 +27,10 @@ pub enum Up {
     Sheets { revision: u64, tools: Vec<ToolSheet> },
     /// What the hub's call `call` came to.
     Called { call: u64, called: Outcome },
-    /// A line the owner typed without `/`, to the session `session` (ADR-0057).
+    /// A line the owner typed in chat mode, to the session `session` (ADR-0057).
     Say { session: u32, text: String },
-    /// A `/` command the owner ran here, with `session`'s tab open, and what it printed: noted in the session's
-    /// transcript, and folded into the head of the owner's next line to it.
+    /// A command the owner ran here in `!` mode, with `session`'s tab open, and what it printed: a line to the session,
+    /// which starts a turn.
     Ran { session: u32, line: String, printed: String },
     /// The owner's answer to the ask numbered `ask`.
     Answer { ask: u64, allow: bool },

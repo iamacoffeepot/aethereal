@@ -4,6 +4,7 @@
 use super::read::Container;
 use super::transcript::Compaction;
 use super::{Chats, Icon, Look, Open, Row, Status, Tone, Typed, Which, typed};
+use crate::console::Mode;
 use aethereal_data::{Budget, Json};
 use aethereal_sessions::{Chat, Ended, Entry, Note, Numbered, ShowAsk, Speaker, State, Tab};
 
@@ -29,7 +30,7 @@ fn texts(rows: &[&Row]) -> Vec<String> {
     rows.iter()
         .map(|row| match &row.look {
             Look::Line { text, .. } | Look::Fold { text, .. } | Look::Divider { text } => text.clone(),
-            Look::Turn { tag, text, .. } => format!("{tag} > {text}"),
+            Look::Turn { tag, mode, text, .. } => format!("{tag} {} {text}", mode.mark()),
             Look::Reply { .. } => String::from("<reply>"),
         })
         .collect()
@@ -135,17 +136,61 @@ fn the_engine_learns_its_id_from_its_own_line_echoed_and_dims_every_other_engine
 }
 
 #[test]
-fn a_line_goes_to_claude_a_slash_line_runs_here_and_claude_codes_own_words_are_said() {
-    // Catches `/compact` run as one of the engine's tools rather than sent, a `/` command sent to Claude, the chat's
-    // own words, `/stop_session`, `/new_session`, and `/archive_session`, noted in the session as a command run there,
-    // and a bare `/stop` taken as one of them.
-    assert_eq!(typed("what do you see?"), Typed::Say(String::from("what do you see?")));
-    assert_eq!(typed("/capture_frame --window 1"), Typed::Run(String::from("capture_frame --window 1")));
-    assert_eq!(typed("/compact"), Typed::Say(String::from("/compact")));
-    assert_eq!(typed("/stop_session"), Typed::Own(String::from("stop_session")));
-    assert_eq!(typed("/new_session  work"), Typed::Own(String::from("new_session  work")));
-    assert_eq!(typed("/stop"), Typed::Run(String::from("stop")));
-    assert_eq!(typed("   "), Typed::Blank);
+fn a_chat_line_goes_to_claude_whole_and_a_bang_line_runs_here_the_chat_s_words_among_them() {
+    // Catches a `/` line in chat mode run here or cut short rather than passed whole to Claude Code, a line in `!` mode
+    // said to Claude, the chat's own words given a way of their own, and a blank line sent anywhere.
+    assert_eq!(typed("what do you see?", Mode::Chat), Typed::Say(String::from("what do you see?")));
+    assert_eq!(typed("/compact", Mode::Chat), Typed::Say(String::from("/compact")));
+    assert_eq!(typed("/clear", Mode::Chat), Typed::Say(String::from("/clear")));
+    assert_eq!(typed(" capture_frame --window 1 ", Mode::Bang), Typed::Run(String::from("capture_frame --window 1")));
+    assert_eq!(typed("new_session work", Mode::Bang), Typed::Run(String::from("new_session work")));
+    assert_eq!(typed("clear", Mode::Bang), Typed::Run(String::from("clear")));
+    assert_eq!(typed("   ", Mode::Chat), Typed::Blank);
+    assert_eq!(typed("", Mode::Bang), Typed::Blank);
+}
+
+#[test]
+fn each_session_s_tab_keeps_its_own_mode_and_the_console_s_own_is_always_in_bang_mode() {
+    // Catches one tab's `!` mode carried to another, a tab's mode lost as it is closed and opened again, and the
+    // console's own tab put in chat mode, so its lines would be said to no session.
+    let mut chats = Chats::default();
+    let _ = chats.listed(vec![tab(1, State::Idle, 0), tab(2, State::Idle, 0)]);
+
+    assert_eq!(chats.mode(), Mode::Chat);
+
+    chats.switch(Mode::Bang);
+    let _ = chats.choose(1);
+
+    assert_eq!(chats.mode(), Mode::Chat);
+
+    let _ = chats.choose(0);
+    chats.switch(Mode::Chat);
+
+    assert_eq!(chats.mode(), Mode::Bang);
+
+    let _ = chats.choose(2);
+
+    assert_eq!(chats.mode(), Mode::Bang);
+}
+
+#[test]
+fn a_command_run_in_bang_mode_is_marked_so_with_what_it_printed_under_it_and_a_clear_is_a_divider() {
+    // Catches a command run shown with chat mode's mark, so it reads as a line said to Claude, what it printed lost,
+    // the turn it starts marked as begun by itself, and Claude Code's fresh conversation after `/clear` shown as
+    // nothing.
+    let mut chats = opened();
+    let ran = Entry::Ran { engine: 12, line: String::from("memory"), printed: String::from("4 MiB") };
+    chats.shown(
+        1,
+        &[
+            Numbered { number: 1, entry: ran },
+            claude(2, r#"{"type":"system","subtype":"init"}"#),
+            said(3, 12, "/clear"),
+            claude(4, r#"{"type":"conversation_reset","trigger":"clear"}"#),
+        ],
+    );
+
+    assert_eq!(texts(&chats.rows()), ["wary-owl ! memory", "4 MiB", "wary-owl > /clear", "cleared"]);
 }
 
 #[test]

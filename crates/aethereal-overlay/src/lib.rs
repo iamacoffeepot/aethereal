@@ -33,8 +33,10 @@
 //!
 //! In an engine its hub trusts, the console is the chat with Claude's sessions (ADR-0057): the overlay listens to the
 //! engine's link, the sessions show as tabs beneath the prompt, the console's own first, and with a session's tab open
-//! its transcript shows in place of the scrollback, a line goes to the session, and a `/` line runs here and is noted
-//! in it. Escape on an empty line stops the session's turn, and on a line typed empties it. The chat's words,
+//! its transcript shows in place of the scrollback, and a line goes to the session; `!` on an empty line puts the tab
+//! in `!` mode, where a line runs here and is sent to the session with what it printed, as the console's own tab is
+//! always, and Backspace on an empty line puts it back. Escape on a line typed empties it, on an empty one leaves `!`
+//! mode, and in chat mode stops the session's turn. The chat's words,
 //! `new_session`, `stop_session`, and `archive_session`, are the engine's tools, which the overlay offers with the same
 //! worker once the hub shows it the chat; Control-Tab and Alt with a digit change tabs; and the grip, the seam between the band and the
 //! console, sets how tall the console is. An engine the hub shows no chat keeps the console as it was.
