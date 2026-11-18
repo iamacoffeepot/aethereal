@@ -7,10 +7,10 @@ pub use crate::engine::outside::{Arrival, AskedToMove, Handed, Jobbed, Outside, 
 
 use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
-use crate::{Clock, Engine, table};
+use crate::{Clock, Engine};
 use aethereal_actor::{
     Actor, ActorRef, Actors, Admits, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed,
-    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
+    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, Seated, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::any;
@@ -319,9 +319,9 @@ impl<H: Steps> Harness<H> {
     /// Panics when the program has no such root: a test that names one the program it built does not hold.
     pub fn root<T: Actor<Key = ()> + Root>(&mut self) -> ActorRef<T> {
         let path = ActorPath::from_root(&PathSegment::new(T::NAME, &()));
-        let seated = table::reach(self.host.engine().table(), &path, Declared::of::<T>().id());
-        let is_seated = seated.seat != SeatNumber::NOWHERE;
-        assert!(is_seated, "the program has no root {}", T::NAME);
+        let Some(seated) = self.host.engine().table().found(&path, Declared::of::<T>().id()) else {
+            panic!("the program has no root {}", T::NAME);
+        };
 
         ActorRef::found(seated)
     }

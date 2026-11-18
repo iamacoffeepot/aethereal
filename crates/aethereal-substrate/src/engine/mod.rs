@@ -39,7 +39,7 @@ use crate::log;
 use crate::stages::Stages;
 use crate::stats::Stats;
 use crate::stream::{self, Handed, Pieces, Streams};
-use crate::table::{self, Actors};
+use crate::table::Actors;
 use crate::unsent::Unsent;
 use crate::watch::{Notice, Watches};
 use crate::{
@@ -919,7 +919,7 @@ impl Engine {
             return Err(Refused::KeyTaken);
         }
         self.staged(from.declared())?;
-        let live = |path: &ActorPath, kind| table::reach(&self.table, path, kind).seat != SeatNumber::NOWHERE;
+        let live = |path: &ActorPath, kind| self.table.holds(path, kind);
         if let Some(segment) = from.declared().missing(live) {
             return Err(Refused::Missing(segment.name.clone()));
         }

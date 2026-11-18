@@ -2,10 +2,10 @@
 //! (ADR-0029).
 
 use super::{Host, Serves, Stage, Unbuilt};
-use crate::{Feed, table};
+use crate::Feed;
 use aethereal_actor::{
     ActorRef, Actors, Bytes, ChildOf, Controller, Given, Path, PathTo, Publisher, Requests, Resource, Root, Rooted,
-    SeatNumber, Source,
+    Source,
 };
 use aethereal_data::config::RootSettings;
 use aethereal_data::{ActorId, Encode, Kind, KindId};
@@ -176,9 +176,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
         L: ChildOf + PathTo + Rooted,
         L::Root: FoundBy<L, A>,
     {
-        let reached = table::reach(self.stage.engine.table(), path.names(), KindId::of::<L>());
-
-        (reached.seat != SeatNumber::NOWHERE).then_some(ActorRef::found(reached))
+        self.stage.engine.table().found(path.names(), KindId::of::<L>()).map(ActorRef::found)
     }
 
     /// Hands `value` in, for the root's config to carry, as [`Engine::hand`](crate::Engine::hand) does.

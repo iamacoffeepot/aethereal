@@ -7,7 +7,7 @@ use crate::host::{Hosting, Opening, WindowFeed};
 use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{ActorRef, Fault, SeatNumber, Seated, Table, Turn, actor, path};
+use aethereal_actor::{ActorRef, Fault, SeatNumber, Seated, Turn, actor, path};
 use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};
@@ -417,8 +417,14 @@ impl Widget {
 }
 
 /// The actor at `place`, of the type `T`, as the engine's table has it.
+///
+/// # Panics
+///
+/// Panics when no actor of the type is live there.
 pub fn found<T: Kind>(harness: &mut Harness<Bench>, place: &ActorPath) -> Seated {
-    harness.host().engine().table().reach(place, KindId::of::<T>())
+    let found = harness.host().engine().table().found(place, KindId::of::<T>());
+
+    found.expect("a live actor of the type stands at the place")
 }
 
 /// A harness over an engine with the window root, one window opened as it was set up, the prober, and the widget,

@@ -18,10 +18,15 @@ use std::num::NonZeroUsize;
 /// The actor `path` names in `table`, and its seat, when one of kind `kind` is live there; otherwise the place, the id
 /// the engine computes for it, in no seat (ADR-0022).
 pub fn reach(table: &impl Table, path: &ActorPath, kind: KindId) -> Seated {
-    let is_kind = |seated: &Seated| table.declared(seated.id).is_some_and(|declared| declared.id() == kind);
-    let reached = table.resolve(path).filter(is_kind);
+    found(table, path, kind).unwrap_or_else(|| Seated { id: path_id(path), seat: SeatNumber::NOWHERE })
+}
 
-    reached.unwrap_or_else(|| Seated { id: path_id(path), seat: SeatNumber::NOWHERE })
+/// The actor `path` names in `table`, and its seat, when one of kind `kind` is live there: none when nothing live
+/// stands there, or an actor of another kind does.
+fn found(table: &impl Table, path: &ActorPath, kind: KindId) -> Option<Seated> {
+    let is_kind = |seated: &Seated| table.declared(seated.id).is_some_and(|declared| declared.id() == kind);
+
+    table.resolve(path).filter(is_kind)
 }
 
 /// The table as a turn reads it. The id of a child is computed here, by the engine, and nowhere else.
@@ -197,6 +202,19 @@ impl ActorTable {
         let resolves = is_last && is_beneath;
 
         resolves.then_some(id)
+    }
+
+    /// The actor `path` names, and its seat, when one of kind `kind` is live there: none when nothing live stands
+    /// there, or an actor of another kind does (ADR-0022).
+    #[must_use]
+    pub fn found(&self, path: &ActorPath, kind: KindId) -> Option<Seated> {
+        found(self, path, kind)
+    }
+
+    /// Whether an actor of kind `kind` is live at `path` (ADR-0022).
+    #[must_use]
+    pub fn holds(&self, path: &ActorPath, kind: KindId) -> bool {
+        self.found(path, kind).is_some()
     }
 
     /// The path `id` stands for, when its actor and every actor above it are live.
