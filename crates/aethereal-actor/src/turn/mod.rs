@@ -17,7 +17,7 @@ pub use spawn::Spawn;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
 use crate::Submitted;
-use crate::guard::{Anyone, Guard, Sender};
+use crate::guard::{Anyone, Guard, Sender, SenderType};
 #[cfg(feature = "std")]
 #[cfg(feature = "std")]
 use crate::job::{WrittenJob, lending_given};
@@ -28,8 +28,8 @@ use crate::{
     Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances, Keeping,
     Keeps, Kinds, Later, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
     Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
-    Seated, Seats, Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within,
-    Written,
+    Seated, Seats, Seen, SentAs, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What,
+    Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -297,7 +297,7 @@ impl Asked {
 
     /// What the engine says to `to` of its request of the count `request`, which `by` did not answer, as `why`: mail of
     /// kind [`Unanswered`], the `count`th `by` is counted as sending, written to this arena and not yet sent
-    /// (ADR-0017).
+    /// (ADR-0017). The engine says it, so it is stamped as sent by no actor's code: `by` may have ended, or never been.
     #[must_use]
     pub fn unanswered(&mut self, by: Seated, to: Seated, count: u64, request: u64, why: Unanswered) -> Mailed {
         let Ok(bytes) = self.arena.write_mail(&why) else {
@@ -305,7 +305,7 @@ impl Asked {
         };
         let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(request));
 
-        Mailed { by, to, count, kind, bytes, tie, due: Due::Never }
+        Mailed { by, sent_as: SentAs::Engine, to, count, kind, bytes, tie, due: Due::Never }
     }
 
     /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
@@ -984,7 +984,8 @@ impl Seat<'_> {
             last.bytes = joined;
             return Ok(());
         }
-        self.asked.buffers.mailed.push(Mailed { by: self.me, to, count: self.sent, kind, bytes, tie, due });
+        let sent_as = SentAs::Actor(self.declared);
+        self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count: self.sent, kind, bytes, tie, due });
 
         Ok(())
     }
@@ -1007,11 +1008,11 @@ impl Seat<'_> {
             self.asked.carrying.clear();
             return Err(EncodeError::NotCarried { name: "Given" });
         }
-        let kind = KindId::of::<K>();
+        let (kind, sent_as) = (KindId::of::<K>(), SentAs::Actor(self.declared));
         for to in to {
             self.sent += 1;
-            let mailed = Mailed { by: self.me, to, count: self.sent, kind, bytes, tie: Tie::TELL, due: Due::Never };
-            self.asked.buffers.mailed.push(mailed);
+            let (count, tie, due) = (self.sent, Tie::TELL, Due::Never);
+            self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count, kind, bytes, tie, due });
         }
 
         Ok(())
@@ -1581,10 +1582,11 @@ impl<'a> Turning<'a> {
         }
     }
 
-    /// The source of the item the turn handles, as the guard of a handler of an actor whose type declares `declared`
-    /// reads it (ADR-0058).
-    pub(crate) const fn sender(&self, declared: &'static Declared) -> Sender<'_> {
-        Sender::new(self.source, self.me, declared, self.above, self.table, self.made)
+    /// The source of the item the turn handles, which sent it as `sender_type`, as the guard of a handler of an actor
+    /// whose type declares `declared` reads it (ADR-0058). It is handed no table: a guard reads only what was fixed
+    /// when the mail was sent, and what is fixed of the receiver.
+    pub(crate) const fn sender(&self, declared: &'static Declared, sender_type: SenderType) -> Sender<'_> {
+        Sender::new(self.source, sender_type, self.me, declared, self.above, self.made)
     }
 
     /// The turn of the handler of `A`, whose type declares `declared`, and whose guard `F` checked the sender as

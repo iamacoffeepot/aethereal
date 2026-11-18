@@ -3,7 +3,7 @@
 
 #[cfg(feature = "std")]
 use crate::Bytes;
-use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated, Unreadable};
+use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated, SentAs, Unreadable};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -117,11 +117,15 @@ impl Effect {
 /// A piece of mail a turn sends, or a run of them (ADR-0009, ADR-0011).
 ///
 /// Mail of kind `kind`, whose bytes are at `bytes`, in the arena of the worker that ran the turn or in bytes of
-/// their own, is sent by the actor `by` names to the actor `to` names, in its seat, as the turn resolved the target
-/// it was given. `count` is the sender's count of mail sent, which with the sender is the mail's id.
+/// their own, is sent by the actor `by` names, as the type `sent_as` stands for, to the actor `to` names, in its seat,
+/// as the turn resolved the target it was given. `count` is the sender's count of mail sent, which with the sender is
+/// the mail's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mailed {
     pub by: Seated,
+    /// The type `by` sent it as, stamped as it was sent, while `by` is live in its turn: what a guard reads of the
+    /// sender where the mail is delivered (ADR-0058).
+    pub sent_as: SentAs,
     pub to: Seated,
     pub count: u64,
     pub kind: KindId,

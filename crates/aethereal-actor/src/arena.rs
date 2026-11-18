@@ -763,7 +763,7 @@ mod tests {
         // Catches a spilled piece's pins not handed to its reader, so a reference in mail that ran past the slab is
         // refused, or pinned where it begins in the slab rather than in the piece; and not shown to a host, which would
         // offer a guest none of them.
-        use crate::{BlobId, Bytes, Mail, MailId, SeatNumber, Seated, pins};
+        use crate::{BlobId, Bytes, Chain, Mail, MailId, SeatNumber, Seated, SenderType, SentAs, pins};
         use aethereal_data::{ActorId, KindId};
         use core::slice;
 
@@ -778,7 +778,16 @@ mod tests {
         let read = spilled.map(|payload| {
             let bytes = arena.read(payload).unwrap_or_default();
             let pins = PinSource::step(slice::from_ref(&arena), &[], &[]);
-            let mail = Mail::new(KindId::of::<crate::Unanswered>(), bytes, &pins, sender, root, 1, 64);
+            let engine = SenderType::Stamped(SentAs::Engine);
+            let mail = Mail::new(
+                KindId::of::<crate::Unanswered>(),
+                bytes,
+                &pins,
+                sender,
+                engine,
+                Chain { root, depth: 1 },
+                64,
+            );
             let mut shown = Vec::new();
             mail.pinned().each(|at, pin| shown.push((at, pin.id())));
             let is_spilled = matches!(payload, Payload::Spilled { .. });

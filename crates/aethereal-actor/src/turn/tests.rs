@@ -384,8 +384,18 @@ fn begin_and_end_send_as_their_own_actor() {
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
-    let to_parent =
-        |kind| Mailed { by: herald.seated(), to: ME, count: 1, kind, bytes: NOTHING, tie: Tie::TELL, due: Due::Never };
+    // The herald's `begin` sends as the herald: stamped with its type, not its parent's (ADR-0058).
+    let sent_as = SentAs::Actor(Declared::of::<Herald>());
+    let to_parent = |kind| Mailed {
+        by: herald.seated(),
+        sent_as,
+        to: ME,
+        count: 1,
+        kind,
+        bytes: NOTHING,
+        tie: Tie::TELL,
+        due: Due::Never,
+    };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Declared::of::<Herald>()), seat: SeatNumber::new(0) });
     assert_eq!(asked.effects(), [spawn]);
     assert_eq!(asked.mailed(), [to_parent(KindId::of::<Poked>())]);
@@ -448,8 +458,10 @@ fn handler_asks_by_the_kind_of_its_mail() {
             tie,
             Due::Never,
         );
-        let mail =
-            Mail::new(kind, bytes, &crate::PinSource::NOTHING, other, MailId { sender: other.id, count: 1 }, 1, 64);
+        // The leaf's handlers take mail from anyone, so the type its sender sent it as is never read.
+        let (sent_as, chain) =
+            (SenderType::Stamped(SentAs::Engine), Chain { root: MailId { sender: other.id, count: 1 }, depth: 1 });
+        let mail = Mail::new(kind, bytes, &crate::PinSource::NOTHING, other, sent_as, chain, 64);
         let handled = leaf.turn(Item::Mail(mail), turning);
 
         let Buffers { mailed, effects, .. } = asked.into_parts().0;
@@ -459,6 +471,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
 
     let poked = Mailed {
         by: ME,
+        sent_as: SentAs::Actor(Declared::of::<Leaf>()),
         to: other,
         count: 1,
         kind: KindId::of::<Poked>(),
@@ -477,6 +490,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
     };
     let poke = Mailed {
         by: ME,
+        sent_as: SentAs::Actor(Declared::of::<Leaf>()),
         to: other,
         count: 1,
         kind: KindId::of::<Poke>(),

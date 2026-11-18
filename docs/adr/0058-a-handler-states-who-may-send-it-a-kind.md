@@ -17,7 +17,7 @@ Each is a few lines that the handler's signature does not show. A reader learns 
 What the engine already has:
 
 - **Each item has a source the engine writes** (ADR-0009: `Item`; `Turning::source`).
-- **Each actor is seated with its type's declaration** (ADR-0013: `Declared`; `Table::declared`), so where mail is delivered the engine can read the sender's type: natively from the table's entry, and in a guest's table by asking its host, as a cast does (`Table::lists`).
+- **Each send is made in a turn that holds its actor's type's declaration** (ADR-0013: `Declared`; the turn's seat), so the engine can write the sender's type on the mail as it is sent, while the sender is live in its turn.
 - **Dispatch picks the handler** (`declared/handles.rs`: `HandledList::dispatch`, which calls `hand::<A, H>`), and takes the first listing whose role matches the item, so an actor type lists each kind once.
 
 ## Decision
@@ -69,17 +69,18 @@ impl<T: Actor> Sent for ActorRef<T> { /* Types([T]); sender.actor::<T>() */ }
 impl<P: Listed> Sent for ProtocolRef<P> { /* Speaking(P's kinds); sender.speaking::<P>() */ }
 impl Sent for ErasedActorRef { /* Every; Some(sender.reference()) */ }
 
-/// The source of the item being handled, as the receiver's turn reads it: nothing is read until a guard asks.
+/// The source of the item being handled, as the receiver's turn reads it: nothing is read until a guard asks. It holds
+/// the sender's seat and the type the mail was sent as, both fixed at the send, and what is fixed of the receiver: its
+/// seat and type, what stands above it, and the children it has made, live or ended. It holds no table.
 pub struct Sender<'t> { .. }
 
 impl Sender<'_> {
-    pub fn reference(&self) -> ErasedActorRef;                                    // who it is
-    pub fn actor<T: Actor>(&self) -> Option<ActorRef<T>>;                         // it, when it is an actor of type `T`
-    pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>>;                  // it, when its type lists every kind of `P`, as a cast reads it
-    pub fn receiver<A: Actor>(&self) -> Option<ActorRef<A>>;                      // it, when it is the receiver's own seat
-    pub fn parent<P: Actor>(&self) -> Option<ActorRef<P>>;                        // it, when it is the actor directly above the receiver
-    pub fn child<T: ChildOf>(&self) -> Option<ActorRef<T>>;                       // it, when it is of type `T`, directly beneath the receiver
-    pub fn at<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>>; // it, when it is the live actor the typed path names
+    pub fn reference(&self) -> ErasedActorRef;                   // who it is
+    pub fn actor<T: Actor>(&self) -> Option<ActorRef<T>>;        // it, when it sent the mail as an actor of type `T`
+    pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>>; // it, when the type it sent as lists every kind of `P`, as a cast reads it
+    pub fn receiver<A: Actor>(&self) -> Option<ActorRef<A>>;     // it, when it is the receiver's own seat
+    pub fn parent<P: Actor>(&self) -> Option<ActorRef<P>>;       // it, when it is the actor directly above the receiver, and sent as a `P`
+    pub fn child<T: ChildOf>(&self) -> Option<ActorRef<T>>;      // it, when it is a child the receiver made, and sent as a `T`
 }
 
 /// Which types of sender a guard may admit, as its `Sent` type says.
@@ -254,10 +255,20 @@ match admitted {
 
 - **It holds for every sender:** a native actor, a guest whose host wrote its mail (ADR-0015), the outside (ADR-0036), a send through a `ProtocolRef`, and an answer.
 - **`Anyone` costs nothing.** Its `admits` answers the reference the turn already holds, inlined, so the `None` arm folds away and the sender's type is not read.
-- **A sender's type is read from the table.** `Table::declared` (`aethereal-actor/src/boundary.rs:39`) answers it natively from the actor's entry (`aethereal-substrate/src/table/mod.rs:65`), or from what the step stood up (`engine/since.rs:125`). A guest's table holds no other actor's type (`aethereal-actor/src/guest.rs:1632`), so `Table` gains `is_of(id, actor_type)`, which a guest's table asks its host for, as it does `lists` (`guest.rs:1622`). `Itself`, `Parent`, and `Child<T>` compare seats the turn already holds.
+- **A sender's type is the type it sent the mail as, stamped on the mail at the send** (below). `Itself`, `Parent`, and `Child<T>` compare seats the turn already holds: `Parent` the receiver's own `Above`, and `Child<T>` the children the receiver made, which its seat keeps, live or ended.
 - **Mail that does not read is not handed to the guard.** It is answered as unread mail is (ADR-0017: `Untaken::Unread`), whoever sent it.
 
 Whether a guest's own types, and the source the engine writes for its mail, can be relied on is decided separately; this decision reads them as the engine records them.
+
+### A guard reads only what was fixed when the mail was sent
+
+**The rule: a check where mail is delivered reads only facts fixed when the mail was sent, and of its receiver, never what the engine holds of the sender now.** Between a send and its delivery the sender may end, its closing turn's mail among the rest (ADR-0020), or move onto new code (ADR-0054), and the table changes with it; a check that read the table would judge the mail by what the sender became, and drop a farewell a child sends its parent from its `end` with a log line.
+
+- **Each piece of mail carries the type its sender sent it as.** The engine writes it on the mail as it is sent, while the sender is live in its turn: `Mailed::sent_as`, a `SentAs` (`aethereal-actor/src/mail.rs`), carried on as the queued item's `Envelope::sent_as` and a fused hop's `Hop::sent_as`. It is `SentAs::Actor(&'static Declared)`, the declaration of the code that ran the send, pointer wide, so each queued piece of mail carries eight bytes more, and a guard looks nothing up: `is_of` compares the declaration's id, and `speaking` reads its listed kinds. Mail the engine sends as an actor, what a host brings it, a job's answer, a stage, and what the outside sends, is stamped with the actor's type as the table holds it at that send; what the engine says of a request, `Unanswered`, which no actor's code sent and whose sender may never have been, is `SentAs::Engine`, of no type and listing no kind.
+- **The types are enforced by `Sender`'s shape.** `Sender` (`aethereal-actor/src/guard/sender.rs`) holds the sender's seat, its `SenderType`, read from the mail, and the receiver's seat, declaration, `Above`, and `Children`; it holds no `Table` and no other view of the engine, so a guard written later cannot read live state about its sender by accident: it does not build.
+- **A guest asks its host for the stamp.** A guest holds no other actor's type, so its mail's `SenderType` is `Hosted { item, .. }`, the item's place in the batch its host handed in, and its host, which keeps the stamp of each item of the batch for the call, answers `aethereal_sent_is` and `aethereal_sent_lists` from it. A hosted turn's sends are stamped with the type of whoever sent each: the actor, or a child its turn spawned, from its `begin`.
+- **Mail sent before a move is judged as the type that sent it.** An actor that moves onto new code whose type has another id is checked, for mail its old code sent, as its old type.
+- **No guard reads where the sender is now.** A check of whether the sender is the live actor a typed path names would read the table at delivery; no guard needs one, so `Sender` has none. One that does takes a view of the table of its own, named for its live read at the call, and says why its answer may change between the send and the delivery.
 
 ### A native send is checked at its call, against the receiver's guard
 
@@ -279,7 +290,7 @@ impl<Me: Conforms<P>, P: Listed> SentBy<Me, ()> for ProtocolRef<P> {}    // an a
 
 - **`send` and `ask` on a target that names its receiver's type, `ActorRef<T>`, `Path<L>`, or a place beneath the sender, gain the bound `<T as Handles<K>>::From: Admits<T, Me, I>`**, its index inferred at the call, with a diagnostic written for it: "`Producer` may not send this mail: the receiver's guard admits only `ActorRef<Counter>`", followed by the receiver and kind the send names.
 - **No guard author writes anything new.** `Admits` has one blanket impl, over the guard's `Sent` type, which every guard names already. The enum-guard derive writes `SentBy<Me, I>` for the enum (above). A guard of a handler's own, such as `ItsProcess`, is checked through its `Sent`, `ActorRef<Process>`, so the check reads the type `admits` answers and cannot drift from it.
-- **`Speaks<P>` admits at the call a type that `Conforms` to `P`:** one with a handler of each of `P`'s kinds, answering each as a named protocol says, as an `ActorRef` is made a `ProtocolRef` (ADR-0016). Delivery reads the sender's listed kinds, as a cast does.
+- **`Speaks<P>` admits at the call a type that `Conforms` to `P`:** one with a handler of each of `P`'s kinds, answering each as a named protocol says, as an `ActorRef` is made a `ProtocolRef` (ADR-0016). Delivery reads the kinds listed by the type the sender sent as, as a cast reads a type's.
 - **Still checked only at delivery:** a send through a `ProtocolRef`, which does not name its receiver's type; and the part of a guard that reads the seat or the mail, such as `Parent`'s seat, or whether the sender is the process `Spawned` holds. Delivery is the guarantee for every sender: a native actor, a send through a `ProtocolRef<P>`, an answer, and a guest.
 
 ### A refusal goes to the handler's `refused`
@@ -319,7 +330,8 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - A refused sender is logged, and a refused request answered, where a check by hand often did neither.
 - Delivery checks every sender against the receiver's guard: a native one, a send through a protocol reference, an answer, and a guest. A native send whose target names its receiver's type is also checked against the guard's `Sent` type at its call, so a sender the guard refuses by type does not build.
 - The types a guard admits are stated once, by its `Sent` type, which also takes them from the sender, and cannot disagree with `admits`; an enum of senders is derived from its cases, so its check and its types cannot drift.
-- `Handles<K>` gains `From`, `Returns`, and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard<A>` names a `Sent` and `Checks<A, K>` its check, `Admits` and `SentBy` read the `Sent` at a send's call, `Turn` takes its guard as its type argument after its actor, defaulted (ADR-0059), and `Table` gains `is_of`.
+- `Handles<K>` gains `From`, `Returns`, and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard<A>` names a `Sent` and `Checks<A, K>` its check, `Admits` and `SentBy` read the `Sent` at a send's call, and `Turn` takes its guard as its type argument after its actor, defaulted (ADR-0059).
+- Each queued piece of mail carries the type its sender sent it as, eight bytes, and a guard reads it in place of the table, so mail from a sender that has since ended or moved onto new code is checked as it was sent; a guest asks its host for the stamp of the item it handles, as it asked for the sender's type before.
 - A test that hands a guarded handler its mail from the outside (ADR-0036), whose type, `Outside`, handles nothing and is admitted at the call by `Anyone` alone, stands up the type the guard admits.
 
 ## Alternatives considered
@@ -338,3 +350,7 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - **The check at the send alone.** It sees no guest, no reply, and no send through a protocol reference, which is how an HTTP stack reaches its handler.
 - **The check at delivery alone.** It holds, but a native sender learns only from a log at run time what its build could have told it.
 - **Rust privacy on a kind's constructor.** A native sender must build a value to send it, but a guest writes bytes, whatever kind they claim.
+- **A guard reads the sender's type from the table.** The table holds a sender only while it is live, and as the code it runs now: mail from a closing turn arrives after its sender has left, and mail sent before a move after the sender's type has changed, so the guard refuses both, and a tell is dropped with only a log line.
+- **The sender's type id on the mail, its declaration found by id where it is delivered.** No list covers every type an engine can run, a guest's loaded at run time among them, and an id is made from a type's name and its state's layout (ADR-0006), so two versions of a guest's code that keep its state share an id and not their handlers: a lookup by id answers one version's listed kinds for mail the other sent. The declaration itself is as wide as the id.
+- **Check closing-turn mail at its send, while its sender is in the table.** A send is checked at its call only where its target names its receiver's type (above), and the receiver's guard can read its own state and the mail, which only delivery holds.
+- **Refuse, at the call, a guard on a kind a closing turn sends.** It forbids the farewell rather than delivering it.

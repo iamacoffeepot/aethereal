@@ -21,6 +21,7 @@
 //! refers to, and its host holds the instance to them (ADR-0014). A read of a
 //! blob, its hash, a put, and a kind's head are calls out.
 
+use crate::Written;
 use crate::records::{
     self, Born, CancelRecord, ClaimRecord, Gone, Handed, HoldRecord, HolderRecord, ItemHead, JobRecord, Kept, Keying,
     LineRecord, Naming, Other, OutHead, Parent, PinRecord, RefRecord, Requesting, SendRecord, Span, SpawnRecord,
@@ -32,7 +33,7 @@ use crate::{
     Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
-use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, Table, Time, Turning, Unfit, What, Written};
+use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, SenderType, Table, Time, Turning, Unfit, What};
 use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
@@ -187,8 +188,13 @@ pub struct Calls {
     /// Whether the type of the actor of the id lists every kind of the ids written at the address, of the length:
     /// one when it does.
     pub lists: extern "C" fn(u64, u32, u32) -> u32,
-    /// Whether the actor of the id is of the type of the second id: one when it is (ADR-0058).
-    pub is_of: extern "C" fn(u64, u64) -> u32,
+    /// Whether the sender of the item of the batch handed in at the index sent it as the type of the id, as its host
+    /// holds the stamp the engine put on it at the send: one when it did (ADR-0058).
+    pub sent_is: extern "C" fn(u32, u64) -> u32,
+    /// Whether the type the sender of the item of the batch handed in at the index sent it as lists every kind of the
+    /// ids written at the address, of the length, as its host holds the stamp the engine put on it at the send: one
+    /// when it does (ADR-0058).
+    pub sent_lists: extern "C" fn(u32, u32, u32) -> u32,
     /// Whether the table held the actor of the id as the step began, or it was stood up since in the part: one when
     /// it was.
     pub held: extern "C" fn(u64) -> u32,
@@ -494,7 +500,10 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
         let mut counted = Counted::default();
         let mut sent = sent;
         for _ in 0..items {
-            let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, read_limit) else {
+            // The item's sender sent it as the type its host holds the stamp of, by the item's place in the batch.
+            let sender_type = SenderType::Hosted { item: ran, calls };
+            let Some((read, ItemHead { source, chain, handed, .. }, after)) = read_item(rest, sender_type, read_limit)
+            else {
                 break;
             };
             rest = after;
@@ -560,14 +569,15 @@ enum Inboxed<'a> {
     Unanswered { mail: Mail<'a>, asking: Asking },
 }
 
-/// One item read from the inbox, its head, and what follows it, its mail read within `read_limit` bytes.
-fn read_item(items: &[u8], read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, &[u8])> {
+/// One item read from the inbox, its head, and what follows it, its mail sent as `sender_type` and read within
+/// `read_limit` bytes.
+fn read_item(items: &[u8], sender_type: SenderType, read_limit: usize) -> Option<(Inboxed<'_>, ItemHead, &[u8])> {
     let head = ItemHead::read(items)?;
     let rest = items.get(ItemHead::BYTES..)?;
     let (bytes, rest) = rest.split_at_checked(head.len as usize)?;
     let ItemHead { handed, source, chain, .. } = head;
     // Its host offered the call the pins the item holds (ADR-0014).
-    let mail = |kind, bytes| Mail::new(kind, bytes, &PinSource::OFFERED, source, chain.root, chain.depth, read_limit);
+    let mail = |kind, bytes| Mail::new(kind, bytes, &PinSource::OFFERED, source, sender_type, chain, read_limit);
     let read = match handed {
         Handed::Mail { kind } | Handed::Asks { kind, .. } => Inboxed::Item(Item::Mail(mail(kind, bytes))),
         Handed::Ended(gone) => Inboxed::Item(Item::Ended(ended(gone, source, bytes))),
@@ -1628,11 +1638,6 @@ impl Table for Host {
         (self.calls.lists)(id.bits(), address(kinds.as_ptr()), count(kinds.len())) == 1
     }
 
-    /// Whether the actor `id` stands for is of the type, asked of the host, which holds its type (ADR-0058).
-    fn is_of(&self, id: ActorId, actor_type: KindId) -> bool {
-        (self.calls.is_of)(id.bits(), u64::from_le_bytes(actor_type.plain_bytes())) == 1
-    }
-
     /// Nothing: the guest holds no other actor's type, and leaves every check of a send to its host, which fails the
     /// turn of a send its declaration does not reach where a native one stops the engine (ADR-0013, ADR-0015).
     fn declared(&self, _: ActorId) -> Option<&'static Declared> {
@@ -1703,6 +1708,22 @@ impl Children for Host {
     }
 }
 
+/// Whether the sender of the `item`th item of the batch sent it as the type whose id is `actor_type`, asked through
+/// `calls` of the host, which holds the stamp the engine put on it at the send (ADR-0058).
+pub(crate) fn sent_is(calls: &Calls, item: u32, actor_type: KindId) -> bool {
+    (calls.sent_is)(item, u64::from_le_bytes(actor_type.plain_bytes())) == 1
+}
+
+/// Whether the type the sender of the `item`th item of the batch sent it as lists every one of `kinds`, asked through
+/// `calls` of the host, which holds the stamp the engine put on it at the send (ADR-0058).
+pub(crate) fn sent_lists(calls: &Calls, item: u32, kinds: &[KindId]) -> bool {
+    let Ok(kinds) = to_bytes(&kinds.to_vec()) else {
+        return false;
+    };
+
+    (calls.sent_lists)(item, address(kinds.as_ptr()), count(kinds.len())) == 1
+}
+
 /// Exports the calls a guest's host makes, for the actor types listed, imports the calls out it makes of its host,
 /// and writes the section that declares them (ADR-0015). A guest's crate calls it once, at its root. Built for
 /// anything but WebAssembly, it emits nothing, so a native program can name the guest's types and spawn them from
@@ -1735,7 +1756,8 @@ macro_rules! guest {
                 safe fn aethereal_reach_child(parent: u64, naming: u32, len: u32, kind: u64, seated: u32) -> u32;
                 safe fn aethereal_is_live(id: u64) -> u32;
                 safe fn aethereal_lists(id: u64, kinds: u32, len: u32) -> u32;
-                safe fn aethereal_is_of(id: u64, actor_type: u64) -> u32;
+                safe fn aethereal_sent_is(item: u32, actor_type: u64) -> u32;
+                safe fn aethereal_sent_lists(item: u32, kinds: u32, len: u32) -> u32;
                 safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
@@ -1771,7 +1793,8 @@ macro_rules! guest {
                 reach_child: aethereal_reach_child,
                 is_live: aethereal_is_live,
                 lists: aethereal_lists,
-                is_of: aethereal_is_of,
+                sent_is: aethereal_sent_is,
+                sent_lists: aethereal_sent_lists,
                 held: aethereal_held,
                 take,
                 give_back,

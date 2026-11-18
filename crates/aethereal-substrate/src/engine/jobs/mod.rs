@@ -388,7 +388,8 @@ impl Engine {
             self.lives.fold_records([lives::sent(by, sent)], &[]);
             let mail = MailId { sender: by.id, count: sent };
             arrivals.extend(kept.into_iter().map(|kept| Arrival { to: by, by, mail, kept }));
-            mailed.push(Mailed { by, to: by, count: sent, kind, bytes, tie, due: Due::Never });
+            let sent_as = self.sent_as(by);
+            mailed.push(Mailed { by, sent_as, to: by, count: sent, kind, bytes, tie, due: Due::Never });
         }
         self.arenas[parity][ROOTS] = arena;
         // Most jobs are given no resource.

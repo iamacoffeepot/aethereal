@@ -13,7 +13,9 @@ use super::gift::{self, Arrival};
 use super::wake::Bell;
 use super::{Engine, ROOTS, parity};
 use crate::{Context, lives, log, stream};
-use aethereal_actor::{Actors, Arena, Controller, Due, Gift, Given, MailId, Mailed, Requests, Seated, Source, Tie};
+use aethereal_actor::{
+    Actors, Arena, Controller, Due, Gift, Given, MailId, Mailed, Requests, Seated, SentAs, Source, Tie,
+};
 use aethereal_data::{ActorId, Encode, Kind, KindId};
 use crossbeam_queue::SegQueue;
 use std::any;
@@ -79,11 +81,19 @@ impl<K> Clone for Feed<K> {
 
 /// A feed as the engine brings from it, whatever its kind.
 trait Brings: Send + Sync {
-    /// Writes each event pushed before this bring began into `arena`, as mail from `owner` to itself, counting on from
-    /// `sent`, the mail `owner` has sent, into `mailed`. An event that holds resources is kept only once `claim` has
-    /// claimed every one of them for the mail of the count it is written as (ADR-0019).
-    fn bring(&self, owner: Seated, sent: u64, arena: &mut Arena, mailed: &mut Vec<Mailed>, claim: Claim<'_>)
-    -> Brought;
+    /// Writes each event pushed before this bring began into `arena`, as mail from `owner` to itself, sent as the type
+    /// `sent_as` stands for, counting on from `sent`, the mail `owner` has sent, into `mailed`. An event that holds
+    /// resources is kept only once `claim` has claimed every one of them for the mail of the count it is written as
+    /// (ADR-0019, ADR-0058).
+    fn bring(
+        &self,
+        owner: Seated,
+        sent_as: SentAs,
+        sent: u64,
+        arena: &mut Arena,
+        mailed: &mut Vec<Mailed>,
+        claim: Claim<'_>,
+    ) -> Brought;
 
     /// What the kind of its events is called, where the engine records one it could not write.
     fn name(&self) -> &'static str;
@@ -96,6 +106,7 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
     fn bring(
         &self,
         owner: Seated,
+        sent_as: SentAs,
         mut sent: u64,
         arena: &mut Arena,
         mailed: &mut Vec<Mailed>,
@@ -120,7 +131,8 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
             }
             sent += 1;
             let kind = KindId::of::<K>();
-            mailed.push(Mailed { by: owner, to: owner, count: sent, kind, bytes, tie: Tie::TELL, due: Due::Never });
+            let (tie, due) = (Tie::TELL, Due::Never);
+            mailed.push(Mailed { by: owner, sent_as, to: owner, count: sent, kind, bytes, tie, due });
         }
 
         Brought { sent, unwritten }
@@ -240,10 +252,11 @@ impl Engine {
                 // An actor whose closing turn has run keeps nothing, so its sources are found nowhere at the next bring.
                 if let Some(life) = self.lives.shard(owner.seat.number()).life(owner) {
                     let before = life.sent();
+                    let sent_as = self.sent_as(owner);
                     let handed = &self.handed;
                     let mut claim = |count, tickets: &[u64]| claim(handed, &mut claimed, owner, count, tickets);
                     let Brought { sent, unwritten } =
-                        source.feed.bring(owner, before, &mut arena, &mut mailed, &mut claim);
+                        source.feed.bring(owner, sent_as, before, &mut arena, &mut mailed, &mut claim);
                     unbrought.extend((0..unwritten).map(|_| log::unbrought(owner, source.feed.name())));
                     // A second source of the same owner counts on from the first.
                     let has_sent = sent > before;

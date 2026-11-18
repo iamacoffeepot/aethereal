@@ -51,8 +51,8 @@ use aethereal_actor::{
     Above, ActorName, ActorRef, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain,
     Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
     JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
-    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
-    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, SenderType, SentAs, Sleep,
+    Standings, Stood, Submitted, Table, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -904,7 +904,7 @@ impl Engine {
         begin: impl FnOnce(
             Seated,
             &ActorPath,
-            &dyn aethereal_actor::Table,
+            &dyn Table,
             &mut Asked,
             &mut Instances,
             &mut Keeping,
@@ -1642,6 +1642,13 @@ impl Engine {
         part(seat, self.seating.len())
     }
 
+    /// The type the actor `actor` names runs as, as the table holds it as the engine sends mail as that actor between
+    /// steps: what a host brings it, a job's answer, a stage, or what the outside sends, each stamped with it as it is
+    /// sent (ADR-0058). One the table no longer holds has ended, and its mail is stamped as the engine's own.
+    fn sent_as(&self, actor: Seated) -> SentAs {
+        Table::declared(&self.table, actor.id).map_or(SentAs::Engine, SentAs::Actor)
+    }
+
     /// The part with the fewest actors, the first of them when several tie.
     fn emptiest(&self) -> usize {
         (0..self.seated.len()).min_by_key(|part| self.seated[*part]).unwrap_or_default()
@@ -1767,9 +1774,9 @@ impl Reading<'_> {
             // A hop to an actor that was cut off in the step would overtake what it carries, so it is carried
             // after that.
             if lists.fusing.carries(hop.to.id) {
-                let Hop { to, from, count, root, depth, kind, tie, due, .. } = hop;
+                let Hop { to, from, sent_as, count, root, depth, kind, tie, due, .. } = hop;
                 let tying = Tying::of(tie, due);
-                let envelope = |bytes| Envelope { sender_seat: from.seat, root, depth, kind, bytes, tying };
+                let envelope = |bytes| Envelope { sender_seat: from.seat, sent_as, root, depth, kind, bytes, tying };
                 room.streams.carry_hop(
                     to,
                     (from.id.bits(), count),
@@ -2171,9 +2178,10 @@ impl Reading<'_> {
                 let mut held = Vec::new();
                 asked.arena().pin_copied(hop.sent, 0, &mut held);
                 let pins = PinSource::lying(bytes, &held);
-                let mail = Mail::new(hop.kind, bytes, &pins, hop.from, hop.root, hop.depth, self.read_limit);
-                let item = ask::item(mail, answering);
                 let chain = Chain { root: hop.root, depth: hop.depth };
+                let sender_type = SenderType::Stamped(hop.sent_as);
+                let mail = Mail::new(hop.kind, bytes, &pins, hop.from, sender_type, chain, self.read_limit);
+                let item = ask::item(mail, answering);
                 let turning = Turning::new(
                     me,
                     &seat.path,
@@ -2272,7 +2280,7 @@ impl Reading<'_> {
             };
             let burst = sends.count();
             if let Some(index) = first {
-                let Mailed { to, count, kind, bytes, tie, due, .. } = mailed[index];
+                let Mailed { sent_as, to, count, kind, bytes, tie, due, .. } = mailed[index];
                 let hand = hand(to, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
                 let pieces = bytes.pieces();
@@ -2302,6 +2310,7 @@ impl Reading<'_> {
                     let hop = Hop {
                         to,
                         from: me,
+                        sent_as,
                         count,
                         tie,
                         due,

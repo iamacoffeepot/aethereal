@@ -436,6 +436,7 @@ impl Engine {
             };
             mailed.push(Mailed {
                 by: subscriber,
+                sent_as: self.sent_as(subscriber),
                 to: subscriber,
                 count,
                 kind,

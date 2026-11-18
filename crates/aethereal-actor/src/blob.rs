@@ -550,7 +550,8 @@ mod pinned {
 mod tests {
     use super::*;
     use crate::{
-        Actors, ActorsWriter, Mail, MailId, PinSource, Pinned, Pinning, SeatNumber, Seated, Unanswered, Written,
+        Actors, ActorsWriter, Chain, Mail, MailId, PinSource, Pinned, Pinning, SeatNumber, Seated, SenderType, SentAs,
+        Unanswered, Written,
     };
     use aethereal_data::{ActorId, DecodeError, Encode, KindId, Writer};
 
@@ -606,7 +607,9 @@ mod tests {
         let root = MailId { sender: sender.id, count: 1 };
         let sources = [PinSource::lying(bytes, held), PinSource::copied(bytes, Pinned::lying(held, 0))];
 
-        sources.map(|pins| Mail::new(KindId::of::<Unanswered>(), bytes, &pins, sender, root, 1, 64).contents())
+        let (engine, chain) = (SenderType::Stamped(SentAs::Engine), Chain { root, depth: 1 });
+
+        sources.map(|pins| Mail::new(KindId::of::<Unanswered>(), bytes, &pins, sender, engine, chain, 64).contents())
     }
 
     #[test]

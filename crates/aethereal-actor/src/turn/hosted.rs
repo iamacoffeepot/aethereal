@@ -6,7 +6,7 @@ use crate::resource::{Reach, Resources};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
     Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Runs,
-    SeatNumber, Seated, Seats, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry, take_claimed,
+    SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -266,9 +266,13 @@ impl<'a> Hosted<'a> {
         request: Request,
         #[cfg(feature = "std")] held: &[crate::Pinning],
     ) -> Result<(), FalseSend> {
-        if by != self.seat.me {
-            self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?;
-        }
+        // The mail is stamped with the type of whoever sent it, as its host knows it: the actor whose turn this is, or a
+        // child it spawned, whose `begin` sent it (ADR-0058).
+        let declared = if by == self.seat.me {
+            self.seat.declared
+        } else {
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?.declared
+        };
         // A reply or an answer to a held request goes to its asker, which is handed it as what became of its request:
         // the engine checks its kind against the request, and not against what the asker lists (ADR-0017). Any other
         // send is of a kind its receiver lists, as a native send's build checks (ADR-0059). An actor the table no
@@ -302,7 +306,7 @@ impl<'a> Hosted<'a> {
             Request::Asks { answer, context, due } => (self.ask(by, count, answer, context, due)?, due),
             Request::Answers { request } => (self.answer(by, to, kind, request)?, Due::Never),
         };
-        let mailed = Mailed { by, to, count, kind, bytes, tie, due };
+        let mailed = Mailed { by, sent_as: SentAs::Actor(declared), to, count, kind, bytes, tie, due };
         let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
         self.sent = match self.sent {

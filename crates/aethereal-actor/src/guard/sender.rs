@@ -1,39 +1,78 @@
 //! The source of the item being handled, as a guard reads it (ADR-0058).
 
+#[cfg(feature = "guest")]
+use crate::guest::{Calls, sent_is, sent_lists};
 use crate::{
-    Above, Actor, ActorRef, ChildOf, Children, Declared, ErasedActorRef, Kinds, Listed, Path, PathTo, ProtocolRef,
-    Seated, Table,
+    Above, Actor, ActorRef, ChildOf, Children, Declared, ErasedActorRef, Kinds, Listed, ProtocolRef, Seated, SentAs,
 };
 use aethereal_data::KindId;
 
 /// The source of the item being handled, as the receiver's turn reads it: nothing is read until a guard asks
 /// (ADR-0058).
 ///
-/// Each check answers the reference a guard hands on, typed, so a guard never casts. A check of a type reads the
-/// receiver's own declaration, or its parent's, when the sender is one of them, and asks the table otherwise.
+/// It holds only what was fixed when the mail was sent, the sender's seat and the type it sent as, and what is fixed
+/// of the receiver: its own seat and type, what stands above it, and the children it has made, live or ended. It holds
+/// no table, so no check here reads what the engine holds of the sender now, which can change between the send and the
+/// delivery: a sender that ended after it sent, from its closing turn among others, or moved onto new code, is checked
+/// as it was when it sent (ADR-0020, ADR-0054). Each check answers the reference a guard hands on, typed, so a guard
+/// never casts.
 pub struct Sender<'t> {
     source: Seated,
+    /// The type the sender sent the mail as, stamped at the send.
+    sender_type: SenderType,
     /// The receiver, and what its type declares.
     me: Seated,
     declared: &'static Declared,
     above: Above,
-    table: &'t dyn Table,
-    /// The children the receiver made before this step.
+    /// The children the receiver made before this step, live or ended.
     made: &'t dyn Children,
 }
 
+/// The type the sender of a piece of mail sent it as, as a guard reads it: stamped on the mail at the send (ADR-0058).
+#[derive(Clone, Copy)]
+pub enum SenderType {
+    /// As the engine stamped it.
+    Stamped(SentAs),
+    /// As the host of a guest holds the stamp of the `item`th item of the batch it handed the guest's code, which the
+    /// guest asks it about through `calls`: the guest holds no other actor's type (ADR-0015).
+    #[cfg(feature = "guest")]
+    Hosted { item: u32, calls: &'static Calls },
+}
+
+impl SenderType {
+    /// Whether it is the actor type whose id is `actor_type`.
+    #[must_use]
+    pub fn is(self, actor_type: KindId) -> bool {
+        match self {
+            Self::Stamped(sent_as) => sent_as.is(actor_type),
+            #[cfg(feature = "guest")]
+            Self::Hosted { item, calls } => sent_is(calls, item, actor_type),
+        }
+    }
+
+    /// Whether the type lists every one of `kinds`, as a cast reads it (ADR-0016).
+    #[must_use]
+    pub fn lists_all(self, kinds: &[KindId]) -> bool {
+        match self {
+            Self::Stamped(sent_as) => sent_as.lists_all(kinds),
+            #[cfg(feature = "guest")]
+            Self::Hosted { item, calls } => sent_lists(calls, item, kinds),
+        }
+    }
+}
+
 impl<'t> Sender<'t> {
-    /// The sender `source` names, of an item handed to the actor `me` names, whose type declares `declared`, which
-    /// stands beneath `above`, has made the children `made` holds, and reads `table`.
+    /// The sender `source` names, which sent the mail as `sender_type`, of mail handed to the actor `me` names, whose
+    /// type declares `declared`, which stands beneath `above`, and has made the children `made` holds.
     pub(crate) const fn new(
         source: Seated,
+        sender_type: SenderType,
         me: Seated,
         declared: &'static Declared,
         above: Above,
-        table: &'t dyn Table,
         made: &'t dyn Children,
     ) -> Self {
-        Self { source, me, declared, above, table, made }
+        Self { source, sender_type, me, declared, above, made }
     }
 
     /// Who it is.
@@ -42,20 +81,18 @@ impl<'t> Sender<'t> {
         ErasedActorRef::new(self.source)
     }
 
-    /// It, when it is an actor of type `T`.
+    /// It, when it sent the mail as an actor of type `T`.
     #[must_use]
     pub fn actor<T: Actor>(&self) -> Option<ActorRef<T>> {
-        self.is_of(KindId::of::<T>()).then(|| ActorRef::new(self.source))
+        self.sender_type.is(KindId::of::<T>()).then(|| ActorRef::new(self.source))
     }
 
-    /// It, when its type lists every kind of `P`, as a cast reads it (ADR-0016).
+    /// It, when the type it sent the mail as lists every kind of `P`, as a cast reads it (ADR-0016).
     #[must_use]
     pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>> {
         let kinds = <P::Kinds as Kinds>::KINDS;
-        let lists =
-            self.known().map_or_else(|| self.table.lists(self.source.id, kinds), |known| known.lists_all(kinds));
 
-        lists.then(|| ProtocolRef::new(self.source))
+        self.sender_type.lists_all(kinds).then(|| ProtocolRef::new(self.source))
     }
 
     /// It, when it is the receiver's own seat, and the receiver is of type `A`.
@@ -68,50 +105,25 @@ impl<'t> Sender<'t> {
         is_receiver.then(|| ActorRef::new(self.source))
     }
 
-    /// It, when it is the actor directly above the receiver, of type `P`.
+    /// It, when it is the actor directly above the receiver, and sent the mail as one of type `P`.
     #[must_use]
     pub fn parent<P: Actor>(&self) -> Option<ActorRef<P>> {
         let is_parent = self.parent_seat() == Some(self.source);
-        let is_type = self.is_of(KindId::of::<P>());
+        let is_type = self.sender_type.is(KindId::of::<P>());
         let is_admitted = is_parent && is_type;
 
         is_admitted.then(|| ActorRef::new(self.source))
     }
 
-    /// It, when it is of type `T`, directly beneath the receiver: a child the receiver made before this step.
+    /// It, when it is directly beneath the receiver, a child the receiver made before this step, and sent the mail as
+    /// one of type `T`.
     #[must_use]
     pub fn child<T: ChildOf>(&self) -> Option<ActorRef<T>> {
         let is_child = self.made.has_made(self.source.id);
-        let is_type = self.is_of(KindId::of::<T>());
+        let is_type = self.sender_type.is(KindId::of::<T>());
         let is_admitted = is_child && is_type;
 
         is_admitted.then(|| ActorRef::new(self.source))
-    }
-
-    /// It, when it is the live actor the typed path `path` names, as a resolve sees it.
-    #[must_use]
-    pub fn at<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>> {
-        let is_there = self.table.resolve(path.names()) == Some(self.source);
-        let is_type = self.is_of(KindId::of::<L>());
-        let is_admitted = is_there && is_type;
-
-        is_admitted.then(|| ActorRef::new(self.source))
-    }
-
-    /// Whether it is an actor of the type whose id is `actor_type`.
-    fn is_of(&self, actor_type: KindId) -> bool {
-        self.known().map_or_else(|| self.table.is_of(self.source.id, actor_type), |known| known.id() == actor_type)
-    }
-
-    /// What its type declares, when it is the receiver or the receiver's parent, whose types the turn holds.
-    fn known(&self) -> Option<&'static Declared> {
-        if self.source == self.me {
-            return Some(self.declared);
-        }
-        match self.above {
-            Above::Actor(parent, declared) if parent == self.source => Some(declared),
-            Above::Chassis | Above::Actor(..) | Above::Elsewhere(_) => None,
-        }
     }
 
     /// The receiver's parent, and its seat: none for a root.

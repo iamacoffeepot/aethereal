@@ -1,7 +1,7 @@
 //! Chains of mail run within a step: what one part keeps while it fuses (ADR-0013).
 
 use crate::ByActor;
-use aethereal_actor::{Declared, Due, MailId, Payload, SeatNumber, Seated, Tie};
+use aethereal_actor::{Declared, Due, MailId, Payload, SeatNumber, Seated, SentAs, Tie};
 use aethereal_data::{ActorId, ActorPath, KindId};
 use std::collections::VecDeque;
 
@@ -105,6 +105,8 @@ pub(super) struct Hop {
     pub(super) to: Seated,
     /// The sender, and its seat.
     pub(super) from: Seated,
+    /// The type the sender sent it as, stamped at the send (ADR-0058).
+    pub(super) sent_as: SentAs,
     /// Its sender's count of mail sent, with it: with the sender, its id.
     pub(super) count: u64,
     /// The first mail of its chain.
