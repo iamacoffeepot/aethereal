@@ -5,7 +5,8 @@ use super::*;
 use aethereal_data::Plain;
 use aethereal_data::config::{ConfigError, ConfigFault, FlagName};
 use aethereal_data::{JsonFault, JsonForm};
-use aethereal_substrate::{Builds, EngineSettings, ProgramError, Settled};
+use aethereal_substrate::harness::desk;
+use aethereal_substrate::{EngineSettings, ProgramError};
 use core::error::Error;
 use std::fs;
 use std::iter;
@@ -14,11 +15,10 @@ use std::process::{self, Command};
 
 type Outcome = Result<(), Box<dyn Error>>;
 
-/// A host that keeps the settings it read and runs nothing.
-struct Bench {
-    engine: EngineSettings,
-    running: BenchRunning,
-}
+desk!(
+    /// A desk that keeps nothing its roots serve, and reads its own section.
+    struct Bench((), BenchRunning);
+);
 
 /// The bench's own section.
 #[derive(Plain, Debug, Clone, Default, PartialEq, Eq)]
@@ -31,27 +31,6 @@ struct BenchRunning {
     /// Whether it says what it does.
     #[flag]
     loud: bool,
-}
-
-impl Host for Bench {
-    type Running = BenchRunning;
-    type Hosting<'host> = ();
-    type Exit = Self;
-    type Error = ProgramError;
-
-    fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        Self::build(settled)
-    }
-}
-
-impl Builds for Bench {
-    fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        let engine = settled.engine().clone();
-        let running = settled.running().clone();
-        pollster::block_on(settled.bootstrap(()))?;
-
-        Ok(Self { engine, running })
-    }
 }
 
 /// A file of `text`, named for `test`, removed when dropped.
@@ -116,9 +95,10 @@ fn the_first_layer_wins_the_command_line_then_the_environment_the_file_and_the_p
 
     let bench = built(program, &args, &variables)?;
 
-    let engine = (bench.engine.hops, bench.engine.parts.get(), bench.engine.read_limit, bench.engine.mail_bytes);
+    let settings = bench.settings();
+    let engine = (settings.hops, settings.parts.get(), settings.read_limit, settings.mail_bytes);
     assert_eq!(engine, (2, 3, 4, 5));
-    assert_eq!(bench.running, BenchRunning { pace: 2, loud: false });
+    assert_eq!(*bench.running(), BenchRunning { pace: 2, loud: false });
     Ok(())
 }
 
@@ -143,7 +123,7 @@ fn the_environment_reads_only_the_flags_the_program_left() -> Outcome {
     assert_eq!(named(unknown), unknown_variable("BENCH_BOGUS"));
     assert_eq!(named(hidden.err()), unknown_variable("BENCH_PACE"));
     assert_eq!(named(old_name), unknown_variable("BENCH_PACE"));
-    assert_eq!(bench.running.pace, 5);
+    assert_eq!(bench.running().pace, 5);
     Ok(())
 }
 

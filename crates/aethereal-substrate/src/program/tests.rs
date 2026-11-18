@@ -1,6 +1,7 @@
 //! A program bootstrapped on a host of the tests' own: its settings, each root's needs, its ends, and its refusals.
 
 use super::*;
+use crate::harness::{Steps, desk};
 use crate::{Bootstrap, root_id};
 use aethereal_actor::{Actor, Beginning, Fault, Given, Handle, Publisher, Root, Seated, actor};
 use aethereal_data::config::{ConfigError, ConfigFault};
@@ -9,7 +10,7 @@ use core::error::Error;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-/// What a bench's hosting holds of what its roots served it, which the test that lends it to a bootstrap reads once the
+/// What a bench keeps of what its roots served it, which a test that lends it to a bootstrap of its own reads once the
 /// bootstrap has come to its end, whether it built or failed.
 #[derive(Default)]
 struct Served {
@@ -33,42 +34,17 @@ fn began<T: Kind>(values: &[u32]) -> Began {
     Began { root: T::NAME, values: values.to_vec() }
 }
 
-/// A host that keeps the engine, the ends its roots serve it, and the settings it read, and runs nothing.
-struct Bench {
-    engine: Engine,
-    served: Served,
-    pace: u32,
-    hops: u32,
-}
+desk!(
+    /// A desk that keeps the ends its roots serve it, and reads its own section.
+    struct Bench(Served, BenchRunning);
+);
 
 /// The bench's own section.
-#[derive(Plain, Debug, Default)]
+#[derive(Plain, Debug, Clone, Default)]
 #[kind(name = "test.bench.running")]
 #[settings]
 struct BenchRunning {
     pace: u32,
-}
-
-impl Host for Bench {
-    type Running = BenchRunning;
-    type Hosting<'host> = Hosted<'host>;
-    type Exit = Self;
-    type Error = ProgramError;
-
-    fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        Self::build(settled)
-    }
-}
-
-impl Builds for Bench {
-    fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        let pace = settled.running().pace;
-        let hops = settled.engine().hops;
-        let mut served = Served::default();
-        let (engine, _) = pollster::block_on(settled.bootstrap(&mut served))?;
-
-        Ok(Self { engine, served, pace, hops })
-    }
 }
 
 /// A light, which the lamp provides, and gives the host as its end.
@@ -433,16 +409,16 @@ fn each_root_bootstraps_in_order_from_its_settings_and_what_earlier_roots_provid
     let program = program();
     let code = layer(&program, &["lamp.brightness=7", "scene.seconds=3"])?;
 
-    let bench = program.layer(code).build()?;
+    let mut bench = program.layer(code).build()?;
 
     let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
-    assert_eq!(bench.served.began, expected);
-    assert_eq!(root::<Lamp>(&bench.engine).map(|lamp| lamp.values.as_slice()), Some(&[7][..]));
-    assert_eq!(root::<Keeper>(&bench.engine).map(|keeper| keeper.values.as_slice()), Some(&[2, 7][..]));
-    assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(3));
-    assert_eq!(bench.served.lights, [Lit(7)]);
+    assert_eq!(bench.kept().began, expected);
+    assert_eq!(root::<Lamp>(bench.engine()).map(|lamp| lamp.values.as_slice()), Some(&[7][..]));
+    assert_eq!(root::<Keeper>(bench.engine()).map(|keeper| keeper.values.as_slice()), Some(&[2, 7][..]));
+    assert_eq!(root::<Scene>(bench.engine()).map(|scene| scene.seconds), Some(3));
+    assert_eq!(bench.kept().lights, [Lit(7)]);
     let scene = ActorPath::from_root(&PathSegment::new(Scene::NAME, &()));
-    assert!(bench.engine.table().resolve(&scene).is_some());
+    assert!(bench.engine().table().resolve(&scene).is_some());
     Ok(())
 }
 
@@ -504,7 +480,7 @@ fn the_host_reads_its_own_sections() -> Outcome {
 
     let bench = program.layer(code).build()?;
 
-    assert_eq!((bench.pace, bench.hops), (5, 2));
+    assert_eq!((bench.running().pace, bench.settings().hops), (5, 2));
     Ok(())
 }
 
@@ -546,12 +522,12 @@ fn the_programs_defaults_reach_their_sections_beneath_every_layer() -> Outcome {
         .root_with::<Scene>(SceneSettings { seconds: 3 });
     let file = layer(&program, &["scene.seconds=4", "engine.hops=1"])?;
 
-    let bench = program.layer(file).build()?;
+    let mut bench = program.layer(file).build()?;
 
     let expected = [began::<Lamp>(&[7]), began::<Counter>(&[]), began::<Keeper>(&[2, 7])];
-    assert_eq!(bench.served.began, expected);
-    assert_eq!(root::<Scene>(&bench.engine).map(|scene| scene.seconds), Some(4));
-    assert_eq!((bench.pace, bench.hops), (5, 1));
+    assert_eq!(bench.kept().began, expected);
+    assert_eq!(root::<Scene>(bench.engine()).map(|scene| scene.seconds), Some(4));
+    assert_eq!((bench.running().pace, bench.settings().hops), (5, 1));
     Ok(())
 }
 
@@ -579,6 +555,6 @@ fn the_renderer_is_handed_the_root_list_in_draw_order() -> Outcome {
     let id = |name| root_id(&PathSegment::new(name, &()));
 
     let bench = roots().draws::<(Sketcher, Painter)>().build()?;
-    assert_eq!(bench.served.drawing, [Drawing(vec![id(Sketcher::NAME), id(Painter::NAME)])]);
+    assert_eq!(bench.kept().drawing, [Drawing(vec![id(Sketcher::NAME), id(Painter::NAME)])]);
     Ok(())
 }

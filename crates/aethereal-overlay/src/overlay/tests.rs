@@ -19,10 +19,8 @@ use aethereal_render::stats::FrameBudget;
 use aethereal_render::surface::{Front, WindowFormat};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
 use aethereal_sessions::{Entry, Numbered, ShowEvents, ShowTabs, Speaker, State, Tab};
-use aethereal_substrate::harness::{Bench, Harness, Unheard};
-use aethereal_substrate::{
-    Bootstrap, Bootstrapping, Builds, Engine, EngineSettings, Host, ProgramError, Settled, Unbuilt,
-};
+use aethereal_substrate::harness::{Harness, Unheard, desk};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tools::{Call, Called, Caller, Tool, Tools};
 use aethereal_ui::widgets::Scroll;
 use aethereal_ui::{ItemKey, Stand};
@@ -36,12 +34,10 @@ const SURFACE: Surface = Surface { width: 1280, height: 720, scale: 1.0 };
 /// A cycle of the program's time: a frame at 60 Hz.
 const CYCLE: Duration = Duration::from_nanos(16_666_667);
 
-/// A host of the test's own: it keeps the engine its program bootstrapped, and what the roots' bootstraps kept on it,
-/// and runs nothing.
-struct Desk {
-    engine: Engine,
-    kept: Kept,
-}
+desk!(
+    /// A desk that keeps what the roots' bootstraps kept on it, while the test steps it.
+    struct Desk(Kept);
+);
 
 /// What the roots' bootstraps kept on the desk, so the chassis's ends of the window and the renderer stay open while the
 /// program runs: the window's feed, which names the window, and the rest, none of which is read.
@@ -49,32 +45,6 @@ struct Desk {
 struct Kept {
     windows: Vec<WindowFeed>,
     ends: Vec<Box<dyn Any>>,
-}
-
-/// The desk's own section, which sets nothing.
-#[derive(Plain, Debug, Default)]
-#[kind(name = "test.overlay.running")]
-#[settings]
-struct DeskRunning {}
-
-impl Host for Desk {
-    type Running = DeskRunning;
-    type Hosting<'host> = &'host mut Kept;
-    type Exit = Self;
-    type Error = ProgramError;
-
-    fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        Self::build(settled)
-    }
-}
-
-impl Builds for Desk {
-    fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        let mut kept = Kept::default();
-        let (engine, _) = pollster::block_on(settled.bootstrap(&mut kept))?;
-
-        Ok(Self { engine, kept })
-    }
 }
 
 /// Opens one window as big as [`SURFACE`], begins the root with it, and provides it with the actor the root made of it.
@@ -138,29 +108,28 @@ impl Bootstrap<Desk> for Renderer {
 
 /// The program: a window as big as [`SURFACE`], the renderer on a device that draws nothing, drawing that window, the
 /// tools root, and the overlay on the window, in a cycle of `Tick`, `Prepare`, and `Render`, bootstrapped as a host
-/// bootstraps it, so the overlay is handed the window as a program hands it. Answers the window, and what the desk kept,
-/// which the test holds while the program runs.
-fn program() -> Result<(Harness<Bench>, WindowId, Kept), Unheard> {
+/// bootstraps it, so the overlay is handed the window as a program hands it. Answers it on the desk, which keeps the
+/// ends the roots' bootstraps kept while the test steps it, and the window.
+fn program() -> Result<(Harness<Desk>, WindowId), Unheard> {
     let settings = EngineSettings { read_limit: 1 << 24, mail_bytes: 0, blob_bytes: 1 << 28, ..Default::default() };
-    let Desk { engine, kept } = Desk::program()
+    let program = Desk::program()
         .with_cycle::<(Tick, Prepare, Render)>()
         .with_engine(settings)
         .root::<Windows>()
         .root::<Renderer>()
         .root::<Tools>()
-        .root::<Overlay>()
-        .build()
-        .map_err(|error| Unheard::Program(error.to_string()))?;
-    let Some(on) = kept.windows.first().map(WindowFeed::window) else {
+        .root::<Overlay>();
+    let mut harness = Harness::of(program)?;
+    let Some(on) = harness.host().kept().windows.first().map(WindowFeed::window) else {
         return Err(Unheard::Program(String::from("the window root opened no window")));
     };
 
-    Ok((Harness::bare(engine)?, on, kept))
+    Ok((harness, on))
 }
 
 /// Runs `cycles` cycles of the program, each settled before the next: what each `Prepare` laid out is made by the
 /// renderer, and its list sent, before the next cycle.
-fn run(harness: &mut Harness<Bench>, cycles: u32) {
+fn run(harness: &mut Harness<Desk>, cycles: u32) {
     for _ in 0..cycles {
         harness.advance(CYCLE);
         harness.settle();
@@ -169,7 +138,7 @@ fn run(harness: &mut Harness<Bench>, cycles: u32) {
 
 /// Sends the overlay `event` on `window` through the first keys its screen declares, its own, as the window sends a key
 /// that reaches them, and settles what it set going.
-fn key(harness: &mut Harness<Bench>, window: WindowId, event: KeyEvent) -> Result<(), Unheard> {
+fn key(harness: &mut Harness<Desk>, window: WindowId, event: KeyEvent) -> Result<(), Unheard> {
     let overlay = harness.root::<Overlay>();
     harness.tell(overlay, &Keyed { window, entry: 0, event })?;
     harness.settle();
@@ -193,7 +162,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
     // console whose line is not focused as it opens, so what is typed reaches the program beneath; a line whose text
     // input's edits are not kept, or whose Enter runs nothing; a call never asked of the tools root; and an answer
     // never printed into the scrollback.
-    let (mut harness, on, _kept) = program()?;
+    let (mut harness, on) = program()?;
     run(&mut harness, 3);
     key(&mut harness, on, down("Backquote", "`"))?;
     key(&mut harness, on, typed("`"))?;
@@ -230,7 +199,7 @@ fn a_line_typed_at_the_console_and_entered_calls_its_tool_and_prints_the_answer(
 }
 
 /// Where the console's scrollback stands, as its screen's table keeps it.
-fn scrollback(harness: &mut Harness<Bench>) -> Result<Stand, Unheard> {
+fn scrollback(harness: &mut Harness<Desk>) -> Result<Stand, Unheard> {
     let overlay = harness.root::<Overlay>();
     let state = harness.state(overlay)?.ui.table().state::<Scroll>(&OverlayNode::Scrollback.path());
 
@@ -238,7 +207,7 @@ fn scrollback(harness: &mut Harness<Bench>) -> Result<Stand, Unheard> {
 }
 
 /// Enters `memory` at the open console `times` times, each answer printed before the next.
-fn printed(harness: &mut Harness<Bench>, on: WindowId, times: u32) -> Result<(), Unheard> {
+fn printed(harness: &mut Harness<Desk>, on: WindowId, times: u32) -> Result<(), Unheard> {
     for _ in 0..times {
         key(harness, on, down("KeyM", "m"))?;
         key(harness, on, typed("memory"))?;
@@ -254,7 +223,7 @@ fn the_scrollback_keeps_to_its_end_as_rows_are_printed_and_pages_back_and_down_t
     // Catches a scrollback, a scroll that builds only the rows that can show, that stays where it stood as answers are
     // printed beneath it, so the newest never shows; Page Up handed from the line to it that does not slide it back;
     // and one paged back down to its end that does not keep to it again.
-    let (mut harness, on, _kept) = program()?;
+    let (mut harness, on) = program()?;
     run(&mut harness, 3);
     for _ in 0..2 {
         key(&mut harness, on, down("Backquote", "`"))?;
@@ -289,7 +258,7 @@ fn with_a_session_listed_a_line_goes_to_it_and_in_bang_mode_runs_here_and_escape
     // does not build in the console's view; Escape that closes the console rather than emptying the line, leaving
     // `!` mode, or stopping the turn; and Backspace, which the overlay takes first, that no longer deletes, or that
     // leaves `!` mode while the line holds text.
-    let (mut harness, on, _kept) = program()?;
+    let (mut harness, on) = program()?;
     run(&mut harness, 3);
     for _ in 0..2 {
         key(&mut harness, on, down("Backquote", "`"))?;
@@ -363,7 +332,7 @@ fn up(code: &str, key: &str) -> KeyEvent {
 }
 
 /// Types `line` at the open console and enters it, its answer settled.
-fn entered(harness: &mut Harness<Bench>, on: WindowId, line: &str) -> Result<(), Unheard> {
+fn entered(harness: &mut Harness<Desk>, on: WindowId, line: &str) -> Result<(), Unheard> {
     key(harness, on, down("KeyN", "n"))?;
     key(harness, on, typed(line))?;
     key(harness, on, down("Enter", "Enter"))?;
@@ -378,7 +347,7 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
     // Catches the chat's words served by an engine the hub has not shown the chat; words that are not the engine's
     // tools, so the console's own tab cannot run them; Alt-1 that does not open the console's own tab, or types into
     // the line; and a session made at the console left closed once it lists.
-    let (mut harness, on, _kept) = program()?;
+    let (mut harness, on) = program()?;
     run(&mut harness, 3);
     for _ in 0..2 {
         key(&mut harness, on, down("Backquote", "`"))?;
@@ -386,7 +355,7 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
         run(&mut harness, 3);
     }
     let overlay = harness.root::<Overlay>();
-    let unknown = |harness: &mut Harness<Bench>| -> Result<usize, Unheard> {
+    let unknown = |harness: &mut Harness<Desk>| -> Result<usize, Unheard> {
         let rows =
             harness.state(overlay)?.console.rows().filter(|row| row.text().contains("no tool is named `new_session`"));
         Ok(rows.count())
@@ -424,7 +393,7 @@ fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_lai
     // now that the library wraps it rather than the console cutting it into rows of so many characters; and charts cut
     // into another count of columns than the boxes the library last laid them out in hold, as a path that names
     // another node than the frame chart or a meter's graph, or counts never read from the layout, would cut them.
-    let (mut harness, on, _kept) = program()?;
+    let (mut harness, on) = program()?;
     run(&mut harness, 3);
     for _ in 0..2 {
         key(&mut harness, on, down("Backquote", "`"))?;
@@ -460,7 +429,7 @@ fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_lai
 /// Calls the overlay's tool `tool` of its tools' worker as `caller`, with `input`, and answers whether it answered a
 /// value or why it refused.
 fn called<K: Plain>(
-    harness: &mut Harness<Bench>,
+    harness: &mut Harness<Desk>,
     caller: Caller,
     tool: &str,
     input: &K,
@@ -483,7 +452,7 @@ fn the_worker_asks_the_overlay_for_a_session_s_theme_and_refuses_it_the_chat_s_w
     // Catches a theme the worker asks of the overlay never answered to its caller, or never switching the palette; a
     // `set_theme` refused to a session, though it changes only how the overlay looks; and a chat's word a session calls
     // asked of the overlay, where the sessions are the owner's.
-    let (mut harness, _, _kept) = program()?;
+    let (mut harness, _) = program()?;
     run(&mut harness, 3);
     let overlay = harness.root::<Overlay>();
     let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };

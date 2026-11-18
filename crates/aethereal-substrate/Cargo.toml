@@ -8,17 +8,17 @@ description = "The substrate, the engine's core: the views folded from the effec
 
 [features]
 # The outside seat, and the harness a test speaks through it with (ADR-0036).
-harness = []
+harness = ["dep:pollster"]
 
 [dependencies]
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data", features = ["json"] }
 aethereal-data-derive = { path = "../aethereal-data-derive" }
 crossbeam-queue = { workspace = true }
+# A desk blocks on its program's bootstrap, as the native hosts do (ADR-0029, ADR-0036).
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
-# The tests' hosts block on a program's bootstrap, as the native hosts do (ADR-0029).
-pollster = { workspace = true }
 # An integration test reads actors' state through the engine, which only this feature opens (ADR-0036).
 aethereal-substrate = { path = ".", features = ["harness"] }
 
