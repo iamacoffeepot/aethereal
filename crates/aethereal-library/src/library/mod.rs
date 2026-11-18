@@ -7,8 +7,7 @@ mod start;
 
 use crate::{Defaulted, Defaults, ModulePublished, PublishModule};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, Given, Handle, Held, Publisher, Receives,
-    Refused, Top, Turn, path,
+    Answered, Beginning, Bytes, Fault, Given, Handle, Held, Publisher, Refused, Reply, Turn, actor, path,
 };
 use aethereal_data::{Bound, FilePath, KindName, Plain};
 use aethereal_files::{FileRead, Files, FilesListed, ListFiles, Namespace};
@@ -103,17 +102,8 @@ pub enum ReadingModule {
 }
 
 /// The library is a root, listed by the program.
-impl ChildOf for Library {
-    type Parent = Top;
-}
-
-impl Actor for Library {
-    type Config = LibraryConfig;
-    type Key = ();
-    type Handles = (Answer<FilesListed, Listing>, Answer<FileRead, ReadingModule>, Defaults, PublishModule);
-    type Depends = (Files,);
-    type Spawns = ();
-
+#[actor(depends(Files))]
+impl Library {
     fn begin(config: LibraryConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let publisher = turn.take(config.publisher)?;
         turn.to(path::<Files>(())).ask(&ListFiles { namespace: Namespace::Code }, &Listing)?;
@@ -127,14 +117,19 @@ impl Actor for Library {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    /// `Code` listed: each module read, or `Code` published at once when it holds none.
+    #[answer]
+    fn files_listed(
+        &mut self,
+        answered: (Answered<FilesListed>, Listing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.handle_files_listed(answered, turn)
     }
-}
 
-/// A module of `Code` read, for what it was read for.
-impl Receives<Answer<FileRead, ReadingModule>> for Library {
-    fn handle(
+    /// A module of `Code` read, for what it was read for.
+    #[answer]
+    fn file_read(
         &mut self,
         (answered, reading): (Answered<FileRead>, ReadingModule),
         turn: &mut Turn<'_, Self>,
@@ -143,6 +138,23 @@ impl Receives<Answer<FileRead, ReadingModule>> for Library {
             ReadingModule::Starting { path } => self.read_as_starting(path, answered, turn),
             ReadingModule::Publishing { number } => self.read_to_publish(number, answered, turn),
         }
+    }
+
+    /// Taken at once while the library is open; held until `Code` is published while it starts, so `Code` comes first;
+    /// and answered that it stopped once it has.
+    #[request]
+    fn defaults(&mut self, defaults: Defaults, turn: &mut Turn<'_, Self>) -> Result<Reply<Defaulted>, Fault> {
+        self.handle_defaults(defaults, turn)
+    }
+
+    /// Reads the module, once `Code` is published: answered once it is read.
+    #[request]
+    fn publish_module(
+        &mut self,
+        publish_module: PublishModule,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<ModulePublished>, Fault> {
+        self.handle_publish_module(publish_module, turn)
     }
 }
 

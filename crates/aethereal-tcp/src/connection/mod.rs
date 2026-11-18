@@ -16,8 +16,8 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, Later, More, Open,
-    Protocol, Receives, Reply, Serving, Stream, StreamKey, Turn, Unsent,
+    Answer, Answered, Beginning, Bytes, Ended, Enough, Fault, Given, Handle, Held, Later, More, Open, Receives, Reply,
+    Serving, Stream, StreamKey, Turn, Unsent, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -110,23 +110,8 @@ pub struct Shut;
 pub struct Finish;
 
 /// What a connection is written, finished, and hung up through, whichever place it stands in.
+#[protocol(Write(answers = Wrote), Finish, Shut)]
 pub struct Writing;
-
-impl Protocol for Writing {
-    type Kinds = (Write, Finish, Shut);
-}
-
-impl Carries<Write> for Writing {
-    type Answers = (Wrote,);
-}
-
-impl Carries<Finish> for Writing {
-    type Answers = ();
-}
-
-impl Carries<Shut> for Writing {
-    type Answers = ();
-}
 
 /// Who reads a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

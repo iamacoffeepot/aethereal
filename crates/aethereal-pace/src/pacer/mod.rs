@@ -10,11 +10,8 @@ use asked::SIXTIETH_NANOS;
 pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, Unadvanced};
 
 use crate::host::Clockwork;
-use aethereal_actor::{
-    Actor, Beginning, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, On, Reply, Source, Stop,
-    Top, Turn,
-};
-use aethereal_actor::{Anyone, Receives, Requests};
+use aethereal_actor::Requests;
+use aethereal_actor::{Beginning, Controller, Fault, Given, Handle, Held, Level, Reply, Source, Stop, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Feed;
 use core::time::Duration;
@@ -101,17 +98,8 @@ struct Advancing {
 }
 
 /// The pacer is a root, made by the chassis whose clock it holds.
-impl ChildOf for Pacer {
-    type Parent = Top;
-}
-
-impl Actor for Pacer {
-    type Config = PacerConfig;
-    type Key = ();
-    type Handles = (Paced, SetPace, Advance, ReadPace, On<Stop>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Pacer {
     /// Takes the source and the controller, asks the host to hold the clock when the program starts held, and
     /// subscribes to `Stop`, after which no cycle runs.
     fn begin(config: PacerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -129,88 +117,11 @@ impl Actor for Pacer {
         Ok(Self { source, control, limit_nanos: config.limit_nanos, clock })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Sets the clock as asked, and answers how it moved before. A clock set running while advances are held refuses
-/// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
-impl Handles<SetPace> for Pacer {
-    type From = Anyone;
-    type Returns = PaceSet;
-
-    fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self>) -> Result<PaceSet, Fault> {
-        let was = self.pace();
-        match (&mut self.clock, set.pace) {
-            (Clock::Real, Pace::Held) => {
-                self.clock = Clock::Held(VecDeque::new());
-                turn.open(&mut self.control)?.push(Pacing::Hold);
-            }
-            (Clock::Held(advancing), Pace::Real) => {
-                for advance in advancing.drain(..) {
-                    turn.answer(advance.held, &Advanced::Refused(Unadvanced::Running))?;
-                }
-                self.clock = Clock::Real;
-                turn.open(&mut self.control)?.push(Pacing::Run);
-            }
-            (Clock::Real, Pace::Real) | (Clock::Held(_), Pace::Held) | (Clock::Stopping, _) => {}
-        }
-
-        Ok(PaceSet { was })
-    }
-}
-
-/// Holds the advance, and asks the host for its first cycle when no other advance is under way: answered once its last
-/// cycle has finished. One the clock cannot run is refused at once.
-impl Handles<Advance> for Pacer {
-    type From = Anyone;
-    type Returns = Reply<Advanced>;
-
-    fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self>) -> Result<Reply<Advanced>, Fault> {
-        let Advance { cycles, delta_nanos } = advance;
-        let delta_nanos = delta_nanos.unwrap_or(SIXTIETH_NANOS);
-        let limit_nanos = self.limit_nanos;
-        let advancing = match &mut self.clock {
-            Clock::Real => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Running))),
-            Clock::Stopping => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Stopping))),
-            Clock::Held(_) if cycles == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoCycles))),
-            Clock::Held(_) if delta_nanos == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoTime))),
-            Clock::Held(_) if delta_nanos > limit_nanos => {
-                return Ok(Reply::Now(Advanced::Refused(Unadvanced::PastLimit { limit_nanos })));
-            }
-            Clock::Held(advancing) => advancing,
-        };
-        let (held, later) = turn.hold();
-        let is_first = advancing.is_empty();
-        advancing.push_back(Advancing { held, left: cycles, delta_nanos });
-        if is_first {
-            // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
-            turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
-        }
-
-        Ok(Reply::Later(later))
-    }
-}
-
-/// Answers how the clock moves.
-impl Handles<ReadPace> for Pacer {
-    type From = Anyone;
-    type Returns = PaceRead;
-
-    fn handle(&mut self, _: ReadPace, _: &mut Turn<'_, Self>) -> Result<PaceRead, Fault> {
-        Ok(PaceRead { pace: self.pace() })
-    }
-}
-
-/// What the source brought, from this actor to itself (ADR-0010): that the held cycle last asked for finished. It
-/// counts against the first advance held, answers that advance once it has none left, and asks the host for the next
-/// cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
-impl Handles<Paced> for Pacer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// What the source brought, from this actor to itself (ADR-0010): that the held cycle last asked for finished. It
+    /// counts against the first advance held, answers that advance once it has none left, and asks the host for the
+    /// next cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
+    #[tell]
+    fn paced(&mut self, paced: Paced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();
         let is_brought = turn.sender() == me.into();
         if !is_brought {
@@ -240,11 +151,67 @@ impl Handles<Paced> for Pacer {
 
         Ok(())
     }
-}
 
-/// The program is stopping: every advance held is refused, and so is every one asked from now on.
-impl Receives<On<Stop>> for Pacer {
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Sets the clock as asked, and answers how it moved before. A clock set running while advances are held refuses
+    /// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
+    #[request]
+    fn set_pace(&mut self, set: SetPace, turn: &mut Turn<'_, Self>) -> Result<PaceSet, Fault> {
+        let was = self.pace();
+        match (&mut self.clock, set.pace) {
+            (Clock::Real, Pace::Held) => {
+                self.clock = Clock::Held(VecDeque::new());
+                turn.open(&mut self.control)?.push(Pacing::Hold);
+            }
+            (Clock::Held(advancing), Pace::Real) => {
+                for advance in advancing.drain(..) {
+                    turn.answer(advance.held, &Advanced::Refused(Unadvanced::Running))?;
+                }
+                self.clock = Clock::Real;
+                turn.open(&mut self.control)?.push(Pacing::Run);
+            }
+            (Clock::Real, Pace::Real) | (Clock::Held(_), Pace::Held) | (Clock::Stopping, _) => {}
+        }
+
+        Ok(PaceSet { was })
+    }
+
+    /// Holds the advance, and asks the host for its first cycle when no other advance is under way: answered once its
+    /// last cycle has finished. One the clock cannot run is refused at once.
+    #[request]
+    fn advance(&mut self, advance: Advance, turn: &mut Turn<'_, Self>) -> Result<Reply<Advanced>, Fault> {
+        let Advance { cycles, delta_nanos } = advance;
+        let delta_nanos = delta_nanos.unwrap_or(SIXTIETH_NANOS);
+        let limit_nanos = self.limit_nanos;
+        let advancing = match &mut self.clock {
+            Clock::Real => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Running))),
+            Clock::Stopping => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Stopping))),
+            Clock::Held(_) if cycles == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoCycles))),
+            Clock::Held(_) if delta_nanos == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoTime))),
+            Clock::Held(_) if delta_nanos > limit_nanos => {
+                return Ok(Reply::Now(Advanced::Refused(Unadvanced::PastLimit { limit_nanos })));
+            }
+            Clock::Held(advancing) => advancing,
+        };
+        let (held, later) = turn.hold();
+        let is_first = advancing.is_empty();
+        advancing.push_back(Advancing { held, left: cycles, delta_nanos });
+        if is_first {
+            // Pushed last, so a turn that fails before it asks the host for nothing (ADR-0019).
+            turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
+        }
+
+        Ok(Reply::Later(later))
+    }
+
+    /// Answers how the clock moves.
+    #[request]
+    fn read_pace(&mut self, _: ReadPace) -> Result<PaceRead, Fault> {
+        Ok(PaceRead { pace: self.pace() })
+    }
+
+    /// The program is stopping: every advance held is refused, and so is every one asked from now on.
+    #[on]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Clock::Held(advancing) = &mut self.clock {
             for advance in advancing.drain(..) {
                 turn.answer(advance.held, &Advanced::Refused(Unadvanced::Stopping))?;

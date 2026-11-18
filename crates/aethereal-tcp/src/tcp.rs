@@ -5,10 +5,7 @@ use crate::{
     BoundSocket, ConnectionConfig, Dialed, Framing, Listener, ListenerConfig, Shut, Socket, SocketAddress, SocketPath,
     Unaddressable,
 };
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Given, Handles, Held,
-    Receives, Reply, Spawn, Top, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Ended, Fault, Given, Held, Reply, Spawn, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
@@ -174,18 +171,9 @@ pub struct Tcp {
     next: u64,
 }
 
-impl ChildOf for Tcp {
-    type Parent = Top;
-}
-
-impl Actor for Tcp {
-    type Config = TcpConfig;
-    type Key = ();
-    type Handles = (Listen, Connect, ConnectUnix, Answer<Reached, Dialing>, Answer<ReachedUnix, DialingUnix>, Ended);
-    type Depends = ();
-    type Spawns = (Dialed, Listener);
-
-    fn begin(config: TcpConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(spawns(Dialed, Listener))]
+impl Tcp {
+    fn begin(config: TcpConfig) -> Result<Self, Fault> {
         Ok(Self {
             config,
             listeners: BTreeMap::new(),
@@ -197,25 +185,13 @@ impl Actor for Tcp {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Listen> for Tcp {
-    type From = Anyone;
-    type Returns = Listening;
-
-    fn handle(&mut self, listen: Listen, turn: &mut Turn<'_, Self>) -> Result<Listening, Fault> {
+    #[request]
+    fn listen(&mut self, listen: Listen, turn: &mut Turn<'_, Self>) -> Result<Listening, Fault> {
         self.listen(turn, &listen)
     }
-}
 
-impl Handles<Connect> for Tcp {
-    type From = Anyone;
-    type Returns = Reply<Connected>;
-
-    fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self>) -> Result<Reply<Connected>, Fault> {
+    #[request]
+    fn connect(&mut self, connect: Connect, turn: &mut Turn<'_, Self>) -> Result<Reply<Connected>, Fault> {
         if self.is_full() {
             return Ok(Reply::Now(Connected::Full));
         }
@@ -227,13 +203,9 @@ impl Handles<Connect> for Tcp {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Handles<ConnectUnix> for Tcp {
-    type From = Anyone;
-    type Returns = Reply<ConnectedUnix>;
-
-    fn handle(&mut self, connect: ConnectUnix, turn: &mut Turn<'_, Self>) -> Result<Reply<ConnectedUnix>, Fault> {
+    #[request]
+    fn connect_unix(&mut self, connect: ConnectUnix, turn: &mut Turn<'_, Self>) -> Result<Reply<ConnectedUnix>, Fault> {
         let path = match connect.path.checked() {
             Ok(path) => String::from(path),
             Err(why) => return Ok(Reply::Now(ConnectedUnix::Unaddressable(why))),
@@ -249,10 +221,9 @@ impl Handles<ConnectUnix> for Tcp {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<Reached, Dialing>> for Tcp {
-    fn handle(
+    #[answer]
+    fn reached(
         &mut self,
         (answered, dialing): (Answered<Reached>, Dialing),
         turn: &mut Turn<'_, Self>,
@@ -276,10 +247,9 @@ impl Receives<Answer<Reached, Dialing>> for Tcp {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<ReachedUnix, DialingUnix>> for Tcp {
-    fn handle(
+    #[answer]
+    fn reached_unix(
         &mut self,
         (answered, dialing): (Answered<ReachedUnix>, DialingUnix),
         turn: &mut Turn<'_, Self>,
@@ -303,10 +273,9 @@ impl Receives<Answer<ReachedUnix, DialingUnix>> for Tcp {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Tcp {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id().bits();
         self.listeners.retain(|_, opened| opened.child.id().bits() != gone);
         self.dialed.retain(|_, opened| opened.child.id().bits() != gone);

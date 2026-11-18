@@ -6,7 +6,7 @@
 use super::session::{Activity, Life, Then};
 use super::transcript::{Ended, Entry, Note, Since, Speaker, WindDown};
 use super::{Resting, Sessions};
-use aethereal_actor::{Answer, Answered, Fault, JobId, Receives, Sleep, Slept, Turn};
+use aethereal_actor::{Answered, Fault, JobId, Sleep, Slept, Turn};
 use core::time::Duration;
 
 /// The line that asks Claude Code to compact its session.
@@ -51,11 +51,9 @@ impl Sessions {
     pub(super) fn wound_down(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         self.stop(turn, session, Ended::Idle, Then::Rest { lines: Vec::new() })
     }
-}
 
-impl Receives<Answer<Slept, Resting>> for Sessions {
     /// A session's idle time, or a step's deadline, is up: unless it was active since, it is wound down a step.
-    fn handle(
+    pub(super) fn handle_slept(
         &mut self,
         (answered, Resting { session, rest }): (Answered<Slept>, Resting),
         turn: &mut Turn<'_, Self>,

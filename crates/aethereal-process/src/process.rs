@@ -3,8 +3,7 @@
 use crate::jobs::{Raise, Raised, Raising, Wait, Waited, Waiting};
 use crate::{Processes, Signal, Unwaited};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, JobId, Level,
-    Protocol, ProtocolRef, Receives, Sleep, Slept, Turn,
+    Answered, Beginning, Ended, Fault, JobId, Level, ProtocolRef, Sleep, Slept, Turn, actor, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -37,15 +36,8 @@ pub struct Stop;
 
 /// What the actor a program is started for takes: the [`Exited`] its process tells it (ADR-0040). It is named in
 /// [`Start`](crate::Start) by a reference to it of this protocol.
+#[protocol(Exited)]
 pub struct Exits;
-
-impl Protocol for Exits {
-    type Kinds = (Exited,);
-}
-
-impl Carries<Exited> for Exits {
-    type Answers = ();
-}
 
 /// What a process is made from: its number, which names its program to the launcher, the actor it tells how the
 /// program exited, and how long a program asked to stop is given.
@@ -86,17 +78,8 @@ pub struct Process {
     stopping: Stopping,
 }
 
-impl ChildOf for Process {
-    type Parent = Processes;
-}
-
-impl Actor for Process {
-    type Config = ProcessConfig;
-    type Key = u64;
-    type Handles = (Stop, Ended, Answer<Waited, Waiting>, Answer<Slept, Grace>, Answer<Raised, Raising>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Processes)]
+impl Process {
     fn begin(config: ProcessConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);
         turn.run(&Wait { process: config.number }, &Waiting)?;
@@ -109,23 +92,14 @@ impl Actor for Process {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Stop> for Process {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.stop(turn)
     }
-}
 
-impl Receives<Ended> for Process {
     /// Its starter has ended, which is the one actor it watches: no one wants the program any more.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_starter = ended.actor().id() == self.starter.id();
         if is_starter {
             self.stop(turn)?;
@@ -133,11 +107,10 @@ impl Receives<Ended> for Process {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Waited, Waiting>> for Process {
     /// The program has exited: its starter is told how, and the process ends.
-    fn handle(
+    #[answer]
+    fn waited(
         &mut self,
         (answered, Waiting): (Answered<Waited>, Waiting),
         turn: &mut Turn<'_, Self>,
@@ -154,21 +127,19 @@ impl Receives<Answer<Waited, Waiting>> for Process {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Grace>> for Process {
     /// The program's time to end has passed, and it has not exited, or this would have been cancelled: its group is
     /// killed.
-    fn handle(&mut self, _: (Answered<Slept>, Grace), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, _: (Answered<Slept>, Grace), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Raise { process: self.number, signal: Signal::Kill }, &Raising)?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Raised, Raising>> for Process {
     /// A signal was sent: what it came to is told by the program's exit.
-    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn raised(&mut self, _: (Answered<Raised>, Raising)) -> Result<(), Fault> {
         Ok(())
     }
 }

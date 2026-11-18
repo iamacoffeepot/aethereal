@@ -14,8 +14,8 @@ use crate::frames::{self, Written};
 use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Level, Number,
-    Part, Receives, Streams, Subscribers, Taken, Top, Turn, Unanswered, path,
+    ActorRef, Answered, Beginning, Due, Ended, Fault, Level, Number, Part, Speaks, Streams, Subscribers, Taken, Turn,
+    Unanswered, actor, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents};
@@ -113,10 +113,6 @@ pub struct Link {
     listeners: Subscribers<Listening>,
 }
 
-impl ChildOf for Link {
-    type Parent = Top;
-}
-
 /// It stands up on every host, and refuses to where a frame it would read could not be read, or where its settings
 /// hold no token.
 impl<H: Host> Bootstrap<H> for Link {
@@ -135,23 +131,8 @@ impl<H: Host> Bootstrap<H> for Link {
     }
 }
 
-impl Actor for Link {
-    type Config = LinkConfig;
-    type Key = ();
-    type Handles = (
-        Sheets,
-        Answer<Connected, Connecting>,
-        Part<Reading>,
-        Answer<HungUp, Number>,
-        Answer<Wrote, Sending>,
-        Answer<Called, Calling>,
-        Listen,
-        Chat,
-        Ended,
-    );
-    type Depends = (Tools, Tcp);
-    type Spawns = ();
-
+#[actor(depends(Tools, Tcp))]
+impl Link {
     /// Subscribes to the engine's tools, and dials its hub.
     fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Tools>(())).send(&Subscribe)?;
@@ -169,27 +150,18 @@ impl Actor for Link {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Sheets> for Link {
-    type From = Anyone;
-    type Returns = ();
-
     /// The engine's tools as `Tools` now holds them: kept, and written to the hub when connected.
-    fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn sheets(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.set = Set::Heard(sheets);
 
         self.write_sheets(turn)
     }
-}
 
-impl Receives<Answer<Connected, Connecting>> for Link {
     /// Connected, it reads the connection and writes `Hello`, with its token, and the set; otherwise the link has
     /// ended.
-    fn handle(
+    #[answer]
+    fn connected(
         &mut self,
         (answered, Connecting): (Answered<Connected>, Connecting),
         turn: &mut Turn<'_, Self>,
@@ -206,15 +178,11 @@ impl Receives<Answer<Connected, Connecting>> for Link {
 
         self.write_sheets(turn)
     }
-}
-
-impl Handles<Part<Reading>> for Link {
-    type From = Anyone;
-    type Returns = ();
 
     /// A frame from the hub: a call, asked of the engine's tools; the chat it shows a trusted engine, handed to each
     /// listener; or a refusal, which ends the link, as a frame that does not read does.
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn part(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
         };
@@ -250,11 +218,10 @@ impl Handles<Part<Reading>> for Link {
             Down::Ask { ask, session, what } => self.ask(turn, ShowAsk { ask, session, what }),
         }
     }
-}
 
-impl Receives<Answer<HungUp, Number>> for Link {
     /// The connection's stream has ended: when it is the open connection's, the link has ended.
-    fn handle(
+    #[answer]
+    fn hung_up(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
         turn: &mut Turn<'_, Self>,
@@ -268,11 +235,10 @@ impl Receives<Answer<HungUp, Number>> for Link {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Wrote, Sending>> for Link {
     /// A write to the open connection that was not sent ends the link.
-    fn handle(
+    #[answer]
+    fn wrote(
         &mut self,
         (answered, sending): (Answered<Wrote>, Sending),
         turn: &mut Turn<'_, Self>,
@@ -287,11 +253,10 @@ impl Receives<Answer<Wrote, Sending>> for Link {
 
         self.hang_up(turn)
     }
-}
 
-impl Receives<Answer<Called, Calling>> for Link {
     /// What `Tools` answered, written to the hub: one that comes once the link has ended is dropped.
-    fn handle(
+    #[answer]
+    fn called(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -306,6 +271,26 @@ impl Receives<Answer<Called, Calling>> for Link {
         };
 
         self.answer(turn, call, called)
+    }
+
+    /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or
+    /// the hub has shown nothing.
+    #[tell]
+    fn listen(&mut self, listen: Listen, turn: &mut Turn<'_, Self, Speaks<Listening>>) -> Result<(), Fault> {
+        self.handle_listen(listen, turn)
+    }
+
+    /// What the engine's owner did, written up as its frame when the link is open: the hub takes it only from a trusted
+    /// engine. A frame too large for the link is not written, and logged.
+    #[tell]
+    fn chat(&mut self, chat: Chat, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_chat(chat, turn)
+    }
+
+    /// A listener has ended, and is let go.
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
+        self.handle_ended(ended)
     }
 }
 

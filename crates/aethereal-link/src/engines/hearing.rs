@@ -8,7 +8,7 @@
 //! ```
 
 use super::{Engine, Engines};
-use aethereal_actor::{ActorRef, Fault, Handles, Speaks, Turn};
+use aethereal_actor::{ActorRef, Fault, Speaks, Turn};
 use aethereal_data::{Bound, Plain};
 
 /// What an actor that hears of trusted engines is told.
@@ -28,13 +28,14 @@ pub struct TrustedEngine {
     pub engine: ActorRef<Engine>,
 }
 
-impl Handles<HearTrusted> for Engines {
-    type From = Speaks<Hearing>;
-    type Returns = ();
-
+impl Engines {
     /// Holds the sender, and tells it each engine linked trusted already: nothing, when it hears already, as it was
     /// told them then and is told each after.
-    fn handle(&mut self, _: HearTrusted, turn: &mut Turn<'_, Self, Speaks<Hearing>>) -> Result<(), Fault> {
+    pub(super) fn handle_hear_trusted(
+        &mut self,
+        _: HearTrusted,
+        turn: &mut Turn<'_, Self, Speaks<Hearing>>,
+    ) -> Result<(), Fault> {
         let hearer = *turn.from();
         let added = self.hearers.subscribe(turn, hearer);
         if !added {

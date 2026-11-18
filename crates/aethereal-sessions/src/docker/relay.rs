@@ -13,8 +13,8 @@ use super::{
     Watching, reply,
 };
 use aethereal_actor::{
-    ActorRef, Answer, Answered, Anyone, Enough, Fault, Handles, Later, More, Number, Open, Part, ProtocolRef, Receives,
-    Serving, Stream, StreamKey, Taken, Turn, Unsent,
+    ActorRef, Answered, Enough, Fault, Later, More, Number, Open, Part, ProtocolRef, Serving, Stream, StreamKey, Taken,
+    Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Client, Failure, Finished, Follow, Received, Receiving, Switch};
@@ -94,11 +94,12 @@ enum Passed {
     Broke(DockerError),
 }
 
-impl Handles<Open<Attaching>> for Docker {
-    type From = Anyone;
-    type Returns = Later<Detached>;
-
-    fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<Later<Detached>, Fault> {
+impl Docker {
+    pub(super) fn handle_open_attaching(
+        &mut self,
+        open: Open<Attaching>,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Later<Detached>, Fault> {
         let (key, attach, later) = self.attaching.open(turn, open)?;
         let downstream = Downstream::Attach { key, demux: Demux::new(), queue: VecDeque::new() };
 
@@ -106,13 +107,12 @@ impl Handles<Open<Attaching>> for Docker {
 
         Ok(later)
     }
-}
 
-impl Handles<Open<Logging>> for Docker {
-    type From = Anyone;
-    type Returns = Later<LogsDone>;
-
-    fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<Later<LogsDone>, Fault> {
+    pub(super) fn handle_open_logging(
+        &mut self,
+        open: Open<Logging>,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Later<LogsDone>, Fault> {
         let (key, logs, later) = self.logging.open(turn, open)?;
         let downstream = Downstream::Logs { key, demux: Demux::new(), queue: VecDeque::new() };
 
@@ -120,13 +120,12 @@ impl Handles<Open<Logging>> for Docker {
 
         Ok(later)
     }
-}
 
-impl Handles<Open<Watching>> for Docker {
-    type From = Anyone;
-    type Returns = Later<EventsDone>;
-
-    fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<Later<EventsDone>, Fault> {
+    pub(super) fn handle_open_watching(
+        &mut self,
+        open: Open<Watching>,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Later<EventsDone>, Fault> {
         let (key, events, later) = self.watching.open(turn, open)?;
         let downstream = Downstream::Events { key, lines: Lines::new(), queue: VecDeque::new() };
 
@@ -134,14 +133,10 @@ impl Handles<Open<Watching>> for Docker {
 
         Ok(later)
     }
-}
-
-impl Handles<More> for Docker {
-    type From = Anyone;
-    type Returns = ();
 
     /// An asker grants a stream more credit: what waits for it is passed on.
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let attach = self.attaching.more(turn, &more).map(Served::Attach);
         let logs = self.logging.more(turn, &more).map(Served::Logs);
         let events = self.watching.more(turn, &more).map(Served::Events);
@@ -154,14 +149,10 @@ impl Handles<More> for Docker {
 
         self.flush(turn, number)
     }
-}
-
-impl Handles<Enough> for Docker {
-    type From = Anyone;
-    type Returns = ();
 
     /// An asker stops a stream: it is answered at once, and the response's connection hung up.
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let served = if let Some(stream) = self.attaching.stop(turn, &enough) {
             let served = Served::Attach(stream.key());
             stream.finish(turn, &Detached::HungUp(HungUp::Shut))?;
@@ -180,15 +171,10 @@ impl Handles<Enough> for Docker {
 
         self.drop_relay(turn, served)
     }
-}
-
-impl Handles<Part<Receiving>> for Docker {
-    type From = Anyone;
-    type Returns = ();
 
     /// A part of a response `Http`'s client streams: taken apart into the parts of the stream it is relayed to, its
     /// credit held back until they are passed on.
-    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    pub(super) fn handle_part(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, kept, .. }) = self.receiving.part_held(turn, part) else {
             return Ok(());
         };
@@ -203,12 +189,10 @@ impl Handles<Part<Receiving>> for Docker {
 
         self.flush(turn, number)
     }
-}
 
-impl Receives<Answer<Finished, Number>> for Docker {
     /// A response `Http`'s client streamed has ended: its client is hung up, and the stream it was relayed to is
     /// answered once every part waiting is passed on.
-    fn handle(
+    pub(super) fn handle_finished(
         &mut self,
         (answered, upstream): (Answered<Finished>, Number),
         turn: &mut Turn<'_, Self>,

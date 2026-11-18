@@ -50,8 +50,8 @@ pub use streams::{
 };
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, More, Number, Open, Part,
-    Protocol, Receives, Serving, Streams, Top, Turn, path,
+    Answered, Ended, Enough, Fault, Later, More, Number, Open, Part, Reply, Serving, Streams, Turn, actor, path,
+    protocol,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Connect, Connected, Fetch, Fetched, Finished, Http, Peer, Receiving, Unreached};
@@ -77,15 +77,8 @@ pub struct Calling {
 }
 
 /// What the client asks `Http`'s client for a request answered whole.
+#[protocol(Fetch(answers = Fetched))]
 pub struct Fetches;
-
-impl Protocol for Fetches {
-    type Kinds = (Fetch,);
-}
-
-impl Carries<Fetch> for Fetches {
-    type Answers = (Fetched,);
-}
 
 /// The Docker client: asks Docker's Engine API, over its Unix socket, for what the hub's sessions need of their
 /// containers, as typed requests and streams, and nothing else (ADR-0057).
@@ -123,37 +116,9 @@ impl<H: Host> Bootstrap<H> for Docker {
     }
 }
 
-impl ChildOf for Docker {
-    type Parent = Top;
-}
-
-impl Actor for Docker {
-    type Config = DockerConfig;
-    type Key = ();
-    type Handles = (
-        Create,
-        Start,
-        Stop,
-        Kill,
-        Remove,
-        Inspect,
-        List,
-        CreateVolume,
-        Open<Attaching>,
-        Open<Logging>,
-        Open<Watching>,
-        More,
-        Enough,
-        Ended,
-        Answer<Connected, Dialing>,
-        Answer<Fetched, Calling>,
-        Part<Receiving>,
-        Answer<Finished, Number>,
-    );
-    type Depends = (Http,);
-    type Spawns = ();
-
-    fn begin(config: DockerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Http))]
+impl Docker {
+    fn begin(config: DockerConfig) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.window).unwrap_or(NonZeroU32::MIN);
 
         Ok(Self {
@@ -168,15 +133,96 @@ impl Actor for Docker {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[request]
+    fn create(&mut self, create: Create, turn: &mut Turn<'_, Self>) -> Result<Reply<Created>, Fault> {
+        self.handle_create(create, turn)
+    }
+
+    #[request]
+    fn start(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+        self.handle_start(start, turn)
+    }
+
+    #[request]
+    fn stop(&mut self, stop: Stop, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+        self.handle_stop(stop, turn)
+    }
+
+    #[request]
+    fn kill(&mut self, kill: Kill, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+        self.handle_kill(kill, turn)
+    }
+
+    #[request]
+    fn remove(&mut self, remove: Remove, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+        self.handle_remove(remove, turn)
+    }
+
+    #[request]
+    fn inspect(&mut self, inspect: Inspect, turn: &mut Turn<'_, Self>) -> Result<Reply<Inspected>, Fault> {
+        self.handle_inspect(inspect, turn)
+    }
+
+    #[request]
+    fn list(&mut self, list: List, turn: &mut Turn<'_, Self>) -> Result<Reply<Listed>, Fault> {
+        self.handle_list(list, turn)
+    }
+
+    #[request]
+    fn create_volume(
+        &mut self,
+        create_volume: CreateVolume,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<VolumeCreated>, Fault> {
+        self.handle_create_volume(create_volume, turn)
+    }
+
+    #[request]
+    fn open_attaching(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<Later<Detached>, Fault> {
+        self.handle_open_attaching(open, turn)
+    }
+
+    #[request]
+    fn open_logging(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<Later<LogsDone>, Fault> {
+        self.handle_open_logging(open, turn)
+    }
+
+    #[request]
+    fn open_watching(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<Later<EventsDone>, Fault> {
+        self.handle_open_watching(open, turn)
+    }
+
+    /// An asker grants a stream more credit: what waits for it is passed on.
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_more(more, turn)
+    }
+
+    /// An asker stops a stream: it is answered at once, and the response's connection hung up.
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_enough(enough, turn)
+    }
+
+    /// An actor that opened streams has ended: each of its streams' connections is hung up, as nothing will take what
+    /// comes on it.
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let attaches = self.attaching.ended(&ended).into_iter().map(|stream| relay::Served::Attach(stream.key()));
+        let logs = self.logging.ended(&ended).into_iter().map(|stream| relay::Served::Logs(stream.key()));
+        let events = self.watching.ended(&ended).into_iter().map(|stream| relay::Served::Events(stream.key()));
+        let gone: Vec<relay::Served> = attaches.chain(logs).chain(events).collect();
+        for served in gone {
+            self.drop_relay(turn, served)?;
+        }
+
         Ok(())
     }
-}
 
-impl Receives<Answer<Connected, Dialing>> for Docker {
     /// A connection `Http` dialed: the request it was for is asked on it, or the stream opened, and a connection
     /// nothing waits on any more is hung up. A dial that failed answers what it was for.
-    fn handle(
+    #[answer]
+    fn connected(
         &mut self,
         (answered, Dialing { number }): (Answered<Connected>, Dialing),
         turn: &mut Turn<'_, Self>,
@@ -202,21 +248,25 @@ impl Receives<Answer<Connected, Dialing>> for Docker {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Docker {
-    /// An actor that opened streams has ended: each of its streams' connections is hung up, as nothing will take what
-    /// comes on it.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let attaches = self.attaching.ended(&ended).into_iter().map(|stream| relay::Served::Attach(stream.key()));
-        let logs = self.logging.ended(&ended).into_iter().map(|stream| relay::Served::Logs(stream.key()));
-        let events = self.watching.ended(&ended).into_iter().map(|stream| relay::Served::Events(stream.key()));
-        let gone: Vec<relay::Served> = attaches.chain(logs).chain(events).collect();
-        for served in gone {
-            self.drop_relay(turn, served)?;
-        }
+    /// `Http`'s client answered a request: its asker is answered with what the reply says, and the client hung up.
+    #[answer]
+    fn fetched(&mut self, answered: (Answered<Fetched>, Calling), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_fetched(answered, turn)
+    }
 
-        Ok(())
+    /// A part of a response `Http`'s client streams: taken apart into the parts of the stream it is relayed to, its
+    /// credit held back until they are passed on.
+    #[tell]
+    fn part(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_part(part, turn)
+    }
+
+    /// A response `Http`'s client streamed has ended: its client is hung up, and the stream it was relayed to is
+    /// answered once every part waiting is passed on.
+    #[answer]
+    fn finished(&mut self, answered: (Answered<Finished>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_finished(answered, turn)
     }
 }
 

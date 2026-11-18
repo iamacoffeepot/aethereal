@@ -3,17 +3,18 @@
 
 use super::{Fetching, Library, ReadingModule, Stage};
 use crate::{ModulePublished, Numbered, PublishModule, Unloaded};
-use aethereal_actor::{Answered, Bytes, Fault, Handles, Reply, Turn, path};
-use aethereal_actor::{Anyone, Level};
+use aethereal_actor::Level;
+use aethereal_actor::{Answered, Bytes, Fault, Reply, Turn, path};
 use aethereal_data::{FilePath, to_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 
-/// Reads the module, once `Code` is published: answered once it is read.
-impl Handles<PublishModule> for Library {
-    type From = Anyone;
-    type Returns = Reply<ModulePublished>;
-
-    fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self>) -> Result<Reply<ModulePublished>, Fault> {
+impl Library {
+    /// Reads the module, once `Code` is published: answered once it is read.
+    pub(super) fn handle_publish_module(
+        &mut self,
+        publish: PublishModule,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<ModulePublished>, Fault> {
         let is_open = matches!(self.stage, Stage::Open);
         if !is_open {
             return Ok(Reply::Now(ModulePublished::Unopened));

@@ -12,10 +12,7 @@ use crate::{
     StoreHash, StoreName, Stored, StoredBinary, Unpin,
 };
 use aethereal_actor::Held as Debt;
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Later, Level,
-    Receives, Top, Turn,
-};
+use aethereal_actor::{Answered, Beginning, Ended, ErasedActorRef, Fault, Later, Level, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use launches::Launches;
 use shelves::{Admitted, Launchable, Shelves};
@@ -316,144 +313,91 @@ impl Store {
     }
 }
 
-impl ChildOf for Store {
-    type Parent = Top;
-}
-
-impl Actor for Store {
-    type Config = StoreConfig;
-    type Key = ();
-    type Handles = (
-        CheckIn,
-        CheckInDropped,
-        ListStored,
-        Pin,
-        Unpin,
-        Hold,
-        Launch,
-        Ended,
-        Answer<Counted, Counting>,
-        Answer<Stocked, Stocking>,
-        Answer<Shelved, Shelving>,
-        Answer<Issued, Issuing>,
-        Answer<Recalled, Recalling>,
-    );
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Store {
     fn begin(config: StoreConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Recount, &Counting)?;
 
         Ok(Self { config, stage: Stage::Counting { asks: Vec::new() } })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<CheckIn> for Store {
-    type From = Anyone;
-    type Returns = Later<CheckedIn>;
-
-    fn handle(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self>) -> Result<Later<CheckedIn>, Fault> {
+    #[request]
+    fn check_in(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self>) -> Result<Later<CheckedIn>, Fault> {
         let (debt, later) = turn.hold();
         let CheckIn { path, name } = check_in;
         self.take(Ask::CheckIn { debt, from: Source::Path(path), name }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<CheckInDropped> for Store {
-    type From = Anyone;
-    type Returns = Later<CheckedIn>;
-
-    fn handle(&mut self, check_in: CheckInDropped, turn: &mut Turn<'_, Self>) -> Result<Later<CheckedIn>, Fault> {
+    #[request]
+    fn check_in_dropped(
+        &mut self,
+        check_in: CheckInDropped,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Later<CheckedIn>, Fault> {
         let (debt, later) = turn.hold();
         let CheckInDropped { session, file, name } = check_in;
         self.take(Ask::CheckIn { debt, from: Source::Dropped { session, file }, name }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<ListStored> for Store {
-    type From = Anyone;
-    type Returns = Later<Stored>;
-
-    fn handle(&mut self, _: ListStored, turn: &mut Turn<'_, Self>) -> Result<Later<Stored>, Fault> {
+    #[request]
+    fn list_stored(&mut self, _: ListStored, turn: &mut Turn<'_, Self>) -> Result<Later<Stored>, Fault> {
         let (debt, later) = turn.hold();
         self.take(Ask::List { debt }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<Pin> for Store {
-    type From = Anyone;
-    type Returns = Later<Pinned>;
-
-    fn handle(&mut self, Pin { hash }: Pin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
+    #[request]
+    fn pin(&mut self, Pin { hash }: Pin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
         let (debt, later) = turn.hold();
         self.take(Ask::Pin { debt, hash }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<Unpin> for Store {
-    type From = Anyone;
-    type Returns = Later<Pinned>;
-
-    fn handle(&mut self, Unpin { hash }: Unpin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
+    #[request]
+    fn unpin(&mut self, Unpin { hash }: Unpin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
         let (debt, later) = turn.hold();
         self.take(Ask::Unpin { debt, hash }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<Hold> for Store {
-    type From = Anyone;
-    type Returns = Later<Held>;
-
-    fn handle(&mut self, Hold { hash }: Hold, turn: &mut Turn<'_, Self>) -> Result<Later<Held>, Fault> {
+    #[request]
+    fn hold(&mut self, Hold { hash }: Hold, turn: &mut Turn<'_, Self>) -> Result<Later<Held>, Fault> {
         let (debt, later) = turn.hold();
         let holder = turn.sender();
         self.take(Ask::Hold { debt, hash, holder }, turn)?;
 
         Ok(later)
     }
-}
 
-impl Handles<Launch> for Store {
-    type From = Anyone;
-    type Returns = Later<Launched>;
-
-    fn handle(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self>) -> Result<Later<Launched>, Fault> {
+    #[request]
+    fn launch(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self>) -> Result<Later<Launched>, Fault> {
         let (debt, later) = turn.hold();
         let asker = turn.sender();
         self.take(Ask::Launch { debt, binary, asker }, turn)?;
 
         Ok(later)
     }
-}
 
-/// A holder has ended: its holds go, and its launch copies are removed. Nothing is held and no launch copy handed out
-/// while the index is read, as each is taken only once it is.
-impl Receives<Ended> for Store {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A holder has ended: its holds go, and its launch copies are removed. Nothing is held and no launch copy handed
+    /// out while the index is read, as each is taken only once it is.
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Stage::Open { open } = &mut self.stage else {
             return Ok(());
         };
         open.ended(ended.actor());
         open.pump(self.config, turn)
     }
-}
 
-impl Receives<Answer<Counted, Counting>> for Store {
-    fn handle(
+    #[answer]
+    fn counted(
         &mut self,
         (answered, Counting): (Answered<Counted>, Counting),
         turn: &mut Turn<'_, Self>,
@@ -478,10 +422,9 @@ impl Receives<Answer<Counted, Counting>> for Store {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Stocked, Stocking>> for Store {
-    fn handle(
+    #[answer]
+    fn stocked(
         &mut self,
         (answered, Stocking): (Answered<Stocked>, Stocking),
         turn: &mut Turn<'_, Self>,
@@ -496,10 +439,9 @@ impl Receives<Answer<Stocked, Stocking>> for Store {
         open.stocked(stocked, self.config.most_bytes, turn)?;
         open.pump(self.config, turn)
     }
-}
 
-impl Receives<Answer<Shelved, Shelving>> for Store {
-    fn handle(
+    #[answer]
+    fn shelved(
         &mut self,
         (answered, Shelving): (Answered<Shelved>, Shelving),
         turn: &mut Turn<'_, Self>,
@@ -516,10 +458,9 @@ impl Receives<Answer<Shelved, Shelving>> for Store {
         }
         open.pump(self.config, turn)
     }
-}
 
-impl Receives<Answer<Issued, Issuing>> for Store {
-    fn handle(
+    #[answer]
+    fn issued(
         &mut self,
         (answered, Issuing): (Answered<Issued>, Issuing),
         turn: &mut Turn<'_, Self>,
@@ -534,10 +475,9 @@ impl Receives<Answer<Issued, Issuing>> for Store {
         open.issued(issued, turn)?;
         open.pump(self.config, turn)
     }
-}
 
-impl Receives<Answer<Recalled, Recalling>> for Store {
-    fn handle(
+    #[answer]
+    fn recalled(
         &mut self,
         (answered, Recalling): (Answered<Recalled>, Recalling),
         turn: &mut Turn<'_, Self>,

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{Caller, CommandLine, FlagsFault};
-use aethereal_actor::{Anyone, Beginning, Ending, Handles, Top, tuning};
+use aethereal_actor::tuning;
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use std::num::NonZeroUsize;
@@ -35,23 +35,20 @@ struct Dial {
 #[kind(name = "aether.test.dial_config")]
 struct DialConfig;
 
-impl ChildOf for Dial {
-    type Parent = Top;
-}
-
-impl Actor for Dial {
-    type Config = DialConfig;
-    type Key = ();
-    type Handles = (ReadTuning, Tune);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: DialConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Dial {
+    fn begin(_: DialConfig) -> Result<Self, Fault> {
         Ok(Self { level: 3, name: String::from("gain"), marks: vec![0, 5, 10] })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[request]
+    fn read_tuning(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
+        tuning::read(self, turn)
+    }
+
+    #[request]
+    fn tune(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
+        tuning::tune(self, &tune, turn)
     }
 }
 
@@ -73,24 +70,6 @@ impl Tunable for Dial {
 
     fn tunes(me: ActorRef<Self>) -> ProtocolRef<Tunes> {
         me.protocol()
-    }
-}
-
-impl Handles<ReadTuning> for Dial {
-    type From = Anyone;
-    type Returns = Tuning;
-
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
-        tuning::read(self, turn)
-    }
-}
-
-impl Handles<Tune> for Dial {
-    type From = Anyone;
-    type Returns = Tuned;
-
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
-        tuning::tune(self, &tune, turn)
     }
 }
 

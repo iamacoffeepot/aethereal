@@ -3,10 +3,7 @@
 
 use crate::http1::fit::{BlobBytesTooLow, ReadLimitTooLow};
 use crate::{Client, ClientConfig, HttpSettings};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Handles, Held, Receives,
-    Spawn, Top, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Ended, Fault, Held, Spawn, Turn, actor, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{self as tcp, ConnectUnix, ConnectedUnix, Dialed, Framing, Shut, SocketPath, Tcp, Unaddressable};
@@ -136,31 +133,14 @@ impl<H: Host> Bootstrap<H> for Http {
     }
 }
 
-impl ChildOf for Http {
-    type Parent = Top;
-}
-
-impl Actor for Http {
-    type Config = HttpSettings;
-    type Key = ();
-    type Handles = (Connect, Answer<tcp::Connected, Reaching>, Answer<ConnectedUnix, ReachingUnix>, Ended);
-    type Depends = (Tcp,);
-    type Spawns = (Client,);
-
-    fn begin(settings: HttpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Tcp), spawns(Client))]
+impl Http {
+    fn begin(settings: HttpSettings) -> Result<Self, Fault> {
         Ok(Self { settings, clients: BTreeMap::new(), connecting: BTreeMap::new(), askers: Vec::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Connect> for Http {
-    type From = Anyone;
-    type Returns = aethereal_actor::Reply<Connected>;
-
-    fn handle(
+    #[request]
+    fn connect(
         &mut self,
         connect: Connect,
         turn: &mut Turn<'_, Self>,
@@ -195,10 +175,9 @@ impl Handles<Connect> for Http {
 
         Ok(aethereal_actor::Reply::Later(later))
     }
-}
 
-impl Receives<Answer<tcp::Connected, Reaching>> for Http {
-    fn handle(
+    #[answer]
+    fn connected(
         &mut self,
         (answered, reaching): (Answered<tcp::Connected>, Reaching),
         turn: &mut Turn<'_, Self>,
@@ -220,10 +199,9 @@ impl Receives<Answer<tcp::Connected, Reaching>> for Http {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<ConnectedUnix, ReachingUnix>> for Http {
-    fn handle(
+    #[answer]
+    fn connected_unix(
         &mut self,
         (answered, reaching): (Answered<ConnectedUnix>, ReachingUnix),
         turn: &mut Turn<'_, Self>,
@@ -246,10 +224,9 @@ impl Receives<Answer<ConnectedUnix, ReachingUnix>> for Http {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Http {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id().bits();
         self.clients.retain(|_, opened| opened.client.id().bits() != gone);
         let was_asker = self.askers.contains(&gone);

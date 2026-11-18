@@ -8,10 +8,7 @@ mod tests;
 pub use record::{BehindGuest, GuestStanding, HeadRecord, PublishRecord, Upgrading};
 
 use crate::{Library, ModulePublished, Numbered, PublishModule, Unloaded};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves,
-    ProtocolRef, Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, Moves, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use core::fmt::Write as _;
@@ -64,60 +61,15 @@ pub struct LibraryTool {
     next: u64,
 }
 
-impl ChildOf for LibraryTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for LibraryTool {
-    type Config = LibraryToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<ModulePublished, Calling>);
-    type Depends = (Library,);
-    type Spawns = ();
-
-    fn begin(_: LibraryToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Library))]
+impl LibraryTool {
+    fn begin(_: LibraryToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for LibraryTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![
-            ToolSheet::of::<Publish>(
-                PUBLISH,
-                "Publishes a guest module of `Code` as the head of every kind it makes, moving the heads of kinds \
-                 another module made before, and answers at once with the module's hash and each kind with the number \
-                 of its publish. Each running actor of those kinds is asked before its next batch whether to move onto \
-                 it: `upgrades` shows who has.",
-                Output::Value(SchemaNodes::of(&PublishRecord::SHAPE)),
-            ),
-            ToolSheet::json::<ReadUpgrades>(
-                UPGRADES,
-                "Shows every kind's head, with the number of the publish that made it, how many actors have moved \
-                 onto it, and the fields their old states lacked; and every running guest that is not on its kind's \
-                 head: still to be asked, behind with how many batches it has answered `Later`, or parked with the \
-                 publish its move failed on and why. A parked guest runs its old code until its kind's head moves \
-                 again.",
-                Output::Value(SchemaNodes::of(&Upgrading::SHAPE)),
-            ),
-        ]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// `publish` is held and asked of the library; `upgrades` is answered at once.
-impl Handles<Call> for LibraryTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// `publish` is held and asked of the library; `upgrades` is answered at once.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
         match call.tool.as_str() {
@@ -144,11 +96,10 @@ impl Handles<Call> for LibraryTool {
             _ => Ok(Reply::Now(refused("this worker serves publish and upgrades alone"))),
         }
     }
-}
 
-/// The library published the module, or did not: the publish is answered either way.
-impl Receives<Answer<ModulePublished, Calling>> for LibraryTool {
-    fn handle(
+    /// The library published the module, or did not: the publish is answered either way.
+    #[answer]
+    fn module_published(
         &mut self,
         (answered, Calling { call }): (Answered<ModulePublished>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -180,6 +131,34 @@ impl Receives<Answer<ModulePublished, Calling>> for LibraryTool {
         turn.answer(held, &called)?;
 
         Ok(())
+    }
+}
+
+impl Tool for LibraryTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![
+            ToolSheet::of::<Publish>(
+                PUBLISH,
+                "Publishes a guest module of `Code` as the head of every kind it makes, moving the heads of kinds \
+                 another module made before, and answers at once with the module's hash and each kind with the number \
+                 of its publish. Each running actor of those kinds is asked before its next batch whether to move onto \
+                 it: `upgrades` shows who has.",
+                Output::Value(SchemaNodes::of(&PublishRecord::SHAPE)),
+            ),
+            ToolSheet::json::<ReadUpgrades>(
+                UPGRADES,
+                "Shows every kind's head, with the number of the publish that made it, how many actors have moved \
+                 onto it, and the fields their old states lacked; and every running guest that is not on its kind's \
+                 head: still to be asked, behind with how many batches it has answered `Later`, or parked with the \
+                 publish its move failed on and why. A parked guest runs its old code until its kind's head moves \
+                 again.",
+                Output::Value(SchemaNodes::of(&Upgrading::SHAPE)),
+            ),
+        ]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

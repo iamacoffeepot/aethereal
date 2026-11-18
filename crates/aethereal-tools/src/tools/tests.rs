@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{Output, Tool, ToolFlag, ToolSheet, Toolbox, ToolboxConfig, Tooling, Typed};
-use aethereal_actor::{ActorRef, Anyone, Anywhere, ProtocolRef};
+use aethereal_actor::{ActorRef, Anywhere, ProtocolRef};
 use aethereal_data::{Budget, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
@@ -34,23 +34,21 @@ struct LengthConfig;
 #[kind(name = "aether.test.length")]
 struct Length;
 
-impl ChildOf for Length {
-    type Parent = Anywhere;
-}
-
-impl Actor for Length {
-    type Config = LengthConfig;
-    type Key = ();
-    type Handles = (Call,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: LengthConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl Length {
+    fn begin(_: LengthConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+        let said = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1 << 16))
+            .map(|say| Said { length: u32::try_from(say.text.len()).unwrap_or(u32::MAX) });
+        let called = match said {
+            Ok(said) => Called::output(turn, to_bytes(&said)?),
+            Err(why) => Called::Refused(format!("the input did not read: {why:?}")),
+        };
+        Ok(called)
     }
 }
 
@@ -61,21 +59,6 @@ impl Tool for Length {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for Length {
-    type From = Anyone;
-    type Returns = Called;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
-        let said = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1 << 16))
-            .map(|say| Said { length: u32::try_from(say.text.len()).unwrap_or(u32::MAX) });
-        let called = match said {
-            Ok(said) => Called::output(turn, to_bytes(&said)?),
-            Err(why) => Called::Refused(format!("the input did not read: {why:?}")),
-        };
-        Ok(called)
     }
 }
 

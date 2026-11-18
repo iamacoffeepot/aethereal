@@ -3,15 +3,15 @@
 
 use super::{Deferred, Library, Listing, Module, Reading, ReadingModule, Stage};
 use crate::Defaulted;
-use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
+use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use aethereal_data::{FilePath, KindName};
 use aethereal_files::{FileRead, Files, FilesListed, Namespace, ReadFile};
 use std::collections::BTreeMap;
 use std::mem;
 
-/// `Code` listed: each module read, or `Code` published at once when it holds none.
-impl Receives<Answer<FilesListed, Listing>> for Library {
-    fn handle(
+impl Library {
+    /// `Code` listed: each module read, or `Code` published at once when it holds none.
+    pub(super) fn handle_files_listed(
         &mut self,
         (answered, Listing): (Answered<FilesListed>, Listing),
         turn: &mut Turn<'_, Self>,

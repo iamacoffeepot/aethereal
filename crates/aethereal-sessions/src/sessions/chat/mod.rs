@@ -20,7 +20,7 @@ use super::Sessions;
 use super::asked::Waiting;
 use super::asks::{Archived, Opened, Said, State};
 use super::transcript::{Entry, Numbered, Speaker};
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Held, Level, ProtocolRef, Receives, Speaks, Turn};
+use aethereal_actor::{Ended, Fault, Held, Level, ProtocolRef, Speaks, Turn};
 use aethereal_data::{ActorId, Bound, Plain, write_json_string};
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
@@ -179,16 +179,15 @@ impl Sessions {
     pub fn joined(&self) -> Vec<u32> {
         self.chats.engines.keys().copied().collect()
     }
-}
-
-impl Handles<Joined> for Sessions {
-    type From = Speaks<Showing>;
-    type Returns = ();
 
     /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
     /// sender that takes nothing an engine is shown is refused by its guard; one that names an engine another actor
     /// joined as, and one joined as another engine already, are each refused here, and nothing joined changes.
-    fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Speaks<Showing>>) -> Result<(), Fault> {
+    pub(super) fn handle_joined(
+        &mut self,
+        joined: Joined,
+        turn: &mut Turn<'_, Self, Speaks<Showing>>,
+    ) -> Result<(), Fault> {
         let Joined { engine } = joined;
         let shown = *turn.from();
         match self.chats.joining(engine, shown.id()) {
@@ -211,25 +210,23 @@ impl Handles<Joined> for Sessions {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Sessions {
     /// An engine that joined has ended: its tabs end with it. A turn running carries on, and an ask waits on.
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[allow(
+        clippy::needless_pass_by_value,
+        clippy::unnecessary_wraps,
+        reason = "a handler's body, it takes and answers what its handler does"
+    )]
+    pub(super) fn handle_ended(&mut self, ended: Ended) -> Result<(), Fault> {
         let gone = ended.actor().id();
         self.chats.engines.retain(|_, watcher| watcher.shown.id() != gone);
 
         Ok(())
     }
-}
-
-impl Handles<Chatted> for Sessions {
-    type From = Anyone;
-    type Returns = ();
 
     /// What a trusted engine's owner did: taken only from the actor that joined as that engine, and done once the
     /// capability has found its sessions.
-    fn handle(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    pub(super) fn handle_chatted(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Chatted { engine, chat } = chatted;
         let sender = turn.sender();
         let joined = self.chats.engines.get(&engine).map(|watcher| watcher.shown.id());

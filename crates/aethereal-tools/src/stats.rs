@@ -4,8 +4,7 @@
 use crate::logs::spoken_name;
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Against, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats, Fault, Figures, Handles,
-    LARGEST, Process, ProtocolRef, Turn,
+    ActorRef, Against, Anywhere, EngineStats, Fault, Figures, LARGEST, Process, ProtocolRef, Turn, actor,
 };
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 
@@ -138,23 +137,27 @@ pub struct EngineStatsToolConfig;
 #[kind(name = "aether.tools.engine_stats_tool")]
 pub struct EngineStatsTool;
 
-impl ChildOf for EngineStatsTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for EngineStatsTool {
-    type Config = EngineStatsToolConfig;
-    type Key = ();
-    type Handles = (Call,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EngineStatsToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl EngineStatsTool {
+    fn begin(_: EngineStatsToolConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+        let read = match from_bytes::<ReadEngineStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
+            Ok(read) => read,
+            Err(fault) => {
+                return Ok(Called::Refused(format!("the input of `{ENGINE_STATS}`: {fault}")));
+            }
+        };
+        let EngineStats::Read(figures) = turn.engine_stats() else {
+            return Ok(Called::Refused(format!("`{ENGINE_STATS}` runs where no engine's figures are read")));
+        };
+        let most = read.most.map_or(LARGEST, |most| usize::try_from(most).unwrap_or(usize::MAX));
+        let answer = EngineFigures::of(figures, most);
+
+        Ok(Called::output(turn, to_bytes(&answer)?))
     }
 }
 
@@ -178,27 +181,6 @@ impl Tool for EngineStatsTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for EngineStatsTool {
-    type From = Anyone;
-    type Returns = Called;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
-        let read = match from_bytes::<ReadEngineStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
-            Ok(read) => read,
-            Err(fault) => {
-                return Ok(Called::Refused(format!("the input of `{ENGINE_STATS}`: {fault}")));
-            }
-        };
-        let EngineStats::Read(figures) = turn.engine_stats() else {
-            return Ok(Called::Refused(format!("`{ENGINE_STATS}` runs where no engine's figures are read")));
-        };
-        let most = read.most.map_or(LARGEST, |most| usize::try_from(most).unwrap_or(usize::MAX));
-        let answer = EngineFigures::of(figures, most);
-
-        Ok(Called::output(turn, to_bytes(&answer)?))
     }
 }
 
