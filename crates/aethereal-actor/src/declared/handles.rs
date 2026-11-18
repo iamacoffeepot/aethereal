@@ -2,7 +2,7 @@
 
 use super::{Declared, Handler, Role};
 use crate::answering::{Answering, Refusal, Token};
-use crate::guard::{Anyone, Checks};
+use crate::guard::{Anyone, Checks, SenderType};
 use crate::{
     Actor, Actors, Answer, Ended, ErasedActorRef, Fault, Item, Mail, On, Stage, Turn, Turning, Unreadable, Within,
 };
@@ -85,10 +85,10 @@ pub trait Handles<K: Kind>: Actor {
     /// which the engine sends.
     fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<Self::Returns, Fault>;
 
-    /// Mail of `K` from a sender `From` refused: by default [`Refusal::Logged`], logged, naming the sender, a request
-    /// answered [`Unanswered::Unreadable`](crate::Unanswered::Unreadable), and other mail dropped; or an answer in the
-    /// handler's form, [`Refusal::Answers`], which the engine sends as it sends the handler's. Its turn holds the
-    /// sender as an [`ErasedActorRef`], as the guard checked nothing to hand on.
+    /// Mail of `K` from a sender `From` refused: by default [`Refusal::Logged`], logged, naming the sender and the type
+    /// it sent `K` as, a request answered [`Unanswered::Unreadable`](crate::Unanswered::Unreadable), and other mail
+    /// dropped; or an answer in the handler's form, [`Refusal::Answers`], which the engine sends as it sends the
+    /// handler's. Its turn holds the sender as an [`ErasedActorRef`], as the guard checked nothing to hand on.
     fn refused(&mut self, _mail: K, _turn: &mut Turn<'_, Self>) -> Result<Refusal<Self::Returns>, Fault> {
         Ok(Refusal::Logged)
     }
@@ -149,8 +149,9 @@ impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
             Err(untaken) => return turning.untaken(untaken),
         };
         // The guard reads the type the sender sent the mail as, stamped at the send, and nothing the engine holds of
-        // the sender now (ADR-0058).
-        let sender = turning.sender(declared, sent.sender_type());
+        // the sender now, as does a refusal that names it (ADR-0058).
+        let sent_as = sent.sender_type();
+        let sender = turning.sender(declared, sent_as);
         let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &sender);
 
         match admitted {
@@ -160,13 +161,13 @@ impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
 
                 turn.settled()
             }
-            None => refuse(actor, mail, turning, declared),
+            None => refuse(actor, mail, turning, declared, sent_as),
         }
     }
 }
 
 /// Hands `mail`, which the guard of `A`'s handler of `K` refused, to the handler's `refused`, in a turn that holds the
-/// sender as it came. Out of line, as most mail is admitted.
+/// sender as it came, which sent it as `sent_as`. Out of line, as most mail is admitted.
 #[cold]
 #[inline(never)]
 fn refuse<A: Handles<K>, K: Kind>(
@@ -174,12 +175,13 @@ fn refuse<A: Handles<K>, K: Kind>(
     mail: K,
     turning: Turning<'_>,
     declared: &'static Declared,
+    sent_as: SenderType,
 ) -> Result<(), Fault> {
     let sender = ErasedActorRef::new(turning.source());
     let mut turn = turning.declaring::<A, Anyone>(declared, sender);
     match A::refused(actor, mail, &mut turn)? {
         Refusal::Answers(answer) => answer.send(&mut turn, Token::new())?,
-        Refusal::Logged => turn.refuse::<K>(),
+        Refusal::Logged => turn.refuse::<K>(sent_as),
     }
 
     turn.settled()

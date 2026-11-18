@@ -36,9 +36,9 @@ use crate::{Answer, Job, JobId, Unrun};
 use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, Unfit, config_bytes};
 #[cfg(feature = "std")]
 use crate::{Buffer, JobCode, JobType, Kept, Pool};
-#[cfg(feature = "std")]
-use aethereal_data::KindName;
-use aethereal_data::{ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, PathSegment, PathTooDeep, Writer};
+use aethereal_data::{
+    ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, KindName, PathSegment, PathTooDeep, Writer,
+};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -596,6 +596,38 @@ struct Seat<'a> {
     /// When the request the turn handles is due, which an ask that states no deadline of its own inherits: `Never`
     /// when the item is no request, and for a `begin` or a closing turn, which handle none (ADR-0041).
     due: Due,
+}
+
+/// The type a refused sender sent its mail as, as the refusal's line names it (ADR-0058).
+enum SentType {
+    /// An actor of the type of this name sent it.
+    Of(&'static KindName),
+    /// The engine said it, where no actor's code sent it.
+    Engine,
+    /// A guest refused it, whose host holds the stamp, of a type the guest does not hold (ADR-0015).
+    #[cfg(feature = "guest")]
+    Unknown,
+}
+
+/// The type the engine stamped, by its declaration's name.
+impl From<SentAs> for SentType {
+    fn from(sent_as: SentAs) -> Self {
+        match sent_as {
+            SentAs::Actor(declared) => Self::Of(declared.name()),
+            SentAs::Engine => Self::Engine,
+        }
+    }
+}
+
+impl fmt::Display for SentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Of(name) => write!(f, "of {name}"),
+            Self::Engine => f.write_str("sent by the engine"),
+            #[cfg(feature = "guest")]
+            Self::Unknown => f.write_str("of an unknown type"),
+        }
+    }
 }
 
 /// What a seat lent for a guarded turn's code written for any sender counted, which the seat it was lent from takes
@@ -1166,6 +1198,22 @@ impl Seat<'_> {
         }
 
         self.asked.stood_declared(id).or_else(|| self.table.declared(id))
+    }
+
+    /// The type a guest's refused sender sent its mail as, `sent_as`, its host's stamp, as the refusal names it. A guest
+    /// holds no other actor's type, and its host answers only whether the stamp is a type the guest names: so it names
+    /// the stamp by the types it holds, its own and its parent's, and never by what the table holds of the sender now
+    /// (ADR-0015, ADR-0058).
+    #[cfg(feature = "guest")]
+    fn hosted_type(&self, sent_as: SenderType) -> SentType {
+        let parent = match self.above {
+            Above::Actor(_, declared) => Some(declared),
+            Above::Chassis | Above::Elsewhere(_) => None,
+        };
+        let mut held = [Some(self.declared), parent].into_iter().flatten();
+
+        held.find(|declared| sent_as.is(declared.id()))
+            .map_or(SentType::Unknown, |declared| SentType::Of(declared.name()))
     }
 
     /// The actor this one stands beneath, and its seat, live or not: none for a root.
@@ -2234,21 +2282,27 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
         &self.from
     }
 
-    /// Refuses `mail`, whose sender the handler's guard did not admit: logs it, naming the sender's type and the actor
-    /// it is, and asks the engine to answer it [`Unanswered::Unreadable`] when it is a request and otherwise to drop
-    /// it, as the actor's log records with [`Unreadable::Refused`] (ADR-0058). What the default
+    /// Refuses `mail`, whose sender the handler's guard did not admit: logs it, naming the type its sender sent it as,
+    /// `sent_as`, and the actor it is, and asks the engine to answer it [`Unanswered::Unreadable`] when it is a request
+    /// and otherwise to drop it, as the actor's log records with [`Unreadable::Refused`] (ADR-0058). What the default
     /// [`refused`](crate::Handles::refused) does.
     #[cold]
     #[inline(never)]
-    pub(crate) fn refuse<K: Kind>(&mut self) {
+    pub(crate) fn refuse<K: Kind>(&mut self, sent_as: SenderType) {
         let sender = self.source;
         let kind = &K::NAME;
-        let of = self.seat.declared_at(sender.id).map_or("an unknown type", |declared| declared.name().as_str());
+        // Read from the stamp the guard read, never the table, so a sender that has ended or moved onto new code since
+        // it sent is named as it sent (ADR-0058).
+        let of = match sent_as {
+            SenderType::Stamped(stamp) => SentType::from(stamp),
+            #[cfg(feature = "guest")]
+            SenderType::Hosted { .. } => self.seat.hosted_type(sent_as),
+        };
 
         // A table that names no path, as a guest's does, leaves the sender named by its id and seat.
         match self.seat.table.path_of(sender.id) {
-            Some(path) => self.log(Level::Warn, format_args!("refused {kind} from {path}, of {of}")),
-            None => self.log(Level::Warn, format_args!("refused {kind} from {sender:?}, of {of}")),
+            Some(path) => self.log(Level::Warn, format_args!("refused {kind} from {path}, {of}")),
+            None => self.log(Level::Warn, format_args!("refused {kind} from {sender:?}, {of}")),
         }
         self.seat.ask(What::Unread(Unreadable::Refused));
     }
