@@ -14,8 +14,8 @@ use std::pin::Pin;
 pub enum Undialed {
     /// The host name found no address, or no socket is at the path.
     Unresolved,
-    /// Every address refused, or none answered in time; or nothing listens on the socket at the path, or the host
-    /// refused the connect.
+    /// Every address refused, or none answered in time, or the name's lookup did not; or nothing listens on the
+    /// socket at the path, or the host refused the connect.
     Refused,
 }
 

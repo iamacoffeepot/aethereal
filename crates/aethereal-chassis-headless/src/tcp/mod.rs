@@ -1,5 +1,6 @@
 //! The TCP capability on the native host: its dialer, names looked up and connected to, and Unix sockets connected to,
-//! on threads of its own, and its bootstrap, which serves the dialer and the host's poller (ADR-0033, ADR-0034).
+//! on threads of its own, each lookup on a thread of its own again so the dial's time holds it, and its bootstrap,
+//! which serves the dialer and the host's poller (ADR-0033, ADR-0034).
 
 #[cfg(test)]
 mod tests;
@@ -12,10 +13,11 @@ use aethereal_tcp::UnixDialing;
 use aethereal_tcp::{Dialer, Dialing, Tcp, TcpSettings, Undialed};
 use crossbeam_queue::SegQueue;
 use std::future::Future;
+use std::io;
 #[cfg(unix)]
 use std::io::ErrorKind;
 use std::mem;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -23,6 +25,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle, Thread};
@@ -31,7 +34,7 @@ use std::time::Duration;
 /// The native host's dialer (ADR-0033): each dial done on one of threads of its own, which looks the name up and tries
 /// each of its addresses in turn, or connects to the Unix socket at a path, so a dial never blocks the thread that
 /// polls it, and is woken once it has connected or given up. Dropping the last reference to it stops its threads once
-/// each has finished what it was dialing.
+/// each has finished what it was dialing; a lookup the resolver has not answered is not waited on past the dial's time.
 pub struct Dialers {
     shared: Arc<Shared>,
     /// The threads that dial, which the dials asked wake in turn.
@@ -42,14 +45,19 @@ pub struct Dialers {
     threads: Vec<JoinHandle<()>>,
 }
 
-/// What the threads share: the dials asked and not yet taken, how long each address is tried, and whether to stop. The
-/// queue is how a dial crosses from the thread that polls it to one that blocks on the network, which no turn's mail
-/// reaches.
+/// What the threads share: the dials asked and not yet taken, how long a lookup and each address are given, how a name
+/// is looked up, and whether to stop. The queue is how a dial crosses from the thread that polls it to one that blocks
+/// on the network, which no turn's mail reaches.
 struct Shared {
     asked: SegQueue<Asked>,
     within: Duration,
+    lookup: Lookup,
     stopping: AtomicBool,
 }
+
+/// How a dial looks a name up: the platform's resolver, or one a test stands in its place. Shared, as each lookup runs
+/// on a thread of its own that may outlive the dial.
+type Lookup = Arc<dyn Fn(&str, u16) -> io::Result<Vec<SocketAddr>> + Send + Sync>;
 
 /// One dial asked: where to, and where its connection goes.
 enum Asked {
@@ -74,16 +82,26 @@ enum Delivery<S> {
 }
 
 impl Dialers {
-    /// The dialer on `threads` threads, trying each address for at most `within`.
+    /// The dialer on `threads` threads, giving a name's lookup, and then each address, at most `within`.
     ///
     /// # Panics
     ///
     /// Panics when the host cannot make a thread.
     #[must_use]
     pub fn new(threads: NonZeroUsize, within: Duration) -> Self {
+        Self::looking_up(threads, within, Arc::new(resolve))
+    }
+
+    /// The dialer on `threads` threads, looking names up with `lookup`, and giving a lookup, and then each address, at
+    /// most `within`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the host cannot make a thread.
+    fn looking_up(threads: NonZeroUsize, within: Duration, lookup: Lookup) -> Self {
         // A connect given no time fails at once, so each address is given a millisecond at the least.
         let within = within.max(Duration::from_millis(1));
-        let shared = Arc::new(Shared { asked: SegQueue::new(), within, stopping: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { asked: SegQueue::new(), within, lookup, stopping: AtomicBool::new(false) });
         let threads: Vec<JoinHandle<()>> = (0..threads.get())
             .map(|number| {
                 let shared = Arc::clone(&shared);
@@ -182,7 +200,7 @@ fn dial(shared: &Shared) {
     loop {
         while let Some(asked) = shared.asked.pop() {
             match asked {
-                Asked::Host { host, port, delivery } => deliver(&delivery, connect(&host, port, shared.within)),
+                Asked::Host { host, port, delivery } => deliver(&delivery, connect(shared, host, port)),
                 #[cfg(unix)]
                 Asked::Path { path, delivery } => deliver(&delivery, connect_unix(&path)),
             }
@@ -194,18 +212,44 @@ fn dial(shared: &Shared) {
     }
 }
 
-/// A connection to `port` on `host`, set not to block: each address the name has tried in turn, for at most `within`.
-fn connect(host: &str, port: u16, within: Duration) -> Result<TcpStream, Undialed> {
-    let addresses: Vec<_> = (host, port).to_socket_addrs().map_err(|_| Undialed::Unresolved)?.collect();
-    if addresses.is_empty() {
-        return Err(Undialed::Unresolved);
-    }
+/// A connection to `port` on `host`, set not to block: the name looked up within the dial's time, then each address it
+/// has tried in turn, for at most that time each.
+fn connect(shared: &Shared, host: String, port: u16) -> Result<TcpStream, Undialed> {
+    let addresses = look_up(Arc::clone(&shared.lookup), host, port, shared.within)?;
     let opened = |stream: &TcpStream| stream.set_nonblocking(true).is_ok();
 
     addresses
         .iter()
-        .find_map(|address| TcpStream::connect_timeout(address, within).ok().filter(opened))
+        .find_map(|address| TcpStream::connect_timeout(address, shared.within).ok().filter(opened))
         .ok_or(Undialed::Refused)
+}
+
+/// The addresses `lookup` finds for `port` on `host`, waited on for at most `within`. The lookup runs on a thread of
+/// its own, which is never joined: a resolver that has not answered in time is answered `Refused`, as a connect that
+/// has not, and is left to finish alone, what it finds then dropped. So neither the dial nor the dialer's drop waits on
+/// a resolver past the dial's time.
+fn look_up(lookup: Lookup, host: String, port: u16, within: Duration) -> Result<Vec<SocketAddr>, Undialed> {
+    let (found, finding) = mpsc::sync_channel(1);
+    #[allow(clippy::disallowed_methods)] // The native host owns the real threads (ADR-0001).
+    let spawned = thread::Builder::new().name(String::from("aethereal-lookup")).spawn(move || {
+        // A dial that stopped waiting has dropped its end, and what is found then goes nowhere.
+        let _ = found.send(lookup(&host, port));
+    });
+    if spawned.is_err() {
+        return Err(Undialed::Refused);
+    }
+
+    match finding.recv_timeout(within) {
+        Ok(Ok(addresses)) if !addresses.is_empty() => Ok(addresses),
+        Ok(_) | Err(RecvTimeoutError::Disconnected) => Err(Undialed::Unresolved),
+        Err(RecvTimeoutError::Timeout) => Err(Undialed::Refused),
+    }
+}
+
+/// The addresses the platform's resolver finds for `port` on `host`, or `host` itself when it is an address written
+/// out.
+fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    Ok((host, port).to_socket_addrs()?.collect())
 }
 
 /// A connection to the Unix socket at `path`, set not to block. A path with nothing at it is told from a socket that

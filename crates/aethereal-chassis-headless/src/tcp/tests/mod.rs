@@ -85,6 +85,41 @@ fn a_dial_to_a_port_nothing_listens_on_is_refused() {
     assert_eq!(pollster::block_on(dialer.dial("127.0.0.1", port)).err(), Some(Undialed::Refused));
 }
 
+/// A resolver that answers nothing until `released`'s sender is dropped: slower than any dial's time while the test
+/// holds it.
+fn held(released: mpsc::Receiver<()>) -> Lookup {
+    // The seam is shared across threads, and a receiver is taken by one at a time.
+    let released = Mutex::new(released);
+
+    Arc::new(move |_, _| {
+        let _ = released.lock().map(|released| released.recv());
+
+        Err(io::Error::from(ErrorKind::TimedOut))
+    })
+}
+
+#[test]
+fn a_dial_whose_lookup_outlasts_its_time_is_refused_and_its_dialer_drops() {
+    // Catches a lookup no dial's time holds: the dial, and the dialer's drop, which joins its threads, would wait on the
+    // resolver for as long as it takes.
+    let (release, released) = mpsc::channel();
+    let dialer = Dialers::looking_up(NonZeroUsize::MIN, Duration::from_millis(1), held(released));
+    // Bound after the dialer, so a run that fails drops it first, letting the resolver answer, and still ends.
+    let _release = release;
+    let mut dialing = dialer.dial("name.test", 80);
+    let mut context = Context::from_waker(Waker::noop());
+    let mut answer = Poll::Pending;
+
+    waiting::until(waiting::BUDGET, || {
+        answer = dialing.as_mut().poll(&mut context);
+
+        answer.is_ready()
+    });
+    assert_eq!(answer.map(Result::err), Poll::Ready(Some(Undialed::Refused)));
+    drop(dialing);
+    drop(dialer);
+}
+
 /// One frame of at most a kilobyte, its length first.
 const FRAMING: Framing = Framing::LengthPrefixed { most_bytes: 1024 };
 
