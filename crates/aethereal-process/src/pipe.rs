@@ -48,7 +48,8 @@ impl Pipe {
         let connection =
             ConnectionConfig { socket: config.socket, framing: FRAMING, most_unsent_bytes: MOST_UNSENT_BYTES };
 
-        Ok(Self { connection: Connection::begin(connection, turn)?, starter: config.starter })
+        // The program closes its output as it exits, so the pipe ends once that end is read, whatever its stdin holds.
+        Ok(Self { connection: Connection::begin_ending_with_peer(connection, turn)?, starter: config.starter })
     }
 
     #[request]

@@ -137,7 +137,8 @@ where
     /// Reads on the body the connection numbered `number` streams to its reader, from what it has buffered, while the
     /// reader may be sent a part: what is decoded passes through the layers in order and goes on the stream as one
     /// part, and the stream ends `Whole` where the body ends. While only more bytes would take it further, the
-    /// connection is granted the credit it withheld. While a part waits on an actor layer, nothing more is read.
+    /// connection is granted the credit it withheld, or closes once its client has finished writing, the body
+    /// incomplete. While a part waits on an actor layer, nothing more is read.
     pub(super) fn stream(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let most_line = self.settings.most_head_bytes;
         let Some(connection) = self.connections.get_mut(&number) else {
@@ -174,7 +175,7 @@ where
         let is_idle = part.is_empty() && !end;
         if is_idle {
             drop(part);
-            return self.release(number, turn);
+            return self.read_more(number, turn);
         }
         let part = Vec::from(part);
 
@@ -183,7 +184,7 @@ where
             return Ok(());
         }
 
-        self.release(number, turn)
+        self.read_more(number, turn)
     }
 
     /// Passes a part of the body the connection numbered `number` streams, `carried` where its bytes are and the body's

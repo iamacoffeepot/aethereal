@@ -494,11 +494,11 @@ where
         Ok(Read::of(end, past))
     }
 
-    /// Goes on with the body the connection numbered `number` gathers as `read` says: grants the credit it withheld
-    /// while more bytes are all it needs, or answers the gather.
+    /// Goes on with the body the connection numbered `number` gathers as `read` says: reads more while more bytes are
+    /// all it needs, or answers the gather.
     fn settle_gather(&mut self, number: u64, read: Read, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         match read {
-            Read::More => self.release(number, turn),
+            Read::More => self.read_more(number, turn),
             Read::Whole => self.answer_gather(number, turn),
             Read::Stopped(ending) => self.stop_body(number, ending, turn),
             Read::Waits => Ok(()),
