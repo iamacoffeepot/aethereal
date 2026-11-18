@@ -5,10 +5,7 @@ mod tests;
 
 use crate::perform::{Input, MOST_INPUTS, Perform, Performed, Unperformed, unperformable};
 use crate::window::{Window, WindowId};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, Unanswered, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, Unanswered, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
@@ -63,22 +60,68 @@ struct Sent {
     last: u32,
 }
 
-impl ChildOf for InputTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for InputTool {
-    type Config = InputToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<Performed, Sending>);
-    type Depends = (Window,);
-    type Spawns = ();
-
-    fn begin(_: InputToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Window))]
+impl InputTool {
+    fn begin(_: InputToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Checks the inputs, holds the call, and asks the window's actor to perform each, in order: answered once the last
+    /// is. A call of no inputs is answered at once, as there is nothing to perform.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let Ok(asked) = from_bytes::<SendInput>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
+            return Ok(Reply::Now(Called::Refused(String::from("that is no input to send"))));
+        };
+        let SendInput { window, inputs } = asked;
+        let checked = unperformable(&inputs).map_or(Performed::Performed, Performed::Refused);
+        let is_empty = inputs.is_empty();
+        let is_refused = checked != Performed::Performed;
+        if is_empty || is_refused {
+            let called = Called::output(turn, to_bytes(&checked)?);
+            return Ok(Reply::Now(called));
+        }
+        let call = self.next;
+        self.next += 1;
+        let mut last = 0;
+        for (input, at) in inputs.into_iter().zip(0..) {
+            turn.to(path::<Window>(window)).ask(&Perform { inputs: vec![input] }, &Sending { call, at })?;
+            last = at;
+        }
+        let (held, later) = turn.hold();
+        self.calls.insert(call, Sent { held, last });
+
+        Ok(Reply::Later(later))
+    }
+
+    /// The window's actor performed an input, refused it, or was not there: the call is answered once its last input is
+    /// performed, or with the first refusal, and the answers after that are dropped. A window whose actor had ended, or
+    /// never was, is not open.
+    #[answer]
+    fn performed(
+        &mut self,
+        (answered, Sending { call, at }): (Answered<Performed>, Sending),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(sent) = self.calls.get(&call) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(Performed::Performed) if at < sent.last => return Ok(()),
+            Answered::Yes(Performed::Performed) => Called::output(turn, to_bytes(&Performed::Performed)?),
+            Answered::Yes(Performed::Refused(why)) => {
+                Called::output(turn, to_bytes(&Performed::Refused(counted(why, at)))?)
+            }
+            Answered::No(Unanswered::Ended) => {
+                Called::output(turn, to_bytes(&Performed::Refused(Unperformed::NotOpen))?)
+            }
+            Answered::No(why) => Called::Refused(format!("input {at} was not performed: {why:?}")),
+        };
+        let Some(sent) = self.calls.remove(&call) else {
+            return Ok(());
+        };
+        turn.answer(sent.held, &called)?;
+
         Ok(())
     }
 }
@@ -105,70 +148,6 @@ impl Tool for InputTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-/// Checks the inputs, holds the call, and asks the window's actor to perform each, in order: answered once the last
-/// is. A call of no inputs is answered at once, as there is nothing to perform.
-impl Handles<Call> for InputTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let Ok(asked) = from_bytes::<SendInput>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            return Ok(Reply::Now(Called::Refused(String::from("that is no input to send"))));
-        };
-        let SendInput { window, inputs } = asked;
-        let checked = unperformable(&inputs).map_or(Performed::Performed, Performed::Refused);
-        let is_empty = inputs.is_empty();
-        let is_refused = checked != Performed::Performed;
-        if is_empty || is_refused {
-            let called = Called::output(turn, to_bytes(&checked)?);
-            return Ok(Reply::Now(called));
-        }
-        let call = self.next;
-        self.next += 1;
-        let mut last = 0;
-        for (input, at) in inputs.into_iter().zip(0..) {
-            turn.to(path::<Window>(window)).ask(&Perform { inputs: vec![input] }, &Sending { call, at })?;
-            last = at;
-        }
-        let (held, later) = turn.hold();
-        self.calls.insert(call, Sent { held, last });
-
-        Ok(Reply::Later(later))
-    }
-}
-
-/// The window's actor performed an input, refused it, or was not there: the call is answered once its last input is
-/// performed, or with the first refusal, and the answers after that are dropped. A window whose actor had ended, or
-/// never was, is not open.
-impl Receives<Answer<Performed, Sending>> for InputTool {
-    fn handle(
-        &mut self,
-        (answered, Sending { call, at }): (Answered<Performed>, Sending),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(sent) = self.calls.get(&call) else {
-            return Ok(());
-        };
-        let called = match answered {
-            Answered::Yes(Performed::Performed) if at < sent.last => return Ok(()),
-            Answered::Yes(Performed::Performed) => Called::output(turn, to_bytes(&Performed::Performed)?),
-            Answered::Yes(Performed::Refused(why)) => {
-                Called::output(turn, to_bytes(&Performed::Refused(counted(why, at)))?)
-            }
-            Answered::No(Unanswered::Ended) => {
-                Called::output(turn, to_bytes(&Performed::Refused(Unperformed::NotOpen))?)
-            }
-            Answered::No(why) => Called::Refused(format!("input {at} was not performed: {why:?}")),
-        };
-        let Some(sent) = self.calls.remove(&call) else {
-            return Ok(());
-        };
-        turn.answer(sent.held, &called)?;
-
-        Ok(())
     }
 }
 

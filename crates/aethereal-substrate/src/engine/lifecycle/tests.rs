@@ -5,8 +5,8 @@ use super::super::outside::{Handed, Turned};
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Later, On, Own,
-    Present, Receives, Render, Spawn, Stage, Start, Stop, Tick, Time, Top, Turn, path,
+    Answered, Anywhere, Cycle, Drained, Fault, Held, Later, Own, Present, Render, Stage, Start, Stop, Tick, Time, Turn,
+    actor, path,
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
@@ -132,17 +132,8 @@ struct Staged {
     on_start: OnStart,
 }
 
-impl ChildOf for Staged {
-    type Parent = Top;
-}
-
-impl Actor for Staged {
-    type Config = StagedConfig;
-    type Key = u64;
-    type Handles = (On<Start>, On<Stop>, Note);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64)]
+impl Staged {
     fn begin(config: StagedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Stop>();
@@ -153,13 +144,8 @@ impl Actor for Staged {
         Ok(Self { on_start: config.on_start })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Staged {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Note::Pass(2))?;
         let quits = self.on_start == OnStart::PassesThenQuits;
         if quits {
@@ -168,19 +154,14 @@ impl Receives<On<Start>> for Staged {
 
         Ok(())
     }
-}
 
-impl Receives<On<Stop>> for Staged {
-    fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn stop(&mut self, _: Stop) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Note> for Staged {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match note {
             Note::Pass(left) => {
                 if left > 0 {
@@ -308,23 +289,10 @@ impl Kind for Impostor {
     const NAME: KindName = LIFECYCLE;
 }
 
-impl ChildOf for Impostor {
-    type Parent = Top;
-}
-
-impl Actor for Impostor {
-    type Config = Note;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Impostor {
+    fn begin(_: Note) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -352,17 +320,8 @@ impl Stage for Receive {
 #[kind(name = "aether.test.cycler")]
 struct Cycler;
 
-impl ChildOf for Cycler {
-    type Parent = Anywhere;
-}
-
-impl Actor for Cycler {
-    type Config = Note;
-    type Key = ();
-    type Handles = (On<Receive>, On<Tick>, On<Render>, On<Present>, On<Stop>, Note);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Anywhere)]
+impl Cycler {
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Receive>();
         turn.subscribe::<Tick>();
@@ -373,42 +332,42 @@ impl Actor for Cycler {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Takes the stage it is sent, which the record shows.
+    #[on]
+    fn receive(&mut self, _: Receive) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Cycler {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Note::Pass(1))?;
 
         Ok(())
     }
-}
 
-impl Handles<Note> for Cycler {
-    type From = Anyone;
-    type Returns = ();
+    /// Takes the stage it is sent, which the record shows.
+    #[on]
+    fn render(&mut self, _: Render) -> Result<(), Fault> {
+        Ok(())
+    }
 
-    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Takes the stage it is sent, which the record shows.
+    #[on]
+    fn present(&mut self, _: Present) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    /// Takes the stage it is sent, which the record shows.
+    #[on]
+    fn stop(&mut self, _: Stop) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    #[tell]
+    fn note(&mut self, _: Note) -> Result<(), Fault> {
         Ok(())
     }
 }
-
-/// Takes the stage it is sent, which the record shows.
-macro_rules! takes {
-    ($($stage:ident),+) => {
-        $(
-            impl Receives<On<$stage>> for Cycler {
-                fn handle(&mut self, _: $stage, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-                    Ok(())
-                }
-            }
-        )+
-    };
-}
-
-takes!(Receive, Render, Present, Stop);
 
 /// The cycle a cycler is made on: every stage it subscribes to, a chassis's own first.
 type Full = (Receive, Tick, Render, Present);
@@ -559,17 +518,8 @@ struct Nest {
     spawned: Vec<Spawned>,
 }
 
-impl ChildOf for Nest {
-    type Parent = Top;
-}
-
-impl Actor for Nest {
-    type Config = Note;
-    type Key = ();
-    type Handles = (Note,);
-    type Depends = ();
-    type Spawns = (Cycler, Latecomer);
-
+#[actor(spawns(Cycler, Latecomer))]
+impl Nest {
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Cycler>(&(), Note::Nothing);
         turn.to(turn.me()).send(&Note::Nothing)?;
@@ -577,16 +527,8 @@ impl Actor for Nest {
         Ok(Self { spawned: vec![Spawned::of(&spawned)] })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Note> for Nest {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let spawned = turn.spawn::<Latecomer>(&(), Note::Nothing);
         self.spawned.push(Spawned::of(&spawned));
 
@@ -634,37 +576,19 @@ fn an_actor_that_subscribes_to_a_stage_its_engine_does_not_run_is_refused_where_
 #[kind(name = "aether.test.latecomer")]
 struct Latecomer;
 
-impl ChildOf for Latecomer {
-    type Parent = Anywhere;
-}
-
-impl Actor for Latecomer {
-    type Config = Note;
-    type Key = ();
-    type Handles = (On<Receive>, Note);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl Latecomer {
+    fn begin(_: Note) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn receive(&mut self, _: Receive) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Receives<On<Receive>> for Latecomer {
-    fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Note> for Latecomer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.subscribe::<Receive>();
 
         Ok(())
@@ -680,42 +604,24 @@ struct Drainer {
     held: Vec<Held<Drained>>,
 }
 
-impl ChildOf for Drainer {
-    type Parent = Top;
-}
-
-impl Actor for Drainer {
-    type Config = Note;
-    type Key = ();
-    type Handles = (On<Stop>, Note);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Drainer {
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Stop>();
 
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Stop>> for Drainer {
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (held, _) = turn.hold::<Drained>();
         self.held.push(held);
 
         Ok(())
     }
-}
 
-impl Handles<Note> for Drainer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match note {
             Note::Answer => {
                 for held in self.held.drain(..) {
@@ -736,25 +642,12 @@ impl Handles<Note> for Drainer {
 #[kind(name = "aether.test.waker")]
 struct Waker;
 
-impl ChildOf for Waker {
-    type Parent = Top;
-}
-
-impl Actor for Waker {
-    type Config = Note;
-    type Key = ();
-    type Handles = ();
-    type Depends = (Drainer,);
-    type Spawns = ();
-
+#[actor(depends(Drainer))]
+impl Waker {
     fn begin(note: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Drainer>(())).send(&note)?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -820,31 +713,14 @@ fn a_stage_nothing_subscribes_to_is_passed_at_once() {
 #[kind(name = "aether.test.shore")]
 struct Shore;
 
-impl ChildOf for Shore {
-    type Parent = Top;
-}
-
-impl Actor for Shore {
-    type Config = Note;
-    type Key = ();
-    type Handles = (Note,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Shore {
+    fn begin(_: Note) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Note> for Shore {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, _: Note) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -854,28 +730,14 @@ impl Handles<Note> for Shore {
 #[kind(name = "aether.test.castaway")]
 struct Castaway;
 
-impl ChildOf for Castaway {
-    type Parent = Top;
-}
-
-impl Actor for Castaway {
-    type Config = Note;
-    type Key = ();
-    type Handles = (On<Receive>,);
-    type Depends = (Shore,);
-    type Spawns = ();
-
-    fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Shore))]
+impl Castaway {
+    fn begin(_: Note) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Receive>> for Castaway {
-    fn handle(&mut self, _: Receive, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn receive(&mut self, _: Receive) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -925,44 +787,23 @@ struct Granter {
     held: Vec<Held<Granted>>,
 }
 
-impl ChildOf for Granter {
-    type Parent = Top;
-}
-
-impl Actor for Granter {
-    type Config = Note;
-    type Key = ();
-    type Handles = (Grant, Hop);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Granter {
+    fn begin(_: Note) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Grant> for Granter {
-    type From = Anyone;
-    type Returns = Later<Granted>;
-
-    fn handle(&mut self, _: Grant, turn: &mut Turn<'_, Self>) -> Result<Later<Granted>, Fault> {
+    #[request]
+    fn grant(&mut self, _: Grant, turn: &mut Turn<'_, Self>) -> Result<Later<Granted>, Fault> {
         let (held, later) = turn.hold();
         self.held.push(held);
         turn.to(turn.me()).send(&Hop)?;
 
         Ok(later)
     }
-}
 
-impl Handles<Hop> for Granter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Hop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn hop(&mut self, _: Hop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in self.held.drain(..) {
             turn.answer(held, &Granted)?;
         }
@@ -991,17 +832,8 @@ struct Asker {
     on_granted: OnGranted,
 }
 
-impl ChildOf for Asker {
-    type Parent = Top;
-}
-
-impl Actor for Asker {
-    type Config = OnGranted;
-    type Key = ();
-    type Handles = (Answer<Granted, Asking>, On<Start>, On<Stop>);
-    type Depends = (Granter,);
-    type Spawns = ();
-
+#[actor(depends(Granter))]
+impl Asker {
     fn begin(on_granted: OnGranted, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Stop>();
@@ -1010,13 +842,8 @@ impl Actor for Asker {
         Ok(Self { on_granted })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Granted, Asking>> for Asker {
-    fn handle(&mut self, _: (Answered<Granted>, Asking), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn granted(&mut self, _: (Answered<Granted>, Asking), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match self.on_granted {
             OnGranted::Keeps => {}
             OnGranted::Quits => turn.quit(),
@@ -1025,16 +852,14 @@ impl Receives<Answer<Granted, Asking>> for Asker {
 
         Ok(())
     }
-}
 
-impl Receives<On<Start>> for Asker {
-    fn handle(&mut self, _: Start, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Receives<On<Stop>> for Asker {
-    fn handle(&mut self, _: Stop, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn stop(&mut self, _: Stop) -> Result<(), Fault> {
         Ok(())
     }
 }

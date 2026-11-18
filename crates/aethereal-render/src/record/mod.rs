@@ -11,8 +11,7 @@ use crate::capture::image::{self, Region};
 use crate::capture::{Crop, crop_or_whole, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handle, Handles,
-    Held, ProtocolRef, Receives, Reply, Turn, Unanswered, path,
+    ActorRef, Answered, Anywhere, Bytes, Fault, Handle, Held, ProtocolRef, Reply, Turn, Unanswered, actor, path,
 };
 use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
@@ -236,63 +235,15 @@ enum Answering {
     Refused(String),
 }
 
-impl ChildOf for RecordTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for RecordTool {
-    type Config = RecordToolConfig;
-    type Key = ();
-    type Handles = (
-        Call,
-        Answer<PaceSet, Pacing>,
-        Answer<Advanced, Stepping>,
-        Answer<Pixels, Framing>,
-        Answer<FrameEncoded, Framing>,
-        Answer<ClipFinished, Filing>,
-        Answer<FileWritten, Filing>,
-    );
-    type Depends = (Pacer, Renderer, Files);
-    type Spawns = ();
-
-    fn begin(_: RecordToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Pacer, Renderer, Files))]
+impl RecordTool {
+    fn begin(_: RecordToolConfig) -> Result<Self, Fault> {
         Ok(Self { clip: Clipping::Idle, next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for RecordTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet::of::<Record>(
-            "record_clip",
-            "Records frames drawn onto a window as an MP4. It records `frames` frames of the window at \
-             `frames_per_second` (60 when left out), encoded as H.264 and written into the program's saves as \
-             clips/<name>.mp4. It holds the program's clock and advances it one cycle per frame, each by exactly \
-             1/fps, so the clip plays in exact real time however slowly its frames draw, and two runs of a \
-             deterministic program match frame for frame. The clock is left as it was found. `crop` and `longest` \
-             cut and shrink each frame as capture_frame's do; each side is then rounded down to even, as H.264 \
-             stores colour two by two pixels, so a frame not shrunk loses its last column or row. At most 3600 \
-             frames and 240 a second, and the file must fit the engine's budget for blobs. It answers the file, \
-             within the save directory the engine was given, and its frames, rate and size. The program must list \
-             the pacer and the file capability; a browser's engine has no encoder.",
-            Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
-        )]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// Checks the call, holds it, and asks the pacer to hold the clock: frames are drawn once it has.
-impl Handles<Call> for RecordTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// Checks the call, holds it, and asks the pacer to hold the clock: frames are drawn once it has.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(asked) = from_bytes::<Record>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             return Ok(Reply::Now(refused("that is no clip to record")));
         };
@@ -317,11 +268,10 @@ impl Handles<Call> for RecordTool {
 
         Ok(Reply::Later(later))
     }
-}
 
-/// The pacer held the clock, so the first frame is drawn; or it set the clock back, so the call is answered.
-impl Receives<Answer<PaceSet, Pacing>> for RecordTool {
-    fn handle(
+    /// The pacer held the clock, so the first frame is drawn; or it set the clock back, so the call is answered.
+    #[answer]
+    fn pace_set(
         &mut self,
         (answered, Pacing { clip }): (Answered<PaceSet>, Pacing),
         turn: &mut Turn<'_, Self>,
@@ -360,11 +310,10 @@ impl Receives<Answer<PaceSet, Pacing>> for RecordTool {
 
         Ok(())
     }
-}
 
-/// A frame's cycle has run: only a refusal matters, as the frame read back is what moves the clip on.
-impl Receives<Answer<Advanced, Stepping>> for RecordTool {
-    fn handle(
+    /// A frame's cycle has run: only a refusal matters, as the frame read back is what moves the clip on.
+    #[answer]
+    fn advanced(
         &mut self,
         (answered, Stepping { clip }): (Answered<Advanced>, Stepping),
         turn: &mut Turn<'_, Self>,
@@ -379,12 +328,11 @@ impl Receives<Answer<Advanced, Stepping>> for RecordTool {
         };
         recording.fail(why, turn)
     }
-}
 
-/// A frame was read back: it is checked and waits for the encoder, made at the first frame's size; it is encoded once
-/// the encoder is free, and the next frame drawn when there is room for it.
-impl Receives<Answer<Pixels, Framing>> for RecordTool {
-    fn handle(
+    /// A frame was read back: it is checked and waits for the encoder, made at the first frame's size; it is encoded
+    /// once the encoder is free, and the next frame drawn when there is room for it.
+    #[answer]
+    fn pixels(
         &mut self,
         (answered, Framing { clip, frame }): (Answered<Pixels>, Framing),
         turn: &mut Turn<'_, Self>,
@@ -442,12 +390,11 @@ impl Receives<Answer<Pixels, Framing>> for RecordTool {
 
         recording.draw_next(turn)
     }
-}
 
-/// A frame was encoded, and the encoder handed back: the next frame waiting is encoded, the next drawn when there is
-/// room for it, and the clip's MP4 finished once the last is in.
-impl Receives<Answer<FrameEncoded, Framing>> for RecordTool {
-    fn handle(
+    /// A frame was encoded, and the encoder handed back: the next frame waiting is encoded, the next drawn when there
+    /// is room for it, and the clip's MP4 finished once the last is in.
+    #[answer]
+    fn frame_encoded(
         &mut self,
         (answered, Framing { clip, frame }): (Answered<FrameEncoded>, Framing),
         turn: &mut Turn<'_, Self>,
@@ -479,11 +426,10 @@ impl Receives<Answer<FrameEncoded, Framing>> for RecordTool {
 
         recording.draw_next(turn)
     }
-}
 
-/// The clip's MP4 is finished: it is written into the program's saves.
-impl Receives<Answer<ClipFinished, Filing>> for RecordTool {
-    fn handle(
+    /// The clip's MP4 is finished: it is written into the program's saves.
+    #[answer]
+    fn clip_finished(
         &mut self,
         (answered, Filing { clip }): (Answered<ClipFinished>, Filing),
         turn: &mut Turn<'_, Self>,
@@ -513,11 +459,10 @@ impl Receives<Answer<ClipFinished, Filing>> for RecordTool {
 
         Ok(())
     }
-}
 
-/// The clip's MP4 is written: the clock is set back, and the call answered with the clip once it is.
-impl Receives<Answer<FileWritten, Filing>> for RecordTool {
-    fn handle(
+    /// The clip's MP4 is written: the clock is set back, and the call answered with the clip once it is.
+    #[answer]
+    fn file_written(
         &mut self,
         (answered, Filing { clip }): (Answered<FileWritten>, Filing),
         turn: &mut Turn<'_, Self>,
@@ -541,6 +486,29 @@ impl Receives<Answer<FileWritten, Filing>> for RecordTool {
         let recorded = recorded.clone();
 
         recording.restore(Answering::Recorded(recorded), turn)
+    }
+}
+
+impl Tool for RecordTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![ToolSheet::of::<Record>(
+            "record_clip",
+            "Records frames drawn onto a window as an MP4. It records `frames` frames of the window at \
+             `frames_per_second` (60 when left out), encoded as H.264 and written into the program's saves as \
+             clips/<name>.mp4. It holds the program's clock and advances it one cycle per frame, each by exactly \
+             1/fps, so the clip plays in exact real time however slowly its frames draw, and two runs of a \
+             deterministic program match frame for frame. The clock is left as it was found. `crop` and `longest` \
+             cut and shrink each frame as capture_frame's do; each side is then rounded down to even, as H.264 \
+             stores colour two by two pixels, so a frame not shrunk loses its last column or row. At most 3600 \
+             frames and 240 a second, and the file must fit the engine's budget for blobs. It answers the file, \
+             within the save directory the engine was given, and its frames, rate and size. The program must list \
+             the pacer and the file capability; a browser's engine has no encoder.",
+            Output::Value(SchemaNodes::of(&Recorded::SHAPE)),
+        )]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

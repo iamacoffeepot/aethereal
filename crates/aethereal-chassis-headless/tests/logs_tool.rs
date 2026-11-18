@@ -1,9 +1,7 @@
 //! `actor_logs` on the native host (ADR-0044, ADR-0036): a root that logs as it is told, and the tool reading what
 //! it said, live and after it has ended, the test asking the tool's worker each call as a holder would.
 
-use aethereal_actor::{
-    Actor, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, ProtocolRef, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Fault, Level, ProtocolRef, Turn, actor, path};
 use aethereal_chassis_headless::Headless;
 use aethereal_data::{ActorPath, Budget, Plain, from_bytes, to_bytes};
 use aethereal_substrate::Host;
@@ -34,31 +32,14 @@ struct GiveUp;
 #[kind(name = "aether.test.logs.talker")]
 struct Talker;
 
-impl ChildOf for Talker {
-    type Parent = Top;
-}
-
-impl Actor for Talker {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Say, GiveUp);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(talker: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Talker {
+    fn begin(talker: Self) -> Result<Self, Fault> {
         Ok(talker)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Say> for Talker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn say(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let level = match level {
             LogLevel::Debug => Level::Debug,
             LogLevel::Info => Level::Info,
@@ -69,13 +50,9 @@ impl Handles<Say> for Talker {
 
         Ok(())
     }
-}
 
-impl Handles<GiveUp> for Talker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn give_up(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Error, "giving up");
 
         Err(Fault::new(&give_up)?)

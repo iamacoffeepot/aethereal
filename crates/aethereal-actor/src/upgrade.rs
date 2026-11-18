@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 ///
 /// ```
 /// use aethereal_actor::{Portable, TakeOverError, Upgrade, Upgrades};
-/// # use aethereal_actor::{Actor, Anywhere, Beginning, ChildOf, Ending, Fault, Portability};
+/// # use aethereal_actor::{Anywhere, Fault, Portability, actor};
 /// # use aethereal_data::{Bound, Plain};
 /// # #[derive(Plain)]
 /// # #[kind(name = "doc.hud_config")]
@@ -22,17 +22,11 @@ use alloc::vec::Vec;
 /// # #[derive(Bound, Portability)]
 /// # #[kind(name = "doc.hud")]
 /// # struct Hud { health: f32, saving: bool, show_cooldowns: bool }
-/// # impl ChildOf for Hud { type Parent = Anywhere; }
-/// # impl Actor for Hud {
-/// #     type Config = HudConfig;
-/// #     type Key = ();
-/// #     type Handles = ();
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #     fn begin(_: HudConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// # #[actor(parent = Anywhere)]
+/// # impl Hud {
+/// #     fn begin(_: HudConfig) -> Result<Self, Fault> {
 /// #         Ok(Self { health: 100.0, saving: false, show_cooldowns: false })
 /// #     }
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> { Ok(()) }
 /// # }
 ///
 /// impl Upgrades for Hud {

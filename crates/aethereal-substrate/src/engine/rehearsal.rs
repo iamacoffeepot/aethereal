@@ -1,7 +1,7 @@
 //! An engine for a host to time steps on, to measure what splitting one among workers costs (ADR-0011).
 
 use super::Engine;
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
+use aethereal_actor::{Beginning, Fault, Turn, actor};
 use aethereal_data::Plain;
 use std::num::NonZeroUsize;
 
@@ -15,33 +15,16 @@ struct Again;
 #[kind(name = "aether.rehearsal.echo")]
 struct Echo;
 
-impl ChildOf for Echo {
-    type Parent = Top;
-}
-
-impl Actor for Echo {
-    type Config = Again;
-    type Key = u64;
-    type Handles = (Again,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64)]
+impl Echo {
     fn begin(_: Again, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&Again)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Again> for Echo {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn again(&mut self, _: Again, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Again)?;
 
         Ok(())

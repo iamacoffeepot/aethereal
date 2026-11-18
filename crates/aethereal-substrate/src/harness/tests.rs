@@ -2,10 +2,7 @@
 
 use super::{Harness, Ran, Unheard};
 use crate::Engine;
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Later, Protocol, ProtocolRef,
-    Receives, Top, Turn, Unanswered,
-};
+use aethereal_actor::{Answered, Fault, Later, ProtocolRef, Turn, Unanswered, actor, protocol};
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
 
@@ -26,59 +23,27 @@ struct Note(u32);
 struct Silence;
 
 /// What the relay asks and tells: the outside, as it takes every kind.
+#[protocol(Ping(answers = Pong), Note)]
 struct Listening;
-
-impl Protocol for Listening {
-    type Kinds = (Ping, Note);
-}
-
-impl Carries<Ping> for Listening {
-    type Answers = (Pong,);
-}
-
-impl Carries<Note> for Listening {
-    type Answers = ();
-}
 
 /// A root that doubles what it is asked, and holds a silence and lets go of it unanswered.
 #[derive(Plain)]
 #[kind(name = "aether.test.outside.doubler")]
 struct Doubler;
 
-impl ChildOf for Doubler {
-    type Parent = Top;
-}
-
-impl Actor for Doubler {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Ping, Silence);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(doubler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Doubler {
+    fn begin(doubler: Self) -> Result<Self, Fault> {
         Ok(doubler)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Doubler {
-    type From = Anyone;
-    type Returns = Pong;
-
-    fn handle(&mut self, Ping(value): Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+    #[request]
+    fn ping(&mut self, Ping(value): Ping) -> Result<Pong, Fault> {
         Ok(Pong(value * 2))
     }
-}
 
-impl Handles<Silence> for Doubler {
-    type From = Anyone;
-    type Returns = Later<Pong>;
-
-    fn handle(&mut self, _: Silence, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+    #[request]
+    fn silence(&mut self, _: Silence, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
         let (held, later) = turn.hold();
         drop(held);
 
@@ -105,46 +70,24 @@ struct Relay {
     report: ProtocolRef<Listening>,
 }
 
-impl ChildOf for Relay {
-    type Parent = Top;
-}
-
-impl Actor for Relay {
-    type Config = Report;
-    type Key = ();
-    type Handles = (Note, Ping, Answer<Pong, Waiting>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(report: Report, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Relay {
+    fn begin(report: Report) -> Result<Self, Fault> {
         Ok(Self { report: report.to })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Note> for Relay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).send(&note).map(|_| ())?)
     }
-}
 
-impl Handles<Ping> for Relay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).ask(&ping, &Waiting).map(|_| ())?)
     }
-}
 
-impl Receives<Answer<Pong, Waiting>> for Relay {
-    fn handle(&mut self, (answered, _): (Answered<Pong>, Waiting), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (answered, _): (Answered<Pong>, Waiting), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let note = match answered {
             Answered::Yes(Pong(value)) => Note(value),
             Answered::No(_) => Note(0),
@@ -343,31 +286,14 @@ struct Passer {
     seen: Vec<u32>,
 }
 
-impl ChildOf for Passer {
-    type Parent = Top;
-}
-
-impl Actor for Passer {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Pass,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(passer: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Passer {
+    fn begin(passer: Self) -> Result<Self, Fault> {
         Ok(passer)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Pass> for Passer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pass(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.seen.push(left);
         if left == 0 {
             return Err(Fault::new(&Pass(left))?);
@@ -492,31 +418,14 @@ fn settling_answers_with_every_turn_of_every_step_in_order() -> Result<(), Unhea
 #[kind(name = "aether.test.outside.caster")]
 struct Caster;
 
-impl ChildOf for Caster {
-    type Parent = Top;
-}
-
-impl Actor for Caster {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Note,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(caster: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Caster {
+    fn begin(caster: Self) -> Result<Self, Fault> {
         Ok(caster)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Note> for Caster {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
             turn.to(sender).send(&note)?;
         }

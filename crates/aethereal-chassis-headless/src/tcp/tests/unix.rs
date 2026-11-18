@@ -2,7 +2,7 @@
 //! its own under the system's temporary directory.
 
 use super::*;
-use aethereal_actor::{Anyone, Receives};
+use aethereal_actor::actor;
 use aethereal_tcp::{ConnectUnix, ConnectedUnix, SocketPath};
 use std::fs;
 use std::io::{Read as _, Write as _};
@@ -171,18 +171,9 @@ struct Holder {
     bytes: Vec<u8>,
 }
 
-impl ChildOf for Holder {
-    type Parent = Top;
-}
-
-impl Actor for Holder {
-    type Config = Asked;
-    type Key = ();
-    type Handles = (Hold, Part<Reading>, Answer<HungUp, Number>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Holder {
+    fn begin(_: Asked) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Asked)?);
         };
@@ -190,29 +181,8 @@ impl Actor for Holder {
         Ok(Self { reading: Streams::new(window), pace: Pace::Holding, held: Vec::new(), bytes: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Holder {
-    const SECTION: &'static str = "holder";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Asked)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Hold> for Holder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, hold: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn hold(&mut self, hold: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match hold {
             Hold::Read(connection) => {
                 self.reading.open(turn, connection.protocol(), Read, ())?;
@@ -227,13 +197,9 @@ impl Handles<Hold> for Holder {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Reading>> for Holder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn reading(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.reading.part_held(turn, part),
             Pace::Taking => self.reading.part(turn, part)?,
@@ -248,11 +214,23 @@ impl Handles<Part<Reading>> for Holder {
 
         Ok(())
     }
+
+    #[answer]
+    fn hung_up(&mut self, (_, number): (Answered<HungUp>, Number)) -> Result<(), Fault> {
+        self.reading.answered(number);
+
+        Ok(())
+    }
 }
 
-impl Receives<Answer<HungUp, Number>> for Holder {
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.reading.answered(number);
+impl Bootstrap<Headless> for Holder {
+    const SECTION: &'static str = "holder";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Asked)?;
 
         Ok(())
     }

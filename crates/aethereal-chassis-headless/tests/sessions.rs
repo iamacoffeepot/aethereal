@@ -3,10 +3,8 @@
 //! the build host's own daemon and Claude Code.
 #![cfg(unix)]
 
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Receives, Top, Turn, path,
-};
-use aethereal_actor::{Service, Spares};
+use aethereal_actor::{ActorRef, Answered, Fault, Turn, path};
+use aethereal_actor::{Service, Spares, actor};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
@@ -97,26 +95,9 @@ struct Caller {
     archived: Vec<Archived>,
 }
 
-impl ChildOf for Caller {
-    type Parent = Top;
-}
-
-impl Actor for Caller {
-    type Config = Unset;
-    type Key = ();
-    type Handles = (
-        Order,
-        Answer<Opened, Asked>,
-        Answer<Said, Asked>,
-        Answer<Transcribed, Asked>,
-        Answer<SessionsListed, Asked>,
-        Answer<Interrupted, Asked>,
-        Answer<Archived, Asked>,
-    );
-    type Depends = (Sessions,);
-    type Spawns = ();
-
-    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Sessions))]
+impl Caller {
+    fn begin(_: Unset) -> Result<Self, Fault> {
         Ok(Self {
             opened: Vec::new(),
             said: Vec::new(),
@@ -127,7 +108,78 @@ impl Actor for Caller {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let sessions = path::<Sessions>(());
+        match order {
+            Order::New(new) => turn.to(sessions).ask(&new, &Asked)?,
+            Order::Say(say) => turn.to(sessions).ask(&say, &Asked)?,
+            Order::Read(read) => turn.to(sessions).ask(&read, &Asked)?,
+            Order::List => turn.to(sessions).ask(&ListSessions, &Asked)?,
+            Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &Asked)?,
+            Order::Archive(archive) => turn.to(sessions).ask(&archive, &Asked)?,
+        };
+
+        Ok(())
+    }
+
+    #[answer]
+    fn opened(&mut self, (answered, Asked): (Answered<Opened>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.opened.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn said(&mut self, (answered, Asked): (Answered<Said>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.said.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn transcribed(&mut self, (answered, Asked): (Answered<Transcribed>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.read.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn sessions_listed(&mut self, (answered, Asked): (Answered<SessionsListed>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.listed.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn interrupted(&mut self, (answered, Asked): (Answered<Interrupted>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.interrupted.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn archived(&mut self, (answered, Asked): (Answered<Archived>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.archived.push(answer);
+
         Ok(())
     }
 }
@@ -144,45 +196,6 @@ impl Bootstrap<Headless> for Caller {
         Ok(())
     }
 }
-
-impl Handles<Order> for Caller {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let sessions = path::<Sessions>(());
-        match order {
-            Order::New(new) => turn.to(sessions).ask(&new, &Asked)?,
-            Order::Say(say) => turn.to(sessions).ask(&say, &Asked)?,
-            Order::Read(read) => turn.to(sessions).ask(&read, &Asked)?,
-            Order::List => turn.to(sessions).ask(&ListSessions, &Asked)?,
-            Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &Asked)?,
-            Order::Archive(archive) => turn.to(sessions).ask(&archive, &Asked)?,
-        };
-
-        Ok(())
-    }
-}
-
-macro_rules! keeps {
-    ($($answer:ty => $field:ident),*) => {$(
-        impl Receives<Answer<$answer, Asked>> for Caller {
-            fn handle(&mut self, (answered, Asked): (Answered<$answer>, Asked), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-                let Answered::Yes(answer) = answered else {
-                    panic!("the sessions answer: {answered:?}");
-                };
-                self.$field.push(answer);
-
-                Ok(())
-            }
-        }
-    )*};
-}
-
-keeps!(
-    Opened => opened, Said => said, Transcribed => read, SessionsListed => listed, Interrupted => interrupted,
-    Archived => archived
-);
 
 /// A container the fake daemon made.
 struct Container {
@@ -1329,23 +1342,10 @@ impl Future for Later {
 #[kind(name = "aether.test.sessions.recorder")]
 struct Recorder;
 
-impl ChildOf for Recorder {
-    type Parent = Top;
-}
-
-impl Actor for Recorder {
-    type Config = Unset;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Recorder {
+    fn begin(_: Unset) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1697,44 +1697,14 @@ struct Impostor {
     heard: Vec<ActorRef<Engine>>,
 }
 
-impl ChildOf for Impostor {
-    type Parent = Top;
-}
-
-impl Actor for Impostor {
-    type Config = Unset;
-    type Key = ();
-    type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk, TrustedEngine);
-    type Depends = (Sessions, Engines);
-    type Spawns = ();
-
-    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Sessions, Engines))]
+impl Impostor {
+    fn begin(_: Unset) -> Result<Self, Fault> {
         Ok(Self { shown: 0, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Impostor {
-    const SECTION: &'static str = "impostor";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Pose> for Impostor {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pose(&mut self, pose: Pose, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
         match pose {
             Pose::Join { engine } => {
@@ -1756,35 +1726,48 @@ impl Handles<Pose> for Impostor {
 
         Ok(())
     }
-}
 
-impl Handles<TrustedEngine> for Impostor {
-    type From = Anyone;
-    type Returns = ();
+    #[tell]
+    fn show_tabs(&mut self, _: ShowTabs) -> Result<(), Fault> {
+        self.shown += 1;
 
-    fn handle(&mut self, trusted: TrustedEngine, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    #[tell]
+    fn show_events(&mut self, _: ShowEvents) -> Result<(), Fault> {
+        self.shown += 1;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn show_ask(&mut self, _: ShowAsk) -> Result<(), Fault> {
+        self.shown += 1;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn trusted_engine(&mut self, trusted: TrustedEngine) -> Result<(), Fault> {
         self.heard.push(trusted.engine);
 
         Ok(())
     }
 }
 
-macro_rules! counts {
-    ($($shown:ty),*) => {$(
-        impl Handles<$shown> for Impostor {
-            type From = Anyone;
-            type Returns = ();
+impl Bootstrap<Headless> for Impostor {
+    const SECTION: &'static str = "impostor";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
 
-            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-                self.shown += 1;
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Unset)?;
 
-                Ok(())
-            }
-        }
-    )*};
+        Ok(())
+    }
 }
-
-counts!(ShowTabs, ShowEvents, ShowAsk);
 
 /// Tells the impostor `pose`, and steps until the engine has nothing left to run of it.
 fn pose(harness: &mut Harness<Headless>, pose: &Pose) -> Result<(), Unheard> {

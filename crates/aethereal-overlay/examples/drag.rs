@@ -22,9 +22,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Prepare, Render, Spawn, Tick, Top, Turn, child,
-};
+use aethereal_actor::{Beginning, Fault, Level, Prepare, Render, Tick, Turn, actor, child};
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
@@ -274,21 +272,8 @@ impl Shelf {
     }
 }
 
-impl ChildOf for Shelves {
-    type Parent = Top;
-}
-
-impl ChildOf for Shelf {
-    type Parent = Shelves;
-}
-
-impl Actor for Shelves {
-    type Config = ShelvesConfig;
-    type Key = ();
-    type Handles = aethereal_ui::handles![Event];
-    type Depends = aethereal_ui::depends!();
-    type Spawns = (Shelf,);
-
+#[actor(with(aethereal_ui::screen), spawns(Shelf))]
+impl Shelves {
     fn begin(config: ShelvesConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(config.window.actor()).send(&window::Subscribe)?;
         let frame = Frame::Main(config.window.id());
@@ -308,16 +293,8 @@ impl Actor for Shelves {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Shelves {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -328,13 +305,8 @@ impl Handles<Event> for Shelves {
     }
 }
 
-impl Actor for Shelf {
-    type Config = ShelfConfig;
-    type Key = Hand;
-    type Handles = aethereal_ui::handles![];
-    type Depends = aethereal_ui::depends!();
-    type Spawns = ();
-
+#[actor(key = Hand, parent = Shelves, with(aethereal_ui::screen))]
+impl Shelf {
     /// The left shelf begins with three fruit and two stones, the right with two fruit.
     fn begin(config: ShelfConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(config.frame), Viewport::window(1, 1, 1.0), turn)?;
@@ -344,10 +316,6 @@ impl Actor for Shelf {
         };
 
         Ok(Self { hand: config.hand, fruit, stones, ui })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

@@ -7,7 +7,7 @@
 use crate::prelude::*;
 use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Stateless, Widget};
 use crate::widgets::{Keeps, Text};
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
+use aethereal_actor::{Beginning, Fault, Turn, actor};
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
@@ -185,25 +185,12 @@ impl Shop {
     }
 }
 
-impl ChildOf for Shop {
-    type Parent = Top;
-}
-
-impl Actor for Shop {
-    type Config = Frame;
-    type Key = ();
-    type Handles = aethereal_ui::handles![];
-    type Depends = crate::depends!();
-    type Spawns = ();
-
+#[actor(with(aethereal_ui::screen))]
+impl Shop {
     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 
         Ok(shop(ui))
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

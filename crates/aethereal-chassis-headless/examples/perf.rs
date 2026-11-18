@@ -14,7 +14,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Spawn, Turn};
+use aethereal_actor::{Beginning, Fault, Level, Recursive, Turn, actor};
 use aethereal_chassis_headless::{Headless, Measured};
 use aethereal_data::Plain;
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -104,17 +104,8 @@ const fn mix(mut value: u64) -> u64 {
     value ^ (value >> 33)
 }
 
-impl ChildOf for Counter {
-    type Parent = Recursive;
-}
-
-impl Actor for Counter {
-    type Config = CounterConfig;
-    type Key = u64;
-    type Handles = (Count,);
-    type Depends = ();
-    type Spawns = (Self,);
-
+#[actor(key = u64, parent = Recursive, spawns(Self))]
+impl Counter {
     fn begin(config: CounterConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for number in 1..=config.children + config.idle {
             let child = CounterConfig { number, children: 0, idle: 0, shape: config.shape };
@@ -130,16 +121,8 @@ impl Actor for Counter {
         Ok(Self { number: config.number, shape: config.shape })
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Count> for Counter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn count(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));
         hint::black_box(worked);
         if self.shape == LOG {

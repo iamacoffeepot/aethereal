@@ -22,79 +22,47 @@ pub struct Parent<P> {
 /// dropped.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
+/// # use aethereal_actor::{Fault, Turn, actor, parent};
 /// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $parent:ty) => {
-/// #         #[derive(Plain)]
-/// #         #[kind(name = $named)]
-/// #         struct $name;
-/// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #     };
-/// # }
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
 /// #
-/// # impl Actor for Squad {
-/// #     type Config = Squad;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.army")]
+/// # struct Army;
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #         Ok(squad)
-/// #     }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.squad")]
+/// # struct Squad;
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Actor for Army {
-/// #     type Config = Army;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// # #[actor]
+/// # impl Army {
+/// #     fn begin(army: Army) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #     #[tell]
+/// #     fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// #
-/// actor!(Army, "aether.doc.army", Top);
 /// // A squad stands beneath one type: it sends to its parent through `turn.parent()`.
-/// actor!(Squad, "aether.doc.squad", Army);
-///
-/// impl Handles<Poke> for Squad {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #[actor(parent = Army)]
+/// impl Squad {
+/// #     fn begin(squad: Squad) -> Result<Self, Fault> {
+/// #         Ok(squad)
+/// #     }
+/// #
+///     #[tell]
+///     fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(parent()).send(&Poke)?;
 ///
 ///         Ok(())
 ///     }
 /// }
-/// #
-/// # impl Handles<Poke> for Army {
-/// #     type From = Anyone;
-/// #     type Returns = ();
-/// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
 /// ```
 #[must_use]
 pub const fn parent<P>() -> Parent<P> {
@@ -204,154 +172,90 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// live or not; a place beneath one as a typed path is, live in the table as the step began.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
+/// # use aethereal_actor::{Fault, Turn, actor, child};
 /// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $parent:ty) => {
-/// #         #[derive(Plain)]
-/// #         #[kind(name = $named)]
-/// #         struct $name;
-/// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #     };
-/// # }
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
 /// #
-/// # impl Actor for Squad {
-/// #     type Config = Squad;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.army")]
+/// # struct Army;
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #         Ok(squad)
-/// #     }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.squad")]
+/// # struct Squad;
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Actor for Army {
-/// #     type Config = Army;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// # #[actor]
+/// # impl Army {
+/// #     fn begin(army: Army) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #     #[tell]
+/// #     fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// #
-/// actor!(Army, "aether.doc.army", Top);
 /// // A squad stands beneath an army, and nothing else.
-/// actor!(Squad, "aether.doc.squad", Army);
-///
-/// impl Handles<Poke> for Squad {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #[actor(parent = Army)]
+/// impl Squad {
+/// #     fn begin(squad: Squad) -> Result<Self, Fault> {
+/// #         Ok(squad)
+/// #     }
+/// #
+///     #[tell]
+///     fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<Squad>(())).send(&Poke)?;
 ///
 ///         Ok(())
 ///     }
 /// }
-/// #
-/// # impl Handles<Poke> for Army {
-/// #     type From = Anyone;
-/// #     type Returns = ();
-/// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
 /// ```
 ///
 /// Nor does a place whose types do not stand each beneath the one before:
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
+/// # use aethereal_actor::{Fault, Turn, actor, child};
 /// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $parent:ty) => {
-/// #         #[derive(Plain)]
-/// #         #[kind(name = $named)]
-/// #         struct $name;
-/// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #     };
-/// # }
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.doc.poke")]
 /// # struct Poke;
 /// #
-/// # impl Actor for Squad {
-/// #     type Config = Squad;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.army")]
+/// # struct Army;
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #         Ok(squad)
-/// #     }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.doc.squad")]
+/// # struct Squad;
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Actor for Army {
-/// #     type Config = Army;
-/// #     type Key = ();
-/// #     type Handles = (Poke,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// // A squad stands beneath an army, so no squad stands beneath the army's squad.
+/// #[actor]
+/// impl Army {
+/// #     fn begin(army: Army) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// actor!(Army, "aether.doc.army", Top);
-/// actor!(Squad, "aether.doc.squad", Army);
-///
-/// // A squad stands beneath an army, so no squad stands beneath the army's squad.
-/// impl Handles<Poke> for Army {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     #[tell]
+///     fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<(Squad, Squad)>(())).send(&Poke)?;
 ///
 ///         Ok(())
 ///     }
 /// }
 /// #
-/// # impl Handles<Poke> for Squad {
-/// #     type From = Anyone;
-/// #     type Returns = ();
+/// # #[actor(parent = Army)]
+/// # impl Squad {
+/// #     fn begin(squad: Squad) -> Result<Self, Fault> {
+/// #         Ok(squad)
+/// #     }
 /// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #     #[tell]
+/// #     fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }

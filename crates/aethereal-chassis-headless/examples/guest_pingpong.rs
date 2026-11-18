@@ -4,9 +4,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, ProtocolRef, Receives, Time, Top, Turn,
-};
+use aethereal_actor::{Answered, Beginning, Fault, ProtocolRef, Time, Turn, actor};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -37,17 +35,8 @@ struct Pinger {
     echo: ProtocolRef<Pings>,
 }
 
-impl ChildOf for Pinger {
-    type Parent = Top;
-}
-
-impl Actor for Pinger {
-    type Config = Volley;
-    type Key = u64;
-    type Handles = (Answer<Pong, Served>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64)]
+impl Pinger {
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
         let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) else {
@@ -58,13 +47,8 @@ impl Actor for Pinger {
         Ok(Self { echo })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pong, Served>> for Pinger {
-    fn handle(&mut self, (pong, Served): (Answered<Pong>, Served), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, Served): (Answered<Pong>, Served), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(pong) = pong else {
             return Ok(());
         };

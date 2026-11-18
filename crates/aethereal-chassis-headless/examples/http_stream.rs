@@ -15,8 +15,8 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to one place loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Bytes, ChildOf, Ended, Ending, Enough, Fault, Handles, Later, Level,
-    More, Number, Open, Part, Receives, Reply, Serving, Slept, Top, Turn,
+    Answered, Beginning, Bytes, Ended, Enough, Fault, Later, Level, More, Number, Open, Part, Reply, Serving, Slept,
+    Turn, actor,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -81,17 +81,8 @@ struct Source {
     sent: u32,
 }
 
-impl ChildOf for Source {
-    type Parent = Top;
-}
-
-impl Actor for Source {
-    type Config = Plan;
-    type Key = ();
-    type Handles = (Request<(), ()>, Open<OutboundBody>, More, Enough, Ended);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Source {
     fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let part_bytes = usize::try_from(plan.part_bytes).unwrap_or(usize::MAX);
         let mut part = Vec::from(turn.buffer(part_bytes));
@@ -103,29 +94,8 @@ impl Actor for Source {
         Ok(Self { plan, part, serving: Serving::new(), sent: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Source {
-    const SECTION: &'static str = "source";
-    type Settings = Plan;
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap(plan: Plan, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), plan)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Request<(), ()>> for Source {
-    type From = FromStack;
-    type Returns = Response;
-
-    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<Response, Fault> {
+    #[request]
+    fn request(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, FromStack>) -> Result<Response, Fault> {
         let length = match self.plan.framing {
             Framing::Chunked => ResponseLength::Unknown,
             Framing::Known => ResponseLength::Known(u64::from(self.plan.parts) * u64::from(self.plan.part_bytes)),
@@ -139,25 +109,17 @@ impl Handles<Request<(), ()>> for Source {
 
         Ok(response)
     }
-}
 
-impl Handles<Open<OutboundBody>> for Source {
-    type From = Anyone;
-    type Returns = Later<SourceEnd>;
-
-    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<SourceEnd>, Fault> {
+    #[request]
+    fn open(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<SourceEnd>, Fault> {
         let (_, _, later) = self.serving.open(turn, open)?;
         self.sent = 0;
 
         Ok(later)
     }
-}
 
-impl Handles<More> for Source {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(key) = self.serving.more(turn, &more) else {
             return Ok(());
         };
@@ -186,24 +148,32 @@ impl Handles<More> for Source {
 
         Ok(())
     }
-}
 
-impl Handles<Enough> for Source {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(stopped) = self.serving.stop(turn, &enough) {
             stopped.finish(turn, &SourceEnd::Stopped)?;
         }
 
         Ok(())
     }
+
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
+        self.serving.ended(&ended);
+
+        Ok(())
+    }
 }
 
-impl Receives<Ended> for Source {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.serving.ended(&ended);
+impl Bootstrap<Headless> for Source {
+    const SECTION: &'static str = "source";
+    type Settings = Plan;
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap(plan: Plan, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), plan)?;
 
         Ok(())
     }
@@ -214,10 +184,6 @@ impl Receives<Ended> for Source {
 #[kind(name = "aether.bench.http.bench_stack")]
 struct BenchStack {
     serving: StackServing<Self, (Source,)>,
-}
-
-impl ChildOf for BenchStack {
-    type Parent = Top;
 }
 
 impl Bootstrap<Headless> for BenchStack {
@@ -239,47 +205,16 @@ impl Bootstrap<Headless> for BenchStack {
     }
 }
 
-impl Actor for BenchStack {
-    type Config = StackSettings;
-    type Key = ();
-    type Handles = (
-        Answer<Listening, Binding>,
-        Part<Accepting>,
-        Answer<Unbound, Number>,
-        Part<Reading>,
-        Answer<HungUp, Number>,
-        Answer<Wrote, Sending>,
-        Answer<Response, Answering>,
-        Answer<Slept, Deadline>,
-        Gather,
-        Shut,
-        Answer<Outward, ParkedResponse>,
-        Answer<PartStep, ParkedPart>,
-        Open<InboundBody>,
-        More,
-        Enough,
-        Ended,
-        Part<OutboundBody>,
-        Answer<SourceEnd, Number>,
-    );
-    type Depends = (Tcp, Source);
-    type Spawns = ();
-
+#[actor(depends(Tcp, Source))]
+impl BenchStack {
     fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let layers: Layers<(Source,)> = layers(turn)?;
 
         Ok(Self { serving: StackServing::listen(turn, &settings, layers)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Stack for BenchStack {}
-
-impl Receives<Answer<Listening, Binding>> for BenchStack {
-    fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn listening(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
             turn.log(Level::Error, format_args!("no port to serve on: {listened:?}"));
@@ -287,137 +222,98 @@ impl Receives<Answer<Listening, Binding>> for BenchStack {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Accepting>> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn accepting(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.accept(part, turn)
     }
-}
 
-impl Receives<Answer<Unbound, Number>> for BenchStack {
-    fn handle(&mut self, unbound: (Answered<Unbound>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn unbound(&mut self, unbound: (Answered<Unbound>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.unbound(unbound, turn)
     }
-}
 
-impl Handles<Part<Reading>> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn reading(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.read(part, turn)
     }
-}
 
-impl Receives<Answer<HungUp, Number>> for BenchStack {
-    fn handle(&mut self, hung_up: (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn hung_up(&mut self, hung_up: (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.hung_up(hung_up, turn)
     }
-}
 
-impl Receives<Answer<Wrote, Sending>> for BenchStack {
-    fn handle(&mut self, wrote: (Answered<Wrote>, Sending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn wrote(&mut self, wrote: (Answered<Wrote>, Sending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.wrote(wrote, turn)
     }
-}
 
-impl Receives<Answer<Response, Answering>> for BenchStack {
-    fn handle(&mut self, answered: (Answered<Response>, Answering), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn response(&mut self, answered: (Answered<Response>, Answering), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.answered(answered, turn)
     }
-}
 
-impl Receives<Answer<Slept, Deadline>> for BenchStack {
-    fn handle(&mut self, slept: (Answered<Slept>, Deadline), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, slept: (Answered<Slept>, Deadline), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.slept(slept, turn)
     }
-}
 
-impl Handles<Gather> for BenchStack {
-    type From = Anyone;
-    type Returns = Reply<Gathered>;
-
-    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<Reply<Gathered>, Fault> {
+    #[request]
+    fn gather(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<Reply<Gathered>, Fault> {
         self.serving.gather(gather, turn)
     }
-}
 
-impl Handles<Shut> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.shut(turn)
     }
-}
 
-impl Receives<Answer<Outward, ParkedResponse>> for BenchStack {
-    fn handle(
+    #[answer]
+    fn outward(
         &mut self,
         returned: (Answered<Outward>, ParkedResponse),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.serving.returned(returned, turn)
     }
-}
 
-impl Handles<Open<InboundBody>> for BenchStack {
-    type From = Anyone;
-    type Returns = Later<BodyRead>;
+    #[answer]
+    fn part_step(&mut self, passed: (Answered<PartStep>, ParkedPart), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.serving.passed(passed, turn)
+    }
 
-    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<BodyRead>, Fault> {
+    #[request]
+    fn open(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<BodyRead>, Fault> {
         self.serving.open_body(open, turn)
     }
-}
 
-impl Handles<More> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.grant_body(&more, turn)
     }
-}
 
-impl Handles<Enough> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.stop_reading(&enough, turn)
     }
-}
 
-impl Receives<Ended> for BenchStack {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.lose_reader(&ended, turn)
     }
-}
 
-impl Handles<Part<OutboundBody>> for BenchStack {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn outbound_body(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.take_part(part, turn)
     }
-}
 
-impl Receives<Answer<SourceEnd, Number>> for BenchStack {
-    fn handle(&mut self, ended: (Answered<SourceEnd>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn source_end(&mut self, ended: (Answered<SourceEnd>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.end_source(ended, turn)
     }
 }
 
-impl Receives<Answer<PartStep, ParkedPart>> for BenchStack {
-    fn handle(&mut self, passed: (Answered<PartStep>, ParkedPart), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.serving.passed(passed, turn)
-    }
-}
+impl Stack for BenchStack {}
 
 /// What one run's client read: the bytes after the head, framing and all, and the nanoseconds from its request written
 /// to the close.

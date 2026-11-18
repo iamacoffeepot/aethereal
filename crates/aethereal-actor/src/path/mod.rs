@@ -24,7 +24,7 @@ use core::marker::PhantomData;
 /// A send at a path builds only for a kind the path's type handles, from an actor that depends on its root:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Fault, Top, Turn, actor, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -45,40 +45,19 @@ use core::marker::PhantomData;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Poke, Knock);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent, depends($depends))]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
-/// #         }
 /// #
-/// #         impl Handles<Poke> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         impl Handles<Knock> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn knock(&mut self, _: Knock) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -97,7 +76,7 @@ use core::marker::PhantomData;
 /// One of a kind it does not handle does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Fault, Top, Turn, actor, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -118,40 +97,19 @@ use core::marker::PhantomData;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Poke, Knock);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent, depends($depends))]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
-/// #         }
 /// #
-/// #         impl Handles<Poke> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         impl Handles<Knock> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn knock(&mut self, _: Knock) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -170,7 +128,7 @@ use core::marker::PhantomData;
 /// Nor does a path to a type that stands in no one place:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Anywhere, Fault, actor, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -191,40 +149,19 @@ use core::marker::PhantomData;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Poke, Knock);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent, depends($depends))]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn poke(&mut self, _: Poke) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
-/// #         }
 /// #
-/// #         impl Handles<Poke> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         impl Handles<Knock> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn knock(&mut self, _: Knock) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }

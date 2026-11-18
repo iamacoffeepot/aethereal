@@ -4,9 +4,7 @@
 //! to move, what it answered, and about which publish, the test reads in the engine's record of its asks.
 
 use crate::Shut;
-use aethereal_actor::{
-    Actor, Anyone, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Portability, Top, Turn, Upgrade, Upgrades,
-};
+use aethereal_actor::{Bytes, Fault, Portability, Turn, Upgrade, Upgrades, actor};
 #[cfg(echo_v2)]
 use aethereal_actor::{Portable, TakeOverError};
 use aethereal_data::{Bound, Plain};
@@ -104,22 +102,38 @@ impl Mover {
     }
 }
 
-impl ChildOf for Mover {
-    type Parent = Top;
-}
-
-impl Actor for Mover {
-    type Config = MoverConfig;
-    type Key = ();
-    type Handles = (Probe, Keep, LetGo, Shut);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Mover {
+    fn begin(config: MoverConfig) -> Result<Self, Fault> {
         Ok(Self::new(config.holds))
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[request]
+    fn probe(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<Report, Fault> {
+        self.count += 1;
+        let kept = self.kept.iter().map(|blob| u64::try_from(turn.read(blob).len()).unwrap_or(u64::MAX)).sum();
+
+        Ok(Report { version: VERSION, count: self.count, first_move: self.first_move(), kept })
+    }
+
+    #[tell]
+    fn keep(&mut self, keep: Keep) -> Result<(), Fault> {
+        self.kept.push(keep.blob);
+
+        Ok(())
+    }
+
+    #[tell]
+    fn let_go(&mut self, _: LetGo) -> Result<(), Fault> {
+        self.holds = false;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.close();
+
         Ok(())
     }
 }
@@ -145,51 +159,6 @@ impl Upgrades for Mover {
     }
 }
 
-impl Handles<Probe> for Mover {
-    type From = Anyone;
-    type Returns = Report;
-
-    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<Report, Fault> {
-        self.count += 1;
-        let kept = self.kept.iter().map(|blob| u64::try_from(turn.read(blob).len()).unwrap_or(u64::MAX)).sum();
-
-        Ok(Report { version: VERSION, count: self.count, first_move: self.first_move(), kept })
-    }
-}
-
-impl Handles<Keep> for Mover {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keep: Keep, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.kept.push(keep.blob);
-
-        Ok(())
-    }
-}
-
-impl Handles<LetGo> for Mover {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.holds = false;
-
-        Ok(())
-    }
-}
-
-impl Handles<Shut> for Mover {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.close();
-
-        Ok(())
-    }
-}
-
 /// An actor whose second version keeps its state's layout, so its state is taken in as it is: it writes no
 /// `take_over`, and a move that called one would fail.
 #[derive(Bound, Portability)]
@@ -198,40 +167,23 @@ pub struct Keeper {
     count: u64,
 }
 
-impl ChildOf for Keeper {
-    type Parent = Top;
-}
-
-impl Actor for Keeper {
-    type Config = MoverConfig;
-    type Key = ();
-    type Handles = (Probe,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Keeper {
+    fn begin(_: MoverConfig) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[request]
+    fn probe(&mut self, _: Probe) -> Result<Report, Fault> {
+        self.count += 1;
+
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
     }
 }
 
 impl Upgrades for Keeper {
     fn upgrade(&self) -> Upgrade {
         Upgrade::Now
-    }
-}
-
-impl Handles<Probe> for Keeper {
-    type From = Anyone;
-    type Returns = Report;
-
-    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
-        self.count += 1;
-
-        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
     }
 }
 
@@ -283,22 +235,23 @@ impl Stubborn {
     }
 }
 
-impl ChildOf for Stubborn {
-    type Parent = Top;
-}
-
-impl Actor for Stubborn {
-    type Config = MoverConfig;
-    type Key = ();
-    type Handles = (Probe, LetGo);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Stubborn {
+    fn begin(config: MoverConfig) -> Result<Self, Fault> {
         Ok(Self::new(config.holds))
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[request]
+    fn probe(&mut self, _: Probe) -> Result<Report, Fault> {
+        self.answer();
+
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
+    }
+
+    #[tell]
+    fn let_go(&mut self, _: LetGo) -> Result<(), Fault> {
+        self.holds = false;
+
         Ok(())
     }
 }
@@ -323,28 +276,6 @@ impl Upgrades for Stubborn {
     }
 }
 
-impl Handles<Probe> for Stubborn {
-    type From = Anyone;
-    type Returns = Report;
-
-    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
-        self.answer();
-
-        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
-    }
-}
-
-impl Handles<LetGo> for Stubborn {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.holds = false;
-
-        Ok(())
-    }
-}
-
 /// An actor whose second version's `take_over` panics, which traps the instance it runs in: the second version's in
 /// the actor's part, and every actor living there with it (ADR-0015). It answers `Later` while it holds.
 #[cfg(not(echo_v2))]
@@ -366,22 +297,23 @@ pub struct Breaker {
     count: u64,
 }
 
-impl ChildOf for Breaker {
-    type Parent = Top;
-}
-
-impl Actor for Breaker {
-    type Config = MoverConfig;
-    type Key = ();
-    type Handles = (Probe, LetGo);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Breaker {
+    fn begin(config: MoverConfig) -> Result<Self, Fault> {
         Ok(Self { count: 0, holds: config.holds })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[request]
+    fn probe(&mut self, _: Probe) -> Result<Report, Fault> {
+        self.count += 1;
+
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
+    }
+
+    #[tell]
+    fn let_go(&mut self, _: LetGo) -> Result<(), Fault> {
+        self.holds = false;
+
         Ok(())
     }
 }
@@ -399,27 +331,5 @@ impl Upgrades for Breaker {
     #[cfg(echo_v2)]
     fn take_over(_: Portable<Self>) -> Result<Self, TakeOverError> {
         panic!("a breaker's second version takes over no state");
-    }
-}
-
-impl Handles<Probe> for Breaker {
-    type From = Anyone;
-    type Returns = Report;
-
-    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
-        self.count += 1;
-
-        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
-    }
-}
-
-impl Handles<LetGo> for Breaker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.holds = false;
-
-        Ok(())
     }
 }

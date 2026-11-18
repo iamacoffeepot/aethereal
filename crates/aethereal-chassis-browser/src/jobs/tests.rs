@@ -2,8 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Entry, Job, Receives, Running, Seated, Services, Sleep, Slept,
-    Time, Top, Turn, Unanswered,
+    Answered, Beginning, Entry, Job, Running, Seated, Services, Sleep, Slept, Time, Turn, Unanswered, actor,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::harness::Turned;
@@ -192,17 +191,8 @@ struct GivesUp {
 #[kind(name = "aether.test.quitter")]
 struct Quitter;
 
-impl ChildOf for Quitter {
-    type Parent = Top;
-}
-
-impl Actor for Quitter {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Answer<Ran, Nothing>, Answer<Slept, GivesUp>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Quitter {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
         turn.run(&Sleep { until: Time::from_nanos(10) }, &GivesUp { on })?;
@@ -210,7 +200,17 @@ impl Actor for Quitter {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn ran(&mut self, _: (Answered<Ran>, Nothing)) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    #[answer]
+    fn slept(&mut self, (_, gives_up): (Answered<Slept>, GivesUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.cancel(gives_up.on);
+        let unpolled = turn.run(&Forever, &Nothing)?;
+        turn.cancel(unpolled);
+
         Ok(())
     }
 }
@@ -241,22 +241,6 @@ impl Seen {
 /// What the turns recorded since this was last asked were answered with, in order.
 fn seen(engine: &mut Engine) -> Vec<Seen> {
     engine.take_turned().iter().filter_map(Seen::of).collect()
-}
-
-impl Receives<Answer<Ran, Nothing>> for Quitter {
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Slept, GivesUp>> for Quitter {
-    fn handle(&mut self, (_, gives_up): (Answered<Slept>, GivesUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.cancel(gives_up.on);
-        let unpolled = turn.run(&Forever, &Nothing)?;
-        turn.cancel(unpolled);
-
-        Ok(())
-    }
 }
 
 /// Brings in what the jobs finished, and steps until no actor has anything left to run, as a frame does.
@@ -308,30 +292,16 @@ fn a_stopped_job_is_dropped_whether_or_not_it_was_polled_and_a_sleep_wakes_once_
 #[kind(name = "aether.test.staller")]
 struct Staller;
 
-impl ChildOf for Staller {
-    type Parent = Top;
-}
-
-impl Actor for Staller {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Answer<Ran, Nothing>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Staller {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Stalls, &Nothing)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Ran, Nothing>> for Staller {
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn ran(&mut self, _: (Answered<Ran>, Nothing)) -> Result<(), Fault> {
         Ok(())
     }
 }

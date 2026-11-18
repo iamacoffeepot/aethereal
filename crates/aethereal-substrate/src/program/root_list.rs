@@ -27,7 +27,7 @@ impl Drawn {
 /// that is not a root of the program, or is keyed, does not build.
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::RootList;
 /// #
@@ -37,23 +37,10 @@ impl Drawn {
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor]
+/// #         impl $name {
+/// #             fn begin(root: $name) -> Result<Self, Fault> {
 /// #                 Ok(root)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -71,7 +58,7 @@ impl Drawn {
 /// A root list that names a root the program does not list does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::RootList;
 /// #
@@ -81,23 +68,10 @@ impl Drawn {
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor]
+/// #         impl $name {
+/// #             fn begin(root: $name) -> Result<Self, Fault> {
 /// #                 Ok(root)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };

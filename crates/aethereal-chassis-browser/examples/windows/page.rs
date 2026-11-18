@@ -2,10 +2,7 @@
 //! beneath a stage whose draw list calls each, the program's root list (ADR-0055).
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Spawn,
-    Tick, Top, Turn, child, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Render, Tick, Turn, actor, child, path};
 use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
 use aethereal_render::Renderer;
@@ -139,17 +136,8 @@ impl<H: Host> Bootstrap<H> for Stage {
 #[kind(name = "aether.example.stage")]
 struct Stage;
 
-impl ChildOf for Stage {
-    type Parent = Top;
-}
-
-impl Actor for Stage {
-    type Config = Staged;
-    type Key = ();
-    type Handles = ();
-    type Depends = (Renderer,);
-    type Spawns = (Scene,);
-
+#[actor(depends(Renderer), spawns(Scene))]
+impl Stage {
     fn begin(staged: Staged, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut entries = Vec::with_capacity(staged.scenes.len());
         for shows in staged.scenes {
@@ -162,10 +150,6 @@ impl Actor for Stage {
         turn.to(path::<Renderer>(())).send(&DrawList { entries })?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -200,10 +184,6 @@ enum Ring {
     Making,
     /// The ring is placed, and listed: these are the placement, and the instances and uniforms it writes.
     Drawing { placement: PlacementId, instances: InstancesId, uniforms: UniformsId },
-}
-
-impl ChildOf for Scene {
-    type Parent = Stage;
 }
 
 /// What was learned before the mesh was asked for: the shape the program draws into.
@@ -246,24 +226,8 @@ struct MadeAll {
     uniforms: UniformsId,
 }
 
-impl Actor for Scene {
-    type Config = Shows;
-    type Key = WindowId;
-    type Handles = (
-        On<Tick>,
-        Event,
-        Keyed,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MadeMesh>,
-        Answer<Instanced, MadeProgram>,
-        Answer<Uniformed, MadeInstances>,
-        Answer<Placed, MadeAll>,
-        Answer<Opened, Nothing>,
-    );
-    type Depends = (Renderer, Windows);
-    type Spawns = ();
-
+#[actor(key = WindowId, parent = Stage, depends(Renderer, Windows))]
+impl Scene {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.to(shows.window.actor()).send(&window::Subscribe)?;
@@ -286,7 +250,230 @@ impl Actor for Scene {
         Ok(scene)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let step_millis = tick.delta_nanos / 1_000_000;
+        self.turned_millis = if self.held > 0 {
+            self.turned_millis.wrapping_add(TURN_MILLIS).saturating_sub(step_millis) % TURN_MILLIS
+        } else {
+            self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
+        };
+        let Ring::Drawing { instances, uniforms, .. } = self.ring else {
+            return Ok(());
+        };
+        let records = ring(self.turned_millis, self.count, self.warm);
+        let (Ok(records), Ok(bytes)) = (turn.put(records), turn.put(self.look())) else {
+            say(String::from("a frame was not written: its bytes were not put"));
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?.send(&WriteUniforms {
+            uniforms,
+            first: 0,
+            bytes,
+        })?;
+
+        Ok(())
+    }
+
+    /// The window's events: the pointer moves the ring's middle, and each resize is said beside the window, so a canvas
+    /// resized is seen to be its window alone.
+    #[tell]
+    fn event(&mut self, event: Event) -> Result<(), Fault> {
+        match event {
+            Event::PointerMoved { x, y } => {
+                // A surface is some thousands of pixels across, which an f32 holds exactly.
+                #[allow(clippy::cast_precision_loss)]
+                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+                self.middle_x = (x / width).mul_add(2.0, -1.0);
+                self.middle_y = (y / height).mul_add(-2.0, 1.0);
+            }
+            Event::Resized(Surface { width, height, scale }) => {
+                say(format!("resized window={} width={width} height={height} scale={scale}", self.window.to_name()));
+                (self.width, self.height) = (width, height);
+            }
+            Event::FocusLost => self.held = 0,
+            Event::PointerDown { .. }
+            | Event::PointerUp { .. }
+            | Event::Wheel { .. }
+            | Event::KeyDown { .. }
+            | Event::KeyUp { .. }
+            | Event::Text { .. }
+            | Event::Composing { .. }
+            | Event::Moded(_)
+            | Event::FocusGained
+            | Event::CloseRequested
+            | Event::Closed => {}
+        }
+
+        Ok(())
+    }
+
+    /// The keys its list hears: a key held turns the ring the other way, and `N` asks the window root for another
+    /// window, which a page answers `NoHost`.
+    #[tell]
+    fn keyed(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match keyed.event {
+            KeyEvent::KeyDown { code, repeat, .. } => {
+                if !repeat {
+                    self.held += 1;
+                }
+                let another = code == "KeyN" && !repeat;
+                if another {
+                    let open =
+                        OpenWindow { title: String::from("another"), size: Logical { width: 480.0, height: 360.0 } };
+                    turn.to(path::<Windows>(())).ask(&open, &Nothing)?;
+                }
+            }
+            KeyEvent::KeyUp { .. } => self.held = self.held.saturating_sub(1),
+            KeyEvent::Text { .. } | KeyEvent::Composing { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
+        let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
+            say(String::from("the triangle was not asked for: its bytes were not put"));
+            return Ok(());
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
+        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            say(format!("the triangle was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
+            say(String::from("the program was not asked for: its text was not put"));
+            return Ok(());
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let shade = CreateProgram {
+            wgsl,
+            vertex: String::from("place"),
+            fragment: String::from("shade"),
+            layout: VertexLayout { stride: 8, attributes: vec![position] },
+            instances: PerInstance::Records(record()),
+            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+            shape: learned.shape,
+        };
+        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, made): (Answered<Programmed>, MadeMesh),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(program)) = answered else {
+            say(format!("the program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(records) = turn.put(ring(0, self.count, self.warm)) else {
+            say(String::from("the instances were not asked for: their records were not put"));
+            return Ok(());
+        };
+        let instances = CreateInstances { layout: record(), capacity: u32::from(self.count), records };
+        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn instanced(
+        &mut self,
+        (answered, made): (Answered<Instanced>, MadeProgram),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Instanced::Made(instances)) = answered else {
+            say(format!("the instances were not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(bytes) = turn.put(self.look()) else {
+            say(String::from("the uniforms were not asked for: their bytes were not put"));
+            return Ok(());
+        };
+        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
+        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn uniformed(
+        &mut self,
+        (answered, made): (Answered<Uniformed>, MadeInstances),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
+            say(format!("the uniforms were not made: {answered:?}"));
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Records(made.instances),
+            joins: vec![Join::to::<Main>(Frame::Main(self.window), made.program, bindings)],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, made): (Answered<Placed>, MadeAll),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Placed::Made(placement)) => {
+                self.ring = Ring::Drawing { placement, instances: made.instances, uniforms: made.uniforms };
+                turn.to(path::<Renderer>(())).send(&self.list())?;
+            }
+            Answered::Yes(Placed::Refused(why)) => {
+                say(format!("the ring was not placed: {why:?}"));
+            }
+            Answered::No(why) => say(format!("the ring was not placed: {why:?}")),
+        }
+
+        Ok(())
+    }
+
+    /// What the window root answered the window asked for, said beside the window whose scene asked: a page opens no
+    /// window on request, so it is refused, `NoHost`.
+    #[answer]
+    fn opened(&mut self, (answered, _): (Answered<Opened>, Nothing)) -> Result<(), Fault> {
+        let asked_by = self.window.to_name();
+        match answered {
+            Answered::Yes(Opened::Window { window, .. }) => {
+                say(format!("opened window={} asked_by={asked_by}", window.to_name()));
+            }
+            Answered::Yes(Opened::Refused(why)) => say(format!("refused open asked_by={asked_by} why={why:?}")),
+            Answered::No(why) => say(format!("unanswered open asked_by={asked_by} why={why:?}")),
+        }
+
         Ok(())
     }
 }
@@ -335,253 +522,10 @@ impl Scene {
     }
 }
 
-/// The keys its list hears: a key held turns the ring the other way, and `N` asks the window root for another window,
-/// which a page answers `NoHost`.
-impl Handles<Keyed> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match keyed.event {
-            KeyEvent::KeyDown { code, repeat, .. } => {
-                if !repeat {
-                    self.held += 1;
-                }
-                let another = code == "KeyN" && !repeat;
-                if another {
-                    let open =
-                        OpenWindow { title: String::from("another"), size: Logical { width: 480.0, height: 360.0 } };
-                    turn.to(path::<Windows>(())).ask(&open, &Nothing)?;
-                }
-            }
-            KeyEvent::KeyUp { .. } => self.held = self.held.saturating_sub(1),
-            KeyEvent::Text { .. } | KeyEvent::Composing { .. } => {}
-        }
-
-        Ok(())
-    }
-}
-
-/// The window's events: the pointer moves the ring's middle, and each resize is said beside the window, so a canvas
-/// resized is seen to be its window alone.
-impl Handles<Event> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match event {
-            Event::PointerMoved { x, y } => {
-                // A surface is some thousands of pixels across, which an f32 holds exactly.
-                #[allow(clippy::cast_precision_loss)]
-                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
-                self.middle_x = (x / width).mul_add(2.0, -1.0);
-                self.middle_y = (y / height).mul_add(-2.0, 1.0);
-            }
-            Event::Resized(Surface { width, height, scale }) => {
-                say(format!("resized window={} width={width} height={height} scale={scale}", self.window.to_name()));
-                (self.width, self.height) = (width, height);
-            }
-            Event::FocusLost => self.held = 0,
-            Event::PointerDown { .. }
-            | Event::PointerUp { .. }
-            | Event::Wheel { .. }
-            | Event::KeyDown { .. }
-            | Event::KeyUp { .. }
-            | Event::Text { .. }
-            | Event::Composing { .. }
-            | Event::Moded(_)
-            | Event::FocusGained
-            | Event::CloseRequested
-            | Event::Closed => {}
-        }
-
-        Ok(())
-    }
-}
-
-/// What the window root answered the window asked for, said beside the window whose scene asked: a page opens no
-/// window on request, so it is refused, `NoHost`.
-impl Receives<Answer<Opened, Nothing>> for Scene {
-    fn handle(&mut self, (answered, _): (Answered<Opened>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let asked_by = self.window.to_name();
-        match answered {
-            Answered::Yes(Opened::Window { window, .. }) => {
-                say(format!("opened window={} asked_by={asked_by}", window.to_name()));
-            }
-            Answered::Yes(Opened::Refused(why)) => say(format!("refused open asked_by={asked_by} why={why:?}")),
-            Answered::No(why) => say(format!("unanswered open asked_by={asked_by} why={why:?}")),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Scene {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            say(format!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
-        let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
-            say(String::from("the triangle was not asked for: its bytes were not put"));
-            return Ok(());
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
-        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
 /// How a record of the ring is laid out: a place, then a colour.
 fn record() -> VertexLayout {
     let offset = Attribute { location: 1, format: VertexFormat::Float32x2, offset: 0 };
     let colour = Attribute { location: 2, format: VertexFormat::Unorm8x4, offset: 8 };
 
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            say(format!("the triangle was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
-            say(String::from("the program was not asked for: its text was not put"));
-            return Ok(());
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let shade = CreateProgram {
-            wgsl,
-            vertex: String::from("place"),
-            fragment: String::from("shade"),
-            layout: VertexLayout { stride: 8, attributes: vec![position] },
-            instances: PerInstance::Records(record()),
-            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
-            reads: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-            shape: learned.shape,
-        };
-        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, MadeMesh>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(program)) = answered else {
-            say(format!("the program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(records) = turn.put(ring(0, self.count, self.warm)) else {
-            say(String::from("the instances were not asked for: their records were not put"));
-            return Ok(());
-        };
-        let instances = CreateInstances { layout: record(), capacity: u32::from(self.count), records };
-        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Instanced, MadeProgram>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Instanced::Made(instances)) = answered else {
-            say(format!("the instances were not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(bytes) = turn.put(self.look()) else {
-            say(String::from("the uniforms were not asked for: their bytes were not put"));
-            return Ok(());
-        };
-        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
-        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Uniformed>, MadeInstances),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
-            say(format!("the uniforms were not made: {answered:?}"));
-            return Ok(());
-        };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Records(made.instances),
-            joins: vec![Join::to::<Main>(Frame::Main(self.window), made.program, bindings)],
-        };
-        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Placed, MadeAll>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Placed::Made(placement)) => {
-                self.ring = Ring::Drawing { placement, instances: made.instances, uniforms: made.uniforms };
-                turn.to(path::<Renderer>(())).send(&self.list())?;
-            }
-            Answered::Yes(Placed::Refused(why)) => {
-                say(format!("the ring was not placed: {why:?}"));
-            }
-            Answered::No(why) => say(format!("the ring was not placed: {why:?}")),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Scene {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let step_millis = tick.delta_nanos / 1_000_000;
-        self.turned_millis = if self.held > 0 {
-            self.turned_millis.wrapping_add(TURN_MILLIS).saturating_sub(step_millis) % TURN_MILLIS
-        } else {
-            self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
-        };
-        let Ring::Drawing { instances, uniforms, .. } = self.ring else {
-            return Ok(());
-        };
-        let records = ring(self.turned_millis, self.count, self.warm);
-        let (Ok(records), Ok(bytes)) = (turn.put(records), turn.put(self.look())) else {
-            say(String::from("a frame was not written: its bytes were not put"));
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?.send(&WriteUniforms {
-            uniforms,
-            first: 0,
-            bytes,
-        })?;
-
-        Ok(())
-    }
 }

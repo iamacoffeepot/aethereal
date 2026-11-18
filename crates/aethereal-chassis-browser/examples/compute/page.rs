@@ -3,9 +3,7 @@
 //! see that it moved.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -136,10 +134,6 @@ enum Simulator {
     Asked { first: Digest },
 }
 
-impl ChildOf for Simulator {
-    type Parent = Top;
-}
-
 /// What is kept of a reading of the field: a digest of its bytes, and the first particle's place across, its bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.example.digest")]
@@ -198,25 +192,8 @@ struct Dispatching {
     placement: PlacementId,
 }
 
-impl Actor for Simulator {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MeshId>,
-        Answer<Computed, Drawing>,
-        Answer<Stored, MadePrograms>,
-        Answer<Placed, Placing>,
-        Answer<Dispatched, Dispatching>,
-        Answer<StorageContents, Nothing>,
-        Answer<Timed, Nothing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Simulator {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -224,7 +201,248 @@ impl Actor for Simulator {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
+
+        Ok(())
+    }
+
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match *self {
+            Self::Running { storage, drawn } if drawn < SETTLED => {
+                *self = Self::Running { storage, drawn: drawn + 1 };
+            }
+            Self::Running { storage, .. } => {
+                turn.to(path::<Renderer>(())).ask(&ReadStorage { storage }, &Nothing)?;
+                *self = Self::Reading { storage };
+            }
+            Self::Read { storage, first, drawn } if drawn < SETTLED => {
+                *self = Self::Read { storage, first, drawn: drawn + 1 };
+            }
+            Self::Read { storage, first, .. } => {
+                turn.to(path::<Renderer>(())).ask(&ReadStorage { storage }, &Nothing)?.ask(&TimeFrame, &Nothing)?;
+                *self = Self::Asked { first };
+            }
+            Self::Making { .. } | Self::Reading { .. } | Self::Asked { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let quad = floats([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0]);
+        let (vertices, indices) = match (turn.put(quad), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
+            (Ok(vertices), Ok(indices)) => (vertices, indices),
+            (Err(why), _) | (_, Err(why)) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+        let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let layout = VertexLayout { stride: 8, attributes: vec![corner] };
+        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout, vertices, indices }, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            say(format!("the quad was not made: {answered:?}"));
+            return Ok(());
+        };
+        let wgsl = match turn.put(Vec::from(DOTS)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no dots asked: {why}"));
+                return Ok(());
+            }
+        };
+        let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let dots = CreateProgram {
+            wgsl,
+            vertex: String::from("place"),
+            fragment: String::from("shade"),
+            layout: VertexLayout { stride: 8, attributes: vec![corner] },
+            instances: PerInstance::None,
+            bindings: vec![field(Access::Read)],
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+            shape: learned.shape,
+        };
+        turn.to(path::<Renderer>(())).ask(&dots, &mesh)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, mesh): (Answered<Programmed>, MeshId),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(dots)) = answered else {
+            say(format!("the dots were not made: {answered:?}"));
+            return Ok(());
+        };
+        let wgsl = match turn.put(Vec::from(SIMULATE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no compute program asked: {why}"));
+                return Ok(());
+            }
+        };
+        let simulate = CreateCompute { wgsl, entry: String::from("simulate"), bindings: vec![field(Access::Write)] };
+        turn.to(path::<Renderer>(())).ask(&simulate, &Drawing { mesh, dots })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn computed(
+        &mut self,
+        (answered, drawing): (Answered<Computed>, Drawing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Computed::Made(simulate)) = answered else {
+            say(format!("the compute program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let bytes = match turn.put(seeded()) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                say(format!("no field asked: {why}"));
+                return Ok(());
+            }
+        };
+        let made = MadePrograms { mesh: drawing.mesh, dots: drawing.dots, simulate };
+        turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &made)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn stored(
+        &mut self,
+        (answered, made): (Answered<Stored>, MadePrograms),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Stored::Made(storage)) = answered else {
+            say(format!("the field was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Count(PARTICLES),
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.dots, bindings)],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &Placing { simulate: made.simulate, storage })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, placing): (Answered<Placed>, Placing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
+            say(format!("the dots were not placed: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let storage = placing.storage;
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
+        // Run in the compute pass before the one the dots are drawn in, so each frame draws where it moved them.
+        let dispatch = CreateDispatch {
+            join: Dispatch::to::<Compute>(Frame::Main(window), placing.simulate, bindings),
+            size: Invocations::PerElement(storage),
+            runs: Runs::UntilReleased,
+        };
+        turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { storage, placement })?;
+
+        Ok(())
+    }
+
+    /// The dispatch made is listed, run before the dots are drawn.
+    #[answer]
+    fn dispatched(
+        &mut self,
+        (answered, dispatching): (Answered<Dispatched>, Dispatching),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Dispatched::Made(dispatch)) = answered else {
+            say(format!("the field was not dispatched: {answered:?}"));
+            return Ok(());
+        };
+        let drawn = Entry::Draw { placement: dispatching.placement, pointer: Pointer::Ignores };
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![Entry::Run(dispatch), drawn] })?;
+        say(format!("placed dispatched particles={PARTICLES}"));
+        *self = Self::Running { storage: dispatching.storage, drawn: 0 };
+
+        Ok(())
+    }
+
+    #[answer]
+    fn storage_contents(
+        &mut self,
+        (answered, _): (Answered<StorageContents>, Nothing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
+            say(format!("the field was not read: {answered:?}"));
+            return Ok(());
+        };
+        let read = Digest::of(turn.read(&bytes));
+        match *self {
+            Self::Reading { storage } => {
+                let seeded = Digest::of(&seeded());
+                let moved = read != seeded;
+                let (from, to) = (seeded.x(), read.x());
+                say(format!("first read moved_from_seed={moved} x_seeded={from} x_read={to}"));
+                *self = Self::Read { storage, first: read, drawn: 0 };
+            }
+            Self::Asked { first } => {
+                let moved = read != first;
+                let (from, to) = (first.x(), read.x());
+                say(format!("second read moved={moved} x_first={from} x_second={to}"));
+            }
+            Self::Making { .. } | Self::Running { .. } | Self::Read { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn timed(&mut self, (answered, _): (Answered<Timed>, Nothing)) -> Result<(), Fault> {
+        let said = match answered {
+            Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
+            Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
+            Answered::No(why) => format!("unanswered timing={why:?}"),
+        };
+        say(said);
+
         Ok(())
     }
 }
@@ -258,263 +476,7 @@ fn seeded() -> Vec<u8> {
     floats(field.collect::<Vec<f32>>())
 }
 
-impl Receives<On<Start>> for Simulator {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Simulator {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            say(format!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let quad = floats([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0]);
-        let (vertices, indices) = match (turn.put(quad), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
-            (Ok(vertices), Ok(indices)) => (vertices, indices),
-            (Err(why), _) | (_, Err(why)) => {
-                say(format!("nothing asked: {why}"));
-                return Ok(());
-            }
-        };
-        let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let layout = VertexLayout { stride: 8, attributes: vec![corner] };
-        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout, vertices, indices }, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
 /// What the field is bound as at `access`: storage of particles, sixteen bytes each, read with `arrayLength`.
 const fn field(access: Access) -> Binding {
     Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 16, access } }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            say(format!("the quad was not made: {answered:?}"));
-            return Ok(());
-        };
-        let wgsl = match turn.put(Vec::from(DOTS)) {
-            Ok(wgsl) => wgsl,
-            Err(why) => {
-                say(format!("no dots asked: {why}"));
-                return Ok(());
-            }
-        };
-        let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let dots = CreateProgram {
-            wgsl,
-            vertex: String::from("place"),
-            fragment: String::from("shade"),
-            layout: VertexLayout { stride: 8, attributes: vec![corner] },
-            instances: PerInstance::None,
-            bindings: vec![field(Access::Read)],
-            reads: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-            shape: learned.shape,
-        };
-        turn.to(path::<Renderer>(())).ask(&dots, &mesh)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, MeshId>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, mesh): (Answered<Programmed>, MeshId),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(dots)) = answered else {
-            say(format!("the dots were not made: {answered:?}"));
-            return Ok(());
-        };
-        let wgsl = match turn.put(Vec::from(SIMULATE)) {
-            Ok(wgsl) => wgsl,
-            Err(why) => {
-                say(format!("no compute program asked: {why}"));
-                return Ok(());
-            }
-        };
-        let simulate = CreateCompute { wgsl, entry: String::from("simulate"), bindings: vec![field(Access::Write)] };
-        turn.to(path::<Renderer>(())).ask(&simulate, &Drawing { mesh, dots })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Computed, Drawing>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, drawing): (Answered<Computed>, Drawing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Computed::Made(simulate)) = answered else {
-            say(format!("the compute program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let bytes = match turn.put(seeded()) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                say(format!("no field asked: {why}"));
-                return Ok(());
-            }
-        };
-        let made = MadePrograms { mesh: drawing.mesh, dots: drawing.dots, simulate };
-        turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &made)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Stored, MadePrograms>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Stored>, MadePrograms),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Stored::Made(storage)) = answered else {
-            say(format!("the field was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Count(PARTICLES),
-            joins: vec![Join::to::<Main>(Frame::Main(window), made.dots, bindings)],
-        };
-        turn.to(path::<Renderer>(())).ask(&place, &Placing { simulate: made.simulate, storage })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Placed, Placing>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, placing): (Answered<Placed>, Placing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(placement)) = answered else {
-            say(format!("the dots were not placed: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        let storage = placing.storage;
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
-        // Run in the compute pass before the one the dots are drawn in, so each frame draws where it moved them.
-        let dispatch = CreateDispatch {
-            join: Dispatch::to::<Compute>(Frame::Main(window), placing.simulate, bindings),
-            size: Invocations::PerElement(storage),
-            runs: Runs::UntilReleased,
-        };
-        turn.to(path::<Renderer>(())).ask(&dispatch, &Dispatching { storage, placement })?;
-
-        Ok(())
-    }
-}
-
-/// The dispatch made is listed, run before the dots are drawn.
-impl Receives<Answer<Dispatched, Dispatching>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, dispatching): (Answered<Dispatched>, Dispatching),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Dispatched::Made(dispatch)) = answered else {
-            say(format!("the field was not dispatched: {answered:?}"));
-            return Ok(());
-        };
-        let drawn = Entry::Draw { placement: dispatching.placement, pointer: Pointer::Ignores };
-        turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![Entry::Run(dispatch), drawn] })?;
-        say(format!("placed dispatched particles={PARTICLES}"));
-        *self = Self::Running { storage: dispatching.storage, drawn: 0 };
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Simulator {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match *self {
-            Self::Running { storage, drawn } if drawn < SETTLED => {
-                *self = Self::Running { storage, drawn: drawn + 1 };
-            }
-            Self::Running { storage, .. } => {
-                turn.to(path::<Renderer>(())).ask(&ReadStorage { storage }, &Nothing)?;
-                *self = Self::Reading { storage };
-            }
-            Self::Read { storage, first, drawn } if drawn < SETTLED => {
-                *self = Self::Read { storage, first, drawn: drawn + 1 };
-            }
-            Self::Read { storage, first, .. } => {
-                turn.to(path::<Renderer>(())).ask(&ReadStorage { storage }, &Nothing)?.ask(&TimeFrame, &Nothing)?;
-                *self = Self::Asked { first };
-            }
-            Self::Making { .. } | Self::Reading { .. } | Self::Asked { .. } => {}
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<StorageContents, Nothing>> for Simulator {
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<StorageContents>, Nothing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
-            say(format!("the field was not read: {answered:?}"));
-            return Ok(());
-        };
-        let read = Digest::of(turn.read(&bytes));
-        match *self {
-            Self::Reading { storage } => {
-                let seeded = Digest::of(&seeded());
-                let moved = read != seeded;
-                let (from, to) = (seeded.x(), read.x());
-                say(format!("first read moved_from_seed={moved} x_seeded={from} x_read={to}"));
-                *self = Self::Read { storage, first: read, drawn: 0 };
-            }
-            Self::Asked { first } => {
-                let moved = read != first;
-                let (from, to) = (first.x(), read.x());
-                say(format!("second read moved={moved} x_first={from} x_second={to}"));
-            }
-            Self::Making { .. } | Self::Running { .. } | Self::Read { .. } => {}
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Timed, Nothing>> for Simulator {
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let said = match answered {
-            Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
-            Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
-            Answered::No(why) => format!("unanswered timing={why:?}"),
-        };
-        say(said);
-
-        Ok(())
-    }
 }

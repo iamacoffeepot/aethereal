@@ -2,10 +2,7 @@
 //! one root, then reads back what was drawn and the storage it drew from.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn,
-    path,
-};
+use aethereal_actor::{Answered, Beginning, Bytes, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -147,10 +144,6 @@ enum Reader {
     Asked,
 }
 
-impl ChildOf for Reader {
-    type Parent = Top;
-}
-
 /// Which program was asked for, with what was made before it: an actor handles one kind of answer with one kind of
 /// context.
 #[derive(Plain)]
@@ -196,25 +189,8 @@ enum Of {
     Texture,
 }
 
-impl Actor for Reader {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, Making>,
-        Answer<Stored, MadePrograms>,
-        Answer<Placed, Placing>,
-        Answer<Textured, Splatted>,
-        Answer<Pixels, Of>,
-        Answer<StorageContents, Nothing>,
-        Answer<Timed, Nothing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Reader {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -222,7 +198,251 @@ impl Actor for Reader {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
+
+        Ok(())
+    }
+
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Drawing { window, texture, storage, drawn } = *self else {
+            return Ok(());
+        };
+        if drawn < SETTLED {
+            *self = Self::Drawing { window, texture, storage, drawn: drawn + 1 };
+            return Ok(());
+        }
+        turn.to(path::<Renderer>(()))
+            .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Frame)?
+            .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Texture)?
+            .ask(&ReadStorage { storage }, &Nothing)?
+            .ask(&TimeFrame, &Nothing)?;
+        *self = Self::Asked;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let quad = floats([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0]);
+        let (vertices, indices) = match (turn.put(quad), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
+            (Ok(vertices), Ok(indices)) => (vertices, indices),
+            (Err(why), _) | (_, Err(why)) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            say(format!("the quad was not made: {answered:?}"));
+            return Ok(());
+        };
+        let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32, access: Access::Read } };
+        let shape = learned.shape;
+        let wgsl = match turn.put(Vec::from(SPLATS)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no splats asked: {why}"));
+                return Ok(());
+            }
+        };
+        let splats = program(wgsl, ("place", "shade"), shape, vec![storage], Blend::Opaque);
+        turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { shape, mesh })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, making): (Answered<Programmed>, Making),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(made)) = answered else {
+            say(format!("a program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let (mesh, splats) = match making {
+            Making::Splats { shape, mesh } => {
+                let wgsl = match turn.put(Vec::from(TINT)) {
+                    Ok(wgsl) => wgsl,
+                    Err(why) => {
+                        say(format!("no tint asked: {why}"));
+                        return Ok(());
+                    }
+                };
+                let tint = program(wgsl, ("cover", "tint"), shape, Vec::new(), Blend::Multiply);
+                turn.to(path::<Renderer>(())).ask(&tint, &Making::Tint { mesh, splats: made })?;
+                return Ok(());
+            }
+            Making::Tint { mesh, splats } => (mesh, splats),
+        };
+        let bytes = match turn.put(floats(SPLATS_HELD)) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                say(format!("no storage asked: {why}"));
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &MadePrograms { mesh, splats, tint: made })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn stored(
+        &mut self,
+        (answered, made): (Answered<Stored>, MadePrograms),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Stored::Made(storage)) = answered else {
+            say(format!("the storage was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Count(2),
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.splats, bindings)],
+        };
+        let placing = Placing::Splats { mesh: made.mesh, tint: made.tint, storage };
+        turn.to(path::<Renderer>(())).ask(&place, &placing)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, placing): (Answered<Placed>, Placing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Placed::Made(placement)) = answered else {
+            say(format!("a placement was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let storage = match placing {
+            Placing::Splats { mesh, tint, storage } => {
+                let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
+                let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
+                turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint { storage, splats: placement })?;
+                return Ok(());
+            }
+            Placing::Tint { storage, splats } => {
+                // The tint is listed after the splats, so it is drawn over them.
+                let entries = [splats, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
+                storage
+            }
+        };
+        let pixels = match turn.put(TEXELS.to_vec()) {
+            Ok(pixels) => pixels,
+            Err(why) => {
+                say(format!("no texture asked: {why}"));
+                return Ok(());
+            }
+        };
+        let texture = CreateTexture { width: 2, height: 2, format: TextureFormat::Rgba8, pixels };
+        turn.to(path::<Renderer>(())).ask(&texture, &Splatted { storage })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn textured(&mut self, (answered, splatted): (Answered<Textured>, Splatted)) -> Result<(), Fault> {
+        let Answered::Yes(Textured::Made(texture)) = answered else {
+            say(format!("the texture was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        say(String::from("placed splats tint texture"));
+        *self = Self::Drawing { window, texture, storage: splatted.storage, drawn: 0 };
+
+        Ok(())
+    }
+
+    #[answer]
+    fn pixels(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Pixels::Read { width, height, format, pixels }) = answered else {
+            say(format!("nothing was read: {answered:?}"));
+            return Ok(());
+        };
+        let read = turn.read(&pixels);
+        let said = match of {
+            Of::Frame => {
+                let tinted = pixel(read, width, width / 4, height / 2);
+                let green = pixel(read, width, width * 3 / 4, height / 2);
+                let corner = pixel(read, width, 2, 2);
+                let bytes = read.len();
+                format!(
+                    "frame width={width} height={height} format={format:?} bytes={bytes} tinted_red={tinted} \
+                     green={green} corner={corner}"
+                )
+            }
+            Of::Texture => {
+                let same = read == TEXELS;
+                format!("texture width={width} height={height} same={same} bytes={read:?}")
+            }
+        };
+        say(said);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn storage_contents(
+        &mut self,
+        (answered, _): (Answered<StorageContents>, Nothing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
+            say(format!("the storage was not read: {answered:?}"));
+            return Ok(());
+        };
+        let read = turn.read(&bytes);
+        let same = read == floats(SPLATS_HELD);
+        let bytes = read.len();
+        say(format!("storage bytes={bytes} same={same}"));
+
+        Ok(())
+    }
+
+    #[answer]
+    fn timed(&mut self, (answered, _): (Answered<Timed>, Nothing)) -> Result<(), Fault> {
+        let said = match answered {
+            Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
+            Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
+            Answered::No(why) => format!("unanswered timing={why:?}"),
+        };
+        say(said);
+
         Ok(())
     }
 }
@@ -266,273 +486,10 @@ fn program(
     }
 }
 
-impl Receives<On<Start>> for Reader {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Reader {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            say(format!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let quad = floats([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0]);
-        let (vertices, indices) = match (turn.put(quad), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
-            (Ok(vertices), Ok(indices)) => (vertices, indices),
-            (Err(why), _) | (_, Err(why)) => {
-                say(format!("nothing asked: {why}"));
-                return Ok(());
-            }
-        };
-        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            say(format!("the quad was not made: {answered:?}"));
-            return Ok(());
-        };
-        let storage = Binding { group: 0, binding: 0, kind: BindingKind::Storage { bytes: 32, access: Access::Read } };
-        let shape = learned.shape;
-        let wgsl = match turn.put(Vec::from(SPLATS)) {
-            Ok(wgsl) => wgsl,
-            Err(why) => {
-                say(format!("no splats asked: {why}"));
-                return Ok(());
-            }
-        };
-        let splats = program(wgsl, ("place", "shade"), shape, vec![storage], Blend::Opaque);
-        turn.to(path::<Renderer>(())).ask(&splats, &Making::Splats { shape, mesh })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, Making>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, making): (Answered<Programmed>, Making),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(made)) = answered else {
-            say(format!("a program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let (mesh, splats) = match making {
-            Making::Splats { shape, mesh } => {
-                let wgsl = match turn.put(Vec::from(TINT)) {
-                    Ok(wgsl) => wgsl,
-                    Err(why) => {
-                        say(format!("no tint asked: {why}"));
-                        return Ok(());
-                    }
-                };
-                let tint = program(wgsl, ("cover", "tint"), shape, Vec::new(), Blend::Multiply);
-                turn.to(path::<Renderer>(())).ask(&tint, &Making::Tint { mesh, splats: made })?;
-                return Ok(());
-            }
-            Making::Tint { mesh, splats } => (mesh, splats),
-        };
-        let bytes = match turn.put(floats(SPLATS_HELD)) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                say(format!("no storage asked: {why}"));
-                return Ok(());
-            }
-        };
-        turn.to(path::<Renderer>(())).ask(&CreateStorage { bytes }, &MadePrograms { mesh, splats, tint: made })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Stored, MadePrograms>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Stored>, MadePrograms),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Stored::Made(storage)) = answered else {
-            say(format!("the storage was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Storage(storage) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Count(2),
-            joins: vec![Join::to::<Main>(Frame::Main(window), made.splats, bindings)],
-        };
-        let placing = Placing::Splats { mesh: made.mesh, tint: made.tint, storage };
-        turn.to(path::<Renderer>(())).ask(&place, &placing)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Placed, Placing>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, placing): (Answered<Placed>, Placing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(placement)) = answered else {
-            say(format!("a placement was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        let storage = match placing {
-            Placing::Splats { mesh, tint, storage } => {
-                let join = Join::to::<Main>(Frame::Main(window), tint, Vec::new());
-                let place = Place { mesh, instances: Drawn::Count(1), joins: vec![join] };
-                turn.to(path::<Renderer>(())).ask(&place, &Placing::Tint { storage, splats: placement })?;
-                return Ok(());
-            }
-            Placing::Tint { storage, splats } => {
-                // The tint is listed after the splats, so it is drawn over them.
-                let entries = [splats, placement].map(|placement| Entry::Draw { placement, pointer: Pointer::Ignores });
-                turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.to_vec() })?;
-                storage
-            }
-        };
-        let pixels = match turn.put(TEXELS.to_vec()) {
-            Ok(pixels) => pixels,
-            Err(why) => {
-                say(format!("no texture asked: {why}"));
-                return Ok(());
-            }
-        };
-        let texture = CreateTexture { width: 2, height: 2, format: TextureFormat::Rgba8, pixels };
-        turn.to(path::<Renderer>(())).ask(&texture, &Splatted { storage })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Textured, Splatted>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, splatted): (Answered<Textured>, Splatted),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Textured::Made(texture)) = answered else {
-            say(format!("the texture was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        say(String::from("placed splats tint texture"));
-        *self = Self::Drawing { window, texture, storage: splatted.storage, drawn: 0 };
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Reader {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Drawing { window, texture, storage, drawn } = *self else {
-            return Ok(());
-        };
-        if drawn < SETTLED {
-            *self = Self::Drawing { window, texture, storage, drawn: drawn + 1 };
-            return Ok(());
-        }
-        turn.to(path::<Renderer>(()))
-            .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Frame)?
-            .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Texture)?
-            .ask(&ReadStorage { storage }, &Nothing)?
-            .ask(&TimeFrame, &Nothing)?;
-        *self = Self::Asked;
-
-        Ok(())
-    }
-}
-
 /// The pixel at `x`, `y` of `pixels`, `width` across, four bytes each.
 fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
     let at = ((y * width + x) * 4) as usize;
     let channels = pixels.get(at..at + 4).unwrap_or_default();
 
     channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
-}
-
-impl Receives<Answer<Pixels, Of>> for Reader {
-    fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Pixels::Read { width, height, format, pixels }) = answered else {
-            say(format!("nothing was read: {answered:?}"));
-            return Ok(());
-        };
-        let read = turn.read(&pixels);
-        let said = match of {
-            Of::Frame => {
-                let tinted = pixel(read, width, width / 4, height / 2);
-                let green = pixel(read, width, width * 3 / 4, height / 2);
-                let corner = pixel(read, width, 2, 2);
-                let bytes = read.len();
-                format!(
-                    "frame width={width} height={height} format={format:?} bytes={bytes} tinted_red={tinted} \
-                     green={green} corner={corner}"
-                )
-            }
-            Of::Texture => {
-                let same = read == TEXELS;
-                format!("texture width={width} height={height} same={same} bytes={read:?}")
-            }
-        };
-        say(said);
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<StorageContents, Nothing>> for Reader {
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<StorageContents>, Nothing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(StorageContents::Read { bytes }) = answered else {
-            say(format!("the storage was not read: {answered:?}"));
-            return Ok(());
-        };
-        let read = turn.read(&bytes);
-        let same = read == floats(SPLATS_HELD);
-        let bytes = read.len();
-        say(format!("storage bytes={bytes} same={same}"));
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Timed, Nothing>> for Reader {
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let said = match answered {
-            Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
-            Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
-            Answered::No(why) => format!("unanswered timing={why:?}"),
-        };
-        say(said);
-
-        Ok(())
-    }
 }

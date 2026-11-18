@@ -38,13 +38,13 @@ use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
 use crate::relay::Relays;
 use crate::stop::Stop;
-use crate::tools::{ChatWord, Choice, Marked, OverlayTools};
-use aethereal_actor::{Actor, ActorRef, Answer, Beginning, ChildOf, Ending, Fault, On, Tick, Top, path};
+use crate::tools::{ChatWord, Choice, Marked, OverlayTools, ThemesShown, Worded};
+use aethereal_actor::{ActorRef, Answered, Beginning, Fault, Speaks, Tick, Turn, actor, path};
 use aethereal_data::Bound;
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
-use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Target, Viewport};
@@ -144,32 +144,8 @@ pub struct Overlay {
     tools: ActorRef<OverlayTools>,
 }
 
-impl ChildOf for Overlay {
-    type Parent = Top;
-}
-
-impl Actor for Overlay {
-    type Config = OverlayConfig;
-    type Key = ();
-    type Handles = aethereal_ui::handles![
-        Event,
-        On<Tick>,
-        FrameStats,
-        GpuTimes,
-        Sheets,
-        Answer<Called, Calling>,
-        Answer<Offered, Offering>,
-        Marked,
-        ShowTabs,
-        ShowEvents,
-        ShowAsk,
-        Relays,
-        Choice,
-        ChatWord,
-    ];
-    type Depends = aethereal_ui::depends!(Tools);
-    type Spawns = (OverlayTools,);
-
+#[actor(with(aethereal_ui::screen), depends(Tools), spawns(OverlayTools))]
+impl Overlay {
     /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
     /// which hears the backtick, and spawns the worker of its tools and offers them.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -206,7 +182,73 @@ impl Actor for Overlay {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[tell]
+    fn event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_event(event, turn)
+    }
+
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_tick(tick, turn)
+    }
+
+    #[tell]
+    fn frame_stats(&mut self, stats: FrameStats) -> Result<(), Fault> {
+        self.handle_frame_stats(stats)
+    }
+
+    #[tell]
+    fn gpu_times(&mut self, told: GpuTimes) -> Result<(), Fault> {
+        self.handle_gpu_times(told)
+    }
+
+    #[tell]
+    fn sheets(&mut self, sheets: Sheets) -> Result<(), Fault> {
+        self.handle_sheets(sheets)
+    }
+
+    #[answer]
+    fn called(&mut self, mail: (Answered<Called>, Calling), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_called(mail, turn)
+    }
+
+    #[answer]
+    fn offered(&mut self, mail: (Answered<Offered>, Offering), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_offered(mail, turn)
+    }
+
+    #[tell]
+    fn marked(&mut self, marked: Marked) -> Result<(), Fault> {
+        self.handle_marked(marked)
+    }
+
+    #[tell]
+    fn show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_show_tabs(shown, turn)
+    }
+
+    #[tell]
+    fn show_events(&mut self, shown: ShowEvents) -> Result<(), Fault> {
+        self.handle_show_events(shown)
+    }
+
+    #[tell]
+    fn show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_show_ask(ask, turn)
+    }
+
+    #[tell]
+    fn relays(&mut self, mail: Relays, turn: &mut Turn<'_, Self, Speaks<(Chat,)>>) -> Result<(), Fault> {
+        self.handle_relays(mail, turn)
+    }
+
+    #[request]
+    fn choice(&mut self, choice: Choice) -> Result<ThemesShown, Fault> {
+        self.handle_choice(choice)
+    }
+
+    #[request]
+    fn chat_word(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<Worded, Fault> {
+        self.handle_chat_word(word, turn)
     }
 }

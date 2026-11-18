@@ -3,10 +3,7 @@
 //! actor that keeps a glow past one in a frame that ends in floats and darkens it into another.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Bytes, ChildOf, Ending, Fault, Handles, On, Receives, Render, Start,
-    Tick, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Bytes, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
@@ -174,10 +171,6 @@ enum Mapper {
     Done,
 }
 
-impl ChildOf for Mapper {
-    type Parent = Top;
-}
-
 /// What was learned before the quad was asked for: the window's colour, which the quad is drawn in.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -229,22 +222,8 @@ enum Of {
     Released,
 }
 
-impl Actor for Mapper {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, Making>,
-        Answer<Framed, Framing>,
-        Answer<Placed, Placing>,
-        Answer<Pixels, Of>,
-    );
-    type Depends = (Renderer, Claimer);
-    type Spawns = ();
-
+#[actor(depends(Renderer, Claimer))]
+impl Mapper {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -252,45 +231,8 @@ impl Actor for Mapper {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// The bytes of `values`, as a blob is put.
-fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
-    values.into_iter().flat_map(u32::to_ne_bytes).collect()
-}
-
-/// How the quad's corners are laid out: a place of two floats.
-fn corners() -> VertexLayout {
-    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-
-    VertexLayout { stride: 8, attributes: vec![corner] }
-}
-
-/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into `shape`, binding `bindings`.
-fn program(wgsl: Bytes, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
-    CreateProgram {
-        wgsl,
-        vertex: String::from("place"),
-        fragment: String::from("shade"),
-        layout: corners(),
-        instances: PerInstance::None,
-        bindings,
-        reads: Vec::new(),
-        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-        shape,
-    }
-}
-
-/// The window's main frame: one pass, [`Main`], onto it, writing depth, as the renderer's own is.
-fn main_frame(window: WindowId) -> Result<CreateFrame, FrameRefused> {
-    FrameBuilder::on(Ends::Window(window)).finish(Main, Onto(depth::Write, ()))
-}
-
-impl Receives<On<Start>> for Mapper {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -298,10 +240,37 @@ impl Receives<On<Start>> for Mapper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shaped, Nothing>> for Mapper {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match *self {
+            Self::Drawing { window, map, texture, drawn } if drawn < SETTLED => {
+                *self = Self::Drawing { window, map, texture, drawn: drawn + 1 };
+            }
+            Self::Drawing { window, map, texture, .. } => {
+                turn.to(path::<Renderer>(()))
+                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Shown)?
+                    .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Map)?
+                    .send(&Release::Frame(map))?;
+                *self = Self::Released { window, texture, drawn: 0 };
+            }
+            Self::Released { window, texture, drawn } if drawn < SETTLED => {
+                *self = Self::Released { window, texture, drawn: drawn + 1 };
+            }
+            Self::Released { window, texture, .. } => {
+                turn.to(path::<Renderer>(()))
+                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Kept)?
+                    .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Released)?;
+                *self = Self::Done;
+            }
+            Self::Making { .. } | Self::Done => {}
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -319,10 +288,9 @@ impl Receives<Answer<Shaped, Nothing>> for Mapper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Meshed, Learned>> for Mapper {
-    fn handle(
+    #[answer]
+    fn meshed(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self>,
@@ -343,10 +311,9 @@ impl Receives<Answer<Meshed, Learned>> for Mapper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Programmed, Making>> for Mapper {
-    fn handle(
+    #[answer]
+    fn programmed(
         &mut self,
         (answered, making): (Answered<Programmed>, Making),
         turn: &mut Turn<'_, Self>,
@@ -387,10 +354,9 @@ impl Receives<Answer<Programmed, Making>> for Mapper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Framed, Framing>> for Mapper {
-    fn handle(
+    #[answer]
+    fn framed(
         &mut self,
         (answered, framing): (Answered<Framed>, Framing),
         turn: &mut Turn<'_, Self>,
@@ -422,11 +388,10 @@ impl Receives<Answer<Framed, Framing>> for Mapper {
 
         Ok(())
     }
-}
 
-/// The map placed, the window's main frame is asked for; the quad placed, both are listed.
-impl Receives<Answer<Placed, Placing>> for Mapper {
-    fn handle(
+    /// The map placed, the window's main frame is asked for; the quad placed, both are listed.
+    #[answer]
+    fn placed(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self>,
@@ -459,47 +424,9 @@ impl Receives<Answer<Placed, Placing>> for Mapper {
 
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Mapper {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match *self {
-            Self::Drawing { window, map, texture, drawn } if drawn < SETTLED => {
-                *self = Self::Drawing { window, map, texture, drawn: drawn + 1 };
-            }
-            Self::Drawing { window, map, texture, .. } => {
-                turn.to(path::<Renderer>(()))
-                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Shown)?
-                    .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Map)?
-                    .send(&Release::Frame(map))?;
-                *self = Self::Released { window, texture, drawn: 0 };
-            }
-            Self::Released { window, texture, drawn } if drawn < SETTLED => {
-                *self = Self::Released { window, texture, drawn: drawn + 1 };
-            }
-            Self::Released { window, texture, .. } => {
-                turn.to(path::<Renderer>(()))
-                    .ask(&ReadBack { of: Readable::Frame(window) }, &Of::Kept)?
-                    .ask(&ReadBack { of: Readable::Texture(texture) }, &Of::Released)?;
-                *self = Self::Done;
-            }
-            Self::Making { .. } | Self::Done => {}
-        }
-
-        Ok(())
-    }
-}
-
-/// The pixel at `x`, `y` of `pixels`, `width` across, four bytes each.
-fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
-    let at = ((y * width + x) * 4) as usize;
-    let channels = pixels.get(at..at + 4).unwrap_or_default();
-
-    channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
-}
-
-impl Receives<Answer<Pixels, Of>> for Mapper {
-    fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pixels(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Pixels::Read { width, height, pixels, .. }) = answered else {
             let what = match of {
                 Of::Shown | Of::Kept => "frame",
@@ -523,6 +450,46 @@ impl Receives<Answer<Pixels, Of>> for Mapper {
     }
 }
 
+/// The bytes of `values`, as a blob is put.
+fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
+    values.into_iter().flat_map(u32::to_ne_bytes).collect()
+}
+
+/// How the quad's corners are laid out: a place of two floats.
+fn corners() -> VertexLayout {
+    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+
+    VertexLayout { stride: 8, attributes: vec![corner] }
+}
+
+/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into `shape`, binding `bindings`.
+fn program(wgsl: Bytes, shape: Shape, bindings: Vec<Binding>) -> CreateProgram {
+    CreateProgram {
+        wgsl,
+        vertex: String::from("place"),
+        fragment: String::from("shade"),
+        layout: corners(),
+        instances: PerInstance::None,
+        bindings,
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+        shape,
+    }
+}
+
+/// The window's main frame: one pass, [`Main`], onto it, writing depth, as the renderer's own is.
+fn main_frame(window: WindowId) -> Result<CreateFrame, FrameRefused> {
+    FrameBuilder::on(Ends::Window(window)).finish(Main, Onto(depth::Write, ()))
+}
+
+/// The pixel at `x`, `y` of `pixels`, `width` across, four bytes each.
+fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
+    let at = ((y * width + x) * 4) as usize;
+    let channels = pixels.get(at..at + 4).unwrap_or_default();
+
+    channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
+}
+
 /// Asks the claimer to make a main frame of `window`, which another made.
 #[derive(Debug, Clone, Copy, Plain)]
 #[kind(name = "aether.example.claim")]
@@ -536,10 +503,6 @@ struct Claim {
 #[kind(name = "aether.example.claimer")]
 struct Claimer;
 
-impl ChildOf for Claimer {
-    type Parent = Top;
-}
-
 /// Who told the claimer to claim: the owner it expects to be named.
 #[derive(Plain)]
 #[kind(name = "aether.example.told")]
@@ -547,27 +510,14 @@ struct Told {
     by: u64,
 }
 
-impl Actor for Claimer {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Claim, Answer<Framed, Told>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
-    fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Renderer))]
+impl Claimer {
+    fn begin(_: Nothing) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Claim> for Claimer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, claim: Claim, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn claim(&mut self, claim: Claim, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id().bits();
         let create = match main_frame(claim.window) {
             Ok(create) => create,
@@ -580,10 +530,9 @@ impl Handles<Claim> for Claimer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Framed, Told>> for Claimer {
-    fn handle(&mut self, (answered, told): (Answered<Framed>, Told), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn framed(&mut self, (answered, told): (Answered<Framed>, Told)) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Framed::Refused(FrameRefused::Owned { owner })) => {
                 let named = owner.bits() == told.by;
@@ -649,10 +598,6 @@ enum Glower {
     Done,
 }
 
-impl ChildOf for Glower {
-    type Parent = Top;
-}
-
 /// Which effect, and then which frame, was asked for, with what was made before it.
 #[derive(Plain)]
 #[kind(name = "aether.example.glowing")]
@@ -673,13 +618,8 @@ enum Glowed {
     Darkened,
 }
 
-impl Actor for Glower {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (On<Start>, On<Tick>, Answer<Effected, Glowing>, Answer<Framed, Glowing>, Answer<Pixels, Glowed>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Glower {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -687,26 +627,8 @@ impl Actor for Glower {
         Ok(Self::Making)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// An effect of the WGSL the blob `wgsl` holds, its fragment stage `fragment`, reading no target, binding `bindings`,
-/// and drawing into `colour`.
-fn effect(wgsl: Bytes, fragment: &str, bindings: Vec<Binding>, colour: ColourFormat) -> CreateEffect {
-    CreateEffect {
-        wgsl,
-        fragment: String::from(fragment),
-        reads: Vec::new(),
-        bindings,
-        blend: Blend::Opaque,
-        shape: Shape::flat(colour),
-    }
-}
-
-impl Receives<On<Start>> for Glower {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let wgsl = match turn.put(Vec::from(GLOW)) {
             Ok(wgsl) => wgsl,
             Err(why) => {
@@ -719,10 +641,27 @@ impl Receives<On<Start>> for Glower {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Effected, Glowing>> for Glower {
-    fn handle(
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match *self {
+            Self::Drawing { glow, darkened, drawn } if drawn < SETTLED => {
+                *self = Self::Drawing { glow, darkened, drawn: drawn + 1 };
+            }
+            Self::Drawing { glow, darkened, .. } => {
+                turn.to(path::<Renderer>(()))
+                    .ask(&ReadBack { of: Readable::Texture(glow) }, &Glowed::Glow)?
+                    .ask(&ReadBack { of: Readable::Texture(darkened) }, &Glowed::Darkened)?;
+                *self = Self::Done;
+            }
+            Self::Making | Self::Done => {}
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn effected(
         &mut self,
         (answered, glowing): (Answered<Effected>, Glowing),
         turn: &mut Turn<'_, Self>,
@@ -761,10 +700,9 @@ impl Receives<Answer<Effected, Glowing>> for Glower {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Framed, Glowing>> for Glower {
-    fn handle(
+    #[answer]
+    fn framed(
         &mut self,
         (answered, glowing): (Answered<Framed>, Glowing),
         turn: &mut Turn<'_, Self>,
@@ -798,49 +736,9 @@ impl Receives<Answer<Framed, Glowing>> for Glower {
 
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Glower {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match *self {
-            Self::Drawing { glow, darkened, drawn } if drawn < SETTLED => {
-                *self = Self::Drawing { glow, darkened, drawn: drawn + 1 };
-            }
-            Self::Drawing { glow, darkened, .. } => {
-                turn.to(path::<Renderer>(()))
-                    .ask(&ReadBack { of: Readable::Texture(glow) }, &Glowed::Glow)?
-                    .ask(&ReadBack { of: Readable::Texture(darkened) }, &Glowed::Darkened)?;
-                *self = Self::Done;
-            }
-            Self::Making | Self::Done => {}
-        }
-
-        Ok(())
-    }
-}
-
-/// The finite float the first two bytes of `pixels` hold, a 16-bit float, little-endian: the red of a pixel of
-/// `Rgba16Float`.
-fn half(pixels: &[u8]) -> f32 {
-    let bits = pixels.first_chunk::<2>().map_or(0, |bytes| u16::from_le_bytes(*bytes));
-    let exponent = i32::from((bits >> 10) & 0x1f);
-    let fraction = f32::from(bits & 0x3ff) / 1024.0;
-    let magnitude = if exponent == 0 {
-        fraction * 2.0_f32.powi(-14)
-    } else {
-        (1.0 + fraction) * 2.0_f32.powi(exponent - 15)
-    };
-    let negative = bits >> 15 == 1;
-
-    if negative {
-        -magnitude
-    } else {
-        magnitude
-    }
-}
-
-impl Receives<Answer<Pixels, Glowed>> for Glower {
-    fn handle(
+    #[answer]
+    fn pixels(
         &mut self,
         (answered, glowed): (Answered<Pixels>, Glowed),
         turn: &mut Turn<'_, Self>,
@@ -861,5 +759,38 @@ impl Receives<Answer<Pixels, Glowed>> for Glower {
         say(said);
 
         Ok(())
+    }
+}
+
+/// An effect of the WGSL the blob `wgsl` holds, its fragment stage `fragment`, reading no target, binding `bindings`,
+/// and drawing into `colour`.
+fn effect(wgsl: Bytes, fragment: &str, bindings: Vec<Binding>, colour: ColourFormat) -> CreateEffect {
+    CreateEffect {
+        wgsl,
+        fragment: String::from(fragment),
+        reads: Vec::new(),
+        bindings,
+        blend: Blend::Opaque,
+        shape: Shape::flat(colour),
+    }
+}
+
+/// The finite float the first two bytes of `pixels` hold, a 16-bit float, little-endian: the red of a pixel of
+/// `Rgba16Float`.
+fn half(pixels: &[u8]) -> f32 {
+    let bits = pixels.first_chunk::<2>().map_or(0, |bytes| u16::from_le_bytes(*bytes));
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let fraction = f32::from(bits & 0x3ff) / 1024.0;
+    let magnitude = if exponent == 0 {
+        fraction * 2.0_f32.powi(-14)
+    } else {
+        (1.0 + fraction) * 2.0_f32.powi(exponent - 15)
+    };
+    let negative = bits >> 15 == 1;
+
+    if negative {
+        -magnitude
+    } else {
+        magnitude
     }
 }

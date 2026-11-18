@@ -2,8 +2,8 @@
 
 use super::super::*;
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, Spawn, Turn, child};
-use aethereal_actor::{Anyone, Entry};
+use aethereal_actor::{Ending, Fault, Handle, Recursive, Spawn, Turn, child};
+use aethereal_actor::{Entry, actor};
 use aethereal_data::{Bound, Kind, Plain};
 use std::any;
 use std::mem;
@@ -163,17 +163,8 @@ impl Keeper {
     }
 }
 
-impl ChildOf for Keeper {
-    type Parent = Recursive;
-}
-
-impl Actor for Keeper {
-    type Config = KeeperConfig;
-    type Key = u64;
-    type Handles = (Order, Pass, Last);
-    type Depends = ();
-    type Spawns = (Self,);
-
+#[actor(key = u64, parent = Recursive, spawns(Self))]
+impl Keeper {
     fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let KeeperConfig { number, lamps, makers, orders, takes } = config;
         let refuses = takes == Takes::None;
@@ -191,24 +182,8 @@ impl Actor for Keeper {
         Ok(Self { number, takes, lamps: taken, makers, did })
     }
 
-    fn end(mut self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        let number = self.number;
-        for lamp in &mut self.lamps {
-            let light = turn.open(lamp)?.light;
-            if let Some(parent) = turn.parent() {
-                turn.to(parent).send(&Last { number, light })?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Order> for Keeper {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Make(light) => {
                 let mut witnesses = Vec::new();
@@ -284,13 +259,9 @@ impl Handles<Order> for Keeper {
 
         Ok(())
     }
-}
 
-impl Handles<Pass> for Keeper {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pass(&mut self, pass: Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let refuses = self.takes == Takes::None;
         if refuses {
             self.did.push(Did::Left(pass.lamps.len().try_into().unwrap_or(u64::MAX)));
@@ -303,14 +274,22 @@ impl Handles<Pass> for Keeper {
 
         Ok(())
     }
-}
 
-impl Handles<Last> for Keeper {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, last: Last, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn last(&mut self, last: Last) -> Result<(), Fault> {
         self.did.push(Did::Last { number: last.number, light: last.light });
+
+        Ok(())
+    }
+
+    fn end(mut self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
+        let number = self.number;
+        for lamp in &mut self.lamps {
+            let light = turn.open(lamp)?.light;
+            if let Some(parent) = turn.parent() {
+                turn.to(parent).send(&Last { number, light })?;
+            }
+        }
 
         Ok(())
     }

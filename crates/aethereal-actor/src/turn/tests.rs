@@ -3,9 +3,8 @@
 use super::*;
 use crate::records::Staging;
 use crate::{
-    Anyone, Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Handles, Hosted, How, Item,
-    Itself, Keeping, Kept, Mail, MailId, NotHeld, On, Payload, Protocol, Receives, Resource, Subscribers, Tick, Top,
-    Unspawned, child, parent, path,
+    Anyone, Anywhere, Beginning, ChildOf, Claim, Claimed, Ended, Ending, Fault, Hosted, How, Item, Itself, Keeping,
+    Kept, Mail, MailId, NotHeld, Payload, Resource, Subscribers, Tick, Unspawned, actor, child, parent, path, protocol,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, Plain};
 use alloc::string::ToString;
@@ -126,17 +125,8 @@ struct LeafConfig {
 #[kind(name = "aether.test.leaf")]
 struct Leaf;
 
-impl ChildOf for Leaf {
-    type Parent = Anywhere;
-}
-
-impl Actor for Leaf {
-    type Config = LeafConfig;
-    type Key = u64;
-    type Handles = (Poke, Poked, Shut, Meet, Ended, On<Tick>);
-    type Depends = ();
-    type Spawns = (Herald,);
-
+#[actor(key = u64, parent = Anywhere, spawns(Herald))]
+impl Leaf {
     fn begin(config: LeafConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if config.fails {
             turn.log(Level::Warn, "told to fail");
@@ -146,64 +136,42 @@ impl Actor for Leaf {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Poke> for Leaf {
-    type From = Anyone;
-    type Returns = Poked;
-
-    fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<Poked, Fault> {
+    #[request]
+    fn poke(&mut self, _: Poke) -> Result<Poked, Fault> {
         Ok(Poked)
     }
-}
 
-/// A leaf takes the answer to a poke, and does nothing with it.
-impl Handles<Poked> for Leaf {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A leaf takes the answer to a poke, and does nothing with it.
+    #[tell]
+    fn poked(&mut self, _: Poked) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Shut> for Leaf {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
     }
-}
 
-impl Handles<Meet> for Leaf {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn meet(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(other) = turn.cast::<(Poke,)>(other) {
             turn.to(other).send(&Poke)?;
         }
 
         Ok(())
     }
-}
 
-/// A leaf may subscribe to ticks.
-impl Receives<On<Tick>> for Leaf {
-    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A leaf may watch, as the subscribers it holds do.
+    #[ended]
+    fn ended(&mut self, _: Ended) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-/// A leaf may watch, as the subscribers it holds do.
-impl Receives<Ended> for Leaf {
-    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A leaf may subscribe to ticks.
+    #[on]
+    fn tick(&mut self, _: Tick) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -221,17 +189,8 @@ struct BranchConfig {
 #[kind(name = "aether.test.branch")]
 struct Branch;
 
-impl ChildOf for Branch {
-    type Parent = Herald;
-}
-
-impl Actor for Branch {
-    type Config = BranchConfig;
-    type Key = ();
-    type Handles = (Poked,);
-    type Depends = ();
-    type Spawns = (Leaf, Herald);
-
+#[actor(parent = Herald, spawns(Leaf, Herald))]
+impl Branch {
     /// Spawns its leaves, poking each that begins.
     fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.leaves {
@@ -249,17 +208,9 @@ impl Actor for Branch {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// A branch takes the answer to a poke, and does nothing with it.
-impl Handles<Poked> for Branch {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A branch takes the answer to a poke, and does nothing with it.
+    #[tell]
+    fn poked(&mut self, _: Poked) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -269,18 +220,9 @@ impl Handles<Poked> for Branch {
 #[kind(name = "aether.test.herald")]
 struct Herald;
 
-impl ChildOf for Herald {
-    type Parent = Anywhere;
-}
-
 /// A herald's parent is a leaf.
-impl Actor for Herald {
-    type Config = Poke;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Branch, Leaf);
-
+#[actor(parent = Anywhere, spawns(Branch, Leaf))]
+impl Herald {
     fn begin(_config: Poke, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(parent::<(Poked,)>()).send(&Poked)?;
 
@@ -644,23 +586,10 @@ struct Crown;
 #[kind(name = "aether.test.crown_config")]
 struct CrownConfig;
 
-impl ChildOf for Crown {
-    type Parent = Top;
-}
-
-impl Actor for Crown {
-    type Config = CrownConfig;
-    type Key = u64;
-    type Handles = ();
-    type Depends = (Self,);
-    type Spawns = ();
-
-    fn begin(_: CrownConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, depends(Self))]
+impl Crown {
+    fn begin(_: CrownConfig) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -723,23 +652,8 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
 
 /// What a leaf is poked, shut, and introduced by, as a named protocol: a poke is answered, a shut is not, and nor is
 /// a meeting, though a leaf sends a poke on to the actor it meets, which is no reply.
+#[protocol(Poke(answers = Poked), Shut, Meet)]
 struct Poking;
-
-impl Protocol for Poking {
-    type Kinds = (Poke, Shut, Meet);
-}
-
-impl Carries<Poke> for Poking {
-    type Answers = (Poked,);
-}
-
-impl Carries<Shut> for Poking {
-    type Answers = ();
-}
-
-impl Carries<Meet> for Poking {
-    type Answers = ();
-}
 
 #[test]
 fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {

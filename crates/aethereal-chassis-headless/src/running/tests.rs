@@ -2,11 +2,11 @@
 
 use super::*;
 use crate::waiting;
+use aethereal_actor::{ActorName, actor, path, protocol};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles,
-    Held, Later, On, Receives, Services, Sleep, Slept, Spawn, Start, Stop, Tick, Top, Turn,
+    Answered, Beginning, Controller, Drained, Fault, Given, Handle, Held, Later, Services, Sleep, Slept, Start, Stop,
+    Tick, Turn,
 };
-use aethereal_actor::{ActorName, path};
 use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
 use aethereal_pace::{Advance, Advanced, Pace, Pacer, PacerConfig};
 use aethereal_substrate::{Engine, Jobs};
@@ -44,30 +44,16 @@ fn timed(headless: Headless, every: Duration, stop_within: Duration) -> (Duratio
 #[kind(name = "aether.test.quitter")]
 struct Quitter;
 
-impl ChildOf for Quitter {
-    type Parent = Top;
-}
-
-impl Actor for Quitter {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (On<Start>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Quitter {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Quitter {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.quit();
 
         Ok(())
@@ -79,17 +65,8 @@ impl Receives<On<Start>> for Quitter {
 #[kind(name = "aether.test.unready")]
 struct Unready;
 
-impl ChildOf for Unready {
-    type Parent = Top;
-}
-
-impl Actor for Unready {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Nothing, On<Start>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Unready {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.to(turn.me()).send(&Nothing)?;
@@ -97,24 +74,15 @@ impl Actor for Unready {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Nothing> for Unready {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Nothing, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn nothing(&mut self, _: Nothing, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.quit();
 
         Ok(())
     }
-}
 
-impl Receives<On<Start>> for Unready {
-    fn handle(&mut self, _: Start, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -166,17 +134,8 @@ struct Metronome {
     ticks: u64,
 }
 
-impl ChildOf for Metronome {
-    type Parent = Top;
-}
-
-impl Actor for Metronome {
-    type Config = MetronomeConfig;
-    type Key = ();
-    type Handles = (On<Tick>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Metronome {
     fn begin(config: MetronomeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let deltas = turn.take(config.deltas)?;
         turn.subscribe::<Tick>();
@@ -184,13 +143,8 @@ impl Actor for Metronome {
         Ok(Self { deltas, ticks: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Metronome {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.open(&mut self.deltas)?.push(tick.delta_nanos);
         self.ticks += 1;
         let is_third = self.ticks == 3;
@@ -230,17 +184,8 @@ struct Holdout {
     held: Vec<Held<Drained>>,
 }
 
-impl ChildOf for Holdout {
-    type Parent = Top;
-}
-
-impl Actor for Holdout {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (On<Start>, On<Stop>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Holdout {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Stop>();
@@ -248,21 +193,15 @@ impl Actor for Holdout {
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Holdout {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.quit();
 
         Ok(())
     }
-}
 
-impl Receives<On<Stop>> for Holdout {
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (held, _) = turn.hold();
         self.held.push(held);
 
@@ -313,17 +252,8 @@ struct Napper {
     ticks: u64,
 }
 
-impl ChildOf for Napper {
-    type Parent = Top;
-}
-
-impl Actor for Napper {
-    type Config = NapperConfig;
-    type Key = ();
-    type Handles = (On<Start>, On<Tick>, Answer<Slept, Nothing>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Napper {
     fn begin(config: NapperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let naps = turn.take(config.naps)?;
         turn.subscribe::<Start>();
@@ -332,21 +262,15 @@ impl Actor for Napper {
         Ok(Self { naps, ticks: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Napper {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;
 
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Napper {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.ticks += 1;
         let is_long = self.ticks == 50;
         if is_long {
@@ -356,10 +280,9 @@ impl Receives<On<Tick>> for Napper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Nothing>> for Napper {
-    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let nap = match done {
             Answered::Yes(Slept) => Nap::Slept,
             Answered::No(_) => Nap::NotAnswered,
@@ -405,17 +328,8 @@ struct Dozer {
     naps: Handle<Controller<Nap>>,
 }
 
-impl ChildOf for Dozer {
-    type Parent = Top;
-}
-
-impl Actor for Dozer {
-    type Config = DozerConfig;
-    type Key = ();
-    type Handles = (On<Start>, Answer<Slept, Nothing>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Dozer {
     fn begin(config: DozerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let naps = turn.take(config.naps)?;
         turn.subscribe::<Start>();
@@ -423,21 +337,15 @@ impl Actor for Dozer {
         Ok(Self { naps })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Dozer {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() + Duration::from_millis(20) }, &Nothing)?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Nothing>> for Dozer {
-    fn handle(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, (done, _): (Answered<Slept>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let nap = match done {
             Answered::Yes(Slept) => Nap::Slept,
             Answered::No(_) => Nap::NotAnswered,
@@ -482,15 +390,8 @@ fn a_program_with_no_cycle_is_woken_by_a_job_that_finishes_while_it_sleeps() {
 struct Hush;
 
 /// The protocol a silent actor is asked through: a hush, answered with a hush.
+#[protocol(Hush(answers = Hush))]
 struct Hushes;
-
-impl aethereal_actor::Protocol for Hushes {
-    type Kinds = (Hush,);
-}
-
-impl aethereal_actor::Carries<Hush> for Hushes {
-    type Answers = (Hush,);
-}
 
 /// An actor that holds every hush it is asked, and never answers one.
 #[derive(Bound)]
@@ -499,31 +400,14 @@ struct Silent {
     held: Vec<Held<Hush>>,
 }
 
-impl ChildOf for Silent {
-    type Parent = Waiter;
-}
-
-impl Actor for Silent {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Hush,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Waiter)]
+impl Silent {
+    fn begin(_: Nothing) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Hush> for Silent {
-    type From = Anyone;
-    type Returns = Later<Hush>;
-
-    fn handle(&mut self, _: Hush, turn: &mut Turn<'_, Self>) -> Result<Later<Hush>, Fault> {
+    #[request]
+    fn hush(&mut self, _: Hush, turn: &mut Turn<'_, Self>) -> Result<Later<Hush>, Fault> {
         let (held, later) = turn.hold();
         self.held.push(held);
 
@@ -554,17 +438,8 @@ struct Waiter {
     silent: aethereal_actor::ActorRef<Silent>,
 }
 
-impl ChildOf for Waiter {
-    type Parent = Top;
-}
-
-impl Actor for Waiter {
-    type Config = WaiterConfig;
-    type Key = ();
-    type Handles = (On<Start>, Answer<Hush, Nothing>);
-    type Depends = ();
-    type Spawns = (Silent,);
-
+#[actor(spawns(Silent))]
+impl Waiter {
     fn begin(config: WaiterConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let waited = turn.take(config.waited)?;
         let Ok(silent) = turn.spawn(&(), Nothing) else {
@@ -575,22 +450,16 @@ impl Actor for Waiter {
         Ok(Self { waited, silent })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Waiter {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let due = turn.now() + Duration::from_millis(20);
         turn.to(self.silent.protocol::<Hushes>()).within(due).ask(&Hush, &Nothing)?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Hush, Nothing>> for Waiter {
-    fn handle(&mut self, (answered, _): (Answered<Hush>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn hush(&mut self, (answered, _): (Answered<Hush>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let waited = match answered {
             Answered::Yes(Hush) => Waited::Answered,
             Answered::No(why) => Waited::No(why),
@@ -655,17 +524,8 @@ struct Stepper {
 /// Each held cycle's delta: far longer than the host's period, so a delta measured on the host's clock reads apart.
 const STEP: Duration = Duration::from_millis(200);
 
-impl ChildOf for Stepper {
-    type Parent = Top;
-}
-
-impl Actor for Stepper {
-    type Config = StepperConfig;
-    type Key = ();
-    type Handles = (On<Tick>, Answer<Advanced, Nothing>);
-    type Depends = (Pacer,);
-    type Spawns = ();
-
+#[actor(depends(Pacer))]
+impl Stepper {
     fn begin(config: StepperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let told = turn.take(config.told)?;
         turn.subscribe::<Tick>();
@@ -675,21 +535,19 @@ impl Actor for Stepper {
         Ok(Self { told })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Stepper {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.open(&mut self.told)?.push(Stepped::Ticked(tick.delta_nanos));
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Advanced, Nothing>> for Stepper {
-    fn handle(&mut self, (answered, _): (Answered<Advanced>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn advanced(
+        &mut self,
+        (answered, _): (Answered<Advanced>, Nothing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         if let Answered::Yes(advanced) = answered {
             turn.open(&mut self.told)?.push(Stepped::Advanced(advanced));
         }

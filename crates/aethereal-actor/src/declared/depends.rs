@@ -58,7 +58,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// above it.
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Fault, Top, Turn, actor, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -71,32 +71,15 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Poke,);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent, depends($depends))]
+/// #         impl $name {
+/// #             fn begin(actor: $name) -> Result<Self, Fault> {
 /// #                 Ok(actor)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         // Pokes the actor at the typed path to `$target` with each poke it is sent.
-/// #         impl Handles<Poke> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             // Pokes the actor at the typed path to `$target` with each poke it is sent.
+/// #             #[tell]
+/// #             fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 turn.to(path::<$target>(())).send(&Poke)?;
 /// #
 /// #                 Ok(())
@@ -115,7 +98,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// A typed path beneath a root of nothing it depends on does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Fault, Top, Turn, actor, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -128,32 +111,15 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Poke,);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent, depends($depends))]
+/// #         impl $name {
+/// #             fn begin(actor: $name) -> Result<Self, Fault> {
 /// #                 Ok(actor)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         // Pokes the actor at the typed path to `$target` with each poke it is sent.
-/// #         impl Handles<Poke> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             // Pokes the actor at the typed path to `$target` with each poke it is sent.
+/// #             #[tell]
+/// #             fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 turn.to(path::<$target>(())).send(&Poke)?;
 /// #
 /// #                 Ok(())

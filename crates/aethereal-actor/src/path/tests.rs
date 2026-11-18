@@ -1,6 +1,6 @@
 use super::*;
-use crate::{Actor, Beginning, Declared, Ending, Fault, Handles, Turn};
-use crate::{Anyone, section};
+use crate::{Declared, Fault};
+use crate::{actor, section};
 use aethereal_data::Plain;
 use alloc::vec::Vec;
 
@@ -16,31 +16,14 @@ macro_rules! actor {
         #[kind(name = $named)]
         struct $name;
 
-        impl ChildOf for $name {
-            type Parent = $parent;
-        }
-
-        impl Actor for $name {
-            type Config = $name;
-            type Key = $key;
-            type Handles = (Order,);
-            type Depends = $depends;
-            type Spawns = ();
-
-            fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        #[actor(key = $key, parent = $parent, depends($depends))]
+        impl $name {
+            fn begin(config: $name) -> Result<Self, Fault> {
                 Ok(config)
             }
 
-            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-                Ok(())
-            }
-        }
-
-        impl Handles<Order> for $name {
-            type From = Anyone;
-            type Returns = ();
-
-            fn handle(&mut self, _: Order, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            #[tell]
+            fn order(&mut self, _: Order) -> Result<(), Fault> {
                 Ok(())
             }
         }

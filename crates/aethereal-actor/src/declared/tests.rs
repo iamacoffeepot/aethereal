@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::{
-    Above, Actor, Anyone, Anywhere, Asked, Beginning, Chain, ChildOf, Due, Ending, ErasedActorRef, Fault, Instances,
-    Item, Keeps, Level, Mail, MailId, Mailed, Receives, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn,
-    Turning, section,
+    Above, Anyone, Anywhere, Asked, Chain, ChildOf, Due, ErasedActorRef, Fault, Instances, Item, Keeps, Level, Mail,
+    MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning, actor, section,
 };
 use aethereal_data::{ActorId, ActorPath, Keyed, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -100,39 +99,21 @@ struct Stray;
 #[kind(name = "aether.test.keeper")]
 struct Keeper;
 
-impl ChildOf for Keeper {
-    type Parent = Anywhere;
-}
-
-impl Actor for Keeper {
-    type Config = Kept;
-    type Key = ();
-    type Handles = (Kept, Others);
-    type Depends = (Shelf,);
-    type Spawns = ();
-
-    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Shelf))]
+impl Keeper {
+    fn begin(_: Kept) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Kept> for Keeper {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn kept(&mut self, _: Kept, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
 
         Ok(())
     }
-}
 
-impl Receives<Others> for Keeper {
-    fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[others]
+    fn others(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "other");
 
         Ok(())
@@ -144,31 +125,14 @@ impl Receives<Others> for Keeper {
 #[kind(name = "aether.test.strict")]
 struct Strict;
 
-impl ChildOf for Strict {
-    type Parent = Keeper;
-}
-
-impl Actor for Strict {
-    type Config = Kept;
-    type Key = ();
-    type Handles = (Kept,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Keeper)]
+impl Strict {
+    fn begin(_: Kept) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Kept> for Strict {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn kept(&mut self, _: Kept) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -178,23 +142,10 @@ impl Handles<Kept> for Strict {
 #[kind(name = "aether.test.shelf")]
 struct Shelf;
 
-impl ChildOf for Shelf {
-    type Parent = crate::Top;
-}
-
-impl Actor for Shelf {
-    type Config = Kept;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Shelf {
+    fn begin(_: Kept) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -203,23 +154,10 @@ impl Actor for Shelf {
 #[kind(name = "aether.test.slot")]
 struct Slot;
 
-impl ChildOf for Slot {
-    type Parent = Shelf;
-}
-
-impl Actor for Slot {
-    type Config = Kept;
-    type Key = u64;
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Shelf)]
+impl Slot {
+    fn begin(_: Kept) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -228,28 +166,14 @@ impl Actor for Slot {
 #[kind(name = "aether.test.sink")]
 struct Sink;
 
-impl ChildOf for Sink {
-    type Parent = Recursive;
-}
-
-impl Actor for Sink {
-    type Config = Kept;
-    type Key = u64;
-    type Handles = (Others,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Recursive)]
+impl Sink {
+    fn begin(_: Kept) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Others> for Sink {
-    fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[others]
+    fn others(&mut self, _: Mail<'_>) -> Result<(), Fault> {
         Ok(())
     }
 }

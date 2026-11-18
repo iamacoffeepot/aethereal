@@ -54,7 +54,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// (ADR-0028).
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::{ActorPath, Kind, PathSegment, Plain};
 /// # use aethereal_substrate::{Bootstrap, Builds, Engine, Host, ProgramError, Settled};
 /// #
@@ -94,23 +94,10 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #[kind(name = "example.scene")]
 /// struct Scene;
 /// #
-/// # impl ChildOf for Scene {
-/// #     type Parent = Top;
-/// # }
-/// #
-/// # impl Actor for Scene {
-/// #     type Config = Show;
-/// #     type Key = ();
-/// #     type Handles = ();
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// # #[actor]
+/// # impl Scene {
+/// #     fn begin(_: Show) -> Result<Self, Fault> {
 /// #         Ok(Self)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
 /// #     }
 /// # }
 ///
@@ -123,7 +110,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// A root that needs what no root listed before it provides does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::{Bootstrap, Bootstrapping, Builds, Engine, Host, ProgramError, Settled, Unbuilt};
 /// #
@@ -161,23 +148,10 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = Nothing;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor]
+/// #         impl $name {
+/// #             fn begin(_: Nothing) -> Result<Self, Fault> {
 /// #                 Ok(Self)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -220,7 +194,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// Nor does a bootstrap that gives the host an end it does not serve:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::{Bootstrap, Bootstrapping, Builds, Engine, Host, ProgramError, Settled, Unbuilt};
 /// #
@@ -258,23 +232,10 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = Nothing;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor]
+/// #         impl $name {
+/// #             fn begin(_: Nothing) -> Result<Self, Fault> {
 /// #                 Ok(Self)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -396,7 +357,7 @@ impl<H: Host, R, D> Program<H, R, D> {
     /// settings have none is listed with [`root_with`](Self::root_with).
     ///
     /// ```compile_fail
-    /// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+    /// # use aethereal_actor::{Fault, actor};
     /// # use aethereal_data::Plain;
     /// # use aethereal_substrate::{Bootstrap, Builds, Engine, Host, ProgramError, Settled};
     /// #
@@ -434,23 +395,10 @@ impl<H: Host, R, D> Program<H, R, D> {
     /// #[kind(name = "example.scene")]
     /// struct Scene;
     /// #
-    /// # impl ChildOf for Scene {
-    /// #     type Parent = Top;
-    /// # }
-    /// #
-    /// # impl Actor for Scene {
-    /// #     type Config = Show;
-    /// #     type Key = ();
-    /// #     type Handles = ();
-    /// #     type Depends = ();
-    /// #     type Spawns = ();
-    /// #
-    /// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// # #[actor]
+    /// # impl Scene {
+    /// #     fn begin(_: Show) -> Result<Self, Fault> {
     /// #         Ok(Self)
-    /// #     }
-    /// #
-    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    /// #         Ok(())
     /// #     }
     /// # }
     ///

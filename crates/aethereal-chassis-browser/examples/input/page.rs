@@ -2,7 +2,7 @@
 //! key of the window in its draw list, and notes each event, key, and control it is sent.
 
 use crate::said::{Program, say};
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Render, Tick, Top, Turn, path};
+use aethereal_actor::{Beginning, Fault, Render, Tick, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_chassis_browser::controls::{self, Control, Controls};
 use aethereal_data::Bound;
@@ -66,17 +66,8 @@ impl<H: Host> Bootstrap<H> for Reporter {
 #[kind(name = "aether.example.reporter")]
 struct Reporter;
 
-impl ChildOf for Reporter {
-    type Parent = Top;
-}
-
-impl Actor for Reporter {
-    type Config = Watches;
-    type Key = ();
-    type Handles = (Event, Keyed, Control);
-    type Depends = (Renderer, Controls);
-    type Spawns = ();
-
+#[actor(depends(Renderer, Controls))]
+impl Reporter {
     fn begin(watches: Watches, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(watches.window.actor()).send(&window::Subscribe)?;
         let hears = Entry::Keys { frame: Frame::Main(watches.window.id()), keys: KeySet::All, blocks: true };
@@ -86,38 +77,22 @@ impl Actor for Reporter {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Reporter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, event: Event) -> Result<(), Fault> {
         say(format!("window {event:?}"));
 
         Ok(())
     }
-}
 
-impl Handles<Keyed> for Reporter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keyed: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn keyed(&mut self, keyed: Keyed) -> Result<(), Fault> {
         say(format!("window {:?}", keyed.event));
 
         Ok(())
     }
-}
 
-impl Handles<Control> for Reporter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn control(&mut self, control: Control) -> Result<(), Fault> {
         say(format!("control {control:?}"));
 
         Ok(())

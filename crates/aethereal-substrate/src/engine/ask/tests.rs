@@ -5,10 +5,10 @@ use super::super::*;
 use super::{Answering, Waiting, owed};
 use aethereal_actor::Written;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Asking, Bytes, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
-    Protocol, Reply, Spawn, Tie, Top, Turn, Unanswered, child,
+    ActorRef, Answered, Anywhere, Asking, Bytes, Due, Ending, Fault, Held, Reply, Tie, Turn, Unanswered, child,
+    protocol,
 };
-use aethereal_actor::{Anyone, Receives, Time};
+use aethereal_actor::{Time, actor};
 use aethereal_data::{Bound, Kind, Plain};
 use std::iter;
 use std::mem;
@@ -93,15 +93,8 @@ struct Looking {
 }
 
 /// The protocol a board is asked through: which tile, answered with the tile.
+#[protocol(WhichTile(answers = TileIs))]
 struct Tiles;
-
-impl Protocol for Tiles {
-    type Kinds = (WhichTile,);
-}
-
-impl Carries<WhichTile> for Tiles {
-    type Answers = (TileIs,);
-}
 
 /// A board: it answers which tile is at a [`Spot`] as the spot says. What it holds it answers with `50`, lets go of, or
 /// closes on, as a [`Release`] says, and its closing turn does with what it still holds what the release it closed on
@@ -145,45 +138,14 @@ enum Release {
     ClosesOnIt(Closing),
 }
 
-impl ChildOf for Board {
-    type Parent = Anywhere;
-}
-
-impl Actor for Board {
-    type Config = Blank;
-    type Key = u64;
-    type Handles = (WhichTile, Release, Repeat);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere)]
+impl Board {
+    fn begin(_: Blank) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), closing: Closing::Silently })
     }
 
-    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        let answers = self.closing != Closing::Silently;
-        if !answers {
-            return Ok(());
-        }
-        for held in self.held {
-            let copy = Written::of(&held)?.read(64)?;
-            turn.answer(held, &TileIs { tile: 60 })?;
-            match self.closing {
-                Closing::AnsweringTwice => turn.answer(copy, &TileIs { tile: 61 })?,
-                Closing::AnsweringThenFailing => return Err(Fault::new(&Release::ClosesOnIt(self.closing))?),
-                Closing::Silently | Closing::Answering => drop(copy),
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<WhichTile> for Board {
-    type From = Anyone;
-    type Returns = Reply<TileIs>;
-
-    fn handle(&mut self, which: WhichTile, turn: &mut Turn<'_, Self>) -> Result<Reply<TileIs>, Fault> {
+    #[request]
+    fn which_tile(&mut self, which: WhichTile, turn: &mut Turn<'_, Self>) -> Result<Reply<TileIs>, Fault> {
         let tile = match which.spot {
             Spot::At(x) => x * 10,
             Spot::Fails => return Err(Fault::new(&which)?),
@@ -208,13 +170,9 @@ impl Handles<WhichTile> for Board {
 
         Ok(Reply::Now(TileIs { tile }))
     }
-}
 
-impl Handles<Release> for Board {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn release(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = mem::take(&mut self.held);
         match release {
             Release::Answers => {
@@ -239,16 +197,30 @@ impl Handles<Release> for Board {
 
         Ok(())
     }
-}
 
-impl Handles<Repeat> for Board {
-    type From = ActorRef<Pointer>;
-    type Returns = ();
-
-    fn handle(&mut self, repeat: Repeat, turn: &mut Turn<'_, Self, ActorRef<Pointer>>) -> Result<(), Fault> {
+    #[tell]
+    fn repeat(&mut self, repeat: Repeat, turn: &mut Turn<'_, Self, ActorRef<Pointer>>) -> Result<(), Fault> {
         let pointer = *turn.from();
         for _ in 0..repeat.times {
             turn.to(pointer).send(&TileIs { tile: repeat.tile })?;
+        }
+
+        Ok(())
+    }
+
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
+        let answers = self.closing != Closing::Silently;
+        if !answers {
+            return Ok(());
+        }
+        for held in self.held {
+            let copy = Written::of(&held)?.read(64)?;
+            turn.answer(held, &TileIs { tile: 60 })?;
+            match self.closing {
+                Closing::AnsweringTwice => turn.answer(copy, &TileIs { tile: 61 })?,
+                Closing::AnsweringThenFailing => return Err(Fault::new(&Release::ClosesOnIt(self.closing))?),
+                Closing::Silently | Closing::Answering => drop(copy),
+            }
         }
 
         Ok(())
@@ -384,17 +356,8 @@ struct Pointer {
     seekers: Vec<bool>,
 }
 
-impl ChildOf for Pointer {
-    type Parent = Top;
-}
-
-impl Actor for Pointer {
-    type Config = PointerConfig;
-    type Key = ();
-    type Handles = (Orders, Answer<TileIs, Looking>, TileIs);
-    type Depends = ();
-    type Spawns = (Board, Seeker);
-
+#[actor(spawns(Board, Seeker))]
+impl Pointer {
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Trouble::NoBoard)?);
@@ -418,16 +381,8 @@ impl Actor for Pointer {
         Ok(Self { board, heard: Vec::new(), told: Vec::new(), seekers })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Orders> for Pointer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, orders: Orders, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn orders(&mut self, orders: Orders, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = orders.parted() else {
             return Ok(());
         };
@@ -467,25 +422,16 @@ impl Handles<Orders> for Pointer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<TileIs, Looking>> for Pointer {
-    fn handle(
-        &mut self,
-        (answered, looking): (Answered<TileIs>, Looking),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn tile_is(&mut self, (answered, looking): (Answered<TileIs>, Looking)) -> Result<(), Fault> {
         self.heard.push(heard_of(answered, &looking));
 
         Ok(())
     }
-}
 
-impl Handles<TileIs> for Pointer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, tile: TileIs, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn told_tile(&mut self, tile: TileIs) -> Result<(), Fault> {
         self.told.push(tile.tile);
 
         Ok(())
@@ -509,17 +455,8 @@ struct Seeker {
     heard: Vec<Heard>,
 }
 
-impl ChildOf for Seeker {
-    type Parent = Pointer;
-}
-
-impl Actor for Seeker {
-    type Config = Seeking;
-    type Key = u64;
-    type Handles = (Answer<TileIs, Looking>,);
-    type Depends = ();
-    type Spawns = (Board,);
-
+#[actor(key = u64, parent = Pointer, spawns(Board))]
+impl Seeker {
     fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn::<Board>(&2, Blank) else {
             return Err(Fault::new(&seeking)?);
@@ -532,17 +469,8 @@ impl Actor for Seeker {
         Ok(Self { heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<TileIs, Looking>> for Seeker {
-    fn handle(
-        &mut self,
-        (answered, looking): (Answered<TileIs>, Looking),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn tile_is(&mut self, (answered, looking): (Answered<TileIs>, Looking)) -> Result<(), Fault> {
         self.heard.push(heard_of(answered, &looking));
 
         Ok(())
@@ -566,17 +494,8 @@ struct Keeper {
     kept: Vec<u64>,
 }
 
-impl ChildOf for Keeper {
-    type Parent = Top;
-}
-
-impl Actor for Keeper {
-    type Config = Blank;
-    type Key = ();
-    type Handles = (Orders, Answer<TileIs, Kept>);
-    type Depends = ();
-    type Spawns = (Board,);
-
+#[actor(spawns(Board))]
+impl Keeper {
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Trouble::NoBoard)?);
@@ -586,16 +505,8 @@ impl Actor for Keeper {
         Ok(Self { board, kept: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Orders> for Keeper {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Orders, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn orders(&mut self, _: Orders, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(blob) = turn.put(vec![9; 3]) else {
             return Err(Fault::new(&Trouble::NoRoom)?);
         };
@@ -604,10 +515,9 @@ impl Handles<Orders> for Keeper {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<TileIs, Kept>> for Keeper {
-    fn handle(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn tile_is(&mut self, (_, kept): (Answered<TileIs>, Kept), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.kept.push(u64::try_from(turn.read(&kept.blob).len()).unwrap_or(u64::MAX));
 
         Ok(())

@@ -3,8 +3,8 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Actors, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, On, Receives,
-    Render, Seated, Services, Sleep, Slept, Source, Tick, Top, Turn, Unanswered,
+    Actors, Answered, Beginning, Fault, Given, Handle, Render, Seated, Services, Sleep, Slept, Source, Tick, Turn,
+    Unanswered, actor,
 };
 use aethereal_data::{Bound, Encode, Kind, KindId, Plain};
 use aethereal_substrate::harness::{Turned, Unheard};
@@ -67,17 +67,8 @@ fn painted<C>(browser: &mut Browser<C>) -> Vec<Painted> {
 #[kind(name = "aether.test.painter")]
 struct Painter;
 
-impl ChildOf for Painter {
-    type Parent = Top;
-}
-
-impl Actor for Painter {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (On<Tick>, On<Render>, Answer<Slept, Nothing>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Painter {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.subscribe::<Render>();
@@ -85,27 +76,20 @@ impl Actor for Painter {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Painter {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() }, &Nothing)?;
 
         Ok(())
     }
-}
 
-impl Receives<On<Render>> for Painter {
-    fn handle(&mut self, _: Render, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn render(&mut self, _: Render) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Nothing>> for Painter {
-    fn handle(&mut self, _: (Answered<Slept>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, _: (Answered<Slept>, Nothing)) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -156,33 +140,16 @@ struct Pointer {
     source: Handle<Source<Moved>>,
 }
 
-impl ChildOf for Pointer {
-    type Parent = Top;
-}
-
-impl Actor for Pointer {
-    type Config = PointerConfig;
-    type Key = ();
-    type Handles = (Moved,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Pointer {
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
 
         Ok(Self { source })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Moved> for Pointer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Moved, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn moved(&mut self, _: Moved) -> Result<(), Fault> {
         Ok(())
     }
 }

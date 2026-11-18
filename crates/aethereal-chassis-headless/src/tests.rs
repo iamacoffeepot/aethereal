@@ -1,9 +1,7 @@
 //! The chassis's tests: workers leave what one thread leaves.
 
 use super::*;
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Spawn, Time, Turn,
-};
+use aethereal_actor::{Beginning, Fault, Level, Recursive, Seated, Time, Turn, actor};
 use aethereal_data::{ActorId, Kind, PathSegment, Plain};
 use aethereal_substrate::child_id;
 use std::iter;
@@ -34,17 +32,8 @@ struct Fan {
 /// How many turns each child takes.
 const TURNS: u64 = 6;
 
-impl ChildOf for Fan {
-    type Parent = Recursive;
-}
-
-impl Actor for Fan {
-    type Config = FanConfig;
-    type Key = u64;
-    type Handles = (Count,);
-    type Depends = ();
-    type Spawns = (Self,);
-
+#[actor(key = u64, parent = Recursive, spawns(Self))]
+impl Fan {
     fn begin(config: FanConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let is_root = turn.parent().is_none();
         if is_root {
@@ -59,16 +48,8 @@ impl Actor for Fan {
         Ok(Self { number: config.number })
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Count> for Fan {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn count(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_root = turn.parent().is_none();
         if is_root {
             turn.log(Level::Info, format!("heard {left}"));

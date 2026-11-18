@@ -1,10 +1,7 @@
 //! The MCP capability served on the native host over real HTTP through stacks of the test's own (ADR-0035), the test
 //! its tools' worker (ADR-0037, ADR-0036).
 
-use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef,
-    Top, Turn, Unanswered,
-};
+use aethereal_actor::{ActorName, ActorRef, Answered, Anywhere, Fault, ProtocolRef, Turn, Unanswered, actor};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
 use aethereal_data::{
@@ -65,31 +62,14 @@ struct OnceConfig;
 #[kind(name = "aether.test.once")]
 struct Once;
 
-impl ChildOf for Once {
-    type Parent = Top;
-}
-
-impl Actor for Once {
-    type Config = OnceConfig;
-    type Key = ();
-    type Handles = (Call,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: OnceConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Once {
+    fn begin(_: OnceConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Call> for Once {
-    type From = Anyone;
-    type Returns = Called;
-
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+    #[request]
+    fn call(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         turn.close();
 
         Ok(Called::Refused(String::from("once is enough")))
@@ -871,31 +851,14 @@ macro_rules! listed {
         #[kind(name = $kind)]
         struct $actor;
 
-        impl ChildOf for $actor {
-            type Parent = Anywhere;
-        }
-
-        impl Actor for $actor {
-            type Config = ListedConfig;
-            type Key = ();
-            type Handles = (Call,);
-            type Depends = ();
-            type Spawns = ();
-
-            fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        #[actor(parent = Anywhere)]
+        impl $actor {
+            fn begin(_: ListedConfig) -> Result<Self, Fault> {
                 Ok(Self)
             }
 
-            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-                Ok(())
-            }
-        }
-
-        impl Handles<Call> for $actor {
-            type From = Anyone;
-            type Returns = Called;
-
-            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+            #[request]
+            fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
                 let say = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1024))?;
                 let length = u32::try_from(say.text.len()).unwrap_or(u32::MAX);
 
@@ -924,31 +887,14 @@ listed!(Other, "aether.test.other", "other");
 #[kind(name = "aether.test.unbegun")]
 struct Unbegun;
 
-impl ChildOf for Unbegun {
-    type Parent = Anywhere;
-}
-
-impl Actor for Unbegun {
-    type Config = ListedConfig;
-    type Key = ();
-    type Handles = (Call,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl Unbegun {
+    fn begin(_: ListedConfig) -> Result<Self, Fault> {
         Err(Fault::new(&Self)?)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Call> for Unbegun {
-    type From = Anyone;
-    type Returns = Called;
-
-    fn handle(&mut self, _: Call, _: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+    #[request]
+    fn call(&mut self, _: Call) -> Result<Called, Fault> {
         Ok(Called::Refused(String::new()))
     }
 }

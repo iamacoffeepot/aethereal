@@ -63,7 +63,7 @@ use core::marker::PhantomData;
 /// Two streams whose parts are one kind, taken by one actor, do not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Declared, Ending, Fault, Handles, Part, Stream, Top, Turn};
+/// # use aethereal_actor::{Declared, Fault, Part, Stream, actor};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -98,40 +98,19 @@ use core::marker::PhantomData;
 /// #[kind(name = "aether.doc.reader")]
 /// struct Reader;
 ///
-/// impl ChildOf for Reader {
-///     type Parent = Top;
-/// }
-///
-/// impl Actor for Reader {
-///     type Config = Reader;
-///     type Key = ();
-///     type Handles = (Part<Files>, Part<Logs>);
-///     type Depends = ();
-///     type Spawns = ();
-///
-///     fn begin(reader: Reader, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #[actor]
+/// impl Reader {
+///     fn begin(reader: Reader) -> Result<Self, Fault> {
 ///         Ok(reader)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+///     #[tell]
+///     fn files(&mut self, _: Part<Files>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
-/// }
 ///
-/// impl Handles<Part<Files>> for Reader {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-///         Ok(())
-///     }
-/// }
-///
-/// impl Handles<Part<Logs>> for Reader {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     #[tell]
+///     fn logs(&mut self, _: Part<Logs>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
