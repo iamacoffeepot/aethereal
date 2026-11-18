@@ -428,7 +428,7 @@ aethereal_ui::view! { Overlay, ui,
             }
             Tint { style: prompt_rule { colour: self.ink(Ink::Divider) } }
             Row { style: prompt_strip { background: self.surface(Surface::Inset) },
-                Text { name: sign, style: sign { colour: self.ink(Ink::Input) }, ">" }
+                Text { name: sign, style: sign { colour: self.ink(Ink::Input) }, "{self.sign()}" }
                 Stack { style: line,
                     TextInput {
                         name: prompt,
@@ -604,6 +604,12 @@ impl Overlay {
     /// Whether this engine has learned its own id, so its name shows at the tabs' start.
     pub(super) const fn knows_itself(&self) -> bool {
         matches!(self.chats.mine(), Mine::Engine(_))
+    }
+
+    /// The prompt's mark: the open tab's mode's, `!` on the console's own tab and on a session's in `!` mode, and `>`
+    /// on a session's in chat mode.
+    pub(super) fn sign(&self) -> &'static str {
+        self.chats.mode().mark()
     }
 
     /// This engine's own name, its words alone: none until it has learned its id, when it does not show.

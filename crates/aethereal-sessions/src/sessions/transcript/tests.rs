@@ -72,15 +72,3 @@ fn a_transcript_knows_whether_a_turn_runs_and_whether_one_ran_since_the_last_com
     transcript.add(claude(r#"{"type":"system","subtype":"init"}"#));
     assert_eq!(transcript.turning(), Turning::Running, "a turn Claude starts by itself is a turn");
 }
-
-#[test]
-fn a_command_of_claude_code_s_folds_nothing_in_and_the_next_line_folds_the_runs_before_it() {
-    // Catches `/compact` said at an engine counted as the owner's line, so the commands run before it are folded into
-    // nothing Claude reads, as a command line is written alone.
-    let mut transcript = Transcript::new();
-    transcript.add(Entry::Ran { engine: 3, line: String::from("memory"), printed: String::new() });
-    transcript.add(Entry::Said { by: Speaker::Engine { engine: 3 }, text: String::from("/compact") });
-
-    let lines: Vec<&str> = transcript.ran_since_said().iter().map(|ran| ran.line).collect();
-    assert_eq!(lines, ["memory"]);
-}

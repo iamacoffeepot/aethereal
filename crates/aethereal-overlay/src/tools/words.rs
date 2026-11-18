@@ -39,9 +39,6 @@ pub const STOP_SESSION: &str = "stop_session";
 /// The word that archives a session.
 pub const ARCHIVE_SESSION: &str = "archive_session";
 
-/// The chat's words, each an engine's tool the overlay offers once the hub shows it the chat.
-pub const CHAT_WORDS: [&str; 3] = [NEW_SESSION, STOP_SESSION, ARCHIVE_SESSION];
-
 /// Makes a session named `name`, whose tab opens once the hub lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.overlay.new_session")]

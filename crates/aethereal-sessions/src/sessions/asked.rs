@@ -231,14 +231,44 @@ impl Sessions {
         Ok(())
     }
 
-    /// Takes `text` for `session`, as `by` said it: noted as said, and written to the session with every `/` command
-    /// run since the last line an owner said folded in at its head, and tagged with the engine it was typed at.
+    /// Takes `text` for `session`, as `by` said it: noted as said, and written to the session tagged with the engine it
+    /// was typed at.
     pub(super) fn say<S: Does>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
         session: u32,
         by: Speaker,
         text: String,
+    ) -> Result<Said, Fault> {
+        let written = said(by, &text);
+
+        self.take_line(turn, session, written, Entry::Said { by, text })
+    }
+
+    /// Takes `line`, a command the owner ran in `!` mode at the trusted engine `engine`, and what it `printed`, for
+    /// `session`: noted as run, and written to the session as a line of its own, which starts a turn, as Claude Code's
+    /// own `!` does (ADR-0057: The console is the chat).
+    pub(super) fn ran<S: Does>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        session: u32,
+        engine: u32,
+        line: String,
+        printed: String,
+    ) -> Result<Said, Fault> {
+        let written = ran(engine, &line, &printed);
+
+        self.take_line(turn, session, written, Entry::Ran { engine, line, printed })
+    }
+
+    /// Takes the line `entry` notes for `session`, `written` as the session reads it: noted, and written to the
+    /// session's stdin, kept until its container is attached, or resuming it, as the session stands.
+    fn take_line<S: Does>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        session: u32,
+        written: String,
+        entry: Entry,
     ) -> Result<Said, Fault> {
         let Some(held) = self.held.get(&session) else {
             return Ok(Said::Refused(Refusal::NoSuchSession));
@@ -256,8 +286,7 @@ impl Sessions {
         if let Taking::Refused(why) = &taking {
             return Ok(Said::Refused(why.clone()));
         }
-        let written = written(held, by, &text);
-        let number = self.note(session, Entry::Said { by, text });
+        let number = self.note(session, entry);
         match taking {
             Taking::Kept => {
                 if let Some(Life::Stopping { then: Then::Rest { lines }, .. } | Life::Starting { lines, .. }) =
@@ -281,28 +310,23 @@ impl Sessions {
     }
 }
 
-/// What is written to the session `held` of `text`, said by `by`: each `/` command an owner ran since the last line an
-/// owner said, and what it printed, then the line, each tagged `[engine]` with the engine it came from (ADR-0057). A
-/// line of the hub's own folds nothing in, and one of Claude Code's own commands, `/compact` and the like, is written
-/// alone and untagged, as Claude Code reads a command only so; the commands run before it fold into the next line.
-fn written(held: &Session, by: Speaker, text: &str) -> String {
-    if is_command(text) {
-        return String::from(text);
-    }
-    let mut written = String::new();
-    if by != Speaker::Hub {
-        for ran in held.transcript.ran_since_said() {
-            let _ = writeln!(written, "[{}] {}", ran.engine, ran.line);
-            if !ran.printed.is_empty() {
-                let _ = writeln!(written, "{}", ran.printed.trim_end());
-            }
-        }
-    }
+/// What is written to a session of `text`, said by `by`: tagged `[engine]` with the engine it was typed at (ADR-0057).
+/// One of Claude Code's own commands, `/compact` and the like, is written alone and untagged, as Claude Code reads a
+/// command only so.
+fn said(by: Speaker, text: &str) -> String {
     match by {
-        Speaker::Engine { engine } => {
-            let _ = write!(written, "[{engine}] {text}");
-        }
-        Speaker::Caller | Speaker::Hub => written.push_str(text),
+        Speaker::Engine { engine } if !is_command(text) => format!("[{engine}] {text}"),
+        Speaker::Engine { .. } | Speaker::Caller | Speaker::Hub => String::from(text),
+    }
+}
+
+/// What is written to a session of `line`, a command run in `!` mode at the engine `engine`: the command tagged
+/// `[engine]` and marked `!`, then what it `printed` on the lines after it.
+fn ran(engine: u32, line: &str, printed: &str) -> String {
+    let mut written = format!("[{engine}] !{line}");
+    let printed = printed.trim_end();
+    if !printed.is_empty() {
+        let _ = write!(written, "\n{printed}");
     }
 
     written

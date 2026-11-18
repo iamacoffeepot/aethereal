@@ -4,10 +4,11 @@
 //!
 //! ```text
 //! Numbered ──> read ──> by number ──> rows: each owner's line a turn, tagged `local >`, or `name >` at another
-//!                                     engine, on the raised band, another engine's tag dimmed
+//!                                     engine, on the raised band, another engine's tag dimmed; a command run in
+//!                                     `!` mode tagged `local !`, what it printed under it
 //!                                     a subagent's events under the tool call that started it, folded until opened
-//!                                     compact_boundary a centred divider with its tokens; a turn begun with no line
-//!                                     marked
+//!                                     compact_boundary a centred divider with its tokens; conversation_reset one
+//!                                     saying it was cleared; a turn begun with no line marked
 //! ```
 //!
 //! The entries are kept whole, so scrolling back builds the earlier rows from what the engine holds: the scroll builds
@@ -15,7 +16,7 @@
 
 use super::read::{Container, Read, Told, Under, read};
 use crate::colour::{Ink, Palette};
-use crate::console::{LOCAL, PROMPT_MARK, Shade};
+use crate::console::{LOCAL, Mode, Shade};
 use aethereal_data::Plain;
 use aethereal_render::text::Run;
 use aethereal_sessions::{Numbered, Speaker, engine_words};
@@ -57,10 +58,10 @@ pub struct Row {
 pub enum Look {
     /// A line of text, wrapped to the console, and whose it is.
     Line { text: String, tone: Tone },
-    /// A line the owner typed, at this engine or another, `text`, after `tag`, who typed it and the prompt mark, which
-    /// is drawn as a label in an ink of its own; [`Tone::Own`] or [`Tone::Other`].
-    Turn { tag: String, text: String, tone: Tone },
-    /// A divider across the transcript, `text` centred on it: the session was compacted.
+    /// A line the owner typed, at this engine or another, `text`, after `tag`, who typed it and the mark of the `mode`
+    /// it was typed in, which is drawn as a label in an ink of its own; [`Tone::Own`] or [`Tone::Other`].
+    Turn { tag: String, mode: Mode, text: String, tone: Tone },
+    /// A divider across the transcript, `text` centred on it: the session was compacted, or its conversation cleared.
     Divider { text: String },
     /// Text Claude wrote, as markdown: the part `part` of the entry numbered `number`.
     Reply { number: u64, part: u32 },
@@ -126,17 +127,17 @@ impl Row {
         matches!(self.look, Look::Turn { .. })
     }
 
-    /// Its tag in `palette`, who typed it then the prompt mark: who in the label's ink, apart from the lichen of the
+    /// Its tag in `palette`, who typed it then its mode's mark: who in the label's ink, apart from the lichen of the
     /// text beside it, and dimmed for a line typed at another engine; the mark in the text's own ink, as it is
     /// punctuation, not the label. None but for one of the owner's lines.
     pub fn tag_runs(&self, palette: &Palette) -> Vec<Run> {
-        let who = match &self.look {
-            Look::Turn { tag, tone: Tone::Own, .. } => palette.run(tag, Ink::Label),
-            Look::Turn { tag, .. } => Run::new(tag, palette.faded(Ink::Label, OTHER_TAG_OPACITY)),
+        let (who, mode) = match &self.look {
+            Look::Turn { tag, mode, tone: Tone::Own, .. } => (palette.run(tag, Ink::Label), *mode),
+            Look::Turn { tag, mode, .. } => (Run::new(tag, palette.faded(Ink::Label, OTHER_TAG_OPACITY)), *mode),
             Look::Line { .. } | Look::Reply { .. } | Look::Fold { .. } | Look::Divider { .. } => return Vec::new(),
         };
 
-        vec![who, palette.run(PROMPT_MARK, self.ink())]
+        vec![who, palette.run(mode.tag_mark(), self.ink())]
     }
 
     /// What it is drawn on: the owner's lines on the raised band, as a prompt's lines are in a terminal, and the rest
@@ -333,7 +334,7 @@ impl Turned {
     /// Where it stands after `told`.
     const fn after(self, told: &Told) -> Self {
         match (self, told) {
-            (_, Told::Said { .. }) => Self::Said,
+            (_, Told::Said { .. } | Told::Ran { .. }) => Self::Said,
             (_, Told::Ended { .. }) => Self::Ended,
             (Self::Ended, Told::Began) => Self::ByItself,
             (Self::ByItself, Told::Began) | (_, _) => self,
@@ -344,16 +345,16 @@ impl Turned {
 /// The rows `told` shows, keyed from `key`, indented by `indent`, the lines said at `mine` toned as its own.
 fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32, said: Turned) -> Vec<Row> {
     let line = |text: String, tone: Tone| Row { key, look: Look::Line { text: format!("{indent}{text}"), tone } };
-    let turn = |by: Speaker, text: String| {
+    let turn = |by: Speaker, mode: Mode, text: String| {
         let tag = format!("{indent}{}", who(by, mine));
-        Row { key, look: Look::Turn { tag, text, tone: toned(by, mine) } }
+        Row { key, look: Look::Turn { tag, mode, text, tone: toned(by, mine) } }
     };
     match told {
-        Told::Said { by: by @ Speaker::Engine { .. }, text } => vec![turn(*by, text.clone())],
+        Told::Said { by: by @ Speaker::Engine { .. }, text } => vec![turn(*by, Mode::Chat, text.clone())],
         Told::Said { by, text } => vec![line(format!("{} {text}", who(*by, mine)), toned(*by, mine))],
         Told::Ran { engine, line: typed, printed } => {
             let by = Speaker::Engine { engine: *engine };
-            let mut rows = vec![turn(by, format!("/{typed}"))];
+            let mut rows = vec![turn(by, Mode::Bang, typed.clone())];
             let blank = printed.trim().is_empty();
             if !blank {
                 let text = format!("{indent}{printed}");
@@ -409,6 +410,7 @@ fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32
             };
             vec![Row { key, look: Look::Divider { text: format!("compacted{tokens}") } }]
         }
+        Told::Cleared => vec![Row { key, look: Look::Divider { text: String::from("cleared") } }],
     }
 }
 

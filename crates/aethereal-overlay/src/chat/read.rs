@@ -5,6 +5,7 @@
 //! ```text
 //! Said, Ran, Interrupted, Answered, Hub ──> one Told each
 //! Claude: system init ──> Began;  status compacting ──> Compacting;  compact_boundary ──> Compacted, its token counts
+//!         conversation_reset, as `/clear` brings ──> Cleared
 //!         assistant ──> a Reply of each text, a Tool of each tool_use;  user ──> a Result of each tool_result
 //!         result ──> Ended;  anything else, thinking and rate limits among them ──> nothing
 //! each of Claude's carries what it is under: the main conversation, or the tool call that started its subagent
@@ -43,7 +44,7 @@ pub struct Read {
 pub enum Told {
     /// A line said to the session, and who said it.
     Said { by: Speaker, text: String },
-    /// A `/` command the owner ran at the engine `engine`, and what it printed.
+    /// A command the owner ran in `!` mode at the engine `engine`, and what it printed.
     Ran { engine: u32, line: String, printed: String },
     /// The session's turn was interrupted, at `by`'s word.
     Interrupted { by: Speaker },
@@ -69,6 +70,8 @@ pub enum Told {
     /// The session was compacted: what triggered it, and its tokens before and after, each as Claude Code wrote it or
     /// none when it wrote none.
     Compacted { trigger: String, pre: Option<u64>, post: Option<u64> },
+    /// Claude Code began a fresh conversation, as `/clear` has it: the transcript keeps what came before.
+    Cleared,
 }
 
 impl Read {
@@ -154,6 +157,7 @@ fn claude(line: &str) -> Vec<Read> {
         (Some("system"), Some("init")) => vec![Told::Began],
         (Some("system"), Some("status")) => vec![status(&tree, root)],
         (Some("system"), Some("compact_boundary")) => vec![compacted(&tree, root)],
+        (Some("conversation_reset"), _) => vec![Told::Cleared],
         (Some("assistant"), _) => contents(&tree, root).into_iter().filter_map(|part| said(&tree, part)).collect(),
         (Some("user"), _) => contents(&tree, root).into_iter().filter_map(|part| answered(&tree, part)).collect(),
         (Some("result"), subtype) => {

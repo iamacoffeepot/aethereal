@@ -1948,11 +1948,12 @@ fn an_untrusted_engine_s_chat_is_dropped_and_it_is_shown_none_of_it() -> Result<
 }
 
 #[test]
-fn a_trusted_engine_is_shown_the_sessions_and_its_line_reaches_claude_tagged_with_its_commands_folded_in()
+fn a_trusted_engine_is_shown_the_sessions_and_its_lines_and_commands_reach_claude_tagged_each_its_own()
 -> Result<(), Unheard> {
     // Catches a trusted engine not shown the sessions as it links, a tab opened from `after` that misses or repeats its
-    // backlog, a line written to Claude untagged or without the `/` commands run before it, and the line kept in the
-    // transcript as anyone's but the engine's, over the real link (ADR-0057).
+    // backlog, a command run in `!` mode held back rather than written as a line of its own, without what it printed
+    // or its `!`, a line written to Claude untagged, and either kept in the transcript as anyone's but the engine's,
+    // over the real link (ADR-0057).
     let mut daemon = Daemon::new("chat-trusted");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "chat")?;
@@ -1985,14 +1986,16 @@ fn a_trusted_engine_is_shown_the_sessions_and_its_line_reaches_claude_tagged_wit
         .collect();
     assert_eq!(shown, (2..=last).collect::<Vec<u64>>(), "the backlog after event 1, once each");
 
-    send_frame(&mut stream, &Up::Ran { session, line: String::from("/capture"), printed: String::from("a frame\n") });
+    send_frame(&mut stream, &Up::Ran { session, line: String::from("capture"), printed: String::from("a frame\n") });
     send_frame(&mut stream, &Up::Say { session, text: String::from("what do you see?") });
-    let written = stdin(&mut harness, &mut daemon, &id, 2);
+    let written = stdin(&mut harness, &mut daemon, &id, 3);
     let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, move |down| shows_said_at(down, session, 0));
 
-    let expected =
-        r#"{"type":"user","message":{"role":"user","content":"[0] /capture\na frame\n[0] what do you see?"}}"#;
-    assert_eq!(written.get(1).map(String::as_str), Some(expected));
+    let expected = [
+        r#"{"type":"user","message":{"role":"user","content":"[0] !capture\na frame"}}"#,
+        r#"{"type":"user","message":{"role":"user","content":"[0] what do you see?"}}"#,
+    ];
+    assert_eq!(written[1..3], expected);
     let ran = downs.iter().any(|down| {
         matches!(down, Down::Show { events, .. } if events.iter().any(|numbered| matches!(&numbered.entry, Entry::Ran { engine: 0, .. })))
     });

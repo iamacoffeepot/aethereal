@@ -10,14 +10,15 @@
 //! ShowAsk ──> kept until answered here, or its session waits on none
 //! a tab chosen, by a press, by its place, or the next or the one before ──> Close the one open, Open the chosen from
 //!              the last entry held
-//! a line ──> Say, Run here then Ran, or run here alone (`prompt`)
+//! a line, by the open tab's mode ──> Say in chat mode, or Run here then Ran in `!` mode (`prompt`)
+//! `!` on a session tab's empty line ──> `!` mode;  Backspace or Escape on its empty line ──> chat mode
 //! the chat's words, the engine's tools `new_session`, `stop_session`, and `archive_session` ──> New, Interrupt,
 //!              or Archive (`words`)
 //! ```
 //!
 //! Until the hub lists the sessions, which it never does to an untrusted engine, the console is the engine's own, as it
 //! was before the chat: no tabs show, and every line runs here. Which tab is open, where its transcript is scrolled,
-//! and the line half typed are the engine's alone, and never sent.
+//! each tab's mode, and the line half typed are the engine's alone, and never sent.
 
 mod prompt;
 mod read;
@@ -33,6 +34,7 @@ use transcript::Tone;
 pub use transcript::{Look, Mine, Row};
 
 use crate::colour::{Ink, Palette, Surface};
+use crate::console::Mode;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
@@ -66,7 +68,7 @@ pub enum Open {
     Session(u32),
 }
 
-/// A line this engine sent a session, `/` commands by their line, whose echo in the transcript tells it its own id.
+/// A line this engine sent a session, commands run by their line, whose echo in the transcript tells it its own id.
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 struct Sent {
     session: u32,
@@ -147,6 +149,9 @@ pub struct Chats {
     /// The asks that wait on the owner, in the order they came.
     asks: Vec<ShowAsk>,
     making: Making,
+    /// The mode of each session's tab put in a mode, kept when it is closed: chat mode for any other. The console's own
+    /// tab is always in `!` mode.
+    modes: BTreeMap<u32, Mode>,
 }
 
 /// A session the owner made here, which the console opens once the hub lists it.
@@ -187,6 +192,7 @@ impl Default for Chats {
             unechoed: Vec::new(),
             asks: Vec::new(),
             making: Making::Nothing,
+            modes: BTreeMap::new(),
         }
     }
 }
@@ -205,6 +211,21 @@ impl Chats {
     /// Which tab is open.
     pub const fn open(&self) -> Open {
         self.open
+    }
+
+    /// The open tab's mode: the console's own always `!` mode, and a session's chat mode until it is put in another.
+    pub fn mode(&self) -> Mode {
+        match self.open {
+            Open::Console => Mode::Bang,
+            Open::Session(session) => self.modes.get(&session).copied().unwrap_or(Mode::Chat),
+        }
+    }
+
+    /// Puts the open tab in `mode`: nothing with the console's own open, which is always in `!` mode.
+    pub fn switch(&mut self, mode: Mode) {
+        if let Open::Session(session) = self.open {
+            self.modes.insert(session, mode);
+        }
     }
 
     /// The sessions the hub listed, as tabs: those not archived, in order.
@@ -376,8 +397,8 @@ impl Chats {
         vec![Chat::Say { session, text }]
     }
 
-    /// A `/` command run here, `line` with the `/` taken off, and what it printed, noted in the session whose tab was
-    /// open when it was typed.
+    /// A command run here in `!` mode, `line`, and what it printed, sent to the session whose tab was open when it was
+    /// typed, which takes it as a line.
     pub fn ran(&mut self, session: u32, line: String, printed: String) -> Chat {
         self.sent(session, &line);
 
