@@ -26,18 +26,19 @@
 //! example's, and spawn it with `spawn_engine`, or start one by hand with the arguments `mint_token` answers.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Number, Part, Receives, Slept,
-    Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Level, More, Number,
+    Open, Part, Receives, Slept, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_data::Bound;
 use aethereal_files::Files;
 use aethereal_http::stack::{
-    Answering, Binding, Deadline, Gather, Inward, Layers, Listened, Outward, Parked, ParkedPart, ParkedResponse,
-    PartStep, Response, Sending, Serving, Stack, StackSends, StackSettings, layers,
+    Answering, Binding, Deadline, Gather, GatherSends, Inward, Layers, ListenSends, Listened, Outward, Parked,
+    ParkedPart, ParkedResponse, PartStep, ReadSends, Response, Sending, Serving, Stack, StackSends, StackSettings,
+    layers,
 };
-use aethereal_http::{Http, HttpSettings};
+use aethereal_http::{Http, HttpSettings, InboundBody, OutboundBody, SourceEnd};
 use aethereal_link::{EngineTools, Engines, EnginesSettings};
 use aethereal_mcp::{MarkOwner, Mcp, McpRoutes, McpSettings};
 use aethereal_process::Processes;
@@ -83,8 +84,9 @@ struct ContainerStack {
 }
 
 /// The stack `$stack`, whose layers are `$layers` and whose actor layers pass on each of `$inward`: a root, which
-/// begins by finding its layers and listening, and each of its handlers of HTTP's and TCP's kinds, and of its actor
-/// layers' answers, one call into its `Serving`; but its listen's answer, which each stack decides on itself.
+/// begins by finding its layers and listening, and each of its handlers of HTTP's and TCP's kinds, of its actor layers'
+/// answers, and of its body streams' kinds, one call into its `Serving`; but its listen's answer, which each stack
+/// decides on itself.
 macro_rules! stack {
     ($stack:ident, $layers:ty, [$($inward:ty),*]) => {
         impl ChildOf for $stack {
@@ -107,9 +109,15 @@ macro_rules! stack {
                 Shut,
                 Answer<Outward, ParkedResponse>,
                 Answer<PartStep, ParkedPart>,
+                Open<InboundBody>,
+                More,
+                Enough,
+                Ended,
+                Part<OutboundBody>,
+                Answer<SourceEnd, Number>,
                 $(Answer<Inward<$inward>, Parked>,)*
             );
-            type BeginSends = StackSends<$layers>;
+            type BeginSends = ListenSends;
             type EndSends = ();
 
             fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
@@ -126,7 +134,7 @@ macro_rules! stack {
         impl Stack for $stack {}
 
         impl Handles<Part<Accepting>> for $stack {
-            type Sends = StackSends<$layers>;
+            type Sends = ListenSends;
             type From = Anyone;
 
             fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -204,7 +212,7 @@ macro_rules! stack {
         }
 
         impl Handles<Gather> for $stack {
-            type Sends = StackSends<$layers>;
+            type Sends = GatherSends<$layers>;
             type From = Anyone;
 
             fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
@@ -242,6 +250,62 @@ macro_rules! stack {
                 turn: &mut Turn<'_, Self, Self::Sends>,
             ) -> Result<(), Fault> {
                 self.serving.passed(passed, turn)
+            }
+        }
+
+        impl Handles<Open<InboundBody>> for $stack {
+            type Sends = ReadSends<$layers>;
+            type From = Anyone;
+
+            fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                self.serving.open_body(open, turn)
+            }
+        }
+
+        impl Handles<More> for $stack {
+            type Sends = StackSends<$layers>;
+            type From = Anyone;
+
+            fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                self.serving.grant_body(&more, turn)
+            }
+        }
+
+        impl Handles<Enough> for $stack {
+            type Sends = StackSends<$layers>;
+            type From = Anyone;
+
+            fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                self.serving.stop_reading(&enough, turn)
+            }
+        }
+
+        impl Receives<Ended> for $stack {
+            type Sends = StackSends<$layers>;
+
+            fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                self.serving.lose_reader(&ended, turn)
+            }
+        }
+
+        impl Handles<Part<OutboundBody>> for $stack {
+            type Sends = StackSends<$layers>;
+            type From = Anyone;
+
+            fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+                self.serving.take_part(part, turn)
+            }
+        }
+
+        impl Receives<Answer<SourceEnd, Number>> for $stack {
+            type Sends = StackSends<$layers>;
+
+            fn handle(
+                &mut self,
+                ended: (Answered<SourceEnd>, Number),
+                turn: &mut Turn<'_, Self, Self::Sends>,
+            ) -> Result<(), Fault> {
+                self.serving.end_source(ended, turn)
             }
         }
 
@@ -294,7 +358,7 @@ impl<H: Host> Bootstrap<H> for ContainerStack {
 }
 
 impl Receives<Answer<Listening, Binding>> for LocalStack {
-    type Sends = StackSends<LocalLayers>;
+    type Sends = ListenSends;
 
     /// With no port for the owner, the hub has nothing to serve: it quits, and as its listen rides the boot, the hub
     /// does not start (ADR-0020).
@@ -314,7 +378,7 @@ impl Receives<Answer<Listening, Binding>> for LocalStack {
 }
 
 impl Receives<Answer<Listening, Binding>> for ContainerStack {
-    type Sends = StackSends<ContainerLayers>;
+    type Sends = ListenSends;
 
     /// With no port for the sessions, the owner's port is served without it, and the sessions reach none of the hub's
     /// tools.

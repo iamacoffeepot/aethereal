@@ -1,5 +1,5 @@
 //! What framing a chunk of a streamed response costs a call: the line before each chunk, and what ends the body, as the
-//! exchange writes them (`new`: its own `chunk` module, built in here from its source file) beside the `format!` and
+//! stack writes them (`new`: its own `chunk` module, built in here from its source file) beside the `format!` and
 //! `concat` they replaced (`old`, kept here only to compare). Each lands in a buffer kept from call to call, as a blob's
 //! does: the turn hands out a buffer the actor keeps (ADR-0042), so an old call's own allocation is all it adds.
 //!
@@ -9,7 +9,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-#[path = "../src/exchange/chunk.rs"]
+#[path = "../src/chunk.rs"]
 mod chunk;
 
 use std::alloc::{GlobalAlloc, Layout, System};

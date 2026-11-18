@@ -1,6 +1,6 @@
 //! A request and its response (ADR-0035), their bodies blobs (ADR-0042).
 
-use crate::{ResponseLength, ResponseSource, Status};
+use crate::{OutboundBody, ResponseLength, Status};
 use aethereal_actor::{Bytes, Carries, Protocol, ProtocolRef, Streamed};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;
@@ -141,13 +141,13 @@ pub enum ResponseBody {
     Streamed(StreamedBody),
 }
 
-/// A response's body streamed from `source` through a [`ResponseSource`] stream the exchange opens with `body`, the
-/// handler's number for it, and written as it comes: with its `Content-Length` when its `length` is known, in chunks
-/// when it is not.
+/// A response's body streamed from `source` through an [`OutboundBody`] stream the stack or the exchange that writes
+/// the connection opens with `body`, the handler's number for it, and written as it comes: with its `Content-Length`
+/// when its `length` is known, in chunks when it is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
 #[kind(name = "aether.http.streamed_body")]
 pub struct StreamedBody {
-    pub source: ProtocolRef<Streamed<ResponseSource>>,
+    pub source: ProtocolRef<Streamed<OutboundBody>>,
     pub body: u64,
     pub length: ResponseLength,
 }

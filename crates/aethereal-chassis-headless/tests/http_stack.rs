@@ -1,22 +1,29 @@
-//! A stack served on the native host (ADR-0035): its pure layers, its actor layers, its handler, and its limits, to
-//! clients on threads of their own over real loopback TCP.
+//! A stack served on the native host (ADR-0035): its pure layers, its actor layers, its handler, its bodies streamed
+//! either way, and its limits, to clients on threads of their own over real loopback TCP.
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held,
-    Receives, ToSender, Top, Turn, path,
+    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault,
+    Handles, Held, More, Number, Open, Part, Receives, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender,
+    Top, Turn, Unsent, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, KindId, Plain};
 use aethereal_http::stack::{
-    BodyPart, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundPart, Inward, Layer,
-    LayerForm, Leaving, Outbound, Outward, PartStep, Refused, Request, Response, StackSettings, Step,
+    BodyHandle, BodyPart, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundPart, Inward,
+    Layer, LayerForm, Leaving, Outbound, OutboundPart, Outward, PartStep, Refused, Request, Response, ResponseBody,
+    StackSettings, Step,
 };
-use aethereal_http::{Captures, Header, Method, Route, Router, Routes, Status, Unroutable};
+use aethereal_http::{
+    BodyRead, Captures, Header, InboundBody, Method, OutboundBody, ResponseBytes, ResponseLength, Route, Router,
+    Routes, SourceEnd, Status, StreamedBody, Unroutable,
+};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, EngineSettings, Host};
 use aethereal_tcp::Tcp;
-use std::io::Write as _;
+use core::mem;
+use std::io::{Read as _, Write as _};
+use std::num::NonZeroU32;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -1230,4 +1237,901 @@ fn routes_that_overlap_fail_the_stack_as_it_begins() {
         panic!("the program starts: {:?}", begun.err());
     };
     assert!(why.contains("overlapping_stack"), "the stack's begin is what failed: {why}");
+}
+
+/// A pure layer that writes each part of a request's body in upper case, in place of the part as it came.
+#[derive(Debug, Default, Clone, Plain)]
+struct Upcase;
+
+impl LayerForm for Upcase {
+    type Form = Self;
+}
+
+impl Layer for Upcase {
+    type In = ();
+    type Out = ();
+
+    fn inbound(&mut self, _: &Head, (): ()) -> Step<()> {
+        Step::Pass(())
+    }
+
+    fn inbound_body(&mut self, part: &mut BodyPart<'_>) {
+        if part.is_end() {
+            return;
+        }
+        let upper = part.bytes().to_ascii_uppercase();
+        part.out().extend_from_slice(&upper);
+    }
+}
+
+/// How [`Drain`] reads each request's body.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.drains")]
+enum Drains {
+    /// It opens one stream, grants a part back for each it takes, and answers once the stream ends.
+    #[default]
+    Whole,
+    /// It opens one stream and takes each part without granting for it, until it is told [`DrainOrder::Release`].
+    Slowly,
+    /// It answers as the first part comes, before the body ends.
+    Hastily,
+    /// It opens two streams on the body.
+    Twice,
+    /// It answers at once, and opens none.
+    Never,
+}
+
+/// [`Drain`]'s settings: how it reads each body.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.drain_settings")]
+#[settings]
+struct DrainSettings {
+    drains: Drains,
+}
+
+/// What [`Drain`] is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.drain_order")]
+enum DrainOrder {
+    /// Grants every part it took without granting for, and from then grants a part back for each it takes.
+    Release,
+}
+
+/// A handler that reads each request's body as a stream, as its settings say, keeping every byte it is sent, the size
+/// of each part, and how each stream ended; it answers with what it read.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.drain")]
+struct Drain {
+    drains: Drains,
+    bodies: Streams<InboundBody, ()>,
+    owing: Owing,
+    withheld: Withheld,
+    bytes: Vec<u8>,
+    sizes: Vec<u32>,
+    read: Vec<BodyRead>,
+}
+
+/// Whether [`Drain`] owes a request its answer.
+#[derive(Bound)]
+enum Owing {
+    /// It owes none.
+    Nothing,
+    /// It holds the request, to answer once its body is read.
+    Answer(Held<Response>),
+}
+
+/// What [`Drain`] has taken of a stream without granting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Withheld {
+    /// Nothing.
+    Nothing,
+    /// `parts` of the stream `stream`.
+    Parts { stream: Number, parts: u32 },
+}
+
+impl ChildOf for Drain {
+    type Parent = Top;
+}
+
+impl Actor for Drain {
+    type Config = DrainSettings;
+    type Key = ();
+    type Handles = (Request<(), ()>, Part<InboundBody>, Answer<BodyRead, Number>, DrainOrder);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(settings: DrainSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self {
+            drains: settings.drains,
+            bodies: Streams::new(NonZeroU32::MIN),
+            owing: Owing::Nothing,
+            withheld: Withheld::Nothing,
+            bytes: Vec::new(),
+            sizes: Vec::new(),
+            read: Vec::new(),
+        })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<(), ()>> for Drain {
+    type Answers = (Response,);
+}
+
+impl Drain {
+    /// Answers the request it holds with what it has read of its body.
+    fn answer<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+        let Owing::Answer(held) = mem::replace(&mut self.owing, Owing::Nothing) else {
+            return Ok(());
+        };
+        let response = turn.put(self.bytes.clone()).map_or_else(
+            |_| Response::empty(Status::InternalServerError),
+            |body| Response::new(Status::Ok, "text/plain", body),
+        );
+
+        Ok(turn.answer(held, &response)?)
+    }
+}
+
+impl Handles<Request<(), ()>> for Drain {
+    type Sends = (
+        ToSender<Response>,
+        Asks<Streamed<InboundBody>, Open<InboundBody>, Number>,
+        ToAny<Streamed<InboundBody>, More>,
+    );
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        request: Request<(), ()>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        if self.drains == Drains::Never {
+            return Ok(turn.reply(&Response::empty(Status::Ok))?);
+        }
+        self.owing = Owing::Answer(turn.hold()?);
+        let BodyHandle { reader, .. } = request.body;
+        self.bodies.open(turn, reader, request.body.read(), ())?;
+        if self.drains == Drains::Twice {
+            self.bodies.open(turn, reader, request.body.read(), ())?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Part<InboundBody>> for Drain {
+    type Sends = (ToAny<Streamed<InboundBody>, More>,);
+    type From = Anyone;
+
+    fn handle(&mut self, part: Part<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let taken = match self.drains {
+            Drains::Slowly => self.bodies.part_held(turn, part),
+            Drains::Whole | Drains::Hastily | Drains::Twice | Drains::Never => self.bodies.part(turn, part)?,
+        };
+        let Some(Taken { number, value, .. }) = taken else {
+            return Ok(());
+        };
+        let bytes = turn.read(&value.bytes);
+        self.sizes.push(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+        self.bytes.extend_from_slice(bytes);
+        match (self.drains, self.withheld) {
+            (Drains::Slowly, Withheld::Parts { parts, .. }) => {
+                self.withheld = Withheld::Parts { stream: number, parts: parts + 1 }
+            }
+            (Drains::Slowly, Withheld::Nothing) => self.withheld = Withheld::Parts { stream: number, parts: 1 },
+            (Drains::Hastily, _) => self.answer(turn)?,
+            (Drains::Whole | Drains::Twice | Drains::Never, _) => {}
+        }
+
+        Ok(())
+    }
+}
+
+impl Receives<Answer<BodyRead, Number>> for Drain {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (read, number): (Answered<BodyRead>, Number),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        self.bodies.answered(number);
+        let Answered::Yes(read) = read else {
+            return Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()));
+        };
+        self.read.push(read);
+        if !self.bodies.is_empty() {
+            return Ok(());
+        }
+
+        self.answer(turn)
+    }
+}
+
+impl Handles<DrainOrder> for Drain {
+    type Sends = (ToAny<Streamed<InboundBody>, More>,);
+    type From = Anyone;
+
+    fn handle(&mut self, DrainOrder::Release: DrainOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.drains = Drains::Whole;
+        let Withheld::Parts { stream, parts } = mem::replace(&mut self.withheld, Withheld::Nothing) else {
+            return Ok(());
+        };
+        if let Some(parts) = NonZeroU32::new(parts) {
+            self.bodies.grant(turn, stream, parts)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// How [`Serve`]'s source ends each body it sends once every part of its plan is sent.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.plan_end")]
+enum PlanEnd {
+    /// It ends it `Whole`.
+    #[default]
+    Whole,
+    /// It does not end it, and waits to be stopped.
+    Hold,
+}
+
+/// What [`Serve`] answers each request with: a body streamed from itself, of `length`, which it sends as `parts`,
+/// each as credit allows, then ends as `end` says.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.plan")]
+struct Plan {
+    length: ResponseLength,
+    parts: Vec<String>,
+    end: PlanEnd,
+}
+
+/// [`Serve`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.serve_settings")]
+#[settings]
+struct ServeSettings {}
+
+/// A handler that answers each request with a body streamed from itself, as the [`Plan`] it was last told says, and
+/// the source of that body: it keeps how each body it was asked for ended.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.serve")]
+struct Serve {
+    plan: Plan,
+    serving: Serving<OutboundBody>,
+    making: Making,
+    ended: Vec<SourceEnd>,
+}
+
+/// Where [`Serve`] stands in the body it sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Making {
+    /// It sends none.
+    Idle,
+    /// It sends the body of the stream `stream`, the part of its plan at `next` the next to send.
+    Parts { stream: StreamKey, next: u32 },
+}
+
+impl ChildOf for Serve {
+    type Parent = Top;
+}
+
+impl Actor for Serve {
+    type Config = ServeSettings;
+    type Key = ();
+    type Handles = (Request<(), ()>, Plan, Open<OutboundBody>, More, Enough, Ended);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ServeSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        let plan = Plan { length: ResponseLength::Unknown, parts: Vec::new(), end: PlanEnd::Whole };
+
+        Ok(Self { plan, serving: Serving::new(), making: Making::Idle, ended: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<(), ()>> for Serve {
+    type Answers = (Response,);
+}
+
+impl Serve {
+    /// Sends what is left of its plan's parts while the stream has credit, then ends the body as its plan says.
+    fn send_planned<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
+    where
+        S: Allows<ToAny<(Part<OutboundBody>,), Part<OutboundBody>>, I>,
+    {
+        let Making::Parts { stream, mut next } = self.making else {
+            return Ok(());
+        };
+        let Some(streaming) = self.serving.get_mut(stream) else {
+            return Ok(());
+        };
+        while let Some(part) = self.plan.parts.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            let Ok(bytes) = turn.put(part.clone().into_bytes()) else {
+                return Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()));
+            };
+            match streaming.send(turn, ResponseBytes { bytes }) {
+                Ok(()) => next += 1,
+                Err(Unsent::NoCredit(_)) => break,
+                Err(Unsent::Unwritable(error)) => return Err(error.into()),
+            }
+        }
+        self.making = Making::Parts { stream, next };
+        let is_sent = usize::try_from(next).is_ok_and(|next| next == self.plan.parts.len());
+        if !is_sent || self.plan.end == PlanEnd::Hold {
+            return Ok(());
+        }
+
+        let Some(streaming) = self.serving.take(stream) else {
+            return Ok(());
+        };
+        streaming.finish(turn, &SourceEnd::Whole)?;
+        self.ended.push(SourceEnd::Whole);
+        self.making = Making::Idle;
+
+        Ok(())
+    }
+}
+
+impl Handles<Request<(), ()>> for Serve {
+    type Sends = (ToSender<Response>,);
+    type From = FromStack;
+
+    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        let source = turn.me().protocol();
+        let body = ResponseBody::Streamed(StreamedBody { source, body: 1, length: self.plan.length });
+        let headers = vec![Header::new("content-type", "text/plain")];
+
+        Ok(turn.reply(&Response { status: Status::Ok, headers, body })?)
+    }
+}
+
+impl Handles<Plan> for Serve {
+    type Sends = ();
+    type From = Anyone;
+
+    fn handle(&mut self, plan: Plan, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        self.plan = plan;
+
+        Ok(())
+    }
+}
+
+impl Handles<Open<OutboundBody>> for Serve {
+    type Sends = (ToSender<SourceEnd>, ToAny<(Part<OutboundBody>,), Part<OutboundBody>>);
+    type From = Anyone;
+
+    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        let (stream, _) = self.serving.open(turn, open)?;
+        self.making = Making::Parts { stream, next: 0 };
+
+        self.send_planned(turn)
+    }
+}
+
+impl Handles<More> for Serve {
+    type Sends = (ToAny<(Part<OutboundBody>,), Part<OutboundBody>>,);
+    type From = Anyone;
+
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        if self.serving.more(turn, &more).is_none() {
+            return Ok(());
+        }
+
+        self.send_planned(turn)
+    }
+}
+
+impl Handles<Enough> for Serve {
+    type Sends = ();
+    type From = Anyone;
+
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        let Some(stopped) = self.serving.stop(turn, &enough) else {
+            return Ok(());
+        };
+        stopped.finish(turn, &SourceEnd::Stopped)?;
+        self.ended.push(SourceEnd::Stopped);
+        self.making = Making::Idle;
+
+        Ok(())
+    }
+}
+
+impl Receives<Ended> for Serve {
+    type Sends = ();
+
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        drop(self.serving.ended(&ended));
+
+        Ok(())
+    }
+}
+
+/// [`Shout`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.shout_settings")]
+#[settings]
+struct ShoutSettings {}
+
+/// An actor layer that passes every head as it came, and takes a response's body, each part of which it passes in upper
+/// case.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.shout")]
+struct Shout;
+
+impl ChildOf for Shout {
+    type Parent = Top;
+}
+
+impl Actor for Shout {
+    type Config = ShoutSettings;
+    type Key = ();
+    type Handles = (Inbound<()>, Outbound, OutboundPart);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ShoutSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Inbound<()>> for Shout {
+    type Answers = (Inward<()>,);
+}
+
+impl Carries<Outbound> for Shout {
+    type Answers = (Outward,);
+}
+
+impl Handles<Inbound<()>> for Shout {
+    type Sends = (ToSender<Inward<()>>,);
+    type From = FromStack;
+
+    fn handle(&mut self, _: Inbound<()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        Ok(turn.reply(&Inward::Pass(()))?)
+    }
+}
+
+impl Handles<Outbound> for Shout {
+    type Sends = (ToSender<Outward>,);
+    type From = FromStack;
+
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        Ok(turn.reply(&Outward::Pass(outbound.response))?)
+    }
+}
+
+impl Handles<OutboundPart> for Shout {
+    type Sends = (ToSender<PartStep>,);
+    type From = FromStack;
+
+    fn handle(&mut self, part: OutboundPart, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        let upper = turn.read(&part.bytes).to_ascii_uppercase();
+        let step = turn.put(upper).map_or(PartStep::Refuse(Refused::TooLarge), PartStep::Pass);
+
+        Ok(turn.reply(&step)?)
+    }
+}
+
+stack!(ReadStack, "test.http_stack.read_stack", "read_stack", (Upcase, Drain), []);
+stack!(SourceStack, "test.http_stack.source_stack", "source_stack", (Serve,), []);
+stack!(ShoutStack, "test.http_stack.shout_stack", "shout_stack", (Shout, Serve), [()]);
+
+/// A host serving a [`ReadStack`] of `settings`, whose handler reads each body as `drains` says, and the port it
+/// listens on.
+fn reading(settings: StackSettings, drains: Drains) -> Result<(Harness<Headless>, u16), Unheard> {
+    let program = Headless::program()
+        .with_engine(engine(&settings))
+        .root::<Tcp>()
+        .root_with::<Drain>(DrainSettings { drains })
+        .root_with::<ReadStack>(settings);
+    let mut harness = Harness::of(program)?;
+    let port = bound(&mut harness, |stack: &ReadStack| stack.serving.port());
+
+    Ok((harness, port))
+}
+
+/// A host serving a [`SourceStack`], or a [`ShoutStack`] when `shouts`, whose handler streams each response as `plan`
+/// says, and the port it listens on.
+fn sourcing(plan: &Plan, shouts: Shouts) -> Result<(Harness<Headless>, u16), Unheard> {
+    let settings = StackSettings::default();
+    let program = Headless::program().with_engine(engine(&settings)).root::<Tcp>().root::<Serve>();
+    let (mut harness, port) = match shouts {
+        Shouts::No => {
+            let mut harness = Harness::of(program.root_with::<SourceStack>(settings))?;
+            let port = bound(&mut harness, |stack: &SourceStack| stack.serving.port());
+            (harness, port)
+        }
+        Shouts::Yes => {
+            let mut harness = Harness::of(program.root::<Shout>().root_with::<ShoutStack>(settings))?;
+            let port = bound(&mut harness, |stack: &ShoutStack| stack.serving.port());
+            (harness, port)
+        }
+    };
+    let serve = harness.root::<Serve>();
+    harness.tell(serve, plan)?;
+
+    Ok((harness, port))
+}
+
+/// Whether a host's stack has [`Shout`] before its handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shouts {
+    No,
+    Yes,
+}
+
+/// A client on a thread of its own that sends `sent` to `port` and reads everything the server writes until it closes.
+fn raw(port: u16, sent: impl AsRef<[u8]> + Send + 'static) -> JoinHandle<Vec<u8>> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(sent.as_ref()).is_ok(), "the client writes");
+        let mut read = Vec::new();
+        assert!(stream.read_to_end(&mut read).is_ok(), "the server closes within ten seconds");
+
+        read
+    })
+}
+
+/// What `client` answered, the harness stepping the host until it has.
+fn joined<R>(harness: &mut Harness<Headless>, client: JoinHandle<R>) -> R {
+    while !client.is_finished() {
+        harness.step();
+    }
+    let Ok(answered) = client.join() else {
+        panic!("the client finished");
+    };
+
+    answered
+}
+
+/// The head and the body of what a server wrote, split at the blank line that ends the head.
+fn split(written: &[u8]) -> (String, &[u8]) {
+    let Some(end) = written.windows(4).position(|window| window == b"\r\n\r\n") else {
+        panic!("a head was written: {:?}", String::from_utf8_lossy(written));
+    };
+
+    (String::from_utf8_lossy(&written[..end]).into_owned(), &written[end + 4..])
+}
+
+/// `body` in chunks of `sizes` bytes in turn, chunked as HTTP/1.1 frames it, its last chunk after them.
+fn chunked(body: &[u8], sizes: &[usize]) -> Vec<u8> {
+    let mut framed = Vec::new();
+    let mut at = 0;
+    for &size in sizes.iter().cycle() {
+        if at == body.len() {
+            break;
+        }
+        let end = (at + size).min(body.len());
+        framed.extend_from_slice(format!("{:x}\r\n", end - at).as_bytes());
+        framed.extend_from_slice(&body[at..end]);
+        framed.extend_from_slice(b"\r\n");
+        at = end;
+    }
+    framed.extend_from_slice(b"0\r\n\r\n");
+
+    framed
+}
+
+#[test]
+fn a_large_chunked_body_reaches_its_reader_whole_and_in_order_through_a_layer_that_rewrites_it() -> Result<(), Unheard>
+{
+    // Catches a part lost, sent twice, or out of order; a chunk's size line or data cut between reads decoded wrong; a
+    // pure layer's rewrite not the part the reader is sent; and the stream ended before its last chunk, or never.
+    let settings = StackSettings { chunk_bytes: 1024, ..StackSettings::default() };
+    let (mut harness, port) = reading(settings, Drains::Whole)?;
+    let body: Vec<u8> = (0..256 * 1024).map(|at| b"abcdefghijklmnopqrstuvwxyz"[at % 26]).collect();
+    let mut sent = b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+    sent.extend_from_slice(&chunked(&body, &[1, 700, 4096, 33, 9000]));
+
+    let (answered, closed) = heard(&mut harness, client(port, sent, 1));
+
+    let drain = harness.root::<Drain>();
+    let drain = harness.state(drain)?;
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", answered[0].head);
+    assert_eq!(drain.read, [BodyRead::Whole]);
+    assert!(drain.bytes == body.to_ascii_uppercase(), "the reader is sent every byte, rewritten, in order");
+    assert!(drain.sizes.len() > 1, "the body comes in parts: {}", drain.sizes.len());
+    assert!(closed, "a request that asked to close is closed once answered");
+
+    Ok(())
+}
+
+#[test]
+fn a_reader_that_grants_slowly_bounds_what_the_stack_reads_ahead_of_it() -> Result<(), Unheard> {
+    // Catches a connection granted credit for its frames while its body's reader has none, so the stack buffers the
+    // client's body without bound; and the credit withheld never granted back once the reader takes more.
+    let settings = StackSettings { chunk_bytes: 64, window: 2, ..StackSettings::default() };
+    let bound: u32 = 2 * 64;
+    let (mut harness, port) = reading(settings, Drains::Slowly)?;
+    let body = vec![b'a'; 64 * 1024];
+    let mut sent =
+        format!("POST /up HTTP/1.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+    sent.extend_from_slice(&body);
+    let client = client(port, sent, 1);
+    let drain = harness.root::<Drain>();
+    let stack = harness.root::<ReadStack>();
+
+    let mut held = 0;
+    waiting::until(BUDGET, || {
+        harness.step();
+        held = harness.state(stack).map_or(0, |stack| u32::try_from(stack.serving.held_bytes()).unwrap_or(u32::MAX));
+        let parts = harness.state(drain).map_or(0, |drain| drain.sizes.len());
+
+        parts == 1 && held == bound
+    });
+    assert_eq!(held, bound, "the stack holds no more than its read window while the reader takes nothing");
+
+    harness.tell(drain, &DrainOrder::Release)?;
+    let (answered, _) = heard(&mut harness, client);
+
+    let drain = harness.state(drain)?;
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", answered[0].head);
+    assert_eq!((drain.read.as_slice(), drain.bytes.len()), (&[BodyRead::Whole][..], body.len()));
+    // The frame that carried the head is granted back as it is read, so its rest stands beside the window.
+    let most = bound + 64;
+    assert!(
+        drain.sizes.iter().all(|&size| size <= most),
+        "no part is more than the stack read ahead: {:?}",
+        drain.sizes
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_handler_that_answers_before_the_body_ends_cuts_it_and_the_connection_closes_after_the_response()
+-> Result<(), Unheard> {
+    // Catches a stream left open once its handler answers, never ended; the rest of the body read as the next request;
+    // and the connection kept, though where its next request starts is not known.
+    let (mut harness, port) = reading(StackSettings::default(), Drains::Hastily)?;
+    let sent = b"POST /up HTTP/1.1\r\nContent-Length: 1000\r\n\r\nonly ten b";
+
+    let (answered, closed) = heard(&mut harness, client(port, sent, 1));
+
+    let drain = harness.root::<Drain>();
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", answered[0].head);
+    assert!(answered[0].head.contains("connection: close"), "{:?}", answered[0].head);
+    assert!(!answered[0].body.is_empty(), "it answers with the part it read");
+    assert!(b"ONLY TEN B".starts_with(&answered[0].body), "{:?}", answered[0].body);
+    assert_eq!(harness.state(drain)?.read, [BodyRead::Cut]);
+    assert!(closed, "the rest of a cut body is not read, so its connection closes");
+
+    Ok(())
+}
+
+#[test]
+fn a_second_open_of_a_body_or_one_of_a_body_already_read_is_busy() -> Result<(), Unheard> {
+    // Catches two streams handed one body's parts; and a body of no bytes read again by a second stream, which a stale
+    // stream would read as the next request's.
+    let (mut harness, port) = reading(StackSettings::default(), Drains::Twice)?;
+    let drain = harness.root::<Drain>();
+
+    let posted = b"POST /up HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+    let (posted, _) = heard(&mut harness, client(port, posted, 1));
+    let read = harness.state(drain)?.read.clone();
+    let (got, _) = heard(&mut harness, client(port, b"GET /up HTTP/1.1\r\nConnection: close\r\n\r\n", 1));
+
+    assert_eq!(posted[0].body, b"HELLO");
+    assert!(read.contains(&BodyRead::Whole), "one stream reads the body: {read:?}");
+    assert!(read.contains(&BodyRead::Busy), "the other is busy: {read:?}");
+    assert_eq!(harness.state(drain)?.read[2..], [BodyRead::Whole, BodyRead::Busy]);
+    assert!(got[0].head.starts_with("HTTP/1.1 200 OK"), "{:?}", got[0].head);
+
+    Ok(())
+}
+
+#[test]
+fn a_body_that_stops_moving_ends_stalled_and_its_connection_closes_unanswered() -> Result<(), Unheard> {
+    // Catches a body that stops coming held for ever, its stream never ended; a stalled request answered; and the
+    // stall timed before `stall_within_millis` has passed.
+    let settings = StackSettings { stall_within_millis: 200, ..StackSettings::default() };
+    let (mut harness, port) = reading(settings, Drains::Whole)?;
+    #[allow(clippy::disallowed_methods)] // The test times the stall against its limit on real time.
+    let sent = Instant::now();
+
+    let written = joined(&mut harness, raw(port, b"POST /up HTTP/1.1\r\nContent-Length: 10\r\n\r\nfour"));
+
+    let drain = harness.root::<Drain>();
+    assert!(written.is_empty(), "nothing is written: {:?}", String::from_utf8_lossy(&written));
+    assert_eq!(harness.state(drain)?.read, [BodyRead::Stalled]);
+    assert!(sent.elapsed() >= Duration::from_millis(200), "it waited for the stall: {:?}", sent.elapsed());
+
+    Ok(())
+}
+
+/// A client on a thread of its own that sends `head` to `port`, reads the response that comes, and, when it is
+/// `100 Continue`, sends `body` and reads the next: each response it read.
+fn expecting(port: u16, head: &'static [u8], body: &'static [u8]) -> JoinHandle<Vec<Read>> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        let mut buffer = Vec::new();
+        assert!(stream.write_all(head).is_ok(), "the client writes its head");
+        let first = response(&mut stream, &mut buffer);
+        if !first.head.starts_with("HTTP/1.1 100") {
+            return vec![first];
+        }
+        assert!(stream.write_all(body).is_ok(), "the client writes its body");
+
+        vec![first, response(&mut stream, &mut buffer)]
+    })
+}
+
+#[test]
+fn a_client_that_expects_to_continue_is_told_as_its_body_is_opened_and_not_when_it_is_never_read() -> Result<(), Unheard>
+{
+    // Catches `100 Continue` never sent, so a client that waits for it never sends its body; and sent to a request its
+    // handler answers without reading, so the client sends a body no one reads.
+    const HEAD: &[u8] = b"POST /up HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 5\r\nConnection: close\r\n\r\n";
+    let (mut opened, opened_port) = reading(StackSettings::default(), Drains::Whole)?;
+    let (mut unread, unread_port) = reading(StackSettings::default(), Drains::Never)?;
+
+    let continued = joined(&mut opened, expecting(opened_port, HEAD, b"hello"));
+    let answered = joined(&mut unread, expecting(unread_port, HEAD, b"hello"));
+
+    assert!(continued[0].head.starts_with("HTTP/1.1 100 Continue"), "{continued:?}");
+    assert_eq!(continued[1].body, b"HELLO");
+    assert_eq!(answered.len(), 1, "{answered:?}");
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_body_of_unknown_length_is_chunked_to_one_one_and_delimited_by_the_close_to_one_zero() -> Result<(), Unheard> {
+    // Catches a chunked body's size lines or its last chunk written wrong; an empty part written as a chunk, which
+    // ends the body early; a chunked body written to an HTTP/1.0 client, which reads no chunks, or its connection kept
+    // with nothing to say where the body ends; and the next request on the connection read before the last chunk.
+    let parts = vec![String::from("hello "), String::new(), String::from("world")];
+    let plan = Plan { length: ResponseLength::Unknown, parts, end: PlanEnd::Whole };
+    let (mut harness, port) = sourcing(&plan, Shouts::No)?;
+
+    let pipelined =
+        joined(&mut harness, raw(port, b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\nConnection: close\r\n\r\n"));
+    let old = joined(&mut harness, raw(port, b"GET /a HTTP/1.0\r\n\r\n"));
+
+    let (first, rest) = split(&pipelined);
+    let chunks: &[u8] = b"6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n";
+    assert!(first.contains("transfer-encoding: chunked"), "{first}");
+    assert!(rest.starts_with(chunks), "{:?}", String::from_utf8_lossy(rest));
+    let (second, last) = split(&rest[chunks.len()..]);
+    assert!(second.starts_with("HTTP/1.1 200 OK"), "{second}");
+    assert_eq!(last, chunks);
+    let (head, body) = split(&old);
+    assert!(!head.contains("transfer-encoding"), "{head}");
+    assert!(!head.contains("content-length"), "{head}");
+    assert_eq!(body, b"hello world");
+
+    Ok(())
+}
+
+#[test]
+fn a_known_length_its_source_comes_short_of_or_runs_past_closes_the_connection_cut_short() -> Result<(), Unheard> {
+    // Catches a body that came short of its length ended as if whole, so the client waits for bytes that never come or
+    // reads the next response as them; and one that ran past it written whole, so the client reads its end as the
+    // next response.
+    const ASKED: &[u8] = b"GET /a HTTP/1.1\r\n\r\n";
+    let short = Plan { length: ResponseLength::Known(10), parts: vec![String::from("12345")], end: PlanEnd::Whole };
+    let long = Plan { length: ResponseLength::Known(3), parts: vec![String::from("12345")], end: PlanEnd::Hold };
+    let (mut shorted, short_port) = sourcing(&short, Shouts::No)?;
+    let (mut lengthened, long_port) = sourcing(&long, Shouts::No)?;
+
+    let came_short = joined(&mut shorted, raw(short_port, ASKED));
+    let ran_past = joined(&mut lengthened, raw(long_port, ASKED));
+
+    let (short_head, short_body) = split(&came_short);
+    let (long_head, long_body) = split(&ran_past);
+    assert!(short_head.contains("content-length: 10"), "{short_head}");
+    assert_eq!(short_body, b"12345");
+    assert!(long_head.contains("content-length: 3"), "{long_head}");
+    assert!(long_body.len() < 3, "{long_body:?}");
+    let serve = lengthened.root::<Serve>();
+    assert_eq!(lengthened.state(serve)?.ended, [SourceEnd::Stopped], "the source of a body cut short is stopped");
+
+    Ok(())
+}
+
+#[test]
+fn a_client_that_hangs_up_mid_response_stops_its_source() -> Result<(), Unheard> {
+    // Catches a source left sending to a connection that has gone, its stream never stopped, so it holds what it makes
+    // the body from for ever.
+    let parts = vec![String::from("some of the body"); 4];
+    let plan = Plan { length: ResponseLength::Unknown, parts, end: PlanEnd::Hold };
+    let (mut harness, port) = sourcing(&plan, Shouts::No)?;
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    let client = thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(b"GET /a HTTP/1.1\r\n\r\n").is_ok(), "the client writes");
+        let mut read = Vec::new();
+        let mut chunk = [0; 4096];
+        while !read.windows(16).any(|window| window == b"some of the body") {
+            let Ok(count) = stream.read(&mut chunk) else {
+                panic!("the body comes within ten seconds");
+            };
+            assert_ne!(count, 0, "the server writes the body before it closes");
+            read.extend_from_slice(&chunk[..count]);
+        }
+    });
+    joined(&mut harness, client);
+    let serve = harness.root::<Serve>();
+
+    let mut ended = Vec::new();
+    waiting::until(BUDGET, || {
+        harness.step();
+        ended = harness.state(serve).map_or_else(|_| Vec::new(), |serve| serve.ended.clone());
+
+        !ended.is_empty()
+    });
+
+    assert_eq!(ended, [SourceEnd::Stopped]);
+
+    Ok(())
+}
+
+#[test]
+fn a_head_request_is_written_its_head_alone_and_its_source_is_stopped_unread() -> Result<(), Unheard> {
+    // Catches a body written in answer to a `HEAD`; its length left out of the head; and a source opened and left
+    // waiting to be read, or never opened, so it never learns it will not be.
+    // The source holds its body open once it has sent it, so it ends only when it is stopped.
+    let plan = Plan { length: ResponseLength::Known(5), parts: vec![String::from("hello")], end: PlanEnd::Hold };
+    let (mut harness, port) = sourcing(&plan, Shouts::No)?;
+
+    let written = joined(&mut harness, raw(port, b"HEAD /a HTTP/1.1\r\nConnection: close\r\n\r\n"));
+
+    let (head, body) = split(&written);
+    assert!(head.contains("content-length: 5"), "{head}");
+    assert!(body.is_empty(), "{body:?}");
+    let serve = harness.root::<Serve>();
+    assert_eq!(harness.state(serve)?.ended, [SourceEnd::Stopped]);
+
+    Ok(())
+}
+
+#[test]
+fn a_request_sent_after_a_streamed_body_is_read_once_that_body_ends_and_answered_in_order() -> Result<(), Unheard> {
+    // Catches a streamed body's decoder that reads past its last chunk into the next request; the bytes after it lost;
+    // and the next request answered before the one before it.
+    let settings = StackSettings { chunk_bytes: 16, window: 1, ..StackSettings::default() };
+    let (mut harness, port) = reading(settings, Drains::Whole)?;
+    let ahead = b"POST /one HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n\
+        POST /two HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbye";
+
+    let (answered, closed) = heard(&mut harness, client(port, ahead, 2));
+
+    assert_eq!(answered[0].body, b"HELLO", "{answered:?}");
+    assert_eq!(answered[1].body, b"HELLOBYE", "the second is read after the first: {answered:?}");
+    assert!(closed, "the second request asked to close");
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_layer_that_takes_a_streamed_body_rewrites_each_part_before_it_is_written() -> Result<(), Unheard> {
+    // Catches a streamed part written before an actor layer that lists `OutboundPart` has passed it, or written as it
+    // came rather than as the layer passed it; and the parts written out of order once a layer is asked about each.
+    let parts = vec![String::from("hello "), String::from("streamed "), String::from("world")];
+    let plan = Plan { length: ResponseLength::Known(20), parts, end: PlanEnd::Whole };
+    let (mut harness, port) = sourcing(&plan, Shouts::Yes)?;
+
+    let (answered, _) = heard(&mut harness, client(port, b"GET /a HTTP/1.1\r\nConnection: close\r\n\r\n", 1));
+
+    assert!(answered[0].head.contains("content-length: 20"), "{:?}", answered[0].head);
+    assert_eq!(answered[0].body, b"HELLO STREAMED WORLD");
+
+    Ok(())
 }

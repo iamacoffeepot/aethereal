@@ -4,8 +4,8 @@
 use super::Gather;
 use super::gather::Gathering;
 use crate::head::is_token;
-use crate::{BodyLength, Header, Method, Status};
-use aethereal_actor::{Bytes, ProtocolRef};
+use crate::{BodyLength, Header, InboundBody, Method, ReadBody, ResponseLength, Status, StreamedBody};
+use aethereal_actor::{Bytes, ProtocolRef, Streamed};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;
 
@@ -38,11 +38,13 @@ impl<A, C> Request<A, C> {
     }
 }
 
-/// How a request's body is read: whole, by asking the stack's `gatherer`.
+/// How a request's body is read: as a stream, opened on the stack's `reader`, or whole, by asking its `gatherer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
 pub struct BodyHandle {
     /// `Known(n)` by its `Content-Length`, 0 for none; or `Chunked`.
     pub length: BodyLength,
+    /// The stack, asked for the body as a stream.
+    pub reader: ProtocolRef<Streamed<InboundBody>>,
     /// The stack, asked for the body whole.
     pub gatherer: ProtocolRef<Gathering>,
     /// Which of the stack's requests it is the body of.
@@ -50,9 +52,21 @@ pub struct BodyHandle {
 }
 
 impl BodyHandle {
-    /// The handle of the body of the stack's request numbered `request`, `length` long, gathered through `gatherer`.
-    pub(super) const fn new(length: BodyLength, gatherer: ProtocolRef<Gathering>, request: u64) -> Self {
-        Self { length, gatherer, request }
+    /// The handle of the body of the stack's request numbered `request`, `length` long, read through `reader` and
+    /// gathered through `gatherer`.
+    pub(super) const fn new(
+        length: BodyLength,
+        reader: ProtocolRef<Streamed<InboundBody>>,
+        gatherer: ProtocolRef<Gathering>,
+        request: u64,
+    ) -> Self {
+        Self { length, reader, gatherer, request }
+    }
+
+    /// What an [`InboundBody`] stream on the `reader` opens with, to read the body as it arrives: a body of any size.
+    #[must_use]
+    pub const fn read(&self) -> ReadBody {
+        ReadBody::new(self.request)
     }
 
     /// What the `gatherer` is asked for the body in one answer, refused past `most_bytes`.
@@ -62,8 +76,8 @@ impl BodyHandle {
     }
 }
 
-/// What a handler answers a request with, or a layer answers in its place. The stack writes `Content-Length` and
-/// `Connection` itself, and passes a whole body to its connection without reading it.
+/// What a handler answers a request with, or a layer answers in its place. The stack writes `Content-Length`,
+/// `Transfer-Encoding`, and `Connection` itself, and passes a whole body to its connection without reading it.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
 #[kind(name = "aether.http.stack.response")]
 pub struct Response {
@@ -80,6 +94,19 @@ pub enum ResponseBody {
     Empty,
     /// Put whole, written after the head as it is, with its `Content-Length`.
     Whole(Bytes),
+    /// Read from its source as the connection takes it, once the head is written: its length, when known, is named in
+    /// the head as it passes the layers on the way out, as its `content-length`.
+    Streamed(StreamedBody),
+}
+
+impl ResponseBody {
+    /// The body's source and its number for it, when a source streams it.
+    pub(super) const fn streamed(&self) -> Option<StreamedBody> {
+        match self {
+            Self::Streamed(streamed) => Some(*streamed),
+            Self::Empty | Self::Whole(_) => None,
+        }
+    }
 }
 
 /// A response's head: its status and its headers, which a layer changes on the way out.
@@ -124,11 +151,38 @@ impl Response {
         Self::empty(Status::Forbidden)
     }
 
-    /// Its head and its body, apart.
+    /// Its head and its body, apart. A streamed body's length is named in the head, as its `content-length` when it is
+    /// known, in place of any the response had, so a layer that changes the body's length says so there on the way
+    /// out, before any of the body passes it.
     pub(super) fn into_parts(self) -> (ResponseHead, ResponseBody) {
-        let Self { status, headers, body } = self;
+        let Self { status, mut headers, body } = self;
+        if let ResponseBody::Streamed(StreamedBody { length, .. }) = body {
+            headers.retain(|header| header.name != CONTENT_LENGTH);
+            if let ResponseLength::Known(length) = length {
+                headers.push(Header::new(CONTENT_LENGTH, &length.to_string()));
+            }
+        }
 
         (ResponseHead { status, headers }, body)
+    }
+}
+
+/// The header a streamed body's length is named by in its response's head as the head passes the layers.
+const CONTENT_LENGTH: &str = "content-length";
+
+impl ResponseHead {
+    /// The length its streamed body is framed by, its `content-length` taken out of its headers once every layer has
+    /// passed it: one that reads as a number is the body's length, and none, or one that does not read, or more than
+    /// one, leaves it unknown.
+    pub(super) fn take_length(&mut self) -> ResponseLength {
+        let mut named = self.headers.iter().filter(|header| header.name == CONTENT_LENGTH);
+        let length = match (named.next(), named.next()) {
+            (Some(header), None) => header.value.parse().map_or(ResponseLength::Unknown, ResponseLength::Known),
+            (None | Some(_), _) => ResponseLength::Unknown,
+        };
+        self.headers.retain(|header| header.name != CONTENT_LENGTH);
+
+        length
     }
 }
 

@@ -32,7 +32,9 @@ pub use last::{AsksEach, Handed, HandlerList, LastLayer, Picked, Reach, Slot12, 
 pub use layer::{BodyPart, Layer, LayerForm, Leaving, Refused, Step};
 pub use layers::{Entered, LayerList, Layers, Slot, Unlayered, layers};
 pub use message::{BodyHandle, Request, Response, ResponseBody, ResponseHead};
-pub use serving::{Answering, Binding, Deadline, Listened, Sending, Serving, StackSends};
+pub use serving::{
+    Answering, Binding, Deadline, GatherSends, ListenSends, Listened, ReadSends, Sending, Serving, StackSends,
+};
 pub use settings::StackSettings;
 pub use walks::{Ask, Formed, Returned, Taker, Unasked, Walked, Walks};
 

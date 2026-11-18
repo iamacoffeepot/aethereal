@@ -2,7 +2,6 @@
 //! it of the server's handler, or of its mount's handler with the body streamed, and writes the response the handler
 //! answers with, whole or streamed from its source (ADR-0035).
 
-mod chunk;
 mod inflow;
 mod outflow;
 
@@ -12,7 +11,7 @@ use crate::pooled::put;
 use crate::request_head::{self, Framing, Parsed as Front, Refusal, RequestHead as Head};
 use crate::response_head::{self, Frame};
 use crate::{
-    Handling, Header, Limits, Method, Mount, Request, RequestBody, Response, ResponseBody, ResponseSource, Server,
+    Handling, Header, InboundBody, Limits, Method, Mount, OutboundBody, Request, Response, ResponseBody, Server,
     SourceEnd, Status, StreamHandling, StreamedRequest,
 };
 use aethereal_actor::{
@@ -139,8 +138,8 @@ enum Phase {
 /// The server's side of one accepted connection, beneath the server, keyed by its count (ADR-0035): reads it through
 /// a [`Reading`] stream, parses each request, asks it of the handler, and writes the [`Response`] answered. A request
 /// under a [`Mount`] is asked of the mount's handler as a [`StreamedRequest`], and its body served to the handler as a
-/// [`RequestBody`] stream, paced by its credit. A response whose body is streamed is read from its source through a
-/// [`ResponseSource`] stream, paced by what the connection has sent. It takes one request at a time: while one is out,
+/// [`InboundBody`] stream, paced by its credit. A response whose body is streamed is read from its source through a
+/// [`OutboundBody`] stream, paced by what the connection has sent. It takes one request at a time: while one is out,
 /// and until its response is written, it grants its connection no credit but what a streamed body needs, so requests
 /// sent ahead wait in the kernel.
 #[derive(Bound)]
@@ -161,11 +160,11 @@ pub struct Exchange {
     /// needs more bytes.
     withheld: u32,
     /// The stream a mount's handler reads a body through.
-    serving: Serving<RequestBody>,
+    serving: Serving<InboundBody>,
     /// How many requests it has asked of a mount's handler: the number of the last.
     streamed: u64,
     /// The streams it reads streamed responses' bodies through.
-    sourcing: Streams<ResponseSource, ()>,
+    sourcing: Streams<OutboundBody, ()>,
     phase: Phase,
     /// How many phases with a deadline it has entered: the number of the one it is in.
     phases: u64,
@@ -186,11 +185,11 @@ impl Actor for Exchange {
         Answer<Response, Asking>,
         Answer<Slept, Deadline>,
         Shut,
-        Open<RequestBody>,
+        Open<InboundBody>,
         More,
         Enough,
         Ended,
-        Part<ResponseSource>,
+        Part<OutboundBody>,
         Answer<SourceEnd, Number>,
     );
     type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
@@ -258,19 +257,19 @@ type Timing = (Writes, SourceStop);
 type Credit = ToAny<Streamed<Reading>, More>;
 
 /// What an exchange asks a streamed response's source: the stream of its body.
-type Sourcing = Asks<Streamed<ResponseSource>, Open<ResponseSource>, Number>;
+type Sourcing = Asks<Streamed<OutboundBody>, Open<OutboundBody>, Number>;
 
 /// What an exchange grants a streamed response's source: more parts.
-type SourceCredit = ToAny<Streamed<ResponseSource>, More>;
+type SourceCredit = ToAny<Streamed<OutboundBody>, More>;
 
 /// What an exchange tells a streamed response's source when it takes no more of the body.
-type SourceStop = ToAny<Streamed<ResponseSource>, Enough>;
+type SourceStop = ToAny<Streamed<OutboundBody>, Enough>;
 
 /// What an exchange asks its connection: a write.
 type Writes = Asks<Writing, Write, Sending>;
 
 /// What an exchange sends as it streams a body: the parts of the stream a mount's handler reads it through.
-type Parts = ToAny<(Part<RequestBody>,), Part<RequestBody>>;
+type Parts = ToAny<(Part<InboundBody>,), Part<InboundBody>>;
 
 impl Handles<Part<Reading>> for Exchange {
     type Sends = Advancing;
