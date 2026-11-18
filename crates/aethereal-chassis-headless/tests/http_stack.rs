@@ -2,29 +2,29 @@
 //! clients on threads of their own over real loopback TCP.
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    Number, Part, Receives, Root, Slept, ToSender, Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held,
+    Receives, ToSender, Top, Turn, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, KindId, Plain};
 use aethereal_http::stack::{
-    Answering, Binding, BodyPart, Credentials, Deadline, FromStack, Gather, Gathered, Gathering, Head, Inbound,
-    InboundPart, Inward, Layer, LayerForm, Layers, Leaving, Listened, Outbound, Outward, Parked, ParkedPart,
-    ParkedResponse, PartStep, Refused, Request, Response, Sending, Serving, Stack, StackSends, StackSettings, Step,
-    layers,
+    BodyPart, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundPart, Inward, Layer,
+    LayerForm, Leaving, Outbound, Outward, PartStep, Refused, Request, Response, StackSettings, Step,
 };
 use aethereal_http::{Captures, Header, Method, Route, Router, Routes, Status, Unroutable};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_tcp::{Accepting, HungUp, Listening, Reading, Shut, Tcp, Unbound, Wrote};
+use aethereal_substrate::{Bootstrap, EngineSettings, Host};
+use aethereal_tcp::Tcp;
 use std::io::Write as _;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 mod peer;
+mod stacks;
 
 use peer::{Read, client, closes, connect, heard, response};
+use stacks::{bound, stack};
 
 /// What [`Count`] attaches: the number of the request on its connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -730,225 +730,6 @@ impl Routes for OverlappingRoutes {
     }
 }
 
-/// A stack named `$stack`, of the kind `$name`, its settings the section `$section`, whose layers are `$layers` and
-/// whose actor layers pass on each of `$inward`: each of its handlers of HTTP's and TCP's kinds, and of its actor
-/// layers' answers, one call into its [`Serving`].
-macro_rules! stack {
-    ($stack:ident, $name:tt, $section:tt, $layers:ty, [$($inward:ty),*]) => {
-        #[derive(Bound)]
-        #[kind(name = $name)]
-        struct $stack {
-            serving: Serving<Self, $layers>,
-        }
-
-        impl ChildOf for $stack {
-            type Parent = Top;
-        }
-
-        impl<H: Host> Bootstrap<H> for $stack {
-            const SECTION: &'static str = $section;
-            type Settings = StackSettings;
-            type Needs = ();
-            type Provides = ();
-
-            async fn bootstrap(
-                settings: StackSettings,
-                (): (),
-                cx: &mut Bootstrapping<'_, H, Self>,
-            ) -> Result<(), Unbuilt> {
-                settings.fit(cx)?;
-
-                cx.begin(&(), settings)
-            }
-        }
-
-        impl Actor for $stack {
-            type Config = StackSettings;
-            type Key = ();
-            type Handles = (
-                Answer<Listening, Binding>,
-                Part<Accepting>,
-                Answer<Unbound, Number>,
-                Part<Reading>,
-                Answer<HungUp, Number>,
-                Answer<Wrote, Sending>,
-                Answer<Response, Answering>,
-                Answer<Slept, Deadline>,
-                Gather,
-                Shut,
-                Answer<Outward, ParkedResponse>,
-                Answer<PartStep, ParkedPart>,
-                $(Answer<Inward<$inward>, Parked>,)*
-            );
-            type BeginSends = StackSends<$layers>;
-            type EndSends = ();
-
-            fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-                let layers: Layers<$layers> = layers(turn)?;
-
-                Ok(Self { serving: Serving::listen(turn, &settings, layers)? })
-            }
-
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-                Ok(())
-            }
-        }
-
-        impl Stack for $stack {}
-
-        impl Receives<Answer<Listening, Binding>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                listening: (Answered<Listening>, Binding),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                let listened = self.serving.listened(listening, turn)?;
-                if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
-                    turn.log(Level::Warn, format!("the stack serves nothing: {listened:?}"));
-                }
-
-                Ok(())
-            }
-        }
-
-        impl Handles<Part<Accepting>> for $stack {
-            type Sends = StackSends<$layers>;
-            type From = Anyone;
-
-            fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-                self.serving.accept(part, turn)
-            }
-        }
-
-        impl Receives<Answer<Unbound, Number>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                unbound: (Answered<Unbound>, Number),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.unbound(unbound, turn)
-            }
-        }
-
-        impl Handles<Part<Reading>> for $stack {
-            type Sends = StackSends<$layers>;
-            type From = Anyone;
-
-            fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-                self.serving.read(part, turn)
-            }
-        }
-
-        impl Receives<Answer<HungUp, Number>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                hung_up: (Answered<HungUp>, Number),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.hung_up(hung_up, turn)
-            }
-        }
-
-        impl Receives<Answer<Wrote, Sending>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                wrote: (Answered<Wrote>, Sending),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.wrote(wrote, turn)
-            }
-        }
-
-        impl Receives<Answer<Response, Answering>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                answered: (Answered<Response>, Answering),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.answered(answered, turn)
-            }
-        }
-
-        impl Receives<Answer<Slept, Deadline>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                slept: (Answered<Slept>, Deadline),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.slept(slept, turn)
-            }
-        }
-
-        impl Handles<Gather> for $stack {
-            type Sends = StackSends<$layers>;
-            type From = Anyone;
-
-            fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-                self.serving.gather(gather, turn)
-            }
-        }
-
-        impl Handles<Shut> for $stack {
-            type Sends = StackSends<$layers>;
-            type From = Anyone;
-
-            fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-                self.serving.shut(turn)
-            }
-        }
-
-        impl Receives<Answer<Outward, ParkedResponse>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                returned: (Answered<Outward>, ParkedResponse),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.returned(returned, turn)
-            }
-        }
-
-        impl Receives<Answer<PartStep, ParkedPart>> for $stack {
-            type Sends = StackSends<$layers>;
-
-            fn handle(
-                &mut self,
-                passed: (Answered<PartStep>, ParkedPart),
-                turn: &mut Turn<'_, Self, Self::Sends>,
-            ) -> Result<(), Fault> {
-                self.serving.passed(passed, turn)
-            }
-        }
-
-        $(
-            impl Receives<Answer<Inward<$inward>, Parked>> for $stack {
-                type Sends = StackSends<$layers>;
-
-                fn handle(
-                    &mut self,
-                    entered: (Answered<Inward<$inward>>, Parked),
-                    turn: &mut Turn<'_, Self, Self::Sends>,
-                ) -> Result<(), Fault> {
-                    self.serving.entered(entered, turn)
-                }
-            }
-        )*
-    };
-}
-
 stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), []);
 stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), []);
 stack!(GateStack, "test.http_stack.gate_stack", "gate_stack", (Count, Gate, Tag, Upper, Mirror), [Caller]);
@@ -961,23 +742,6 @@ fn engine(settings: &StackSettings) -> EngineSettings {
         read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX),
         ..EngineSettings::default()
     }
-}
-
-/// The port `stack` listens on, the harness stepping the host until `Tcp` has bound it.
-fn bound<S: Actor<Key = ()> + Root>(harness: &mut Harness<Headless>, port: impl Fn(&S) -> Option<u16>) -> u16 {
-    let stack = harness.root::<S>();
-    let mut bound = None;
-    waiting::until(BUDGET, || {
-        harness.step();
-        bound = harness.state(stack).ok().and_then(&port);
-
-        bound.is_some()
-    });
-    let Some(port) = bound else {
-        panic!("the stack binds its port");
-    };
-
-    port
 }
 
 /// A host serving an [`EchoStack`] of `settings`, whose handler gathers at most `most_bytes`, and the port it listens

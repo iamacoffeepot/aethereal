@@ -1,27 +1,18 @@
-//! The MCP capability's root (ADR-0037).
+//! The MCP capability's root (ADR-0037): a handler a stack asks each request on `/mcp` of (ADR-0035).
 
+use crate::McpSettings;
 use crate::front::{self, Reply, Routed};
-use crate::{Admit, Admitted, Dismiss, McpSettings};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
-    Path, Receives, ToSender, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Receives,
+    ToSender, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_http::{Handling, Http, Request, Response, Serve, Served, Status};
+use aethereal_http::Status;
+use aethereal_http::stack::{FromStack, Gather, Gathered, Gathering, Request, Response};
 use aethereal_substrate::Bootstrap;
-use aethereal_tcp::Interface;
 use aethereal_tools::{Call, Called, Caller, HeldTool, Holder, Offer, Offered, Output, Table, Tooling, Withdraw};
+use core::time::Duration;
 use std::collections::BTreeMap;
-
-/// What the root keeps for a serve: which of its two ports it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.serving")]
-pub enum Serving {
-    /// Its own port, on the loopback.
-    Own,
-    /// The sessions' route.
-    Route,
-}
 
 /// What the root keeps for a call it asked of a worker: which it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -30,15 +21,14 @@ pub struct Calling {
     number: u64,
 }
 
-/// Why the root failed: `Http` gave it no port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.unserved")]
-pub struct Unserved;
-
-/// Why a turn of the root failed: the engine had no room to hold a response's body, not even an empty one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.mcp.unstored")]
-pub struct Unstored;
+/// What the root keeps while a request's body is gathered: the answer it holds for the request, and the request itself,
+/// whose headers the answer is checked against and whose caller its call names.
+#[derive(Bound)]
+#[kind(name = "aether.mcp.reading")]
+pub struct Reading {
+    held: Held<Response>,
+    request: Request<Caller, ()>,
+}
 
 /// A request the root holds until its worker answers, its JSON-RPC id, and what the tool's sheet says it answers with.
 #[derive(Bound)]
@@ -48,74 +38,24 @@ struct Waiting {
     output: Output,
 }
 
-/// Where the root is in being served on one of its ports.
-#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
-enum Port {
-    /// `Http` has not answered.
-    Asked,
-    /// `Http` bound this port.
-    Bound(u16),
-    /// `Http` bound nothing: the route alone may be so, and its calls go unserved.
-    Unbound,
-}
-
-impl Port {
-    /// The port bound: none until `Http` has bound one.
-    const fn bound(self) -> Option<u16> {
-        match self {
-            Self::Asked | Self::Unbound => None,
-            Self::Bound(port) => Some(port),
-        }
-    }
-}
-
 /// The MCP capability: forwards each call of a tool to the worker that offered it (ADR-0037). An actor asks it to
 /// [`Offer`] at its typed path, `path::<Mcp>(())`.
 ///
-/// It serves two ports. Its own is bound on the loopback, and each call on it is the owner's ([`Caller::Owner`]). The
-/// sessions' route is bound where the settings say, and each call on it must bear, in its `Authorization` header, a
-/// [`Bearer`](crate::Bearer) the root was told of with an [`Admit`], whose caller the call is forwarded as; a request on
-/// the route that bears none is answered `401` before it is read (ADR-0057). A worker reads who called from
-/// [`Call::caller`], which no caller writes.
+/// It is a handler of a stack (ADR-0035): asked each `POST /mcp` a stack's layers pass, with who sent it attached as a
+/// [`Caller`], which it forwards with each call. A worker reads who called from [`Call::caller`], which no caller
+/// writes, and decides what that caller may do. It never sees a credential: the stack's layers read them, and a request
+/// carries none.
 ///
 /// Mail it cannot read never fails it (ADR-0017): an offer past the engine's `read_limit` is answered `Unreadable`, and
-/// a tool's answer past it refuses that call. `Http` will not start where a request could be such mail, and a program
-/// sets `read_limit` above what its offers hold and what its tools answer, so that each is served.
+/// a tool's answer past it refuses that call. A program sets `read_limit` above what its offers hold and what its tools
+/// answer, so that each is served.
 #[derive(Bound, Bootstrap)]
 #[kind(name = "aether.mcp")]
 pub struct Mcp {
     settings: McpSettings,
-    port: Port,
-    route: Port,
-    admitted: Admitted,
     table: Table,
     waiting: BTreeMap<u64, Waiting>,
     next: u64,
-}
-
-impl Mcp {
-    /// Its own port: none until `Http` has bound it.
-    #[must_use]
-    pub const fn port(&self) -> Option<u16> {
-        self.port.bound()
-    }
-
-    /// The sessions' route's port: none until `Http` has bound it, or when it bound none.
-    #[must_use]
-    pub const fn route_port(&self) -> Option<u16> {
-        self.route.bound()
-    }
-
-    /// Who a request on its port `port`, bearing `authorization`, comes from: the owner on its own port, the caller its
-    /// bearer names on the route, and none on the route without a bearer it holds.
-    fn caller(&self, port: u16, authorization: Option<&str>) -> Option<Caller> {
-        let is_route = self.route.bound() == Some(port);
-        if !is_route {
-            return Some(Caller::Owner);
-        }
-
-        self.admitted.caller(authorization?)
-    }
 }
 
 impl ChildOf for Mcp {
@@ -130,31 +70,20 @@ impl Carries<Offer> for Mcp {
     type Answers = (Offered,);
 }
 
+/// Asked by a stack, it answers each request, in the turn it is asked or once its tool has answered.
+impl Carries<Request<Caller, ()>> for Mcp {
+    type Answers = (Response,);
+}
+
 impl Actor for Mcp {
     type Config = McpSettings;
     type Key = ();
-    type Handles = (Request, Offer, Withdraw, Admit, Dismiss, Answer<Called, Calling>, Answer<Served, Serving>, Ended);
-    type BeginSends = (Asks<Path<Http>, Serve, Serving>,);
+    type Handles = (Request<Caller, ()>, Answer<Gathered, Reading>, Offer, Withdraw, Answer<Called, Calling>, Ended);
+    type BeginSends = ();
     type EndSends = ();
 
-    /// Asks `Http` to serve its own port on the loopback, and the route where the settings say.
-    fn begin(settings: McpSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        let handler = turn.me().protocol::<Handling, _>();
-        let own = Serve { port: settings.port, interface: Interface::Loopback, handler, mounts: Vec::new() };
-        turn.to(path::<Http>(())).ask(&own, &Serving::Own)?;
-        let interface = Interface::At(settings.route_interface.clone());
-        let route = Serve { port: settings.route_port, interface, handler, mounts: Vec::new() };
-        turn.to(path::<Http>(())).ask(&route, &Serving::Route)?;
-
-        Ok(Self {
-            settings,
-            port: Port::Asked,
-            route: Port::Asked,
-            admitted: Admitted::default(),
-            table: Table::new(),
-            waiting: BTreeMap::new(),
-            next: 0,
-        })
+    fn begin(settings: McpSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { settings, table: Table::new(), waiting: BTreeMap::new(), next: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -162,49 +91,73 @@ impl Actor for Mcp {
     }
 }
 
-impl Handles<Request> for Mcp {
-    type Sends = (Asks<Tooling, Call, Calling>, ToSender<Response>);
-    type From = Anyone;
+impl Handles<Request<Caller, ()>> for Mcp {
+    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Reading>);
+    type From = FromStack;
 
-    /// A request on its own port is the owner's, and one on the route the caller its bearer names: one on the route
-    /// that bears none it holds is answered `401` unread.
-    fn handle(&mut self, request: Request, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let Some(caller) = self.caller(request.port, request.header("authorization")) else {
-            let response = response(turn, Reply::Empty(Status::Unauthorized))?;
-            turn.reply(&response)?;
-            return Ok(());
+    /// A request from an origin it does not take is answered `403` unread; any other is held, and its body gathered
+    /// whole.
+    fn handle(
+        &mut self,
+        request: Request<Caller, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        if !front::is_from_allowed(&request, &self.settings.origins) {
+            return Ok(turn.reply(&Response::empty(Status::Forbidden))?);
+        }
+        let gather = request.body.whole(self.settings.most_body_bytes);
+        let gatherer = request.body.gatherer;
+        let reading = Reading { held: turn.hold()?, request };
+        turn.to(gatherer).ask(&gather, &reading)?;
+
+        Ok(())
+    }
+}
+
+impl Receives<Answer<Gathered, Reading>> for Mcp {
+    type Sends = (Asks<Tooling, Call, Calling>,);
+
+    /// The body is read: the request is answered now, or its call is forwarded to its tool's worker and the request
+    /// held until the worker answers. A body past `most_body_bytes` is answered `413`; one the stack could not read is
+    /// answered `400`, which the stack passes over when it has closed the connection or answers in its place.
+    fn handle(
+        &mut self,
+        (gathered, Reading { held, request }): (Answered<Gathered>, Reading),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let body = match gathered {
+            Answered::Yes(Gathered::Whole(body)) => body,
+            Answered::Yes(Gathered::TooLarge) => {
+                return Ok(turn.answer(held, &Response::empty(Status::ContentTooLarge))?);
+            }
+            Answered::Yes(_) | Answered::No(_) => return Ok(turn.answer(held, &Response::empty(Status::BadRequest))?),
         };
-        let routed = front::route(&request, turn.read(&request.body), &self.settings.origins, &self.table);
-        let (id, tool, input) = match routed {
+        let (id, tool, input) = match front::route(&request, turn.read(&body), &self.table) {
             Routed::Respond(reply) => {
-                let response = response(turn, reply)?;
-                turn.reply(&response)?;
-                return Ok(());
+                let response = response(turn, reply);
+                return Ok(turn.answer(held, &response)?);
             }
             Routed::Call { id, tool, input } => (id, tool, input),
         };
         let room = usize::try_from(self.settings.most_calls).unwrap_or(usize::MAX);
-        let is_full = self.waiting.len() >= room;
-        if is_full {
-            let response = response(turn, front::refused(&id, "too many calls are out"))?;
-            turn.reply(&response)?;
-            return Ok(());
+        if self.waiting.len() >= room {
+            let response = response(turn, front::refused(&id, "too many calls are out"));
+            return Ok(turn.answer(held, &response)?);
         }
         let Some(HeldTool { worker, output, .. }) = self.table.tool(&tool) else {
-            let response = response(turn, front::refused(&id, "the tool has gone"))?;
-            turn.reply(&response)?;
-            return Ok(());
+            let response = response(turn, front::refused(&id, "the tool has gone"));
+            return Ok(turn.answer(held, &response)?);
         };
         let (worker, output) = (*worker, output.sheet());
         let Ok(input) = turn.put(input) else {
-            let response = response(turn, front::refused(&id, "the engine had no room to hold the arguments"))?;
-            turn.reply(&response)?;
-            return Ok(());
+            let response = response(turn, front::refused(&id, "the engine had no room to hold the arguments"));
+            return Ok(turn.answer(held, &response)?);
         };
-        let held = turn.hold()?;
         let number = self.next;
         self.next += 1;
-        turn.to(worker).ask(&Call { tool, input, caller }, &Calling { number })?;
+        let due = turn.now() + Duration::from_millis(u64::from(self.settings.call_within_millis));
+        let call = Call { tool, input, caller: request.attached };
+        turn.to(worker).within(due).ask(&call, &Calling { number })?;
         self.waiting.insert(number, Waiting { held, id, output });
 
         Ok(())
@@ -233,30 +186,6 @@ impl Handles<Withdraw> for Mcp {
 
     fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);
-
-        Ok(())
-    }
-}
-
-impl Handles<Admit> for Mcp {
-    type Sends = ();
-    type From = Anyone;
-
-    /// A bearer the hub minted for one caller: a call on the route bearing it is that caller's, from now on.
-    fn handle(&mut self, admit: Admit, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.admitted.admit(admit.bearer, admit.caller);
-
-        Ok(())
-    }
-}
-
-impl Handles<Dismiss> for Mcp {
-    type Sends = ();
-    type From = Anyone;
-
-    /// A caller's bearer is let go of: a call on the route bearing it is refused from now on.
-    fn handle(&mut self, dismiss: Dismiss, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        self.admitted.dismiss(dismiss.caller);
 
         Ok(())
     }
@@ -297,39 +226,8 @@ impl Receives<Answer<Called, Calling>> for Mcp {
             (Answered::Yes(Called::Refused(why)), _) => front::refused(&id, &why),
             (Answered::No(why), _) => front::refused(&id, &format!("the tool did not answer: {why:?}")),
         };
-        let response = response(turn, reply)?;
+        let response = response(turn, reply);
         turn.answer(held, &response)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Served, Serving>> for Mcp {
-    type Sends = ();
-
-    /// Its own port bound, or the route's. With no port of its own it fails; with no route it serves its own port, and
-    /// the sessions reach none of its tools.
-    fn handle(
-        &mut self,
-        (answered, serving): (Answered<Served>, Serving),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
-        let port = match (answered, serving) {
-            (Answered::Yes(Served::Bound { port, .. }), _) => Port::Bound(port),
-            (answered, Serving::Own) => {
-                turn.log(Level::Error, format_args!("no port to serve on: {answered:?}"));
-                return Err(Fault::new(&Unserved)?);
-            }
-            (answered, Serving::Route) => {
-                let interface = &self.settings.route_interface;
-                turn.log(Level::Error, format_args!("no route for the sessions on {interface}: {answered:?}"));
-                Port::Unbound
-            }
-        };
-        match serving {
-            Serving::Own => self.port = port,
-            Serving::Route => self.route = port,
-        }
 
         Ok(())
     }
@@ -345,21 +243,16 @@ impl Receives<Ended> for Mcp {
     }
 }
 
-/// `reply` as a response, its body put as a blob: one the engine has no room to hold is answered `503` with no body
-/// (ADR-0042).
-fn response<S>(turn: &mut Turn<'_, Mcp, S>, reply: Reply) -> Result<Response, Fault> {
-    let put = match reply {
-        Reply::Empty(status) => turn.put(Vec::new()).map(|body| Response::bare(status, body)),
-        Reply::Json { status, body } => {
-            turn.put(body.into_bytes()).map(|body| Response::new(status, "application/json", body))
-        }
-    };
-    if let Ok(response) = put {
-        return Ok(response);
-    }
-    let Ok(empty) = turn.put(Vec::new()) else {
-        return Err(Fault::new(&Unstored)?);
+/// `reply` as a response, its JSON put as a blob: one the engine has no room to hold is answered `503` with no body,
+/// which needs none (ADR-0042).
+fn response<S>(turn: &mut Turn<'_, Mcp, S>, reply: Reply) -> Response {
+    let (status, body) = match reply {
+        Reply::Empty(status) => return Response::empty(status),
+        Reply::Json { status, body } => (status, body),
     };
 
-    Ok(Response::bare(Status::ServiceUnavailable, empty))
+    turn.put(body.into_bytes()).map_or_else(
+        |_| Response::empty(Status::ServiceUnavailable),
+        |body| Response::new(status, "application/json", body),
+    )
 }

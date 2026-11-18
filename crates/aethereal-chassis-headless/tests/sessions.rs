@@ -12,20 +12,21 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
+use aethereal_http::stack::StackSettings;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{Down, Engines, EnginesSettings, ListEngines, MintFor, Minted, REVISION, Up};
-use aethereal_mcp::{Mcp, McpSettings};
+use aethereal_mcp::{Mcp, McpRoutes};
 use aethereal_sessions::{
     Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
     Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say,
-    Sessions, SessionsListed, SessionsSettings, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State, Transcribed,
-    Transcript,
+    Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State,
+    Transcribed, Transcript,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_tcp::Tcp;
-use aethereal_tools::{Caller as By, Output, ToolSheet};
+use aethereal_tcp::{Interface, Tcp};
+use aethereal_tools::{Call, Called, Caller as By, Offer, Offered, Output, ToolSheet, Toolbox, Tooling};
 use core::fmt::Write as _;
 use core::mem;
 use core::time::Duration;
@@ -40,6 +41,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::{env, fs, process, thread};
+
+mod stacks;
+
+use stacks::{bound, stack};
+
+// The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and `Mcp` is asked
+// it on `POST /mcp`.
+stack!(ContainerStack, "test.sessions.container_stack", "container_stack", (Sessions, McpRoutes), [By]);
 
 /// The session id Claude names its conversation by in these tests.
 const CONVERSATION: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
@@ -521,31 +530,33 @@ fn chunk_of(bytes: &[u8]) -> Vec<u8> {
     [format!("{:x}\r\n", bytes.len()).as_bytes(), bytes, b"\r\n"].concat()
 }
 
-/// A hub of `Tcp`, `Http`, `Files` in the test's directory, the Docker client on the fake's socket, the sessions as
-/// `sessions` say, and the caller.
+/// A hub of `Tcp`, `Http`, `Mcp`, `Files` in the test's directory, the Docker client on the fake's socket, the sessions
+/// as `sessions` say with their tools, the sessions' port served on the loopback, and the caller.
 fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>, Unheard> {
     let program = Headless::program()
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
-        .root_with::<Mcp>(route())
+        .root::<Mcp>()
         .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
+        .root::<Toolbox<(SessionsTools,), Mcp>>()
+        .root_with::<ContainerStack>(StackSettings {
+            port: 0,
+            interface: Interface::Loopback,
+            ..StackSettings::default()
+        })
         .root::<Caller>();
 
     Harness::of(program)
 }
 
-/// `Mcp` on ports the host picks, its route on the loopback, where the sessions' bearers are admitted.
-fn route() -> McpSettings {
-    McpSettings { port: 0, route_port: 0, route_interface: String::from("127.0.0.1"), ..McpSettings::default() }
-}
-
-/// The engine's settings for a hub: it reads whatever `Http` reads whole.
+/// The engine's settings for a hub: it reads whatever `Http` and the sessions' port read whole.
 fn engine() -> EngineSettings {
-    let read_limit = HttpSettings::default().most_read_bytes().try_into().unwrap_or(u32::MAX);
+    let heads = HttpSettings::default().most_read_bytes().max(StackSettings::default().most_read_bytes());
+    let read_limit = heads.try_into().unwrap_or(u32::MAX);
 
     EngineSettings { read_limit, ..EngineSettings::default() }
 }
@@ -841,67 +852,186 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     Ok(())
 }
 
-/// The status the sessions' route of `Mcp` answers a `tools/list` bearing the `Authorization` header `authorization`
-/// with, the hub and the daemon stepped until a client on a thread of its own has read it.
-fn route_status(harness: &mut Harness<Headless>, daemon: &mut Daemon, authorization: &str) -> Result<u16, Unheard> {
-    let mcp = harness.root::<Mcp>();
-    let Some(port) = harness.state(mcp)?.route_port() else {
-        panic!("the route is served");
-    };
+/// A response the sessions' port answered: its status, and its head's and body's text.
+#[derive(Debug)]
+struct Heard {
+    status: u16,
+    head: String,
+    body: String,
+}
+
+/// A `POST /mcp` of the JSON-RPC `method`, with `fields` in its params beside `_meta`, naming the tool `tool` for a
+/// call, and bearing the `Authorization` header `authorization`: none sends no such header.
+fn rpc(method: &str, tool: Option<&str>, fields: &str, authorization: Option<&str>) -> String {
     let meta =
         r#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
-    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{meta}}}}}"#);
-    let request = format!(
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{{fields}"_meta":{meta}}}}}"#);
+    let mut request = format!(
         "POST /mcp HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\nMCP-Protocol-Version: 2026-07-28\r\n\
-         Mcp-Method: tools/list\r\nAuthorization: {authorization}\r\n\r\n{body}",
+         Mcp-Method: {method}\r\n",
         body.len()
     );
+    if let Some(tool) = tool {
+        let _ = write!(request, "Mcp-Name: {tool}\r\n");
+    }
+    if let Some(authorization) = authorization {
+        let _ = write!(request, "Authorization: {authorization}\r\n");
+    }
+    request.push_str("\r\n");
+    request.push_str(&body);
+
+    request
+}
+
+/// A `tools/list` bearing `authorization`.
+fn list_tools(authorization: Option<&str>) -> String {
+    rpc("tools/list", None, "", authorization)
+}
+
+/// A client on a thread of its own, outside the engine, which sends `request` to the hub's sessions' port and reads to
+/// the close.
+fn sent(harness: &mut Harness<Headless>, request: String) -> thread::JoinHandle<Heard> {
+    let port = bound(harness, |stack: &ContainerStack| stack.serving.port());
     #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
-    let client = thread::spawn(move || {
+    thread::spawn(move || {
         let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-            panic!("the client connects to the route");
+            panic!("the client connects to the sessions' port");
         };
         assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
         assert!(stream.write_all(request.as_bytes()).is_ok(), "the client writes");
         let mut whole = Vec::new();
         assert!(stream.read_to_end(&mut whole).is_ok(), "a response comes within ten seconds");
         let text = String::from_utf8_lossy(&whole).into_owned();
-        let Some(status) = text.split(' ').nth(1).and_then(|status| status.parse::<u16>().ok()) else {
-            panic!("a status: {text}");
+        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+            panic!("a whole response: {text}");
         };
-        status
-    });
+        let Some(status) = head.split(' ').nth(1).and_then(|status| status.parse().ok()) else {
+            panic!("a status: {head}");
+        };
+
+        Heard { status, head: String::from(head), body: String::from(body) }
+    })
+}
+
+/// What `client` heard, the hub and the daemon stepped until it has.
+fn heard_by(harness: &mut Harness<Headless>, daemon: &mut Daemon, client: thread::JoinHandle<Heard>) -> Heard {
     while !client.is_finished() {
         harness.step();
         daemon.pump();
     }
-    let Ok(status) = client.join() else {
+    let Ok(heard) = client.join() else {
         panic!("the client finished");
     };
 
-    Ok(status)
+    heard
+}
+
+/// What the hub's sessions' port answers `request` with.
+fn routed(harness: &mut Harness<Headless>, daemon: &mut Daemon, request: String) -> Heard {
+    let client = sent(harness, request);
+
+    heard_by(harness, daemon, client)
+}
+
+/// The `Authorization` header the container `id` was given in its environment, as its MCP config sends it.
+fn authorization_of(daemon: &Daemon, id: &str) -> String {
+    let body = daemon.body(id);
+    let bearer = body.split("\"AETHEREAL_HUB_BEARER=").nth(1).and_then(|rest| rest.split('"').next());
+    let Some(bearer) = bearer else {
+        panic!("the container's environment holds its bearer: {body}");
+    };
+    assert_eq!(body.matches(bearer).count(), 1, "the bearer is in the environment alone");
+
+    format!("Bearer {bearer}")
+}
+
+/// Whether `heard` is the sessions' refusal of a request with no bearer they hold: `401`, with the challenge a client
+/// answers with its bearer, which only `Sessions` writes, as `Mcp` answers no request `401`.
+fn challenged(heard: &Heard) -> bool {
+    let is_unauthorized = heard.status == 401;
+    let challenges = heard.head.contains("www-authenticate: Bearer realm=\"aethereal\"");
+
+    is_unauthorized && challenges
 }
 
 #[test]
-fn a_session_s_container_bears_a_bearer_the_route_lets_in_until_its_container_is_removed() -> Result<(), Unheard> {
-    // Catches a container given a bearer `Mcp` was never told of, so the session reaches none of the hub's tools; the
-    // bearer written into the container's command, where every process list and `docker inspect` show it; and a
-    // bearer still let in once its container is gone (ADR-0057).
+fn a_session_s_container_bears_a_bearer_its_port_lets_in_until_its_container_is_removed() -> Result<(), Unheard> {
+    // Catches a container given a bearer `Sessions` does not hold, so the session reaches none of the hub's tools; the
+    // bearer written into the container's command, where every process list and `docker inspect` show it; a request
+    // bearing no bearer, or one never minted, let on to `Mcp`, or refused without the challenge a client answers; and
+    // a bearer still let in once its container is gone (ADR-0057).
     let mut daemon = Daemon::new("bearer");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "bearer")?;
-    let body = daemon.body(&daemon.made(0));
-    let bearer = body.split("\"AETHEREAL_HUB_BEARER=").nth(1).and_then(|rest| rest.split('"').next());
-    let Some(bearer) = bearer.map(String::from) else {
-        panic!("the container's environment holds its bearer: {body}");
-    };
-    let authorization = format!("Bearer {bearer}");
+    let authorization = authorization_of(&daemon, &daemon.made(0));
+    let stranger = format!("Bearer {}", "5a".repeat(16));
 
-    assert_eq!(body.matches(&bearer).count(), 1, "the bearer is in the environment alone");
-    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 200);
+    let held = routed(&mut harness, &mut daemon, list_tools(Some(&authorization)));
+    let unborne = routed(&mut harness, &mut daemon, list_tools(None));
+    let unminted = routed(&mut harness, &mut daemon, list_tools(Some(&stranger)));
+
+    assert_eq!(held.status, 200, "{held:?}");
+    assert!(challenged(&unborne), "{unborne:?}");
+    assert!(challenged(&unminted), "{unminted:?}");
+
     order(&mut harness, &Order::Archive(Archive { session }))?;
     until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
-    assert_eq!(route_status(&mut harness, &mut daemon, &authorization)?, 401);
+    let dismissed = routed(&mut harness, &mut daemon, list_tools(Some(&authorization)));
+
+    assert!(challenged(&dismissed), "{dismissed:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unheard> {
+    // Catches a session's bearer of a container it no longer runs still let in once its next container's is minted,
+    // and the next container's bearer not held, so a session that wakes reaches none of the hub's tools (ADR-0057).
+    let mut daemon = Daemon::new("rebearer");
+    let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
+    let session = open(&mut harness, &mut daemon, "rebearer")?;
+    let older = authorization_of(&daemon, &daemon.made(0));
+    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Stopped)?, State::Stopped);
+
+    say(&mut harness, &mut daemon, session, "back again")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
+    let newer = authorization_of(&daemon, &daemon.made(1));
+    let refused = routed(&mut harness, &mut daemon, list_tools(Some(&older)));
+    let held = routed(&mut harness, &mut daemon, list_tools(Some(&newer)));
+
+    assert_ne!(older, newer, "each container is given a bearer of its own");
+    assert!(challenged(&refused), "{refused:?}");
+    assert_eq!(held.status, 200, "{held:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_session_s_call_reaches_its_tool_as_that_session_s_and_a_session_tool_refuses_it() -> Result<(), Unheard> {
+    // Catches the session `Sessions` names for a bearer not handed on to `Mcp`, or `Mcp` forwarding a call on the
+    // sessions' port as the owner's or another session's, so a session could mint a trusted engine or drive another
+    // session; and a session's call of a session tool carried out (ADR-0057).
+    let mut daemon = Daemon::new("caller");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "caller")?;
+    let authorization = authorization_of(&daemon, &daemon.made(0));
+    let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet()], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+
+    let calling = sent(&mut harness, rpc("tools/call", Some("nothing"), r#""name":"nothing","#, Some(&authorization)));
+    let call = harness.asked::<Call>()?;
+    let named = call.request.caller;
+    harness.reply(call, &Called::Refused(String::from("heard")))?;
+    let called = heard_by(&mut harness, &mut daemon, calling);
+    let fields = r#""name":"session_list","arguments":{},"#;
+    let refused =
+        routed(&mut harness, &mut daemon, rpc("tools/call", Some("session_list"), fields, Some(&authorization)));
+
+    assert_eq!(named, By::Session { session });
+    assert!(called.body.contains("heard"), "{called:?}");
+    assert!(refused.body.contains("\"isError\":true"), "{refused:?}");
+    assert!(refused.body.contains("the session tools are the owner's"), "{refused:?}");
 
     Ok(())
 }
@@ -1241,7 +1371,7 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
-        .root_with::<Mcp>(route())
+        .root::<Mcp>()
         .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Recorder>(daemon.files())
@@ -1372,7 +1502,7 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
-        .root_with::<Mcp>(route())
+        .root::<Mcp>()
         .root_with::<Store>(StoreSettings {
             root: root.join("store").display().to_string(),
             ..StoreSettings::default()
@@ -1648,7 +1778,7 @@ fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
         .with_engine(engine())
         .root::<Tcp>()
         .root_with::<Http>(HttpSettings::default())
-        .root_with::<Mcp>(route())
+        .root::<Mcp>()
         .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())

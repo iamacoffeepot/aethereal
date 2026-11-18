@@ -1,8 +1,8 @@
 use super::{Made, spec, volumes};
+use crate::Bearer;
 use crate::sessions::record::Conversation;
 use crate::sessions::settings::SessionsSettings;
 use crate::{Label, Variable};
-use aethereal_mcp::Bearer;
 
 fn settings() -> SessionsSettings {
     SessionsSettings {

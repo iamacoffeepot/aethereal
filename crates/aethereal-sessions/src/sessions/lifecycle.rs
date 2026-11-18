@@ -15,8 +15,6 @@ use crate::{
     Stop, Until, Unwritable,
 };
 use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
-use aethereal_mcp::{Admit, Dismiss, Mcp};
-use aethereal_tools::Caller;
 use core::mem;
 use std::collections::BTreeSet;
 
@@ -181,8 +179,8 @@ impl Sessions {
 impl Receives<Answer<Provisioned, Crediting>> for Sessions {
     type Sends = Acts;
 
-    /// The credential is read, a bearer drawn, and the drop box made: `Mcp` is told the bearer is the session's, and
-    /// Docker asked to make the session's container, which is given both.
+    /// The credential is read, a bearer drawn, and the drop box made: the bearer is held as the session's, and Docker
+    /// asked to make the session's container, which is given both.
     fn handle(
         &mut self,
         (answered, Crediting { session, run }): (Answered<Provisioned>, Crediting),
@@ -200,7 +198,7 @@ impl Receives<Answer<Provisioned, Crediting>> for Sessions {
                 return self.unstarted(turn, session, run, &Refusal::NoCredential);
             }
         };
-        turn.to(path::<Mcp>(())).send(&Admit { bearer, caller: Caller::Session { session } })?;
+        self.bearers.admit(bearer, session);
         let conversation = self.held.get(&session).map_or(Conversation::Unbegun, |held| held.conversation.clone());
         let made = Made { session, run, conversation: &conversation, env, bearer, drop_box };
         let spec = match spec(&self.settings, made) {
@@ -340,7 +338,7 @@ impl Sessions {
     }
 
     /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said, and
-    /// `Mcp` lets go of its bearer, so nothing calls the hub's tools as the session until its next container.
+    /// its bearer is let go of, so nothing calls the hub's tools as the session until its next container.
     fn removed<S: Does>(
         &mut self,
         turn: &mut Turn<'_, Self, S>,
@@ -365,7 +363,7 @@ impl Sessions {
         let Life::Stopping { then, .. } = mem::replace(&mut held.life, Life::Stopped) else {
             return Ok(());
         };
-        turn.to(path::<Mcp>(())).send(&Dismiss { caller: Caller::Session { session } })?;
+        self.bearers.dismiss(session);
         self.chats.forget(session);
         self.dirty(session);
         match then {

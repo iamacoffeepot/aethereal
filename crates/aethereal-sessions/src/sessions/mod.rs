@@ -3,15 +3,15 @@
 //! resumes it when it is spoken to.
 
 /// Everything the capability sends in a turn: requests of Docker, its streams and their credit, writes to stdin, reads
-/// and writes of its files, its bearers told to `Mcp`, and what the trusted engines are shown; and, for a turn that
-/// handles an ask, the answer to it. One list, as each turn may start, stop, or write to any
+/// and writes of its files, and what the trusted engines are shown; and, for a turn that handles an ask, the answer to
+/// it. One list, as each turn may start, stop, or write to any
 /// session, its markers always first and in this order, so [`Does`] finds each at its place.
 macro_rules! acts {
     ($($answer:ty)?) => {
         (
             super::M0, super::M1, super::M2, super::M3, super::M4, super::M5, super::M6, super::M7, super::M8,
             super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15, super::M16, super::M17,
-            super::M18, super::M19, super::M20,
+            super::M18,
             $($answer,)?
         )
     };
@@ -19,11 +19,13 @@ macro_rules! acts {
 
 mod asked;
 mod asks;
+mod bearers;
 mod chat;
 mod container;
 mod credential;
 mod heard;
 mod idle;
+mod layer;
 mod lifecycle;
 mod loading;
 mod output;
@@ -39,6 +41,7 @@ pub use asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
     ReadTranscript, Refusal, Said, Say, Session as ListedSession, State, Transcribed,
 };
+pub use bearers::Bearer;
 pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowEvents, ShowTabs, Showing, Tab};
 pub use credential::{Credential, Crediting, NoCredential, Provision, Provisioned};
 pub use heard::Heard;
@@ -53,13 +56,14 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, More, Number, Open, Part, Path,
-    Streamed, Streams, Tells, ToAny, Top, Turn,
+    Streamed, Streams, ToAny, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_files::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
-use aethereal_mcp::{Admit, Dismiss, Mcp};
+use aethereal_http::stack::{Inbound, Outbound};
 use aethereal_tcp::{Write, Writing};
 use asked::Waiting;
+use bearers::Bearers;
 use chat::Chats;
 use core::time::Duration;
 use loading::Reading;
@@ -158,14 +162,12 @@ type M12 = Asks<Writing, Write, Typing>;
 type M13 = Asks<Path<Docker>, CreateVolume, Homing>;
 type M14 = Asks<Path<Files>, ReadFile, Loading>;
 type M15 = Asks<Path<Files>, WriteFile, Keeping>;
-type M16 = Tells<Path<Mcp>, Admit>;
-type M17 = Tells<Path<Mcp>, Dismiss>;
-type M18 = ToAny<Showing, ShowTabs>;
-type M19 = ToAny<Showing, ShowEvents>;
-type M20 = ToAny<Showing, ShowAsk>;
+type M16 = ToAny<Showing, ShowTabs>;
+type M17 = ToAny<Showing, ShowEvents>;
+type M18 = ToAny<Showing, ShowAsk>;
 
 /// The sends of a turn that handles no ask.
-type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19, M20);
+type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18);
 
 /// A turn's sends that list everything [`Acts`] does, at the same places: what the capability's helpers act through,
 /// whichever answer the turn's ask is answered with.
@@ -189,8 +191,6 @@ trait Does:
     + Allows<M16, At<16>>
     + Allows<M17, At<17>>
     + Allows<M18, At<18>>
-    + Allows<M19, At<19>>
-    + Allows<M20, At<20>>
 {
 }
 
@@ -214,8 +214,6 @@ impl<S> Does for S where
         + Allows<M16, At<16>>
         + Allows<M17, At<17>>
         + Allows<M18, At<18>>
-        + Allows<M19, At<19>>
-        + Allows<M20, At<20>>
 {
 }
 
@@ -231,6 +229,11 @@ impl<S> Does for S where
 /// `Save` namespace, which it asks as any actor does and needs listed before it, so a hub that starts again knows its
 /// sessions: it follows Docker's events, lists the containers that carry its label, and re-attaches to each that still
 /// runs, reading what it missed from its logs.
+///
+/// It is the actor layer of the stack that serves the sessions' port (ADR-0035): each container is given a bearer it
+/// mints and holds, and a request on that port bearing one it holds passes on as that session's
+/// ([`Inbound`](aethereal_http::stack::Inbound)); any other is answered `401`. It holds only each session's latest
+/// container's bearer, and lets go of it as the container is removed.
 #[derive(Bound)]
 #[kind(name = "aether.sessions")]
 pub struct Sessions {
@@ -250,6 +253,8 @@ pub struct Sessions {
     next_rest: u64,
     /// The trusted engines the chat is shown to, and what waits for their owner's answer (ADR-0057).
     chats: Chats,
+    /// The bearer of each running session's container, which the container stack's requests are checked against.
+    bearers: Bearers,
 }
 
 /// Where the capability is in beginning. In each phase before it runs, `waiting` asks are answered once it does.
@@ -307,6 +312,8 @@ impl Actor for Sessions {
         Joined,
         Chatted,
         aethereal_actor::Ended,
+        Inbound<()>,
+        Outbound,
     );
     type BeginSends = (M14,);
     type EndSends = ();
@@ -329,6 +336,7 @@ impl Actor for Sessions {
             watching: Streams::new(WINDOW),
             next_rest: 0,
             chats: Chats::new(),
+            bearers: Bearers::default(),
         })
     }
 
