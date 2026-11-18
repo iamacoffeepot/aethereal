@@ -2,31 +2,23 @@
 
 use aethereal_data::Plain;
 
-/// The MCP capability's section, `mcp`: its port, the sessions' route, its limits, and the origins it takes (ADR-0037,
-/// ADR-0057). They are the root's config. Its own port is bound on the loopback, whatever `Tcp`'s setting, so only this
-/// machine's programs reach it; the route is bound where its setting says.
+/// The MCP capability's section, `mcp`: its limits, how long a tool may take, and the origins it takes (ADR-0037). They
+/// are the root's config. Where it is served is its stacks' settings, each a section of its own (ADR-0035).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
 #[kind(name = "aether.mcp.settings")]
 #[settings]
 pub struct McpSettings {
-    /// The port served on the loopback, 0 for any the host picks: the owner's.
-    #[flag]
-    pub port: u16,
-    /// The port of the sessions' route, 0 for any the host picks: every call on it bears a bearer the hub minted for
-    /// one session (ADR-0057).
-    #[flag]
-    pub route_port: u16,
-    /// The address the route is bound on: where the sessions' containers reach this machine, the gateway of Docker's
-    /// default bridge unless set otherwise. A route that cannot be bound there is logged, and the owner's port is
-    /// served without it.
-    #[flag]
-    pub route_interface: String,
     /// The most tools the root holds.
     #[flag]
     pub most_tools: u32,
     /// The most calls out at a time; past it, a call is a result with `isError` true.
     #[flag]
     pub most_calls: u32,
+    /// The most bytes of a request's body it reads, past which the request is answered `413` unread.
+    pub most_body_bytes: u32,
+    /// The milliseconds a tool may take to answer a call, past which the call is a result with `isError` true and its
+    /// slot of `most_calls` comes back. The stack that asked the request times its own answer apart.
+    pub call_within_millis: u32,
     /// Origins allowed besides this machine's, each compared exactly.
     pub origins: Vec<String>,
 }
@@ -34,11 +26,10 @@ pub struct McpSettings {
 impl Default for McpSettings {
     fn default() -> Self {
         Self {
-            port: 8890,
-            route_port: 8893,
-            route_interface: String::from("172.17.0.1"),
             most_tools: 256,
             most_calls: 64,
+            most_body_bytes: 8 * 1024 * 1024,
+            call_within_millis: 300_000,
             origins: Vec::new(),
         }
     }

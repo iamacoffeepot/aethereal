@@ -56,8 +56,9 @@ pub struct SessionsSettings {
     /// directories its volumes are mounted at.
     #[flag]
     pub user: String,
-    /// The sessions' route to the hub's tools, as a container on Docker's default bridge reaches it: `Mcp`'s
-    /// `route_port` on its `route_interface` (ADR-0057). Empty for none.
+    /// The sessions' route to the hub's tools, as a container on Docker's default bridge reaches it: the port and
+    /// interface of the program's container stack, whose actor layer this capability is (ADR-0035, ADR-0057). Empty
+    /// for none.
     #[flag]
     pub hub_url: String,
     /// The value of the label every container of this hub carries, [`HUB_LABEL`].

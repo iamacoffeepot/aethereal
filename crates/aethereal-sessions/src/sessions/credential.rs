@@ -4,12 +4,13 @@
 //! stockroom makes. The credential and the bearer are secrets, so neither is ever kept in `Files`, whose namespaces any
 //! actor may read, nor a setting's value, an argument, a log line, or a record: only the credential's path is a
 //! setting, and each crosses the engine only as this job's answer and the create Docker is asked, as the container's
-//! environment, and the bearer as the `Admit` that tells `Mcp` of it, each `Debug` written without it.
+//! environment, and the bearer in the capability's own state, which checks the sessions' requests against it, each
+//! `Debug` written without it.
 
+use super::Bearer;
 use crate::Variable;
 use aethereal_actor::{Fault, Job, Randomness, Runner, Running};
 use aethereal_data::{Bound, Plain};
-use aethereal_mcp::Bearer;
 use aethereal_store::Stockroom;
 use core::str;
 
