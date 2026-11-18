@@ -21,7 +21,7 @@ use aethereal_substrate::{Bootstrap, EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use core::mem;
 use std::io::{Read as _, Write as _};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroU32;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -925,6 +925,70 @@ fn a_connection_drained_after_its_last_response_closes_at_its_bound_when_its_cli
         assert!(ended, "the client reads the end once its last response is written");
         assert_eq!(open, 0, "the drain closes the connection at `{bound}` though its client never does");
     }
+
+    Ok(())
+}
+
+/// A client on a thread of its own that sends `sent` to `port`, shuts its write half, as `nc -N` and some HTTP clients
+/// do, and reads everything the server writes until it closes.
+fn finishing(port: u16, sent: &'static [u8]) -> JoinHandle<Vec<u8>> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(sent).is_ok(), "the client writes");
+        assert!(stream.shutdown(Shutdown::Write).is_ok(), "the client shuts its write half");
+        let mut read = Vec::new();
+        assert!(stream.read_to_end(&mut read).is_ok(), "the server closes within ten seconds");
+
+        read
+    })
+}
+
+#[test]
+fn a_client_that_finishes_writing_after_its_request_is_answered_and_then_closed() -> Result<(), Unheard> {
+    // Catches a client's end of writing taken for its hang-up, so a request it sent whole is never answered; a
+    // connection kept alive for a request that cannot come, so the client never reads the end; and one drained, which
+    // the stack holds, one of its `most_connections`, with nothing to drain. No bound of an idle connection or a drain
+    // passes within the test's waits, so only a close at once ends it.
+    let settings = StackSettings {
+        idle_within_millis: u32::MAX,
+        drain_stall_within_millis: u32::MAX,
+        drain_within_millis: u32::MAX,
+        ..StackSettings::default()
+    };
+    let (mut harness, port) = echoing(settings, 64)?;
+    let stack = harness.root::<EchoStack>();
+    let sent = b"POST /echo HTTP/1.1\r\nAuthorization: Bearer open\r\nContent-Length: 5\r\n\r\nhello";
+
+    let written = joined(&mut harness, finishing(port, sent));
+    let (head, body) = split(&written);
+    let mut open = usize::MAX;
+    waiting::until(BUDGET, || {
+        harness.step();
+        open = harness.state(stack).map_or(usize::MAX, |stack| stack.serving.connections());
+
+        open == 0
+    });
+
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert!(head.contains("connection: close"), "the response says the connection closes: {head}");
+    assert_eq!(body, b"hello");
+    assert_eq!(open, 0, "the stack holds no connection once it has answered a client that finished writing");
+
+    Ok(())
+}
+
+#[test]
+fn a_client_that_finishes_writing_partway_through_a_body_is_closed_unanswered() -> Result<(), Unheard> {
+    // Catches a request cut short answered as if whole, and a body that waits for bytes that cannot come until it
+    // stalls, which no bound here does within the client's wait, holding the connection open with nothing to read.
+    let settings = StackSettings { stall_within_millis: u32::MAX, ..StackSettings::default() };
+    let (mut harness, port) = echoing(settings, 64)?;
+    let sent = b"POST /echo HTTP/1.1\r\nAuthorization: Bearer open\r\nContent-Length: 10\r\n\r\nhello";
+
+    let written = joined(&mut harness, finishing(port, sent));
+
+    assert!(written.is_empty(), "nothing is answered: {:?}", String::from_utf8_lossy(&written));
 
     Ok(())
 }
@@ -2060,9 +2124,10 @@ fn a_streamed_responses_source_runs_no_more_than_its_window_ahead_of_what_is_wri
 }
 
 #[test]
-fn a_client_that_hangs_up_mid_response_stops_its_source() -> Result<(), Unheard> {
+fn a_client_that_resets_mid_response_stops_its_source() -> Result<(), Unheard> {
     // Catches a source left sending to a connection that has gone, its stream never stopped, so it holds what it makes
-    // the body from for ever.
+    // the body from for ever. The client resets the connection, as a client does that closes with bytes it has not
+    // read: one that only finished writing may still read its response, which is written on.
     let parts = vec![String::from("some of the body"); 4];
     let plan = Plan { length: ResponseLength::Unknown, parts, end: PlanEnd::Hold };
     let (mut harness, port) = sourcing(&plan, Shouts::No)?;
@@ -2071,14 +2136,17 @@ fn a_client_that_hangs_up_mid_response_stops_its_source() -> Result<(), Unheard>
         let mut stream = connect(port);
         assert!(stream.write_all(b"GET /a HTTP/1.1\r\n\r\n").is_ok(), "the client writes");
         let mut read = Vec::new();
-        let mut chunk = [0; 4096];
-        while !read.windows(16).any(|window| window == b"some of the body") {
-            let Ok(count) = stream.read(&mut chunk) else {
+        let mut byte = [0];
+        while !read.ends_with(b"some of the body") {
+            let Ok(count) = stream.read(&mut byte) else {
                 panic!("the body comes within ten seconds");
             };
             assert_ne!(count, 0, "the server writes the body before it closes");
-            read.extend_from_slice(&chunk[..count]);
+            read.extend_from_slice(&byte[..count]);
         }
+        // Read a byte at a time, the rest of the body is left in the socket once it comes, so the drop resets.
+        let waiting = stream.peek(&mut byte);
+        assert!(waiting.is_ok_and(|count| count == 1), "more of the body comes within ten seconds");
     });
     joined(&mut harness, client);
     let serve = harness.root::<Serve>();

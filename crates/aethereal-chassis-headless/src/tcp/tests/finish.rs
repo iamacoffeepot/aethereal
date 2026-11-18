@@ -1,8 +1,10 @@
-//! A connection asked to finish writing (ADR-0033): its write half shut once what it holds is written, its read half
-//! open until the peer ends it.
+//! A connection's halves ending apart (ADR-0033): asked to finish writing, its write half shut once what it holds is
+//! written, its read half open until the peer ends it; and its peer finished writing, its read half ended while it
+//! writes on until it is finished.
 
 use super::*;
 use aethereal_tcp::Finish;
+use std::net::Shutdown;
 
 /// Whatever arrived, in parts of at most 64 KiB: what the peer sends comes back as it was sent.
 const CHUNKS: Framing = Framing::Chunks { most_bytes: 64 * 1024 };
@@ -124,6 +126,42 @@ fn a_write_after_a_finish_is_answered_finished_and_never_reaches_the_peer() -> R
     let mut read = Vec::new();
     assert!(pair.read_to_end(&mut read), "the peer reads the end");
     assert!(read.is_empty(), "nothing is written after the finish: {read:?}");
+
+    Ok(())
+}
+
+/// How each stream `streamer` read has ended, the harness stepping the host until one has or the wait is spent.
+fn ended(harness: &mut Harness<Headless>, streamer: ActorRef<Streamer>) -> Result<Vec<HungUp>, Unheard> {
+    waiting::until(waiting::BUDGET, || {
+        harness.step();
+
+        harness.state(streamer).is_ok_and(|state| !state.ended.is_empty())
+    });
+
+    Ok(harness.state(streamer)?.ended.clone())
+}
+
+#[test]
+fn a_connection_whose_peer_finished_writing_still_writes_to_it_and_closes_once_finished() -> Result<(), Unheard> {
+    // Catches the peer's end taken for its hang-up, so a write after it is never sent and a peer that shut only its
+    // write half, as `nc -N` and some HTTP clients do, never reads its answer; a read stream left open past the peer's
+    // end, so its reader waits for more for good; and a connection that never closes once both halves have ended.
+    let mut pair = Pair::dial(TcpSettings::default())?;
+    assert!(pair.peer.write_all(b"asked").is_ok(), "the peer writes");
+    assert!(pair.peer.shutdown(Shutdown::Write).is_ok(), "the peer shuts its write half");
+    assert_eq!(heard(&mut pair.harness, pair.streamer, 1)?, [frame(Side::Client, b"asked")]);
+    assert_eq!(ended(&mut pair.harness, pair.streamer)?, [HungUp::Peer]);
+
+    let parts = vec![pair.harness.put(b"answer".to_vec())?];
+    let wrote = pair.harness.ask(pair.connection.protocol::<Writing>(), &Write { parts })?;
+    assert_eq!(pair.harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
+    pair.harness.tell(pair.connection.protocol::<Writing>(), &Finish)?;
+    let mut read = Vec::new();
+    assert!(pair.read_to_end(&mut read), "the peer reads the end once the connection finishes");
+    pair.harness.settle();
+
+    assert_eq!(read, b"answer");
+    assert!(pair.harness.state(pair.connection).is_err(), "both halves ended, the connection has closed");
 
     Ok(())
 }

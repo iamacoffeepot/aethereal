@@ -28,7 +28,7 @@ use aethereal_tcp::{
     Tcp, Unbound, Wrote,
 };
 use body::Ending;
-use connection::{Connection, Entering, Inflow, Out, Passing, Phase, Returning};
+use connection::{Connection, Entering, Inflow, Out, Passing, Phase, ReadSide, Returning};
 use core::mem;
 use core::time::Duration;
 use outflow::Outflow;
@@ -331,12 +331,13 @@ where
         self.advance(number, turn)
     }
 
-    /// A connection's stream has ended, as `Tcp` says how: a body being read from it ends `HungUp`, a response's source
-    /// is stopped, and its entry is dropped.
+    /// A connection's stream has ended, as `Tcp` says how. When its client finished writing, it goes on as
+    /// [`finished_writing`](Self::finished_writing) says. Otherwise it is gone: a body being read from it ends
+    /// `HungUp`, a response's source is stopped, and its entry is dropped.
     ///
     /// # Errors
     ///
-    /// The fault of mail that does not encode.
+    /// The fault of mail that does not encode, or of a sleep the engine would not run.
     pub fn hung_up(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
@@ -349,8 +350,33 @@ where
             Answered::Yes(how) => how,
             Answered::No(_) => HungUp::Reset,
         };
+        if how == HungUp::Peer {
+            return self.finished_writing(connection, turn);
+        }
 
         self.close(connection, Ending::HungUp(how), turn)
+    }
+
+    /// The client of the connection numbered `number` finished writing, and nothing more will be read from it. A
+    /// request it sent whole is answered, and the connection then closes rather than waiting for another, its drain
+    /// skipped, as nothing is left to drain. A request whose head it stopped partway through is incomplete, and the
+    /// connection closes with no answer, as it does between requests and while draining. A body is read on from what
+    /// the connection buffered: one that ends there is whole, and one that needs more is incomplete, and closes the
+    /// connection with no answer.
+    fn finished_writing(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
+        let Some(connection) = self.connections.get_mut(&number) else {
+            return Ok(());
+        };
+        connection.stop_reading();
+
+        match connection.phase {
+            Phase::Idle { .. } | Phase::Head { .. } | Phase::Draining(_) => {
+                self.close(number, Ending::HungUp(HungUp::Peer), turn)
+            }
+            Phase::Out(Out { body: Inflow::Gathering { .. }, .. }) => self.gathered(number, turn),
+            Phase::Out(Out { body: Inflow::Streaming { .. }, .. }) => self.stream(number, turn),
+            Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Outflow(_) | Phase::Closing => Ok(()),
+        }
     }
 
     /// A write was answered: a streamed response's head or parts go on as [`flowed`](Self::flowed) says; otherwise the
@@ -776,17 +802,33 @@ where
         turn.now() + Duration::from_millis(u64::from(self.settings.answer_within_millis))
     }
 
-    /// Grants the connection numbered `number` the credit withheld while a request was out.
+    /// Grants the connection numbered `number` the credit withheld while a request was out, while its client still
+    /// writes.
     fn release(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
-        if let Some(withheld) = NonZeroU32::new(connection.withheld) {
-            self.reading.grant(turn, connection.reader, withheld)?;
+        if let ReadSide::Open(reader) = connection.read_side
+            && let Some(withheld) = NonZeroU32::new(connection.withheld)
+        {
+            self.reading.grant(turn, reader, withheld)?;
         }
         connection.withheld = 0;
 
         Ok(())
+    }
+
+    /// Only more bytes take the body of the request out on the connection numbered `number` further: it is granted the
+    /// credit it withheld, so more come; or, once its client has finished writing, none will, the request is
+    /// incomplete, and the connection closes with no answer.
+    pub(super) fn read_more(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
+        let is_read_out = self.connections.get(&number).is_some_and(Connection::is_read_out);
+        if !is_read_out {
+            return self.release(number, turn);
+        }
+        turn.log(Level::Info, "a client finished writing before its request's body ended, and the connection closes");
+
+        self.close(number, Ending::HungUp(HungUp::Peer), turn)
     }
 
     /// Closes the connection numbered `number`: a body being read from it is ended as `ending` says, a response's
@@ -822,11 +864,15 @@ where
     /// what the client still sends is read and dropped, the credit withheld for it granted, until the client closes or
     /// a bound of the drain passes (`drain_stall_within_millis`, `drain_within_millis`), when it is closed. A socket
     /// closed with bytes it has not read resets the connection, and the reset can destroy the response before the
-    /// client reads it.
+    /// client reads it. A client that has finished writing sends nothing to drain, and its connection closes at once,
+    /// its response sent.
     fn drain(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
+        if connection.is_read_out() {
+            return self.close(number, Ending::HungUp(HungUp::Peer), turn);
+        }
         turn.to(connection.accepted).send(&Finish)?;
         connection.drain(number, &self.settings, turn)?;
 

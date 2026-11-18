@@ -169,6 +169,8 @@ struct Streamer {
     accepted: Vec<ActorRef<Accepted>>,
     /// The frames it took, in order.
     heard: Vec<Heard>,
+    /// How each stream it read ended, in order.
+    ended: Vec<HungUp>,
 }
 
 #[actor]
@@ -183,6 +185,7 @@ impl Streamer {
             reading: Streams::new(window),
             accepted: Vec::new(),
             heard: Vec::new(),
+            ended: Vec::new(),
         })
     }
 
@@ -227,8 +230,11 @@ impl Streamer {
     }
 
     #[answer]
-    fn hung_up(&mut self, (_, number): (Answered<HungUp>, Number)) -> Result<(), Fault> {
+    fn hung_up(&mut self, (answered, number): (Answered<HungUp>, Number)) -> Result<(), Fault> {
         self.reading.answered(number);
+        if let Answered::Yes(how) = answered {
+            self.ended.push(how);
+        }
 
         Ok(())
     }
