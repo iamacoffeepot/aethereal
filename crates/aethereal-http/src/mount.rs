@@ -36,7 +36,7 @@ impl Carries<StreamedRequest> for StreamHandling {
 }
 
 /// A request an exchange parsed the head of, every limit on the head checked, whose body is read to its handler as it
-/// arrives through a [`RequestBody`] stream the handler opens on `body` with [`read_body`](Self::read_body).
+/// arrives through an [`InboundBody`] stream the handler opens on `body` with [`read_body`](Self::read_body).
 #[derive(Debug, Bound)]
 #[kind(name = "aether.http.streamed_request")]
 pub struct StreamedRequest {
@@ -50,7 +50,7 @@ pub struct StreamedRequest {
     /// How long its body is, as its head says.
     pub length: BodyLength,
     /// The exchange that reads the body.
-    pub body: ProtocolRef<Streamed<RequestBody>>,
+    pub body: ProtocolRef<Streamed<InboundBody>>,
     /// Which of the exchange's requests it is, which the stream that reads its body names.
     pub(crate) request: u64,
     /// Where the request came from.
@@ -60,7 +60,7 @@ pub struct StreamedRequest {
 }
 
 impl StreamedRequest {
-    /// What a [`RequestBody`] stream on `body` opens with to read this request's body.
+    /// What an [`InboundBody`] stream on `body` opens with to read this request's body.
     #[must_use]
     pub const fn read_body(&self) -> ReadBody {
         ReadBody { request: self.request }
@@ -77,20 +77,20 @@ pub enum BodyLength {
     Chunked,
 }
 
-/// An exchange's stream of one request's body as it arrives (ADR-0017): opened with [`ReadBody`], each part the bytes
-/// of the body one read brought, decoded, and ended with how the body was read. The handler's credit paces it: the
-/// exchange reads its connection only while the handler has credit, so a handler that falls behind holds the client
-/// back, and the body is never held whole.
-pub struct RequestBody;
+/// A stream of one request's body as it arrives (ADR-0017, ADR-0035), served by the stack or the exchange that reads its
+/// connection: opened with [`ReadBody`], each part the bytes of the body one read brought, decoded and passed by the
+/// layers, and ended with how the body was read. The reader's credit paces it: the connection is read only while the
+/// reader has credit, so a reader that falls behind holds the client back, and the body is never held whole.
+pub struct InboundBody;
 
-impl Stream for RequestBody {
+impl Stream for InboundBody {
     type Open = ReadBody;
     type Part = BodyBytes;
     type Done = BodyRead;
 }
 
-/// What a [`RequestBody`] stream opens with: the request whose body it reads, from
-/// [`StreamedRequest::read_body`].
+/// What an [`InboundBody`] stream opens with: the request whose body it reads, from a stack's
+/// [`BodyHandle::read`](crate::stack::BodyHandle::read) or [`StreamedRequest::read_body`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.read_body")]
 pub struct ReadBody {
@@ -98,6 +98,16 @@ pub struct ReadBody {
 }
 
 impl ReadBody {
+    /// The open of a stream that reads the body of the request numbered `request`.
+    pub(crate) const fn new(request: u64) -> Self {
+        Self { request }
+    }
+
+    /// Which request it reads the body of.
+    pub(crate) const fn request(self) -> u64 {
+        self.request
+    }
+
     /// Whether it reads the body of the request numbered `request`.
     pub(crate) const fn reads(self, request: u64) -> bool {
         self.request == request
@@ -111,27 +121,30 @@ pub struct BodyBytes {
     pub bytes: Bytes,
 }
 
-/// How a streamed request's body was read: the answer that ends its [`RequestBody`] stream, told once.
+/// How a streamed request's body was read: the answer that ends its [`InboundBody`] stream, told once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.body_read")]
 pub enum BodyRead {
-    /// It ended where its framing said: every byte was sent. The exchange takes the next request once the handler has
-    /// answered.
+    /// It ended where its framing said: every byte was sent. The connection takes the next request once the handler
+    /// has answered.
     Whole,
-    /// It decoded past its mount's `most_body_bytes`: the exchange answers `413` and closes once it is sent.
+    /// It ran past what is taken of it: past its mount's `most_body_bytes`, which an exchange answers `413`, or a
+    /// stack's layer refused it as too large. The rest is not read, and the connection closes after the response.
     TooLarge,
-    /// Its chunked framing broke: the exchange answers `400`, or `413` for a chunk's line past `most_head_bytes`, and
-    /// closes once it is sent.
+    /// Its chunked framing broke, answered `400`, or `413` for a chunk's line past `most_head_bytes`, and the
+    /// connection closes once that is sent; or a stack's layer refused it as malformed.
     Malformed,
-    /// It made no progress for `stall_within_millis`: no bytes came, or the handler opened no stream or granted no
-    /// credit. The exchange closes, and owes no response.
+    /// It made no progress for `stall_within_millis`: no bytes came, or its reader opened no stream or granted no
+    /// credit. The connection closes, and owes no response.
     Stalled,
-    /// The connection ended before the body did, as `HungUp` says, or the exchange was shut. The exchange has closed.
+    /// The connection ended before the body did, as `HungUp` says, or its server was shut. The connection has closed.
     HungUp(HungUp),
-    /// It names no body waiting to be read: another stream reads it, it has been read, or the request it names is not
-    /// the one out. Nothing more of the body this stream would read is sent.
+    /// It names no body waiting to be read: another stream or gather reads it, it has been read, or the request it
+    /// names is not its connection's request out. Nothing more of the body this stream would read is sent.
     Busy,
-    /// The handler answered before the body ended: the rest of it is not read, and the exchange closes once the
-    /// response is sent.
+    /// The handler answered before the body ended, or the reader stopped the stream: the rest of it is not read, and
+    /// the connection closes once the response is sent.
     Cut,
+    /// An actor layer of a stack did not answer a part of it, and the stack answers the request itself.
+    Unpassed,
 }

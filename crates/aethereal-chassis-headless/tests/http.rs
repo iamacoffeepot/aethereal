@@ -9,9 +9,9 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{
-    BlobBytesTooLow, BodyRead, Handling, Header, Http, HttpSettings, Mount, ReadLimitTooLow, Request, RequestBody,
-    Response, ResponseBody, ResponseBytes, ResponseLength, ResponseSource, Serve, Served, SourceEnd, Status,
-    StreamedBody, StreamedRequest,
+    BlobBytesTooLow, BodyRead, Handling, Header, Http, HttpSettings, InboundBody, Mount, OutboundBody, ReadLimitTooLow,
+    Request, Response, ResponseBody, ResponseBytes, ResponseLength, Serve, Served, SourceEnd, Status, StreamedBody,
+    StreamedRequest,
 };
 use aethereal_substrate::harness::{Harness, Held, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -287,7 +287,7 @@ struct Unset;
 #[kind(name = "aether.test.http.reader")]
 struct Reader {
     /// Each body's stream, and the request it answers once the body ends.
-    bodies: Streams<RequestBody, aethereal_actor::Held<Response>>,
+    bodies: Streams<InboundBody, aethereal_actor::Held<Response>>,
     /// Each part taken, in order.
     parts: Vec<Vec<u8>>,
     /// How each body was read.
@@ -301,7 +301,7 @@ impl ChildOf for Reader {
 impl Actor for Reader {
     type Config = Unset;
     type Key = ();
-    type Handles = (StreamedRequest, Part<RequestBody>, Answer<BodyRead, Number>);
+    type Handles = (StreamedRequest, Part<InboundBody>, Answer<BodyRead, Number>);
     type BeginSends = ();
     type EndSends = ();
 
@@ -328,8 +328,8 @@ impl Bootstrap<Headless> for Reader {
 impl Handles<StreamedRequest> for Reader {
     type Sends = (
         ToSender<Response>,
-        Asks<Streamed<RequestBody>, Open<RequestBody>, Number>,
-        ToAny<Streamed<RequestBody>, More>,
+        Asks<Streamed<InboundBody>, Open<InboundBody>, Number>,
+        ToAny<Streamed<InboundBody>, More>,
     );
     type From = Anyone;
 
@@ -341,11 +341,11 @@ impl Handles<StreamedRequest> for Reader {
     }
 }
 
-impl Handles<Part<RequestBody>> for Reader {
-    type Sends = (ToAny<Streamed<RequestBody>, More>,);
+impl Handles<Part<InboundBody>> for Reader {
+    type Sends = (ToAny<Streamed<InboundBody>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<RequestBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(taken) = self.bodies.part(turn, part)? else {
             return Ok(());
         };
@@ -564,13 +564,13 @@ fn part(place: u32, bytes: u32) -> Vec<u8> {
     vec![letter; usize::try_from(bytes).unwrap_or(0)]
 }
 
-/// A root that sends streamed responses' bodies: each [`ResponseSource`] stream opened on it is sent as its plan says,
+/// A root that sends streamed responses' bodies: each [`OutboundBody`] stream opened on it is sent as its plan says,
 /// a part for each credit it has. It keeps the most credit it was ever granted ahead, and how each stream ended.
 #[derive(Bound)]
 #[kind(name = "aether.test.http.source")]
 struct Source {
     plan: Plan,
-    serving: Serving<ResponseSource>,
+    serving: Serving<OutboundBody>,
     /// The parts sent of the stream open.
     sent: u32,
     /// The most parts it was ever let send ahead.
@@ -586,7 +586,7 @@ impl ChildOf for Source {
 impl Actor for Source {
     type Config = Plan;
     type Key = ();
-    type Handles = (Plan, Open<ResponseSource>, More, Enough, Ended);
+    type Handles = (Plan, Open<OutboundBody>, More, Enough, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -621,11 +621,11 @@ impl Handles<Plan> for Source {
     }
 }
 
-impl Handles<Open<ResponseSource>> for Source {
+impl Handles<Open<OutboundBody>> for Source {
     type Sends = (ToSender<SourceEnd>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<ResponseSource>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         self.serving.open(turn, open)?;
         self.sent = 0;
 
@@ -634,7 +634,7 @@ impl Handles<Open<ResponseSource>> for Source {
 }
 
 impl Handles<More> for Source {
-    type Sends = (ToAny<(Part<ResponseSource>,), Part<ResponseSource>>,);
+    type Sends = (ToAny<(Part<OutboundBody>,), Part<OutboundBody>>,);
     type From = Anyone;
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {

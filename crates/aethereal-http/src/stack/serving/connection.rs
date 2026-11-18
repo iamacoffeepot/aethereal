@@ -1,13 +1,16 @@
 //! A stack's entry for one connection (ADR-0035): not an actor, but what the stack keeps of it, keyed by its number:
-//! what has been read and not parsed, the request out or parked at an actor layer, its layers' forms, and the deadline
-//! it sleeps until.
+//! what has been read and not parsed, the request out or parked at an actor layer, the streamed response being
+//! written, its layers' forms, and the deadline it sleeps until.
 
+use super::outflow::Outflow;
 use super::{Deadline, Owed};
 use crate::body::Body;
 use crate::request_head::Framing;
 use crate::stack::actor::{Standing, held};
 use crate::stack::{Gathered, Head, Response, ResponseBody, ResponseHead, StackSettings};
-use aethereal_actor::{ActorRef, Answer, Due, Fault, Held, JobId, Number, Receives, Sleep, Slept, Time, Turn};
+use aethereal_actor::{
+    ActorRef, Answer, Due, Fault, Held, JobId, Number, Receives, Sleep, Slept, StreamKey, Time, Turn,
+};
 use aethereal_data::Bound;
 use aethereal_tcp::{Accepted, SocketAddress};
 use core::time::Duration;
@@ -52,6 +55,8 @@ pub(super) enum Phase {
     Out(Out),
     /// A response is parked at an actor layer on the way out, whose ask has a deadline of its own.
     Returning(Returning),
+    /// A streamed response's head is written, and its body is written as its source sends it.
+    Outflow(Outflow),
     /// A last response is written: the connection closes once it is sent.
     Closing,
 }
@@ -112,17 +117,20 @@ pub(super) enum Inflow {
     /// It is gathered into `gathered`, as `left` says is left of it, for the gather `held`, up to `most` bytes: it last
     /// moved at `moved`, and its last part read is `passing` the layers.
     Gathering { left: Body, gathered: Vec<u8>, most: u64, held: Held<Gathered>, moved: Time, passing: Passing },
+    /// It is streamed to the stream `reader`, as `left` says is left of it, a part at a time as the reader's credit
+    /// allows: it last moved at `moved`, and its last part read is `passing` the layers.
+    Streaming { left: Body, reader: StreamKey, moved: Time, passing: Passing },
     /// It is read, or will not be: its answer is awaited from `since`.
     Read { since: Time },
 }
 
-/// Where the last part read of a body being gathered stands among the layers.
+/// Where the last part of a body, either way, stands among the layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
 pub(super) enum Passing {
-    /// It has passed them all, so the next is read.
+    /// It has passed them all, so the next is taken.
     Through,
     /// It is parked at the actor layer `at`, which was asked about it, and the body ends after it when `end`: no more
-    /// is read until the layer answers.
+    /// of the body is passed until the layer answers.
     Parked { at: u32, end: bool },
 }
 
@@ -152,10 +160,13 @@ impl<F> Connection<F> {
         }
     }
 
-    /// Whether a request is out on it, or parked at a layer, or its last response is written, so what it reads waits
-    /// for the response.
+    /// Whether a request is out on it, or parked at a layer, or its response is being written, or its last is
+    /// written, so what it reads waits for the response.
     pub const fn is_held(&self) -> bool {
-        matches!(self.phase, Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Closing)
+        matches!(
+            self.phase,
+            Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Outflow(_) | Phase::Closing
+        )
     }
 
     /// Whether it is between requests, so the credit it withheld is granted and what it buffered is parsed.
@@ -177,9 +188,24 @@ impl<F> Connection<F> {
     pub const fn is_passing(&self, standing: Standing) -> bool {
         matches!(
             self.phase,
-            Phase::Out(Out { request, body: Inflow::Gathering { passing: Passing::Parked { at, .. }, .. }, .. })
-                if request == standing.request && at == standing.at
+            Phase::Out(Out {
+                request,
+                body: Inflow::Gathering { passing: Passing::Parked { at, .. }, .. }
+                    | Inflow::Streaming { passing: Passing::Parked { at, .. }, .. },
+                ..
+            }) if request == standing.request && at == standing.at
         )
+    }
+
+    /// Whether a part of the streamed body of the response to the request `standing` names is parked at its actor
+    /// layer on the way out.
+    pub fn is_flowing(&self, standing: Standing) -> bool {
+        matches!(&self.phase, Phase::Outflow(outflow) if outflow.stands(standing))
+    }
+
+    /// Whether the body of the request out on it is streamed to the stream `reader`.
+    pub fn is_read_by(&self, reader: StreamKey) -> bool {
+        matches!(&self.phase, Phase::Out(Out { body: Inflow::Streaming { reader: streamed, .. }, .. }) if *streamed == reader)
     }
 
     /// Whether the request numbered `request` is the one out on it.
@@ -246,8 +272,8 @@ impl<F> Connection<F> {
     }
 
     /// When its phase is late under `settings`: a head from its first byte; a body unread from when its request was
-    /// asked, and one being gathered once it has not moved; the answer from when the body was read, or the request
-    /// asked when it has none; and the next request from the last response.
+    /// asked, and one being gathered or streamed, either way, once it has not moved; the answer from when the body was
+    /// read, or the request asked when it has none; and the next request from the last response.
     fn due(&self, settings: &StackSettings) -> Due {
         let (since, within) = match &self.phase {
             Phase::Idle { since } => (*since, settings.idle_within_millis),
@@ -255,14 +281,23 @@ impl<F> Connection<F> {
             // Each ask of an actor layer is answered by its own deadline.
             Phase::Entering(_)
             | Phase::Returning(_)
-            | Phase::Out(Out { body: Inflow::Gathering { passing: Passing::Parked { .. }, .. }, .. }) => {
+            | Phase::Out(Out {
+                body:
+                    Inflow::Gathering { passing: Passing::Parked { .. }, .. }
+                    | Inflow::Streaming { passing: Passing::Parked { .. }, .. },
+                ..
+            })
+            | Phase::Outflow(Outflow { passing: Passing::Parked { .. }, .. }) => {
                 return Due::Never;
             }
             Phase::Out(Out { body: Inflow::Bodiless { since } | Inflow::Read { since }, .. }) => {
                 (*since, settings.answer_within_millis)
             }
             Phase::Out(Out { body: Inflow::Unread { since, .. }, .. }) => (*since, settings.stall_within_millis),
-            Phase::Out(Out { body: Inflow::Gathering { moved, .. }, .. }) => (*moved, settings.stall_within_millis),
+            Phase::Out(Out { body: Inflow::Gathering { moved, .. } | Inflow::Streaming { moved, .. }, .. }) => {
+                (*moved, settings.stall_within_millis)
+            }
+            Phase::Outflow(outflow) => (outflow.moved, settings.stall_within_millis),
             Phase::Closing => return Due::Never,
         };
 

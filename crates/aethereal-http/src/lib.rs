@@ -28,6 +28,7 @@
 
 pub mod base64;
 mod body;
+mod chunk;
 mod client;
 mod exchange;
 mod head;
@@ -51,9 +52,9 @@ pub use client::{
 pub use exchange::{Asking, Deadline, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Connect, Connected, Http, Peer, Reaching, ReachingUnix, Serve, Served, Unreached};
 pub use message::{Handling, Header, Method, Request, Response, ResponseBody, StreamedBody};
-pub use mount::{BodyBytes, BodyLength, BodyRead, Mount, ReadBody, RequestBody, StreamHandling, StreamedRequest};
+pub use mount::{BodyBytes, BodyLength, BodyRead, InboundBody, Mount, ReadBody, StreamHandling, StreamedRequest};
 pub use router::{Captures, Route, Router, Routes, Unroutable};
 pub use server::{Server, ServerConfig};
 pub use settings::{BlobBytesTooLow, ClientLimits, HttpSettings, Limits, ReadLimitTooLow};
-pub use source::{ResponseBytes, ResponseLength, ResponseSource, SendBody, SourceEnd};
+pub use source::{OutboundBody, ResponseBytes, ResponseLength, SendBody, SourceEnd};
 pub use status::Status;

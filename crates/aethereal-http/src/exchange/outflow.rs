@@ -1,9 +1,10 @@
-//! A streamed response's body, read from its source through a [`ResponseSource`] stream and written to the connection
+//! A streamed response's body, read from its source through an [`OutboundBody`] stream and written to the connection
 //! as it comes, paced by what the connection has sent (ADR-0035, ADR-0017).
 
-use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, Timing, chunk, put, unstored};
+use super::{Carries, Exchange, Headed, Owed, Phase, Responding, Sending, Timing, put, unstored};
+use crate::chunk;
 use crate::response_head::Frame;
-use crate::{Header, ResponseLength, ResponseSource, SendBody, SourceEnd, Status, StreamedBody};
+use crate::{Header, OutboundBody, ResponseLength, SendBody, SourceEnd, Status, StreamedBody};
 use aethereal_actor::{
     Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Number, Part, Receives, Taken, Time, Turn,
 };
@@ -57,13 +58,13 @@ impl Outflow {
     }
 }
 
-impl Handles<Part<ResponseSource>> for Exchange {
+impl Handles<Part<OutboundBody>> for Exchange {
     type Sends = Responding;
     type From = Anyone;
 
     /// A part of a streamed response's body is taken without granting for it, and written once the write before it is
     /// sent. A source that sends past its length closes the connection.
-    fn handle(&mut self, part: Part<ResponseSource>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.sourcing.part_held(turn, part) else {
             return Ok(());
         };

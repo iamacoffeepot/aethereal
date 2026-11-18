@@ -3,17 +3,20 @@
 //! the request until it answers.
 
 use super::actor::{Inbound, Inward, Outbound, Outward, Parked, ParkedResponse};
-use super::{BodyPart, Gathered, Head, Layer, Leaving, Response, Step, Unlayered};
+use super::{BodyPart, Head, Layer, Leaving, Response, Sending, Step, Unlayered};
 use aethereal_actor::{
     Actor, ActorRef, Actors, Allows, Asks, Beginning, Carries, ChildOf, ErasedActorRef, Fault, Handled, Handles,
-    PathTo, Time, ToSender, Turn, Within, path,
+    PathTo, Time, Turn, Within, path,
 };
 use aethereal_data::{Decode, Encode, Kind, Plain};
+use aethereal_tcp::{Write, Writing};
 use core::marker::PhantomData;
 
 /// What a stack's sends list in place of an ask it never makes, of a pure layer or of a place past its last layer: a
-/// reply to a gather, which every stack lists already, so the list says nothing it did not.
-pub type Unasked = ToSender<Gathered>;
+/// write, which every stack lists already, so the list says nothing it did not. It is no reply, as a handler of a kind
+/// whose protocol says what it answers may list no reply but that answer (ADR-0016), and each of a stack's handlers
+/// lists these places.
+pub type Unasked = Asks<Writing, Write, Sending>;
 
 /// A layer before the handler, as a stack holds it: its form, a pure layer itself or a reference to an actor layer.
 /// What the stack does with it whatever it attaches: finds it as the stack begins, asks it about a response on the

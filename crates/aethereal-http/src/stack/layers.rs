@@ -66,10 +66,10 @@ pub trait LayerList: 'static {
     /// # Errors
     ///
     /// The fault of an ask that does not encode.
-    fn inbound<Me>(
+    fn inbound<Me, Own>(
         values: &mut Self::Values,
         head: &Head,
-        turn: &mut Turn<'_, Me, StackSends<Self>>,
+        turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
         parked: Parked,
         due: Time,
     ) -> Result<Entered<Self::Attached>, Fault>;
@@ -81,12 +81,12 @@ pub trait LayerList: 'static {
     /// # Errors
     ///
     /// The fault of an ask that does not encode.
-    fn resume<Me, X: 'static>(
+    fn resume<Me, X: 'static, Own>(
         values: &mut Self::Values,
         at: usize,
         attached: X,
         head: &Head,
-        turn: &mut Turn<'_, Me, StackSends<Self>>,
+        turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
         parked: Parked,
         due: Time,
     ) -> Result<Entered<Self::Attached>, Fault>;
@@ -97,12 +97,12 @@ pub trait LayerList: 'static {
     /// # Errors
     ///
     /// The fault of an ask that does not encode.
-    fn outbound<Me>(
+    fn outbound<Me, Own>(
         values: &mut Self::Values,
         at: usize,
         head: &Head,
         leaving: &mut Leaving<'_>,
-        turn: &mut Turn<'_, Me, StackSends<Self>>,
+        turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
         parked: ParkedResponse,
         due: Time,
     ) -> Result<Returned, Fault>;
@@ -262,34 +262,34 @@ where
         &forms.0
     }
 
-    fn inbound<Me>(
+    fn inbound<Me, Own>(
         (): &mut Self::Values,
         _: &Head,
-        _: &mut Turn<'_, Me, StackSends<Self>>,
+        _: &mut Turn<'_, Me, StackSends<Self, Own>>,
         _: Parked,
         _: Time,
     ) -> Result<Entered<()>, Fault> {
         Ok(Entered::Passed(()))
     }
 
-    fn resume<Me, X: 'static>(
+    fn resume<Me, X: 'static, Own>(
         (): &mut Self::Values,
         at: usize,
         _: X,
         _: &Head,
-        _: &mut Turn<'_, Me, StackSends<Self>>,
+        _: &mut Turn<'_, Me, StackSends<Self, Own>>,
         _: Parked,
         _: Time,
     ) -> Result<Entered<()>, Fault> {
         Ok(untaken(at))
     }
 
-    fn outbound<Me>(
+    fn outbound<Me, Own>(
         (): &mut Self::Values,
         _: usize,
         _: &Head,
         _: &mut Leaving<'_>,
-        _: &mut Turn<'_, Me, StackSends<Self>>,
+        _: &mut Turn<'_, Me, StackSends<Self, Own>>,
         _: ParkedResponse,
         _: Time,
     ) -> Result<Returned, Fault> {
@@ -366,10 +366,10 @@ macro_rules! layered {
                 &forms.$place
             }
 
-            fn inbound<Me>(
+            fn inbound<Me, Own>(
                 values: &mut Self::Values,
                 head: &Head,
-                turn: &mut Turn<'_, Me, StackSends<Self>>,
+                turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
                 parked: Parked,
                 due: Time,
             ) -> Result<Entered<$attached>, Fault> {
@@ -379,12 +379,12 @@ macro_rules! layered {
             }
 
             #[allow(unused_variables, reason = "a list of one layer resumes at its last, and walks no layer more")]
-            fn resume<Me, X: 'static>(
+            fn resume<Me, X: 'static, Own>(
                 values: &mut Self::Values,
                 at: usize,
                 attached: X,
                 head: &Head,
-                turn: &mut Turn<'_, Me, StackSends<Self>>,
+                turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
                 parked: Parked,
                 due: Time,
             ) -> Result<Entered<$attached>, Fault> {
@@ -393,12 +393,12 @@ macro_rules! layered {
                 Ok(untaken(at))
             }
 
-            fn outbound<Me>(
+            fn outbound<Me, Own>(
                 values: &mut Self::Values,
                 at: usize,
                 head: &Head,
                 leaving: &mut Leaving<'_>,
-                turn: &mut Turn<'_, Me, StackSends<Self>>,
+                turn: &mut Turn<'_, Me, StackSends<Self, Own>>,
                 parked: ParkedResponse,
                 due: Time,
             ) -> Result<Returned, Fault> {
@@ -477,9 +477,9 @@ macro_rules! layered {
 }
 
 layered! {
-    [L0 0 11 12] H 1 [0 1 2 3 4 5 6 7 8 9];
-    [L0 0 11 12 L1 1 13 14] H 2 [0 1 2 3 4 5 6 7];
-    [L0 0 11 12 L1 1 13 14 L2 2 15 16] H 3 [0 1 2 3 4 5];
-    [L0 0 11 12 L1 1 13 14 L2 2 15 16 L3 3 17 18] H 4 [0 1 2 3];
-    [L0 0 11 12 L1 1 13 14 L2 2 15 16 L3 3 17 18 L4 4 19 20] H 5 [0 1];
+    [L0 0 9 10] H 1 [0 1 2 3 4 5 6 7 8 9];
+    [L0 0 9 10 L1 1 11 12] H 2 [0 1 2 3 4 5 6 7];
+    [L0 0 9 10 L1 1 11 12 L2 2 13 14] H 3 [0 1 2 3 4 5];
+    [L0 0 9 10 L1 1 11 12 L2 2 13 14 L3 3 15 16] H 4 [0 1 2 3];
+    [L0 0 9 10 L1 1 11 12 L2 2 13 14 L3 3 15 16 L4 4 17 18] H 5 [0 1];
 }

@@ -76,8 +76,8 @@ impl<'r> Leaving<'r> {
 
     /// Answers in place of the response: `response` goes on out through the layers before this one.
     pub fn answer(&mut self, response: Response) {
-        let Response { status, headers, body } = response;
-        *self.head = ResponseHead { status, headers };
+        let (head, body) = response.into_parts();
+        *self.head = head;
         *self.body = body;
         self.answered = true;
     }

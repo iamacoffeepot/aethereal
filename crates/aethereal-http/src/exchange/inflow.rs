@@ -1,9 +1,9 @@
-//! A streamed request's body, served to its mount's handler as a [`RequestBody`] stream as it arrives, paced by the
+//! A streamed request's body, served to its mount's handler as an [`InboundBody`] stream as it arrives, paced by the
 //! handler's credit, as a client streams a response to its asker (ADR-0035, ADR-0017).
 
 use super::{Credit, Exchange, Owed, Parts, Phase, Refusal, SourceStop, Writes, unstored};
 use crate::body::{Body, Decoded, Progress};
-use crate::{BodyBytes, BodyRead, RequestBody};
+use crate::{BodyBytes, BodyRead, InboundBody};
 use aethereal_actor::{
     Allows, Anyone, Ended, Enough, Fault, Handles, Level, More, Open, Receives, StreamKey, Time, ToSender, Turn, Unsent,
 };
@@ -54,13 +54,13 @@ impl Inflow {
     }
 }
 
-impl Handles<Open<RequestBody>> for Exchange {
+impl Handles<Open<InboundBody>> for Exchange {
     type Sends = (ToSender<BodyRead>, Credit, Writes, Parts);
     type From = Anyone;
 
     /// A handler opens the stream that reads a body: the body of the streamed request out, when no stream reads it
     /// yet, or none, answered `Busy` at once.
-    fn handle(&mut self, open: Open<RequestBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let (key, asked) = self.serving.open(turn, open)?;
         let Phase::Inflow { ref mut inflow, .. } = self.phase else {
             return self.end_body(turn, key, BodyRead::Busy);

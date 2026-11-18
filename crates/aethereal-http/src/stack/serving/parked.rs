@@ -2,16 +2,17 @@
 //! that layer, its head in, its response out, or a part of a body; or, when the layer did not answer, a status takes
 //! the response's place.
 
+use super::body::Ending;
 use super::connection::{Phase, Stage};
 use super::{Deadline, Reaches, Serving, Stepping};
-use crate::Status;
 use crate::stack::actor::{Way, place};
 use crate::stack::{
-    AsksEach, Entered, Gathered, Gathering, Inward, LayerList, Outward, Parked, ParkedPart, ParkedResponse, PartStep,
-    Response, Stack, StackSends,
+    AsksEach, Entered, Gathering, Inward, LayerList, Outward, Parked, ParkedPart, ParkedResponse, PartStep, Response,
+    Stack, StackSends,
 };
+use crate::{InboundBody, OutboundBody, SourceEnd, Status};
 use aethereal_actor::{
-    Answer, Answered, Conforms, Fault, Handles, Level, Number, Part, Receives, Slept, Turn, Unanswered,
+    Answer, Answered, Conforms, Fault, Handles, Level, Number, Part, Receives, Slept, Streamed, Turn, Unanswered,
 };
 use aethereal_tcp::{Accepting, HungUp, Reading, Unbound};
 use core::mem;
@@ -23,7 +24,9 @@ where
         + Receives<Answer<Unbound, Number>>
         + Handles<Part<Reading>>
         + Receives<Answer<HungUp, Number>>
-        + Receives<Answer<Slept, Deadline>>,
+        + Receives<Answer<Slept, Deadline>>
+        + Handles<Part<OutboundBody>>
+        + Receives<Answer<SourceEnd, Number>>,
     T: LayerList,
 {
     /// An actor layer answered a request's head on the way in, as `answered` says, or did not: the request goes on in
@@ -35,13 +38,13 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn entered<X: 'static, Is, Js>(
+    pub fn entered<X: 'static, Is, Ks, Js>(
         &mut self,
         (answered, parked): (Answered<Inward<X>>, Parked),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is>,
+        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
         StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let standing = parked.standing();
@@ -81,13 +84,13 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn returned<Is, Js>(
+    pub fn returned<Is, Ks, Js>(
         &mut self,
         (answered, parked): (Answered<Outward>, ParkedResponse),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is>,
+        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
         StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let standing = parked.standing();
@@ -114,22 +117,23 @@ where
     }
 
     /// An actor layer answered a part of a body, as `answered` says, or did not. A part of the request's body goes on
-    /// in through the layers after it, and the body is read on; when the layer did not answer, the handler's gather
-    /// ends `Unpassed`, and a status takes the place of the handler's response. A response's body goes on out through
-    /// the layers before it; when the layer did not answer, a status takes the response's place, and goes out through
-    /// the layers before it. A body the layer refuses is stopped. An answer for a part the connection no longer parks
-    /// there is passed over.
+    /// in through the layers after it, and the body is read on; when the layer did not answer, the handler's gather or
+    /// stream ends `Unpassed`, and a status takes the place of the handler's response. A whole response's body goes on
+    /// out through the layers before it; when the layer did not answer, a status takes the response's place, and goes
+    /// out through the layers before it. A part of a streamed response's body goes on out the same way; when the layer
+    /// did not answer, the head is already written, so the connection closes, the body cut short. A body the layer
+    /// refuses is stopped. An answer for a part the connection no longer parks there is passed over.
     ///
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn passed<Is, Js>(
+    pub fn passed<Is, Ks, Js>(
         &mut self,
         (answered, parked): (Answered<PartStep>, ParkedPart),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is>,
+        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
         StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let (standing, way) = parked.standing();
@@ -151,6 +155,7 @@ where
                 };
                 self.passed_in(standing, answered, turn)?;
             }
+            Way::Out if connection.is_flowing(standing) => self.passed_out(standing, answered, turn)?,
             Way::Out => {
                 if !connection.is_returning(standing, Stage::Body) {
                     turn.log(Level::Info, "an actor layer answered a part no longer parked there, and was passed over");
@@ -163,7 +168,7 @@ where
                     Answered::Yes(PartStep::Pass(bytes)) => self.returned_body(number, returning, bytes, turn)?,
                     Answered::Yes(PartStep::Refuse(refused)) => {
                         turn.log(Level::Info, format!("an actor layer refused a response's body: {refused:?}"));
-                        self.close(number, &Gathered::HungUp(HungUp::Shut), turn)?;
+                        self.close(number, Ending::HungUp(HungUp::Shut), turn)?;
                     }
                     Answered::No(why) => {
                         // Nothing of the response is written, so the status goes out in its place, its head first.
