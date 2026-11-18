@@ -1055,11 +1055,12 @@ fn a_name_held_already_fails_the_boot_naming_the_toolbox() -> Result<(), Unheard
     Ok(())
 }
 
-/// A directory of files, named for `test`, removed when dropped.
-struct Assets(PathBuf);
+/// A directory for one test, named for it, removed when dropped: the files the test reads, and the store a hub keeps
+/// beneath `store/`.
+struct Dir(PathBuf);
 
-impl Assets {
-    /// A directory holding `files`, each a name in it and its bytes.
+impl Dir {
+    /// A directory for `test` holding `files`, each a name in it and its bytes.
     fn new(test: &str, files: &[(&str, &[u8])]) -> Self {
         let root = env::temp_dir().join(format!("aethereal-mcp-{}-{test}", process::id()));
         assert!(fs::create_dir_all(&root).is_ok(), "the directory is made");
@@ -1069,9 +1070,16 @@ impl Assets {
 
         Self(root)
     }
+
+    /// The store's settings for a hub, kept here, which the store counts as it begins and no test here checks anything
+    /// into. The hub holds the store and the process capability because the engines it spawns depend on them
+    /// (ADR-0059).
+    fn store(&self) -> StoreSettings {
+        StoreSettings { root: self.0.join("store").display().to_string(), ..StoreSettings::default() }
+    }
 }
 
-impl Drop for Assets {
+impl Drop for Dir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
@@ -1118,7 +1126,7 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
     let large = vec![b'a'; 256 * 1024 + 1];
     let files: [(&str, &[u8]); 4] =
         [("a.txt", b"hello \"there\"\n"), ("b.bin", &[0xFF, 0xFE]), ("full.txt", &full), ("large.txt", &large)];
-    let assets = Assets::new("read", &files);
+    let assets = Dir::new("read", &files);
     let roots = FileRoots {
         assets: assets.0.display().to_string(),
         save: assets.0.join("save").display().to_string(),
@@ -1163,7 +1171,7 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
 fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), Unheard> {
     // Catches the write tool's decode, hold, ask, and encode each going wrong, its text written as anything but its
     // bytes, a write to `Assets` or past the namespace taken, and a write the disk refused answered as done.
-    let assets = Assets::new("write", &[("a.txt", b"an asset")]);
+    let assets = Dir::new("write", &[("a.txt", b"an asset")]);
     let save = assets.0.join("save");
     let roots = FileRoots {
         assets: assets.0.display().to_string(),
@@ -1242,34 +1250,26 @@ fn engine_list(harness: &mut Harness<Headless>) -> Result<EngineList, Unheard> {
     Ok(list)
 }
 
-/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine, and an engine linked to
-/// it holding `say`, played by a socket: the hub, its owner's port, and the engine's connection.
-fn hub_with_an_engine(settings: McpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
-    let (mut harness, port, link_port) = hub(settings)?;
+/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine and its store kept in
+/// `dir`, and an engine linked to it holding `say`, played by a socket: the hub, its owner's port, and the engine's
+/// connection.
+fn hub_with_an_engine(dir: &Dir, settings: McpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
+    let (mut harness, port, link_port) = hub(dir, settings)?;
     let stream = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
 
     Ok((harness, port, stream))
 }
 
-/// The store's settings for a hub: a directory of the test process's own in the system's temporary directory, which
-/// the store counts as it begins and no test here checks anything into. The hub holds the store and the process
-/// capability because the engines it spawns depend on them (ADR-0059).
-fn store(file: &str) -> StoreSettings {
-    let root = env::temp_dir().join(format!("aethereal-{file}-store-{}", process::id()));
-
-    StoreSettings { root: root.display().to_string(), ..StoreSettings::default() }
-}
-
-/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine: the hub, its owner's
-/// port, and the port engines link on.
-fn hub(settings: McpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
+/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine and its store kept in
+/// `dir`: the hub, its owner's port, and the port engines link on.
+fn hub(dir: &Dir, settings: McpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
     let engines = EnginesSettings { port: 0, most_calls: 1, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
     let stack = on_loopback();
     let read_limit = engine_for(&stack).read_limit.max(LINK_BYTES);
     let engine = EngineSettings { read_limit, ..engine_for(&stack) };
     let program = program_with(engine, stack, settings)
         .root_with::<Engines>(engines)
-        .root_with::<Store>(store("mcp"))
+        .root_with::<Store>(dir.store())
         .root::<Processes>()
         .root::<Toolbox<(EngineTools,), Mcp>>();
     let mut harness = Harness::of(program)?;
@@ -1325,8 +1325,9 @@ fn call_tool_of_a_tool_that_never_answers_is_refused_at_mcp_s_deadline_and_frees
     // its tools, not the one that holds the call, so an ask there that states no deadline is due never, `Engine` keeps
     // the call after the client was answered, and with one call out every `call_tool` of the engine after it is
     // refused. Catches too a call written with no time left, or more than `Mcp` gave it.
+    let dir = Dir::new("deadline", &[]);
     let (mut harness, port, stream) =
-        hub_with_an_engine(McpSettings { call_within_millis: 300, ..McpSettings::default() })?;
+        hub_with_an_engine(&dir, McpSettings { call_within_millis: 300, ..McpSettings::default() })?;
 
     let first = client(port, &call_say_on_the_engine());
     #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
@@ -1389,9 +1390,9 @@ struct SessionsHub {
     engines: [TcpStream; 2],
 }
 
-/// The hub of [`SessionsHub`], once both engines are listed and the sessions' port is served.
-fn sessions_hub() -> Result<SessionsHub, Unheard> {
-    let (mut harness, port, link_port) = hub(McpSettings::default())?;
+/// The hub of [`SessionsHub`], its store kept in `dir`, once both engines are listed and the sessions' port is served.
+fn sessions_hub(dir: &Dir) -> Result<SessionsHub, Unheard> {
+    let (mut harness, port, link_port) = hub(dir, McpSettings::default())?;
     let owner_s = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
     let session_s = linked(&mut harness, link_port, Caller::Session { session: 3 }, "work", 2)?;
     let badge = badge_port_of(&mut harness);
@@ -1428,7 +1429,8 @@ fn a_session_reaches_only_the_engines_it_started_and_the_owner_reaches_every_one
     // enough; a session refused its own engine; an id no engine has refused other than the owner's engine is, which
     // would tell a session which ids the owner runs; and the owner's own calls checked or refused (ADR-0057). Each
     // call goes over real HTTP, so the caller is what its stack's layer attached.
-    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub()?;
+    let dir = Dir::new("sessions_reach", &[]);
+    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub(&dir)?;
     let say_on = |engine: u32| {
         call_tool("call_tool", &format!("{{\"engine\":{engine},\"tool\":\"say\",\"input\":{{\"text\":\"hi\"}}}}"))
     };
@@ -1460,7 +1462,8 @@ fn a_session_reaches_only_the_engines_it_started_and_the_owner_reaches_every_one
 fn a_session_s_list_engines_shows_only_its_own_and_the_owner_s_shows_every_one() -> Result<(), Unheard> {
     // Catches a session's `list_engines` showing the owner's engine or another session's, which it cannot reach and
     // whose names are not its own to read, and the owner's list cut by the filter meant for sessions (ADR-0057).
-    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub()?;
+    let dir = Dir::new("sessions_list", &[]);
+    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub(&dir)?;
     let list = call_tool("list_engines", "{}");
 
     let shown = |read: &Read| (read.body.contains("\"work\""), read.body.contains("\"scene\""));
