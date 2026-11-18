@@ -54,9 +54,8 @@ use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Answer, Anyone, Beginning, Bytes, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle,
-    Handles, Held, Level, On, Protocol, ProtocolRef, Receives, Render, Reply, Resource, Source, Subscribers, Top, Turn,
-    path,
+    Answered, Beginning, Bytes, Controller, Ended, Fault, Given, Handle, Held, Level, ProtocolRef, Render, Reply,
+    Resource, Source, Subscribers, Turn, actor, path, protocol,
 };
 use aethereal_data::{ActorId, Bound, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -106,11 +105,6 @@ struct Owed {
     dispatches: Vec<(u64, ProtocolRef<(DispatchRan,)>)>,
 }
 
-/// The renderer is a root, made by the chassis that opened the GPU (ADR-0021, ADR-0022).
-impl ChildOf for Renderer {
-    type Parent = Top;
-}
-
 /// What the renderer is made from: the GPU the chassis opened; the front the chassis hands it each window's frame
 /// through, with a slot for each window's surface it keeps ([`WindowSurface::new`](crate::surface::WindowSurface::new)),
 /// and the controller it asks the chassis to present each window's frame it drew through; each window it draws to,
@@ -138,176 +132,8 @@ pub struct RendererConfig {
 /// to release what it made, to read back what it draws or storage, to time what it draws, to make a font or read its
 /// metrics, to make, write, place, or move a text (ADR-0052), or to be sent each frame's statistics or the
 /// GPU's time over its passes, or told the adapter it draws on (ADR-0053).
+#[protocol(CreateMesh(answers = Meshed), CreateTexture(answers = Textured), CreateProgram(answers = Programmed), CreateCompute(answers = Computed), CreateInstances(answers = Instanced), WriteInstances, CreateUniforms(answers = Uniformed), WriteUniforms, CreateStorage(answers = Stored), CreateZeroedStorage(answers = Stored), WriteStorage, Place(answers = Placed), CreateDispatch(answers = Dispatched), DrawList, ShapeOf(answers = Shaped), CreateEffect(answers = Effected), CreateFrame(answers = Framed), Release, ReadBack(answers = Pixels), ReadStorage(answers = StorageContents), TimeFrame(answers = Timed), CreateFont(answers = FontMade), ReadMetrics(answers = FontMetrics), CreateText(answers = TextMade), WriteText, PlaceText(answers = TextPlaced), MoveText, SubscribeFrameStats, UnsubscribeFrameStats, SubscribeGpuTimes, UnsubscribeGpuTimes, DescribeGpu(answers = GpuDescribed))]
 pub struct Rendering;
-
-impl Protocol for Rendering {
-    type Kinds = (
-        CreateMesh,
-        CreateTexture,
-        CreateProgram,
-        CreateCompute,
-        CreateInstances,
-        WriteInstances,
-        CreateUniforms,
-        WriteUniforms,
-        CreateStorage,
-        CreateZeroedStorage,
-        WriteStorage,
-        Place,
-        CreateDispatch,
-        DrawList,
-        ShapeOf,
-        CreateEffect,
-        CreateFrame,
-        Release,
-        ReadBack,
-        ReadStorage,
-        TimeFrame,
-        CreateFont,
-        ReadMetrics,
-        CreateText,
-        WriteText,
-        PlaceText,
-        MoveText,
-        SubscribeFrameStats,
-        UnsubscribeFrameStats,
-        SubscribeGpuTimes,
-        UnsubscribeGpuTimes,
-        DescribeGpu,
-    );
-}
-
-impl Carries<CreateMesh> for Rendering {
-    type Answers = (Meshed,);
-}
-
-impl Carries<CreateTexture> for Rendering {
-    type Answers = (Textured,);
-}
-
-impl Carries<CreateProgram> for Rendering {
-    type Answers = (Programmed,);
-}
-
-impl Carries<CreateCompute> for Rendering {
-    type Answers = (Computed,);
-}
-
-impl Carries<CreateDispatch> for Rendering {
-    type Answers = (Dispatched,);
-}
-
-impl Carries<CreateInstances> for Rendering {
-    type Answers = (Instanced,);
-}
-
-impl Carries<WriteInstances> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<CreateUniforms> for Rendering {
-    type Answers = (Uniformed,);
-}
-
-impl Carries<WriteUniforms> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<CreateStorage> for Rendering {
-    type Answers = (Stored,);
-}
-
-impl Carries<CreateZeroedStorage> for Rendering {
-    type Answers = (Stored,);
-}
-
-impl Carries<WriteStorage> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<Place> for Rendering {
-    type Answers = (Placed,);
-}
-
-impl Carries<DrawList> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<ShapeOf> for Rendering {
-    type Answers = (Shaped,);
-}
-
-impl Carries<CreateEffect> for Rendering {
-    type Answers = (Effected,);
-}
-
-impl Carries<CreateFrame> for Rendering {
-    type Answers = (Framed,);
-}
-
-impl Carries<Release> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<ReadBack> for Rendering {
-    type Answers = (Pixels,);
-}
-
-impl Carries<ReadFrameTarget> for Rendering {
-    type Answers = (TargetPixels,);
-}
-
-impl Carries<ReadStorage> for Rendering {
-    type Answers = (StorageContents,);
-}
-
-impl Carries<TimeFrame> for Rendering {
-    type Answers = (Timed,);
-}
-
-impl Carries<CreateFont> for Rendering {
-    type Answers = (FontMade,);
-}
-
-impl Carries<ReadMetrics> for Rendering {
-    type Answers = (FontMetrics,);
-}
-
-impl Carries<CreateText> for Rendering {
-    type Answers = (TextMade,);
-}
-
-impl Carries<WriteText> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<PlaceText> for Rendering {
-    type Answers = (TextPlaced,);
-}
-
-impl Carries<MoveText> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<SubscribeFrameStats> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<UnsubscribeFrameStats> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<SubscribeGpuTimes> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<UnsubscribeGpuTimes> for Rendering {
-    type Answers = ();
-}
-
-impl Carries<DescribeGpu> for Rendering {
-    type Answers = (GpuDescribed,);
-}
 
 /// Releases what the renderer made before its maker ends. Only its maker may; what another asks is logged and left.
 /// A text released takes its placements with it, whoever made them (ADR-0052).
@@ -618,53 +444,9 @@ struct Storage {
     size: u64,
 }
 
-impl Actor for Renderer {
-    type Config = RendererConfig;
-    type Key = ();
-    type Handles = (
-        On<Render>,
-        CreateMesh,
-        CreateTexture,
-        CreateProgram,
-        CreateCompute,
-        CreateInstances,
-        WriteInstances,
-        CreateUniforms,
-        WriteUniforms,
-        CreateStorage,
-        CreateZeroedStorage,
-        WriteStorage,
-        Place,
-        CreateDispatch,
-        DrawList,
-        ShapeOf,
-        CreateEffect,
-        CreateFrame,
-        Release,
-        ReadBack,
-        ReadFrameTarget,
-        ReadStorage,
-        TimeFrame,
-        Mapped,
-        Surfaced,
-        Ended,
-        CreateFont,
-        ReadMetrics,
-        CreateText,
-        WriteText,
-        PlaceText,
-        MoveText,
-        Answer<GlyphsGenerated, Generating>,
-        SubscribeFrameStats,
-        UnsubscribeFrameStats,
-        SubscribeGpuTimes,
-        UnsubscribeGpuTimes,
-        DescribeGpu,
-        Probed,
-    );
-    type Depends = (Window,);
-    type Spawns = ();
-
+// The renderer is a root, made by the chassis that opened the GPU (ADR-0021, ADR-0022).
+#[actor(depends(Window))]
+impl Renderer {
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         // The renderer's own fonts, their metrics put once, as blobs kept for the renderer's life (ADR-0052).
         let faces = match Faces::new(|bytes| turn.put(bytes)) {
@@ -719,19 +501,14 @@ impl Actor for Renderer {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Draws each window handed a frame, sends each of them the `Keys` entries its walk holds when they have changed since
-/// it was last sent them (ADR-0055), and tells each subscriber of the frame's statistics, counted only while one
-/// subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing tells
-/// the subscribers of its statistics so, and its passes have no time to tell. A frame not drawn runs none of its
-/// dispatches (ADR-0026), and the maker of each dispatch that runs once and ran is told so once the cycle's commands are
-/// submitted.
-impl Receives<On<Render>> for Renderer {
-    fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Draws each window handed a frame, sends each of them the `Keys` entries its walk holds when they have changed
+    /// since it was last sent them (ADR-0055), and tells each subscriber of the frame's statistics, counted only while
+    /// one subscribes, and of its passes' times, timed only while one subscribes (ADR-0053). A cycle that draws nothing
+    /// tells the subscribers of its statistics so, and its passes have no time to tell. A frame not drawn runs none of
+    /// its dispatches (ADR-0026), and the maker of each dispatch that runs once and ran is told so once the cycle's
+    /// commands are submitted.
+    #[on]
+    fn render(&mut self, render: Render, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let front = turn.open(&mut self.front)?;
         let handed = front.take();
         let budget = front.budget();
@@ -840,13 +617,430 @@ impl Receives<On<Render>> for Renderer {
 
         Ok(())
     }
-}
 
-impl Handles<ReadBack> for Renderer {
-    type From = Anyone;
-    type Returns = Reply<Pixels>;
+    #[request]
+    fn create_mesh(&mut self, create: CreateMesh, turn: &mut Turn<'_, Self>) -> Result<Meshed, Fault> {
+        // Copied out of the store: the bytes are read through the turn, as the GPU is opened through it.
+        let vertices = turn.read(&create.vertices).to_vec();
+        let indices = turn.read(&create.indices).to_vec();
+        let counted = match mesh::check(&create.layout, &vertices, &indices) {
+            Ok(counted) => counted,
+            Err(why) => return Ok(Meshed::Refused(why)),
+        };
 
-    fn handle(&mut self, read: ReadBack, turn: &mut Turn<'_, Self>) -> Result<Reply<Pixels>, Fault> {
+        self.watch.uploaded(vertices.len() + indices.len());
+        let gpu = turn.open(&mut self.gpu)?;
+        let mesh = Mesh {
+            vertices: upload(gpu, &vertices, wgpu::BufferUsages::VERTEX),
+            indices: upload(gpu, &indices, wgpu::BufferUsages::INDEX),
+            counted,
+            layout: create.layout,
+        };
+        let id = self.made(turn, |kept, id, maker| kept.meshes.keep(id, maker, mesh))?;
+
+        Ok(Meshed::Made(MeshId { id }))
+    }
+
+    #[request]
+    fn create_texture(&mut self, create: CreateTexture, turn: &mut Turn<'_, Self>) -> Result<Textured, Fault> {
+        let CreateTexture { width, height, format, pixels } = create;
+        let pixels = turn.read(&pixels).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_texture_dimension_2d;
+        if let Err(why) = texture::check(width, height, format, &pixels, most) {
+            return Ok(Textured::Refused(why));
+        }
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let made = gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: format.wgpu(),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let layout = wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * format.bytes()),
+            rows_per_image: Some(height),
+        };
+        gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
+        self.watch.uploaded(pixels.len());
+        let view = made.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture = Texture { made, view, format, origin: Origin::Pixels };
+        let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
+
+        Ok(Textured::Made(TextureId { id }))
+    }
+
+    #[request]
+    fn create_program(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self>) -> Result<Programmed, Fault> {
+        // Copied out of the store, as a mesh's bytes are: the GPU is opened through the turn.
+        let bytes = turn.read(&create.wgsl).to_vec();
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        let checked = program::source(&bytes).and_then(|wgsl| program::check(&create, wgsl, &limits));
+        let wgsl = match checked {
+            Ok(wgsl) => wgsl,
+            Err(why) => return Ok(Programmed::Refused(why)),
+        };
+
+        let picking = turn.open(&mut self.kept)?.picker.layout().clone();
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = pipeline(gpu, &create, &wgsl, &picking);
+        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
+
+        Ok(Programmed::Made(ProgramId { id }))
+    }
+
+    #[request]
+    fn create_compute(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self>) -> Result<Computed, Fault> {
+        let bytes = turn.read(&create.wgsl).to_vec();
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        let checked = program::source(&bytes).and_then(|wgsl| Ok((wgsl, compute::check(&create, wgsl, &limits)?)));
+        let (wgsl, checked) = match checked {
+            Ok(checked) => checked,
+            Err(why) => return Ok(Computed::Refused(why)),
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = compute_pipeline(gpu.device(), &create, wgsl, checked);
+        let id = self.made(turn, |kept, id, maker| kept.computes.keep(id, maker, made))?;
+
+        Ok(Computed::Made(ComputeId { id }))
+    }
+
+    #[request]
+    fn create_instances(&mut self, create: CreateInstances, turn: &mut Turn<'_, Self>) -> Result<Instanced, Fault> {
+        let CreateInstances { layout, capacity, records } = create;
+        let records = turn.read(&records).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_buffer_size;
+        let length = match instances::check(&layout, capacity, &records, most) {
+            Ok(length) => length,
+            Err(why) => return Ok(Instanced::Refused(why)),
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let room = u64::from(capacity) * u64::from(layout.stride);
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: room,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue().write_buffer(&buffer, 0, &records);
+        self.watch.uploaded(records.len());
+        let held = instances::Held { stride: layout.stride, capacity, length };
+        let made = Instances { buffer, held, layout };
+        let id = self.made(turn, |kept, id, maker| kept.instances.keep(id, maker, made))?;
+
+        Ok(Instanced::Made(InstancesId { id }))
+    }
+
+    #[tell]
+    fn write_instances(&mut self, write: WriteInstances, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let records = turn.read(&write.records).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.instances.owned(write.instances.id, by, |instances| {
+            let length = instances.held.write(write.first, records.len() as u64);
+            if let Ok(length) = length {
+                instances.held.length = length;
+            }
+            length.map(|_| (instances.buffer.clone(), instances.held.stride))
+        });
+        let (buffer, stride) = match written {
+            Owned::Mine(Ok(written)) => written,
+            Owned::Mine(Err(why)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: {why:?}", write.instances));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.instances));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.instances));
+                return Ok(());
+            }
+        };
+
+        let at = u64::from(write.first) * u64::from(stride);
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, at, &records);
+        self.watch.uploaded(records.len());
+
+        Ok(())
+    }
+
+    #[request]
+    fn create_uniforms(&mut self, create: CreateUniforms, turn: &mut Turn<'_, Self>) -> Result<Uniformed, Fault> {
+        let bytes = turn.read(&create.bytes).to_vec();
+        let most = turn.open(&mut self.gpu)?.device().limits().max_uniform_buffer_binding_size;
+        let size = match uniforms::check(&bytes, most) {
+            Ok(size) => size,
+            Err(why) => return Ok(Uniformed::Refused(why)),
+        };
+
+        self.watch.uploaded(bytes.len());
+        let gpu = turn.open(&mut self.gpu)?;
+        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::UNIFORM);
+        let made = Uniforms { buffer, size };
+        let id = self.made(turn, |kept, id, maker| kept.uniforms.keep(id, maker, made))?;
+
+        Ok(Uniformed::Made(UniformsId { id }))
+    }
+
+    #[tell]
+    fn write_uniforms(&mut self, write: WriteUniforms, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let bytes = turn.read(&write.bytes).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.uniforms.owned(write.uniforms.id, by, |uniforms| {
+            let fits = uniforms::writes(uniforms.size, write.first, bytes.len() as u64);
+            (fits, uniforms.buffer.clone())
+        });
+        let buffer = match written {
+            Owned::Mine((true, buffer)) => buffer,
+            Owned::Mine((false, _)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside them", write.uniforms));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made them", write.uniforms));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.uniforms));
+                return Ok(());
+            }
+        };
+
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
+        self.watch.uploaded(bytes.len());
+
+        Ok(())
+    }
+
+    #[request]
+    fn create_storage(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self>) -> Result<Stored, Fault> {
+        let bytes = turn.read(&create.bytes).to_vec();
+        self.watch.uploaded(bytes.len());
+        self.store(turn, bytes.len() as u64, |gpu| upload(gpu, &bytes, STORAGE_USAGE))
+    }
+
+    #[request]
+    fn create_zeroed_storage(
+        &mut self,
+        create: CreateZeroedStorage,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Stored, Fault> {
+        // WebGPU makes a buffer with every byte zero.
+        self.store(turn, create.bytes, |gpu| {
+            gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: create.bytes,
+                usage: STORAGE_USAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })
+    }
+
+    #[tell]
+    fn write_storage(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let bytes = turn.read(&write.bytes).to_vec();
+        let kept = turn.open(&mut self.kept)?;
+        let written = kept.storage.owned(write.storage.id, by, |storage| {
+            let fits = storage::fits(storage.size, write.first, bytes.len() as u64);
+            (fits, storage.buffer.clone())
+        });
+        let buffer = match written {
+            Owned::Mine((true, buffer)) => buffer,
+            Owned::Mine((false, _)) => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside it", write.storage));
+                return Ok(());
+            }
+            Owned::NotOwner => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.storage));
+                return Ok(());
+            }
+            Owned::Unknown => {
+                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.storage));
+                return Ok(());
+            }
+        };
+
+        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, write.first, &bytes);
+        self.watch.uploaded(bytes.len());
+
+        Ok(())
+    }
+
+    #[request]
+    fn place(&mut self, place: Place, turn: &mut Turn<'_, Self>) -> Result<Placed, Fault> {
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let placed = placement::check(&place, &*kept).and_then(|()| kept.placement(&device, &place));
+        let made = match placed {
+            Ok(made) => made,
+            Err(why) => return Ok(Placed::Refused(why)),
+        };
+        let id = self.made(turn, |kept, id, maker| {
+            kept.placements.keep(id, maker, made);
+            kept.reorder();
+        })?;
+
+        Ok(Placed::Made(PlacementId { id }))
+    }
+
+    /// A dispatch, checked now and kept until released, or, when it runs once, until a cycle runs it or its frame goes,
+    /// its maker kept to tell (ADR-0026).
+    #[request]
+    fn create_dispatch(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self>) -> Result<Dispatched, Fault> {
+        let sender = turn.sender();
+        let by = sender.id();
+        let told = match create.runs {
+            Runs::UntilReleased => Told::Untold,
+            Runs::Once => {
+                let Some(maker) = turn.cast::<(DispatchRan,)>(sender) else {
+                    return Ok(Dispatched::Refused(DispatchRefused::Untold));
+                };
+                Told::Told(maker)
+            }
+        };
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let made = kept.checked_dispatch(&device, &create, by);
+        let made = match made {
+            Ok(made) => made,
+            Err(why) => return Ok(Dispatched::Refused(why)),
+        };
+        let id = self.made(turn, |kept, id, maker| {
+            kept.dispatches.keep(id, maker, made);
+            kept.reorder();
+        })?;
+        if let Told::Told(maker) = told {
+            self.owed.dispatches.push((id, maker));
+        }
+
+        Ok(Dispatched::Made(DispatchId { id }))
+    }
+
+    /// A list of the sender's own placements, the children it calls, each call found one segment beneath the sender,
+    /// its hits, and the keys it hears, checked whole and kept in place of its last, or refused and logged, the last
+    /// standing (ADR-0031, ADR-0055). The sender is watched from the first list it sends, as from the first thing it
+    /// made, so its list goes when it ends.
+    #[tell]
+    fn draw_list(&mut self, list: DrawList, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let hearers = (turn.cast::<Hearer>(sender), turn.cast::<KeyHearer>(sender));
+        let entries: Result<Vec<Listed>, ListRefused> = list
+            .entries
+            .iter()
+            .zip(0..)
+            .map(|(entry, at)| {
+                let reads =
+                    (|child: &PathSegment| turn.child_id(sender, child), |pixels: &Bytes| turn.read(pixels).len());
+                let listed = entry.listed(at, hearers, reads);
+                listed.map_err(|why| ListRefused { at, why })
+            })
+            .collect();
+        let listed = match entries {
+            Ok(entries) => self.kept_for(turn, |kept, by| kept.listed(entries, by))?,
+            Err(why) => Err(why),
+        };
+        if let Err(why) = listed {
+            turn.log(Level::Warn, format_args!("a draw list was refused: {why:?}"));
+        }
+
+        Ok(())
+    }
+
+    #[request]
+    fn shape_of(&mut self, of: ShapeOf, turn: &mut Turn<'_, Self>) -> Result<Shaped, Fault> {
+        let kept = turn.open(&mut self.kept)?;
+        let shaped = match kept.pass(of.frame, of.pass) {
+            Ok(fits) => Shaped::Shape(fits.shape),
+            Err(why) => Shaped::Refused(why),
+        };
+
+        Ok(shaped)
+    }
+
+    #[request]
+    fn create_effect(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self>) -> Result<Effected, Fault> {
+        let bytes = turn.read(&create.wgsl).to_vec();
+        let limits = turn.open(&mut self.gpu)?.device().limits();
+        let checked = program::source(&bytes).and_then(|wgsl| effect::check(&create, wgsl, &limits).map(|()| wgsl));
+        let wgsl = match checked {
+            Ok(wgsl) => wgsl,
+            Err(why) => return Ok(Effected::Refused(why)),
+        };
+
+        let gpu = turn.open(&mut self.gpu)?;
+        let made = effect_pipeline(gpu.device(), &create, wgsl);
+        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
+
+        Ok(Effected::Made(MadeEffect { program: ProgramId { id }, reads: create.reads }))
+    }
+
+    #[request]
+    fn create_frame(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self>) -> Result<Framed, Fault> {
+        let by = turn.sender().id();
+        let device = turn.open(&mut self.gpu)?.device().clone();
+        let kept = turn.open(&mut self.kept)?;
+        let checked = kept.may_make(create.ends, by).and_then(|()| frame::check(&create, &*kept));
+        if let Err(why) = checked {
+            return Ok(Framed::Refused(why));
+        }
+
+        let framed = self.kept_for(turn, |kept, maker| kept.frame(&device, create, maker))?;
+        let kept = turn.open(&mut self.kept)?;
+        let (undrawn, unrun) = (kept.undrawn(), kept.unrun());
+        for (placement, window, pass) in undrawn {
+            turn.log(
+                Level::Warn,
+                format_args!(
+                    "placement {placement} is not drawn: the main frame of window {window:?} has no pass {pass:?} of \
+                     its shape"
+                ),
+            );
+        }
+        for (dispatch, window, pass) in unrun {
+            turn.log(
+                Level::Warn,
+                format_args!(
+                    "dispatch {dispatch} is not run: the main frame of window {window:?} has no compute pass {pass:?}"
+                ),
+            );
+        }
+
+        Ok(framed.unwrap_or_else(Framed::Refused))
+    }
+
+    /// Releases what the sender made, as it asks. A dispatch that runs once, released before it ran, never runs, and
+    /// its maker, which released it, is not told.
+    #[tell]
+    fn release(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let by = turn.sender().id();
+        let kept = turn.open(&mut self.kept)?;
+        let released = kept.release(release, by);
+        let held = kept.reorder_after_release();
+        log_held(turn, &held);
+        match released {
+            Owned::Mine(()) => {}
+            Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
+            Owned::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
+        }
+        self.untell_gone(turn)?;
+
+        self.tell_unjoined(turn)
+    }
+
+    #[request]
+    fn read_back(&mut self, read: ReadBack, turn: &mut Turn<'_, Self>) -> Result<Reply<Pixels>, Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -894,15 +1088,15 @@ impl Handles<ReadBack> for Renderer {
 
         Ok(Reply::Later(later))
     }
-}
 
-/// Copies the region asked of the frame's target now, as the last `Render` left it, and answers it once the chassis has
-/// mapped the copy (ADR-0048).
-impl Handles<ReadFrameTarget> for Renderer {
-    type From = Anyone;
-    type Returns = Reply<TargetPixels>;
-
-    fn handle(&mut self, read: ReadFrameTarget, turn: &mut Turn<'_, Self>) -> Result<Reply<TargetPixels>, Fault> {
+    /// Copies the region asked of the frame's target now, as the last `Render` left it, and answers it once the chassis
+    /// has mapped the copy (ADR-0048).
+    #[request]
+    fn read_frame_target(
+        &mut self,
+        read: ReadFrameTarget,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<TargetPixels>, Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -923,13 +1117,9 @@ impl Handles<ReadFrameTarget> for Renderer {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Handles<ReadStorage> for Renderer {
-    type From = Anyone;
-    type Returns = Reply<StorageContents>;
-
-    fn handle(&mut self, read: ReadStorage, turn: &mut Turn<'_, Self>) -> Result<Reply<StorageContents>, Fault> {
+    #[request]
+    fn read_storage(&mut self, read: ReadStorage, turn: &mut Turn<'_, Self>) -> Result<Reply<StorageContents>, Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -948,13 +1138,9 @@ impl Handles<ReadStorage> for Renderer {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Handles<TimeFrame> for Renderer {
-    type From = Anyone;
-    type Returns = Reply<Timed>;
-
-    fn handle(&mut self, _: TimeFrame, turn: &mut Turn<'_, Self>) -> Result<Reply<Timed>, Fault> {
+    #[request]
+    fn time_frame(&mut self, _: TimeFrame, turn: &mut Turn<'_, Self>) -> Result<Reply<Timed>, Fault> {
         let features = turn.open(&mut self.gpu)?.device().features();
         if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
             return Ok(Reply::Now(Timed::Refused(TimingRefused::Unsupported)));
@@ -965,36 +1151,9 @@ impl Handles<TimeFrame> for Renderer {
 
         Ok(Reply::Later(later))
     }
-}
 
-/// Takes in a pointer event's place that a window's actor sent, to probe at the next frame drawn onto the window
-/// (ADR-0055). One from any other actor, or of a window the renderer does not draw to, is dropped.
-impl Handles<Probed> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, probed: Probed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let window = turn.found(&path::<Window>(probed.window));
-        let sender = turn.sender();
-        let is_window = window.is_some_and(|window| window.erase() == sender);
-        if !is_window {
-            turn.log(Level::Warn, format_args!("{probed:?} was dropped: only its window's actor probes it"));
-            return Ok(());
-        }
-        let kept = turn.open(&mut self.kept)?;
-        if let Some(windowed) = kept.windows.iter_mut().find(|windowed| windowed.window == probed.window) {
-            windowed.probing.heard(&probed);
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Mapped> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn mapped(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         // What the source brings comes from this actor to itself; a buffer is read only once the chassis says it is
         // mapped, as reading one that is not stops the program.
         let brought = turn.sender().id() == turn.me().id();
@@ -1068,18 +1227,13 @@ impl Handles<Mapped> for Renderer {
 
         Ok(())
     }
-}
 
-/// What the chassis said of a window it opened or closed while the program runs, brought from the source to itself: a
-/// window opened is drawn to from the next `Render` it is handed a frame for, by the renderer's own main frame of it,
-/// and its probes are asked for,
-/// and a window closed has its main frame dropped, with the targets made for it, so what joined only that frame is
-/// drawn nowhere until its maker releases it (ADR-0027).
-impl Handles<Surfaced> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// What the chassis said of a window it opened or closed while the program runs, brought from the source to itself:
+    /// a window opened is drawn to from the next `Render` it is handed a frame for, by the renderer's own main frame of
+    /// it, and its probes are asked for, and a window closed has its main frame dropped, with the targets made for it,
+    /// so what joined only that frame is drawn nowhere until its maker releases it (ADR-0027).
+    #[tell]
+    fn surfaced(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let brought = turn.sender().id() == turn.me().id();
         if !brought {
             turn.log(
@@ -1120,6 +1274,107 @@ impl Handles<Surfaced> for Renderer {
 
         Ok(())
     }
+
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.watch.ended(&ended);
+        self.timed.ended(&ended);
+        let maker = ended.actor().id();
+        let kept = turn.open(&mut self.kept)?;
+        let watched = kept.makers.ended(maker);
+        if !watched {
+            return Ok(());
+        }
+        let held = kept.ended(maker);
+        log_held(turn, &held);
+        // What the ended actor made to run once went with all it made, and no one is left to tell.
+        self.untell_gone(turn)?;
+
+        self.tell_unjoined(turn)
+    }
+
+    #[request]
+    fn create_font(&mut self, create: CreateFont, turn: &mut Turn<'_, Self>) -> Result<FontMade, Fault> {
+        self.handle_create_font(create, turn)
+    }
+
+    #[request]
+    fn read_metrics(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self>) -> Result<FontMetrics, Fault> {
+        self.handle_read_metrics(read, turn)
+    }
+
+    #[request]
+    fn create_text(&mut self, create: CreateText, turn: &mut Turn<'_, Self>) -> Result<Reply<TextMade>, Fault> {
+        self.handle_create_text(create, turn)
+    }
+
+    #[tell]
+    fn write_text(&mut self, write: WriteText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_write_text(&write, turn)
+    }
+
+    #[request]
+    fn place_text(&mut self, place: PlaceText, turn: &mut Turn<'_, Self>) -> Result<TextPlaced, Fault> {
+        self.handle_place_text(&place, turn)
+    }
+
+    #[tell]
+    fn move_text(&mut self, moved: MoveText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_move_text(moved, turn)
+    }
+
+    #[answer]
+    fn glyphs_generated(
+        &mut self,
+        mail: (Answered<GlyphsGenerated>, Generating),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.handle_glyphs_generated(mail, turn)
+    }
+
+    #[tell]
+    fn subscribe_frame_stats(&mut self, mail: SubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_subscribe_frame_stats(mail, turn)
+    }
+
+    #[tell]
+    fn unsubscribe_frame_stats(&mut self, mail: UnsubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_unsubscribe_frame_stats(mail, turn)
+    }
+
+    #[tell]
+    fn subscribe_gpu_times(&mut self, mail: SubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_subscribe_gpu_times(mail, turn)
+    }
+
+    #[tell]
+    fn unsubscribe_gpu_times(&mut self, mail: UnsubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_unsubscribe_gpu_times(mail, turn)
+    }
+
+    #[request]
+    fn describe_gpu(&mut self, mail: DescribeGpu, turn: &mut Turn<'_, Self>) -> Result<GpuDescribed, Fault> {
+        self.handle_describe_gpu(mail, turn)
+    }
+
+    /// Takes in a pointer event's place that a window's actor sent, to probe at the next frame drawn onto the window
+    /// (ADR-0055). One from any other actor, or of a window the renderer does not draw to, is dropped.
+    #[tell]
+    fn probed(&mut self, probed: Probed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let window = turn.found(&path::<Window>(probed.window));
+        let sender = turn.sender();
+        let is_window = window.is_some_and(|window| window.erase() == sender);
+        if !is_window {
+            turn.log(Level::Warn, format_args!("{probed:?} was dropped: only its window's actor probes it"));
+            return Ok(());
+        }
+        let kept = turn.open(&mut self.kept)?;
+        if let Some(windowed) = kept.windows.iter_mut().find(|windowed| windowed.window == probed.window) {
+            windowed.probing.heard(&probed);
+        }
+
+        Ok(())
+    }
 }
 
 /// What `read`, a read, a window, or a dispatch, owes of `owed`, taken from it.
@@ -1136,499 +1391,10 @@ fn mapped_bytes<T>(buffer: &wgpu::Buffer, read: impl FnOnce(&[u8]) -> T) -> Opti
     made
 }
 
-impl Handles<CreateMesh> for Renderer {
-    type From = Anyone;
-    type Returns = Meshed;
-
-    fn handle(&mut self, create: CreateMesh, turn: &mut Turn<'_, Self>) -> Result<Meshed, Fault> {
-        // Copied out of the store: the bytes are read through the turn, as the GPU is opened through it.
-        let vertices = turn.read(&create.vertices).to_vec();
-        let indices = turn.read(&create.indices).to_vec();
-        let counted = match mesh::check(&create.layout, &vertices, &indices) {
-            Ok(counted) => counted,
-            Err(why) => return Ok(Meshed::Refused(why)),
-        };
-
-        self.watch.uploaded(vertices.len() + indices.len());
-        let gpu = turn.open(&mut self.gpu)?;
-        let mesh = Mesh {
-            vertices: upload(gpu, &vertices, wgpu::BufferUsages::VERTEX),
-            indices: upload(gpu, &indices, wgpu::BufferUsages::INDEX),
-            counted,
-            layout: create.layout,
-        };
-        let id = self.made(turn, |kept, id, maker| kept.meshes.keep(id, maker, mesh))?;
-
-        Ok(Meshed::Made(MeshId { id }))
-    }
-}
-
-impl Handles<CreateTexture> for Renderer {
-    type From = Anyone;
-    type Returns = Textured;
-
-    fn handle(&mut self, create: CreateTexture, turn: &mut Turn<'_, Self>) -> Result<Textured, Fault> {
-        let CreateTexture { width, height, format, pixels } = create;
-        let pixels = turn.read(&pixels).to_vec();
-        let most = turn.open(&mut self.gpu)?.device().limits().max_texture_dimension_2d;
-        if let Err(why) = texture::check(width, height, format, &pixels, most) {
-            return Ok(Textured::Refused(why));
-        }
-
-        let gpu = turn.open(&mut self.gpu)?;
-        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
-        let made = gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: format.wgpu(),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let layout = wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * format.bytes()),
-            rows_per_image: Some(height),
-        };
-        gpu.queue().write_texture(made.as_image_copy(), &pixels, layout, size);
-        self.watch.uploaded(pixels.len());
-        let view = made.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture = Texture { made, view, format, origin: Origin::Pixels };
-        let id = self.made(turn, |kept, id, maker| kept.textures.keep(id, maker, texture))?;
-
-        Ok(Textured::Made(TextureId { id }))
-    }
-}
-
-impl Handles<CreateProgram> for Renderer {
-    type From = Anyone;
-    type Returns = Programmed;
-
-    fn handle(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self>) -> Result<Programmed, Fault> {
-        // Copied out of the store, as a mesh's bytes are: the GPU is opened through the turn.
-        let bytes = turn.read(&create.wgsl).to_vec();
-        let limits = turn.open(&mut self.gpu)?.device().limits();
-        let checked = program::source(&bytes).and_then(|wgsl| program::check(&create, wgsl, &limits));
-        let wgsl = match checked {
-            Ok(wgsl) => wgsl,
-            Err(why) => return Ok(Programmed::Refused(why)),
-        };
-
-        let picking = turn.open(&mut self.kept)?.picker.layout().clone();
-        let gpu = turn.open(&mut self.gpu)?;
-        let made = pipeline(gpu, &create, &wgsl, &picking);
-        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
-
-        Ok(Programmed::Made(ProgramId { id }))
-    }
-}
-
-impl Handles<CreateCompute> for Renderer {
-    type From = Anyone;
-    type Returns = Computed;
-
-    fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self>) -> Result<Computed, Fault> {
-        let bytes = turn.read(&create.wgsl).to_vec();
-        let limits = turn.open(&mut self.gpu)?.device().limits();
-        let checked = program::source(&bytes).and_then(|wgsl| Ok((wgsl, compute::check(&create, wgsl, &limits)?)));
-        let (wgsl, checked) = match checked {
-            Ok(checked) => checked,
-            Err(why) => return Ok(Computed::Refused(why)),
-        };
-
-        let gpu = turn.open(&mut self.gpu)?;
-        let made = compute_pipeline(gpu.device(), &create, wgsl, checked);
-        let id = self.made(turn, |kept, id, maker| kept.computes.keep(id, maker, made))?;
-
-        Ok(Computed::Made(ComputeId { id }))
-    }
-}
-
-impl Handles<CreateInstances> for Renderer {
-    type From = Anyone;
-    type Returns = Instanced;
-
-    fn handle(&mut self, create: CreateInstances, turn: &mut Turn<'_, Self>) -> Result<Instanced, Fault> {
-        let CreateInstances { layout, capacity, records } = create;
-        let records = turn.read(&records).to_vec();
-        let most = turn.open(&mut self.gpu)?.device().limits().max_buffer_size;
-        let length = match instances::check(&layout, capacity, &records, most) {
-            Ok(length) => length,
-            Err(why) => return Ok(Instanced::Refused(why)),
-        };
-
-        let gpu = turn.open(&mut self.gpu)?;
-        let room = u64::from(capacity) * u64::from(layout.stride);
-        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: room,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        gpu.queue().write_buffer(&buffer, 0, &records);
-        self.watch.uploaded(records.len());
-        let held = instances::Held { stride: layout.stride, capacity, length };
-        let made = Instances { buffer, held, layout };
-        let id = self.made(turn, |kept, id, maker| kept.instances.keep(id, maker, made))?;
-
-        Ok(Instanced::Made(InstancesId { id }))
-    }
-}
-
-impl Handles<WriteInstances> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, write: WriteInstances, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let by = turn.sender().id();
-        let records = turn.read(&write.records).to_vec();
-        let kept = turn.open(&mut self.kept)?;
-        let written = kept.instances.owned(write.instances.id, by, |instances| {
-            let length = instances.held.write(write.first, records.len() as u64);
-            if let Ok(length) = length {
-                instances.held.length = length;
-            }
-            length.map(|_| (instances.buffer.clone(), instances.held.stride))
-        });
-        let (buffer, stride) = match written {
-            Owned::Mine(Ok(written)) => written,
-            Owned::Mine(Err(why)) => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: {why:?}", write.instances));
-                return Ok(());
-            }
-            Owned::NotOwner => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.instances));
-                return Ok(());
-            }
-            Owned::Unknown => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.instances));
-                return Ok(());
-            }
-        };
-
-        let at = u64::from(write.first) * u64::from(stride);
-        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, at, &records);
-        self.watch.uploaded(records.len());
-
-        Ok(())
-    }
-}
-
-impl Handles<CreateUniforms> for Renderer {
-    type From = Anyone;
-    type Returns = Uniformed;
-
-    fn handle(&mut self, create: CreateUniforms, turn: &mut Turn<'_, Self>) -> Result<Uniformed, Fault> {
-        let bytes = turn.read(&create.bytes).to_vec();
-        let most = turn.open(&mut self.gpu)?.device().limits().max_uniform_buffer_binding_size;
-        let size = match uniforms::check(&bytes, most) {
-            Ok(size) => size,
-            Err(why) => return Ok(Uniformed::Refused(why)),
-        };
-
-        self.watch.uploaded(bytes.len());
-        let gpu = turn.open(&mut self.gpu)?;
-        let buffer = upload(gpu, &bytes, wgpu::BufferUsages::UNIFORM);
-        let made = Uniforms { buffer, size };
-        let id = self.made(turn, |kept, id, maker| kept.uniforms.keep(id, maker, made))?;
-
-        Ok(Uniformed::Made(UniformsId { id }))
-    }
-}
-
-impl Handles<WriteUniforms> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, write: WriteUniforms, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let by = turn.sender().id();
-        let bytes = turn.read(&write.bytes).to_vec();
-        let kept = turn.open(&mut self.kept)?;
-        let written = kept.uniforms.owned(write.uniforms.id, by, |uniforms| {
-            let fits = uniforms::writes(uniforms.size, write.first, bytes.len() as u64);
-            (fits, uniforms.buffer.clone())
-        });
-        let buffer = match written {
-            Owned::Mine((true, buffer)) => buffer,
-            Owned::Mine((false, _)) => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside them", write.uniforms));
-                return Ok(());
-            }
-            Owned::NotOwner => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: another made them", write.uniforms));
-                return Ok(());
-            }
-            Owned::Unknown => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.uniforms));
-                return Ok(());
-            }
-        };
-
-        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, u64::from(write.first), &bytes);
-        self.watch.uploaded(bytes.len());
-
-        Ok(())
-    }
-}
-
-impl Handles<CreateStorage> for Renderer {
-    type From = Anyone;
-    type Returns = Stored;
-
-    fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self>) -> Result<Stored, Fault> {
-        let bytes = turn.read(&create.bytes).to_vec();
-        self.watch.uploaded(bytes.len());
-        self.store(turn, bytes.len() as u64, |gpu| upload(gpu, &bytes, STORAGE_USAGE))
-    }
-}
-
-impl Handles<CreateZeroedStorage> for Renderer {
-    type From = Anyone;
-    type Returns = Stored;
-
-    fn handle(&mut self, create: CreateZeroedStorage, turn: &mut Turn<'_, Self>) -> Result<Stored, Fault> {
-        // WebGPU makes a buffer with every byte zero.
-        self.store(turn, create.bytes, |gpu| {
-            gpu.device().create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: create.bytes,
-                usage: STORAGE_USAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        })
-    }
-}
-
-impl Handles<WriteStorage> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let by = turn.sender().id();
-        let bytes = turn.read(&write.bytes).to_vec();
-        let kept = turn.open(&mut self.kept)?;
-        let written = kept.storage.owned(write.storage.id, by, |storage| {
-            let fits = storage::fits(storage.size, write.first, bytes.len() as u64);
-            (fits, storage.buffer.clone())
-        });
-        let buffer = match written {
-            Owned::Mine((true, buffer)) => buffer,
-            Owned::Mine((false, _)) => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: it lies outside it", write.storage));
-                return Ok(());
-            }
-            Owned::NotOwner => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.storage));
-                return Ok(());
-            }
-            Owned::Unknown => {
-                turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.storage));
-                return Ok(());
-            }
-        };
-
-        turn.open(&mut self.gpu)?.queue().write_buffer(&buffer, write.first, &bytes);
-        self.watch.uploaded(bytes.len());
-
-        Ok(())
-    }
-}
-
-impl Handles<Place> for Renderer {
-    type From = Anyone;
-    type Returns = Placed;
-
-    fn handle(&mut self, place: Place, turn: &mut Turn<'_, Self>) -> Result<Placed, Fault> {
-        let device = turn.open(&mut self.gpu)?.device().clone();
-        let kept = turn.open(&mut self.kept)?;
-        let placed = placement::check(&place, &*kept).and_then(|()| kept.placement(&device, &place));
-        let made = match placed {
-            Ok(made) => made,
-            Err(why) => return Ok(Placed::Refused(why)),
-        };
-        let id = self.made(turn, |kept, id, maker| {
-            kept.placements.keep(id, maker, made);
-            kept.reorder();
-        })?;
-
-        Ok(Placed::Made(PlacementId { id }))
-    }
-}
-
-/// A dispatch, checked now and kept until released, or, when it runs once, until a cycle runs it or its frame goes, its
-/// maker kept to tell (ADR-0026).
-impl Handles<CreateDispatch> for Renderer {
-    type From = Anyone;
-    type Returns = Dispatched;
-
-    fn handle(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self>) -> Result<Dispatched, Fault> {
-        let sender = turn.sender();
-        let by = sender.id();
-        let told = match create.runs {
-            Runs::UntilReleased => Told::Untold,
-            Runs::Once => {
-                let Some(maker) = turn.cast::<(DispatchRan,)>(sender) else {
-                    return Ok(Dispatched::Refused(DispatchRefused::Untold));
-                };
-                Told::Told(maker)
-            }
-        };
-        let device = turn.open(&mut self.gpu)?.device().clone();
-        let kept = turn.open(&mut self.kept)?;
-        let made = kept.checked_dispatch(&device, &create, by);
-        let made = match made {
-            Ok(made) => made,
-            Err(why) => return Ok(Dispatched::Refused(why)),
-        };
-        let id = self.made(turn, |kept, id, maker| {
-            kept.dispatches.keep(id, maker, made);
-            kept.reorder();
-        })?;
-        if let Told::Told(maker) = told {
-            self.owed.dispatches.push((id, maker));
-        }
-
-        Ok(Dispatched::Made(DispatchId { id }))
-    }
-}
-
 /// Whom a dispatch's making leaves the renderer to tell when it has run: its maker, when it runs once, or no one.
 enum Told {
     Untold,
     Told(ProtocolRef<(DispatchRan,)>),
-}
-
-/// A list of the sender's own placements, the children it calls, each call found one segment beneath the sender, its
-/// hits, and the keys it hears, checked whole and kept in place of its last, or refused and logged, the last standing
-/// (ADR-0031, ADR-0055). The
-/// sender is watched from the first list it sends, as from the first thing it made, so its list goes when it ends.
-impl Handles<DrawList> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let sender = turn.sender();
-        let hearers = (turn.cast::<Hearer>(sender), turn.cast::<KeyHearer>(sender));
-        let entries: Result<Vec<Listed>, ListRefused> = list
-            .entries
-            .iter()
-            .zip(0..)
-            .map(|(entry, at)| {
-                let reads =
-                    (|child: &PathSegment| turn.child_id(sender, child), |pixels: &Bytes| turn.read(pixels).len());
-                let listed = entry.listed(at, hearers, reads);
-                listed.map_err(|why| ListRefused { at, why })
-            })
-            .collect();
-        let listed = match entries {
-            Ok(entries) => self.kept_for(turn, |kept, by| kept.listed(entries, by))?,
-            Err(why) => Err(why),
-        };
-        if let Err(why) = listed {
-            turn.log(Level::Warn, format_args!("a draw list was refused: {why:?}"));
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<ShapeOf> for Renderer {
-    type From = Anyone;
-    type Returns = Shaped;
-
-    fn handle(&mut self, of: ShapeOf, turn: &mut Turn<'_, Self>) -> Result<Shaped, Fault> {
-        let kept = turn.open(&mut self.kept)?;
-        let shaped = match kept.pass(of.frame, of.pass) {
-            Ok(fits) => Shaped::Shape(fits.shape),
-            Err(why) => Shaped::Refused(why),
-        };
-
-        Ok(shaped)
-    }
-}
-
-impl Handles<CreateEffect> for Renderer {
-    type From = Anyone;
-    type Returns = Effected;
-
-    fn handle(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self>) -> Result<Effected, Fault> {
-        let bytes = turn.read(&create.wgsl).to_vec();
-        let limits = turn.open(&mut self.gpu)?.device().limits();
-        let checked = program::source(&bytes).and_then(|wgsl| effect::check(&create, wgsl, &limits).map(|()| wgsl));
-        let wgsl = match checked {
-            Ok(wgsl) => wgsl,
-            Err(why) => return Ok(Effected::Refused(why)),
-        };
-
-        let gpu = turn.open(&mut self.gpu)?;
-        let made = effect_pipeline(gpu.device(), &create, wgsl);
-        let id = self.made(turn, |kept, id, maker| kept.programs.keep(id, maker, made))?;
-
-        Ok(Effected::Made(MadeEffect { program: ProgramId { id }, reads: create.reads }))
-    }
-}
-
-impl Handles<CreateFrame> for Renderer {
-    type From = Anyone;
-    type Returns = Framed;
-
-    fn handle(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self>) -> Result<Framed, Fault> {
-        let by = turn.sender().id();
-        let device = turn.open(&mut self.gpu)?.device().clone();
-        let kept = turn.open(&mut self.kept)?;
-        let checked = kept.may_make(create.ends, by).and_then(|()| frame::check(&create, &*kept));
-        if let Err(why) = checked {
-            return Ok(Framed::Refused(why));
-        }
-
-        let framed = self.kept_for(turn, |kept, maker| kept.frame(&device, create, maker))?;
-        let kept = turn.open(&mut self.kept)?;
-        let (undrawn, unrun) = (kept.undrawn(), kept.unrun());
-        for (placement, window, pass) in undrawn {
-            turn.log(
-                Level::Warn,
-                format_args!(
-                    "placement {placement} is not drawn: the main frame of window {window:?} has no pass {pass:?} of \
-                     its shape"
-                ),
-            );
-        }
-        for (dispatch, window, pass) in unrun {
-            turn.log(
-                Level::Warn,
-                format_args!(
-                    "dispatch {dispatch} is not run: the main frame of window {window:?} has no compute pass {pass:?}"
-                ),
-            );
-        }
-
-        Ok(framed.unwrap_or_else(Framed::Refused))
-    }
-}
-
-/// Releases what the sender made, as it asks. A dispatch that runs once, released before it ran, never runs, and its
-/// maker, which released it, is not told.
-impl Handles<Release> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let by = turn.sender().id();
-        let kept = turn.open(&mut self.kept)?;
-        let released = kept.release(release, by);
-        let held = kept.reorder_after_release();
-        log_held(turn, &held);
-        match released {
-            Owned::Mine(()) => {}
-            Owned::NotOwner => turn.log(Level::Warn, format_args!("{release:?} was not released: another made it")),
-            Owned::Unknown => turn.log(Level::Warn, format_args!("{release:?} was not released: no such thing")),
-        }
-        self.untell_gone(turn)?;
-
-        self.tell_unjoined(turn)
-    }
 }
 
 impl Renderer {
@@ -1675,25 +1441,6 @@ fn log_held(turn: &mut Turn<'_, Renderer>, held: &[u64]) {
             Level::Warn,
             format_args!("dispatch {dispatch} is not run: a frame in no order with its own writes what it writes"),
         );
-    }
-}
-
-impl Receives<Ended> for Renderer {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.watch.ended(&ended);
-        self.timed.ended(&ended);
-        let maker = ended.actor().id();
-        let kept = turn.open(&mut self.kept)?;
-        let watched = kept.makers.ended(maker);
-        if !watched {
-            return Ok(());
-        }
-        let held = kept.ended(maker);
-        log_held(turn, &held);
-        // What the ended actor made to run once went with all it made, and no one is left to tell.
-        self.untell_gone(turn)?;
-
-        self.tell_unjoined(turn)
     }
 }
 

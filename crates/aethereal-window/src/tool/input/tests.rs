@@ -9,7 +9,7 @@ use crate::keys::{KeyEvent, KeySet, Keyed, KeysEntry, KeysListed};
 use crate::perform::{MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES};
 use crate::pointing::{Probed, SubscribeProbes};
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{Anyone, Top};
+use aethereal_actor::{Beginning, actor};
 use aethereal_data::{ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Turned, Unheard};
@@ -26,17 +26,8 @@ const SURFACE: Surface = Surface { width: 640, height: 480, scale: 1.0 };
 #[kind(name = "aether.test.subscriber")]
 struct Subscriber;
 
-impl ChildOf for Subscriber {
-    type Parent = Top;
-}
-
-impl Actor for Subscriber {
-    type Config = InputToolConfig;
-    type Key = ();
-    type Handles = (Event, Keyed, Probed);
-    type Depends = (Window,);
-    type Spawns = ();
-
+#[actor(depends(Window))]
+impl Subscriber {
     fn begin(_: InputToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let hears = KeysEntry { actor: turn.me().protocol(), entry: 0, keys: KeySet::All, blocks: true };
         let window = path::<Window>(WindowId::nth(0));
@@ -45,34 +36,18 @@ impl Actor for Subscriber {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, _: Event) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Event> for Subscriber {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn keyed(&mut self, _: Keyed) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Keyed> for Subscriber {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Probed> for Subscriber {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn probed(&mut self, _: Probed) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -2,10 +2,7 @@
 //! them at each `Tick`.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Render, Start, Tick, Top, Turn,
-    path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -109,10 +106,6 @@ enum Drawer {
     Drawing { instances: InstancesId, uniforms: UniformsId },
 }
 
-impl ChildOf for Drawer {
-    type Parent = Top;
-}
-
 /// What was learned before the mesh was asked for: the shape the program draws into.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -153,22 +146,8 @@ struct MadeAll {
     uniforms: UniformsId,
 }
 
-impl Actor for Drawer {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MadeMesh>,
-        Answer<Instanced, MadeProgram>,
-        Answer<Uniformed, MadeInstances>,
-        Answer<Placed, MadeAll>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Drawer {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -176,7 +155,179 @@ impl Actor for Drawer {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
+
+        Ok(())
+    }
+
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Drawing { instances, uniforms } = *self else {
+            return Ok(());
+        };
+        let millis = tick.elapsed_nanos / 1_000_000;
+        // Written whole, then cut to the ring's length: a write that ends short of what they held leaves the rest.
+        let (length, records) = ring(millis);
+        let put = (turn.put(records), turn.put(Vec::new()), turn.put(look(millis)));
+        let (Ok(records), Ok(nothing), Ok(bytes)) = put else {
+            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(()))
+            .send(&WriteInstances { instances, first: 0, records })?
+            .send(&WriteInstances { instances, first: length, records: nothing })?
+            .send(&WriteUniforms { uniforms, first: 0, bytes })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
+        let (vertices, indices) = match (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) {
+            (Ok(vertices), Ok(indices)) => (vertices, indices),
+            (Err(why), _) | (_, Err(why)) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
+        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            say(format!("the triangle was not made: {answered:?}"));
+            return Ok(());
+        };
+        let wgsl = match turn.put(Vec::from(SHADE)) {
+            Ok(wgsl) => wgsl,
+            Err(why) => {
+                say(format!("no program asked: {why}"));
+                return Ok(());
+            }
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let shade = CreateProgram {
+            wgsl,
+            vertex: String::from("place"),
+            fragment: String::from("shade"),
+            layout: VertexLayout { stride: 8, attributes: vec![position] },
+            instances: PerInstance::Records(record()),
+            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+            shape: learned.shape,
+        };
+        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, made): (Answered<Programmed>, MadeMesh),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(program)) = answered else {
+            say(format!("the program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let records = match turn.put(ring(0).1) {
+            Ok(records) => records,
+            Err(why) => {
+                say(format!("no instances asked: {why}"));
+                return Ok(());
+            }
+        };
+        let instances = CreateInstances { layout: record(), capacity: u32::from(RING), records };
+        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn instanced(
+        &mut self,
+        (answered, made): (Answered<Instanced>, MadeProgram),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Instanced::Made(instances)) = answered else {
+            say(format!("the instances were not made: {answered:?}"));
+            return Ok(());
+        };
+        let bytes = match turn.put(look(0)) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                say(format!("no uniforms asked: {why}"));
+                return Ok(());
+            }
+        };
+        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
+        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn uniformed(
+        &mut self,
+        (answered, made): (Answered<Uniformed>, MadeInstances),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
+            say(format!("the uniforms were not made: {answered:?}"));
+            return Ok(());
+        };
+        let Self::Making { window } = *self else {
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Records(made.instances),
+            joins: vec![Join::to::<Main>(Frame::Main(window), made.program, bindings)],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, made): (Answered<Placed>, MadeAll),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Placed::Made(placement)) => {
+                say(format!("placed {placement:?}"));
+                let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
+                turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
+                *self = Self::Drawing { instances: made.instances, uniforms: made.uniforms };
+            }
+            Answered::Yes(Placed::Refused(why)) => say(format!("the ring was not placed: {why:?}")),
+            Answered::No(why) => say(format!("the ring was not placed: {why:?}")),
+        }
+
         Ok(())
     }
 }
@@ -212,194 +363,10 @@ fn look(millis: u64) -> Vec<u8> {
     bytes([scale.to_bits(), 0, 0, 0])
 }
 
-impl Receives<On<Start>> for Drawer {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Drawer {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            say(format!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
-        let (vertices, indices) = match (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) {
-            (Ok(vertices), Ok(indices)) => (vertices, indices),
-            (Err(why), _) | (_, Err(why)) => {
-                say(format!("nothing asked: {why}"));
-                return Ok(());
-            }
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
-        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
 /// How a record of the ring is laid out: a place, then a colour.
 fn record() -> VertexLayout {
     let offset = Attribute { location: 1, format: VertexFormat::Float32x2, offset: 0 };
     let colour = Attribute { location: 2, format: VertexFormat::Unorm8x4, offset: 8 };
 
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Drawer {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            say(format!("the triangle was not made: {answered:?}"));
-            return Ok(());
-        };
-        let wgsl = match turn.put(Vec::from(SHADE)) {
-            Ok(wgsl) => wgsl,
-            Err(why) => {
-                say(format!("no program asked: {why}"));
-                return Ok(());
-            }
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let shade = CreateProgram {
-            wgsl,
-            vertex: String::from("place"),
-            fragment: String::from("shade"),
-            layout: VertexLayout { stride: 8, attributes: vec![position] },
-            instances: PerInstance::Records(record()),
-            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
-            reads: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-            shape: learned.shape,
-        };
-        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, MadeMesh>> for Drawer {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(program)) = answered else {
-            say(format!("the program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let records = match turn.put(ring(0).1) {
-            Ok(records) => records,
-            Err(why) => {
-                say(format!("no instances asked: {why}"));
-                return Ok(());
-            }
-        };
-        let instances = CreateInstances { layout: record(), capacity: u32::from(RING), records };
-        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Instanced, MadeProgram>> for Drawer {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Instanced::Made(instances)) = answered else {
-            say(format!("the instances were not made: {answered:?}"));
-            return Ok(());
-        };
-        let bytes = match turn.put(look(0)) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                say(format!("no uniforms asked: {why}"));
-                return Ok(());
-            }
-        };
-        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
-        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Uniformed, MadeInstances>> for Drawer {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Uniformed>, MadeInstances),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
-            say(format!("the uniforms were not made: {answered:?}"));
-            return Ok(());
-        };
-        let Self::Making { window } = *self else {
-            return Ok(());
-        };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Records(made.instances),
-            joins: vec![Join::to::<Main>(Frame::Main(window), made.program, bindings)],
-        };
-        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Placed, MadeAll>> for Drawer {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Placed::Made(placement)) => {
-                say(format!("placed {placement:?}"));
-                let drawn = Entry::Draw { placement, pointer: Pointer::Ignores };
-                turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![drawn] })?;
-                *self = Self::Drawing { instances: made.instances, uniforms: made.uniforms };
-            }
-            Answered::Yes(Placed::Refused(why)) => say(format!("the ring was not placed: {why:?}")),
-            Answered::No(why) => say(format!("the ring was not placed: {why:?}")),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Drawer {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Drawing { instances, uniforms } = *self else {
-            return Ok(());
-        };
-        let millis = tick.elapsed_nanos / 1_000_000;
-        // Written whole, then cut to the ring's length: a write that ends short of what they held leaves the rest.
-        let (length, records) = ring(millis);
-        let put = (turn.put(records), turn.put(Vec::new()), turn.put(look(millis)));
-        let (Ok(records), Ok(nothing), Ok(bytes)) = put else {
-            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(()))
-            .send(&WriteInstances { instances, first: 0, records })?
-            .send(&WriteInstances { instances, first: length, records: nothing })?
-            .send(&WriteUniforms { uniforms, first: 0, bytes })?;
-
-        Ok(())
-    }
 }

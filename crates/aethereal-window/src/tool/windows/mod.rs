@@ -5,10 +5,7 @@
 mod tests;
 
 use crate::windows::{ListWindows, ModeSet, MoveWindow, Moved, ResizeWindow, Resized, SetMode, WindowList, Windows};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
@@ -39,72 +36,15 @@ pub struct WindowTool {
     next: u64,
 }
 
-impl ChildOf for WindowTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for WindowTool {
-    type Config = WindowToolConfig;
-    type Key = ();
-    type Handles =
-        (Call, Answer<WindowList, Placing>, Answer<Resized, Placing>, Answer<Moved, Placing>, Answer<ModeSet, Placing>);
-    type Depends = (Windows,);
-    type Spawns = ();
-
-    fn begin(_: WindowToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Windows))]
+impl WindowTool {
+    fn begin(_: WindowToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for WindowTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![
-            ToolSheet::json::<ListWindows>(
-                "list_windows",
-                "Lists every open window, in the order of their ids. Each is listed with its id, which names it to \
-                 capture_frame, record_clip, send_input, and the tools here; its title; its surface, in its pixels, \
-                 and the screen's scale; the mode it is shown in; and whether it has the keyboard. A window still \
-                 opening is not listed.",
-                Output::Value(SchemaNodes::of(&WindowList::SHAPE)),
-            ),
-            ToolSheet::of::<ResizeWindow>(
-                "resize_window",
-                "Resizes a window shown windowed to `size` in logical pixels. It answers its surface as it is drawn \
-                 now; a windowing system that resizes later answers the size before. Refused for a window maximized \
-                 or fullscreen: set it windowed first.",
-                Output::Value(SchemaNodes::of(&Resized::SHAPE)),
-            ),
-            ToolSheet::of::<MoveWindow>(
-                "move_window",
-                "Moves a window shown windowed to `at`. `at` is where its frame's top left goes, in logical pixels \
-                 from the screen's top left. Refused on Wayland, whose compositor alone places windows, and in a \
-                 browser.",
-                Output::Value(SchemaNodes::of(&Moved::SHAPE)),
-            ),
-            ToolSheet::of::<SetMode>(
-                "set_window_mode",
-                "Shows a window `Windowed`, `Maximized`, or `Fullscreen`, and answers its surface as it is drawn \
-                 now. Refused in a browser.",
-                Output::Value(SchemaNodes::of(&ModeSet::SHAPE)),
-            ),
-        ]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// Holds the call, and asks the window root what it was called with: answered once the root has answered.
-impl Handles<Call> for WindowTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// Holds the call, and asks the window root what it was called with: answered once the root has answered.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let placing = Placing { call: self.next };
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
@@ -144,45 +84,80 @@ impl Handles<Call> for WindowTool {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<WindowList, Placing>> for WindowTool {
-    fn handle(
+    #[answer]
+    fn window_list(
         &mut self,
         (answered, placing): (Answered<WindowList>, Placing),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
-}
 
-impl Receives<Answer<Resized, Placing>> for WindowTool {
-    fn handle(
+    #[answer]
+    fn resized(
         &mut self,
         (answered, placing): (Answered<Resized>, Placing),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
-}
 
-impl Receives<Answer<Moved, Placing>> for WindowTool {
-    fn handle(
+    #[answer]
+    fn moved(
         &mut self,
         (answered, placing): (Answered<Moved>, Placing),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
-}
 
-impl Receives<Answer<ModeSet, Placing>> for WindowTool {
-    fn handle(
+    #[answer]
+    fn mode_set(
         &mut self,
         (answered, placing): (Answered<ModeSet>, Placing),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
+    }
+}
+
+impl Tool for WindowTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![
+            ToolSheet::json::<ListWindows>(
+                "list_windows",
+                "Lists every open window, in the order of their ids. Each is listed with its id, which names it to \
+                 capture_frame, record_clip, send_input, and the tools here; its title; its surface, in its pixels, \
+                 and the screen's scale; the mode it is shown in; and whether it has the keyboard. A window still \
+                 opening is not listed.",
+                Output::Value(SchemaNodes::of(&WindowList::SHAPE)),
+            ),
+            ToolSheet::of::<ResizeWindow>(
+                "resize_window",
+                "Resizes a window shown windowed to `size` in logical pixels. It answers its surface as it is drawn \
+                 now; a windowing system that resizes later answers the size before. Refused for a window maximized \
+                 or fullscreen: set it windowed first.",
+                Output::Value(SchemaNodes::of(&Resized::SHAPE)),
+            ),
+            ToolSheet::of::<MoveWindow>(
+                "move_window",
+                "Moves a window shown windowed to `at`. `at` is where its frame's top left goes, in logical pixels \
+                 from the screen's top left. Refused on Wayland, whose compositor alone places windows, and in a \
+                 browser.",
+                Output::Value(SchemaNodes::of(&Moved::SHAPE)),
+            ),
+            ToolSheet::of::<SetMode>(
+                "set_window_mode",
+                "Shows a window `Windowed`, `Maximized`, or `Fullscreen`, and answers its surface as it is drawn \
+                 now. Refused in a browser.",
+                Output::Value(SchemaNodes::of(&ModeSet::SHAPE)),
+            ),
+        ]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

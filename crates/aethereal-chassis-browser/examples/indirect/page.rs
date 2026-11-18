@@ -5,9 +5,7 @@
 //! order.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -175,10 +173,6 @@ enum Culler {
     Reading,
 }
 
-impl ChildOf for Culler {
-    type Parent = Top;
-}
-
 /// The bytes of `values`, as a blob is put.
 fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
     values.into_iter().flat_map(u32::to_ne_bytes).collect()
@@ -285,26 +279,8 @@ enum Read {
     Visible,
 }
 
-impl Actor for Culler {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MeshId>,
-        Answer<Computed, Computing>,
-        Answer<Stored, Storing>,
-        Answer<Framed, Made>,
-        Answer<Placed, Made>,
-        Answer<Dispatched, Dispatching>,
-        Answer<StorageContents, Read>,
-        Answer<Timed, Nothing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Culler {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -312,13 +288,8 @@ impl Actor for Culler {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Culler {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -326,10 +297,27 @@ impl Receives<On<Start>> for Culler {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shaped, Nothing>> for Culler {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Running { arguments, visible, drawn } = *self else {
+            return Ok(());
+        };
+        if drawn < SETTLED {
+            *self = Self::Running { arguments, visible, drawn: drawn + 1 };
+            return Ok(());
+        }
+        turn.to(path::<Renderer>(()))
+            .ask(&ReadStorage { storage: arguments }, &Read::Arguments)?
+            .ask(&ReadStorage { storage: visible }, &Read::Visible)?
+            .ask(&TimeFrame, &Nothing)?;
+        *self = Self::Reading;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -348,15 +336,9 @@ impl Receives<Answer<Shaped, Nothing>> for Culler {
 
         Ok(())
     }
-}
 
-/// Storage bound at `binding` as `access` says, of which the program binds at least `bytes`.
-const fn stored(binding: u32, bytes: u32, access: Access) -> Binding {
-    Binding { group: 0, binding, kind: BindingKind::Storage { bytes, access } }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Culler {
-    fn handle(
+    #[answer]
+    fn meshed(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self>,
@@ -389,23 +371,9 @@ impl Receives<Answer<Meshed, Learned>> for Culler {
 
         Ok(())
     }
-}
 
-/// The compute program of the cull's entry point `entry`, binding what that pass binds: the items at 0, the totals at
-/// 1, the visible list at 2, the arguments at 3, and the totals again at 4, to read the offsets.
-fn cull(entry: &str, turn: &mut Turn<'_, Culler>) -> Result<CreateCompute, String> {
-    let bindings = match entry {
-        "tally" => vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write)],
-        "offsets" => vec![stored(1, 4, Access::Write), stored(3, 20, Access::Write)],
-        _ => vec![stored(0, 8, Access::Read), stored(2, 4, Access::Write), stored(4, 4, Access::Read)],
-    };
-    let wgsl = turn.put(Vec::from(CULL)).map_err(|why| format!("no {entry} asked: {why}"))?;
-
-    Ok(CreateCompute { wgsl, entry: String::from(entry), bindings })
-}
-
-impl Receives<Answer<Programmed, MeshId>> for Culler {
-    fn handle(
+    #[answer]
+    fn programmed(
         &mut self,
         (answered, mesh): (Answered<Programmed>, MeshId),
         turn: &mut Turn<'_, Self>,
@@ -425,10 +393,9 @@ impl Receives<Answer<Programmed, MeshId>> for Culler {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Computed, Computing>> for Culler {
-    fn handle(
+    #[answer]
+    fn computed(
         &mut self,
         (answered, computing): (Answered<Computed>, Computing),
         turn: &mut Turn<'_, Self>,
@@ -465,10 +432,9 @@ impl Receives<Answer<Computed, Computing>> for Culler {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Stored, Storing>> for Culler {
-    fn handle(
+    #[answer]
+    fn stored(
         &mut self,
         (answered, storing): (Answered<Stored>, Storing),
         turn: &mut Turn<'_, Self>,
@@ -529,18 +495,9 @@ impl Receives<Answer<Stored, Storing>> for Culler {
 
         Ok(())
     }
-}
 
-/// `storage` bound at each of `bindings`, in group 0.
-fn bound(bindings: &[(u32, StorageId)]) -> Vec<Bind> {
-    bindings
-        .iter()
-        .map(|(binding, storage)| Bind { group: 0, binding: *binding, to: Resource::Storage(*storage) })
-        .collect()
-}
-
-impl Receives<Answer<Framed, Made>> for Culler {
-    fn handle(&mut self, (answered, made): (Answered<Framed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn framed(&mut self, (answered, made): (Answered<Framed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Framed::Made(_)) = answered else {
             say(format!("the frame was not made: {answered:?}"));
             return Ok(());
@@ -558,36 +515,9 @@ impl Receives<Answer<Framed, Made>> for Culler {
 
         Ok(())
     }
-}
 
-/// The dispatch of the compaction's pass `dispatching` names, into the main frame of `window`: the first and third
-/// one invocation for each item, the second one workgroup.
-fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
-    let frame = Frame::Main(window);
-    match dispatching {
-        Dispatching::Tally { made, .. } => CreateDispatch {
-            join: Dispatch::to::<Tally>(frame, made.culls.tally, bound(&[(0, made.items), (1, made.totals)])),
-            size: Invocations::PerElement(made.items),
-            runs: Runs::UntilReleased,
-        },
-        Dispatching::Offsets { made, .. } => CreateDispatch {
-            join: Dispatch::to::<Offsets>(frame, made.culls.offsets, bound(&[(1, made.totals), (3, made.arguments)])),
-            size: Invocations::Workgroups([1, 1, 1]),
-            runs: Runs::UntilReleased,
-        },
-        Dispatching::Scatter { made, .. } => {
-            let bindings = bound(&[(0, made.items), (2, made.visible), (4, made.totals)]);
-            CreateDispatch {
-                join: Dispatch::to::<Scatter>(frame, made.culls.scatter, bindings),
-                size: Invocations::PerElement(made.items),
-                runs: Runs::UntilReleased,
-            }
-        }
-    }
-}
-
-impl Receives<Answer<Placed, Made>> for Culler {
-    fn handle(&mut self, (answered, made): (Answered<Placed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn placed(&mut self, (answered, made): (Answered<Placed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("the dots were not placed: {answered:?}"));
             return Ok(());
@@ -601,11 +531,10 @@ impl Receives<Answer<Placed, Made>> for Culler {
 
         Ok(())
     }
-}
 
-/// Each pass's dispatch made, the next is asked for; the last made, the placement and the three are listed.
-impl Receives<Answer<Dispatched, Dispatching>> for Culler {
-    fn handle(
+    /// Each pass's dispatch made, the next is asked for; the last made, the placement and the three are listed.
+    #[answer]
+    fn dispatched(
         &mut self,
         (answered, dispatching): (Answered<Dispatched>, Dispatching),
         turn: &mut Turn<'_, Self>,
@@ -636,29 +565,9 @@ impl Receives<Answer<Dispatched, Dispatching>> for Culler {
 
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Culler {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Running { arguments, visible, drawn } = *self else {
-            return Ok(());
-        };
-        if drawn < SETTLED {
-            *self = Self::Running { arguments, visible, drawn: drawn + 1 };
-            return Ok(());
-        }
-        turn.to(path::<Renderer>(()))
-            .ask(&ReadStorage { storage: arguments }, &Read::Arguments)?
-            .ask(&ReadStorage { storage: visible }, &Read::Visible)?
-            .ask(&TimeFrame, &Nothing)?;
-        *self = Self::Reading;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<StorageContents, Read>> for Culler {
-    fn handle(
+    #[answer]
+    fn storage_contents(
         &mut self,
         (answered, read): (Answered<StorageContents>, Read),
         turn: &mut Turn<'_, Self>,
@@ -688,10 +597,9 @@ impl Receives<Answer<StorageContents, Read>> for Culler {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Timed, Nothing>> for Culler {
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn timed(&mut self, (answered, _): (Answered<Timed>, Nothing)) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
             Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
@@ -700,5 +608,57 @@ impl Receives<Answer<Timed, Nothing>> for Culler {
         say(said);
 
         Ok(())
+    }
+}
+
+/// Storage bound at `binding` as `access` says, of which the program binds at least `bytes`.
+const fn stored(binding: u32, bytes: u32, access: Access) -> Binding {
+    Binding { group: 0, binding, kind: BindingKind::Storage { bytes, access } }
+}
+
+/// The compute program of the cull's entry point `entry`, binding what that pass binds: the items at 0, the totals at
+/// 1, the visible list at 2, the arguments at 3, and the totals again at 4, to read the offsets.
+fn cull(entry: &str, turn: &mut Turn<'_, Culler>) -> Result<CreateCompute, String> {
+    let bindings = match entry {
+        "tally" => vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write)],
+        "offsets" => vec![stored(1, 4, Access::Write), stored(3, 20, Access::Write)],
+        _ => vec![stored(0, 8, Access::Read), stored(2, 4, Access::Write), stored(4, 4, Access::Read)],
+    };
+    let wgsl = turn.put(Vec::from(CULL)).map_err(|why| format!("no {entry} asked: {why}"))?;
+
+    Ok(CreateCompute { wgsl, entry: String::from(entry), bindings })
+}
+
+/// `storage` bound at each of `bindings`, in group 0.
+fn bound(bindings: &[(u32, StorageId)]) -> Vec<Bind> {
+    bindings
+        .iter()
+        .map(|(binding, storage)| Bind { group: 0, binding: *binding, to: Resource::Storage(*storage) })
+        .collect()
+}
+
+/// The dispatch of the compaction's pass `dispatching` names, into the main frame of `window`: the first and third
+/// one invocation for each item, the second one workgroup.
+fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
+    let frame = Frame::Main(window);
+    match dispatching {
+        Dispatching::Tally { made, .. } => CreateDispatch {
+            join: Dispatch::to::<Tally>(frame, made.culls.tally, bound(&[(0, made.items), (1, made.totals)])),
+            size: Invocations::PerElement(made.items),
+            runs: Runs::UntilReleased,
+        },
+        Dispatching::Offsets { made, .. } => CreateDispatch {
+            join: Dispatch::to::<Offsets>(frame, made.culls.offsets, bound(&[(1, made.totals), (3, made.arguments)])),
+            size: Invocations::Workgroups([1, 1, 1]),
+            runs: Runs::UntilReleased,
+        },
+        Dispatching::Scatter { made, .. } => {
+            let bindings = bound(&[(0, made.items), (2, made.visible), (4, made.totals)]);
+            CreateDispatch {
+                join: Dispatch::to::<Scatter>(frame, made.culls.scatter, bindings),
+                size: Invocations::PerElement(made.items),
+                runs: Runs::UntilReleased,
+            }
+        }
     }
 }

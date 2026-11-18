@@ -1,10 +1,7 @@
 //! The page's entry points, and an actor that asks the renderer for meshes, a texture, and programs.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, On, Receives, Refused, Render, Start, Tick, Top, Turn,
-    path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Refused, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::mesh::{Attribute, CreateMesh, Meshed, VertexFormat, VertexLayout};
@@ -64,24 +61,67 @@ struct Asked {
 #[kind(name = "aether.example.maker")]
 struct Maker;
 
-impl ChildOf for Maker {
-    type Parent = Top;
-}
-
-impl Actor for Maker {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (On<Start>, Answer<Meshed, Asked>, Answer<Textured, Asked>, Answer<Programmed, Asked>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Maker {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let requests = match Requests::put(turn) {
+            Ok(requests) => requests,
+            Err(why) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+
+        turn.to(path::<Renderer>(()))
+            .ask(&requests.triangle, &Asked { what: String::from("a triangle") })?
+            .ask(&requests.texture, &Asked { what: String::from("a texture") })?
+            .ask(&requests.past, &Asked { what: String::from("an index past the end") })?
+            .ask(&requests.shade, &Asked { what: String::from("a program") })?
+            .ask(&requests.unread, &Asked { what: String::from("a program reading an unlaid vertex") })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(&mut self, (answered, asked): (Answered<Meshed>, Asked), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Meshed::Made(mesh)) => {
+                say(format!("{}: made {mesh:?}, then released", asked.what));
+                turn.to(path::<Renderer>(())).send(&Release::Mesh(mesh))?;
+            }
+            Answered::Yes(Meshed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
+            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn textured(&mut self, (answered, asked): (Answered<Textured>, Asked)) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Textured::Made(texture)) => say(format!("{}: made {texture:?}", asked.what)),
+            Answered::Yes(Textured::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
+            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(&mut self, (answered, asked): (Answered<Programmed>, Asked)) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Programmed::Made(program)) => say(format!("{}: made {program:?}", asked.what)),
+            Answered::Yes(Programmed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
+            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
+        }
+
         Ok(())
     }
 }
@@ -153,69 +193,5 @@ impl Requests {
         let unread = CreateProgram { wgsl: turn.put(tinted.into_bytes())?, ..shade.clone() };
 
         Ok(Self { triangle, texture, past, shade, unread })
-    }
-}
-
-impl Receives<On<Start>> for Maker {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let requests = match Requests::put(turn) {
-            Ok(requests) => requests,
-            Err(why) => {
-                say(format!("nothing asked: {why}"));
-                return Ok(());
-            }
-        };
-
-        turn.to(path::<Renderer>(()))
-            .ask(&requests.triangle, &Asked { what: String::from("a triangle") })?
-            .ask(&requests.texture, &Asked { what: String::from("a texture") })?
-            .ask(&requests.past, &Asked { what: String::from("an index past the end") })?
-            .ask(&requests.shade, &Asked { what: String::from("a program") })?
-            .ask(&requests.unread, &Asked { what: String::from("a program reading an unlaid vertex") })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Meshed, Asked>> for Maker {
-    fn handle(&mut self, (answered, asked): (Answered<Meshed>, Asked), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Meshed::Made(mesh)) => {
-                say(format!("{}: made {mesh:?}, then released", asked.what));
-                turn.to(path::<Renderer>(())).send(&Release::Mesh(mesh))?;
-            }
-            Answered::Yes(Meshed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
-            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Textured, Asked>> for Maker {
-    fn handle(&mut self, (answered, asked): (Answered<Textured>, Asked), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Textured::Made(texture)) => say(format!("{}: made {texture:?}", asked.what)),
-            Answered::Yes(Textured::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
-            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, Asked>> for Maker {
-    fn handle(
-        &mut self,
-        (answered, asked): (Answered<Programmed>, Asked),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Programmed::Made(program)) => say(format!("{}: made {program:?}", asked.what)),
-            Answered::Yes(Programmed::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
-            Answered::No(why) => say(format!("{}: unanswered, {why:?}", asked.what)),
-        }
-
-        Ok(())
     }
 }

@@ -4,10 +4,7 @@
 //! the root list's one root.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn,
-    path,
-};
+use aethereal_actor::{Answered, Beginning, Bytes, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -182,10 +179,6 @@ enum Rimmer {
     Drawing,
 }
 
-impl ChildOf for Rimmer {
-    type Parent = Top;
-}
-
 /// What was learned before the quad was asked for: the window's colour, which the lay draws into.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -229,62 +222,16 @@ enum Placing {
     Rims { floor: PlacementId },
 }
 
-impl Actor for Rimmer {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Effected, Laying>,
-        Answer<Programmed, Making>,
-        Answer<Framed, MadePrograms>,
-        Answer<Placed, Placing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Rimmer {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// The bytes of `values`, as a blob is put.
-fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
-    values.into_iter().flat_map(u32::to_ne_bytes).collect()
-}
-
-/// How the quad's corners are laid out: a place of two floats.
-fn corners() -> VertexLayout {
-    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-
-    VertexLayout { stride: 8, attributes: vec![corner] }
-}
-
-/// A program of the WGSL the blob `wgsl` holds over the quad, testing and writing depth, reading `reads`, with its
-/// alpha as `coverage` says, drawn into a pass of `shape`.
-fn program(wgsl: Bytes, reads: Vec<Read>, coverage: Coverage, shape: Shape) -> CreateProgram {
-    CreateProgram {
-        wgsl,
-        vertex: String::from("place"),
-        fragment: String::from("shade"),
-        layout: corners(),
-        instances: PerInstance::None,
-        bindings: Vec::new(),
-        reads,
-        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::None, coverage },
-        shape,
-    }
-}
-
-impl Receives<On<Start>> for Rimmer {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -292,10 +239,9 @@ impl Receives<On<Start>> for Rimmer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shaped, Nothing>> for Rimmer {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -313,10 +259,9 @@ impl Receives<Answer<Shaped, Nothing>> for Rimmer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Meshed, Learned>> for Rimmer {
-    fn handle(
+    #[answer]
+    fn meshed(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self>,
@@ -344,10 +289,9 @@ impl Receives<Answer<Meshed, Learned>> for Rimmer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Effected, Laying>> for Rimmer {
-    fn handle(
+    #[answer]
+    fn effected(
         &mut self,
         (answered, Laying { mesh }): (Answered<Effected>, Laying),
         turn: &mut Turn<'_, Self>,
@@ -372,10 +316,9 @@ impl Receives<Answer<Effected, Laying>> for Rimmer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Programmed, Making>> for Rimmer {
-    fn handle(
+    #[answer]
+    fn programmed(
         &mut self,
         (answered, making): (Answered<Programmed>, Making),
         turn: &mut Turn<'_, Self>,
@@ -421,10 +364,9 @@ impl Receives<Answer<Programmed, Making>> for Rimmer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Framed, MadePrograms>> for Rimmer {
-    fn handle(
+    #[answer]
+    fn framed(
         &mut self,
         (answered, made): (Answered<Framed>, MadePrograms),
         turn: &mut Turn<'_, Self>,
@@ -443,11 +385,10 @@ impl Receives<Answer<Framed, MadePrograms>> for Rimmer {
 
         Ok(())
     }
-}
 
-/// The floor placed, the rims are asked for; the rims placed, both are listed.
-impl Receives<Answer<Placed, Placing>> for Rimmer {
-    fn handle(
+    /// The floor placed, the rims are asked for; the rims placed, both are listed.
+    #[answer]
+    fn placed(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self>,
@@ -474,5 +415,33 @@ impl Receives<Answer<Placed, Placing>> for Rimmer {
         }
 
         Ok(())
+    }
+}
+
+/// The bytes of `values`, as a blob is put.
+fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
+    values.into_iter().flat_map(u32::to_ne_bytes).collect()
+}
+
+/// How the quad's corners are laid out: a place of two floats.
+fn corners() -> VertexLayout {
+    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+
+    VertexLayout { stride: 8, attributes: vec![corner] }
+}
+
+/// A program of the WGSL the blob `wgsl` holds over the quad, testing and writing depth, reading `reads`, with its
+/// alpha as `coverage` says, drawn into a pass of `shape`.
+fn program(wgsl: Bytes, reads: Vec<Read>, coverage: Coverage, shape: Shape) -> CreateProgram {
+    CreateProgram {
+        wgsl,
+        vertex: String::from("place"),
+        fragment: String::from("shade"),
+        layout: corners(),
+        instances: PerInstance::None,
+        bindings: Vec::new(),
+        reads,
+        state: Fixed { blend: Blend::Opaque, depth: Depth::TestWrite, cull: Cull::None, coverage },
+        shape,
     }
 }

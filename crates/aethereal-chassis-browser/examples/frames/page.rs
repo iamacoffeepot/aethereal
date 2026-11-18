@@ -4,10 +4,7 @@
 //! back what was drawn and times the frame's passes.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn,
-    path,
-};
+use aethereal_actor::{Answered, Beginning, Bytes, Fault, Render, Start, Tick, Turn, actor, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -197,10 +194,6 @@ enum Framer {
     Asked,
 }
 
-impl ChildOf for Framer {
-    type Parent = Top;
-}
-
 /// What was learned before the quad was asked for: the window's colour, which the tint draws into.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -258,24 +251,8 @@ enum Placing {
     Splat { surface: PlacementId },
 }
 
-impl Actor for Framer {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Effected, Effecting>,
-        Answer<Programmed, Making>,
-        Answer<Framed, MadePrograms>,
-        Answer<Placed, Placing>,
-        Answer<Pixels, Nothing>,
-        Answer<Timed, Nothing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Framer {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -283,41 +260,8 @@ impl Actor for Framer {
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// The bytes of `values`, as a blob is put.
-fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
-    values.into_iter().flat_map(u32::to_ne_bytes).collect()
-}
-
-/// How the quad's corners are laid out: a place of two floats.
-fn corners() -> VertexLayout {
-    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-
-    VertexLayout { stride: 8, attributes: vec![corner] }
-}
-
-/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into the scene, a target of floats with depth,
-/// using depth as `depth` says.
-fn program(wgsl: Bytes, depth: Depth) -> CreateProgram {
-    CreateProgram {
-        wgsl,
-        vertex: String::from("place"),
-        fragment: String::from("shade"),
-        layout: corners(),
-        instances: PerInstance::None,
-        bindings: Vec::new(),
-        reads: Vec::new(),
-        state: Fixed { blend: Blend::Opaque, depth, cull: Cull::None, coverage: Coverage::Off },
-        shape: Shape::with_depth(ColourFormat::Rgba16Float),
-    }
-}
-
-impl Receives<On<Start>> for Framer {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -325,10 +269,26 @@ impl Receives<On<Start>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shaped, Nothing>> for Framer {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Self::Drawing { window, drawn } = *self else {
+            return Ok(());
+        };
+        if drawn < SETTLED {
+            *self = Self::Drawing { window, drawn: drawn + 1 };
+            return Ok(());
+        }
+        turn.to(path::<Renderer>(()))
+            .ask(&ReadBack { of: Readable::Frame(window) }, &Nothing)?
+            .ask(&TimeFrame, &Nothing)?;
+        *self = Self::Asked;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -346,10 +306,9 @@ impl Receives<Answer<Shaped, Nothing>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Meshed, Learned>> for Framer {
-    fn handle(
+    #[answer]
+    fn meshed(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
         turn: &mut Turn<'_, Self>,
@@ -377,10 +336,9 @@ impl Receives<Answer<Meshed, Learned>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Effected, Effecting>> for Framer {
-    fn handle(
+    #[answer]
+    fn effected(
         &mut self,
         (answered, effecting): (Answered<Effected>, Effecting),
         turn: &mut Turn<'_, Self>,
@@ -456,10 +414,9 @@ impl Receives<Answer<Effected, Effecting>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Programmed, Making>> for Framer {
-    fn handle(
+    #[answer]
+    fn programmed(
         &mut self,
         (answered, making): (Answered<Programmed>, Making),
         turn: &mut Turn<'_, Self>,
@@ -502,10 +459,9 @@ impl Receives<Answer<Programmed, Making>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Framed, MadePrograms>> for Framer {
-    fn handle(
+    #[answer]
+    fn framed(
         &mut self,
         (answered, made): (Answered<Framed>, MadePrograms),
         turn: &mut Turn<'_, Self>,
@@ -524,11 +480,10 @@ impl Receives<Answer<Framed, MadePrograms>> for Framer {
 
         Ok(())
     }
-}
 
-/// The surface placed, the splat is asked for; the splat placed, both are listed.
-impl Receives<Answer<Placed, Placing>> for Framer {
-    fn handle(
+    /// The surface placed, the splat is asked for; the splat placed, both are listed.
+    #[answer]
+    fn placed(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
         turn: &mut Turn<'_, Self>,
@@ -557,36 +512,9 @@ impl Receives<Answer<Placed, Placing>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<On<Tick>> for Framer {
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Self::Drawing { window, drawn } = *self else {
-            return Ok(());
-        };
-        if drawn < SETTLED {
-            *self = Self::Drawing { window, drawn: drawn + 1 };
-            return Ok(());
-        }
-        turn.to(path::<Renderer>(()))
-            .ask(&ReadBack { of: Readable::Frame(window) }, &Nothing)?
-            .ask(&TimeFrame, &Nothing)?;
-        *self = Self::Asked;
-
-        Ok(())
-    }
-}
-
-/// The pixel at `x`, `y` of `pixels`, `width` across, four bytes each.
-fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
-    let at = ((y * width + x) * 4) as usize;
-    let channels = pixels.get(at..at + 4).unwrap_or_default();
-
-    channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
-}
-
-impl Receives<Answer<Pixels, Nothing>> for Framer {
-    fn handle(&mut self, (answered, _): (Answered<Pixels>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pixels(&mut self, (answered, _): (Answered<Pixels>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Pixels::Read { width, height, format, pixels }) = answered else {
             say(format!("nothing was read: {answered:?}"));
             return Ok(());
@@ -608,10 +536,9 @@ impl Receives<Answer<Pixels, Nothing>> for Framer {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Timed, Nothing>> for Framer {
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn timed(&mut self, (answered, _): (Answered<Timed>, Nothing)) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
             Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),
@@ -621,4 +548,40 @@ impl Receives<Answer<Timed, Nothing>> for Framer {
 
         Ok(())
     }
+}
+
+/// The bytes of `values`, as a blob is put.
+fn bytes(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
+    values.into_iter().flat_map(u32::to_ne_bytes).collect()
+}
+
+/// How the quad's corners are laid out: a place of two floats.
+fn corners() -> VertexLayout {
+    let corner = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+
+    VertexLayout { stride: 8, attributes: vec![corner] }
+}
+
+/// A program of the WGSL the blob `wgsl` holds over the quad, drawing into the scene, a target of floats with depth,
+/// using depth as `depth` says.
+fn program(wgsl: Bytes, depth: Depth) -> CreateProgram {
+    CreateProgram {
+        wgsl,
+        vertex: String::from("place"),
+        fragment: String::from("shade"),
+        layout: corners(),
+        instances: PerInstance::None,
+        bindings: Vec::new(),
+        reads: Vec::new(),
+        state: Fixed { blend: Blend::Opaque, depth, cull: Cull::None, coverage: Coverage::Off },
+        shape: Shape::with_depth(ColourFormat::Rgba16Float),
+    }
+}
+
+/// The pixel at `x`, `y` of `pixels`, `width` across, four bytes each.
+fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
+    let at = ((y * width + x) * 4) as usize;
+    let channels = pixels.get(at..at + 4).unwrap_or_default();
+
+    channels.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
 }

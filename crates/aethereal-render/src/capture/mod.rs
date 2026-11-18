@@ -9,10 +9,7 @@ mod tests;
 use crate::Renderer;
 use crate::readback::{Pixels, ReadBack, ReadRefused, Readable};
 use crate::texture::TextureFormat;
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_pace::{Pace, PaceRead, Pacer, ReadPace};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -136,52 +133,15 @@ pub struct CaptureTool {
     next: u64,
 }
 
-impl ChildOf for CaptureTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for CaptureTool {
-    type Config = CaptureToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<PaceRead, PaceReading>, Answer<Pixels, Reading>, Answer<Encoded, Encoding>);
-    type Depends = (Pacer, Renderer);
-    type Spawns = ();
-
-    fn begin(_: CaptureToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Pacer, Renderer))]
+impl CaptureTool {
+    fn begin(_: CaptureToolConfig) -> Result<Self, Fault> {
         Ok(Self { reading: BTreeMap::new(), encoding: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for CaptureTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet::of::<Capture>(
-            "capture_frame",
-            "Captures the next frame drawn onto a window as a PNG image. The window is numbered from 0, and a line \
-             with the image gives the frame's size, the crop, and the image's size. Under a held clock it captures \
-             the last frame drawn, as no frame is drawn until the clock is advanced. `longest` bounds the image's \
-             longer side: a larger image is shrunk to keep its shape, and a smaller one is never enlarged; left out, \
-             the frame is sent at its own size. An image costs about width × height / 750 tokens, so a whole frame \
-             at 1024 is about a thousand. `crop` cuts a region of the frame, in its pixels from the top left, before \
-             shrinking: crop to look closely at part of a frame. Left out, the whole frame is sent.",
-            Output::Image,
-        )]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// Holds the call, and asks the pacer how the clock moves: a held clock's capture reads the last frame drawn.
-impl Handles<Call> for CaptureTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// Holds the call, and asks the pacer how the clock moves: a held clock's capture reads the last frame drawn.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(capture) = from_bytes::<Capture>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             return Ok(Reply::Now(refused("that is no capture")));
         };
@@ -198,12 +158,11 @@ impl Handles<Call> for CaptureTool {
 
         Ok(Reply::Later(later))
     }
-}
 
-/// Asks the renderer for the frame to capture: the last drawn under a held clock, and the next while it runs, or when
-/// the pacer did not answer.
-impl Receives<Answer<PaceRead, PaceReading>> for CaptureTool {
-    fn handle(
+    /// Asks the renderer for the frame to capture: the last drawn under a held clock, and the next while it runs, or
+    /// when the pacer did not answer.
+    #[answer]
+    fn pace_read(
         &mut self,
         (answered, PaceReading { number }): (Answered<PaceRead>, PaceReading),
         turn: &mut Turn<'_, Self>,
@@ -219,10 +178,9 @@ impl Receives<Answer<PaceRead, PaceReading>> for CaptureTool {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Pixels, Reading>> for CaptureTool {
-    fn handle(
+    #[answer]
+    fn pixels(
         &mut self,
         (answered, Reading { number }): (Answered<Pixels>, Reading),
         turn: &mut Turn<'_, Self>,
@@ -260,10 +218,9 @@ impl Receives<Answer<Pixels, Reading>> for CaptureTool {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Encoded, Encoding>> for CaptureTool {
-    fn handle(
+    #[answer]
+    fn encoded(
         &mut self,
         (answered, Encoding { number }): (Answered<Encoded>, Encoding),
         turn: &mut Turn<'_, Self>,
@@ -278,6 +235,26 @@ impl Receives<Answer<Encoded, Encoding>> for CaptureTool {
         turn.answer(held, &called)?;
 
         Ok(())
+    }
+}
+
+impl Tool for CaptureTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![ToolSheet::of::<Capture>(
+            "capture_frame",
+            "Captures the next frame drawn onto a window as a PNG image. The window is numbered from 0, and a line \
+             with the image gives the frame's size, the crop, and the image's size. Under a held clock it captures \
+             the last frame drawn, as no frame is drawn until the clock is advanced. `longest` bounds the image's \
+             longer side: a larger image is shrunk to keep its shape, and a smaller one is never enlarged; left out, \
+             the frame is sent at its own size. An image costs about width × height / 750 tokens, so a whole frame \
+             at 1024 is about a thousand. `crop` cuts a region of the frame, in its pixels from the top left, before \
+             shrinking: crop to look closely at part of a frame. Left out, the whole frame is sent.",
+            Output::Image,
+        )]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

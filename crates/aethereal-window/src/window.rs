@@ -10,10 +10,7 @@ use crate::keys::{KeyCascade, KeysListed};
 use crate::perform::{Perform, Performed, unperformable};
 use crate::pointing::{Cascade, Picked, Probed, SubscribeProbes};
 use crate::windows::Windows;
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level, Receives, Subscribers,
-    Turn,
-};
+use aethereal_actor::{Ended, ErasedActorRef, Fault, Level, Subscribers, Turn, actor};
 use aethereal_data::{Bound, Key, KeyName, Plain, TypedKey};
 use core::mem;
 
@@ -73,20 +70,11 @@ pub struct Window {
     focused: bool,
 }
 
-/// Each window's actor stands beneath the window root, which makes it as its host opens the window, and which tells
-/// it when its host has closed the window.
-impl ChildOf for Window {
-    type Parent = Windows;
-}
-
-impl Actor for Window {
-    type Config = WindowConfig;
-    type Key = WindowId;
-    type Handles = (Subscribe, Unsubscribe, Event, Perform, SubscribeProbes, Picked, KeysListed, Ended);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: WindowConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+// Each window's actor stands beneath the window root, which makes it as its host opens the window, and which tells
+// it when its host has closed the window.
+#[actor(key = WindowId, parent = Windows)]
+impl Window {
+    fn begin(config: WindowConfig) -> Result<Self, Fault> {
         let WindowConfig { window, surface, mode, focused } = config;
 
         Ok(Self {
@@ -102,7 +90,139 @@ impl Actor for Window {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Adds the sender, and sends it the surface, mode, and focus as they stand: nothing, when it is subscribed
+    /// already.
+    #[tell]
+    fn subscribe(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let Some(listener) = turn.cast::<(Event,)>(sender) else {
+            turn.log(Level::Warn, "an actor that does not handle a window's events asked to be sent them");
+            return Ok(());
+        };
+        let added = self.listeners.subscribe(turn, listener);
+        if !added {
+            return Ok(());
+        }
+        turn.to(listener).send(&Event::Resized(self.surface))?.send(&Event::Moded(self.mode))?.send(&self.focus())?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn unsubscribe(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.listeners.unsubscribe(turn.sender());
+
+        Ok(())
+    }
+
+    /// What the window root sent on from its host, sent on when it says anything new, its keys and typed text through
+    /// the keys' cascade and every other event to the subscribers, and a pointer event probed. An event any other actor
+    /// sends is not the host's, and is not sent on. Once the window has closed, `Closed` is the last its subscribers
+    /// are sent, and the actor ends.
+    #[tell]
+    fn event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let root = turn.parent();
+        let is_brought = turn.sender() == root.into();
+        if !is_brought {
+            turn.log(Level::Warn, "an event another actor sent a window was not sent on: only its host's are");
+            return Ok(());
+        }
+        let is_new = self.heard(&event);
+        if is_new {
+            self.send_on(&event, turn)?;
+        }
+        if let Some(probed) = self.probed(&event) {
+            turn.to(&self.probers).send(&probed)?;
+        }
+        let is_closed = event == Event::Closed;
+        if is_closed {
+            turn.close();
+        }
+
+        Ok(())
+    }
+
+    /// Sends each input asked, in order, as the event of the same name, on as it would one the host heard, and probes
+    /// each pointer input, then answers: they are sent in the turn that answers, so each actor sent one handles it
+    /// before anything arriving after the answer (ADR-0046), while the cascade delivers a pointer input once its stacks
+    /// come back, as it does the host's. It is asked by any actor, as an input says nothing of how the window stands,
+    /// which only its host may. Inputs that cannot be performed are refused, and none is sent.
+    #[request]
+    fn perform(&mut self, perform: Perform, turn: &mut Turn<'_, Self>) -> Result<Performed, Fault> {
+        if let Some(why) = unperformable(&perform.inputs) {
+            return Ok(Performed::Refused(why));
+        }
+        for input in perform.inputs {
+            let event = Event::from(input);
+            self.send_on(&event, turn)?;
+            if let Some(probed) = self.probed(&event) {
+                turn.to(&self.probers).send(&probed)?;
+            }
+        }
+
+        Ok(Performed::Performed)
+    }
+
+    /// Adds the sender to the subscribers of the window's probes, which are sent each pointer event's place from the
+    /// next the window hears: nothing more, when it is subscribed already. An actor that does not handle [`Probed`] is
+    /// not.
+    #[tell]
+    fn subscribe_probes(&mut self, _: SubscribeProbes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let Some(prober) = turn.cast::<(Probed,)>(sender) else {
+            turn.log(Level::Warn, "an actor that does not handle a window's probes asked to be sent them");
+            return Ok(());
+        };
+        self.probers.subscribe(turn, prober);
+
+        Ok(())
+    }
+
+    /// Delivers the pointer events the stacks answer, as the cascade says, each to the actor whose list holds the entry
+    /// it reaches, then asks the window root to show the cursor the cascade now answers, when it is not the one last
+    /// asked for. Stacks from an actor that does not subscribe to the window's probes are not the renderer's, and are
+    /// dropped.
+    #[tell]
+    fn picked(&mut self, picked: Picked, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let is_prober = self.is_prober(turn.sender());
+        if !is_prober {
+            turn.log(Level::Warn, "stacks an actor that does not probe the window sent were dropped");
+            return Ok(());
+        }
+        for (hearer, pointed) in self.cascade.picked(self.id, picked) {
+            turn.to(hearer).send(&pointed)?;
+        }
+        let shown = self.cascade.cursor();
+        if *shown != self.cursor {
+            let show = ShowCursor { window: self.id, cursor: shown.clone() };
+            turn.to(turn.parent()).send(&show)?;
+            self.cursor = show.cursor;
+        }
+
+        Ok(())
+    }
+
+    /// Takes in the `Keys` entries a frame lists, which the window's keys and typed text go through from the next it
+    /// hears. Entries from an actor that does not subscribe to the window's probes are not the renderer's, and are
+    /// dropped.
+    #[tell]
+    fn keys_listed(&mut self, listed: KeysListed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let is_prober = self.is_prober(turn.sender());
+        if !is_prober {
+            turn.log(Level::Warn, "keys an actor that does not probe the window listed were dropped");
+            return Ok(());
+        }
+        self.keys.listed(listed);
+
+        Ok(())
+    }
+
+    /// A subscriber that ended leaves the list, and a subscriber of its probes too.
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
+        self.listeners.ended(&ended);
+        self.probers.ended(&ended);
+
         Ok(())
     }
 }
@@ -173,167 +293,5 @@ impl Window {
         } else {
             Event::FocusLost
         }
-    }
-}
-
-/// Adds the sender, and sends it the surface, mode, and focus as they stand: nothing, when it is subscribed already.
-impl Handles<Subscribe> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let sender = turn.sender();
-        let Some(listener) = turn.cast::<(Event,)>(sender) else {
-            turn.log(Level::Warn, "an actor that does not handle a window's events asked to be sent them");
-            return Ok(());
-        };
-        let added = self.listeners.subscribe(turn, listener);
-        if !added {
-            return Ok(());
-        }
-        turn.to(listener).send(&Event::Resized(self.surface))?.send(&Event::Moded(self.mode))?.send(&self.focus())?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Unsubscribe> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.listeners.unsubscribe(turn.sender());
-
-        Ok(())
-    }
-}
-
-/// What the window root sent on from its host, sent on when it says anything new, its keys and typed text through
-/// the keys' cascade and every other event to the subscribers, and a pointer event probed. An event any other actor
-/// sends is not the host's, and is not sent on. Once the window has closed, `Closed` is the last its subscribers are
-/// sent, and the actor ends.
-impl Handles<Event> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let root = turn.parent();
-        let is_brought = turn.sender() == root.into();
-        if !is_brought {
-            turn.log(Level::Warn, "an event another actor sent a window was not sent on: only its host's are");
-            return Ok(());
-        }
-        let is_new = self.heard(&event);
-        if is_new {
-            self.send_on(&event, turn)?;
-        }
-        if let Some(probed) = self.probed(&event) {
-            turn.to(&self.probers).send(&probed)?;
-        }
-        let is_closed = event == Event::Closed;
-        if is_closed {
-            turn.close();
-        }
-
-        Ok(())
-    }
-}
-
-/// Sends each input asked, in order, as the event of the same name, on as it would one the host heard, and probes each
-/// pointer input, then answers: they are sent in the turn that answers, so each actor sent one handles it before
-/// anything arriving after the answer (ADR-0046), while the cascade delivers a pointer input once its stacks come
-/// back, as it does the host's. It is asked by any actor, as an input says nothing of how the window stands, which
-/// only its host may. Inputs that cannot be performed are refused, and none is sent.
-impl Handles<Perform> for Window {
-    type From = Anyone;
-    type Returns = Performed;
-
-    fn handle(&mut self, perform: Perform, turn: &mut Turn<'_, Self>) -> Result<Performed, Fault> {
-        if let Some(why) = unperformable(&perform.inputs) {
-            return Ok(Performed::Refused(why));
-        }
-        for input in perform.inputs {
-            let event = Event::from(input);
-            self.send_on(&event, turn)?;
-            if let Some(probed) = self.probed(&event) {
-                turn.to(&self.probers).send(&probed)?;
-            }
-        }
-
-        Ok(Performed::Performed)
-    }
-}
-
-/// Adds the sender to the subscribers of the window's probes, which are sent each pointer event's place from the next
-/// the window hears: nothing more, when it is subscribed already. An actor that does not handle [`Probed`] is not.
-impl Handles<SubscribeProbes> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: SubscribeProbes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let sender = turn.sender();
-        let Some(prober) = turn.cast::<(Probed,)>(sender) else {
-            turn.log(Level::Warn, "an actor that does not handle a window's probes asked to be sent them");
-            return Ok(());
-        };
-        self.probers.subscribe(turn, prober);
-
-        Ok(())
-    }
-}
-
-/// Delivers the pointer events the stacks answer, as the cascade says, each to the actor whose list holds the entry
-/// it reaches, then asks the window root to show the cursor the cascade now answers, when it is not the one last
-/// asked for. Stacks from an actor that does not subscribe to the window's probes are not the renderer's, and are
-/// dropped.
-impl Handles<Picked> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, picked: Picked, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let is_prober = self.is_prober(turn.sender());
-        if !is_prober {
-            turn.log(Level::Warn, "stacks an actor that does not probe the window sent were dropped");
-            return Ok(());
-        }
-        for (hearer, pointed) in self.cascade.picked(self.id, picked) {
-            turn.to(hearer).send(&pointed)?;
-        }
-        let shown = self.cascade.cursor();
-        if *shown != self.cursor {
-            let show = ShowCursor { window: self.id, cursor: shown.clone() };
-            turn.to(turn.parent()).send(&show)?;
-            self.cursor = show.cursor;
-        }
-
-        Ok(())
-    }
-}
-
-/// Takes in the `Keys` entries a frame lists, which the window's keys and typed text go through from the next it hears.
-/// Entries from an actor that does not subscribe to the window's probes are not the renderer's, and are dropped.
-impl Handles<KeysListed> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, listed: KeysListed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let is_prober = self.is_prober(turn.sender());
-        if !is_prober {
-            turn.log(Level::Warn, "keys an actor that does not probe the window listed were dropped");
-            return Ok(());
-        }
-        self.keys.listed(listed);
-
-        Ok(())
-    }
-}
-
-/// A subscriber that ended leaves the list, and a subscriber of its probes too.
-impl Receives<Ended> for Window {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.listeners.ended(&ended);
-        self.probers.ended(&ended);
-
-        Ok(())
     }
 }

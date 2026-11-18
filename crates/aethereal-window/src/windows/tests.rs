@@ -7,7 +7,7 @@
 use super::*;
 use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, InitialWindow, InitialWindows, Opening, WindowFeed};
-use aethereal_actor::{ActorRef, Actors, Answered, Anyone, Table, Time, path};
+use aethereal_actor::{ActorRef, Actors, Answered, Table, Time, actor, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
 use aethereal_substrate::{
@@ -51,17 +51,8 @@ const FORGED: Event = Event::PointerMoved { x: -1.0, y: -1.0 };
 #[kind(name = "aether.test.listener")]
 struct Listener;
 
-impl ChildOf for Listener {
-    type Parent = Top;
-}
-
-impl Actor for Listener {
-    type Config = Listens;
-    type Key = ();
-    type Handles = (Event,);
-    type Depends = (Windows,);
-    type Spawns = ();
-
+#[actor(depends(Windows))]
+impl Listener {
     fn begin(listens: Listens, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = listens.window;
         turn.to(window.actor()).send(&Subscribe)?.send(&Subscribe)?.send(&FORGED)?;
@@ -70,16 +61,8 @@ impl Actor for Listener {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Listener {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, _: Event) -> Result<(), Fault> {
         Ok(())
     }
 }

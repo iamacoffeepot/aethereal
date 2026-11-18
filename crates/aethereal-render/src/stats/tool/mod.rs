@@ -12,10 +12,7 @@ use super::{
     UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::Renderer;
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Beginning, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 
@@ -120,25 +117,68 @@ enum TimesHeard {
     Heard(GpuTimes),
 }
 
-impl ChildOf for StatsTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for StatsTool {
-    type Config = StatsToolConfig;
-    type Key = ();
-    type Handles = (Call, FrameStats, GpuTimes, Answer<GpuDescribed, Describing>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(parent = Anywhere, depends(Renderer))]
+impl StatsTool {
     fn begin(_: StatsToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Renderer>(())).ask(&DescribeGpu, &Describing)?;
 
         Ok(Self { adapter: Adapter::Asked, reading: Reading::Idle })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    /// Holds the call, and subscribes to the renderer when it is the first to wait.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let Ok(asked) = from_bytes::<ReadRenderStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
+            return Ok(Reply::Now(Called::Refused(String::from("that is no ask of the render stats"))));
+        };
+        let (held, later) = turn.hold();
+        let waiting = Waiting { held, times: asked.gpu_times.unwrap_or(true) };
+        match &mut self.reading {
+            Reading::Waiting { calls, .. } => calls.push(waiting),
+            Reading::Idle => {
+                turn.to(path::<Renderer>(())).send(&SubscribeFrameStats)?;
+                turn.to(path::<Renderer>(())).send(&SubscribeGpuTimes)?;
+                self.reading =
+                    Reading::Waiting { calls: vec![waiting], frame: FrameHeard::Awaited, times: TimesHeard::Awaited };
+            }
+        }
+
+        Ok(Reply::Later(later))
+    }
+
+    /// Keeps the first frame's statistics heard while calls wait, and answers what it can.
+    #[tell]
+    fn frame_stats(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if let Reading::Waiting { frame: frame @ FrameHeard::Awaited, .. } = &mut self.reading {
+            *frame = FrameHeard::Heard(stats);
+        }
+
+        self.answer(turn)
+    }
+
+    /// Keeps the first pass times heard while calls wait, and answers what it can.
+    #[tell]
+    fn gpu_times(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if let Reading::Waiting { times: times @ TimesHeard::Awaited, .. } = &mut self.reading {
+            *times = TimesHeard::Heard(heard);
+        }
+
+        self.answer(turn)
+    }
+
+    /// Keeps the adapter, or why it was not told, and answers what it can.
+    #[answer]
+    fn gpu_described(
+        &mut self,
+        (answered, Describing): (Answered<GpuDescribed>, Describing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.adapter = match answered {
+            Answered::Yes(described) => Adapter::Told(described),
+            Answered::No(why) => Adapter::Unanswered(format!("the renderer did not say its adapter: {why:?}")),
+        };
+
+        self.answer(turn)
     }
 }
 
@@ -164,75 +204,6 @@ impl Tool for StatsTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-/// Holds the call, and subscribes to the renderer when it is the first to wait.
-impl Handles<Call> for StatsTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let Ok(asked) = from_bytes::<ReadRenderStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            return Ok(Reply::Now(Called::Refused(String::from("that is no ask of the render stats"))));
-        };
-        let (held, later) = turn.hold();
-        let waiting = Waiting { held, times: asked.gpu_times.unwrap_or(true) };
-        match &mut self.reading {
-            Reading::Waiting { calls, .. } => calls.push(waiting),
-            Reading::Idle => {
-                turn.to(path::<Renderer>(())).send(&SubscribeFrameStats)?;
-                turn.to(path::<Renderer>(())).send(&SubscribeGpuTimes)?;
-                self.reading =
-                    Reading::Waiting { calls: vec![waiting], frame: FrameHeard::Awaited, times: TimesHeard::Awaited };
-            }
-        }
-
-        Ok(Reply::Later(later))
-    }
-}
-
-/// Keeps the first frame's statistics heard while calls wait, and answers what it can.
-impl Handles<FrameStats> for StatsTool {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if let Reading::Waiting { frame: frame @ FrameHeard::Awaited, .. } = &mut self.reading {
-            *frame = FrameHeard::Heard(stats);
-        }
-
-        self.answer(turn)
-    }
-}
-
-/// Keeps the first pass times heard while calls wait, and answers what it can.
-impl Handles<GpuTimes> for StatsTool {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if let Reading::Waiting { times: times @ TimesHeard::Awaited, .. } = &mut self.reading {
-            *times = TimesHeard::Heard(heard);
-        }
-
-        self.answer(turn)
-    }
-}
-
-/// Keeps the adapter, or why it was not told, and answers what it can.
-impl Receives<Answer<GpuDescribed, Describing>> for StatsTool {
-    fn handle(
-        &mut self,
-        (answered, Describing): (Answered<GpuDescribed>, Describing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        self.adapter = match answered {
-            Answered::Yes(described) => Adapter::Told(described),
-            Answered::No(why) => Adapter::Unanswered(format!("the renderer did not say its adapter: {why:?}")),
-        };
-
-        self.answer(turn)
     }
 }
 

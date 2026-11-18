@@ -5,8 +5,8 @@
 //! out (ADR-0049). Its turn and its triangles' sizes are tuned while it runs (ADR-0050).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, ProtocolRef,
-    ReadTuning, Receives, Start, Tick, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path, tuning,
+    ActorRef, Answered, Beginning, Fault, Level, ProtocolRef, ReadTuning, Start, Tick, Tunable, Tune, Tuned, Tunes,
+    Tuning, Turn, actor, path, tuning,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -226,10 +226,6 @@ pub enum Looks {
     Two { near: UniformsId, far: UniformsId },
 }
 
-impl ChildOf for Scene {
-    type Parent = Top;
-}
-
 /// What was learned before the mesh was asked for: the shape the program draws into.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -287,28 +283,8 @@ pub enum Framing {
     Main { left: FrameId, right: FrameId },
 }
 
-impl Actor for Scene {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Event,
-        Keyed,
-        ReadTuning,
-        Tune,
-        Answer<Shaped, Shaping>,
-        Answer<Effected, Nothing>,
-        Answer<Framed, Framing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MadeMesh>,
-        Answer<Instanced, MadeProgram>,
-        Answer<Uniformed, Looking>,
-        Answer<Placed, MadeAll>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Scene {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -333,7 +309,351 @@ impl Actor for Scene {
         Ok(scene)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Shaping::Window)?;
+
+        Ok(())
+    }
+
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.intervals.push(tick.delta_nanos);
+        let ran = self.runs.over(tick.elapsed_nanos);
+        if ran {
+            self.print_intervals();
+            turn.quit();
+        }
+
+        let step_millis = tick.delta_nanos / 1_000_000;
+        let turn_millis = self.tuning.turn_millis;
+        self.turned_millis = if self.held > 0 {
+            self.turned_millis.wrapping_add(turn_millis).saturating_sub(step_millis) % turn_millis
+        } else {
+            self.turned_millis.wrapping_add(step_millis) % turn_millis
+        };
+        let Ring::Drawing { instances, looks, .. } = self.ring else {
+            return Ok(());
+        };
+        let Ok(records) = turn.put(ring(self.turned_millis, turn_millis)) else {
+            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?;
+        let written = match looks {
+            Looks::One(uniforms) => vec![(uniforms, self.tuning.near)],
+            Looks::Two { near, far } => vec![(near, self.tuning.near), (far, self.tuning.far)],
+        };
+        for (uniforms, scale) in written {
+            let Ok(bytes) = turn.put(self.look(scale)) else {
+                turn.log(Level::Warn, "a look was not written: its bytes were not put");
+                return Ok(());
+            };
+            turn.to(path::<Renderer>(())).send(&WriteUniforms { uniforms, first: 0, bytes })?;
+        }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn event(&mut self, event: Event) -> Result<(), Fault> {
+        match event {
+            Event::PointerMoved { x, y } => {
+                // A surface is some thousands of pixels across, which an f32 holds exactly.
+                #[allow(clippy::cast_precision_loss)]
+                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+                // Two views each follow the pointer across their own half.
+                let (x, width) = match self.views {
+                    Views::One => (x, width),
+                    Views::Two => (x % (width / 2.0), width / 2.0),
+                };
+                self.middle_x = (x / width).mul_add(2.0, -1.0);
+                self.middle_y = (y / height).mul_add(-2.0, 1.0);
+            }
+            Event::PointerDown { x, y, button } => println!("pointer_down x={x} y={y} button={button:?}"),
+            Event::PointerUp { x, y, button } => println!("pointer_up x={x} y={y} button={button:?}"),
+            Event::Wheel { x, y, delta_x, delta_y } => {
+                println!("wheel x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
+            }
+            Event::Resized(surface) => {
+                println!("resized width={} height={} scale={}", surface.width, surface.height, surface.scale);
+                (self.width, self.height) = (surface.width, surface.height);
+            }
+            Event::Moded(mode) => println!("moded mode={mode:?}"),
+            Event::FocusGained => println!("focus=gained"),
+            Event::FocusLost => {
+                println!("focus=lost");
+                self.held = 0;
+            }
+            Event::CloseRequested => println!("close=requested"),
+            Event::Closed => println!("closed"),
+            // Keys and text come through the scene's list, never raw (ADR-0055).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } | Event::Composing { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    /// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
+    #[tell]
+    fn keyed(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match keyed.event {
+            KeyEvent::KeyDown { code, key, repeat } => {
+                println!("key_down code={code} key={key:?} repeat={repeat}");
+                if !repeat {
+                    self.held += 1;
+                }
+                if code == "Escape" {
+                    turn.quit();
+                }
+            }
+            KeyEvent::KeyUp { code, key } => {
+                println!("key_up code={code} key={key:?}");
+                self.held = self.held.saturating_sub(1);
+            }
+            KeyEvent::Text { text } => println!("text text={text:?}"),
+            KeyEvent::Composing { text, caret } => println!("composing text={text:?} caret={caret}"),
+        }
+
+        Ok(())
+    }
+
+    #[request]
+    fn read_tuning(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
+        tuning::read(self, turn)
+    }
+
+    #[request]
+    fn tune(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
+        tuning::tune(self, &tune, turn)
+    }
+
+    #[answer]
+    fn shaped(
+        &mut self,
+        (answered, shaping): (Answered<Shaped>, Shaping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            turn.log(Level::Error, format_args!("the pass the ring joins has no shape: {answered:?}"));
+            return Ok(());
+        };
+        // The window's shape is what the views are laid out in; the views' is what the ring is drawn in.
+        let lays = shaping == Shaping::Window && self.views == Views::Two;
+        if lays {
+            let Ok(wgsl) = turn.put(Vec::from(LAY)) else {
+                turn.log(Level::Error, "the effect was not asked for: its text was not put");
+                return Ok(());
+            };
+            let bindings = vec![
+                Binding { group: 1, binding: 0, kind: BindingKind::Texture },
+                Binding { group: 1, binding: 1, kind: BindingKind::Texture },
+                Binding { group: 1, binding: 2, kind: BindingKind::Sampler },
+            ];
+            let lay = CreateEffect {
+                wgsl,
+                fragment: String::from("lay"),
+                reads: Vec::new(),
+                bindings,
+                blend: Blend::Opaque,
+                shape: Shape::flat(shape.colour),
+            };
+            turn.to(path::<Renderer>(())).ask(&lay, &Nothing)?;
+            return Ok(());
+        }
+        let Some(triangle) = triangle(turn) else {
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn effected(
+        &mut self,
+        (answered, _): (Answered<Effected>, Nothing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Effected::Made(lay)) = answered else {
+            turn.log(Level::Error, format_args!("the effect that lays the views out was not made: {answered:?}"));
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).ask(&view(self.window), &Framing::Left { lay: lay.program() })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn framed(
+        &mut self,
+        (answered, framing): (Answered<Framed>, Framing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        match (answered, framing) {
+            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Left { lay }) => {
+                let right = Framing::Right { lay, left: frame, texture };
+                turn.to(path::<Renderer>(())).ask(&view(self.window), &right)?;
+            }
+            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Right { lay, left, texture: shown }) => {
+                let smoothly = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
+                let lay = Does::Effect {
+                    program: lay,
+                    reads: Vec::new(),
+                    into: Target::End,
+                    bindings: vec![
+                        Bind { group: 1, binding: 0, to: Resource::Texture(shown) },
+                        Bind { group: 1, binding: 1, to: Resource::Texture(texture) },
+                        Bind { group: 1, binding: 2, to: Resource::Sampler(smoothly) },
+                    ],
+                };
+                let main = CreateFrame {
+                    ends: Ends::Window(self.window),
+                    targets: Vec::new(),
+                    passes: vec![PassSpec::of::<Lay>(lay)],
+                };
+                turn.to(path::<Renderer>(())).ask(&main, &Framing::Main { left, right: frame })?;
+            }
+            (Answered::Yes(Framed::Made(_)), Framing::Main { left, right }) => {
+                self.onto = Onto::Views { left, right };
+                turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Texture(left)), &Shaping::Views)?;
+            }
+            (answered, framing) => {
+                turn.log(Level::Error, format_args!("a frame was not made: {framing:?}: {answered:?}"));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
+            turn.log(Level::Error, "the program was not asked for: its text was not put");
+            return Ok(());
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let shade = CreateProgram {
+            wgsl,
+            vertex: String::from("place"),
+            fragment: String::from("shade"),
+            layout: VertexLayout { stride: 8, attributes: vec![position] },
+            instances: PerInstance::Records(record()),
+            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+            shape: learned.shape,
+        };
+        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, made): (Answered<Programmed>, MadeMesh),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(program)) = answered else {
+            turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(records) = turn.put(ring(0, self.tuning.turn_millis)) else {
+            turn.log(Level::Error, "the instances were not asked for: their records were not put");
+            return Ok(());
+        };
+        let instances = CreateInstances { layout: record(), capacity: u32::from(RING), records };
+        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn instanced(
+        &mut self,
+        (answered, made): (Answered<Instanced>, MadeProgram),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Instanced::Made(instances)) = answered else {
+            turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(bytes) = turn.put(self.look(self.tuning.near)) else {
+            turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
+            return Ok(());
+        };
+        let first = Looking::First { mesh: made.mesh, program: made.program, instances };
+        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &first)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn uniformed(
+        &mut self,
+        (answered, looking): (Answered<Uniformed>, Looking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
+            turn.log(Level::Error, format_args!("a look was not made: {answered:?}"));
+            return Ok(());
+        };
+        let (mesh, instances, joins, looks) = match (looking, self.onto) {
+            (Looking::First { mesh, program, instances }, Onto::Window) => {
+                let joins = vec![join(Frame::Main(self.window), program, uniforms)];
+                (mesh, instances, joins, Looks::One(uniforms))
+            }
+            (Looking::First { mesh, program, instances }, Onto::Views { .. }) => {
+                let Ok(bytes) = turn.put(self.look(self.tuning.far)) else {
+                    turn.log(Level::Error, "the far view's look was not asked for: its bytes were not put");
+                    return Ok(());
+                };
+                let far = Looking::Far { mesh, program, instances, near: uniforms };
+                turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &far)?;
+                return Ok(());
+            }
+            (Looking::Far { mesh, program, instances, near }, Onto::Views { left, right }) => {
+                let joins =
+                    vec![join(Frame::Texture(left), program, near), join(Frame::Texture(right), program, uniforms)];
+                (mesh, instances, joins, Looks::Two { near, far: uniforms })
+            }
+            (Looking::Far { .. }, Onto::Window) => {
+                turn.log(Level::Error, "the far view's look was made with no views to draw in");
+                return Ok(());
+            }
+        };
+        let place = Place { mesh, instances: Drawn::Records(instances), joins };
+        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances, looks })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, made): (Answered<Placed>, MadeAll),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Placed::Made(placement)) => {
+                self.ring = Ring::Drawing { placement, instances: made.instances, looks: made.looks };
+                turn.to(path::<Renderer>(())).send(&self.list())?;
+            }
+            Answered::Yes(Placed::Refused(why)) => {
+                turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
+            }
+            Answered::No(why) => turn.log(Level::Error, format_args!("the ring was not placed: {why:?}")),
+        }
+
         Ok(())
     }
 }
@@ -392,127 +712,6 @@ impl Scene {
     }
 }
 
-impl Receives<On<Start>> for Scene {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Shaping::Window)?;
-
-        Ok(())
-    }
-}
-
-/// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
-impl Handles<Keyed> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match keyed.event {
-            KeyEvent::KeyDown { code, key, repeat } => {
-                println!("key_down code={code} key={key:?} repeat={repeat}");
-                if !repeat {
-                    self.held += 1;
-                }
-                if code == "Escape" {
-                    turn.quit();
-                }
-            }
-            KeyEvent::KeyUp { code, key } => {
-                println!("key_up code={code} key={key:?}");
-                self.held = self.held.saturating_sub(1);
-            }
-            KeyEvent::Text { text } => println!("text text={text:?}"),
-            KeyEvent::Composing { text, caret } => println!("composing text={text:?} caret={caret}"),
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match event {
-            Event::PointerMoved { x, y } => {
-                // A surface is some thousands of pixels across, which an f32 holds exactly.
-                #[allow(clippy::cast_precision_loss)]
-                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
-                // Two views each follow the pointer across their own half.
-                let (x, width) = match self.views {
-                    Views::One => (x, width),
-                    Views::Two => (x % (width / 2.0), width / 2.0),
-                };
-                self.middle_x = (x / width).mul_add(2.0, -1.0);
-                self.middle_y = (y / height).mul_add(-2.0, 1.0);
-            }
-            Event::PointerDown { x, y, button } => println!("pointer_down x={x} y={y} button={button:?}"),
-            Event::PointerUp { x, y, button } => println!("pointer_up x={x} y={y} button={button:?}"),
-            Event::Wheel { x, y, delta_x, delta_y } => {
-                println!("wheel x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
-            }
-            Event::Resized(surface) => {
-                println!("resized width={} height={} scale={}", surface.width, surface.height, surface.scale);
-                (self.width, self.height) = (surface.width, surface.height);
-            }
-            Event::Moded(mode) => println!("moded mode={mode:?}"),
-            Event::FocusGained => println!("focus=gained"),
-            Event::FocusLost => {
-                println!("focus=lost");
-                self.held = 0;
-            }
-            Event::CloseRequested => println!("close=requested"),
-            Event::Closed => println!("closed"),
-            // Keys and text come through the scene's list, never raw (ADR-0055).
-            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } | Event::Composing { .. } => {}
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Shaping>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, shaping): (Answered<Shaped>, Shaping),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            turn.log(Level::Error, format_args!("the pass the ring joins has no shape: {answered:?}"));
-            return Ok(());
-        };
-        // The window's shape is what the views are laid out in; the views' is what the ring is drawn in.
-        let lays = shaping == Shaping::Window && self.views == Views::Two;
-        if lays {
-            let Ok(wgsl) = turn.put(Vec::from(LAY)) else {
-                turn.log(Level::Error, "the effect was not asked for: its text was not put");
-                return Ok(());
-            };
-            let bindings = vec![
-                Binding { group: 1, binding: 0, kind: BindingKind::Texture },
-                Binding { group: 1, binding: 1, kind: BindingKind::Texture },
-                Binding { group: 1, binding: 2, kind: BindingKind::Sampler },
-            ];
-            let lay = CreateEffect {
-                wgsl,
-                fragment: String::from("lay"),
-                reads: Vec::new(),
-                bindings,
-                blend: Blend::Opaque,
-                shape: Shape::flat(shape.colour),
-            };
-            turn.to(path::<Renderer>(())).ask(&lay, &Nothing)?;
-            return Ok(());
-        }
-        let Some(triangle) = triangle(turn) else {
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
 /// A view of the ring: a frame that follows half the window, drawing the ring onto its texture in its one pass,
 /// `Main`, from black.
 fn view(window: WindowId) -> CreateFrame {
@@ -522,61 +721,6 @@ fn view(window: WindowId) -> CreateFrame {
         ends: Ends::Follows { window, width: Scale::Half, height: Scale::Full, format: TextureFormat::Rgba8 },
         targets: Vec::new(),
         passes: vec![PassSpec::of::<Main>(ring)],
-    }
-}
-
-impl Receives<Answer<Effected, Nothing>> for Scene {
-    fn handle(&mut self, (answered, _): (Answered<Effected>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Effected::Made(lay)) = answered else {
-            turn.log(Level::Error, format_args!("the effect that lays the views out was not made: {answered:?}"));
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).ask(&view(self.window), &Framing::Left { lay: lay.program() })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Framed, Framing>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, framing): (Answered<Framed>, Framing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match (answered, framing) {
-            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Left { lay }) => {
-                let right = Framing::Right { lay, left: frame, texture };
-                turn.to(path::<Renderer>(())).ask(&view(self.window), &right)?;
-            }
-            (Answered::Yes(Framed::Texture { frame, texture }), Framing::Right { lay, left, texture: shown }) => {
-                let smoothly = Sampling { filter: Filter::Linear, wrap: Wrap::Clamp };
-                let lay = Does::Effect {
-                    program: lay,
-                    reads: Vec::new(),
-                    into: Target::End,
-                    bindings: vec![
-                        Bind { group: 1, binding: 0, to: Resource::Texture(shown) },
-                        Bind { group: 1, binding: 1, to: Resource::Texture(texture) },
-                        Bind { group: 1, binding: 2, to: Resource::Sampler(smoothly) },
-                    ],
-                };
-                let main = CreateFrame {
-                    ends: Ends::Window(self.window),
-                    targets: Vec::new(),
-                    passes: vec![PassSpec::of::<Lay>(lay)],
-                };
-                turn.to(path::<Renderer>(())).ask(&main, &Framing::Main { left, right: frame })?;
-            }
-            (Answered::Yes(Framed::Made(_)), Framing::Main { left, right }) => {
-                self.onto = Onto::Views { left, right };
-                turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Texture(left)), &Shaping::Views)?;
-            }
-            (answered, framing) => {
-                turn.log(Level::Error, format_args!("a frame was not made: {framing:?}: {answered:?}"));
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -600,121 +744,6 @@ fn record() -> VertexLayout {
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
 }
 
-impl Receives<Answer<Meshed, Learned>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
-            turn.log(Level::Error, "the program was not asked for: its text was not put");
-            return Ok(());
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let shade = CreateProgram {
-            wgsl,
-            vertex: String::from("place"),
-            fragment: String::from("shade"),
-            layout: VertexLayout { stride: 8, attributes: vec![position] },
-            instances: PerInstance::Records(record()),
-            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
-            reads: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-            shape: learned.shape,
-        };
-        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, MadeMesh>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(program)) = answered else {
-            turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(records) = turn.put(ring(0, self.tuning.turn_millis)) else {
-            turn.log(Level::Error, "the instances were not asked for: their records were not put");
-            return Ok(());
-        };
-        let instances = CreateInstances { layout: record(), capacity: u32::from(RING), records };
-        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Instanced, MadeProgram>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Instanced::Made(instances)) = answered else {
-            turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(bytes) = turn.put(self.look(self.tuning.near)) else {
-            turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
-            return Ok(());
-        };
-        let first = Looking::First { mesh: made.mesh, program: made.program, instances };
-        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &first)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Uniformed, Looking>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, looking): (Answered<Uniformed>, Looking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
-            turn.log(Level::Error, format_args!("a look was not made: {answered:?}"));
-            return Ok(());
-        };
-        let (mesh, instances, joins, looks) = match (looking, self.onto) {
-            (Looking::First { mesh, program, instances }, Onto::Window) => {
-                let joins = vec![join(Frame::Main(self.window), program, uniforms)];
-                (mesh, instances, joins, Looks::One(uniforms))
-            }
-            (Looking::First { mesh, program, instances }, Onto::Views { .. }) => {
-                let Ok(bytes) = turn.put(self.look(self.tuning.far)) else {
-                    turn.log(Level::Error, "the far view's look was not asked for: its bytes were not put");
-                    return Ok(());
-                };
-                let far = Looking::Far { mesh, program, instances, near: uniforms };
-                turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &far)?;
-                return Ok(());
-            }
-            (Looking::Far { mesh, program, instances, near }, Onto::Views { left, right }) => {
-                let joins =
-                    vec![join(Frame::Texture(left), program, near), join(Frame::Texture(right), program, uniforms)];
-                (mesh, instances, joins, Looks::Two { near, far: uniforms })
-            }
-            (Looking::Far { .. }, Onto::Window) => {
-                turn.log(Level::Error, "the far view's look was made with no views to draw in");
-                return Ok(());
-            }
-        };
-        let place = Place { mesh, instances: Drawn::Records(instances), joins };
-        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances, looks })?;
-
-        Ok(())
-    }
-}
-
 /// The ring's join of the pass `Main` of `frame`, drawn by `program` with the look `uniforms`.
 fn join(frame: Frame, program: ProgramId, uniforms: UniformsId) -> Join {
     let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
@@ -733,67 +762,6 @@ impl Scene {
         };
 
         DrawList { entries }
-    }
-}
-
-impl Receives<Answer<Placed, MadeAll>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Placed::Made(placement)) => {
-                self.ring = Ring::Drawing { placement, instances: made.instances, looks: made.looks };
-                turn.to(path::<Renderer>(())).send(&self.list())?;
-            }
-            Answered::Yes(Placed::Refused(why)) => {
-                turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
-            }
-            Answered::No(why) => turn.log(Level::Error, format_args!("the ring was not placed: {why:?}")),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Scene {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.intervals.push(tick.delta_nanos);
-        let ran = self.runs.over(tick.elapsed_nanos);
-        if ran {
-            self.print_intervals();
-            turn.quit();
-        }
-
-        let step_millis = tick.delta_nanos / 1_000_000;
-        let turn_millis = self.tuning.turn_millis;
-        self.turned_millis = if self.held > 0 {
-            self.turned_millis.wrapping_add(turn_millis).saturating_sub(step_millis) % turn_millis
-        } else {
-            self.turned_millis.wrapping_add(step_millis) % turn_millis
-        };
-        let Ring::Drawing { instances, looks, .. } = self.ring else {
-            return Ok(());
-        };
-        let Ok(records) = turn.put(ring(self.turned_millis, turn_millis)) else {
-            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?;
-        let written = match looks {
-            Looks::One(uniforms) => vec![(uniforms, self.tuning.near)],
-            Looks::Two { near, far } => vec![(near, self.tuning.near), (far, self.tuning.far)],
-        };
-        for (uniforms, scale) in written {
-            let Ok(bytes) = turn.put(self.look(scale)) else {
-                turn.log(Level::Warn, "a look was not written: its bytes were not put");
-                return Ok(());
-            };
-            turn.to(path::<Renderer>(())).send(&WriteUniforms { uniforms, first: 0, bytes })?;
-        }
-
-        Ok(())
     }
 }
 
@@ -821,23 +789,5 @@ impl Tunable for Scene {
 
     fn tunes(me: ActorRef<Self>) -> ProtocolRef<Tunes> {
         me.protocol()
-    }
-}
-
-impl Handles<ReadTuning> for Scene {
-    type From = Anyone;
-    type Returns = Tuning;
-
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
-        tuning::read(self, turn)
-    }
-}
-
-impl Handles<Tune> for Scene {
-    type From = Anyone;
-    type Returns = Tuned;
-
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
-        tuning::tune(self, &tune, turn)
     }
 }
