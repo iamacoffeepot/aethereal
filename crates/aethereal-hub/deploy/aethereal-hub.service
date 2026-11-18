@@ -1,0 +1,49 @@
+# The hub's systemd user service, as deployed. It is installed from here unchanged, and the hub's test
+# `the_deployed_command_line_is_one_the_hub_reads` reads its `ExecStart=` as the hub does: a flag renamed or removed, or
+# a `--set` key moved, fails that test, and the change that moves it updates this file.
+#
+# What differs from host to host is no part of this file. systemd fills `%h` (the user's home), `%t` (the user's
+# runtime directory), `%U` and `%G` (the user's uid and gid). The rest is read from `%h/.config/aethereal-hub/host.env`,
+# a file each host keeps of its own, one `NAME=value` a line:
+#
+#     SESSION_IMAGE       the sessions' Docker image and tag, such as aethereal-session:<tag>
+#     SESSION_CREDENTIAL  the path of the file holding the sessions' Claude credential
+#
+# Deploying, from a checkout of the commit to deploy:
+#
+#     cargo build --release -p aethereal-hub
+#     cd ~/.local/share/aethereal-hub/bin
+#     cp -f aethereal-hub aethereal-hub.prev        # the build to roll back to; skip on the first deploy
+#     cp <checkout>/target/release/aethereal-hub aethereal-hub.new
+#     mv -f aethereal-hub.new aethereal-hub         # a rename: a copy over the running binary fails "Text file busy"
+#     cp <checkout>/crates/aethereal-hub/deploy/aethereal-hub.service ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user restart aethereal-hub
+#
+# Rolling back is the same rename of `aethereal-hub.prev` over `aethereal-hub`, with the unit of that build's commit.
+# Before the hub was a crate of its own, its binary was `link_hub`.
+
+[Unit]
+Description=Aethereal hub (MCP on 127.0.0.1:8895, engine link on 127.0.0.1:8892, sessions on Docker's bridge at 8893)
+
+[Service]
+WorkingDirectory=%h/.local/share/aethereal-hub
+EnvironmentFile=%h/.config/aethereal-hub/host.env
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=%t
+ExecStart=%h/.local/share/aethereal-hub/bin/aethereal-hub \
+    --set local_stack.port=8895 \
+    --link-port 8892 \
+    --root %h/.local/share/aethereal-hub/store \
+    --save %h/.local/share/aethereal-hub/save \
+    --link-most-bytes 16777216 \
+    --set engine.read_limit=16777216 \
+    --most-unsent-bytes 16777216 \
+    --set sessions.image=${SESSION_IMAGE} \
+    --set sessions.user=%U:%G \
+    --set sessions.credential=${SESSION_CREDENTIAL}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

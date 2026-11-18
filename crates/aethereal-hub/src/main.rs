@@ -25,6 +25,9 @@
 //! Build with `cargo build --release -p aethereal-hub`, and run with `aethereal-hub --link-port 8892 --root store`. The
 //! store is kept in the directory `--root` names. Then check an engine's binary in, such as the `link_engine` example's,
 //! and spawn it with `spawn_engine`, or start one by hand with the arguments `mint_token` answers.
+//!
+//! It is deployed as the systemd user service `deploy/aethereal-hub.service`, installed unchanged, whose comments say
+//! how; a test reads its command line as the hub does, so a change that moves a flag or key updates it.
 
 mod describe;
 mod stacks;
