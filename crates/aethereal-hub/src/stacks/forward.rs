@@ -57,6 +57,7 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_actor::Part<::aethereal_tcp::Accepting>> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -81,6 +82,7 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_actor::Part<::aethereal_tcp::Reading>> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -147,18 +149,20 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_http::stack::Gather> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ::aethereal_actor::Reply<::aethereal_http::stack::Gathered>;
 
             fn handle(
                 &mut self,
                 gather: ::aethereal_http::stack::Gather,
                 turn: &mut ::aethereal_actor::Turn<'_, Self>,
-            ) -> Result<(), ::aethereal_actor::Fault> {
+            ) -> Result<::aethereal_actor::Reply<::aethereal_http::stack::Gathered>, ::aethereal_actor::Fault> {
                 self.serving.gather(gather, turn)
             }
         }
 
         impl ::aethereal_actor::Handles<::aethereal_tcp::Shut> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -203,18 +207,20 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_actor::Open<::aethereal_http::stack::InboundBody>> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ::aethereal_actor::Later<::aethereal_http::stack::BodyRead>;
 
             fn handle(
                 &mut self,
                 open: ::aethereal_actor::Open<::aethereal_http::stack::InboundBody>,
                 turn: &mut ::aethereal_actor::Turn<'_, Self>,
-            ) -> Result<(), ::aethereal_actor::Fault> {
+            ) -> Result<::aethereal_actor::Later<::aethereal_http::stack::BodyRead>, ::aethereal_actor::Fault> {
                 self.serving.open_body(open, turn)
             }
         }
 
         impl ::aethereal_actor::Handles<::aethereal_actor::More> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -227,6 +233,7 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_actor::Enough> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -249,6 +256,7 @@ macro_rules! stack {
 
         impl ::aethereal_actor::Handles<::aethereal_actor::Part<::aethereal_http::stack::OutboundBody>> for $stack {
             type From = ::aethereal_actor::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,

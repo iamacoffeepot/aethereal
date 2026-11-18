@@ -51,6 +51,7 @@ impl Columns {
 /// raw.
 impl Handles<Event> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
@@ -163,6 +164,7 @@ impl Receives<On<Tick>> for Overlay {
 /// meter. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.budget = stats.budget;
@@ -180,6 +182,7 @@ impl Handles<FrameStats> for Overlay {
 /// says. Heard only while the overlay is shown.
 impl Handles<GpuTimes> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, told: GpuTimes, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.gpu.heard(told);

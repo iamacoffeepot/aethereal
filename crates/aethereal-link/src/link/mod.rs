@@ -176,6 +176,7 @@ impl Actor for Link {
 
 impl Handles<Sheets> for Link {
     type From = Anyone;
+    type Returns = ();
 
     /// The engine's tools as `Tools` now holds them: kept, and written to the hub when connected.
     fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -209,6 +210,7 @@ impl Receives<Answer<Connected, Connecting>> for Link {
 
 impl Handles<Part<Reading>> for Link {
     type From = Anyone;
+    type Returns = ();
 
     /// A frame from the hub: a call, asked of the engine's tools; the chat it shows a trusted engine, handed to each
     /// listener; or a refusal, which ends the link, as a frame that does not read does.

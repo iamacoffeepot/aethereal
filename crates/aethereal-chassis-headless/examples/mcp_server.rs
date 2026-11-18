@@ -6,16 +6,16 @@
 //! --assets DIR --save DIR`.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Level, More, Number,
-    Open, Part, Receives, Slept, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Later, Level, More,
+    Number, Open, Part, Receives, Reply, Slept, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_data::Bound;
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::stack::{
-    Answering, Binding, Deadline, Gather, InboundBody, Layers, Listened, OutboundBody, Outward, ParkedPart,
-    ParkedResponse, PartStep, Response, Sending, Serving, SourceEnd, Stack, StackSettings, layers,
+    Answering, Binding, BodyRead, Deadline, Gather, Gathered, InboundBody, Layers, Listened, OutboundBody, Outward,
+    ParkedPart, ParkedResponse, PartStep, Response, Sending, Serving, SourceEnd, Stack, StackSettings, layers,
 };
 use aethereal_mcp::{MarkOwner, Mcp, McpRoutes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -108,6 +108,7 @@ impl Receives<Answer<Listening, Binding>> for McpStack {
 
 impl Handles<Part<Accepting>> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.accept(part, turn)
@@ -122,6 +123,7 @@ impl Receives<Answer<Unbound, Number>> for McpStack {
 
 impl Handles<Part<Reading>> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.read(part, turn)
@@ -154,14 +156,16 @@ impl Receives<Answer<Slept, Deadline>> for McpStack {
 
 impl Handles<Gather> for McpStack {
     type From = Anyone;
+    type Returns = Reply<Gathered>;
 
-    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<Reply<Gathered>, Fault> {
         self.serving.gather(gather, turn)
     }
 }
 
 impl Handles<Shut> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.shut(turn)
@@ -180,14 +184,16 @@ impl Receives<Answer<Outward, ParkedResponse>> for McpStack {
 
 impl Handles<Open<InboundBody>> for McpStack {
     type From = Anyone;
+    type Returns = Later<BodyRead>;
 
-    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<BodyRead>, Fault> {
         self.serving.open_body(open, turn)
     }
 }
 
 impl Handles<More> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.grant_body(&more, turn)
@@ -196,6 +202,7 @@ impl Handles<More> for McpStack {
 
 impl Handles<Enough> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.stop_reading(&enough, turn)
@@ -210,6 +217,7 @@ impl Receives<Ended> for McpStack {
 
 impl Handles<Part<OutboundBody>> for McpStack {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.take_part(part, turn)

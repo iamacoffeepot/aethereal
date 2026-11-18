@@ -23,7 +23,7 @@ pub use depends::{Depends, DependsOn, Last, RootIs, RootsHold};
 pub use handles::{Handled, HandledList, Handles, Others, Reached, Received, Receives, Untaken};
 pub use list::{Down, Each, Many, One, Pick, Through, TypeList, Whole};
 pub use lists::{At, Lists};
-pub use protocols::{CarriedBy, Carries, Conforms, Covers, HandledBy, Kinds, Listed, Protocol};
+pub use protocols::{AnsweredAlike, CarriedBy, Carries, Conforms, Covers, HandledBy, Kinds, Listed, Protocol};
 pub use spawns::Spawns;
 pub use state::StateSchema;
 

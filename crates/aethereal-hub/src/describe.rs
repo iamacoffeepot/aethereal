@@ -96,13 +96,12 @@ impl Tool for DescribeHubTool {
 
 impl Handles<Call> for DescribeHubTool {
     type From = Anyone;
+    type Returns = Called;
 
     /// Its input holds nothing, so it is not read.
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         let build = HubBuild { source: Source::built(), link_revision: REVISION };
-        let called = Called::output(turn, to_bytes(&build)?);
-        turn.reply(&called)?;
 
-        Ok(())
+        Ok(Called::output(turn, to_bytes(&build)?))
     }
 }

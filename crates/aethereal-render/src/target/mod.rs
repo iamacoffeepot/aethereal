@@ -9,7 +9,7 @@ use crate::frame::{Frame, TargetKind};
 use crate::readback::{ReadFrameTarget, ReadRefused, Region, TargetPixels};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -132,25 +132,25 @@ impl Tool for TargetTool {
 /// Holds the call, and asks the renderer for the region around the pixel.
 impl Handles<Call> for TargetTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(asked) = from_bytes::<ReadTarget>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            turn.reply(&Called::Refused(String::from("that is no target to read")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(String::from("that is no target to read"))));
         };
         let reach = asked.around.unwrap_or(0);
         if reach > MOST_AROUND {
-            turn.reply(&Called::Refused(format!("`around` is at most {MOST_AROUND}")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(format!("`around` is at most {MOST_AROUND}"))));
         }
         let targeting = Targeting { call: self.next };
         let read =
             ReadFrameTarget { frame: Frame::Main(asked.window), target: asked.target, region: around(asked.at, reach) };
         turn.to(path::<Renderer>(())).ask(&read, &targeting)?;
         self.next += 1;
-        self.calls.insert(targeting.call, turn.hold()?);
+        let (held, later) = turn.hold();
+        self.calls.insert(targeting.call, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

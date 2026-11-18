@@ -93,6 +93,7 @@ impl Actor for Reporter {
 
 impl Handles<Event> for Reporter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("window {event:?}"));
@@ -103,6 +104,7 @@ impl Handles<Event> for Reporter {
 
 impl Handles<Keyed> for Reporter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keyed: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("window {:?}", keyed.event));
@@ -113,6 +115,7 @@ impl Handles<Keyed> for Reporter {
 
 impl Handles<Control> for Reporter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, control: Control, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("control {control:?}"));

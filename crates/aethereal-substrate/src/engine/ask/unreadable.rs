@@ -77,17 +77,14 @@ impl Actor for Weigher {
     }
 }
 
-impl Carries<Parcel> for Weigher {
-    type Answers = (Receipt,);
-}
-
 impl Handles<Parcel> for Weigher {
     type From = Anyone;
+    type Returns = Receipt;
 
-    fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, parcel: Parcel, _: &mut Turn<'_, Self>) -> Result<Receipt, Fault> {
         self.asked += 1;
 
-        Ok(turn.reply(&Receipt { text: parcel.text })?)
+        Ok(Receipt { text: parcel.text })
     }
 }
 
@@ -100,6 +97,7 @@ struct Told {
 
 impl Handles<Told> for Weigher {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Told, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.told += 1;
@@ -185,6 +183,7 @@ impl Actor for Sender {
 
 impl Handles<Send> for Sender {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(self.of).ask(&parcel(WITHIN), &Sent { at })?;

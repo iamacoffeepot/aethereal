@@ -5,8 +5,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answered, Anyone, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault,
-    Given, Handle, Handles, How, Level, Publisher, Receives, Root, Standing, Top, Turn, Unanswered, Upgrade, path,
+    Actor, ActorName, ActorRef, Answered, Anyone, Beginning, Bytes, ChildOf, Ended, Ending, Entry, Fault, Given,
+    Handle, Handles, How, Level, Publisher, Receives, Root, Standing, Top, Turn, Unanswered, Upgrade, path,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -79,6 +79,7 @@ impl Actor for Library {
 
 impl Handles<Publish> for Library {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &publish.kind, &publish.blob);
@@ -120,6 +121,7 @@ impl Actor for LettingGo {
 
 impl Handles<PublishLettingGo> for LettingGo {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &echo::Mover::NAME, &publish.blob);
@@ -208,17 +210,12 @@ impl Receives<Ended> for Lookout {
     }
 }
 
-impl Carries<Recall> for Lookout {
-    type Answers = (Sightings,);
-}
-
 impl Handles<Recall> for Lookout {
     type From = Anyone;
+    type Returns = Sightings;
 
-    fn handle(&mut self, _: Recall, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Sightings { endings: self.seen.clone() })?;
-
-        Ok(())
+    fn handle(&mut self, _: Recall, _: &mut Turn<'_, Self>) -> Result<Sightings, Fault> {
+        Ok(Sightings { endings: self.seen.clone() })
     }
 }
 

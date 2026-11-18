@@ -142,7 +142,7 @@ pub struct Asking {
 /// What a turn asks a request of kind `K` of, keeping a context of kind `C`: a reference to a named protocol, or a
 /// typed path or a reference to a type, whose type says what it answers (ADR-0017, ADR-0022).
 ///
-/// A type asked at a typed path says what it answers each kind it can be asked with [`Carries`], beside its handler:
+/// A type asked at a typed path answers each kind it can be asked with what its handler returns, its [`Carries`]:
 ///
 /// ```
 /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
@@ -216,20 +216,17 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// impl Carries<Hello> for Greeter {
-///     type Answers = (Hi,);
-/// }
-///
 /// impl Handles<Hello> for Greeter {
 ///     type From = Anyone;
+///     type Returns = Hi;
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Hi)?)
+///     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<Hi, Fault> {
+///         Ok(Hi)
 ///     }
 /// }
 /// ```
 ///
-/// A type that does not say what it answers the kind is not asked it at a typed path:
+/// A type whose handler of the kind answers nothing is not asked it at a typed path:
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
@@ -303,19 +300,19 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// // No `Carries<Hello>` for `Greeter`.
-///
+/// // Answers `Hello` with nothing: it is a tell to `Greeter`.
 /// impl Handles<Hello> for Greeter {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Hi)?)
+///     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
 ///     }
 /// }
 /// ```
 ///
-/// An actor is asked through a reference to it by the same rule as at its typed path: its type says what it answers
-/// with [`Carries`], and the asker handles that answer with its context:
+/// An actor is asked through a reference to it by the same rule as at its typed path: its handler returns what it
+/// answers, its [`Carries`], and the asker handles that answer with its context:
 ///
 /// ```
 /// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
@@ -362,15 +359,12 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// # impl Carries<Hello> for Greeter {
-/// #     type Answers = (Hi,);
-/// # }
-/// #
 /// # impl Handles<Hello> for Greeter {
 /// #     type From = Anyone;
+/// #     type Returns = Hi;
 /// #
-/// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(turn.reply(&Hi)?)
+/// #     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<Hi, Fault> {
+/// #         Ok(Hi)
 /// #     }
 /// # }
 /// #
@@ -402,7 +396,7 @@ pub struct Asking {
 /// }
 /// ```
 ///
-/// A reference to a type that does not say what it answers the kind is not asked it:
+/// A reference to a type whose handler of the kind answers nothing is not asked it:
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
@@ -476,13 +470,13 @@ pub struct Asking {
 /// #     }
 /// # }
 /// #
-/// // No `Carries<Hello>` for `Greeter`.
-///
+/// // Answers `Hello` with nothing: it is a tell to `Greeter`.
 /// impl Handles<Hello> for Greeter {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Hi)?)
+///     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
 ///     }
 /// }
 /// ```
@@ -637,9 +631,9 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
 /// What became of a request answered with `mail`: the answer, or none when it is not of the kind asked or did not
 /// read (ADR-0017).
 fn answered<A: Kind + Decode<Actors> + 'static>(mail: &Mail<'_>) -> Answered<A> {
-    // A reply of another kind than the one asked is read as unreadable, as an answer that does not decode is: its
-    // handler replied what its type does not say it answers with, which no build checks until a request returns its
-    // answer (ADR-0059).
+    // An answer of another kind than the one asked is read as unreadable, as an answer that does not decode is. A
+    // native handler's answer is its type's, which the build checks (ADR-0059); this one came from a guest's code, or
+    // through a protocol cast to at run time, which checks the kinds it lists and not their answers.
     if mail.kind() != KindId::of::<A>() {
         return Answered::No(Unanswered::Unreadable);
     }

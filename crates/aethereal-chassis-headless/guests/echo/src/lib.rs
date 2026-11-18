@@ -6,9 +6,9 @@ pub use moving::{Breaker, Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Portability, Protocol,
-    ProtocolRef, Receives, Recursive, Refused, Resource, Runner, Running, Spawn, Start, Stop, Tick, Top, Turn,
-    Unanswered, Upgrade, Upgrades, Within, parent, path,
+    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Later, Level, On, Origin, Portability,
+    Protocol, ProtocolRef, Receives, Recursive, Refused, Resource, Runner, Running, Spawn, Speaks, Start, Stop, Tick,
+    Top, Turn, Unanswered, Upgrade, Upgrades, Within, parent, path,
 };
 use aethereal_data::{
     ActorPath, Bound, Decode, DecodeError, Encode, EncodeError, KindId, KindName, Plain, Schema, Shape, Writer,
@@ -90,36 +90,29 @@ impl Actor for Echo {
 
 impl Handles<Ping> for Echo {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
         self.answered += 1;
-        turn.reply(&Pong { n: ping.n })?;
 
-        Ok(())
+        Ok(Pong { n: ping.n })
     }
-}
-
-impl Carries<Ping> for Echo {
-    type Answers = (Pong,);
-}
-
-impl Carries<Parcel> for Echo {
-    type Answers = (Pong,);
 }
 
 impl Handles<Parcel> for Echo {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, parcel: Parcel, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
         self.answered += 1;
-        turn.reply(&Pong { n: u64::try_from(parcel.text.len()).unwrap_or(u64::MAX) })?;
 
-        Ok(())
+        Ok(Pong { n: u64::try_from(parcel.text.len()).unwrap_or(u64::MAX) })
     }
 }
 
 impl Handles<Increment> for Echo {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.counted += 1;
@@ -130,6 +123,7 @@ impl Handles<Increment> for Echo {
 
 impl Handles<Shut> for Echo {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -166,16 +160,16 @@ impl Actor for Mirror {
 
 impl Handles<Ping> for Mirror {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Pong { n: ping.n })?;
-
-        Ok(())
+    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+        Ok(Pong { n: ping.n })
     }
 }
 
 impl Handles<Shut> for Mirror {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -186,6 +180,7 @@ impl Handles<Shut> for Mirror {
 
 impl Handles<Crash> for Mirror {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Crash, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         panic!("a mirror crashes when it is told to");
@@ -390,13 +385,14 @@ impl Actor for Foreman {
 }
 
 impl Handles<Go> for Foreman {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Pong { n: go.n })?;
+    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong { n: go.n })?;
         let first = turn.run(&Chore { n: go.n }, &Shift { at: go.n })?;
         let second = turn.run(&Chore { n: go.n + 1 }, &Shift { at: go.n + 1 })?;
-        turn.reply(&Pong { n: go.n })?;
+        turn.to(*turn.from()).send(&Pong { n: go.n })?;
         turn.log(Level::Info, format!("ran {} and {}", first.mail().count, second.mail().count));
         self.ran.extend([first, second]);
 
@@ -406,6 +402,7 @@ impl Handles<Go> for Foreman {
 
 impl Handles<CallOff> for Foreman {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: CallOff, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for job in self.ran.drain(..) {
@@ -419,6 +416,7 @@ impl Handles<CallOff> for Foreman {
 
 impl Handles<Shut> for Foreman {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -507,7 +505,7 @@ impl Receives<Answer<Pong, Shift>> for Apprentice {
     }
 }
 
-/// An actor that answers each ping with the time its turn reads, in nanoseconds (ADR-0018).
+/// An actor that tells each actor that pings it the time its turn reads, in nanoseconds, as a pong (ADR-0018).
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.timekeeper")]
 pub struct Timekeeper;
@@ -533,17 +531,20 @@ impl Actor for Timekeeper {
 }
 
 impl Handles<Ping> for Timekeeper {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Pong { n: turn.now().nanos() })?;
+    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+        let n = turn.now().nanos();
+        turn.to(*turn.from()).send(&Pong { n })?;
 
         Ok(())
     }
 }
 
-/// An actor of which the blob makes many, each under its own key: it answers pings, and counts them, so each keeps
-/// state of its own in the instance it lives in, and closes on the word to.
+/// An actor of which the blob makes many, each under its own key: it tells each actor that pings it a pong of the
+/// ping's number, and counts them, so each keeps state of its own in the instance it lives in, and closes on the word
+/// to.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.responder")]
 pub struct Responder {
@@ -571,11 +572,12 @@ impl Actor for Responder {
 }
 
 impl Handles<Ping> for Responder {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         self.answered += 1;
-        turn.reply(&Pong { n: ping.n })?;
+        turn.to(*turn.from()).send(&Pong { n: ping.n })?;
 
         Ok(())
     }
@@ -583,6 +585,7 @@ impl Handles<Ping> for Responder {
 
 impl Handles<Shut> for Responder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -665,6 +668,7 @@ impl Actor for Brood {
 
 impl Handles<Grow> for Brood {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let key = self.next;
@@ -685,7 +689,7 @@ pub struct AddBy {
     pub deeper: u64,
 }
 
-/// An actor that answers a ping with a pong of the ping's number and its own, so the answer says its state survived
+/// An actor that tells whoever pings it a pong of the ping's number and its own, so the pong says its state survived
 /// wherever it was kept. Made deeper, it spawns an adder of its own that adds a thousand more.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.adder")]
@@ -721,10 +725,11 @@ impl Actor for Adder {
 }
 
 impl Handles<Ping> for Adder {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Pong { n: ping.n + self.by })?;
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong { n: ping.n + self.by })?;
 
         Ok(())
     }
@@ -908,6 +913,7 @@ impl Actor for Reporter {
 
 impl Handles<Ping> for Reporter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&Pong { n: ping.n + self.key })?;
@@ -989,6 +995,7 @@ impl Actor for FakeChick {
 
 impl Handles<Ping> for FakeChick {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -1077,6 +1084,7 @@ impl Actor for Hatcher {
 
 impl Handles<Pong> for Hatcher {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&pong)?;
@@ -1087,6 +1095,7 @@ impl Handles<Pong> for Hatcher {
 
 impl Handles<Grow> for Hatcher {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
@@ -1154,6 +1163,7 @@ impl Actor for Boomerang {
 
 impl Handles<Ping> for Boomerang {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&self.home), &1, &AddBy { by: 0, deeper: 0 });
@@ -1208,9 +1218,9 @@ pub struct Book {
     pub blob: Bytes,
 }
 
-/// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; answers a ping of `n`
-/// with a reference to a blob of `n` sevens, which it puts; answers a book it is sent with a pong of a hundred and its
-/// length; and closes on a word to shut.
+/// An actor that keeps a blob and reads it as it begins, telling another a pong of its length; tells whoever pings it
+/// for `n` a reference to a blob of `n` sevens, which it puts; tells whoever sends it a book a pong of a hundred and the
+/// book's length; and closes on a word to shut.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.librarian")]
 pub struct Librarian {
@@ -1243,23 +1253,25 @@ impl Actor for Librarian {
 }
 
 impl Handles<Ping> for Librarian {
-    type From = Anyone;
+    type From = Speaks<(Book,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
-        turn.reply(&Book { blob })?;
+        turn.to(*turn.from()).send(&Book { blob })?;
 
         Ok(())
     }
 }
 
 impl Handles<Book> for Librarian {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         let n = 100 + turn.read(&book.blob).len() as u64;
-        turn.reply(&Pong { n })?;
+        turn.to(*turn.from()).send(&Pong { n })?;
 
         Ok(())
     }
@@ -1267,6 +1279,7 @@ impl Handles<Book> for Librarian {
 
 impl Handles<Shut> for Librarian {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -1353,8 +1366,8 @@ impl Actor for Hoarder {
 }
 
 /// An actor that, pinged for `n`, puts a blob of `n` sevens, spawns a librarian to keep it that tells no one, and then
-/// answers with a reference to a blob it was never given: its host refuses that send, and the turn fails with the librarian it stood
-/// up, which the engine never ends.
+/// tells its pinger a reference to a blob it was never given: its host refuses that send, and the turn fails with the
+/// librarian it stood up, which the engine never ends.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.spendthrift")]
 pub struct Spendthrift;
@@ -1380,15 +1393,16 @@ impl Actor for Spendthrift {
 }
 
 impl Handles<Ping> for Spendthrift {
-    type From = Anyone;
+    type From = Speaks<(Book,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let book = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
         let engine = book.id().engine();
         turn.spawn::<Librarian>(&(), Shelf { book, tell }).map_err(|why| unhatched(&why))?;
-        turn.reply(&Book { blob: forged(BlobId::new(engine, u64::MAX)) })?;
+        turn.to(*turn.from()).send(&Book { blob: forged(BlobId::new(engine, u64::MAX)) })?;
 
         Ok(())
     }
@@ -1441,6 +1455,7 @@ impl Actor for Parting {
 
 impl Handles<Ping> for Parting {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if ping.n == 0 {
@@ -1454,6 +1469,7 @@ impl Handles<Ping> for Parting {
 
 impl Handles<Shut> for Parting {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -1502,8 +1518,8 @@ impl Actor for Archive {
     }
 }
 
-/// An actor that keeps a reference to a book, and answers a ping with a pong of the ping's number and the length it
-/// reads the book to be, and closes.
+/// An actor that keeps a reference to a book, and tells whoever pings it a pong of the ping's number and the length
+/// it reads the book to be, and closes.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.reader")]
 pub struct Reader {
@@ -1531,11 +1547,12 @@ impl Actor for Reader {
 }
 
 impl Handles<Ping> for Reader {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         let n = ping.n + turn.read(&self.book).len() as u64;
-        turn.reply(&Pong { n })?;
+        turn.to(*turn.from()).send(&Pong { n })?;
         turn.close();
 
         Ok(())
@@ -1653,6 +1670,7 @@ impl Actor for Porter {
 
 impl Handles<Hand> for Porter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, hand: Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held: Vec<Handle<Lamp>> = hand.lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
@@ -1699,6 +1717,7 @@ impl Actor for Bearer {
 
 impl Handles<Ping> for Bearer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = core::mem::take(&mut self.lamps);
@@ -1722,7 +1741,8 @@ impl Carries<Ping> for Pings {
 }
 
 /// The protocol an echo is asked to count through, as if each were answered with a pong: an echo counts and does not
-/// answer, so the engine says it went unanswered.
+/// answer, so the engine says it went unanswered. An echo's type does not conform to it, as its handler of an
+/// increment answers nothing: an asker reaches it through a cast, which reads only that the echo takes the kind.
 pub struct Counts;
 
 impl Protocol for Counts {
@@ -1790,13 +1810,17 @@ impl Actor for Querent {
 
 impl Handles<Query> for Querent {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let last = query.first + query.pings;
         for at in query.first..last {
             turn.to(self.echo.protocol::<Pings>()).ask(&Ping { n: at * 10 }, &Which { at })?;
         }
-        turn.to(self.echo.protocol::<Counts>()).ask(&Increment, &Which { at: last })?;
+        let Some(counts) = turn.cast::<Counts>(self.echo) else {
+            return Err(Fault::new(&Shut)?);
+        };
+        turn.to(counts).ask(&Increment, &Which { at: last })?;
 
         Ok(())
     }
@@ -1874,6 +1898,7 @@ impl Receives<Answer<Pong, Which>> for Opener {
 
 impl Handles<Heard> for Opener {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Heard,)>()).send(&heard)?;
@@ -1923,7 +1948,7 @@ impl Receives<Answer<Pong, Which>> for Inlet {
     }
 }
 
-/// An actor that answers a ping of `n` by telling its parent a pong of `n`, and then two books, of `n` sevens and of one
+/// An actor that, pinged for `n`, tells its parent a pong of `n`, and then two books, of `n` sevens and of one
 /// more, sent back to back: a run of mail, after other mail, whose references its host must place.
 #[derive(Bound, Portability)]
 #[kind(name = "aether.guest.shelver")]
@@ -1951,6 +1976,7 @@ impl Actor for Shelver {
 
 impl Handles<Ping> for Shelver {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
@@ -2031,12 +2057,14 @@ impl Actor for Envoy {
 
 impl Handles<Ping> for Envoy {
     type From = Anyone;
+    type Returns = Later<Pong>;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push(turn.hold()?);
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+        let (held, later) = turn.hold();
+        self.held.push(held);
         turn.to(self.steward.protocol::<Pings>()).ask(&Ping { n: ping.n }, &Which { at: ping.n })?;
 
-        Ok(())
+        Ok(later)
     }
 }
 
@@ -2108,26 +2136,31 @@ impl Actor for Steward {
 
 impl Handles<Ping> for Steward {
     type From = Anyone;
+    type Returns = Later<Pong>;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push((ping.n, turn.hold()?));
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+        let (held, later) = turn.hold();
+        self.held.push((ping.n, held));
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Weigh> for Steward {
     type From = Anyone;
+    type Returns = Later<Weight>;
 
-    fn handle(&mut self, weigh: Weigh, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.weighing.push((weigh.n, turn.hold()?));
+    fn handle(&mut self, weigh: Weigh, turn: &mut Turn<'_, Self>) -> Result<Later<Weight>, Fault> {
+        let (held, later) = turn.hold();
+        self.weighing.push((weigh.n, held));
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Release> for Steward {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = mem::take(&mut self.held);
@@ -2143,8 +2176,11 @@ impl Handles<Release> for Steward {
             }
             1 => drop((held, weighing)),
             3 => {
+                let Some(counts) = turn.cast::<Counts>(self.echo) else {
+                    return Err(Fault::new(&Shut)?);
+                };
                 for (n, held) in held {
-                    turn.to(self.echo.protocol::<Counts>()).ask(&Increment, &Kept { n, held })?;
+                    turn.to(counts).ask(&Increment, &Kept { n, held })?;
                 }
                 for (n, held) in weighing {
                     turn.answer(held, &Weight { n: 300 + n })?;
@@ -2216,6 +2252,7 @@ impl Actor for Stasher {
 
 impl Handles<Stash> for Stasher {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, stash: Stash, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let len = usize::try_from(stash.len).unwrap_or_default();
@@ -2296,6 +2333,7 @@ impl Actor for Nester {
 
 impl Handles<Book> for Nester {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.spawn::<Nestling>(&(), book).map_err(|why| unhatched(&why))?;
@@ -2306,6 +2344,7 @@ impl Handles<Book> for Nester {
 
 impl Handles<Pong> for Nester {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&pong)?;
@@ -2351,15 +2390,12 @@ impl Actor for Bell {
     }
 }
 
-impl Carries<Ping> for Bell {
-    type Answers = (Pong,);
-}
-
 impl Handles<Ping> for Bell {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(turn.reply(&Pong { n: ping.n + 1 })?)
+    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+        Ok(Pong { n: ping.n + 1 })
     }
 }
 
@@ -2434,6 +2470,7 @@ impl Actor for Steeple {
 
 impl Handles<Ping> for Steeple {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

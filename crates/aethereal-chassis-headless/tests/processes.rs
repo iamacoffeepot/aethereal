@@ -307,6 +307,7 @@ impl Actor for Starter {
 
 impl Handles<Exited> for Starter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -315,6 +316,7 @@ impl Handles<Exited> for Starter {
 
 impl Handles<Leave> for Starter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -427,6 +429,7 @@ impl Bootstrap<Headless> for Reader {
 
 impl Handles<Follow> for Reader {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.open(turn, pipe.protocol(), Read, ())?;
@@ -437,6 +440,7 @@ impl Handles<Follow> for Reader {
 
 impl Handles<Part<Reading>> for Reader {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {

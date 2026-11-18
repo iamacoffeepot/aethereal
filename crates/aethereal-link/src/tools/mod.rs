@@ -16,7 +16,7 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
@@ -249,20 +249,20 @@ impl Tool for EngineTools {
 
 impl Handles<Call> for EngineTools {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
     /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
     /// spawn is asked for the call's caller, which decides whether the engine is trusted, and a session's call of one
     /// engine first asks `Engines` that engine's trust (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
             Err(refusal) => {
                 let refusal = refusal.into_called(turn);
-                turn.reply(&refusal)?;
-                return Ok(());
+                return Ok(Reply::Now(refusal));
             }
         };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let asking = Asking { number: self.next };
         self.next += 1;
         let pending = match (order, call.caller) {
@@ -286,7 +286,7 @@ impl Handles<Call> for EngineTools {
         };
         self.calls.insert(asking.number, pending);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

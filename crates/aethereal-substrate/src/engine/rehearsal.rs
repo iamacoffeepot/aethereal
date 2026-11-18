@@ -39,6 +39,7 @@ impl Actor for Echo {
 
 impl Handles<Again> for Echo {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Again)?;

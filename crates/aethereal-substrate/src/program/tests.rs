@@ -406,6 +406,7 @@ macro_rules! drawing {
 
         impl Handles<Stroke> for $name {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
@@ -450,6 +451,7 @@ impl Actor for Canvas {
 
 impl Handles<Stroke> for Canvas {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

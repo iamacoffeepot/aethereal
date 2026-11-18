@@ -3,7 +3,7 @@
 use super::{Harness, Ran, Unheard};
 use crate::Engine;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Later, Protocol, ProtocolRef,
     Receives, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
@@ -40,7 +40,7 @@ impl Carries<Note> for Listening {
     type Answers = ();
 }
 
-/// A root that doubles what it is asked, and stays silent or fails when told so.
+/// A root that doubles what it is asked, and holds a silence and lets go of it unanswered.
 #[derive(Plain)]
 #[kind(name = "aether.test.outside.doubler")]
 struct Doubler;
@@ -65,27 +65,24 @@ impl Actor for Doubler {
     }
 }
 
-impl Carries<Ping> for Doubler {
-    type Answers = (Pong,);
-}
-
-impl Carries<Silence> for Doubler {
-    type Answers = (Pong,);
-}
-
 impl Handles<Ping> for Doubler {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, Ping(value): Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(turn.reply(&Pong(value * 2))?)
+    fn handle(&mut self, Ping(value): Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+        Ok(Pong(value * 2))
     }
 }
 
 impl Handles<Silence> for Doubler {
     type From = Anyone;
+    type Returns = Later<Pong>;
 
-    fn handle(&mut self, _: Silence, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    fn handle(&mut self, _: Silence, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+        let (held, later) = turn.hold();
+        drop(held);
+
+        Ok(later)
     }
 }
 
@@ -130,6 +127,7 @@ impl Actor for Relay {
 
 impl Handles<Note> for Relay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).send(&note).map(|_| ())?)
@@ -138,6 +136,7 @@ impl Handles<Note> for Relay {
 
 impl Handles<Ping> for Relay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).ask(&ping, &Waiting).map(|_| ())?)
@@ -197,7 +196,7 @@ fn two_requests_are_read_in_either_order() -> Result<(), Unheard> {
 }
 
 #[test]
-fn a_handler_that_stays_silent_reads_as_the_asker_would() -> Result<(), Unheard> {
+fn a_request_let_go_of_unanswered_reads_as_the_asker_would() -> Result<(), Unheard> {
     let mut harness = harness();
     let doubler = harness.root::<Doubler>();
 
@@ -366,6 +365,7 @@ impl Actor for Passer {
 
 impl Handles<Pass> for Passer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.seen.push(left);
@@ -514,6 +514,7 @@ impl Actor for Caster {
 
 impl Handles<Note> for Caster {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {

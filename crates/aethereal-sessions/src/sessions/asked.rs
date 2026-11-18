@@ -10,7 +10,7 @@ use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
 use super::{Phase, Sessions};
-use aethereal_actor::{Anyone, Fault, Handles, Held, Level, Turn};
+use aethereal_actor::{Anyone, Fault, Handles, Held, Later, Level, Turn};
 use aethereal_data::Bound;
 use core::fmt::Write as _;
 
@@ -50,63 +50,77 @@ pub(super) enum Waiting {
 
 impl Handles<NewSession> for Sessions {
     type From = Anyone;
+    type Returns = Later<Opened>;
 
     /// A new session, numbered after every other, its first container started: answered once it runs.
-    fn handle(&mut self, new: NewSession, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        self.take(turn, Waiting::New { held, name: new.name })
+    fn handle(&mut self, new: NewSession, turn: &mut Turn<'_, Self>) -> Result<Later<Opened>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::New { held, name: new.name })?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Say> for Sessions {
     type From = Anyone;
+    type Returns = Later<Said>;
 
     /// A line for a session: written to it in order, a turn running or not; a stopped session is resumed first.
-    fn handle(&mut self, say: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        self.take(turn, Waiting::Say { held, session: say.session, text: say.text })
+    fn handle(&mut self, say: Say, turn: &mut Turn<'_, Self>) -> Result<Later<Said>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Say { held, session: say.session, text: say.text })?;
+
+        Ok(later)
     }
 }
 
 impl Handles<ReadTranscript> for Sessions {
     type From = Anyone;
+    type Returns = Later<Transcribed>;
 
-    fn handle(&mut self, read: ReadTranscript, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        self.take(turn, Waiting::Read { held, read })
+    fn handle(&mut self, read: ReadTranscript, turn: &mut Turn<'_, Self>) -> Result<Later<Transcribed>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Read { held, read })?;
+
+        Ok(later)
     }
 }
 
 impl Handles<ListSessions> for Sessions {
     type From = Anyone;
+    type Returns = Listed;
 
-    fn handle(&mut self, ListSessions: ListSessions, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ListSessions: ListSessions, _: &mut Turn<'_, Self>) -> Result<Listed, Fault> {
         let sessions = self.held.iter().map(|(&session, held)| held.listed(session)).collect();
-        let listed = Listed { sessions, most_running: self.settings.most_running, strays: self.strays.clone() };
-        turn.reply(&listed)?;
 
-        Ok(())
+        Ok(Listed { sessions, most_running: self.settings.most_running, strays: self.strays.clone() })
     }
 }
 
 impl Handles<Interrupt> for Sessions {
     type From = Anyone;
+    type Returns = Later<Interrupted>;
 
     /// The session's running turn interrupted, through the control request Claude Code reads on its stdin.
-    fn handle(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        self.take(turn, Waiting::Interrupt { held, session: interrupt.session })
+    fn handle(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self>) -> Result<Later<Interrupted>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Interrupt { held, session: interrupt.session })?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Archive> for Sessions {
     type From = Anyone;
+    type Returns = Later<Archived>;
 
     /// The session archived: its container stopped and removed, its transcript and home kept. Answered once no
     /// container of it is left.
-    fn handle(&mut self, archive: Archive, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
-        self.take(turn, Waiting::Archive { held, session: archive.session })
+    fn handle(&mut self, archive: Archive, turn: &mut Turn<'_, Self>) -> Result<Later<Archived>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Archive { held, session: archive.session })?;
+
+        Ok(later)
     }
 }
 

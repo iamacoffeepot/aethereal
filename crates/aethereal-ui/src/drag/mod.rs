@@ -8,7 +8,7 @@
 //! release ──> over the screen's own hit ──> the innermost target around it that takes the kind?
 //!         │       └─> the source's drop_accepted, then the target's drop
 //!         ├─> over another actor's entry ──> cast to Drops? ──> Dropped, mailed ──> its library finds its target
-//!         │       └─> DropAnswered, replied once ──> its outcome?
+//!         │       └─> DropAnswered, mailed back once ──> its outcome?
 //!         │               ├─> Accepted: one took it, its drop raised ──> the source's drop_accepted
 //!         │               └─> Refused: none took it ──> the source's drop_outside
 //!         └─> over nothing, or nothing takes it ──> the source's drop_outside
@@ -396,7 +396,7 @@ drop_methods! {
 /// the release's place in that entry's coordinates, as the window reported them; and the widget it was dragged from, in
 /// its sender's tree, which the answer hands back. A screen's library finds the target at the entry, raises its drop,
 /// and answers whether it took it; an actor that is not a screen handles it as it will, and answers too, once:
-/// [`Dropped::answer`] with [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with
+/// [`Dropped::answer_source`] with [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with
 /// [`DropOutcome::Refused`] its `drop_outside`.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.ui.dropped")]
@@ -413,6 +413,24 @@ impl Dropped {
     #[must_use]
     pub fn answer(self, outcome: DropOutcome) -> DropAnswered {
         DropAnswered { payload: self.payload, source: self.source, outcome }
+    }
+
+    /// Mails its [`answer`](Self::answer) with `outcome` to the actor that dropped it, in the turn that handles it: a
+    /// drop is mailed as a tell to an actor cast to [`Drops`], so its source hears the answer as mail of its own, and
+    /// one that does not handle [`DropAnswered`] is told nothing, which is logged.
+    ///
+    /// # Errors
+    ///
+    /// Why the answer could not be written.
+    pub fn answer_source<A>(self, turn: &mut Turn<'_, A>, outcome: DropOutcome) -> Result<(), Fault> {
+        let sender = turn.sender();
+        let Some(source) = turn.cast::<(DropAnswered,)>(sender) else {
+            turn.log(Level::Warn, "a drop came from an actor that does not handle its answer");
+            return Ok(());
+        };
+        turn.to(source).send(&self.answer(outcome))?;
+
+        Ok(())
     }
 }
 

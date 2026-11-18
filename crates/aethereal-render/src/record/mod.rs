@@ -12,7 +12,7 @@ use crate::capture::{Crop, crop_or_whole, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handle, Handles,
-    Held, ProtocolRef, Receives, Turn, Unanswered, path,
+    Held, ProtocolRef, Receives, Reply, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
@@ -290,36 +290,32 @@ impl Tool for RecordTool {
 /// Checks the call, holds it, and asks the pacer to hold the clock: frames are drawn once it has.
 impl Handles<Call> for RecordTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(asked) = from_bytes::<Record>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            turn.reply(&refused("that is no clip to record"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("that is no clip to record")));
         };
         if let Some(why) = unrecordable(asked.frames, asked.rate(), longest_or_frame(asked.longest)) {
-            turn.reply(&refused(why))?;
-            return Ok(());
+            return Ok(Reply::Now(refused(why)));
         }
         if !video::ENCODES {
-            turn.reply(&Called::Refused(said(Unencodable::NoEncoder)))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(said(Unencodable::NoEncoder))));
         }
         let is_named = clip_path(&asked.name).is_ok();
         if !is_named {
-            turn.reply(&refused("the clip's name makes no file's path"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("the clip's name makes no file's path")));
         }
         if let Clipping::Recording(_) = self.clip {
-            turn.reply(&refused("a clip is being recorded already: record one at a time"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("a clip is being recorded already: record one at a time")));
         }
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         turn.to(path::<Pacer>(())).ask(&SetPace { pace: Pace::Held }, &Pacing { clip: number })?;
         self.clip = Clipping::Recording(Box::new(Clip { held, asked, number, stage: Stage::Holding }));
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

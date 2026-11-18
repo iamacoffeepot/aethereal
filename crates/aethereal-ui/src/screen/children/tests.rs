@@ -51,6 +51,7 @@ impl Actor for Minimap {
 
 impl Handles<Resize> for Minimap {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Resize, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

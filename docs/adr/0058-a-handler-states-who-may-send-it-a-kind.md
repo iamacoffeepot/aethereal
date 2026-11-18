@@ -34,14 +34,15 @@ fn stop(&mut self, stop: Stop, turn: &mut Turn<'_, Self, ActorRef<Engines>>) -> 
 ```rust
 pub trait Handles<K: Kind>: Actor {
     type From: Checks<Self, K>;
+    type Returns: Answering;                                    // how it answers (ADR-0059)
 
-    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault>;
+    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<Self::Returns, Fault>;
 
-    /// Mail of `K` from a sender `From` refused: logged, naming the sender, and a request answered
+    /// Mail of `K` from a sender `From` refused: by default logged, naming the sender, and a request answered
     /// `Unanswered::Unreadable`; other mail is dropped. Its turn holds the sender as an `ErasedActorRef`, as the guard
     /// checked nothing to hand on.
-    fn refused(&mut self, mail: K, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.refuse(&mail)
+    fn refused(&mut self, _: K, _: &mut Turn<'_, Self>) -> Result<Refusal<Self::Returns>, Fault> {
+        Ok(Refusal::Logged)
     }
 }
 
@@ -234,8 +235,13 @@ let sender = turning.sender(declared);
 let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &sender);
 
 match admitted {
-    Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::From>(declared, from)),
-    None => A::refused(actor, mail, &mut turning.declaring::<A, Anyone>(declared, sender.reference())),
+    Some(from) => {
+        let mut turn = turning.declaring::<A, A::From>(declared, from);
+        A::handle(actor, mail, &mut turn)?.send(&mut turn, Token::new())?;    // the answer, sent (ADR-0059)
+
+        turn.settled()
+    }
+    None => refuse(actor, mail, turning, declared),          // `refused`, and its answer or the default
 }
 ```
 
@@ -270,10 +276,10 @@ impl<Me, P: Listed, I> SentBy<Me, I> for ProtocolRef<P> { .. }   // an actor who
 
 ### A refusal goes to the handler's `refused`
 
-`refused` is handed the mail, read as its kind, and the plain turn. The sender is the turn's: `turn.from()` is its `ErasedActorRef`, so no wrapper restates it. `turn.refuse(&mail)` reads the sender from the turn it is called on.
+`refused` is handed the mail, read as its kind, and the plain turn. The sender is the turn's: `turn.from()` is its `ErasedActorRef`, so no wrapper restates it.
 
-- **A refusal is the handler's to answer, beside the handler.** An `#[actor]` block overrides `refused` for a kind with a `#[refused]` method of that kind, written beside its handler (ADR-0059). A refused request returns the request's own answer type, which the macro replies with; a refused tell returns nothing. An override may tell whoever it reaches, each send checked at its call as any is, and the behaviour of one kind stays with its handler.
-- **The default** logs a reason of its own, `Unreadable::Refused`, naming the sender's path and type, and answers a request `Unanswered::Unreadable`, as mail that did not read is answered (ADR-0017). A tell is dropped.
+- **A refusal is the handler's to answer, beside the handler.** `refused` returns a `Refusal` of the handler's answer form: `Refusal::Answers(r)`, which the engine sends as it sends what the handler returns, or `Refusal::Logged`, the default below. An `#[actor]` block overrides `refused` for a kind with a `#[refused]` method of that kind, written beside its handler (ADR-0059). A refused request returns the request's own answer type, which the macro wraps in `Refusal::Answers`; a refused tell returns nothing. An override may tell whoever it reaches, each send checked at its call as any is, and the behaviour of one kind stays with its handler.
+- **The default, `Refusal::Logged`,** logs a reason of its own, `Unreadable::Refused`, naming the sender's path and type, and answers a request `Unanswered::Unreadable`, as mail that did not read is answered (ADR-0017). A tell is dropped. The default is a case of its own because no answer form could stand for it: an answer given now, `A`, has no value the engine could make for every `A`.
 
 ### A kind is listed once
 
@@ -305,7 +311,7 @@ A check that passed the mail over silently, or logged a warning of its own, now 
 - A refused sender is logged, and a refused request answered, where a check by hand often did neither.
 - Delivery checks every sender against the receiver's guard: a native one, a send through a protocol reference, an answer, and a guest. A native send whose target names its receiver's type is also checked against the guard's `Sent` type at its call, so a sender the guard refuses by type does not build.
 - The types a guard admits are stated once, by its `Sent` type, which also takes them from the sender, and cannot disagree with `admits`; an enum of senders is derived from its cases, so its check and its types cannot drift.
-- `Handles<K>` gains `From` and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard<A>` names a `Sent` and `Checks<A, K>` its check, `Admits` and `SentBy` read the `Sent` at a send's call, `Turn` takes its guard as its type argument after its actor, defaulted (ADR-0059), and `Table` gains `is_of`.
+- `Handles<K>` gains `From`, `Returns`, and a default `refused`, and is for mail; `Receives<H>` takes answers, endings, stages, and fallbacks. `Guard<A>` names a `Sent` and `Checks<A, K>` its check, `Admits` and `SentBy` read the `Sent` at a send's call, `Turn` takes its guard as its type argument after its actor, defaulted (ADR-0059), and `Table` gains `is_of`.
 - A test that hands a guarded handler its mail from the outside (ADR-0036), whose type is its own, stands up the type the guard admits.
 
 ## Alternatives considered

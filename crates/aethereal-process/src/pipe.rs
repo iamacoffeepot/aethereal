@@ -2,11 +2,13 @@
 
 use crate::{Exits, Processes};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, More, Open,
-    ProtocolRef, Receives, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, Later, More,
+    Open, ProtocolRef, Receives, Reply, Turn,
 };
 use aethereal_data::Bound;
-use aethereal_tcp::{Connection, ConnectionConfig, Finish, Framing, Interest, Readied, Reading, Shut, Socket, Write};
+use aethereal_tcp::{
+    Connection, ConnectionConfig, Finish, Framing, HungUp, Interest, Readied, Reading, Shut, Socket, Write, Wrote,
+};
 
 /// How a pipe cuts what the program writes: whatever arrived, in chunks of at most 64 KiB, as a connection reads an
 /// HTTP peer. The program's output is bytes whose framing, if any, is its reader's to parse.
@@ -66,14 +68,16 @@ impl Actor for Pipe {
 
 impl Handles<Open<Reading>> for Pipe {
     type From = Anyone;
+    type Returns = Later<HungUp>;
 
-    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
         self.connection.open(turn, open)
     }
 }
 
 impl Handles<More> for Pipe {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
@@ -82,6 +86,7 @@ impl Handles<More> for Pipe {
 
 impl Handles<Enough> for Pipe {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
@@ -102,14 +107,16 @@ impl Receives<Ended> for Pipe {
 
 impl Handles<Write> for Pipe {
     type From = Anyone;
+    type Returns = Reply<Wrote>;
 
-    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<Reply<Wrote>, Fault> {
         self.connection.write(turn, write)
     }
 }
 
 impl Handles<Finish> for Pipe {
     type From = Anyone;
+    type Returns = ();
 
     /// Ends the program's stdin, once what was written is: the program reads to its end.
     fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -119,6 +126,7 @@ impl Handles<Finish> for Pipe {
 
 impl Handles<Shut> for Pipe {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.shut(turn)

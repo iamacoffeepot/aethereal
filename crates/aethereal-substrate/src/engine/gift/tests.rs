@@ -206,6 +206,7 @@ impl Actor for Keeper {
 
 impl Handles<Order> for Keeper {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
@@ -287,6 +288,7 @@ impl Handles<Order> for Keeper {
 
 impl Handles<Pass> for Keeper {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, pass: Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let refuses = self.takes == Takes::None;
@@ -305,6 +307,7 @@ impl Handles<Pass> for Keeper {
 
 impl Handles<Last> for Keeper {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, last: Last, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.did.push(Did::Last { number: last.number, light: last.light });

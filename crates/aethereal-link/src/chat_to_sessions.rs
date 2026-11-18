@@ -62,6 +62,7 @@ impl Actor for ChatToSessions {
 
 impl Handles<TrustedEngine> for ChatToSessions {
     type From = ActorRef<Engines>;
+    type Returns = ();
 
     /// An engine the hub trusts, as `Engines` tells it: told its chat goes to `Sessions`.
     fn handle(&mut self, trusted: TrustedEngine, turn: &mut Turn<'_, Self, ActorRef<Engines>>) -> Result<(), Fault> {

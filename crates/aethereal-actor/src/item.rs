@@ -6,7 +6,7 @@ use crate::{Asking, Ended, Mail};
 ///
 /// An actor is run in a step when its stream has items, and each item is a
 /// turn of its own. Each item has a source, the actor it comes from, which is
-/// whom a reply reaches.
+/// whom the answer to a request reaches.
 #[derive(Clone)]
 pub enum Item<'a> {
     /// A piece of mail. Its source is its sender.

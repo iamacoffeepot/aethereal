@@ -122,6 +122,7 @@ impl Actor for Keeper {
 
 impl Handles<Kept> for Keeper {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
@@ -165,6 +166,7 @@ impl Actor for Strict {
 
 impl Handles<Kept> for Strict {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

@@ -2,7 +2,7 @@
 //! their parts, and their answers (ADR-0017).
 
 use super::{Enough, More, Open, Part, Stream, StreamKey, Unreachable};
-use crate::{Ended, Fault, Held, ProtocolRef, Receives, Turn};
+use crate::{Ended, Fault, Held, Later, ProtocolRef, Receives, Turn};
 use aethereal_data::{Bound, EncodeError};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -40,6 +40,10 @@ pub enum Unsent<P> {
     Unwritable(EncodeError),
 }
 
+/// What opening a stream answers: its key, what it was asked to open with, and the [`Later`] the handler of `Open<S>`
+/// returns.
+type Opened<S> = (StreamKey, <S as Stream>::Open, Later<<S as Stream>::Done>);
+
 impl<S: Stream> Serving<S> {
     /// None served.
     #[must_use]
@@ -47,23 +51,23 @@ impl<S: Stream> Serving<S> {
         Self { streams: BTreeMap::new() }
     }
 
-    /// Opens the stream `open` asks for, holding its request, and answers its key and what it was asked to open
-    /// with. The stream may send nothing until the asker's credit comes, which follows the request.
+    /// Opens the stream `open` asks for, holding its request, and answers its key, what it was asked to open with,
+    /// and the [`Later`] the handler of `Open<S>` returns. The stream may send nothing until the asker's credit
+    /// comes, which follows the request.
     ///
     /// It builds only when the actor handles endings.
     ///
     /// # Errors
     ///
-    /// The turn fails with [`Unreachable`] when the asker does not take the stream's parts, and with what holding the
-    /// request said when it could not be held.
-    pub fn open<A>(&mut self, turn: &mut Turn<'_, A>, open: Open<S>) -> Result<(StreamKey, S::Open), Fault>
+    /// The turn fails with [`Unreachable`] when the asker does not take the stream's parts.
+    pub fn open<A>(&mut self, turn: &mut Turn<'_, A>, open: Open<S>) -> Result<Opened<S>, Fault>
     where
         A: Receives<Ended>,
     {
         let Some(asker) = turn.cast::<(Part<S>,)>(turn.sender()) else {
             return Err(Fault::new(&Unreachable)?);
         };
-        let held = turn.hold::<S::Done>()?;
+        let (held, later) = turn.hold::<S::Done>();
         let (number, value) = open.into_parts();
         let key = StreamKey::new(asker.id().bits(), number);
 
@@ -73,7 +77,7 @@ impl<S: Stream> Serving<S> {
         }
         self.streams.entry(key.asker()).or_default().insert(number, Streaming { asker, held, number, credit: 0 });
 
-        Ok((key, value))
+        Ok((key, value, later))
     }
 
     /// Adds the credit `more` grants to the stream it names, and answers that stream's key: none when it names no

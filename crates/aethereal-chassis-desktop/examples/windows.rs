@@ -267,6 +267,7 @@ impl Receives<On<Start>> for Director {
 /// `N` in any window asks for another; Escape in any quits.
 impl Handles<Keyed> for Director {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let KeyEvent::KeyDown { code, repeat: false, .. } = keyed.event else {
@@ -527,6 +528,7 @@ impl Scene {
 
 impl Handles<Keyed> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = self.window.to_name();
@@ -556,6 +558,7 @@ impl Handles<Keyed> for Scene {
 
 impl Handles<Event> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = self.window.to_name();

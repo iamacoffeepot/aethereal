@@ -368,19 +368,14 @@ fn recent_answered(recent: Recent<'_>, filter: &Filter<'_>) -> RecentLog {
 
 impl LogsTool {
     /// Answers `read_recent`: what every actor logged from the step its input names on (ADR-0053).
-    fn read_recent(call: &Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn read_recent(call: &Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         let read = match from_bytes::<ReadRecent>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
             Ok(read) => read,
-            Err(fault) => {
-                turn.reply(&Called::Refused(format!("the input of `{READ_RECENT}`: {fault}")))?;
-                return Ok(());
-            }
+            Err(fault) => return Ok(Called::Refused(format!("the input of `{READ_RECENT}`: {fault}"))),
         };
         let answer = recent_answered(turn.recent(read.since.unwrap_or(0)), &read.filter());
-        let called = Called::output(turn, to_bytes(&answer)?);
-        turn.reply(&called)?;
 
-        Ok(())
+        Ok(Called::output(turn, to_bytes(&answer)?))
     }
 }
 
@@ -447,16 +442,16 @@ impl Tool for LogsTool {
 
 impl Handles<Call> for LogsTool {
     type From = Anyone;
+    type Returns = Called;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         if call.tool == READ_RECENT {
             return Self::read_recent(&call, turn);
         }
         let read = match from_bytes::<ReadLog>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
             Ok(read) => read,
             Err(fault) => {
-                turn.reply(&Called::Refused(format!("the input of `actor_logs`: {fault}")))?;
-                return Ok(());
+                return Ok(Called::Refused(format!("the input of `actor_logs`: {fault}")));
             }
         };
         let since = read.since.unwrap_or(0);
@@ -470,10 +465,8 @@ impl Handles<Call> for LogsTool {
             Ended::Short(n) => n,
         };
         let written = written(logged.since(since), &filter, &planned, &Tail { next, skipped }, buffer)?;
-        let called = Called::output(turn, written);
-        turn.reply(&called)?;
 
-        Ok(())
+        Ok(Called::output(turn, written))
     }
 }
 

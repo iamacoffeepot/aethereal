@@ -98,6 +98,7 @@ impl Actor for Controls {
 /// Adds the sender, and sends it every control as it stands: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Controls {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -120,6 +121,7 @@ impl Handles<Subscribe> for Controls {
 
 impl Handles<Unsubscribe> for Controls {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listeners.unsubscribe(turn.sender());
@@ -132,6 +134,7 @@ impl Handles<Unsubscribe> for Controls {
 /// another actor sends is not the page's, and is neither kept nor sent on.
 impl Handles<Control> for Controls {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, control: Control, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();

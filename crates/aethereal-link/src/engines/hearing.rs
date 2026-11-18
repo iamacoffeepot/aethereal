@@ -30,6 +30,7 @@ pub struct TrustedEngine {
 
 impl Handles<HearTrusted> for Engines {
     type From = Anyone;
+    type Returns = ();
 
     /// Holds the sender, and tells it each engine linked trusted already: nothing, when it hears already, as it was
     /// told them then and is told each after.

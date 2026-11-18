@@ -6,7 +6,7 @@ use crate::ready::{Ready, Wait};
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
-    Handles, More, Open, Receives, Serving, Spawn, Stream, StreamKey, Turn, Unsent,
+    Handles, Later, More, Open, Receives, Serving, Spawn, Stream, StreamKey, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -118,23 +118,25 @@ impl Actor for Listener {
 
 impl Handles<Open<Accepting>> for Listener {
     type From = Anyone;
+    type Returns = Later<Unbound>;
 
-    fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let (key, Accept) = self.accepting.open(turn, open)?;
+    fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<Later<Unbound>, Fault> {
+        let (key, Accept, later) = self.accepting.open(turn, open)?;
         if let Acceptor::Accepting(_) = self.acceptor {
             if let Some(second) = self.accepting.take(key) {
                 second.finish(turn, &Unbound::Busy)?;
             }
-            return Ok(());
+            return Ok(later);
         }
         self.acceptor = Acceptor::Accepting(key);
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<More> for Listener {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.accepting.more(turn, &more);
@@ -145,6 +147,7 @@ impl Handles<More> for Listener {
 
 impl Handles<Enough> for Listener {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(stopped) = self.accepting.stop(turn, &enough) {
@@ -172,6 +175,7 @@ impl Receives<Ended> for Listener {
 
 impl Handles<Shut> for Listener {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for connection in self.accepted.values() {

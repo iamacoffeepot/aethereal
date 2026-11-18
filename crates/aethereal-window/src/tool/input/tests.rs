@@ -52,6 +52,7 @@ impl Actor for Subscriber {
 
 impl Handles<Event> for Subscriber {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -60,6 +61,7 @@ impl Handles<Event> for Subscriber {
 
 impl Handles<Keyed> for Subscriber {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -68,6 +70,7 @@ impl Handles<Keyed> for Subscriber {
 
 impl Handles<Probed> for Subscriber {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

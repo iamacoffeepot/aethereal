@@ -1,6 +1,7 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
 use super::{Declared, Handler, Role};
+use crate::answering::{Answering, Refusal, Token};
 use crate::guard::{Anyone, Checks};
 use crate::{
     Actor, Actors, Answer, Ended, ErasedActorRef, Fault, Item, Mail, On, Stage, Turn, Turning, Unreadable, Within,
@@ -11,6 +12,63 @@ use aethereal_data::{Decode, DecodeError, Kind, KindId};
 ///
 /// `From` is its guard: who may send it `K`, asked before the handler runs. What its guard refuses goes to
 /// [`refused`](Self::refused). What the handler sends is checked at each send, against what it sends through.
+///
+/// `Returns` is how it answers, and the actor's answer to `K`, its [`Carries`](crate::Carries): `()` for a tell, the
+/// answer `A` sent now, a [`Later<A>`](crate::Later) its hold made, or a [`Reply<A>`](crate::Reply), either
+/// (ADR-0059). The engine sends what it answers now once it returns `Ok`, and the turn has no other way to answer.
+/// An answer to mail that asked for none, a request's kind told, is dropped.
+///
+/// A handler that returns another kind than its `Returns` names does not build:
+///
+/// ```compile_fail,E0053
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
+/// # use aethereal_data::Plain;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.which_tile")]
+/// # struct WhichTile;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
+/// # struct TileIs;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.no_tile")]
+/// # struct NoTile;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.board")]
+/// # struct Board;
+/// #
+/// # impl ChildOf for Board {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl Actor for Board {
+/// #     type Config = Board;
+/// #     type Key = ();
+/// #     type Handles = (WhichTile,);
+/// #     type Depends = ();
+/// #     type Spawns = ();
+/// #
+/// #     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         Ok(board)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// impl Handles<WhichTile> for Board {
+///     type From = Anyone;
+///     type Returns = TileIs;
+///
+///     fn handle(&mut self, _: WhichTile, _: &mut Turn<'_, Self>) -> Result<NoTile, Fault> {
+///         Ok(NoTile)
+///     }
+/// }
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no handler of `{K}`",
     label = "`{K}` is sent here to an actor of type `{Self}`",
@@ -19,15 +77,19 @@ use aethereal_data::{Decode, DecodeError, Kind, KindId};
 pub trait Handles<K: Kind>: Actor {
     /// Who may send it `K`: a guard, which hands the handler the sender it checked.
     type From: Checks<Self, K>;
+    /// How it answers `K`: `()`, `A`, `Later<A>`, or `Reply<A>`.
+    type Returns: Answering;
 
-    /// Handles one piece of mail: a turn of its own, which holds the sender its guard checked.
-    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault>;
+    /// Handles one piece of mail: a turn of its own, which holds the sender its guard checked. It returns its answer,
+    /// which the engine sends.
+    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<Self::Returns, Fault>;
 
-    /// Mail of `K` from a sender `From` refused: logged, naming the sender, and a request answered
-    /// [`Unanswered::Unreadable`](crate::Unanswered::Unreadable); other mail is dropped. Its turn holds the sender as
-    /// an [`ErasedActorRef`], as the guard checked nothing to hand on.
-    fn refused(&mut self, mail: K, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.refuse(&mail)
+    /// Mail of `K` from a sender `From` refused: by default [`Refusal::Logged`], logged, naming the sender, a request
+    /// answered [`Unanswered::Unreadable`](crate::Unanswered::Unreadable), and other mail dropped; or an answer in the
+    /// handler's form, [`Refusal::Answers`], which the engine sends as it sends the handler's. Its turn holds the
+    /// sender as an [`ErasedActorRef`], as the guard checked nothing to hand on.
+    fn refused(&mut self, _mail: K, _turn: &mut Turn<'_, Self>) -> Result<Refusal<Self::Returns>, Fault> {
+        Ok(Refusal::Logged)
     }
 }
 
@@ -85,7 +147,12 @@ impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
         let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &turning.sender(declared));
 
         match admitted {
-            Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::From>(declared, from)),
+            Some(from) => {
+                let mut turn = turning.declaring::<A, A::From>(declared, from);
+                A::handle(actor, mail, &mut turn)?.send(&mut turn, Token::new())?;
+
+                turn.settled()
+            }
             None => refuse(actor, mail, turning, declared),
         }
     }
@@ -102,8 +169,13 @@ fn refuse<A: Handles<K>, K: Kind>(
     declared: &'static Declared,
 ) -> Result<(), Fault> {
     let sender = ErasedActorRef::new(turning.source());
+    let mut turn = turning.declaring::<A, Anyone>(declared, sender);
+    match A::refused(actor, mail, &mut turn)? {
+        Refusal::Answers(answer) => answer.send(&mut turn, Token::new())?,
+        Refusal::Logged => turn.refuse::<K>(),
+    }
 
-    A::refused(actor, mail, &mut turning.declaring::<A, Anyone>(declared, sender))
+    turn.settled()
 }
 
 macro_rules! received {
@@ -124,8 +196,9 @@ macro_rules! received {
                     Ok(taken) => {
                         let sender = ErasedActorRef::new(turning.source());
                         let mut turn = turning.declaring::<A, Anyone>(declared, sender);
+                        <A as Receives<$handled>>::handle(actor, taken, &mut turn)?;
 
-                        <A as Receives<$handled>>::handle(actor, taken, &mut turn)
+                        turn.settled()
                     }
                     Err(untaken) => turning.untaken(untaken),
                 }

@@ -13,6 +13,7 @@ use core::mem;
 
 impl Handles<Part<Logging>> for Sessions {
     type From = Anyone;
+    type Returns = ();
 
     /// A piece of a container's output: each line it ends goes into the session's transcript, and says what it says
     /// of the session's turns.
@@ -66,6 +67,7 @@ impl Receives<Answer<LogsDone, Number>> for Sessions {
 
 impl Handles<Part<Attaching>> for Sessions {
     type From = Anyone;
+    type Returns = ();
 
     /// The container's stdin, attached: each line waiting is written. Its output is read from its logs instead, so
     /// what the attach carries is taken and let go.
@@ -270,6 +272,7 @@ impl Receives<Answer<Wrote, Typing>> for Sessions {
 
 impl Handles<Part<Watching>> for Sessions {
     type From = Anyone;
+    type Returns = ();
 
     /// An event of a container carrying the hub's label: a session's that died has ended.
     fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {

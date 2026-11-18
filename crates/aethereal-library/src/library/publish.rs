@@ -3,7 +3,7 @@
 
 use super::{Fetching, Library, ReadingModule, Stage};
 use crate::{ModulePublished, Numbered, PublishModule, Unloaded};
-use aethereal_actor::{Answered, Bytes, Fault, Handles, Turn, path};
+use aethereal_actor::{Answered, Bytes, Fault, Handles, Reply, Turn, path};
 use aethereal_actor::{Anyone, Level};
 use aethereal_data::{FilePath, to_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
@@ -11,21 +11,21 @@ use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 /// Reads the module, once `Code` is published: answered once it is read.
 impl Handles<PublishModule> for Library {
     type From = Anyone;
+    type Returns = Reply<ModulePublished>;
 
-    fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self>) -> Result<Reply<ModulePublished>, Fault> {
         let is_open = matches!(self.stage, Stage::Open);
         if !is_open {
-            turn.reply(&ModulePublished::Unopened)?;
-            return Ok(());
+            return Ok(Reply::Now(ModulePublished::Unopened));
         }
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         let read = ReadFile { namespace: Namespace::Code, path: publish.path.clone() };
         turn.to(path::<Files>(())).ask(&read, &ReadingModule::Publishing { number })?;
         self.fetching.insert(number, Fetching { held, path: publish.path });
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

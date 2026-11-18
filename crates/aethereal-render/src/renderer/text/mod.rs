@@ -26,7 +26,7 @@ use crate::text::{
     self, Align, CreateFont, CreateText, FontId, FontMade, FontMetrics, FontNotMade, FontSource, MetricsRefused,
     MoveText, Outline, PlaceText, ReadMetrics, TextId, TextMade, TextPlaced, Wrap, WriteText,
 };
-use aethereal_actor::{Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Receives, Turn};
+use aethereal_actor::{Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Receives, Reply, Turn};
 use aethereal_data::ActorId;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
@@ -623,52 +623,30 @@ impl Renderer {
     }
 }
 
-impl aethereal_actor::Carries<CreateFont> for Renderer {
-    type Answers = (FontMade,);
-}
-
-impl aethereal_actor::Carries<CreateText> for Renderer {
-    type Answers = (TextMade,);
-}
-
-impl aethereal_actor::Carries<PlaceText> for Renderer {
-    type Answers = (TextPlaced,);
-}
-
-impl aethereal_actor::Carries<ReadMetrics> for Renderer {
-    type Answers = (FontMetrics,);
-}
-
 /// Makes the font: one of the renderer's own shared, or its bytes read in this turn and its metrics put once as a blob,
 /// with its fallbacks' faces as they are now. Answers it, or why it was refused.
 impl Handles<CreateFont> for Renderer {
     type From = Anyone;
+    type Returns = FontMade;
 
-    fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self>) -> Result<FontMade, Fault> {
         let CreateFont { source, fallbacks } = create;
         let own = match source {
             FontSource::Sans => Own::Sans,
             FontSource::Mono => Own::Mono,
             FontSource::Bytes(bytes) => match read(turn, &bytes) {
                 Ok(own) => own,
-                Err(why) => {
-                    turn.reply(&FontMade::Refused(why))?;
-                    return Ok(());
-                }
+                Err(why) => return Ok(FontMade::Refused(why)),
             },
         };
         let made = turn.open(&mut self.kept)?.text.font(own, &fallbacks);
         let typeface = match made {
             Ok(typeface) => typeface,
-            Err(why) => {
-                turn.reply(&FontMade::Refused(why))?;
-                return Ok(());
-            }
+            Err(why) => return Ok(FontMade::Refused(why)),
         };
         let id = self.made(turn, |kept, id, maker| kept.text.faces.made.keep(id, maker, typeface))?;
-        turn.reply(&FontMade::Made(FontId { id }))?;
 
-        Ok(())
+        Ok(FontMade::Made(FontId { id }))
     }
 }
 
@@ -683,12 +661,10 @@ fn read(turn: &mut Turn<'_, Renderer>, bytes: &Bytes) -> Result<Own, FontNotMade
 /// Answers the font's metrics and its fallbacks', as the blobs kept since each face was read.
 impl Handles<ReadMetrics> for Renderer {
     type From = Anyone;
+    type Returns = FontMetrics;
 
-    fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let metrics = turn.open(&mut self.kept)?.text.metrics(read.font);
-        turn.reply(&metrics)?;
-
-        Ok(())
+    fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self>) -> Result<FontMetrics, Fault> {
+        Ok(turn.open(&mut self.kept)?.text.metrics(read.font))
     }
 }
 
@@ -698,15 +674,13 @@ impl Handles<ReadMetrics> for Renderer {
 /// rather than the text a frame or more after the rest (ADR-0052).
 impl Handles<CreateText> for Renderer {
     type From = Anyone;
+    type Returns = Reply<TextMade>;
 
-    fn handle(&mut self, create: CreateText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateText, turn: &mut Turn<'_, Self>) -> Result<Reply<TextMade>, Fault> {
         let made = turn.open(&mut self.kept)?.text.text(create);
         let (made, unlogged) = match made {
             Ok(made) => made,
-            Err(why) => {
-                turn.reply(&TextMade::Refused(why))?;
-                return Ok(());
-            }
+            Err(why) => return Ok(Reply::Now(TextMade::Refused(why))),
         };
         let id = self.made(turn, |kept, id, maker| kept.text.made.keep(id, maker, made))?;
         log_missing(turn, &unlogged);
@@ -715,13 +689,12 @@ impl Handles<CreateText> for Renderer {
         let waits = kept.text.waits(id);
         self.generate(turn, wanted)?;
         if waits {
-            let held = turn.hold()?;
+            let (held, later) = turn.hold();
             self.owed.texts.push((id, held));
-            return Ok(());
+            return Ok(Reply::Later(later));
         }
-        turn.reply(&TextMade::Made(TextId { id }))?;
 
-        Ok(())
+        Ok(Reply::Now(TextMade::Made(TextId { id })))
     }
 }
 
@@ -729,6 +702,7 @@ impl Handles<CreateText> for Renderer {
 /// what it is now is in the atlas. A write refused is logged, and the text keeps what it had.
 impl Handles<WriteText> for Renderer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, write: WriteText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
@@ -751,27 +725,25 @@ impl Handles<WriteText> for Renderer {
 /// before, and keeps it.
 impl Handles<PlaceText> for Renderer {
     type From = Anyone;
+    type Returns = TextPlaced;
 
-    fn handle(&mut self, place: PlaceText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, place: PlaceText, turn: &mut Turn<'_, Self>) -> Result<TextPlaced, Fault> {
         let device = turn.open(&mut self.gpu)?.device().clone();
         let placed = turn.open(&mut self.kept)?.place_text(&device, &place);
         let made = match placed {
             Ok(made) => made,
-            Err(why) => {
-                turn.reply(&TextPlaced::Refused(why))?;
-                return Ok(());
-            }
+            Err(why) => return Ok(TextPlaced::Refused(why)),
         };
         let id = self.made(turn, |kept, id, maker| kept.text.placed.keep(id, maker, made))?;
-        turn.reply(&TextPlaced::Made(PlacementId { id }))?;
 
-        Ok(())
+        Ok(TextPlaced::Made(PlacementId { id }))
     }
 }
 
 /// Moves the sender's placed text, laying nothing out. A move refused is logged, and the placement stays where it was.
 impl Handles<MoveText> for Renderer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, moved: MoveText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();

@@ -4,7 +4,7 @@ use super::*;
 use crate::waiting;
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles,
-    Held, On, Receives, Services, Sleep, Slept, Spawn, Start, Stop, Tick, Top, Turn,
+    Held, Later, On, Receives, Services, Sleep, Slept, Spawn, Start, Stop, Tick, Top, Turn,
 };
 use aethereal_actor::{ActorName, path};
 use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
@@ -104,6 +104,7 @@ impl Actor for Unready {
 
 impl Handles<Nothing> for Unready {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Nothing, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.quit();
@@ -262,7 +263,8 @@ impl Receives<On<Start>> for Holdout {
 
 impl Receives<On<Stop>> for Holdout {
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push(turn.hold()?);
+        let (held, _) = turn.hold();
+        self.held.push(held);
 
         Ok(())
     }
@@ -519,11 +521,13 @@ impl Actor for Silent {
 
 impl Handles<Hush> for Silent {
     type From = Anyone;
+    type Returns = Later<Hush>;
 
-    fn handle(&mut self, _: Hush, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push(turn.hold()?);
+    fn handle(&mut self, _: Hush, turn: &mut Turn<'_, Self>) -> Result<Later<Hush>, Fault> {
+        let (held, later) = turn.hold();
+        self.held.push(held);
 
-        Ok(())
+        Ok(later)
     }
 }
 

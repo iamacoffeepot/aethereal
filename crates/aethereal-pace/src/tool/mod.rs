@@ -7,7 +7,7 @@ mod tests;
 use crate::pacer::{Advance, Advanced, PaceSet, Pacer, SetPace};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -88,35 +88,32 @@ impl Tool for PaceTool {
 /// Holds the call, and asks the pacer what it was called with: answered once the pacer has answered.
 impl Handles<Call> for PaceTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let calling = Calling { call: self.next };
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
         match call.tool.as_str() {
             "set_pace" => {
                 let Ok(set) = from_bytes::<SetPace>(input, &mut budget) else {
-                    turn.reply(&refused("that is no pace to set"))?;
-                    return Ok(());
+                    return Ok(Reply::Now(refused("that is no pace to set")));
                 };
                 turn.to(path::<Pacer>(())).ask(&set, &calling)?;
             }
             "advance" => {
                 let Ok(advance) = from_bytes::<Advance>(input, &mut budget) else {
-                    turn.reply(&refused("that is no advance"))?;
-                    return Ok(());
+                    return Ok(Reply::Now(refused("that is no advance")));
                 };
                 turn.to(path::<Pacer>(())).ask(&advance, &calling)?;
             }
-            _ => {
-                turn.reply(&refused("this worker serves set_pace and advance alone"))?;
-                return Ok(());
-            }
+            _ => return Ok(Reply::Now(refused("this worker serves set_pace and advance alone"))),
         }
         self.next += 1;
-        self.calls.insert(calling.call, turn.hold()?);
+        let (held, later) = turn.hold();
+        self.calls.insert(calling.call, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

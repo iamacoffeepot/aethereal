@@ -210,6 +210,7 @@ impl Bootstrap<Headless> for Holder {
 
 impl Handles<Hold> for Holder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, hold: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match hold {
@@ -230,6 +231,7 @@ impl Handles<Hold> for Holder {
 
 impl Handles<Part<Reading>> for Holder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {

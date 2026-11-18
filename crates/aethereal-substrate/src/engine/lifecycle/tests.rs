@@ -5,7 +5,7 @@ use super::super::outside::{Handed, Turned};
 use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Anywhere, Carries, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Own,
+    Actor, Answer, Answered, Anyone, Anywhere, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, Later, On, Own,
     Present, Receives, Render, Spawn, Stage, Start, Stop, Tick, Time, Top, Turn, path,
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
@@ -178,6 +178,7 @@ impl Receives<On<Stop>> for Staged {
 
 impl Handles<Note> for Staged {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match note {
@@ -387,6 +388,7 @@ impl Receives<On<Tick>> for Cycler {
 
 impl Handles<Note> for Cycler {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -582,6 +584,7 @@ impl Actor for Nest {
 
 impl Handles<Note> for Nest {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let spawned = turn.spawn::<Latecomer>(&(), Note::Nothing);
@@ -659,6 +662,7 @@ impl Receives<On<Receive>> for Latecomer {
 
 impl Handles<Note> for Latecomer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.subscribe::<Receive>();
@@ -700,7 +704,8 @@ impl Actor for Drainer {
 
 impl Receives<On<Stop>> for Drainer {
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push(turn.hold()?);
+        let (held, _) = turn.hold::<Drained>();
+        self.held.push(held);
 
         Ok(())
     }
@@ -708,6 +713,7 @@ impl Receives<On<Stop>> for Drainer {
 
 impl Handles<Note> for Drainer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match note {
@@ -836,6 +842,7 @@ impl Actor for Shore {
 
 impl Handles<Note> for Shore {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -938,23 +945,22 @@ impl Actor for Granter {
     }
 }
 
-impl Carries<Grant> for Granter {
-    type Answers = (Granted,);
-}
-
 impl Handles<Grant> for Granter {
     type From = Anyone;
+    type Returns = Later<Granted>;
 
-    fn handle(&mut self, _: Grant, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.held.push(turn.hold()?);
+    fn handle(&mut self, _: Grant, turn: &mut Turn<'_, Self>) -> Result<Later<Granted>, Fault> {
+        let (held, later) = turn.hold();
+        self.held.push(held);
         turn.to(turn.me()).send(&Hop)?;
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Hop> for Granter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Hop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in self.held.drain(..) {

@@ -94,6 +94,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #         // Pokes the actor at the typed path to `$target` with each poke it is sent.
 /// #         impl Handles<Poke> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 turn.to(path::<$target>(())).send(&Poke)?;
@@ -150,6 +151,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #         // Pokes the actor at the typed path to `$target` with each poke it is sent.
 /// #         impl Handles<Poke> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 turn.to(path::<$target>(())).send(&Poke)?;

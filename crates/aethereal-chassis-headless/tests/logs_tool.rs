@@ -56,6 +56,7 @@ impl Actor for Talker {
 
 impl Handles<Say> for Talker {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let level = match level {
@@ -72,6 +73,7 @@ impl Handles<Say> for Talker {
 
 impl Handles<GiveUp> for Talker {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Error, "giving up");

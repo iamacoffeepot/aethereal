@@ -28,7 +28,7 @@ pub use words::{ChatWord, NewSession, Worded, chat_sheets};
 use crate::overlay::Overlay;
 use aethereal_actor::{
     Actor, ActorName, ActorRef, Against, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats,
-    Fault, Figures, Handles, Held, LARGEST, Process, ProtocolRef, Receives, Turn, path,
+    Fault, Figures, Handles, Held, LARGEST, Later, Process, ProtocolRef, Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -190,8 +190,9 @@ impl Tool for OverlayTools {
 /// word a session calls, is refused.
 impl Handles<Call> for OverlayTools {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         let order = match call.tool.as_str() {
             MARK => read(MARK, input).map(Order::Mark),
@@ -212,25 +213,24 @@ impl Handles<Call> for OverlayTools {
         match order {
             Ok(Order::Mark(mark)) => {
                 turn.to(path::<Overlay>(())).send(&Marked { text: mark.text })?;
-                let called = Called::output(turn, to_bytes(&Done {})?);
-                turn.reply(&called)?;
+
+                Ok(Reply::Now(Called::output(turn, to_bytes(&Done {})?)))
             }
-            Ok(Order::Memory(memory)) => {
-                let called = Self::memory(&memory, turn)?;
-                turn.reply(&called)?;
-            }
+            Ok(Order::Memory(memory)) => Ok(Reply::Now(Self::memory(&memory, turn)?)),
             Ok(Order::Theme(choice)) => {
-                let answering = self.hold(turn)?;
+                let (answering, later) = self.hold(turn);
                 turn.to(path::<Overlay>(())).ask(&choice, &answering)?;
+
+                Ok(Reply::Later(later))
             }
             Ok(Order::Word(word)) => {
-                let answering = self.hold(turn)?;
+                let (answering, later) = self.hold(turn);
                 turn.to(path::<Overlay>(())).ask(&word, &answering)?;
-            }
-            Err(why) => turn.reply(&Called::Refused(why))?,
-        }
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(Called::Refused(why))),
+        }
     }
 }
 
@@ -268,13 +268,15 @@ impl Receives<Answer<Worded, Answering>> for OverlayTools {
 }
 
 impl OverlayTools {
-    /// Holds the call `turn` handles, to answer once the overlay has, and answers what to keep for the ask.
-    fn hold(&mut self, turn: &mut Turn<'_, Self>) -> Result<Answering, Fault> {
+    /// Holds the call `turn` handles, to answer once the overlay has: what to keep for the ask, and the hold's `Later`,
+    /// which the call's handler returns.
+    fn hold(&mut self, turn: &mut Turn<'_, Self>) -> (Answering, Later<Called>) {
         let answering = Answering { call: self.next };
-        self.calls.insert(answering.call, turn.hold()?);
+        let (held, later) = turn.hold();
+        self.calls.insert(answering.call, held);
         self.next += 1;
 
-        Ok(answering)
+        (answering, later)
     }
 
     /// Answers the call `answering` names with `called`: nothing when it is held no longer.

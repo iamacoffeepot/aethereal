@@ -10,7 +10,7 @@ use super::console::Offering;
 use crate::tools::{
     ChatWord, Choice, Marked, OverlayTools, OverlayToolsConfig, ThemesShown, Worded, chat_sheets, chosen,
 };
-use aethereal_actor::{ActorRef, Anyone, Beginning, Carries, Fault, Handles, Spawn, Turn, path};
+use aethereal_actor::{ActorRef, Anyone, Beginning, Fault, Handles, Spawn, Turn, path};
 use aethereal_data::Kind;
 use aethereal_tools::{Offer, Tool, Tools, Unlisted};
 
@@ -42,6 +42,7 @@ impl Overlay {
 /// in the mark's ink then.
 impl Handles<Marked> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, marked: Marked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.marks.wait(marked.text);
@@ -50,34 +51,27 @@ impl Handles<Marked> for Overlay {
     }
 }
 
-impl Carries<Choice> for Overlay {
-    type Answers = (ThemesShown,);
-}
-
 /// A theme chosen through `set_theme`: the palette changed to the theme it names, for the next frame to draw in, and
 /// answered the themes and the one in use.
 impl Handles<Choice> for Overlay {
     type From = Anyone;
+    type Returns = ThemesShown;
 
-    fn handle(&mut self, choice: Choice, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, choice: Choice, _: &mut Turn<'_, Self>) -> Result<ThemesShown, Fault> {
         let (palette, shown) = chosen(&self.palette, choice);
         self.palette = palette;
-        turn.reply(&shown)?;
 
-        Ok(())
+        Ok(shown)
     }
-}
-
-impl Carries<ChatWord> for Overlay {
-    type Answers = (Worded,);
 }
 
 /// One of the chat's words, which its worker took only from the owner: the chat it comes to told the link, or refused
 /// for a session the chat does not list.
 impl Handles<ChatWord> for Overlay {
     type From = Anyone;
+    type Returns = Worded;
 
-    fn handle(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<Worded, Fault> {
         let chat = match word {
             ChatWord::New { name } => Ok(self.chats.make(name)),
             ChatWord::Stop(which) => self.chats.stop(&which),
@@ -90,8 +84,7 @@ impl Handles<ChatWord> for Overlay {
             }
             Err(why) => Worded::Refused(why),
         };
-        turn.reply(&worded)?;
 
-        Ok(())
+        Ok(worded)
     }
 }

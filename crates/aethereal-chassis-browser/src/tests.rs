@@ -180,6 +180,7 @@ impl Actor for Pointer {
 
 impl Handles<Moved> for Pointer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Moved, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

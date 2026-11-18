@@ -16,8 +16,8 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, More, Open, Protocol,
-    Receives, Serving, Stream, StreamKey, Turn, Unsent,
+    Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, Later, More, Open,
+    Protocol, Receives, Reply, Serving, Stream, StreamKey, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -236,17 +236,21 @@ impl Connection {
 
     /// Opens the stream `open` asks for: the connection's reader, or a second, finished at once as `Busy`. The reader's
     /// credit follows the request, and its `More` is what reads.
-    pub fn open<A: Receives<Ended>>(&mut self, turn: &mut Turn<'_, A>, open: Open<Reading>) -> Result<(), Fault> {
-        let (key, Read) = self.reading.open(turn, open)?;
+    pub fn open<A: Receives<Ended>>(
+        &mut self,
+        turn: &mut Turn<'_, A>,
+        open: Open<Reading>,
+    ) -> Result<Later<HungUp>, Fault> {
+        let (key, Read, later) = self.reading.open(turn, open)?;
         if let Reader::Reading(_) = self.reader {
             if let Some(second) = self.reading.take(key) {
                 second.finish(turn, &HungUp::Busy)?;
             }
-            return Ok(());
+            return Ok(later);
         }
         self.reader = Reader::Reading(key);
 
-        Ok(())
+        Ok(later)
     }
 
     /// Adds the credit `more` grants to the reader's stream, and reads with it.
@@ -289,30 +293,24 @@ impl Connection {
         &mut self,
         turn: &mut Turn<'_, A>,
         write: Write,
-    ) -> Result<(), Fault> {
+    ) -> Result<Reply<Wrote>, Fault> {
         match self.write_half {
             WriteHalf::Open => {}
-            WriteHalf::Finishing | WriteHalf::Finished => {
-                turn.reply(&Wrote::Finished)?;
-                return Ok(());
-            }
-            WriteHalf::Failed => {
-                turn.reply(&Wrote::HungUp)?;
-                return Ok(());
-            }
+            WriteHalf::Finishing | WriteHalf::Finished => return Ok(Reply::Now(Wrote::Finished)),
+            WriteHalf::Failed => return Ok(Reply::Now(Wrote::HungUp)),
         }
         let parts_length: usize = write.parts.iter().map(|part| turn.read(part).len()).sum();
         let prefix = self.framing.prefix(parts_length);
         let length = (prefix.len() + parts_length) as u64;
         let fits = self.waiting() + length <= self.most_unsent_bytes;
         if !fits {
-            turn.reply(&Wrote::Full)?;
-            return Ok(());
+            return Ok(Reply::Now(Wrote::Full));
         }
-        let held = turn.hold::<Wrote>()?;
+        let (held, later) = turn.hold();
         self.unsent.push(Pending { prefix, parts: write.parts, length, held });
+        self.send(turn)?;
 
-        self.send(turn)
+        Ok(Reply::Later(later))
     }
 
     /// Asked to finish writing: it shuts its write half once what it holds unsent is written, and at once when nothing

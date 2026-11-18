@@ -87,12 +87,12 @@ impl Actor for Once {
 
 impl Handles<Call> for Once {
     type From = Anyone;
+    type Returns = Called;
 
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Called::Refused(String::from("once is enough")))?;
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         turn.close();
 
-        Ok(())
+        Ok(Called::Refused(String::from("once is enough")))
     }
 }
 
@@ -893,14 +893,13 @@ macro_rules! listed {
 
         impl Handles<Call> for $actor {
             type From = Anyone;
+            type Returns = Called;
 
-            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
                 let say = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1024))?;
                 let length = u32::try_from(say.text.len()).unwrap_or(u32::MAX);
-                let said = Called::output(turn, to_bytes(&Said { length })?);
-                turn.reply(&said)?;
 
-                Ok(())
+                Ok(Called::output(turn, to_bytes(&Said { length })?))
             }
         }
 
@@ -947,11 +946,10 @@ impl Actor for Unbegun {
 
 impl Handles<Call> for Unbegun {
     type From = Anyone;
+    type Returns = Called;
 
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Called::Refused(String::new()))?;
-
-        Ok(())
+    fn handle(&mut self, _: Call, _: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+        Ok(Called::Refused(String::new()))
     }
 }
 

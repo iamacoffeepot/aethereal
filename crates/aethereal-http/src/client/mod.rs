@@ -20,8 +20,8 @@ pub use settings::{ClientLimits, HttpSettings};
 use crate::Method;
 use crate::http1::body::{Body, Decoded, Progress};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held, Level,
-    More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Turn, Unsent,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held, Later,
+    Level, More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Dialed, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
@@ -186,27 +186,30 @@ impl Actor for Client {
 
 impl Handles<Fetch> for Client {
     type From = Anyone;
+    type Returns = aethereal_actor::Reply<Fetched>;
 
-    fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<aethereal_actor::Reply<Fetched>, Fault> {
         let head_only = fetch.request.method == Method::Head;
         let written = self.write(turn, fetch.request, &Switch::Stay)?;
-        match written {
+        let reply = match written {
             Written::Asked => {
-                let asker = Asker::Fetching(turn.hold()?);
-                self.phase = Phase::Head { asker, head_only };
+                let (held, later) = turn.hold();
+                self.phase = Phase::Head { asker: Asker::Fetching(held), head_only };
+                aethereal_actor::Reply::Later(later)
             }
-            Written::Unsent(failure) => turn.reply(&Fetched::Failed(failure))?,
-        }
+            Written::Unsent(failure) => aethereal_actor::Reply::Now(Fetched::Failed(failure)),
+        };
 
-        Ok(())
+        Ok(reply)
     }
 }
 
 impl Handles<Open<Receiving>> for Client {
     type From = Anyone;
+    type Returns = Later<Finished>;
 
-    fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let (key, Follow { request, switch }) = self.serving.open(turn, open)?;
+    fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<Later<Finished>, Fault> {
+        let (key, Follow { request, switch }, later) = self.serving.open(turn, open)?;
         let head_only = request.method == Method::Head;
         let switches = matches!(switch, Switch::To { .. });
         let written = self.write(turn, request, &switch)?;
@@ -215,12 +218,13 @@ impl Handles<Open<Receiving>> for Client {
             Written::Unsent(failure) => self.finish(turn, key, &Finished::Failed(failure))?,
         }
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<More> for Client {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(_) = self.serving.more(turn, &more) else {
@@ -233,6 +237,7 @@ impl Handles<More> for Client {
 
 impl Handles<Enough> for Client {
     type From = Anyone;
+    type Returns = ();
 
     /// Its asker stops the stream: the connection is left mid-response, or switched, so it closes.
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -262,6 +267,7 @@ impl Receives<Ended> for Client {
 
 impl Handles<Shut> for Client {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.fail(turn, Failure::HungUp(HungUp::Shut))
@@ -270,6 +276,7 @@ impl Handles<Shut> for Client {
 
 impl Handles<Part<Reading>> for Client {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part_held(turn, part) else {

@@ -428,6 +428,7 @@ impl Actor for Worker {
 
 impl Handles<Go> for Worker {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let which = Which { at: go.at };

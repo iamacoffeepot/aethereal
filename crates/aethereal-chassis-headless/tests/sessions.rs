@@ -147,6 +147,7 @@ impl Bootstrap<Headless> for Caller {
 
 impl Handles<Order> for Caller {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
@@ -1731,6 +1732,7 @@ impl Bootstrap<Headless> for Impostor {
 
 impl Handles<Pose> for Impostor {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
@@ -1758,6 +1760,7 @@ impl Handles<Pose> for Impostor {
 
 impl Handles<TrustedEngine> for Impostor {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, trusted: TrustedEngine, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.heard.push(trusted.engine);
@@ -1770,6 +1773,7 @@ macro_rules! counts {
     ($($shown:ty),*) => {$(
         impl Handles<$shown> for Impostor {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 self.shown += 1;

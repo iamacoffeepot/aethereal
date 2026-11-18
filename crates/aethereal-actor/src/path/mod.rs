@@ -67,6 +67,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -75,6 +76,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Knock> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -138,6 +140,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -146,6 +149,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Knock> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -209,6 +213,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Poke> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
@@ -217,6 +222,7 @@ use core::marker::PhantomData;
 /// #
 /// #         impl Handles<Knock> for $name {
 /// #             type From = Anyone;
+/// #             type Returns = ();
 /// #
 /// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())

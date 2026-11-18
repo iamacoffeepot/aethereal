@@ -10,7 +10,7 @@ pub use settings::ToolsSettings;
 
 use crate::{Call, Called, Caller, Holder, Offer, Offered, Table, Withdraw};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Receives,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Receives, Reply,
     Subscribers, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
@@ -56,21 +56,6 @@ impl ChildOf for Tools {
 /// It holds the tools an engine's own program offers.
 impl Holder for Tools {}
 
-/// Asked at its typed path, it answers an offer in the same turn.
-impl Carries<Offer> for Tools {
-    type Answers = (Offered,);
-}
-
-/// Asked at its typed path, it answers with every sheet it holds.
-impl Carries<ListTools> for Tools {
-    type Answers = (Sheets,);
-}
-
-/// Asked at its typed path, it answers with what the tool's worker answered.
-impl Carries<CallTool> for Tools {
-    type Answers = (Called,);
-}
-
 impl Actor for Tools {
     type Config = ToolsSettings;
     type Key = ();
@@ -96,9 +81,10 @@ impl Actor for Tools {
 
 impl Handles<Offer> for Tools {
     type From = Anyone;
+    type Returns = Offered;
 
     /// Holds the offer, when its tools fit in the table, and sends the set with them to each subscriber.
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<Offered, Fault> {
         let room = usize::try_from(self.settings.most_tools).unwrap_or(usize::MAX);
         let worker = offer.worker;
         let offered = self.table.take(offer.tools, worker, room);
@@ -106,14 +92,14 @@ impl Handles<Offer> for Tools {
             turn.watch(worker);
             self.changed(turn)?;
         }
-        turn.reply(&offered)?;
 
-        Ok(())
+        Ok(offered)
     }
 }
 
 impl Handles<Withdraw> for Tools {
     type From = Anyone;
+    type Returns = ();
 
     /// Stops holding the tool, and sends the set without it to each subscriber.
     fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -145,17 +131,17 @@ impl Receives<Ended> for Tools {
 
 impl Handles<ListTools> for Tools {
     type From = Anyone;
+    type Returns = Sheets;
 
-    fn handle(&mut self, _: ListTools, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&self.sheets())?;
-
-        Ok(())
+    fn handle(&mut self, _: ListTools, _: &mut Turn<'_, Self>) -> Result<Sheets, Fault> {
+        Ok(self.sheets())
     }
 }
 
 /// Adds the sender, and sends it the set as it stands: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Tools {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -175,31 +161,30 @@ impl Handles<Subscribe> for Tools {
 
 impl Handles<CallTool> for Tools {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
     /// Asks the call of the worker that offered the tool, holding it until the worker answers: the ask is made in this
     /// turn, so it is due when the call is (ADR-0041). A call of a revision it has changed since is refused at once, in
     /// the turn that looks the tool up, so no tool offered since is called with bytes written for another schema; and a
     /// tool it does not hold is refused at once.
-    fn handle(&mut self, call: CallTool, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: CallTool, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let CallTool { tool, revision, input } = call;
         if revision != self.revision {
             let changed = format!("the engine's tools have changed since revision {revision}: read them again");
-            turn.reply(&Called::Refused(changed))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(changed)));
         }
         let Some(held) = self.table.tool(&tool) else {
-            turn.reply(&Called::Refused(format!("the engine holds no tool named {tool}")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(format!("the engine holds no tool named {tool}"))));
         };
         let worker = held.worker;
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         // An engine's tools are its own: what it forwards is called from its console or by its hub.
         turn.to(worker).ask(&Call { tool, input, caller: Caller::Owner }, &Forwarding { number })?;
         self.calls.insert(number, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

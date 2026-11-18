@@ -78,16 +78,18 @@ impl Tunable for Dial {
 
 impl Handles<ReadTuning> for Dial {
     type From = Anyone;
+    type Returns = Tuning;
 
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
         tuning::read(self, turn)
     }
 }
 
 impl Handles<Tune> for Dial {
     type From = Anyone;
+    type Returns = Tuned;
 
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
         tuning::tune(self, &tune, turn)
     }
 }

@@ -77,6 +77,7 @@ impl Actor for Listener {
 
 impl Handles<Event> for Listener {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

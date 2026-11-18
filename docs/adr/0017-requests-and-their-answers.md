@@ -59,7 +59,7 @@ fn tile(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut 
 
 - `Ended`: the receiver had ended, or was gone, when the request was to be handed to it, or it held the request and ended before answering it;
 - `Failed`: the turn that handled the request failed;
-- `Unreplied`: the receiver held it and let it go without answering it, or a guest's turn handled it and neither answered nor held it, which a native handler cannot do, as it returns its answer or a `Later` (ADR-0059);
+- `Unreplied`: the receiver held it and let it go without answering it, or its turn handled it and neither answered nor held it: a guest's, or a native handler that answers the kind with nothing, reached through a protocol cast to at run time, which checks kinds and not answers. A native request's handler cannot, as it returns its answer or a `Later` (ADR-0059);
 - `Unreadable`: the receiver could not read the request within the engine's `read_limit`, or its bytes did not decode as its kind, so its handler did not run.
 
 What the engine says is mail too, of the engine's kind `Unanswered`, from the receiver to the asker. It is tied to the request as only the engine ties mail, so no actor can say it in the engine's place, and it is handed to the handler of the answer the asker asked for, whose kind the engine keeps with the context. `Failed` and `Unreplied` come after what the turn sent, as the receiver's next piece of mail. `Ended`, and `Unreplied` for a held request let go of, come after all the receiver sent.
@@ -82,7 +82,7 @@ self.waiting.push((path, held));                  // kept in the actor's state
 turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 ```
 
-- `turn.hold()` answers a `Held<A>` and a `Later<A>`, `A` the request's answer, and cannot fail. A `Later<A>` is made only by a hold, so a request's handler that returns one has held its request (ADR-0059).
+- `turn.hold()` answers a `Held<A>` and a `Later<A>`, `A` the request's answer, and cannot fail. A `Later<A>` is made only by a hold, so a request's handler that returns one has held its request (ADR-0059). A turn that holds what it does not owe, its item no request, or one it has answered or held, fails with `NotOwed` once its handler returns.
 
 - `Held<A>` names one request this actor owes an answer of kind `A`. It crosses `Within` and no other boundary, so it is kept in the actor's state, and cannot be in mail. It is neither `Clone` nor `Copy`, and `answer` takes it by value, so it answers once, which the build checks.
 - The engine keeps the debt beside the receiver, in its seat. `answer` confirms the ticket names a debt this actor owes, of kind `A`, as `open` confirms a handle (ADR-0010), and fails the turn when it does not.

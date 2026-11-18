@@ -2092,7 +2092,7 @@ fn replay_records(
     if has_births {
         hand_births(given, next, hosted)?;
     }
-    // A request held is held before the turn's sends are checked, so a reply to it among them is refused (ADR-0017).
+    // A request held is held before the turn's sends are checked, so an answer to it among them is refused (ADR-0017).
     let holds = ends.holds > before.holds;
     if holds && !held(data, head, before, hosted)? {
         return Ok((Err(NotOwed.into()), ends));
@@ -2656,7 +2656,7 @@ fn cancel(data: &[u8], head: &OutHead, before: TurnEnds, ends: TurnEnds, hosted:
 }
 
 /// What mail of `kind` tied as `tie` is handed into a guest as: mail that asks a request, due as `due` says, which its
-/// turn may reply to or hold, and whose deadline what it asks inherits; or mail as it came (ADR-0017, ADR-0041).
+/// turn answers now or holds, and whose deadline what it asks inherits; or mail as it came (ADR-0017, ADR-0041).
 fn handed_mail(kind: KindId, tie: Tie, due: Due) -> Handed {
     match tie.read() {
         Tied::Asks(request) => Handed::Asks { kind, request, due },
@@ -2724,7 +2724,7 @@ mod tests {
     use crate::Monotonic;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Given, Handle, Handles, Links,
-        Origin, Protocol, Publisher, Seated, Services, Trapped, Turn, Unanswered,
+        Origin, Protocol, ProtocolRef, Publisher, Seated, Services, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anyone, Anywhere, ChildOf, Level, Receives, Spawn, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
@@ -2781,11 +2781,12 @@ mod tests {
         pings: u64,
     }
 
-    /// A native actor that pings the echo guest, and pings it again on each pong while it has pings left, counting the
-    /// pongs it has been answered with.
+    /// A native actor that asks the echo guest a ping, and asks it again on each pong while it has pings left, counting
+    /// the pongs it has been answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.pinger")]
     struct Pinger {
+        echo: ProtocolRef<Pings>,
         pongs: u64,
     }
 
@@ -2796,17 +2797,18 @@ mod tests {
     impl Actor for Pinger {
         type Config = Volley;
         type Key = ();
-        type Handles = (Pong,);
+        type Handles = (Answer<echo::Pong, Which>,);
         type Depends = ();
         type Spawns = ();
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
-                turn.to(echo).send(&Ping { n: volley.pings })?;
-            }
+            let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.to(echo).ask(&echo::Ping { n: volley.pings }, &Which { at: volley.pings })?;
 
-            Ok(Self { pongs: 0 })
+            Ok(Self { echo, pongs: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
@@ -2814,13 +2816,15 @@ mod tests {
         }
     }
 
-    impl Handles<Pong> for Pinger {
-        type From = Anyone;
-
-        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    impl Receives<Answer<echo::Pong, Which>> for Pinger {
+        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            let Answered::Yes(pong) = pong else {
+                return Ok(());
+            };
             self.pongs += 1;
             if pong.n > 0 {
-                turn.reply(&Ping { n: pong.n - 1 })?;
+                let n = pong.n - 1;
+                turn.to(self.echo).ask(&echo::Ping { n }, &Which { at: n })?;
             }
 
             Ok(())
@@ -2900,6 +2904,7 @@ mod tests {
 
     impl Handles<Volley> for Questioner {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(echo) = turn.spawn_from::<echo::Echo>(Origin::Blob(&self.code), &(), &echo::EchoConfig) else {
@@ -2991,6 +2996,7 @@ mod tests {
 
     impl Handles<Volley> for Petitioner {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Petitioning { code, how } = &self.petitioning;
@@ -3135,6 +3141,7 @@ mod tests {
 
     impl Handles<echo::Pong> for Shelving {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.shelved.push(pong.n);
@@ -3145,6 +3152,7 @@ mod tests {
 
     impl Handles<echo::Book> for Shelving {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let len = 100 + turn.read(&book.blob).len() as u64;
@@ -3216,6 +3224,7 @@ mod tests {
 
     impl Handles<echo::Heard> for Inquirer {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             // A second query, asked in a later call into the guest than the first.
@@ -3296,6 +3305,7 @@ mod tests {
 
     impl Handles<echo::Heard> for Opening {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let heard = match heard {
@@ -3370,6 +3380,7 @@ mod tests {
 
     impl Handles<echo::Heard> for Stashing {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let heard = match heard {
@@ -3445,6 +3456,7 @@ mod tests {
 
     impl Handles<Lend> for Lender {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Lend, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(blob) = turn.put(vec![7; 3]) else {
@@ -3458,6 +3470,7 @@ mod tests {
 
     impl Handles<Pong> for Lender {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.lent.push(pong.n);
@@ -3495,8 +3508,8 @@ mod tests {
     #[kind(name = "aether.guest.shut")]
     struct Shut;
 
-    /// A native actor that sends the echo guest a ping, the word to close, and another ping, all in its `begin`, and
-    /// counts the pongs it is answered with.
+    /// A native actor that asks the echo guest a ping, tells it to close, and asks it another ping, all in its `begin`,
+    /// and counts the pongs it is answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.closer")]
     struct Closer {
@@ -3510,15 +3523,21 @@ mod tests {
     impl Actor for Closer {
         type Config = Volley;
         type Key = ();
-        type Handles = (Pong,);
+        type Handles = (Answer<echo::Pong, Which>,);
         type Depends = ();
         type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping, Shut)>(found)) {
-                turn.to(echo).send(&Ping { n: 0 })?.send(&Shut)?.send(&Ping { n: 0 })?;
-            }
+            let Some(found) = turn.resolve(&echo) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            let (Some(pings), Some(shuts)) = (turn.cast::<Pings>(found), turn.cast::<(Shut,)>(found)) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.to(pings).ask(&echo::Ping { n: 0 }, &Which { at: 0 })?;
+            turn.to(shuts).send(&Shut)?;
+            turn.to(pings).ask(&echo::Ping { n: 0 }, &Which { at: 1 })?;
 
             Ok(Self { pongs: 0 })
         }
@@ -3528,11 +3547,11 @@ mod tests {
         }
     }
 
-    impl Handles<Pong> for Closer {
-        type From = Anyone;
-
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-            self.pongs += 1;
+    impl Receives<Answer<echo::Pong, Which>> for Closer {
+        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            if let Answered::Yes(_) = pong {
+                self.pongs += 1;
+            }
 
             Ok(())
         }
@@ -3588,8 +3607,8 @@ mod tests {
         assert_eq!(named, Some((aethereal_actor::ActorName::Path(path), 1)));
     }
 
-    /// A native actor that pings the echo guest once as it begins, and keeps the number of each pong it is answered
-    /// with, its own or another's.
+    /// A native actor that asks the echo guest a ping once as it begins, and keeps the number of each pong it is
+    /// answered with, its own or another's.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.caller")]
     struct Caller {
@@ -3604,14 +3623,14 @@ mod tests {
     impl Actor for Caller {
         type Config = Volley;
         type Key = u64;
-        type Handles = (Pong,);
+        type Handles = (Answer<echo::Pong, Which>,);
         type Depends = ();
         type Spawns = ();
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
-                turn.to(echo).send(&Ping { n: volley.pings })?;
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) {
+                turn.to(echo).ask(&echo::Ping { n: volley.pings }, &Which { at: volley.pings })?;
             }
 
             Ok(Self { key: volley.pings, answered: Vec::new() })
@@ -3622,11 +3641,11 @@ mod tests {
         }
     }
 
-    impl Handles<Pong> for Caller {
-        type From = Anyone;
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-            self.answered.push(pong.n);
+    impl Receives<Answer<echo::Pong, Which>> for Caller {
+        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            if let Answered::Yes(pong) = pong {
+                self.answered.push(pong.n);
+            }
 
             Ok(())
         }
@@ -3664,11 +3683,12 @@ mod tests {
         assert_eq!(answered, each_its_own);
     }
 
-    /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob, counting
-    /// the pongs it is answered with.
+    /// A native actor that tells the mirror guest to close, and volleys with the echo guest, both of one blob, asking
+    /// it a ping again on each pong while it has pings left, and counting the pongs it is answered with.
     #[derive(aethereal_data::Bound)]
     #[kind(name = "aether.test.volleyer")]
     struct Volleyer {
+        echo: ProtocolRef<Pings>,
         pongs: u64,
     }
 
@@ -3679,7 +3699,7 @@ mod tests {
     impl Actor for Volleyer {
         type Config = Volley;
         type Key = ();
-        type Handles = (Pong,);
+        type Handles = (Answer<echo::Pong, Which>,);
         type Depends = ();
         type Spawns = ();
 
@@ -3689,11 +3709,12 @@ mod tests {
             if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast::<(Shut,)>(found)) {
                 turn.to(mirror).send(&Shut)?;
             }
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
-                turn.to(echo).send(&Ping { n: volley.pings })?;
-            }
+            let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) else {
+                return Err(Fault::new(&Doom)?);
+            };
+            turn.to(echo).ask(&echo::Ping { n: volley.pings }, &Which { at: volley.pings })?;
 
-            Ok(Self { pongs: 0 })
+            Ok(Self { echo, pongs: 0 })
         }
 
         fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
@@ -3701,13 +3722,15 @@ mod tests {
         }
     }
 
-    impl Handles<Pong> for Volleyer {
-        type From = Anyone;
-
-        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    impl Receives<Answer<echo::Pong, Which>> for Volleyer {
+        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            let Answered::Yes(pong) = pong else {
+                return Ok(());
+            };
             self.pongs += 1;
             if pong.n > 0 {
-                turn.reply(&Ping { n: pong.n - 1 })?;
+                let n = pong.n - 1;
+                turn.to(self.echo).ask(&echo::Ping { n }, &Which { at: n })?;
             }
 
             Ok(())
@@ -3748,6 +3771,7 @@ mod tests {
 
     impl Handles<Pong> for TimeAsker {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told = pong.n;
@@ -3939,6 +3963,7 @@ mod tests {
 
     impl Handles<Pong> for Boss {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
@@ -4217,6 +4242,7 @@ mod tests {
 
     impl Handles<Pong> for Crasher {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
@@ -4423,6 +4449,7 @@ mod tests {
 
     impl Handles<Pong> for Asker {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.answers.push(pong.n);
@@ -4589,6 +4616,7 @@ mod tests {
 
     impl Handles<Ping> for Keeper {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pings.push(100 * self.key + ping.n);
@@ -4834,6 +4862,7 @@ mod tests {
 
     impl Handles<echo::Hand> for Shiner {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             for lamp in hand.lamps {
@@ -4977,6 +5006,7 @@ mod tests {
 
     impl Handles<Ping> for Mortal {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             if self.key > 0 {
@@ -5088,6 +5118,7 @@ mod tests {
 
     impl Handles<Poke> for Nest {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             turn.to(&self.reporters).send(&echo::Ping { n: 1 })?;
@@ -5098,6 +5129,7 @@ mod tests {
 
     impl Handles<Pong> for Nest {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(pong.n);
@@ -5134,6 +5166,7 @@ mod tests {
 
     impl Handles<Poke> for Impostor {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
@@ -5248,6 +5281,7 @@ mod tests {
 
     impl Handles<Pong> for Hen {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(pong.n);
@@ -5534,6 +5568,7 @@ mod tests {
 
     impl Handles<Pong> for Ledger {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs.push(pong.n);
@@ -5587,13 +5622,18 @@ mod tests {
     }
 
     impl Handles<echo::Book> for Borrower {
-        type From = Anyone;
+        type From = ActorRef<echo::Librarian>;
+        type Returns = ();
 
-        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        fn handle(
+            &mut self,
+            book: echo::Book,
+            turn: &mut Turn<'_, Self, ActorRef<echo::Librarian>>,
+        ) -> Result<(), Fault> {
             let bytes = turn.read(&book.blob);
             let read = [bytes.len() as u64, bytes.first().copied().map_or(0, u64::from)];
             self.read.extend(read);
-            turn.reply(&book)?;
+            turn.to(*turn.from()).send(&book)?;
 
             Ok(())
         }
@@ -5601,6 +5641,7 @@ mod tests {
 
     impl Handles<Pong> for Borrower {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.read.push(pong.n);
@@ -5733,6 +5774,7 @@ mod tests {
 
     impl Handles<echo::Book> for Patron {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, book: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             if self.keeps {
@@ -5845,6 +5887,7 @@ mod tests {
 
     impl Handles<echo::Book> for Dun {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, _: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
@@ -5943,6 +5986,7 @@ mod tests {
 
     impl Handles<Pong> for Mourner {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs.push(pong.n);
@@ -6255,6 +6299,7 @@ mod tests {
 
     impl Handles<echo::Heard> for Prober {
         type From = Anyone;
+        type Returns = ();
 
         fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(Probed::of(&heard));

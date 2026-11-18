@@ -116,6 +116,7 @@ impl Actor for Process {
 
 impl Handles<Stop> for Process {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.stop(turn)

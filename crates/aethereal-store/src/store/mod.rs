@@ -13,7 +13,7 @@ use crate::{
 };
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Level,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, ErasedActorRef, Fault, Handles, Later, Level,
     Receives, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
@@ -320,40 +320,6 @@ impl ChildOf for Store {
     type Parent = Top;
 }
 
-/// Asked at its typed path, it answers a check-in once its copy is done.
-impl Carries<CheckIn> for Store {
-    type Answers = (CheckedIn,);
-}
-
-impl Carries<CheckInDropped> for Store {
-    type Answers = (CheckedIn,);
-}
-
-/// Asked at its typed path, it lists what it holds.
-impl Carries<ListStored> for Store {
-    type Answers = (Stored,);
-}
-
-/// Asked at its typed path, it pins an entry.
-impl Carries<Pin> for Store {
-    type Answers = (Pinned,);
-}
-
-/// Asked at its typed path, it clears an entry's pin.
-impl Carries<Unpin> for Store {
-    type Answers = (Pinned,);
-}
-
-/// Asked at its typed path, it holds an entry while the asker lives.
-impl Carries<Hold> for Store {
-    type Answers = (Held,);
-}
-
-/// Asked at its typed path, it answers a launch once its launch copy is made.
-impl Carries<Launch> for Store {
-    type Answers = (Launched,);
-}
-
 impl Actor for Store {
     type Config = StoreConfig;
     type Key = ();
@@ -388,68 +354,89 @@ impl Actor for Store {
 
 impl Handles<CheckIn> for Store {
     type From = Anyone;
+    type Returns = Later<CheckedIn>;
 
-    fn handle(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
+    fn handle(&mut self, check_in: CheckIn, turn: &mut Turn<'_, Self>) -> Result<Later<CheckedIn>, Fault> {
+        let (debt, later) = turn.hold();
         let CheckIn { path, name } = check_in;
-        self.take(Ask::CheckIn { debt, from: Source::Path(path), name }, turn)
+        self.take(Ask::CheckIn { debt, from: Source::Path(path), name }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<CheckInDropped> for Store {
     type From = Anyone;
+    type Returns = Later<CheckedIn>;
 
-    fn handle(&mut self, check_in: CheckInDropped, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
+    fn handle(&mut self, check_in: CheckInDropped, turn: &mut Turn<'_, Self>) -> Result<Later<CheckedIn>, Fault> {
+        let (debt, later) = turn.hold();
         let CheckInDropped { session, file, name } = check_in;
-        self.take(Ask::CheckIn { debt, from: Source::Dropped { session, file }, name }, turn)
+        self.take(Ask::CheckIn { debt, from: Source::Dropped { session, file }, name }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<ListStored> for Store {
     type From = Anyone;
+    type Returns = Later<Stored>;
 
-    fn handle(&mut self, _: ListStored, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
-        self.take(Ask::List { debt }, turn)
+    fn handle(&mut self, _: ListStored, turn: &mut Turn<'_, Self>) -> Result<Later<Stored>, Fault> {
+        let (debt, later) = turn.hold();
+        self.take(Ask::List { debt }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Pin> for Store {
     type From = Anyone;
+    type Returns = Later<Pinned>;
 
-    fn handle(&mut self, Pin { hash }: Pin, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
-        self.take(Ask::Pin { debt, hash }, turn)
+    fn handle(&mut self, Pin { hash }: Pin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
+        let (debt, later) = turn.hold();
+        self.take(Ask::Pin { debt, hash }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Unpin> for Store {
     type From = Anyone;
+    type Returns = Later<Pinned>;
 
-    fn handle(&mut self, Unpin { hash }: Unpin, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
-        self.take(Ask::Unpin { debt, hash }, turn)
+    fn handle(&mut self, Unpin { hash }: Unpin, turn: &mut Turn<'_, Self>) -> Result<Later<Pinned>, Fault> {
+        let (debt, later) = turn.hold();
+        self.take(Ask::Unpin { debt, hash }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Hold> for Store {
     type From = Anyone;
+    type Returns = Later<Held>;
 
-    fn handle(&mut self, Hold { hash }: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
+    fn handle(&mut self, Hold { hash }: Hold, turn: &mut Turn<'_, Self>) -> Result<Later<Held>, Fault> {
+        let (debt, later) = turn.hold();
         let holder = turn.sender();
-        self.take(Ask::Hold { debt, hash, holder }, turn)
+        self.take(Ask::Hold { debt, hash, holder }, turn)?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Launch> for Store {
     type From = Anyone;
+    type Returns = Later<Launched>;
 
-    fn handle(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let debt = turn.hold()?;
+    fn handle(&mut self, Launch { binary }: Launch, turn: &mut Turn<'_, Self>) -> Result<Later<Launched>, Fault> {
+        let (debt, later) = turn.hold();
         let asker = turn.sender();
-        self.take(Ask::Launch { debt, binary, asker }, turn)
+        self.take(Ask::Launch { debt, binary, asker }, turn)?;
+
+        Ok(later)
     }
 }
 

@@ -183,6 +183,7 @@ impl Bootstrap<Headless> for Streamer {
 
 impl Handles<Follow> for Streamer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, follow: Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match follow {
@@ -196,6 +197,7 @@ impl Handles<Follow> for Streamer {
 
 impl Handles<Part<Accepting>> for Streamer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.accepting.part(turn, part)? else {
@@ -211,6 +213,7 @@ impl Handles<Part<Accepting>> for Streamer {
 
 impl Handles<Part<Reading>> for Streamer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {

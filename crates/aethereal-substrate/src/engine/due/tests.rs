@@ -4,7 +4,7 @@ use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles,
-    Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Spawn, Time, Top, Turn, Unanswered,
+    Held, Later, Protocol, ProtocolRef, Receives, Sleep, Slept, Spawn, Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -115,18 +115,20 @@ impl Actor for Mute {
 
 impl Handles<Query> for Mute {
     type From = Anyone;
+    type Returns = Later<Reply>;
 
-    fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
+        let (held, later) = turn.hold();
         self.dues.push(held.due());
         self.held.push(held);
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Release> for Mute {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in self.held.drain(..) {
@@ -178,9 +180,10 @@ impl Actor for Relay {
 
 impl Handles<Query> for Relay {
     type From = Anyone;
+    type Returns = Later<Reply>;
 
-    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
+        let (held, later) = turn.hold();
         self.dues.push(held.due());
         self.held.push(held);
         match query.onward {
@@ -193,12 +196,13 @@ impl Handles<Query> for Relay {
             Onward::Waits => {}
         }
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Forward> for Relay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Forward, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in &self.held {
@@ -297,6 +301,7 @@ impl Actor for Asker {
 
 impl Handles<Order> for Asker {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let to: ProtocolRef<Queries> = match order.whom {

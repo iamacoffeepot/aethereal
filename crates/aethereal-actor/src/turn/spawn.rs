@@ -78,6 +78,7 @@ pub trait Spawn<Me: Actor, I> {
     ///
     /// impl Handles<Lens> for Host {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let _ = turn.spawn::<Lens>(&(), lens);

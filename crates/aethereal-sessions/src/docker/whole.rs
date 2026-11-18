@@ -6,9 +6,12 @@ use super::{
     Acted, Calling, Create, CreateVolume, Created, Docker, DockerError, Fetches, Inspect, Inspected, Kill, List,
     Listed, Remove, Start, Stop, Unwritable, VolumeCreated, reply,
 };
-use aethereal_actor::{ActorRef, Answer, Answered, Anyone, Bytes, Due, Fault, Handles, Held, Receives, Refused, Turn};
+use aethereal_actor::{
+    ActorRef, Answer, Answered, Anyone, Bytes, Due, Fault, Handles, Held, Receives, Refused, Reply, Turn,
+};
 use aethereal_data::Bound;
-use aethereal_http::{Client, Failure, Fetch, Fetched, Header, Outgoing, Reply};
+use aethereal_http::Reply as HttpReply;
+use aethereal_http::{Client, Failure, Fetch, Fetched, Header, Outgoing};
 use aethereal_tcp::Shut;
 
 /// A request answered whole: who waits on it, and where it is.
@@ -39,97 +42,105 @@ enum Step {
 
 impl Handles<Create> for Docker {
     type From = Anyone;
+    type Returns = Reply<Created>;
 
-    fn handle(&mut self, create: Create, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, create: Create, turn: &mut Turn<'_, Self>) -> Result<Reply<Created>, Fault> {
         match create.call() {
             Ok(call) => {
-                let answering = Answering::Created(turn.hold()?);
-                self.ask(turn, call, answering)?;
-            }
-            Err(why) => turn.reply(&Created::Failed(DockerError::Unwritable(why)))?,
-        }
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::Created(held))?;
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(Created::Failed(DockerError::Unwritable(why)))),
+        }
     }
 }
 
 impl Handles<Start> for Docker {
     type From = Anyone;
+    type Returns = Reply<Acted>;
 
-    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, start.call())
     }
 }
 
 impl Handles<Stop> for Docker {
     type From = Anyone;
+    type Returns = Reply<Acted>;
 
-    fn handle(&mut self, stop: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, stop: Stop, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, stop.call())
     }
 }
 
 impl Handles<Kill> for Docker {
     type From = Anyone;
+    type Returns = Reply<Acted>;
 
-    fn handle(&mut self, kill: Kill, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, kill: Kill, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, kill.call())
     }
 }
 
 impl Handles<Remove> for Docker {
     type From = Anyone;
+    type Returns = Reply<Acted>;
 
-    fn handle(&mut self, remove: Remove, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, remove: Remove, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, remove.call())
     }
 }
 
 impl Handles<Inspect> for Docker {
     type From = Anyone;
+    type Returns = Reply<Inspected>;
 
-    fn handle(&mut self, inspect: Inspect, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, inspect: Inspect, turn: &mut Turn<'_, Self>) -> Result<Reply<Inspected>, Fault> {
         match inspect.call() {
             Ok(call) => {
-                let answering = Answering::Inspected(turn.hold()?);
-                self.ask(turn, call, answering)?;
-            }
-            Err(why) => turn.reply(&Inspected::Failed(DockerError::Unwritable(why)))?,
-        }
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::Inspected(held))?;
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(Inspected::Failed(DockerError::Unwritable(why)))),
+        }
     }
 }
 
 impl Handles<List> for Docker {
     type From = Anyone;
+    type Returns = Reply<Listed>;
 
-    fn handle(&mut self, list: List, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, list: List, turn: &mut Turn<'_, Self>) -> Result<Reply<Listed>, Fault> {
         match list.call() {
             Ok(call) => {
-                let answering = Answering::Listed(turn.hold()?);
-                self.ask(turn, call, answering)?;
-            }
-            Err(why) => turn.reply(&Listed::Failed(DockerError::Unwritable(why)))?,
-        }
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::Listed(held))?;
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(Listed::Failed(DockerError::Unwritable(why)))),
+        }
     }
 }
 
 impl Handles<CreateVolume> for Docker {
     type From = Anyone;
+    type Returns = Reply<VolumeCreated>;
 
-    fn handle(&mut self, create: CreateVolume, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateVolume, turn: &mut Turn<'_, Self>) -> Result<Reply<VolumeCreated>, Fault> {
         match create.call() {
             Ok(call) => {
-                let answering = Answering::VolumeCreated(turn.hold()?);
-                self.ask(turn, call, answering)?;
-            }
-            Err(why) => turn.reply(&VolumeCreated::Failed(DockerError::Unwritable(why)))?,
-        }
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::VolumeCreated(held))?;
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(VolumeCreated::Failed(DockerError::Unwritable(why)))),
+        }
     }
 }
 
@@ -147,7 +158,7 @@ impl Receives<Answer<Fetched, Calling>> for Docker {
             turn.to(client).send(&Shut)?;
         }
         match answered {
-            Answered::Yes(Fetched::Whole(Reply { status, body, .. })) => answering.read(turn, status, &body),
+            Answered::Yes(Fetched::Whole(HttpReply { status, body, .. })) => answering.read(turn, status, &body),
             Answered::Yes(Fetched::Failed(failure)) => answering.fail(turn, DockerError::Broken(failure)),
             Answered::No(why) => answering.fail(turn, DockerError::Unanswered(why)),
         }
@@ -156,16 +167,16 @@ impl Receives<Answer<Fetched, Calling>> for Docker {
 
 impl Docker {
     /// Asks for a start, a stop, a kill, or a remove: `call`, or why it could not be written.
-    fn act(&mut self, turn: &mut Turn<'_, Self>, call: Result<Call, Unwritable>) -> Result<(), Fault> {
+    fn act(&mut self, turn: &mut Turn<'_, Self>, call: Result<Call, Unwritable>) -> Result<Reply<Acted>, Fault> {
         match call {
             Ok(call) => {
-                let answering = Answering::Acted(turn.hold()?);
-                self.ask(turn, call, answering)?;
-            }
-            Err(why) => turn.reply(&Acted::Failed(DockerError::Unwritable(why)))?,
-        }
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::Acted(held))?;
 
-        Ok(())
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(Acted::Failed(DockerError::Unwritable(why)))),
+        }
     }
 
     /// Asks `Http` to dial the socket for `call`, which `answering` waits on.

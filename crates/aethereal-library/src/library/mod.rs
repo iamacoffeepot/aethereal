@@ -7,8 +7,8 @@ mod start;
 
 use crate::{Defaulted, Defaults, ModulePublished, PublishModule};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Given, Handle, Held, Publisher,
-    Receives, Refused, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, Given, Handle, Held, Publisher, Receives,
+    Refused, Top, Turn, path,
 };
 use aethereal_data::{Bound, FilePath, KindName, Plain};
 use aethereal_files::{FileRead, Files, FilesListed, ListFiles, Namespace};
@@ -105,16 +105,6 @@ pub enum ReadingModule {
 /// The library is a root, listed by the program.
 impl ChildOf for Library {
     type Parent = Top;
-}
-
-/// Asked at its typed path, `path::<Library>(())`, it answers a publish with what became of it.
-impl Carries<PublishModule> for Library {
-    type Answers = (ModulePublished,);
-}
-
-/// Asked at its typed path, it answers defaults with what it took of them.
-impl Carries<Defaults> for Library {
-    type Answers = (Defaulted,);
 }
 
 impl Actor for Library {

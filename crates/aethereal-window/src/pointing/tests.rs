@@ -393,6 +393,7 @@ impl Actor for Prober {
 
 impl Handles<ProbeOrder> for Prober {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = path::<Window>(WINDOW);
@@ -414,6 +415,7 @@ impl Handles<ProbeOrder> for Prober {
 
 impl Handles<Probed> for Prober {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -447,6 +449,7 @@ impl Actor for Widget {
 
 impl Handles<Pointed> for Widget {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Pointed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

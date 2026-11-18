@@ -5,11 +5,14 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, Top, Turn};
+use aethereal_actor::{
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Receives, Time, Top, Turn,
+};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
 use aethereal_guest_echo as guest;
+use aethereal_guest_echo::{Increment, Ping, Pings, Pong};
 use aethereal_substrate::{Clock, Engine};
 use std::env;
 use std::num::NonZeroUsize;
@@ -18,32 +21,25 @@ use std::sync::Arc;
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
 #[derive(Plain)]
-#[kind(name = "aether.guest.ping")]
-struct Ping {
-    n: u64,
-}
-
-#[derive(Plain)]
-#[kind(name = "aether.guest.pong")]
-struct Pong {
-    n: u64,
-}
-
-#[derive(Plain)]
-#[kind(name = "aether.guest.increment")]
-struct Increment;
-
-#[derive(Plain)]
 #[kind(name = "aether.bench.bursts")]
 struct Bursts {
     bursts: u64,
     each: u64,
 }
 
+/// What a counter keeps for each ping until it is answered: nothing, as the pong says how many bursts are left.
+#[derive(Plain)]
+#[kind(name = "aether.bench.burst")]
+struct Burst;
+
+/// A native actor that asks the echo a ping, and on each pong while bursts are left tells it a burst of increments and
+/// asks it the next ping.
 #[derive(Bound)]
 #[kind(name = "aether.bench.counter")]
 struct Counter {
     each: u64,
+    pings: ProtocolRef<Pings>,
+    counts: ProtocolRef<(Increment,)>,
 }
 
 impl ChildOf for Counter {
@@ -53,17 +49,21 @@ impl ChildOf for Counter {
 impl Actor for Counter {
     type Config = Bursts;
     type Key = ();
-    type Handles = (Pong,);
+    type Handles = (Answer<Pong, Burst>,);
     type Depends = ();
     type Spawns = ();
 
     fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
-            turn.to(echo).send(&Ping { n: bursts.bursts })?;
-        }
+        let Some(echo) = turn.resolve(&echo) else {
+            panic!("the echo begins before its counter");
+        };
+        let (Some(pings), Some(counts)) = (turn.cast::<Pings>(echo), turn.cast::<(Increment,)>(echo)) else {
+            panic!("the echo takes pings and increments");
+        };
+        turn.to(pings).ask(&Ping { n: bursts.bursts }, &Burst)?;
 
-        Ok(Self { each: bursts.each })
+        Ok(Self { each: bursts.each, pings, counts })
     }
 
     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
@@ -71,15 +71,16 @@ impl Actor for Counter {
     }
 }
 
-impl Handles<Pong> for Counter {
-    type From = Anyone;
-
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Receives<Answer<Pong, Burst>> for Counter {
+    fn handle(&mut self, (pong, Burst): (Answered<Pong>, Burst), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(pong) = pong else {
+            return Ok(());
+        };
         if pong.n > 0 {
             for _ in 0..self.each {
-                turn.reply(&Increment)?;
+                turn.to(self.counts).send(&Increment)?;
             }
-            turn.reply(&Ping { n: pong.n - 1 })?;
+            turn.to(self.pings).ask(&Ping { n: pong.n - 1 }, &Burst)?;
         }
 
         Ok(())
@@ -119,16 +120,16 @@ impl Actor for Echo {
 
 impl Handles<Ping> for Echo {
     type From = Anyone;
+    type Returns = Pong;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&Pong { n: ping.n })?;
-
-        Ok(())
+    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+        Ok(Pong { n: ping.n })
     }
 }
 
 impl Handles<Increment> for Echo {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.counted += 1;

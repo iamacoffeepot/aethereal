@@ -92,6 +92,7 @@ impl Link {
 /// hub has shown nothing.
 impl Handles<Listen> for Link {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
@@ -119,6 +120,7 @@ impl Handles<Listen> for Link {
 /// engine. A frame too large for the link is not written, and logged.
 impl Handles<Chat> for Link {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let written = frames::written(&Up::from(chat), self.config.most_bytes)?;

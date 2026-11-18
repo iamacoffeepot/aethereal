@@ -209,6 +209,7 @@ impl Actor for Reply {
 
 impl Handles<Event> for Reply {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {

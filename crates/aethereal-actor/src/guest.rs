@@ -500,7 +500,7 @@ pub fn turns(types: &[Type], calls: &'static Calls, handle: u32, items: u32, len
             rest = after;
             // What became of a request is handed to its handler with the request as it was filed, which the turn
             // reads.
-            // What the item is to a request: one the turn may reply to, or hold, and the deadline its asks inherit
+            // What the item is to a request: one the turn answers, now or by holding it, and the deadline its asks inherit
             // (ADR-0017, ADR-0041).
             let (tie, due) = match handed {
                 Handed::Asks { request, due, .. } => (Tie::asks(request), due),
@@ -982,7 +982,7 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], sends_at: usize
 
 /// What the piece of mail `mailed` is to a request, as its host is told: its own of `asks`, the next that its sender
 /// asked of that count, when it asks one, and the next of `answers`, the debts the turns answered, when it answers that
-/// one: or a reply to the request the turn handles, as an answer that is no debt's is.
+/// one: or the answer the handler returned to the request the turn handles, as an answer that is no debt's is.
 fn requesting(
     mailed: &crate::Mailed,
     asks: &mut slice::Iter<'_, Lying>,

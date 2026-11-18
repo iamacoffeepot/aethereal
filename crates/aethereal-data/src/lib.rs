@@ -43,7 +43,7 @@ pub use json::{
     to_json,
 };
 pub use key::Key;
-pub use kind::{Kind, KindId, KindName};
+pub use kind::{IntoKinds, Kind, KindId, KindName};
 pub use path::{
     ActorId, ActorKey, ActorPath, Instanced, KeyName, Keyed, PathSegment, PathTooDeep, Singleton, Then, TypedKey,
 };

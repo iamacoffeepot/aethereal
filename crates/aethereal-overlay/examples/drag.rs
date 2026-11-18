@@ -315,6 +315,7 @@ impl Actor for Shelves {
 
 impl Handles<Event> for Shelves {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
