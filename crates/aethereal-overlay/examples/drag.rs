@@ -14,7 +14,7 @@
 //! ```
 //!
 //! The engine hands the hub `capture_frame` (ADR-0043), `send_input` (ADR-0046), `actor_logs` (ADR-0044), and the
-//! window tools (ADR-0047). With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a
+//! window tools (ADR-0047). With a hub from the `aethereal-hub` crate running, ask its `mint_token` tool for a
 //! token, which answers the arguments to start this engine with, then run `cargo run --release -p aethereal-overlay
 //! --example drag -- <those arguments> --name drag`; or spawn it from the hub's store. `--size 1920x1080` sizes its
 //! window and `--mode` shows it so as it opens; `--help` lists every flag it reads, each also read from its `DRAG_`

@@ -7,9 +7,9 @@
 //! by the environment, `AETHEREAL_ENGINE_ASSETS=DIR`. `--hub-token` is required: an engine started without it fails
 //! as it begins.
 //!
-//! With a hub from the `link_hub` example running, ask its `mint_token` tool for a token, which answers the arguments
-//! to start this engine with, then run `cargo run --release -p aethereal-chassis-headless --example link_engine --
-//! <those arguments> --name scene --assets DIR`.
+//! With a hub from the `aethereal-hub` crate running, ask its `mint_token` tool for a token, which answers the
+//! arguments to start this engine with, then run `cargo run --release -p aethereal-chassis-headless --example
+//! link_engine -- <those arguments> --name scene --assets DIR`.
 
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;

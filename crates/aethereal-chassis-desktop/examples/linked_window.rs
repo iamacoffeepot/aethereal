@@ -7,7 +7,7 @@
 //! the hub minted for it, and ends when its link ends, or when its window is closed or Escape is pressed (ADR-0040).
 //! Its saves are written under `--files-save`, `save` unless set.
 //!
-//! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
+//! With a hub from the `aethereal-hub` crate running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-chassis-desktop --example
 //! linked_window -- <those arguments> --name window`. A link's frames are at most 16 MiB here, so an image of a large
 //! frame fits one; start the hub with `--link-most-bytes 16777216 --set engine.read_limit=16777216` to read them. Its

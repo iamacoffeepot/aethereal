@@ -1,0 +1,29 @@
+[package]
+name = "aethereal-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The hub: the program on the headless chassis that links engines, serves their tools over MCP, keeps the store, and runs Claude sessions"
+
+[[bin]]
+name = "aethereal-hub"
+path = "src/main.rs"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-chassis-headless = { path = "../aethereal-chassis-headless" }
+aethereal-data = { path = "../aethereal-data" }
+aethereal-files = { path = "../aethereal-files" }
+aethereal-http = { path = "../aethereal-http" }
+aethereal-link = { path = "../aethereal-link", features = ["tools"] }
+aethereal-mcp = { path = "../aethereal-mcp" }
+aethereal-process = { path = "../aethereal-process" }
+aethereal-sessions = { path = "../aethereal-sessions", features = ["tools"] }
+aethereal-store = { path = "../aethereal-store", features = ["tools"] }
+aethereal-substrate = { path = "../aethereal-substrate" }
+aethereal-tcp = { path = "../aethereal-tcp" }
+aethereal-tools = { path = "../aethereal-tools" }
+
+[lints]
+workspace = true
