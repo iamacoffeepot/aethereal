@@ -1,9 +1,9 @@
 //! A message's body, decoded from the bytes read as its framing says (RFC 9112 §6, §7.1): by its length, in chunks,
-//! or until the connection closes. A client decodes a response's body with it, and an exchange a request's. It decodes
+//! or until the connection closes. A client decodes a response's body with it, and a stack a request's. It decodes
 //! whatever has arrived, and keeps where it stopped, so a chunk's size line or its data may be cut anywhere between
 //! reads.
 
-use crate::head::{self, CRLF};
+use crate::http1::head::{self, CRLF};
 use aethereal_data::Plain;
 
 /// What is left to read of a message's body.

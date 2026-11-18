@@ -1,8 +1,8 @@
 //! A response's head, parsed from the bytes a client has read, with every limit on it checked before anything goes
 //! further (ADR-0035): its status line, its headers, and how its body is framed.
 
-use crate::body::{Body, Chunk};
-use crate::head::{self, Ends, Malformed};
+use crate::http1::body::{Body, Chunk};
+use crate::http1::head::{self, Ends, Malformed};
 use crate::{Failure, Header, Limit};
 
 /// A response's head, parsed: what the client hands on of it, and what it reads of it to frame the body and the

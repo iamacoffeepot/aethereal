@@ -1,6 +1,6 @@
 //! A request's head, written as the bytes a client sends its connection before the body (ADR-0035, ADR-0042).
 
-use crate::head::is_token;
+use crate::http1::head::is_token;
 use crate::{Header, Method, Outgoing, Switch, Unwritable};
 
 /// What of a request its head is written from: all but its body.

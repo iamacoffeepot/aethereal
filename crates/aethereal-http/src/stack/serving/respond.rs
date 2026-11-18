@@ -7,13 +7,13 @@ use super::body::{Ending, PASSED, Passage, pass};
 use super::connection::{Phase, Returning, Stage};
 use super::outflow::abandon;
 use super::{Carries, Deadline, Owed, Sending, Serving, Stepping};
-use crate::response_head::{self, Frame};
 use crate::stack::actor::{ParkedPart, ParkedResponse, Standing, Way, place};
+use crate::stack::response_head::{self, Frame};
 use crate::stack::{
     BodyPart, LayerList, Leaving, OutboundPart, OutboundParts, Outward, Response, ResponseBody, ResponseHead, Returned,
     Taker,
 };
-use crate::{OutboundBody, SourceEnd};
+use crate::stack::{OutboundBody, SourceEnd};
 use aethereal_actor::{
     Answer, Bytes, Fault, Guard, Handles, Level, Number, Part, ProtocolRef, Receives, Refused, Slept, Turn,
 };
@@ -29,8 +29,8 @@ pub(super) enum Unstreamed {
 }
 
 /// The head of a response, `head`, its body delimited as `frame` says, written into a buffer of `turn`'s pool and put,
-/// with `Connection: close` when the connection `closes`, for a `HEAD` when `head_only`: each header of `head`'s that
-/// the stack writes itself, or that would not write, dropped and logged.
+/// with `Connection: close` when the connection `closes`: each header of `head`'s that the stack writes itself, or that
+/// would not write, dropped and logged.
 ///
 /// # Errors
 ///
@@ -40,12 +40,11 @@ pub(super) fn put_head<Me, S, F: Guard<Me>>(
     head: &ResponseHead,
     frame: Frame,
     closes: bool,
-    head_only: bool,
 ) -> Result<Bytes, Refused> {
     let ResponseHead { status, headers } = head;
     let (doing, pool) = turn.split();
     let mut written = pool.buffer(response_head::room(headers));
-    let wrote = response_head::head(*status, headers, frame, closes, head_only, &mut written);
+    let wrote = response_head::head(*status, headers, frame, closes, &mut written);
     let put = doing.put(written);
     for name in &wrote.dropped {
         turn.log(Level::Warn, format!("the response's header {name} was not written"));
@@ -241,7 +240,7 @@ where
             Unstreamed::Empty => 0,
             Unstreamed::Whole(bytes) => u64::try_from(turn.read(bytes).len()).unwrap_or(u64::MAX),
         };
-        let Ok(written) = put_head(turn, head, Frame::Length(length), owed.closes, owed.head_only) else {
+        let Ok(written) = put_head(turn, head, Frame::Length(length), owed.closes) else {
             return self.unstored(number, turn);
         };
         let Some(connection) = self.connections.get_mut(&number) else {

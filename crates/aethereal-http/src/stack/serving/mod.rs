@@ -14,9 +14,10 @@ use super::{
     AsksEach, BodyHandle, Credentials, Entered, Gathered, Gathering, Handed, Head, LastLayer, Layer, LayerList, Layers,
     Picked, Response, ResponseBody, Slot, Stack, StackSettings, Unrouted,
 };
-use crate::head::Malformed;
-use crate::request_head::{self, Framing, Parsed, Refusal, RequestHead};
-use crate::{BodyRead, InboundBody, Method, OutboundBody, SourceEnd, Status};
+use crate::http1::head::Malformed;
+use crate::stack::request_head::{self, Framing, Parsed, Refusal, RequestHead};
+use crate::stack::{BodyRead, InboundBody, OutboundBody, SourceEnd};
+use crate::{Method, Status};
 use aethereal_actor::{
     ActorRef, Answer, Answered, Asks, At, Beginning, Conforms, Enough, Fault, Handles, Level, Lists, More, Number,
     Open, Part, Path, Receives, Slept, Streamed, Streams, Taken, Time, ToAny, ToSender, ToType, Turn, Unanswered, path,
@@ -602,7 +603,7 @@ where
             }
 
             // A stack takes no limit on a body: its reader's gather names one.
-            match request_head::parse(&connection.buffer, self.settings.most_head_bytes, |_| u64::MAX) {
+            match request_head::parse(&connection.buffer, self.settings.most_head_bytes) {
                 Parsed::More => {
                     let started = matches!(connection.phase, Phase::Idle { .. }) && !connection.buffer.is_empty();
                     if started {

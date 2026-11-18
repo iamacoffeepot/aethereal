@@ -1,6 +1,6 @@
 //! What a request's head and a response's head share, parsed with every limit checked before anything goes further
-//! (ADR-0035): where a head ends, its lines, its headers, and its body's length. An exchange reads a request line
-//! before them, and a client a status line.
+//! (ADR-0035): where a head ends, its lines, its headers, and its body's length. A stack reads a request line before
+//! them, and a client a status line.
 
 use crate::Header;
 use core::ops::Range;

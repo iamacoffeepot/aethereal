@@ -1,4 +1,4 @@
-//! Bytes a server writes of its own, put as a blob from a buffer of its turn's pool (ADR-0042).
+//! Bytes a stack writes of its own, put as a blob from a buffer of its turn's pool (ADR-0042).
 
 use aethereal_actor::{Bytes, Guard, Refused, Turn};
 

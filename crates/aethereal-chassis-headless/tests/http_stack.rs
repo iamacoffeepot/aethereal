@@ -10,13 +10,12 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, KindId, Plain};
 use aethereal_http::stack::{
-    BodyHandle, BodyPart, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundPart, Inward,
-    Layer, LayerForm, Leaving, Outbound, OutboundPart, Outward, PartStep, Refused, Request, Response, ResponseBody,
-    StackSettings, Step,
+    BodyHandle, BodyPart, BodyRead, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundBody,
+    InboundPart, Inward, Layer, LayerForm, Leaving, Outbound, OutboundBody, OutboundPart, Outward, PartStep, Refused,
+    Request, Response, ResponseBody, ResponseBytes, ResponseLength, SourceEnd, StackSettings, Step, StreamedBody,
 };
 use aethereal_http::{
-    BodyRead, Captures, Header, InboundBody, Method, OutboundBody, ResponseBytes, ResponseLength, Route, Router,
-    Routes, SourceEnd, Status, StreamedBody, Unroutable,
+    BlobBytesTooLow, Captures, Header, Method, ReadLimitTooLow, Route, Router, Routes, Status, Unroutable,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, EngineSettings, Host};
@@ -216,6 +215,87 @@ impl Handles<Request<(), ()>> for Silent {
 
     fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
         self.held.push(turn.hold()?);
+
+        Ok(())
+    }
+}
+
+/// How [`Fickle`] fails each request it is asked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.fails")]
+enum Fails {
+    /// Its turn fails.
+    #[default]
+    Faults,
+    /// It lets the ask go, answering nothing.
+    Drops,
+}
+
+/// [`Fickle`]'s settings: how it fails each request.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.fickle_settings")]
+#[settings]
+struct FickleSettings {
+    fails: Fails,
+}
+
+/// What [`Fickle`] is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.fickle_order")]
+enum FickleOrder {
+    /// Ends.
+    Close,
+}
+
+/// A handler that answers no request: it fails each as its settings say, or has ended before it is asked.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.fickle")]
+struct Fickle {
+    fails: Fails,
+}
+
+impl ChildOf for Fickle {
+    type Parent = Top;
+}
+
+impl Actor for Fickle {
+    type Config = FickleSettings;
+    type Key = ();
+    type Handles = (Request<(), ()>, FickleOrder);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(settings: FickleSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { fails: settings.fails })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<(), ()>> for Fickle {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<(), ()>> for Fickle {
+    type Sends = (ToSender<Response>,);
+    type From = FromStack;
+
+    fn handle(&mut self, _: Request<(), ()>, _: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        match self.fails {
+            Fails::Faults => Err(Fault::of_parts(KindId::of::<Self>(), Vec::new())),
+            Fails::Drops => Ok(()),
+        }
+    }
+}
+
+impl Handles<FickleOrder> for Fickle {
+    type Sends = ();
+    type From = Anyone;
+
+    fn handle(&mut self, FickleOrder::Close: FickleOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        turn.close();
 
         Ok(())
     }
@@ -739,6 +819,7 @@ impl Routes for OverlappingRoutes {
 
 stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), []);
 stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), []);
+stack!(FickleStack, "test.http_stack.fickle_stack", "fickle_stack", (Fickle,), []);
 stack!(GateStack, "test.http_stack.gate_stack", "gate_stack", (Count, Gate, Tag, Upper, Mirror), [Caller]);
 stack!(ShelfStack, "test.http_stack.shelf_stack", "shelf_stack", (Count, ShelfRoutes), []);
 stack!(OverlappingStack, "test.http_stack.overlapping_stack", "overlapping_stack", (Count, OverlappingRoutes), []);
@@ -950,6 +1031,130 @@ fn a_body_gathered_past_its_most_bytes_is_refused_whole_and_the_connection_close
     assert!(chunked_closed, "the rest of a body refused is not read, so its connection closes");
 
     Ok(())
+}
+
+#[test]
+fn an_idle_connection_is_closed_once_its_wait_for_a_request_runs_out() -> Result<(), Unheard> {
+    // Catches a connection whose first wait is never timed: a peer that connects and sends nothing would hold a
+    // connection, and one of the stack's `most_connections`, for good.
+    let settings = StackSettings { idle_within_millis: 200, ..StackSettings::default() };
+    let (mut harness, port) = echoing(settings, 64)?;
+
+    let (_, closed) = heard(&mut harness, client(port, b"", 0));
+
+    assert!(closed, "the stack closes a connection that sent nothing in time");
+
+    Ok(())
+}
+
+#[test]
+fn a_deadline_of_a_request_already_answered_does_not_end_the_next() -> Result<(), Unheard> {
+    // Catches a sleep for a phase the connection has left still acting when it comes: the first request's deadline,
+    // passed while the connection waits between requests, would answer the next `504` or close the connection.
+    const FIRST: &[u8] = b"GET /first HTTP/1.1\r\nAuthorization: Bearer open\r\n\r\n";
+    const SECOND: &[u8] = b"GET /second HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+    let settings = StackSettings { answer_within_millis: 200, ..StackSettings::default() };
+    let (mut harness, port) = echoing(settings, 64)?;
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    let client = thread::spawn(move || {
+        let mut stream = connect(port);
+        let mut buffer = Vec::new();
+        assert!(stream.write_all(FIRST).is_ok(), "the client writes");
+        let first = response(&mut stream, &mut buffer);
+        // Past the first request's deadline, so a sleep left from it has come.
+        #[allow(clippy::disallowed_methods)] // The client waits on real time, outside the engine.
+        thread::sleep(Duration::from_millis(400));
+        assert!(stream.write_all(SECOND).is_ok(), "the client writes");
+        let second = response(&mut stream, &mut buffer);
+
+        (vec![first, second], closes(&mut stream))
+    });
+
+    let (answered, closed) = heard(&mut harness, client);
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 200"), "{answered:?}");
+    assert!(answered[1].head.starts_with("HTTP/1.1 200"), "{answered:?}");
+    assert!(closed, "the second request asked to close");
+
+    Ok(())
+}
+
+/// A host serving a [`FickleStack`] whose handler fails each request as `fails` says, and the port it listens on.
+fn fickle(fails: Fails) -> Result<(Harness<Headless>, u16), Unheard> {
+    let settings = StackSettings::default();
+    let program = Headless::program()
+        .with_engine(engine(&settings))
+        .root::<Tcp>()
+        .root_with::<Fickle>(FickleSettings { fails })
+        .root_with::<FickleStack>(settings);
+    let mut harness = Harness::of(program)?;
+    let port = bound(&mut harness, |stack: &FickleStack| stack.serving.port());
+
+    Ok((harness, port))
+}
+
+#[test]
+fn a_handler_that_ended_is_a_503_and_one_that_failed_or_let_its_request_go_a_500() -> Result<(), Unheard> {
+    // Catches a stack that mistakes why its handler did not answer, or hangs on it.
+    const GONE: &[u8] = b"GET /gone HTTP/1.1\r\nConnection: close\r\n\r\n";
+    for fails in [Fails::Faults, Fails::Drops] {
+        let (mut harness, port) = fickle(fails)?;
+
+        let (answered, _) = heard(&mut harness, client(port, GONE, 1));
+
+        assert!(answered[0].head.starts_with("HTTP/1.1 500"), "{fails:?}: {answered:?}");
+    }
+
+    let (mut harness, port) = fickle(Fails::Faults)?;
+    let fickle = harness.root::<Fickle>();
+    harness.tell(fickle, &FickleOrder::Close)?;
+    waiting::until(BUDGET, || {
+        harness.step();
+
+        harness.state(fickle).is_err()
+    });
+
+    let (answered, _) = heard(&mut harness, client(port, GONE, 1));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 503"), "{answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_stack_does_not_start_where_a_request_could_not_be_read() {
+    // Catches the check dropped, which lets one client end a handler with a request whose head it cannot read.
+    let settings = StackSettings::default();
+    let needed = settings.most_read_bytes();
+    let program = Headless::program()
+        .with_engine(EngineSettings::default())
+        .root::<Tcp>()
+        .root_with::<Echo>(EchoSettings { most_bytes: 64 })
+        .root_with::<EchoStack>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&ReadLimitTooLow { read_limit: 1024, needed }.to_string()), "{why}");
+}
+
+#[test]
+fn a_stack_does_not_start_where_a_chunk_its_connections_read_could_not_be_held() {
+    // Catches the check dropped, which lets every read of every connection fail for want of room to hold it.
+    let settings = StackSettings { chunk_bytes: 2 << 20, ..StackSettings::default() };
+    let engine = EngineSettings { mail_bytes: 1 << 24, blob_bytes: 1 << 20, ..engine(&settings) };
+    let program = Headless::program()
+        .with_engine(engine)
+        .root::<Tcp>()
+        .root_with::<Echo>(EchoSettings { most_bytes: 64 })
+        .root_with::<EchoStack>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&BlobBytesTooLow { blob_bytes: 1 << 20, needed: 2 << 20 }.to_string()), "{why}");
 }
 
 /// A host serving a [`GateStack`] of `settings`, and the port it listens on.
@@ -1478,6 +1683,8 @@ enum PlanEnd {
     Whole,
     /// It does not end it, and waits to be stopped.
     Hold,
+    /// It ends it `Failed`.
+    Fail,
 }
 
 /// What [`Serve`] answers each request with: a body streamed from itself, of `length`, which it sends as `parts`,
@@ -1497,7 +1704,7 @@ struct Plan {
 struct ServeSettings {}
 
 /// A handler that answers each request with a body streamed from itself, as the [`Plan`] it was last told says, and
-/// the source of that body: it keeps how each body it was asked for ended.
+/// the source of that body: it keeps how each body it was asked for ended, and the most credit it held of any.
 #[derive(Bound, Bootstrap)]
 #[kind(name = "test.http_stack.serve")]
 struct Serve {
@@ -1505,6 +1712,7 @@ struct Serve {
     serving: Serving<OutboundBody>,
     making: Making,
     ended: Vec<SourceEnd>,
+    most_credit: u32,
 }
 
 /// Where [`Serve`] stands in the body it sends.
@@ -1530,7 +1738,7 @@ impl Actor for Serve {
     fn begin(_: ServeSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
         let plan = Plan { length: ResponseLength::Unknown, parts: Vec::new(), end: PlanEnd::Whole };
 
-        Ok(Self { plan, serving: Serving::new(), making: Making::Idle, ended: Vec::new() })
+        Ok(Self { plan, serving: Serving::new(), making: Making::Idle, ended: Vec::new(), most_credit: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
@@ -1555,6 +1763,7 @@ impl Serve {
             return Ok(());
         };
         while let Some(part) = self.plan.parts.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            self.most_credit = self.most_credit.max(streaming.credit());
             let Ok(bytes) = turn.put(part.clone().into_bytes()) else {
                 return Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()));
             };
@@ -1566,15 +1775,20 @@ impl Serve {
         }
         self.making = Making::Parts { stream, next };
         let is_sent = usize::try_from(next).is_ok_and(|next| next == self.plan.parts.len());
-        if !is_sent || self.plan.end == PlanEnd::Hold {
+        if !is_sent {
             return Ok(());
         }
+        let end = match self.plan.end {
+            PlanEnd::Whole => SourceEnd::Whole,
+            PlanEnd::Fail => SourceEnd::Failed,
+            PlanEnd::Hold => return Ok(()),
+        };
 
         let Some(streaming) = self.serving.take(stream) else {
             return Ok(());
         };
-        streaming.finish(turn, &SourceEnd::Whole)?;
-        self.ended.push(SourceEnd::Whole);
+        streaming.finish(turn, &end)?;
+        self.ended.push(end);
         self.making = Making::Idle;
 
         Ok(())
@@ -1993,6 +2207,22 @@ fn a_client_that_expects_to_continue_is_told_as_its_body_is_opened_and_not_when_
 }
 
 #[test]
+fn a_client_that_expects_to_continue_with_a_chunked_body_is_told_as_its_body_is_opened() -> Result<(), Unheard> {
+    // Catches `100 Continue` written only for a body of known length, so a client that waits to send a chunked body
+    // stalls.
+    const HEAD: &[u8] =
+        b"POST /up HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+    let (mut harness, port) = reading(StackSettings::default(), Drains::Whole)?;
+
+    let continued = joined(&mut harness, expecting(port, HEAD, b"5\r\nhello\r\n0\r\n\r\n"));
+
+    assert!(continued[0].head.starts_with("HTTP/1.1 100 Continue"), "{continued:?}");
+    assert_eq!(continued[1].body, b"HELLO");
+
+    Ok(())
+}
+
+#[test]
 fn a_body_of_unknown_length_is_chunked_to_one_one_and_delimited_by_the_close_to_one_zero() -> Result<(), Unheard> {
     // Catches a chunked body's size lines or its last chunk written wrong; an empty part written as a chunk, which
     // ends the body early; a chunked body written to an HTTP/1.0 client, which reads no chunks, or its connection kept
@@ -2042,6 +2272,49 @@ fn a_known_length_its_source_comes_short_of_or_runs_past_closes_the_connection_c
     assert!(long_body.len() < 3, "{long_body:?}");
     let serve = lengthened.root::<Serve>();
     assert_eq!(lengthened.state(serve)?.ended, [SourceEnd::Stopped], "the source of a body cut short is stopped");
+
+    Ok(())
+}
+
+#[test]
+fn a_source_that_fails_midway_closes_the_connection_without_ending_the_body() -> Result<(), Unheard> {
+    // Catches a failed source's body ended with its last chunk, which a client would take for the whole body, and a
+    // connection kept open after a head whose status can no longer say the body broke.
+    let parts = vec![String::from("one "), String::from("two "), String::from("three")];
+    let plan = Plan { length: ResponseLength::Unknown, parts, end: PlanEnd::Fail };
+    let (mut harness, port) = sourcing(&plan, Shouts::No)?;
+
+    let written = joined(&mut harness, raw(port, b"GET /a HTTP/1.1\r\n\r\n"));
+
+    let (head, body) = split(&written);
+    let whole: &[u8] = b"4\r\none \r\n4\r\ntwo \r\n5\r\nthree\r\n0\r\n\r\n";
+    assert!(head.contains("transfer-encoding: chunked"), "{head}");
+    assert!(whole.starts_with(body), "what came is the body's start: {:?}", String::from_utf8_lossy(body));
+    assert!(body.len() < whole.len(), "the body is cut short by the close, not ended");
+    let serve = harness.root::<Serve>();
+    assert_eq!(harness.state(serve)?.ended, [SourceEnd::Failed]);
+
+    Ok(())
+}
+
+#[test]
+fn a_streamed_responses_source_runs_no_more_than_its_window_ahead_of_what_is_written() -> Result<(), Unheard> {
+    // Catches a part granted back to its source as the stack takes it as well as once it is written, which lets the
+    // source run past its window, so a client that reads slowly no longer holds it back.
+    let parts = vec!["x".repeat(100); 60];
+    let plan = Plan { length: ResponseLength::Unknown, parts, end: PlanEnd::Whole };
+    let (mut harness, port) = sourcing(&plan, Shouts::No)?;
+
+    let written = joined(&mut harness, raw(port, b"GET /a HTTP/1.1\r\nConnection: close\r\n\r\n"));
+
+    let (head, body) = split(&written);
+    let serve = harness.root::<Serve>();
+    let serve = harness.state(serve)?;
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert!(body.ends_with(b"\r\n0\r\n\r\n"), "the body ended with its last chunk");
+    assert_eq!(serve.ended, [SourceEnd::Whole]);
+    let window = StackSettings::default().window;
+    assert!(serve.most_credit <= window, "the source ran {} parts ahead of a window of {window}", serve.most_credit);
 
     Ok(())
 }

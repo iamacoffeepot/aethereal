@@ -6,11 +6,11 @@
 use super::body::{Carried, Ending, Layered, Walk, walk, write_continue};
 use super::connection::{Inflow, Out, Passing, Phase};
 use super::{Deadline, Serving, Stepping};
-use crate::body::{Decoded, Progress};
-use crate::request_head::Refusal;
+use crate::http1::body::{Decoded, Progress};
 use crate::stack::actor::{ParkedPart, Standing, Way, held};
+use crate::stack::request_head::Refusal;
+use crate::stack::{BodyBytes, BodyRead, InboundBody, OutboundBody, SourceEnd};
 use crate::stack::{InboundPart, InboundParts, LayerList};
-use crate::{BodyBytes, BodyRead, InboundBody, OutboundBody, SourceEnd};
 use aethereal_actor::{
     Answer, Bytes, Ended, Enough, Fault, Handles, Level, More, Number, Open, Part, Receives, Slept, StreamKey,
     ToSender, Unsent,

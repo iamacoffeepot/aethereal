@@ -2,7 +2,7 @@
 //! arrives, and a connection switched to another protocol.
 
 use super::Client;
-use crate::body::Broken;
+use crate::http1::body::Broken;
 use crate::{Header, Method};
 use aethereal_actor::{Bytes, Carries, ProtocolRef, Stream};
 use aethereal_data::{Bound, Plain};

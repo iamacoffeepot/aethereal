@@ -4,9 +4,9 @@
 
 use super::outflow::Outflow;
 use super::{Deadline, Owed};
-use crate::body::Body;
-use crate::request_head::Framing;
+use crate::http1::body::Body;
 use crate::stack::actor::{Standing, held};
+use crate::stack::request_head::Framing;
 use crate::stack::{Gathered, Head, Response, ResponseBody, ResponseHead, StackSettings};
 use aethereal_actor::{
     ActorRef, Answer, Due, Fault, Held, JobId, Number, Receives, Sleep, Slept, StreamKey, Time, Turn,

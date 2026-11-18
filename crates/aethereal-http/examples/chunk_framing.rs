@@ -9,7 +9,7 @@
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
-#[path = "../src/chunk.rs"]
+#[path = "../src/stack/chunk.rs"]
 mod chunk;
 
 use std::alloc::{GlobalAlloc, Layout, System};

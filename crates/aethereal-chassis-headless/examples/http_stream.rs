@@ -2,30 +2,35 @@
 //!
 //! Run with `cargo run --release -p aethereal-chassis-headless --example http_stream [mebibytes=N] [unsent=BYTES]`.
 //! A source serves a body of `N` MiB (by default 64) in parts of 4 KiB, 64 KiB, and 1 MiB, each part the same blob,
-//! so the bench costs the exchange and the connection, not the source. The body is written chunked (its length not
-//! known) and with a `Content-Length` (known), to a client on a thread of its own that reads it to the close. Each line
-//! is the best of three runs: MiB a second, from the request written to the close read.
+//! so the bench costs the stack and the connection, not the source. The body is written chunked (its length not known)
+//! and with a `Content-Length` (known), to a client on a thread of its own that reads it to the close. Each line is the
+//! best of three runs: MiB a second, from the request written to the close read.
 //!
-//! The program is the HTTP server on TCP with the engine's default settings, but for the connection's most unsent
-//! bytes, `unsent` (by default 8 MiB): a write of a window of 1 MiB parts must fit it whole. The host is stepped by the
-//! harness, which is the server's handler and answers the request with the streamed body (ADR-0036).
+//! The program is a stack of its own on TCP (ADR-0035), with the engine's and the stack's default settings, but for the
+//! connection's most unsent bytes, `unsent` (by default 8 MiB): a write of a window of 1 MiB parts must fit it whole.
+//! The source is the stack's one layer, its handler, and answers the request with the body streamed from itself. The
+//! host is stepped by the harness (ADR-0036).
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to one place loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, Answered, Anyone, Beginning, Bytes, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part,
-    Receives, Serving, ToAny, ToSender, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Enough, Fault, Handles, Level,
+    More, Number, Open, Part, Receives, Serving, Slept, ToAny, ToSender, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
+use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
-use aethereal_http::{
-    Handling, Header, Http, HttpSettings, OutboundBody, Request, Response, ResponseBody, ResponseBytes, ResponseLength,
-    Serve, Served, SourceEnd, Status, StreamedBody,
+use aethereal_http::stack::{
+    Answering, Binding, Deadline, FromStack, Gather, GatherSends, InboundBody, Layers, ListenSends, Listened,
+    OutboundBody, Outward, ParkedPart, ParkedResponse, PartStep, ReadSends, Request, Response, ResponseBody,
+    ResponseBytes, ResponseLength, Sending, Serving as StackServing, SourceEnd, Stack, StackSends, StackSettings,
+    StreamedBody, layers,
 };
+use aethereal_http::{Header, Status};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_tcp::{Interface, Tcp, TcpSettings};
+use aethereal_tcp::{Accepting, HungUp, Listening, Reading, Shut, Tcp, TcpSettings, Unbound, Wrote};
 use std::env;
 use std::error::Error;
 use std::io::{Read as _, Write as _};
@@ -42,17 +47,30 @@ const HEAD_BYTES: usize = 4096;
 /// The sizes of part a body is sent in.
 const PART_BYTES: [u32; 3] = [4 << 10, 64 << 10, MEBIBYTE];
 
-/// What a source sends for each body it is opened for: `parts` parts of `part_bytes` bytes.
+/// What a source sends for each body it is opened for: `parts` parts of `part_bytes` bytes, its length named as
+/// `framing` says.
 #[derive(Debug, Clone, Copy, Plain)]
 #[kind(name = "aether.bench.http.plan")]
 #[settings]
 struct Plan {
     parts: u32,
     part_bytes: u32,
+    framing: Framing,
 }
 
-/// A root that sends each [`OutboundBody`] stream opened on it the same part, as many times as its plan says, a part
-/// for each credit it has.
+/// How a source's body is framed: whether its length is named.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.bench.http.framing")]
+enum Framing {
+    /// Its length not known: written in chunks.
+    #[default]
+    Chunked,
+    /// Its length known: written with its `Content-Length`.
+    Known,
+}
+
+/// A root that answers each request with a body streamed from itself, and sends each [`OutboundBody`] stream opened on
+/// it the same part, as many times as its plan says, a part for each credit it has.
 #[derive(Bound)]
 #[kind(name = "aether.bench.http.source")]
 struct Source {
@@ -71,7 +89,7 @@ impl ChildOf for Source {
 impl Actor for Source {
     type Config = Plan;
     type Key = ();
-    type Handles = (Open<OutboundBody>, More, Enough, Ended);
+    type Handles = (Request<(), ()>, Open<OutboundBody>, More, Enough, Ended);
     type BeginSends = ();
     type EndSends = ();
 
@@ -99,6 +117,30 @@ impl Bootstrap<Headless> for Source {
 
     async fn bootstrap(plan: Plan, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), plan)
+    }
+}
+
+impl Carries<Request<(), ()>> for Source {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<(), ()>> for Source {
+    type Sends = (ToSender<Response>,);
+    type From = FromStack;
+
+    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        let length = match self.plan.framing {
+            Framing::Chunked => ResponseLength::Unknown,
+            Framing::Known => ResponseLength::Known(u64::from(self.plan.parts) * u64::from(self.plan.part_bytes)),
+        };
+        let body = StreamedBody { source: turn.me().protocol(), body: 1, length };
+        let response = Response {
+            status: Status::Ok,
+            headers: vec![Header::new("content-type", "application/octet-stream")],
+            body: ResponseBody::Streamed(body),
+        };
+
+        Ok(turn.reply(&response)?)
     }
 }
 
@@ -172,6 +214,266 @@ impl Receives<Ended> for Source {
     }
 }
 
+/// The bench's stack: its one layer is the source, which handles every request.
+#[derive(Bound)]
+#[kind(name = "aether.bench.http.bench_stack")]
+struct BenchStack {
+    serving: StackServing<Self, (Source,)>,
+}
+
+impl ChildOf for BenchStack {
+    type Parent = Top;
+}
+
+impl Bootstrap<Headless> for BenchStack {
+    const SECTION: &'static str = "bench_stack";
+    type Settings = StackSettings;
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap(
+        settings: StackSettings,
+        (): (),
+        cx: &mut Bootstrapping<'_, Headless, Self>,
+    ) -> Result<(), Unbuilt> {
+        settings.fit(cx)?;
+
+        cx.begin(&(), settings)
+    }
+}
+
+impl Actor for BenchStack {
+    type Config = StackSettings;
+    type Key = ();
+    type Handles = (
+        Answer<Listening, Binding>,
+        Part<Accepting>,
+        Answer<Unbound, Number>,
+        Part<Reading>,
+        Answer<HungUp, Number>,
+        Answer<Wrote, Sending>,
+        Answer<Response, Answering>,
+        Answer<Slept, Deadline>,
+        Gather,
+        Shut,
+        Answer<Outward, ParkedResponse>,
+        Answer<PartStep, ParkedPart>,
+        Open<InboundBody>,
+        More,
+        Enough,
+        Ended,
+        Part<OutboundBody>,
+        Answer<SourceEnd, Number>,
+    );
+    type BeginSends = ListenSends;
+    type EndSends = ();
+
+    fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        let layers: Layers<(Source,)> = layers(turn)?;
+
+        Ok(Self { serving: StackServing::listen(turn, &settings, layers)? })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Stack for BenchStack {}
+
+impl Receives<Answer<Listening, Binding>> for BenchStack {
+    type Sends = ListenSends;
+
+    fn handle(
+        &mut self,
+        listening: (Answered<Listening>, Binding),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        let listened = self.serving.listened(listening, turn)?;
+        if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
+            turn.log(Level::Error, format_args!("no port to serve on: {listened:?}"));
+        }
+
+        Ok(())
+    }
+}
+
+impl Handles<Part<Accepting>> for BenchStack {
+    type Sends = ListenSends;
+    type From = Anyone;
+
+    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.accept(part, turn)
+    }
+}
+
+impl Receives<Answer<Unbound, Number>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        unbound: (Answered<Unbound>, Number),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.unbound(unbound, turn)
+    }
+}
+
+impl Handles<Part<Reading>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.read(part, turn)
+    }
+}
+
+impl Receives<Answer<HungUp, Number>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        hung_up: (Answered<HungUp>, Number),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.hung_up(hung_up, turn)
+    }
+}
+
+impl Receives<Answer<Wrote, Sending>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        wrote: (Answered<Wrote>, Sending),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.wrote(wrote, turn)
+    }
+}
+
+impl Receives<Answer<Response, Answering>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        answered: (Answered<Response>, Answering),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.answered(answered, turn)
+    }
+}
+
+impl Receives<Answer<Slept, Deadline>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        slept: (Answered<Slept>, Deadline),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.slept(slept, turn)
+    }
+}
+
+impl Handles<Gather> for BenchStack {
+    type Sends = GatherSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.gather(gather, turn)
+    }
+}
+
+impl Handles<Shut> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.shut(turn)
+    }
+}
+
+impl Receives<Answer<Outward, ParkedResponse>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        returned: (Answered<Outward>, ParkedResponse),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.returned(returned, turn)
+    }
+}
+
+impl Handles<Open<InboundBody>> for BenchStack {
+    type Sends = ReadSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.open_body(open, turn)
+    }
+}
+
+impl Handles<More> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.grant_body(&more, turn)
+    }
+}
+
+impl Handles<Enough> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.stop_reading(&enough, turn)
+    }
+}
+
+impl Receives<Ended> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.lose_reader(&ended, turn)
+    }
+}
+
+impl Handles<Part<OutboundBody>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+    type From = Anyone;
+
+    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        self.serving.take_part(part, turn)
+    }
+}
+
+impl Receives<Answer<SourceEnd, Number>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        ended: (Answered<SourceEnd>, Number),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.end_source(ended, turn)
+    }
+}
+
+impl Receives<Answer<PartStep, ParkedPart>> for BenchStack {
+    type Sends = StackSends<(Source,)>;
+
+    fn handle(
+        &mut self,
+        passed: (Answered<PartStep>, ParkedPart),
+        turn: &mut Turn<'_, Self, Self::Sends>,
+    ) -> Result<(), Fault> {
+        self.serving.passed(passed, turn)
+    }
+}
+
 /// What one run's client read: the bytes after the head, framing and all, and the nanoseconds from its request written
 /// to the close.
 struct Read {
@@ -209,41 +511,32 @@ fn client(port: u16) -> JoinHandle<Read> {
     })
 }
 
-/// One run: a body of `parts` parts of `part_bytes` bytes, its length `known` or not, with `unsent` the connection's
+/// One run: a body of `parts` parts of `part_bytes` bytes, framed as `framing` says, with `unsent` the connection's
 /// most unsent bytes. Answers what the client read.
-fn run(parts: u32, part_bytes: u32, known: bool, unsent: u32) -> Result<Read, Unheard> {
-    let settings = HttpSettings::default();
+fn run(parts: u32, part_bytes: u32, framing: Framing, unsent: u32) -> Result<Read, Unheard> {
+    let settings = StackSettings::default();
     let engine =
         EngineSettings { read_limit: settings.most_read_bytes().try_into().unwrap_or(u32::MAX), ..Default::default() };
     let tcp = TcpSettings { most_unsent_bytes: unsent, ..TcpSettings::default() };
     let program = Headless::program()
         .with_engine(engine)
         .root_with::<Tcp>(tcp)
-        .root_with::<Http>(settings)
-        .root_with::<Source>(Plan { parts, part_bytes });
+        .root_with::<Source>(Plan { parts, part_bytes, framing })
+        .root_with::<BenchStack>(settings);
     let mut harness = Harness::of(program)?;
-    let http = harness.root::<Http>();
-    let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts: Vec::new() })?;
-    let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
-        panic!("the port is bound");
+    let stack = harness.root::<BenchStack>();
+    let mut bound = None;
+    waiting::until(BUDGET, || {
+        harness.step();
+        bound = harness.state(stack).ok().and_then(|stack| stack.serving.port());
+
+        bound.is_some()
+    });
+    let Some(port) = bound else {
+        panic!("the stack binds its port");
     };
 
     let reading = client(port);
-    let source = harness.root::<Source>();
-    let request = harness.asked::<Request>()?;
-    let length = if known {
-        ResponseLength::Known(u64::from(parts) * u64::from(part_bytes))
-    } else {
-        ResponseLength::Unknown
-    };
-    let body = StreamedBody { source: source.protocol(), body: 1, length };
-    let response = Response {
-        status: Status::Ok,
-        headers: vec![Header::new("content-type", "application/octet-stream")],
-        body: ResponseBody::Streamed(body),
-    };
-    harness.reply(request, &response)?;
     while !reading.is_finished() {
         harness.step();
     }
@@ -264,14 +557,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("part bytes  framing   MiB/s    body");
     for part_bytes in PART_BYTES {
         let parts = u32::try_from(total / u64::from(part_bytes)).unwrap_or(u32::MAX);
-        for known in [false, true] {
-            let runs = (0..3).map(|_| run(parts, part_bytes, known, unsent)).collect::<Result<Vec<_>, _>>();
+        for framing in [Framing::Chunked, Framing::Known] {
+            let runs = (0..3).map(|_| run(parts, part_bytes, framing, unsent)).collect::<Result<Vec<_>, _>>();
             let runs = runs.map_err(|unheard| format!("a run was not heard: {unheard:?}"))?;
             let best = runs.iter().min_by_key(|read| read.nanos).ok_or("three runs ran")?;
-            let framing = if known {
-                "known"
-            } else {
-                "chunked"
+            let named = match framing {
+                Framing::Chunked => "chunked",
+                Framing::Known => "known",
             };
             let whole = if runs.iter().all(|read| read.body_bytes >= total) {
                 "whole"
@@ -279,7 +571,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "cut"
             };
             let rate = f64::from(mebibytes) / (best.nanos.max(1) as f64 / 1e9);
-            println!("{part_bytes:10}  {framing:8} {rate:8.1}    {whole}");
+            println!("{part_bytes:10}  {named:8} {rate:8.1}    {whole}");
         }
     }
 
