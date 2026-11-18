@@ -88,7 +88,7 @@ pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
-pub use guard::{Admits, Anyone, Checks, Guard, Itself, Sender, SenderTypes, Sent, SentBy, Speaks};
+pub use guard::{Admits, Anyone, Checks, Guard, Itself, Sender, SenderType, SenderTypes, Sent, SentBy, Speaks};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
 #[cfg(feature = "std")]
 pub use guests::{Config, config_bytes};
@@ -102,7 +102,7 @@ pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submi
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
 pub use macros::{Guard, Sent, actor, protocol};
-pub use mail::{Mail, MailId};
+pub use mail::{Mail, MailId, SentAs};
 pub use moves::{Behind, HeadMoves, Moves, Standing, Standings};
 pub use path::{
     Beneath, Child, Fits, Follow, HasRoot, Here, HoldsRoot, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed,

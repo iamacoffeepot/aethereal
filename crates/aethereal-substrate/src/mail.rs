@@ -1,10 +1,10 @@
 //! A piece of mail as the engine carries it (ADR-0012).
 
-use aethereal_actor::{Due, MailId, Payload, SeatNumber, Tie, Tied, Time};
+use aethereal_actor::{Due, MailId, Payload, SeatNumber, SentAs, Tie, Tied, Time};
 use aethereal_data::KindId;
 
-/// A piece of mail as the engine carries it: what it is, the seat it comes from, and the chain it belongs to
-/// (ADR-0012).
+/// A piece of mail as the engine carries it: what it is, the seat it comes from and the type its sender sent it as, and
+/// the chain it belongs to (ADR-0012, ADR-0058).
 ///
 /// It holds nothing the engine keeps beside it: the stream's entry names the
 /// actor it is for and the mail's id, its sender and that sender's count. It
@@ -13,6 +13,9 @@ use aethereal_data::KindId;
 pub struct Envelope {
     /// The seat of the actor that sent it.
     pub sender_seat: SeatNumber,
+    /// The type the actor that sent it sent it as, stamped at the send: what a guard reads of the sender where it is
+    /// delivered, whatever the sender has done since (ADR-0058).
+    pub sent_as: SentAs,
     /// The first mail of the chain this one belongs to.
     pub root: MailId,
     /// How far down its chain it is: one more than the mail whose turn sent it.

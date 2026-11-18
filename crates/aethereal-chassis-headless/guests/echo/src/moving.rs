@@ -3,8 +3,8 @@
 //! what its state holds, so a test sees which code ran a turn and what the move carried. When each was asked whether
 //! to move, what it answered, and about which publish, the test reads in the engine's record of its asks.
 
-use crate::Shut;
-use aethereal_actor::{Bytes, Fault, Portability, Turn, Upgrade, Upgrades, actor};
+use crate::{Ping, Pong, Shut};
+use aethereal_actor::{Bytes, Fault, Portability, Speaks, Turn, Upgrade, Upgrades, actor};
 #[cfg(echo_v2)]
 use aethereal_actor::{Portable, TakeOverError};
 use aethereal_data::{Bound, Plain};
@@ -114,6 +114,15 @@ impl Mover {
         let kept = self.kept.iter().map(|blob| u64::try_from(turn.read(blob).len()).unwrap_or(u64::MAX)).sum();
 
         Ok(Report { version: VERSION, count: self.count, first_move: self.first_move(), kept })
+    }
+
+    /// Answers a ping with a pong of the same number, told to its sender: mail one version's code sends that may be
+    /// handed over once the actor has moved onto the next (ADR-0054, ADR-0058).
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong { n: ping.n })?;
+
+        Ok(())
     }
 
     #[tell]

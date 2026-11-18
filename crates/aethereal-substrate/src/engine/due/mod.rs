@@ -6,7 +6,7 @@ mod tests;
 
 use super::{Engine, ROOTS, parity};
 use crate::lives;
-use aethereal_actor::{Due, MailId, Mailed, SeatNumber, Seated, Tie, Time, Unanswered};
+use aethereal_actor::{Due, MailId, Mailed, SeatNumber, Seated, SentAs, Tie, Time, Unanswered};
 use aethereal_data::{ActorId, KindId};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -126,7 +126,17 @@ impl Engine {
             };
             self.lives.fold_records([lives::sent(asker, count)], &[]);
             let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(count));
-            mailed.push(Mailed { by: asker, to: asker, count, kind, bytes, tie, due: Due::Never });
+            // The engine says it of a request, as no actor's code (ADR-0058).
+            mailed.push(Mailed {
+                by: asker,
+                sent_as: SentAs::Engine,
+                to: asker,
+                count,
+                kind,
+                bytes,
+                tie,
+                due: Due::Never,
+            });
         }
         self.arenas[parity][ROOTS] = arena;
         // Each is the first of its chain: nothing the asker did in the step it is brought in caused it.

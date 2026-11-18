@@ -4,7 +4,8 @@
 use super::*;
 use crate::{
     Above, Anyone, Anywhere, Asked, Chain, ChildOf, Due, ErasedActorRef, Fault, Instances, Item, Keeps, Level, Mail,
-    MailId, Mailed, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn, Turning, actor, section,
+    MailId, Mailed, Recursive, Runs, SeatNumber, Seated, SenderType, SentAs, Spawner, Table, Tie, Turn, Turning, actor,
+    section,
 };
 use aethereal_data::{ActorId, ActorPath, Keyed, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -204,7 +205,9 @@ fn handed<A: ChildOf>(actor: A, kind: KindId) -> Vec<String> {
         Tie::TELL,
         Due::Never,
     );
-    let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, OTHER, CHAIN.root, 1, 0);
+    // A keeper takes its mail from anyone, so the type its sender sent it as is never read.
+    let sent_as = SenderType::Stamped(SentAs::Engine);
+    let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, OTHER, sent_as, CHAIN, 0);
     let handled = actor.turn(Item::Mail(mail), turning);
     assert!(handled.is_ok());
 

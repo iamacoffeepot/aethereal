@@ -4,9 +4,9 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actors, Asking, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed, Owed, PinSource,
-    Pinning, Preparing, Refused, Runs, Seated, StateSchema, Tie, Tied, Turning, Unanswered, Upgrade, Upgraded, Why,
-    Written, actor,
+    Actors, Asking, Chain, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed, Owed,
+    PinSource, Pinning, Preparing, Refused, Runs, Seated, SenderType, StateSchema, Tie, Tied, Turning, Unanswered,
+    Upgrade, Upgraded, Why, Written, actor,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -56,6 +56,8 @@ pub struct Arrival {
     bytes: Vec<u8>,
     pins: Vec<Pinning>,
     sender: Seated,
+    /// The type its sender sent it as, stamped at the send (ADR-0058).
+    sender_type: SenderType,
     root: MailId,
     depth: u32,
     reached: Reached,
@@ -67,10 +69,10 @@ impl Arrival {
     fn of(mail: Mail<'_>, reached: Reached, limit: usize) -> Self {
         let mut pins = Vec::new();
         mail.pinned().each(|at, pin| pins.push((at, pin.clone())));
-        let (kind, sender, root, depth) = (mail.kind(), mail.sender_seated(), mail.root(), mail.depth());
-        let bytes = mail.bytes().to_vec();
+        let (kind, sender, sender_type) = (mail.kind(), mail.sender_seated(), mail.sender_type());
+        let (root, depth, bytes) = (mail.root(), mail.depth(), mail.bytes().to_vec());
 
-        Self { kind, bytes, pins, sender, root, depth, reached, limit }
+        Self { kind, bytes, pins, sender, sender_type, root, depth, reached, limit }
     }
 
     /// The id of its kind.
@@ -89,7 +91,9 @@ impl Arrival {
     pub fn read<K: Kind + Decode<Actors>>(&self) -> Result<Option<K>, DecodeError> {
         let pins = PinSource::lying(&self.bytes, &self.pins);
 
-        Mail::new(self.kind, &self.bytes, &pins, self.sender, self.root, self.depth, self.limit).read()
+        let chain = Chain { root: self.root, depth: self.depth };
+
+        Mail::new(self.kind, &self.bytes, &pins, self.sender, self.sender_type, chain, self.limit).read()
     }
 }
 
@@ -408,7 +412,8 @@ impl Engine {
         let count = self.sent(by) + 1;
         self.lives.fold_records([lives::sent(by, count)], &[]);
         // The outside states no deadline (ADR-0041).
-        let mailed = Mailed { by, to, count, kind: KindId::of::<K>(), bytes, tie: tie(count), due: Due::Never };
+        let (sent_as, kind) = (self.sent_as(by), KindId::of::<K>());
+        let mailed = Mailed { by, sent_as, to, count, kind, bytes, tie: tie(count), due: Due::Never };
         self.fold_brought(vec![mailed], Vec::new(), parity, |mailed| MailId {
             sender: mailed.by.id,
             count: mailed.count,

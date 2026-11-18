@@ -167,6 +167,59 @@ impl Lookout {
     }
 }
 
+/// A word to the pinger to ping the mover with `n`.
+#[derive(Plain)]
+#[kind(name = "aether.test.call")]
+struct Call {
+    n: u64,
+}
+
+/// A question to the pinger: which pongs has it taken?
+#[derive(Plain)]
+#[kind(name = "aether.test.taken")]
+struct Taken;
+
+/// What the pinger answers a question of what it took with: the number of each pong, oldest first.
+#[derive(Plain)]
+#[kind(name = "aether.test.pongs")]
+struct Pongs {
+    numbers: Vec<u64>,
+}
+
+/// A native root that pings the mover when told to, and takes a pong only from a mover of the type this program names,
+/// the echo's first build: its guard reads the type each pong was sent as (ADR-0058).
+#[derive(Plain)]
+#[kind(name = "aether.test.pinger")]
+struct Pinger {
+    taken: Vec<u64>,
+}
+
+#[actor(depends(echo::Mover))]
+impl Pinger {
+    fn begin(pinger: Self) -> Result<Self, Fault> {
+        Ok(pinger)
+    }
+
+    #[tell]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.to(path::<echo::Mover>(())).send(&echo::Ping { n: call.n })?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn pong(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self, ActorRef<echo::Mover>>) -> Result<(), Fault> {
+        self.taken.push(pong.n);
+
+        Ok(())
+    }
+
+    #[request]
+    fn taken(&mut self, _: Taken) -> Result<Pongs, Fault> {
+        Ok(Pongs { numbers: self.taken.clone() })
+    }
+}
+
 /// A program a test runs: its harness, its guest root, the library, and the blobs of the echo's second build.
 struct Program<A> {
     harness: Harness<Bench>,
@@ -179,10 +232,20 @@ struct Program<A> {
 /// `config`, the library holding the engine's publisher, and `seconds` blobs of the echo's second build put as code,
 /// each its own blob, for the library to publish. Its harness, the root, the library, and the second build's blobs.
 fn program<A: Root + Actor<Key = ()>>(config: &A::Config, seconds: usize) -> Result<Program<A>, Unheard> {
+    program_fusing(config, seconds, 64)
+}
+
+/// The program [`program`] makes, whose parts each run at most `hops` fused hops a step: with none, each piece of mail
+/// is handled in a step after the one it was sent in.
+fn program_fusing<A: Root + Actor<Key = ()>>(
+    config: &A::Config,
+    seconds: usize,
+    hops: usize,
+) -> Result<Program<A>, Unheard> {
     let Some(parts) = NonZeroUsize::new(2) else {
         panic!("two is not zero");
     };
-    let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 23, 64).with_guests(Arc::new(Runtime::default())).ready();
+    let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 23, hops).with_guests(Arc::new(Runtime::default())).ready();
     let Ok(first) = engine.put_code(ECHO.to_vec()) else {
         panic!("the echo guest is fit to run");
     };
@@ -270,6 +333,42 @@ fn lines<A>(harness: &mut Harness<Bench>, actor: ActorRef<A>, level: Level) -> V
 /// why no report came.
 fn handled(report: Result<echo::Report, Unanswered>) -> Result<(u64, u64), Unanswered> {
     report.map(|report| (report.version, report.count))
+}
+
+#[test]
+fn mail_a_guest_sent_before_it_moved_is_checked_as_the_type_that_sent_it() -> Result<(), Unheard> {
+    // Catches a guard that reads the sender's type from the table where its mail is delivered: the mover's pong, sent
+    // by its first version, is handed over after the mover has moved onto a second whose state's layout, and so its
+    // type's id, differs, and such a guard refuses it as no mover of the type the pinger names.
+    let Program { mut harness, guest: mover, library, second } =
+        program_fusing::<echo::Mover>(&echo::MoverConfig { holds: false }, 1, 0)?;
+    harness.add_root::<Pinger>(&(), Pinger { taken: Vec::new() })?;
+    let pinger = harness.root::<Pinger>();
+    harness.tell(pinger, &Call { n: 7 })?;
+    harness.step();
+    let blob = second[0].clone();
+    harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
+
+    let ponged = harness.step_turns();
+    let asked_as_it_ponged = asks(&mut harness, mover);
+    let handed = harness.step_turns();
+    let asked = harness.ask(pinger, &Taken)?;
+    let taken = match harness.answer(asked)? {
+        Answered::Yes(pongs) => Ok(pongs.numbers),
+        Answered::No(why) => Err(why),
+    };
+    let on_head = handled(probe(&mut harness, mover)?);
+
+    assert_eq!(turns_of(&ponged, mover), 1, "the mover pongs on its first version, in the step its head moves");
+    assert_eq!(
+        asked_as_it_ponged,
+        [(Upgrade::Now, 1)],
+        "it moved as that step ended, with no mail, before its pong was handed over"
+    );
+    assert_eq!(turns_of(&handed, pinger), 1, "the pong is handed over in the next step");
+    assert_eq!(taken, Ok(vec![7]), "the pinger's guard admits the pong as sent by the first version");
+    assert_eq!(on_head, Ok((2, 1)), "the mover runs its second version");
+    Ok(())
 }
 
 #[test]

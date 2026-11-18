@@ -752,9 +752,9 @@ impl View for Streams {
 /// envelope.
 #[must_use]
 pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
-    let Mailed { by, to, count, kind, bytes, tie, due } = mailed;
+    let Mailed { by, sent_as, to, count, kind, bytes, tie, due } = mailed;
     let (root, depth, tying) = (context.root, context.depth, Tying::of(tie, due));
-    let envelope = Envelope { sender_seat: by.seat, root, depth, kind, bytes, tying };
+    let envelope = Envelope { sender_seat: by.seat, sent_as, root, depth, kind, bytes, tying };
     let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
 
     (to.seat.number(), entry)

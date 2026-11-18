@@ -627,8 +627,8 @@ impl Node {
         Ok(Self { number: config.number, leaving: config.leaving, found: Vec::new() })
     }
 
-    /// A node takes notes from anyone, a child in its closing turn among them, which no guard that reads the table admits
-    /// once the child is gone: so what it sends back goes through a cast of the sender to what it sends.
+    /// A node takes notes from anyone: itself, its parent, and its children, from their closing turns among the rest.
+    /// What it sends back goes through a cast of the sender to what it sends.
     #[tell]
     fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {

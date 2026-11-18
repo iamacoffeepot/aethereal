@@ -18,7 +18,7 @@ mod tests;
 
 pub use call::{Admits, CasesSentBy, SentBy};
 pub use library::{Anyone, Child, Itself, Parent, Speaks};
-pub use sender::Sender;
+pub use sender::{Sender, SenderType};
 
 use aethereal_data::KindId;
 

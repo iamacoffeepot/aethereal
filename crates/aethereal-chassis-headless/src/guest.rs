@@ -25,8 +25,8 @@ use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
     Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused,
-    Request, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade, Upgraded, Was, Why,
-    Written, holders, take_loose_ticket,
+    Request, Runs, SeatNumber, Seated, Seats, SenderType, SentAs, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade,
+    Upgraded, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
@@ -123,6 +123,10 @@ struct Instance {
     actors: Vec<Seated>,
     /// The pins its actors hold on blobs: dropped with it, as a trap drops it (ADR-0014).
     holdings: Holdings,
+    /// The type the sender of each item of the batch handed in last sent it as, stamped at the send, by the item's
+    /// place in the batch: kept for the call that runs the batch to answer its guest from, and its room kept for the
+    /// next batch (ADR-0058).
+    sent_as: Vec<SenderType>,
 }
 
 /// The pins an instance's actors hold on blobs, by blob: how many references to each the instance holds, and one pin
@@ -165,6 +169,9 @@ struct Answering<'a> {
     given: &'a mut Given,
     /// The pins the call's instance holds, as the call began.
     holdings: &'a Holdings,
+    /// The type the sender of each item of the batch the call runs sent it as, stamped at the send, by the item's place
+    /// in the batch: what the guest asks of a sender a guard checks (ADR-0058). Empty for a call that runs no batch.
+    sent_as: &'a [SenderType],
     /// What the actor whose turns or `begin` the call runs holds of resources, which a child of other code it spawns
     /// may be handed in its config (ADR-0010), and the buffers it keeps, which what it puts is copied into (ADR-0042).
     holds: Holds<'a>,
@@ -490,12 +497,39 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     linker.func_wrap("aethereal", "aethereal_now", |mut caller: Caller<'_, Lending>| {
         answer(&mut caller, |answering| answering.table.now().nanos())
     })?;
-    linker.func_wrap("aethereal", "aethereal_is_of", |mut caller: Caller<'_, Lending>, id: u64, actor_type: u64| {
-        let actor_type = from_bytes::<KindId>(&actor_type.to_le_bytes(), &mut Budget::new(8));
-        answer(&mut caller, |answering| {
-            u32::from(actor_type.is_ok_and(|actor_type| answering.table.is_of(ActorId::new(id), actor_type)))
-        })
-    })?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_sent_is",
+        |mut caller: Caller<'_, Lending>, item: u32, actor_type: u64| {
+            let actor_type = from_bytes::<KindId>(&actor_type.to_le_bytes(), &mut Budget::new(8));
+            // An id that does not read back, or an item past the batch, is sent as no type.
+            answer(&mut caller, |answering| {
+                let Ok(actor_type) = actor_type else {
+                    return 0;
+                };
+                let is = answering.sender_type(item).is_some_and(|sender_type| sender_type.is(actor_type));
+
+                u32::from(is)
+            })
+        },
+    )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_sent_lists",
+        |mut caller: Caller<'_, Lending>, item: u32, at: u32, len: u32| {
+            let kinds = guest_bytes(&mut caller, Span { at, len });
+            let kinds = kinds.and_then(|kinds| from_bytes::<Vec<KindId>>(&kinds, &mut Budget::new(1 << 10)).ok());
+            // Ids that do not read back, or an item past the batch, are listed by no type.
+            answer(&mut caller, |answering| {
+                let Some(kinds) = kinds else {
+                    return 0;
+                };
+                let lists = answering.sender_type(item).is_some_and(|sender_type| sender_type.lists_all(&kinds));
+
+                u32::from(lists)
+            })
+        },
+    )?;
     linker.func_wrap("aethereal", "aethereal_runs_stage", |mut caller: Caller<'_, Lending>, stage: u64| {
         let stage = from_bytes::<KindId>(&stage.to_le_bytes(), &mut Budget::new(8));
         answer(&mut caller, |answering| u32::from(stage.is_ok_and(|stage| answering.table.runs_stage(stage))))
@@ -656,12 +690,20 @@ impl<'a> Answering<'a> {
         instances: &'a mut Instances,
         code: &'a Code,
         given: &'a mut Given,
-        holdings: &'a Holdings,
+        (holdings, sent_as): (&'a Holdings, &'a [SenderType]),
         me: Seated,
     ) -> Self {
         let (codes, types) = (&code.codes, &*code.types);
 
-        Self { table, made, seats, puts, instances, codes, types, given, holdings, holds, me, most_kept_bytes }
+        Self { table, made, seats, puts, instances, codes, types, given, holdings, sent_as, holds, me, most_kept_bytes }
+    }
+
+    /// The type the sender of the `item`th item of the batch the call runs sent it as: none past the batch's last
+    /// item, or in a call that runs no batch.
+    fn sender_type(&self, item: u32) -> Option<SenderType> {
+        let index = usize::try_from(item).ok()?;
+
+        self.sent_as.get(index).copied()
     }
 
     /// Whether the actor at `path` stands beneath a root of a type one of the call's code's types depends on: what a
@@ -1066,6 +1108,7 @@ impl Instance {
             inbox_room: 0,
             actors: Vec::new(),
             holdings: Holdings::default(),
+            sent_as: Vec::new(),
         }
     }
 }
@@ -1174,7 +1217,8 @@ impl Guests for Runtime {
         let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
         let mut given = Given { offered, ..Given::default() };
         let mut holdings = mem::take(&mut held.holdings);
-        let mut answering = Answering::of(reads, instances, code, &mut given, &holdings, me);
+        // A `begin` runs no batch, so no sender's type is asked of it.
+        let mut answering = Answering::of(reads, instances, code, &mut given, (&holdings, &[]), me);
         let began = held.begin(of, me, &handed, &mut answering);
         let began = began.and_then(|began| held.take_pins(&began.1, &mut holdings, &given).map(|()| began));
         let began = began.and_then(|began| held.take_holders(&began.1, &[me]).map(|()| began));
@@ -1474,10 +1518,12 @@ impl Runs for Guest {
         };
         let (items, len) = held.hand_in(batch, &mut self.given.offered);
         let mut holdings = mem::take(&mut held.holdings);
+        let sent_as = mem::take(&mut held.sent_as);
         let Reads { table, made, seats, puts, holds, most_kept_bytes } = reads;
         let lent = Reads { table, made, seats: &mut *seats, puts, holds, most_kept_bytes };
         let code = &self.running.code;
-        let mut answering = Answering::of(lent, &mut *instances, code, &mut self.given, &holdings, self.me);
+        let lending_with = (&holdings, &sent_as[..]);
+        let mut answering = Answering::of(lent, &mut *instances, code, &mut self.given, lending_with, self.me);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
@@ -1488,6 +1534,7 @@ impl Runs for Guest {
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
         held.holdings = holdings;
+        held.sent_as = sent_as;
         instances.put_back(self.running.code.key, held);
         self.ran = match wrote {
             Ok(wrote) => Ran::At { head: wrote, next: 0, before: TurnEnds::default() },
@@ -1582,7 +1629,9 @@ impl Runs for Guest {
         let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
         let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
         let reads = Reads { table, made: &(), seats, puts, holds, most_kept_bytes };
-        let mut answering = Answering::of(reads, instances, &self.running.code, &mut given, &holdings, self.me);
+        // A closing turn runs no batch, so no sender's type is asked of it.
+        let lent = (&holdings, &[][..]);
+        let mut answering = Answering::of(reads, instances, &self.running.code, &mut given, lent, self.me);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
@@ -1928,9 +1977,17 @@ impl Instance {
     fn hand_in(&mut self, batch: &dyn Batch, offered: &mut Vec<Bytes>) -> (u32, u32) {
         let mut items = 0;
         let mut len = 0;
+        self.sent_as.clear();
         batch.each(&mut |peeked| {
             peeked.item.pinned().each(|_, pin| offered.push(pin.clone()));
             items += 1;
+            // The guest asks of an item's sender by the item's place in the batch, so an ending, which no actor sent as
+            // mail, keeps its place as the engine's own.
+            let sender_type = match &peeked.item {
+                Item::Mail(mail) | Item::Answer { mail, .. } | Item::Unanswered { mail, .. } => mail.sender_type(),
+                Item::Ended(_) => SenderType::Stamped(SentAs::Engine),
+            };
+            self.sent_as.push(sender_type);
             let (handed, bytes) = match &peeked.item {
                 Item::Mail(mail) => (handed_mail(mail.kind(), peeked.tie, peeked.due), mail.bytes()),
                 Item::Ended(ended) => match ended.how() {

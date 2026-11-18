@@ -4,7 +4,7 @@
 use super::{Itself, Parent};
 use crate::{
     Above, ActorRef, Asked, Chain, ChildOf, Declared, Due, Effect, Fault, Guard, Instances, Item, Keeps, Level, Mail,
-    MailId, Runs, SeatNumber, Seated, Table, Tie, Turn, Turning, Unreadable, What, actor,
+    MailId, Runs, SeatNumber, Seated, SenderType, SentAs, Table, Tie, Turn, Turning, Unreadable, What, actor,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -151,11 +151,13 @@ fn handed(kind: KindId, from: Seated) -> Handed {
 }
 
 /// What `actor`, seated where the door is, beneath `HALL`, did with mail of `kind` from `from`, with every actor here in
-/// the table, and a door beside it.
+/// the table, and a door beside it. The mail is stamped as sent by the type `from` is of here, or by none for an actor
+/// not here.
 fn handed_to<A: ChildOf>(actor: A, kind: KindId, from: Seated) -> Handed {
     let hall = Declared::of::<Hall>();
     let door = Declared::of::<Door>();
     let table = Typed(vec![(HALL, hall), (OTHER_HALL, hall), (DOOR, Declared::of::<A>()), (SIBLING, door)]);
+    let sent_as = table.declared(from.id).map_or(SentAs::Engine, SentAs::Actor);
     let mut asked = Asked::new();
     let mut actor: Box<dyn Runs> = Box::new(actor);
     let mut instances = Instances::default();
@@ -176,7 +178,7 @@ fn handed_to<A: ChildOf>(actor: A, kind: KindId, from: Seated) -> Handed {
         Tie::TELL,
         Due::Never,
     );
-    let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, from, chain.root, 1, 0);
+    let mail = Mail::new(kind, &[], &crate::PinSource::NOTHING, from, SenderType::Stamped(sent_as), chain, 0);
     let turned = actor.turn(Item::Mail(mail), turning);
     assert!(turned.is_ok(), "a refusal does not fail the turn");
 

@@ -7,7 +7,7 @@ use super::ask::{self, Answering};
 use super::fuse::Hop;
 use crate::stream::{self, Handed, Pieces};
 use crate::{Context, Envelope};
-use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, PinSource};
+use aethereal_actor::{Arena, Batch, Chain, Item, Mail, Peeked, PinSource, SenderType};
 use std::iter;
 
 /// A batch of one actor's waiting items: `first`, and after it as many of `rest` as make
@@ -49,9 +49,10 @@ pub(super) fn read<'a>(
 ) -> (Item<'a>, Context) {
     let source = handed.source();
     match handed {
-        Handed::Mail { envelope: &Envelope { kind, root, depth, .. }, bytes, .. } => {
+        Handed::Mail { envelope: &Envelope { kind, sent_as, root, depth, .. }, bytes, .. } => {
             let bytes = stream::read(bytes, reading.mail, carried);
-            let mail = Mail::new(kind, bytes, pins, source, root, depth, reading.read_limit);
+            let sender_type = SenderType::Stamped(sent_as);
+            let mail = Mail::new(kind, bytes, pins, source, sender_type, Chain { root, depth }, reading.read_limit);
 
             (ask::item(mail, answering), Context { root, depth: depth + 1 })
         }
@@ -84,8 +85,9 @@ impl Batch for OneHop<'_, '_> {
         }
         let bytes = self.lists.fusing.bytes(hop);
         let pins = PinSource::copied(bytes, self.arena.pinned(hop.sent));
-        let mail = Mail::new(hop.kind, bytes, &pins, hop.from, hop.root, hop.depth, self.reading.read_limit);
         let chain = Chain { root: hop.root, depth: hop.depth };
+        let sender_type = SenderType::Stamped(hop.sent_as);
+        let mail = Mail::new(hop.kind, bytes, &pins, hop.from, sender_type, chain, self.reading.read_limit);
         visit(Peeked { item: ask::item(mail, answering), source: hop.from, chain, tie: hop.tie, due: hop.due });
     }
 }
