@@ -24,6 +24,19 @@ pub trait Table {
     /// reaches at each send.
     fn reach(&self, path: &ActorPath, kind: KindId) -> Seated;
 
+    /// The actor `path` names, and its seat, when one of kind `kind` is live there: none when nothing live stands
+    /// there, or an actor of another kind does, as [`Self::reach`] reads it (ADR-0022).
+    fn found(&self, path: &ActorPath, kind: KindId) -> Option<Seated> {
+        let reached = self.reach(path, kind);
+
+        (reached.seat != SeatNumber::NOWHERE).then_some(reached)
+    }
+
+    /// Whether an actor of kind `kind` is live at `path`, as [`Self::found`] finds it (ADR-0022).
+    fn holds(&self, path: &ActorPath, kind: KindId) -> bool {
+        self.found(path, kind).is_some()
+    }
+
     /// The child `segment` names beneath the actor `parent` stands for, and its seat, when one of kind `kind` is live
     /// there, as a resolve sees it (ADR-0022). What `turn.child` reads, in one call out from a guest.
     fn reach_child(&self, parent: ActorId, segment: &PathSegment, kind: KindId) -> Option<Seated>;
