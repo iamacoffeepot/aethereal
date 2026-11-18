@@ -38,6 +38,7 @@ impl Actor for Minimap {
     type Key = u64;
     type Handles = (Resize,);
     type Depends = crate::depends!();
+    type Spawns = ();
 
     fn begin(minimap: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(minimap)

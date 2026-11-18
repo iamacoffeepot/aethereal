@@ -98,6 +98,7 @@ impl Actor for Spawned {
     type Handles =
         (Answer<Launched, Fetching>, Answer<Started, Booting>, Answer<Slept, Patience>, Exited, LinkedAs, Stop);
     type Depends = (Store, Processes);
+    type Spawns = ();
 
     /// Asks the store for a launch copy of its binary.
     fn begin(config: SpawnedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

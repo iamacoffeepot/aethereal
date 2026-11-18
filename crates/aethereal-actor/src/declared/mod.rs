@@ -1,25 +1,30 @@
-//! What an actor type declares: what it handles, and what it reaches by typed path (ADR-0013, ADR-0059).
+//! What an actor type declares: what it handles, what it reaches by typed path, and what it spawns (ADR-0013,
+//! ADR-0059).
 //!
 //! An author writes the declaration as types: one [`Handles`] impl for each
 //! kind an actor handles, the handled kinds as a tuple on the
-//! [`Actor`](crate::Actor), and the types it reaches by typed path as its
-//! `Depends`. Each send is checked at its call against what it is sent
+//! [`Actor`](crate::Actor), the types it reaches by typed path as its
+//! `Depends`, and the types it spawns as its `Spawns`. Each send is checked at its call against what it is sent
 //! through, and a watch builds only for an actor whose type handles endings.
 //! The engine reads the same declaration as the plain data here, made from
 //! those types when the program is built.
 
 mod depends;
 mod handles;
+mod list;
 mod lists;
 mod protocols;
+mod spawns;
 mod state;
 #[cfg(test)]
 mod tests;
 
 pub use depends::{Depends, DependsOn, Last, RootIs, RootsHold};
 pub use handles::{Handled, HandledList, Handles, Others, Reached, Received, Receives, Untaken};
+pub use list::{Down, Each, Many, One, Pick, Through, TypeList, Whole};
 pub use lists::{At, Lists};
 pub use protocols::{CarriedBy, Carries, Conforms, Covers, HandledBy, Kinds, Listed, Protocol};
+pub use spawns::Spawns;
 pub use state::StateSchema;
 
 use crate::{ChildOf, Placement, Spawner, TypeSegment};
@@ -27,7 +32,7 @@ use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
 /// What an actor type declares, as the engine reads it: its name, its state's schema, what it reaches by typed path,
-/// and what it handles (ADR-0013, ADR-0054, ADR-0059).
+/// what it spawns, and what it handles (ADR-0013, ADR-0054, ADR-0059).
 #[derive(Debug)]
 pub struct Declared {
     name: KindName,
@@ -42,6 +47,8 @@ pub struct Declared {
     spawner: Spawner,
     /// The last segment of the typed path to each type it depends on: what it reaches by typed path (ADR-0059).
     depends: &'static [&'static TypeSegment],
+    /// The kind of each type it spawns: what a guest's host checks each spawn its turn makes against (ADR-0059).
+    spawns: &'static [KindId],
     /// Each thing it handles.
     handlers: &'static [Handler],
     /// Which kinds a reference to it may be cast to.
@@ -60,9 +67,10 @@ enum Takes {
 
 impl Declared {
     /// The declaration of the type named `name`, of id `id`, whose state is of the schema `state`, keyed as `keyed`,
-    /// that `spawner` may spawn, which depends on the types whose typed paths end in `depends`, and handles
-    /// `handlers`.
+    /// that `spawner` may spawn, which depends on the types whose typed paths end in `depends`, spawns the types of
+    /// the kinds `spawns`, and handles `handlers`.
     #[must_use]
+    #[allow(clippy::too_many_arguments, reason = "each is one part of what a type declares, as the engine reads it")]
     pub const fn new(
         name: KindName,
         id: KindId,
@@ -70,9 +78,10 @@ impl Declared {
         keyed: Keyed,
         spawner: Spawner,
         depends: &'static [&'static TypeSegment],
+        spawns: &'static [KindId],
         handlers: &'static [Handler],
     ) -> Self {
-        Self { name, id, state, keyed, spawner, depends, handlers, takes: Takes::Listed }
+        Self { name, id, state, keyed, spawner, depends, spawns, handlers, takes: Takes::Listed }
     }
 
     /// The declaration of the root type named `name`, of id `id`, whose state is of the schema `state`, that handles
@@ -81,7 +90,7 @@ impl Declared {
     pub const fn taking_every_kind(name: KindName, id: KindId, state: StateSchema) -> Self {
         let (keyed, spawner, takes) = (Keyed::Singleton, Spawner::Nobody, Takes::Every);
 
-        Self { name, id, state, keyed, spawner, depends: &[], handlers: &[], takes }
+        Self { name, id, state, keyed, spawner, depends: &[], spawns: &[], handlers: &[], takes }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -136,6 +145,19 @@ impl Declared {
     #[must_use]
     pub const fn depends(&self) -> &'static [&'static TypeSegment] {
         self.depends
+    }
+
+    /// The kind of each type it spawns (ADR-0059).
+    #[must_use]
+    pub const fn spawns(&self) -> &'static [KindId] {
+        self.spawns
+    }
+
+    /// Whether it lists the type of kind `kind` among what it spawns: what a guest's host checks a spawn its turn
+    /// makes by, as a native spawn is checked where it is built (ADR-0059).
+    #[must_use]
+    pub fn spawns_kind(&self, kind: KindId) -> bool {
+        self.spawns.contains(&kind)
     }
 
     /// Whether the actor at `path`, whose root is the first of its segments, stands beneath a root of a type it
@@ -222,13 +244,14 @@ impl PartialEq for Declared {
     /// Whether the two declare the same: all but the names in their states' schemas, which a spawn does not read, as
     /// each id holds its state's layout (ADR-0006).
     fn eq(&self, other: &Self) -> bool {
-        let Self { name, id, state: _, keyed, spawner, depends, handlers, takes } = self;
+        let Self { name, id, state: _, keyed, spawner, depends, spawns, handlers, takes } = self;
 
         *name == other.name
             && *id == other.id
             && *keyed == other.keyed
             && *spawner == other.spawner
             && *depends == other.depends
+            && *spawns == other.spawns
             && *handlers == other.handlers
             && *takes == other.takes
     }
@@ -247,6 +270,7 @@ impl<A: ChildOf> Of<A> {
         <A::Key as ActorKey>::KEYED,
         <A::Parent as Placement>::SPAWNER,
         <A::Depends as Depends>::CHAINS,
+        <A::Spawns as Spawns>::KINDS,
         <A::Handles as HandledList<A>>::HANDLERS,
     )
     .checked();

@@ -29,6 +29,7 @@
 //! #             type Key = $key;
 //! #             type Handles = (Note,);
 //! #             type Depends = $depends;
+//! #             type Spawns = ();
 //! #
 //! #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 //! #                 Ok(root)
@@ -88,6 +89,7 @@
 //! #             type Key = ();
 //! #             type Handles = (Note,);
 //! #             type Depends = $depends;
+//! #             type Spawns = ();
 //! #
 //! #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 //! #                 Ok(root)
@@ -117,6 +119,7 @@
 //! ready(PhantomData::<(Lighthouse, (Lookout, ()))>);
 //! ```
 
+use crate::declared::{Each, Many, One, TypeList};
 use crate::{Actor, ChildOf, Top};
 use aethereal_data::{ActorKey, Instanced, Singleton};
 use core::marker::PhantomData;
@@ -154,7 +157,7 @@ impl<L, S> Placed<L, S, ()> for (Top, Instanced) {}
 
 impl<L, S, P: Actor, K> Placed<L, S, ()> for (P, K) {}
 
-/// Each type of a root's `Depends`, a tuple of them, is placed among the roots `S` made before it, each at its place in
+/// Each type of a root's `Depends`, a list of them, is placed among the roots `S` made before it, each at its place in
 /// `I`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` names a root not made before the root that depends on it",
@@ -163,7 +166,21 @@ impl<L, S, P: Actor, K> Placed<L, S, ()> for (P, K) {}
 )]
 pub trait NeedsIn<S, I> {}
 
-impl<S> NeedsIn<S, ()> for () {}
+impl<S, L: TypeList, I> NeedsIn<S, I> for L where L::Form: NeedsBy<L, S, I> {}
+
+/// The list `L` of what a root depends on, of this form, is placed among the roots `S` made before it, at `I`.
+pub trait NeedsBy<L, S, I> {}
+
+impl<L: ChildOf, S, I> NeedsBy<L, S, I> for One where (L::Parent, <L::Key as ActorKey>::Keying): Placed<L, S, I> {}
+
+impl<L: NeedsEach<S, I>, S, I> NeedsBy<L, S, I> for Many {}
+
+/// Each entry of this list of many, of what a root depends on, is placed among the roots `S` made before it, at `I`.
+pub trait NeedsEach<S, I> {}
+
+impl<S> NeedsEach<S, ()> for () {}
+
+impl<S, L: NeedsIn<S, I>, I> NeedsEach<S, I> for Each<L> {}
 
 /// The root `A` is made after the roots `S`, which hold each singleton root it depends on, at `I`.
 pub trait MadeAfter<S, I> {}
@@ -179,11 +196,7 @@ impl<R: MadeAfter<S, IR>, S: Ordered<IS>, IR, IS> Ordered<(IR, IS)> for (R, S) {
 
 macro_rules! tuples {
     ($( [$($name:ident $is:ident)*] )*) => {$(
-        impl<S, $($name: ChildOf, $is),*> NeedsIn<S, ($($is,)*)> for ($($name,)*)
-        where
-            $(($name::Parent, <$name::Key as ActorKey>::Keying): Placed<$name, S, $is>,)*
-        {
-        }
+        impl<S, $($name: NeedsIn<S, $is>, $is),*> NeedsEach<S, ($($is,)*)> for ($($name,)*) {}
     )*};
 }
 

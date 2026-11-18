@@ -294,6 +294,7 @@ impl Actor for Starter {
     type Key = ();
     type Handles = (Exited, Leave);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -396,6 +397,7 @@ impl Actor for Reader {
     type Key = ();
     type Handles = (Follow, Part<Reading>, Answer<HungUp, Number>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {

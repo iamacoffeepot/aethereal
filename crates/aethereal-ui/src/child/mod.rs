@@ -39,7 +39,7 @@ pub type Resizes = (Resize,);
 /// time it builds, so a tree whose children stand as they stood compares equal and is skipped.
 ///
 /// ```
-/// use aethereal_actor::{Actor, Beginning, ChildOf, Fault, Top, child};
+/// use aethereal_actor::{Actor, Beginning, ChildOf, Fault, Spawn, Top, child};
 /// use aethereal_data::{Bound, Plain};
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
@@ -88,6 +88,7 @@ pub type Resizes = (Resize,);
 ///     type Key = ();
 ///     type Handles = aethereal_ui::handles![];
 ///     type Depends = aethereal_ui::depends!();
+///     type Spawns = (Minimap,);
 ///
 ///     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         let Ok(spawned) = turn.spawn::<Minimap>(&(), frame) else {
@@ -109,6 +110,7 @@ pub type Resizes = (Resize,);
 /// #     type Key = ();
 /// #     type Handles = aethereal_ui::handles![];
 /// #     type Depends = aethereal_ui::depends!();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;

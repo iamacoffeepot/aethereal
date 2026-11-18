@@ -88,6 +88,7 @@ impl Actor for StoreTools {
     type Key = ();
     type Handles = (Call, Answer<CheckedIn, Asking>, Answer<Stored, Asking>, Answer<Pinned, Asking>);
     type Depends = (Store,);
+    type Spawns = ();
 
     fn begin(_: StoreToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

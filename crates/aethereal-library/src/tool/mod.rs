@@ -73,6 +73,7 @@ impl Actor for LibraryTool {
     type Key = ();
     type Handles = (Call, Answer<ModulePublished, Calling>);
     type Depends = (Library,);
+    type Spawns = ();
 
     fn begin(_: LibraryToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

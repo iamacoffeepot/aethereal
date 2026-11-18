@@ -2,8 +2,8 @@
 //! its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Ending, Fault,
-    Handles, ProtocolRef, Receives, Top, Turn, Unanswered, path,
+    Actor, ActorName, ActorRef, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef,
+    Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
@@ -32,6 +32,8 @@ use std::{env, fs, process};
 
 mod stacks;
 
+use aethereal_process::Processes;
+use aethereal_store::{Store, StoreSettings};
 use stacks::{bound, stack};
 
 /// What the test's tools read.
@@ -72,6 +74,7 @@ impl Actor for Once {
     type Key = ();
     type Handles = (Call,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: OnceConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -877,6 +880,7 @@ macro_rules! listed {
             type Key = ();
             type Handles = (Call,);
             type Depends = ();
+            type Spawns = ();
 
             fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self)
@@ -916,66 +920,24 @@ listed!(Say1, "aether.test.say1", "say");
 listed!(Say2, "aether.test.say2", "say");
 listed!(Other, "aether.test.other", "other");
 
-/// A root with no place in any program of this test, for a tool to reach.
+/// A tool whose `begin` refuses, so its toolbox's spawn of it is refused.
 #[derive(Debug, Plain)]
-#[kind(name = "aether.test.absent")]
-struct Absent;
+#[kind(name = "aether.test.unbegun")]
+struct Unbegun;
 
-/// What is asked of [`Absent`].
-#[derive(Debug, Plain)]
-#[kind(name = "aether.test.absent_ask")]
-struct AbsentAsk;
-
-impl ChildOf for Absent {
-    type Parent = Top;
-}
-
-impl Carries<AbsentAsk> for Absent {
-    type Answers = (AbsentAsk,);
-}
-
-impl Actor for Absent {
-    type Config = ListedConfig;
-    type Key = ();
-    type Handles = (AbsentAsk,);
-    type Depends = ();
-
-    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<AbsentAsk> for Absent {
-    type From = Anyone;
-
-    fn handle(&mut self, _: AbsentAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&AbsentAsk)?;
-
-        Ok(())
-    }
-}
-
-/// A tool that reaches a root the program does not have.
-#[derive(Debug, Plain)]
-#[kind(name = "aether.test.reaching")]
-struct Reaching;
-
-impl ChildOf for Reaching {
+impl ChildOf for Unbegun {
     type Parent = Anywhere;
 }
 
-impl Actor for Reaching {
+impl Actor for Unbegun {
     type Config = ListedConfig;
     type Key = ();
-    type Handles = (Call, Answer<AbsentAsk, ListedConfig>);
-    type Depends = (Absent,);
+    type Handles = (Call,);
+    type Depends = ();
+    type Spawns = ();
 
     fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        Ok(Self)
+        Err(Fault::new(&Self)?)
     }
 
     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
@@ -983,26 +945,19 @@ impl Actor for Reaching {
     }
 }
 
-impl Handles<Call> for Reaching {
+impl Handles<Call> for Unbegun {
     type From = Anyone;
 
     fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.to(path::<Absent>(())).ask(&AbsentAsk, &ListedConfig)?;
         turn.reply(&Called::Refused(String::new()))?;
 
         Ok(())
     }
 }
 
-impl Receives<Answer<AbsentAsk, ListedConfig>> for Reaching {
-    fn handle(&mut self, _: (Answered<AbsentAsk>, ListedConfig), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for Reaching {
+impl Tool for Unbegun {
     fn sheets() -> Vec<ToolSheet> {
-        vec![sheet("reaching")]
+        vec![sheet("unbegun")]
     }
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
@@ -1068,9 +1023,10 @@ fn a_name_listed_in_two_groups_stops_the_program_as_it_starts() {
 }
 
 #[test]
-fn a_tool_that_reaches_what_the_program_lacks_stops_it_as_it_starts() {
-    // Catches a refused spawn passed over, which leaves a tool missing with nothing said.
-    let started = Harness::of(program().root::<Toolbox<(Reaching,), Mcp>>());
+fn a_tool_whose_spawn_is_refused_stops_the_program_as_it_starts() {
+    // Catches a refused spawn passed over, which leaves a tool missing with nothing said. A tool that reaches a root
+    // the program lacks no longer builds into a program (ADR-0059), so the spawn is refused by the tool's own `begin`.
+    let started = Harness::of(program().root::<Toolbox<(Unbegun,), Mcp>>());
 
     assert!(matches!(started, Err(Unheard::Program(_))));
 }
@@ -1295,6 +1251,15 @@ fn hub_with_an_engine(settings: McpSettings) -> Result<(Harness<Headless>, u16, 
     Ok((harness, port, stream))
 }
 
+/// The store's settings for a hub: a directory of the test process's own in the system's temporary directory, which
+/// the store counts as it begins and no test here checks anything into. The hub holds the store and the process
+/// capability because the engines it spawns depend on them (ADR-0059).
+fn store(file: &str) -> StoreSettings {
+    let root = env::temp_dir().join(format!("aethereal-{file}-store-{}", process::id()));
+
+    StoreSettings { root: root.display().to_string(), ..StoreSettings::default() }
+}
+
 /// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine: the hub, its owner's
 /// port, and the port engines link on.
 fn hub(settings: McpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
@@ -1302,8 +1267,11 @@ fn hub(settings: McpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> 
     let stack = on_loopback();
     let read_limit = engine_for(&stack).read_limit.max(LINK_BYTES);
     let engine = EngineSettings { read_limit, ..engine_for(&stack) };
-    let program =
-        program_with(engine, stack, settings).root_with::<Engines>(engines).root::<Toolbox<(EngineTools,), Mcp>>();
+    let program = program_with(engine, stack, settings)
+        .root_with::<Engines>(engines)
+        .root_with::<Store>(store("mcp"))
+        .root::<Processes>()
+        .root::<Toolbox<(EngineTools,), Mcp>>();
     let mut harness = Harness::of(program)?;
     let port = port_of(&mut harness);
     let engines = harness.root::<Engines>();

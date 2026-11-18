@@ -183,6 +183,7 @@ impl Actor for Engine {
         Ended,
     );
     type Depends = (Engines,);
+    type Spawns = ();
 
     /// Opens its connection's stream.
     fn begin(config: EngineConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

@@ -89,6 +89,7 @@ impl Actor for Window {
     type Key = WindowId;
     type Handles = (Subscribe, Unsubscribe, Event, Perform, SubscribeProbes, Picked, KeysListed, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: WindowConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowConfig { window, surface, mode, focused } = config;

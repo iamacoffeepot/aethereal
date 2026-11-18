@@ -26,6 +26,7 @@ impl Actor for Dialed {
     type Key = u64;
     type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: ConnectionConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { connection: Connection::begin(config, turn)? })

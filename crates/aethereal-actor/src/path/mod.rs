@@ -4,9 +4,11 @@ mod relative;
 mod roots;
 #[cfg(test)]
 mod tests;
+mod walk;
 
 pub use relative::{Child, Parent, child, parent};
 pub use roots::{HasRoot, Here, MadeAfter, NeedsIn, Ordered, Placed, There};
+pub use walk::{Fits, Follow, HoldsRoot, Skip, Walked};
 
 use crate::{ChildOf, Top};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName, PathSegment, Then};
@@ -52,6 +54,7 @@ use core::marker::PhantomData;
 /// #             type Key = ();
 /// #             type Handles = (Poke, Knock);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
@@ -122,6 +125,7 @@ use core::marker::PhantomData;
 /// #             type Key = ();
 /// #             type Handles = (Poke, Knock);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
@@ -192,6 +196,7 @@ use core::marker::PhantomData;
 /// #             type Key = ();
 /// #             type Handles = (Poke, Knock);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)

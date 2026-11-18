@@ -75,6 +75,7 @@ impl Actor for McpStack {
         Answer<SourceEnd, Number>,
     );
     type Depends = (Tcp, Mcp);
+    type Spawns = ();
 
     fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let layers: Layers<McpLayers> = layers(turn)?;

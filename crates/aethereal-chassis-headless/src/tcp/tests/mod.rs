@@ -148,6 +148,7 @@ impl Actor for Streamer {
     type Key = ();
     type Handles = (Follow, Part<Accepting>, Part<Reading>, Answer<Unbound, Number>, Answer<HungUp, Number>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {

@@ -58,6 +58,7 @@ impl Actor for Asker {
     type Key = ();
     type Handles = (Answer<Ran, Nothing>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for at in 0..3 {
@@ -167,6 +168,7 @@ impl Actor for Sleeper {
     type Key = ();
     type Handles = (Answer<Ran, Nothing>, Answer<Slept, Woke>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;

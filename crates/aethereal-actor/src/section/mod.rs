@@ -26,6 +26,8 @@ pub struct Made {
     pub spawner: Spawned,
     /// The typed path to each type it depends on (ADR-0059).
     pub depends: Vec<Depended>,
+    /// The kind of each type it spawns (ADR-0059).
+    pub spawns: Vec<KindId>,
     pub handlers: Vec<Handled>,
     /// The schema of an actor's state, its names included, which must be of the layout `id` is made from (ADR-0006,
     /// ADR-0054).
@@ -186,6 +188,7 @@ const fn declared_type(out: &mut [u8], at: usize, declared: &Declared) -> usize 
         }
     };
     at = depends(out, at, declared.depends());
+    at = kinds(out, at, declared.spawns());
     handlers(out, at, declared.handlers())
 }
 
@@ -270,6 +273,18 @@ const fn depth(segment: &TypeSegment) -> usize {
     depth
 }
 
+/// Writes the kind of each type a type spawns, as [`Made::spawns`] reads them.
+const fn kinds(out: &mut [u8], at: usize, kinds: &[KindId]) -> usize {
+    let mut at = count(out, at, kinds.len());
+    let mut index = 0;
+    while index < kinds.len() {
+        at = id(out, at, kinds[index]);
+        index += 1;
+    }
+
+    at
+}
+
 /// Writes one segment of a typed path: its type's name and kind, and whether it is keyed, as [`Segment`] reads them.
 const fn segment(out: &mut [u8], at: usize, segment: &TypeSegment) -> usize {
     let at = name(out, at, segment.name);
@@ -348,8 +363,9 @@ impl Made {
         };
         let depends = self.depends.iter().map(|depended| leak_path(&depended.last, &depended.above));
         let depends: &'static [&'static TypeSegment] = Box::leak(depends.collect::<Box<[&'static TypeSegment]>>());
+        let spawns: &'static [KindId] = Box::leak(self.spawns.clone().into_boxed_slice());
         let state = StateSchema::Read(Box::leak(Box::new(self.state.clone())));
-        let declared = Declared::new(name.clone(), self.id, state, keyed, spawner, depends, handlers);
+        let declared = Declared::new(name.clone(), self.id, state, keyed, spawner, depends, spawns, handlers);
 
         Box::leak(Box::new(declared))
     }

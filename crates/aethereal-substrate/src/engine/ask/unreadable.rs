@@ -66,6 +66,7 @@ impl Actor for Weigher {
     type Key = ();
     type Handles = (Parcel, Told);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0, told: 0 })
@@ -171,6 +172,7 @@ impl Actor for Sender {
     type Key = ();
     type Handles = (Send, Answer<Receipt, Sent>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(asking: Asking, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { of: asking.of, heard: Vec::new() })

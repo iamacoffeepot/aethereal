@@ -23,7 +23,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Prepare, Render, Tick, Top, Turn, child, path,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Prepare, Render, Spawn, Tick, Top, Turn, child,
+    path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -283,6 +284,7 @@ impl Actor for Shelves {
     type Key = ();
     type Handles = aethereal_ui::handles![Event];
     type Depends = aethereal_ui::depends!();
+    type Spawns = (Shelf,);
 
     fn begin(config: ShelvesConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
@@ -327,6 +329,7 @@ impl Actor for Shelf {
     type Key = Hand;
     type Handles = aethereal_ui::handles![];
     type Depends = aethereal_ui::depends!();
+    type Spawns = ();
 
     /// The left shelf begins with three fruit and two stones, the right with two fruit.
     fn begin(config: ShelfConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

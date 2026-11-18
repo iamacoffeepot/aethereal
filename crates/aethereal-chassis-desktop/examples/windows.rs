@@ -20,8 +20,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Start,
-    Tick, Top, Turn, child, path,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Spawn,
+    Start, Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -231,6 +231,7 @@ impl Actor for Director {
     type Key = ();
     type Handles = (On<Start>, Keyed, Answer<Opened, Nothing>);
     type Depends = (Renderer, Windows);
+    type Spawns = (Scene,);
 
     fn begin(directs: Directs, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -411,6 +412,7 @@ impl Actor for Scene {
         Answer<ModeSet, Nothing>,
     );
     type Depends = (Renderer, Windows);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();

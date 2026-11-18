@@ -2,7 +2,7 @@
 
 use super::super::*;
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, Turn, child};
+use aethereal_actor::{Actor, ChildOf, Ending, Fault, Handle, Handles, Recursive, Spawn, Turn, child};
 use aethereal_actor::{Anyone, Entry};
 use aethereal_data::{Bound, Kind, Plain};
 use std::any;
@@ -172,6 +172,7 @@ impl Actor for Keeper {
     type Key = u64;
     type Handles = (Order, Pass, Last);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: KeeperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let KeeperConfig { number, lamps, makers, orders, takes } = config;

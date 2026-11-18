@@ -6,7 +6,7 @@ use super::{Answering, Waiting, owed};
 use aethereal_actor::Written;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Asking, Bytes, Carries, ChildOf, Due, Ending, Fault, Handles, Held,
-    Protocol, Tie, Top, Turn, Unanswered, child,
+    Protocol, Spawn, Tie, Top, Turn, Unanswered, child,
 };
 use aethereal_actor::{Anyone, Receives, Time};
 use aethereal_data::{Bound, EncodeError, Kind, Plain};
@@ -163,6 +163,7 @@ impl Actor for Board {
     type Key = u64;
     type Handles = (WhichTile, Release);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), closing: Closing::Silently, again: Vec::new() })
@@ -398,6 +399,7 @@ impl Actor for Pointer {
     type Key = ();
     type Handles = (Orders, Answer<TileIs, Looking>, TileIs, HeldReply);
     type Depends = ();
+    type Spawns = (Board, Seeker);
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {
@@ -532,6 +534,7 @@ impl Actor for Seeker {
     type Key = u64;
     type Handles = (Answer<TileIs, Looking>,);
     type Depends = ();
+    type Spawns = (Board,);
 
     fn begin(seeking: Seeking, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn::<Board>(&2, Blank) else {
@@ -588,6 +591,7 @@ impl Actor for Keeper {
     type Key = ();
     type Handles = (Orders, Answer<TileIs, Kept>);
     type Depends = ();
+    type Spawns = (Board,);
 
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(board) = turn.spawn(&1, Blank) else {

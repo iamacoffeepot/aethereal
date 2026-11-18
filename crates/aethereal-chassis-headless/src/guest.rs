@@ -2726,7 +2726,7 @@ mod tests {
         Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Given, Handle, Handles, Links,
         Origin, Protocol, Publisher, Seated, Services, Trapped, Turn, Unanswered,
     };
-    use aethereal_actor::{Anyone, Anywhere, ChildOf, Level, Receives, Tick, Time, Top};
+    use aethereal_actor::{Anyone, Anywhere, ChildOf, Level, Receives, Spawn, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain, Schema, SchemaNodes};
     use aethereal_guest_echo as echo;
@@ -2798,6 +2798,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
@@ -2884,6 +2885,7 @@ mod tests {
         type Key = ();
         type Handles = (Volley, Answer<echo::Pong, Which>);
         type Depends = ();
+        type Spawns = (echo::Echo,);
 
         fn begin(questioner: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
@@ -2974,6 +2976,7 @@ mod tests {
         type Key = u64;
         type Handles = (Volley, Answer<echo::Pong, Which>, Answer<echo::Weight, Which>);
         type Depends = ();
+        type Spawns = (echo::Steward,);
 
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
@@ -3113,6 +3116,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Pong, echo::Book);
         type Depends = ();
+        type Spawns = (echo::Shelver,);
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(shelver) = turn.spawn_from::<echo::Shelver>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
@@ -3194,6 +3198,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Heard,);
         type Depends = ();
+        type Spawns = (echo::Querent,);
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(querent) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
@@ -3273,6 +3278,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Heard,);
         type Depends = ();
+        type Spawns = (echo::Opener,);
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let opening = echo::Opening { n: 3, below: 1 };
@@ -3345,6 +3351,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Heard,);
         type Depends = ();
+        type Spawns = (echo::Stasher,);
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(stasher) = turn.spawn_from::<echo::Stasher>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
@@ -3420,6 +3427,7 @@ mod tests {
         type Key = ();
         type Handles = (Lend, Pong);
         type Depends = ();
+        type Spawns = (echo::Nester,);
 
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(nester) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
@@ -3504,6 +3512,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
@@ -3597,6 +3606,7 @@ mod tests {
         type Key = u64;
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
@@ -3671,6 +3681,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
@@ -3719,6 +3730,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let keeper = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.timekeeper"), &()));
@@ -3812,6 +3824,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = (echo::Ticker,);
 
         fn begin(breeder: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Ticker>(Origin::Blob(&breeder.code), &(), &echo::EchoConfig);
@@ -3891,6 +3904,7 @@ mod tests {
         type Key = u64;
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(order: Order, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let foreman = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.foreman"), &()));
@@ -4185,6 +4199,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
@@ -4389,6 +4404,7 @@ mod tests {
         type Key = u64;
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(asks: Asks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             for path in &asks.paths {
@@ -4429,6 +4445,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(brood) = turn.resolve(&brood_path()).and_then(|found| turn.cast::<(Grow,)>(found)) {
@@ -4559,6 +4576,7 @@ mod tests {
         type Key = u64;
         type Handles = (Ping,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(keeps: Keeps, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { key: keeps.key, pings: Vec::new() })
@@ -4676,6 +4694,7 @@ mod tests {
         type Key = u64;
         type Handles = ();
         type Depends = ();
+        type Spawns = (echo::Sexton,);
 
         fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let sexton: Result<ActorRef<echo::Sexton>, _> =
@@ -4802,6 +4821,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Hand,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Shining, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { lights: Vec::new() })
@@ -4849,6 +4869,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(lighting: Lighting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Lighting { to, lights } = lighting;
@@ -4943,6 +4964,7 @@ mod tests {
         type Key = u64;
         type Handles = (Ping,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(volley: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { key: volley.pings })
@@ -5035,6 +5057,7 @@ mod tests {
         type Key = ();
         type Handles = (Poke, Pong);
         type Depends = ();
+        type Spawns = (echo::Reporter, Keeper, Impostor);
 
         fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mut reporters = Vec::new();
@@ -5098,6 +5121,7 @@ mod tests {
         type Key = u64;
         type Handles = (Poke,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: echo::AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self)
@@ -5130,6 +5154,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let nest = ActorPath::from_root(&PathSegment::new(Nest::NAME, &()));
@@ -5205,6 +5230,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = (echo::Hatcher,);
 
         fn begin(henning: Henning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hatch = echo::Hatch { other: henning.other, home: henning.home.clone() };
@@ -5244,6 +5270,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hen = ActorPath::from_root(&PathSegment::new(Hen::NAME, &()));
@@ -5342,6 +5369,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Publishes { publisher, kinds, blobs } = config;
@@ -5380,6 +5408,7 @@ mod tests {
         type Key = u64;
         type Handles = ();
         type Depends = ();
+        type Spawns = (echo::Echo,);
 
         fn begin(_: Inherit, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Echo>(Origin::Head, &(), &echo::EchoConfig);
@@ -5492,6 +5521,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
@@ -5541,6 +5571,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Book, Pong);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -5592,6 +5623,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(echo::Shut,)>(found)) {
@@ -5684,6 +5716,7 @@ mod tests {
         type Key = u64;
         type Handles = (echo::Book,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(borrowing: Borrowing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -5794,6 +5827,7 @@ mod tests {
         type Key = ();
         type Handles = (echo::Book,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spendthrift = ActorPath::from_root(&PathSegment::new(echo::Spendthrift::NAME, &()));
@@ -5896,6 +5930,7 @@ mod tests {
         type Key = ();
         type Handles = (Pong,);
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
@@ -5931,6 +5966,7 @@ mod tests {
         type Key = ();
         type Handles = ();
         type Depends = ();
+        type Spawns = ();
 
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let parting = |key: u64| ActorPath::from_root(&PathSegment::new(echo::Parting::NAME, &key));
@@ -6185,6 +6221,7 @@ mod tests {
         type Key = ();
         type Handles = (Answer<echo::Pong, Which>, echo::Heard);
         type Depends = ();
+        type Spawns = (echo::Envoy,);
 
         fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(envoy) = turn.spawn_from::<echo::Envoy>(Origin::Blob(&config.code), &(), &echo::EchoConfig) else {

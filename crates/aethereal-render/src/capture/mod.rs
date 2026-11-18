@@ -145,6 +145,7 @@ impl Actor for CaptureTool {
     type Key = ();
     type Handles = (Call, Answer<PaceRead, PaceReading>, Answer<Pixels, Reading>, Answer<Encoded, Encoding>);
     type Depends = (Pacer, Renderer);
+    type Spawns = ();
 
     fn begin(_: CaptureToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { reading: BTreeMap::new(), encoding: BTreeMap::new(), next: 0 })

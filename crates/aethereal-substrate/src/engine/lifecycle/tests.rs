@@ -6,7 +6,7 @@ use super::super::*;
 use crate::stages::key;
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Anywhere, Carries, ChildOf, Cycle, Drained, Ending, Fault, Handles, Held, On, Own,
-    Present, Receives, Render, Stage, Start, Stop, Tick, Time, Top, Turn, path,
+    Present, Receives, Render, Spawn, Stage, Start, Stop, Tick, Time, Top, Turn, path,
 };
 use aethereal_data::{Bound, Kind, KindId, KindName, Plain};
 use core::time::Duration;
@@ -141,6 +141,7 @@ impl Actor for Staged {
     type Key = u64;
     type Handles = (On<Start>, On<Stop>, Note);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: StagedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -315,6 +316,7 @@ impl Actor for Impostor {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -358,6 +360,7 @@ impl Actor for Cycler {
     type Key = ();
     type Handles = (On<Receive>, On<Tick>, On<Render>, On<Present>, On<Stop>, Note);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Receive>();
@@ -563,6 +566,7 @@ impl Actor for Nest {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = (Cycler, Latecomer);
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Cycler>(&(), Note::Nothing);
@@ -636,6 +640,7 @@ impl Actor for Latecomer {
     type Key = ();
     type Handles = (On<Receive>, Note);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -680,6 +685,7 @@ impl Actor for Drainer {
     type Key = ();
     type Handles = (On<Stop>, Note);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Stop>();
@@ -733,6 +739,7 @@ impl Actor for Waker {
     type Key = ();
     type Handles = ();
     type Depends = (Drainer,);
+    type Spawns = ();
 
     fn begin(note: Note, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Drainer>(())).send(&note)?;
@@ -816,6 +823,7 @@ impl Actor for Shore {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -848,6 +856,7 @@ impl Actor for Castaway {
     type Key = ();
     type Handles = (On<Receive>,);
     type Depends = (Shore,);
+    type Spawns = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -918,6 +927,7 @@ impl Actor for Granter {
     type Key = ();
     type Handles = (Grant, Hop);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Note, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
@@ -984,6 +994,7 @@ impl Actor for Asker {
     type Key = ();
     type Handles = (Answer<Granted, Asking>, On<Start>, On<Stop>);
     type Depends = (Granter,);
+    type Spawns = ();
 
     fn begin(on_granted: OnGranted, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

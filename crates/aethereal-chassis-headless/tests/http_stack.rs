@@ -3,7 +3,7 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, Handles,
-    Held, More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Top, Turn, Unsent, path,
+    Held, More, Number, Open, Part, Receives, Serving, Spawn, StreamKey, Streams, Taken, Top, Turn, Unsent, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -117,6 +117,7 @@ impl Actor for Echo {
     type Key = ();
     type Handles = (Request<Seen, ()>, Answer<Gathered, Echoing>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: EchoSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { most_bytes: settings.most_bytes, asked: 0 })
@@ -185,6 +186,7 @@ impl Actor for Silent {
     type Key = ();
     type Handles = (Request<(), ()>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: SilentSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
@@ -252,6 +254,7 @@ impl Actor for Fickle {
     type Key = ();
     type Handles = (Request<(), ()>, FickleOrder);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: FickleSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { fails: settings.fails })
@@ -337,6 +340,7 @@ impl Actor for Gate {
     type Key = ();
     type Handles = (Inbound<Seen>, Outbound, GateOrder);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: GateSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
@@ -453,6 +457,7 @@ impl Actor for Upper {
     type Key = ();
     type Handles = (Inbound<Caller>, Outbound, InboundPart);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: UpperSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -529,6 +534,7 @@ impl Actor for Mirror {
     type Key = ();
     type Handles = (Request<Caller, ()>, Answer<Gathered, Mirroring>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: MirrorSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0 })
@@ -599,6 +605,7 @@ impl Actor for Shelf {
     type Key = ();
     type Handles = (Request<Seen, ()>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: ShelfSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0 })
@@ -663,6 +670,7 @@ impl Actor for Items {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Item,);
 
     fn begin(_: ItemsSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         // A child that is not stood up fails the begin, so the program does not start.
@@ -704,6 +712,7 @@ impl Actor for Item {
     type Key = u64;
     type Handles = (Request<Seen, Numbered>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: ItemSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { number: settings.number })
@@ -1510,6 +1519,7 @@ impl Actor for Drain {
     type Key = ();
     type Handles = (Request<(), ()>, Part<InboundBody>, Answer<BodyRead, Number>, DrainOrder);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: DrainSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
@@ -1682,6 +1692,7 @@ impl Actor for Serve {
     type Key = ();
     type Handles = (Request<(), ()>, Plan, Open<OutboundBody>, More, Enough, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: ServeSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let plan = Plan { length: ResponseLength::Unknown, parts: Vec::new(), end: PlanEnd::Whole };
@@ -1829,6 +1840,7 @@ impl Actor for Shout {
     type Key = ();
     type Handles = (Inbound<()>, Outbound, OutboundPart);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: ShoutSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

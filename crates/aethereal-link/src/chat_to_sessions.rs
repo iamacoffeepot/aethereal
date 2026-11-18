@@ -44,6 +44,7 @@ impl Actor for ChatToSessions {
     type Key = ();
     type Handles = (TrustedEngine,);
     type Depends = (Engines, Sessions);
+    type Spawns = ();
 
     /// Asks `Engines` to tell it each engine the hub trusts.
     fn begin(root: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

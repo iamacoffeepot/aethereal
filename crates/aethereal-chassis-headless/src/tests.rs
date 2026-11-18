@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, Turn,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Spawn, Time, Turn,
 };
 use aethereal_data::{ActorId, Kind, PathSegment, Plain};
 use aethereal_substrate::child_id;
@@ -43,6 +43,7 @@ impl Actor for Fan {
     type Key = u64;
     type Handles = (Count,);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: FanConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let is_root = turn.parent().is_none();

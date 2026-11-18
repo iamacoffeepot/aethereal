@@ -213,6 +213,7 @@ impl Actor for Simulator {
         Answer<Timed, Nothing>,
     );
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

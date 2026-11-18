@@ -135,6 +135,7 @@ impl Actor for Leaf {
     type Key = u64;
     type Handles = (Poke, Poked, Shut, Meet, Ended, On<Tick>);
     type Depends = ();
+    type Spawns = (Herald,);
 
     fn begin(config: LeafConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if config.fails {
@@ -225,6 +226,7 @@ impl Actor for Branch {
     type Key = ();
     type Handles = (Poked,);
     type Depends = ();
+    type Spawns = (Leaf, Herald);
 
     /// Spawns its leaves, poking each that begins.
     fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -272,6 +274,7 @@ impl Actor for Herald {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Branch, Leaf);
 
     fn begin(_config: Poke, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(parent::<(Poked,)>()).send(&Poked)?;
@@ -645,6 +648,7 @@ impl Actor for Crown {
     type Key = u64;
     type Handles = ();
     type Depends = (Self,);
+    type Spawns = ();
 
     fn begin(_: CrownConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -937,6 +941,24 @@ fn a_hosted_spawn_of_a_type_that_does_not_stand_beneath_its_spawner_fails() {
     let by_child = hosted.spawn(child, branch(), None, SeatNumber::new(2));
     assert_eq!(by_child, Err(Unspawned::Unadmitted), "a branch stands beneath a herald, not a branch");
     assert!(hosted.spawn(child, herald(), None, SeatNumber::new(3)).is_ok(), "a herald stands anywhere");
+}
+
+#[test]
+fn a_hosted_spawn_of_a_type_its_spawner_does_not_list_fails() {
+    // Catches a guest's turn handed a child whose type its spawner's does not list among what it spawns, though where
+    // the child stands admits it: a child the program's build check never walked, whose reach was never checked
+    // (ADR-0059).
+    let table = Listed::default();
+    let mut asked = Asked::new();
+    let mut keeping = Keeping::default();
+    let mut hosted =
+        Hosted::beginning(ME, &ROOT, Above::Chassis, &table, &mut asked, Declared::of::<Leaf>(), &mut keeping);
+    let leaf = Code::Linked(Declared::of::<Leaf>());
+    let herald = Code::Linked(Declared::of::<Herald>());
+
+    let unlisted = hosted.spawn(ME, leaf, Some(KeyName::new("0")), SeatNumber::new(1));
+    assert_eq!(unlisted, Err(Unspawned::Unadmitted), "a leaf stands anywhere, but a leaf lists only heralds");
+    assert!(hosted.spawn(ME, herald, None, SeatNumber::new(2)).is_ok(), "a leaf lists heralds");
 }
 
 #[test]

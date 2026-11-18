@@ -4,7 +4,7 @@ use super::*;
 use crate::waiting;
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Beginning, ChildOf, Controller, Drained, Ending, Fault, Given, Handle, Handles,
-    Held, On, Receives, Services, Sleep, Slept, Start, Stop, Tick, Top, Turn,
+    Held, On, Receives, Services, Sleep, Slept, Spawn, Start, Stop, Tick, Top, Turn,
 };
 use aethereal_actor::{ActorName, path};
 use aethereal_data::{ActorPath, Bound, Kind, PathSegment, Plain};
@@ -53,6 +53,7 @@ impl Actor for Quitter {
     type Key = ();
     type Handles = (On<Start>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -87,6 +88,7 @@ impl Actor for Unready {
     type Key = ();
     type Handles = (Nothing, On<Start>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -172,6 +174,7 @@ impl Actor for Metronome {
     type Key = ();
     type Handles = (On<Tick>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: MetronomeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let deltas = turn.take(config.deltas)?;
@@ -235,6 +238,7 @@ impl Actor for Holdout {
     type Key = ();
     type Handles = (On<Start>, On<Stop>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -316,6 +320,7 @@ impl Actor for Napper {
     type Key = ();
     type Handles = (On<Start>, On<Tick>, Answer<Slept, Nothing>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: NapperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let naps = turn.take(config.naps)?;
@@ -407,6 +412,7 @@ impl Actor for Dozer {
     type Key = ();
     type Handles = (On<Start>, Answer<Slept, Nothing>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: DozerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let naps = turn.take(config.naps)?;
@@ -500,6 +506,7 @@ impl Actor for Silent {
     type Key = ();
     type Handles = (Hush,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
@@ -552,6 +559,7 @@ impl Actor for Waiter {
     type Key = ();
     type Handles = (On<Start>, Answer<Hush, Nothing>);
     type Depends = ();
+    type Spawns = (Silent,);
 
     fn begin(config: WaiterConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let waited = turn.take(config.waited)?;
@@ -652,6 +660,7 @@ impl Actor for Stepper {
     type Key = ();
     type Handles = (On<Tick>, Answer<Advanced, Nothing>);
     type Depends = (Pacer,);
+    type Spawns = ();
 
     fn begin(config: StepperConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let told = turn.take(config.told)?;

@@ -4,7 +4,8 @@ use super::bring::Feed;
 use super::jobs::Jobs;
 use super::{CodeRefused, Engine};
 use aethereal_actor::{
-    Actors, Bytes, Controller, Cycle, Given, Guests, JobType, Links, Ordered, Refused, Requests, Resource, Root, Source,
+    Actors, Bytes, Controller, Cycle, Fits, Given, Guests, JobType, Links, Ordered, Refused, Requests, Resource, Root,
+    Source,
 };
 use aethereal_data::{Encode, Kind};
 use core::marker::PhantomData;
@@ -45,6 +46,7 @@ use std::task::Waker;
 /// #             type Key = ();
 /// #             type Handles = (Note,);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
@@ -104,6 +106,7 @@ use std::task::Waker;
 /// #             type Key = ();
 /// #             type Handles = (Note,);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
@@ -308,11 +311,12 @@ impl<S> Setup<S> {
     }
 
     /// The engine, its roots made, for its host to start: it builds only when each root reaches at a typed path of a
-    /// singleton root only one made before it (ADR-0022).
+    /// singleton root only one made before it (ADR-0022), and every type walked to from its roots, through what each
+    /// spawns, depends only on types beneath them (ADR-0059).
     #[must_use]
-    pub fn ready<I>(self) -> Engine
+    pub fn ready<I, W>(self) -> Engine
     where
-        S: Ordered<I>,
+        S: Ordered<I> + Fits<W>,
     {
         self.engine
     }

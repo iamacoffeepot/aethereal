@@ -109,6 +109,7 @@ impl Actor for Keeper {
     type Key = ();
     type Handles = (Kept, Others);
     type Depends = (Shelf,);
+    type Spawns = ();
 
     fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -151,6 +152,7 @@ impl Actor for Strict {
     type Key = ();
     type Handles = (Kept,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -183,6 +185,7 @@ impl Actor for Shelf {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -207,6 +210,7 @@ impl Actor for Slot {
     type Key = u64;
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -231,6 +235,7 @@ impl Actor for Sink {
     type Key = u64;
     type Handles = (Others,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -348,6 +353,7 @@ fn a_declaration_that_depends_on_two_types_of_one_root_does_not_hold() {
         Spawner::Anyone,
         DEPENDS,
         &[],
+        &[],
     );
 
     let _ = twice.checked();
@@ -381,6 +387,7 @@ fn the_spawn_check_finds_a_dependency_of_singletons_not_live_and_passes_a_keyed_
         Keyed::Singleton,
         Spawner::Anyone,
         SLOTTED,
+        &[],
         &[],
     );
     let nothing_live = |_: &ActorPath, _: KindId| false;

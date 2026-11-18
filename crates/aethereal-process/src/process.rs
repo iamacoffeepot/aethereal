@@ -95,6 +95,7 @@ impl Actor for Process {
     type Key = u64;
     type Handles = (Stop, Ended, Answer<Waited, Waiting>, Answer<Slept, Grace>, Answer<Raised, Raising>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: ProcessConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);

@@ -123,6 +123,7 @@ impl Actor for Pacer {
     type Key = ();
     type Handles = (Paced, SetPace, Advance, ReadPace, On<Stop>);
     type Depends = ();
+    type Spawns = ();
 
     /// Takes the source and the controller, asks the host to hold the clock when the program starts held, and
     /// subscribes to `Stop`, after which no cycle runs.

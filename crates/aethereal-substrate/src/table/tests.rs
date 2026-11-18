@@ -27,13 +27,14 @@ struct Layer;
 const WINDOW: KindName = Window::NAME;
 const SURFACE: KindName = Surface::NAME;
 const LAYER: KindName = Layer::NAME;
-/// What the types of these actors declare: nothing they depend on or handle, which the table does not read.
+/// What the types of these actors declare: nothing they depend on, spawn, or handle, which the table does not read.
 const WINDOW_TYPE: &Declared = &Declared::new(
     WINDOW,
     KindId::of::<Window>(),
     StateSchema::of::<Window>(),
     Keyed::Singleton,
     Spawner::Anyone,
+    &[],
     &[],
     &[],
 );
@@ -45,6 +46,7 @@ const SURFACE_TYPE: &Declared = &Declared::new(
     Spawner::Anyone,
     &[],
     &[],
+    &[],
 );
 const LAYER_TYPE: &Declared = &Declared::new(
     LAYER,
@@ -52,6 +54,7 @@ const LAYER_TYPE: &Declared = &Declared::new(
     StateSchema::of::<Layer>(),
     Keyed::Singleton,
     Spawner::Anyone,
+    &[],
     &[],
     &[],
 );

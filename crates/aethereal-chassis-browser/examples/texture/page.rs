@@ -237,6 +237,7 @@ impl Actor for Mapper {
         Answer<Pixels, Of>,
     );
     type Depends = (Renderer, Claimer);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -545,6 +546,7 @@ impl Actor for Claimer {
     type Key = ();
     type Handles = (Claim, Answer<Framed, Told>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -669,6 +671,7 @@ impl Actor for Glower {
     type Key = ();
     type Handles = (On<Start>, On<Tick>, Answer<Effected, Glowing>, Answer<Framed, Glowing>, Answer<Pixels, Glowed>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

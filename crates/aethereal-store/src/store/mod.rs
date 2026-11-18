@@ -373,6 +373,7 @@ impl Actor for Store {
         Answer<Recalled, Recalling>,
     );
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: StoreConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Recount, &Counting)?;

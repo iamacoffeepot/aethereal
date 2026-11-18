@@ -24,6 +24,7 @@ impl Actor for Echo {
     type Key = u64;
     type Handles = (Again,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Again, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&Again)?;

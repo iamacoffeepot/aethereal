@@ -29,6 +29,7 @@ impl Actor for OutsideSeat {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(seat: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(seat)

@@ -46,6 +46,7 @@ impl Drawn {
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
@@ -89,6 +90,7 @@ impl Drawn {
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)

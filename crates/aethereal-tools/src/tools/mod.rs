@@ -76,6 +76,7 @@ impl Actor for Tools {
     type Key = ();
     type Handles = (Offer, Withdraw, Ended, ListTools, Subscribe, CallTool, Answer<Called, Forwarding>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: ToolsSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {

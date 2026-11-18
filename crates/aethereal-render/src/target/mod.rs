@@ -97,6 +97,7 @@ impl Actor for TargetTool {
     type Key = ();
     type Handles = (Call, Answer<TargetPixels, Targeting>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(_: TargetToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

@@ -76,6 +76,7 @@ impl Actor for Painter {
     type Key = ();
     type Handles = (On<Tick>, On<Render>, Answer<Slept, Nothing>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
@@ -164,6 +165,7 @@ impl Actor for Pointer {
     type Key = ();
     type Handles = (Moved,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;

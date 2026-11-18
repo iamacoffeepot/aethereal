@@ -5,7 +5,7 @@ use crate::http1::fit::{BlobBytesTooLow, ReadLimitTooLow};
 use crate::{Client, ClientConfig, HttpSettings};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
-    Receives, Top, Turn, path,
+    Receives, Spawn, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -148,6 +148,7 @@ impl Actor for Http {
     type Key = ();
     type Handles = (Connect, Answer<tcp::Connected, Reaching>, Answer<ConnectedUnix, ReachingUnix>, Ended);
     type Depends = (Tcp,);
+    type Spawns = (Client,);
 
     fn begin(settings: HttpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { settings, clients: BTreeMap::new(), connecting: BTreeMap::new(), askers: Vec::new(), next: 0 })

@@ -67,6 +67,7 @@ impl Actor for DescribeHubTool {
     type Key = ();
     type Handles = (Call,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: DescribeHubToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

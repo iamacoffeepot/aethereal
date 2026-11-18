@@ -14,6 +14,8 @@ use aethereal_link::{
     EngineListing, EngineTools, Engines, EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintFor,
     MintToken, Minted, Origin, Outcome, REVISION, Token, ToolSummary, ToolsShown, Trust, Up, Within,
 };
+use aethereal_process::Processes;
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
@@ -26,6 +28,7 @@ use std::iter;
 use std::net::TcpStream;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::{env, process};
 
 /// The most bytes of a frame, each way.
 const MOST_BYTES: u32 = 64 * 1024;
@@ -75,6 +78,7 @@ impl Actor for Stand {
     type Key = ();
     type Handles = (Offer, Withdraw);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: StandConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { table: Table::new() })
@@ -226,11 +230,25 @@ fn answered_call(harness: &mut Harness<Headless>, stream: TcpStream, called: Out
     heard(harness, peer)
 }
 
-/// A hub: `Tcp`, `Engines` on a port of its choosing, and a toolbox of `EngineTools` offering to the stand-in holder,
-/// with that port and the tools' worker.
+/// The store's settings for a hub: a directory of the test process's own in the system's temporary directory, which
+/// the store counts as it begins and no test here checks anything into. The hub holds the store and the process
+/// capability because the engines it spawns depend on them (ADR-0059).
+fn store(file: &str) -> StoreSettings {
+    let root = env::temp_dir().join(format!("aethereal-{file}-store-{}", process::id()));
+
+    StoreSettings { root: root.display().to_string(), ..StoreSettings::default() }
+}
+
+/// A hub: `Tcp`, `Engines` on a port of its choosing, the store and the process capability the engines it spawns
+/// depend on, and a toolbox of `EngineTools` offering to the stand-in holder, with that port and the tools' worker.
 fn hub() -> Result<(Harness<Headless>, u16, ProtocolRef<Tooling>), Unheard> {
     let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..EnginesSettings::default() };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Engines>(settings);
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Engines>(settings)
+        .root_with::<Store>(store("hub-tools"))
+        .root::<Processes>();
     let mut harness = Harness::of(program)?;
     harness.add_root::<Stand>(&(), StandConfig)?;
     harness.add_root::<Toolbox<(EngineTools,), Stand>>(&(), ToolboxConfig)?;

@@ -5,6 +5,7 @@ use crate::engines::ExitedEngine;
 use crate::engines::randomness::Draw;
 use crate::engines::tokens::Purpose;
 use crate::{Token, Trust};
+use aethereal_actor::Spawn as _;
 use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Held, Level, Turn};
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Stop};

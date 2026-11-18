@@ -161,6 +161,7 @@ macro_rules! root {
             type Key = ();
             type Handles = ();
             type Depends = ();
+            type Spawns = ();
 
             fn begin(line: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 if line.faults {
@@ -199,6 +200,7 @@ impl Actor for Scene {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: SceneSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { seconds: settings.seconds })
@@ -323,6 +325,7 @@ macro_rules! publishing {
             type Key = ();
             type Handles = ();
             type Depends = ();
+            type Spawns = ();
 
             fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self { publisher: turn.take(config.publisher)? })
@@ -390,6 +393,7 @@ macro_rules! drawing {
             type Key = ();
             type Handles = (Stroke,);
             type Depends = (Canvas,);
+            type Spawns = ();
 
             fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self)
@@ -433,6 +437,7 @@ impl Actor for Canvas {
     type Key = ();
     type Handles = (Stroke,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

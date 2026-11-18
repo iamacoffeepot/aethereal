@@ -412,6 +412,7 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 ///     type Key = ();
 ///     type Handles = (Poke, Knock);
 ///     type Depends = ();
+///     type Spawns = ();
 ///
 ///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(door)

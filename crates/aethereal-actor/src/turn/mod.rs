@@ -4,6 +4,7 @@ mod hosted;
 #[cfg(feature = "std")]
 mod origin;
 mod refused;
+mod spawn;
 #[cfg(test)]
 mod tests;
 mod to;
@@ -12,6 +13,7 @@ pub use hosted::{Broke, FalseSend, FalseStage, FalseWatch, Forged, Garbled, Host
 #[cfg(feature = "std")]
 pub use origin::Origin;
 pub use refused::Refused;
+pub use spawn::Spawn;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
 use crate::Submitted;
@@ -22,12 +24,11 @@ use crate::job::{WrittenJob, lending_given};
 use crate::resource;
 use crate::resource::Reach;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Admits, Arena, Asking, ChildOf, Children, Claim, Claimed, Code, Declared,
-    DependsOn, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
-    Keeping, Keeps, Kinds, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
-    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
-    Seated, Seats, Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within,
-    Written,
+    Actor, ActorRef, Actors, ActorsWriter, Arena, Asking, ChildOf, Children, Claim, Claimed, Code, Declared, DependsOn,
+    Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances, Keeping,
+    Keeps, Kinds, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf, Parented,
+    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber, Seated, Seats,
+    Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -1571,6 +1572,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// #     type Key = ();
     /// #     type Handles = (Greet,);
     /// #     type Depends = ();
+    /// #     type Spawns = ();
     /// #     fn begin(_: Greet, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
     /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> { Ok(()) }
     /// # }
@@ -1652,6 +1654,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     ///     type Key = ();
     ///     type Handles = (Nap,);
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(napper)
@@ -1740,6 +1743,7 @@ impl<'a, Me, F: Guard<Me>> Doing<'a, Me, F> {
     ///     type Key = ();
     ///     type Handles = (Knock,);
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(door)
@@ -1801,6 +1805,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///     type Key = ();
     ///     type Handles = ();
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(lens)
@@ -1816,6 +1821,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///     type Key = ();
     ///     type Handles = ();
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(army)
@@ -1877,6 +1883,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///     type Key = ();
     ///     type Handles = (Look,);
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(watcher: Watcher, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(watcher)
@@ -1929,6 +1936,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///     type Key = ();
     ///     type Handles = (Wind,);
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(clock)
@@ -2006,102 +2014,6 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
         let _ = held.into_owed();
 
         Ok(())
-    }
-
-    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
-    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`Admits`]). `C` is inferred
-    /// from where the reference goes, or named at the call, `turn.spawn::<Camera>(&(), config)` (ADR-0022).
-    ///
-    /// The child takes its own mail. It is live once the engine applies this turn's effects.
-    ///
-    /// A type that spawns what stands beneath another does not build:
-    ///
-    /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
-    /// use aethereal_data::Plain;
-    ///
-    /// #[derive(Plain)]
-    /// #[kind(name = "aether.doc.host")]
-    /// struct Host;
-    ///
-    /// impl ChildOf for Host {
-    ///     type Parent = Top;
-    /// }
-    ///
-    /// // Stands beneath itself, not a `Host`.
-    /// #[derive(Plain)]
-    /// #[kind(name = "aether.doc.lens")]
-    /// struct Lens;
-    ///
-    /// impl ChildOf for Lens {
-    ///     type Parent = Lens;
-    /// }
-    ///
-    /// impl Actor for Lens {
-    ///     type Config = Lens;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///
-    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-    ///         Ok(lens)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Actor for Host {
-    ///     type Config = Host;
-    ///     type Key = ();
-    ///     type Handles = (Lens,);
-    ///     type Depends = ();
-    ///
-    ///     fn begin(host: Host, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-    ///         Ok(host)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Lens> for Host {
-    ///     type From = Anyone;
-    ///
-    ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-    ///         let _ = turn.spawn::<Lens>(&(), lens);
-    ///
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
-    pub fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
-    where
-        C: ChildOf,
-        C::Parent: Admits<Me, C>,
-    {
-        self.seat.spawn::<C>(self.instances, key, config)
-    }
-
-    /// Stands up a child of type `C` under `key` whose code is the blob `origin` names, running its `begin` here in the
-    /// blob, and answers with a reference to it (ADR-0009, ADR-0054): [`Origin::Head`], the head the heads view shows
-    /// for `C`'s kind as this turn's step began, or [`Origin::Blob`], a blob this actor holds. Refused with
-    /// [`Refused::NoHead`] when `C`'s kind has no head, and [`Refused::NotMade`] when the blob makes no actor of `C`'s
-    /// type.
-    #[cfg(feature = "std")]
-    pub fn spawn_from<C>(
-        &mut self,
-        origin: Origin<'_>,
-        key: &C::Key,
-        config: &C::Config,
-    ) -> Result<ActorRef<C>, Refused>
-    where
-        C: ChildOf,
-        C::Parent: Admits<Me, C>,
-    {
-        self.seat.spawn_from::<C>(self.instances, origin, key, config)
     }
 
     /// Makes the blob `blob` pins the head of the kind `kind`, with the engine's one publisher, which this actor holds
@@ -2531,6 +2443,7 @@ impl<Me> Beginning<'_, Me> {
     ///     type Key = ();
     ///     type Handles = ();
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(fort: Fort, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let parent = turn.parent();
@@ -2614,33 +2527,6 @@ impl<Me> Beginning<'_, Me> {
         self.seat.take_config(given)
     }
 
-    /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
-    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`Admits`]). `C` is inferred
-    /// from where the reference goes, or named at the call, `turn.spawn::<Camera>(&(), config)` (ADR-0022).
-    pub fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
-    where
-        C: ChildOf,
-        C::Parent: Admits<Me, C>,
-    {
-        self.seat.spawn::<C>(self.instances, key, config)
-    }
-
-    /// Stands up a child of type `C` under `key` whose code is the blob `origin` names, as a turn's `spawn_from` does
-    /// (ADR-0009, ADR-0054).
-    #[cfg(feature = "std")]
-    pub fn spawn_from<C>(
-        &mut self,
-        origin: Origin<'_>,
-        key: &C::Key,
-        config: &C::Config,
-    ) -> Result<ActorRef<C>, Refused>
-    where
-        C: ChildOf,
-        C::Parent: Admits<Me, C>,
-    {
-        self.seat.spawn_from::<C>(self.instances, origin, key, config)
-    }
-
     /// Makes the blob `blob` pins the head of the kind `kind`, and answers with the number the engine gives the
     /// publish, as a turn's `publish` does: for the root that is handed the engine's one publisher, which publishes as
     /// it begins (ADR-0054).
@@ -2676,6 +2562,7 @@ impl<Me> Beginning<'_, Me> {
     ///     type Key = ();
     ///     type Handles = ();
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let me = turn.me();
@@ -2720,6 +2607,7 @@ impl<Me> Beginning<'_, Me> {
     ///     type Key = ();
     ///     type Handles = ();
     ///     type Depends = ();
+    ///     type Spawns = ();
     ///
     ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         turn.subscribe::<Tick>();
@@ -2931,6 +2819,7 @@ impl<'a, Me> Ending<'a, Me> {
     /// #     type Key = ();
     /// #     type Handles = (Hello,);
     /// #     type Depends = ();
+    /// #     type Spawns = ();
     /// #
     /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #         Ok(greeter)
@@ -2964,6 +2853,7 @@ impl<'a, Me> Ending<'a, Me> {
     ///     type Key = ();
     ///     type Handles = (Answer<Hi, Waiting>,);
     ///     type Depends = (Greeter,);
+    ///     type Spawns = ();
     ///
     ///     fn begin(visitor: Visitor, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(visitor)

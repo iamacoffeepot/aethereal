@@ -81,8 +81,9 @@ pub struct FalseSend;
 /// Why a host does not hand its guest's turn a child the turn recorded spawning.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Unspawned {
-    /// The child's type does not stand beneath the spawner's, as its parent says: the turn broke its declaration, and
-    /// fails with [`FalseSend`], as for a send past it (ADR-0022).
+    /// The child's type does not stand beneath the spawner's, as its parent says, or the spawner's type does not list
+    /// it among what it spawns: the turn broke its declaration, and fails with [`FalseSend`], as for a send past it
+    /// (ADR-0022, ADR-0059).
     Unadmitted,
     /// The spawner is not who it says, the key is not of the type's keying, or the key is taken: the guest's records
     /// do not read back.
@@ -577,9 +578,10 @@ impl<'a> Hosted<'a> {
     ///
     /// # Errors
     ///
-    /// [`Unspawned::Unadmitted`] when the child's type does not stand beneath `by`'s: the turn's own actor, or a
-    /// child's `begin`'s. [`Unspawned::Garbled`] when `by` is not who it says, the key is not of the type's keying, or
-    /// the key is taken.
+    /// [`Unspawned::Unadmitted`] when the child's type does not stand beneath `by`'s, the turn's own actor or a
+    /// child's `begin`'s, or `by`'s type does not list it among what it spawns, as a native spawn is checked where it
+    /// is built (ADR-0059). [`Unspawned::Garbled`] when `by` is not who it says, the key is not of the type's keying,
+    /// or the key is taken.
     pub fn spawn(
         &mut self,
         by: Seated,
@@ -588,13 +590,17 @@ impl<'a> Hosted<'a> {
         seat: SeatNumber,
     ) -> Result<Seated, Unspawned> {
         let declared = from.declared();
-        let (by_path, by_type) = if by == self.seat.me {
-            (self.seat.path.clone(), self.seat.declared.id())
+        let (by_path, by_declared) = if by == self.seat.me {
+            (self.seat.path.clone(), self.seat.declared)
         } else {
             let child = self.spawned.iter().find(|child| child.me == by).ok_or(Unspawned::Garbled)?;
-            (child.path.clone(), child.declared.id())
+            (child.path.clone(), child.declared)
         };
-        if !declared.admits(by_type) {
+
+        let stands = declared.admits(by_declared.id());
+        let listed = by_declared.spawns_kind(declared.id());
+        let is_admitted = stands && listed;
+        if !is_admitted {
             return Err(Unspawned::Unadmitted);
         }
         let segment = match (&key, declared.keyed()) {

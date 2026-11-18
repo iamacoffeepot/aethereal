@@ -148,6 +148,7 @@ impl Actor for Link {
         Ended,
     );
     type Depends = (Tools, Tcp);
+    type Spawns = ();
 
     /// Subscribes to the engine's tools, and dials its hub.
     fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

@@ -6,7 +6,7 @@ use crate::ready::{Ready, Wait};
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
-    Handles, More, Open, Receives, Serving, Stream, StreamKey, Turn, Unsent,
+    Handles, More, Open, Receives, Serving, Spawn, Stream, StreamKey, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -93,6 +93,7 @@ impl Actor for Listener {
     type Key = u64;
     type Handles = (Open<Accepting>, More, Enough, Ended, Shut, Answer<Readied, Interest>);
     type Depends = ();
+    type Spawns = (Accepted,);
 
     fn begin(config: ListenerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let bound = turn.take(config.bound)?;

@@ -116,6 +116,7 @@ impl Actor for Board {
     type Key = ();
     type Handles = aethereal_ui::handles![];
     type Depends = crate::depends!();
+    type Spawns = ();
 
     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;

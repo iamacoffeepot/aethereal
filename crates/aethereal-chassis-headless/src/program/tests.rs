@@ -52,6 +52,7 @@ impl Actor for Counter {
     type Key = ();
     type Handles = (Answer<Counted, NothingKept>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: NothingKept, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Count { n: 1 }, &NothingKept)?;

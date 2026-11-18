@@ -37,6 +37,7 @@ macro_rules! stack {
                 $(::aethereal_actor::Answer<::aethereal_http::stack::Inward<$inward>, ::aethereal_http::stack::Parked>,)*
             );
             type Depends = (::aethereal_tcp::Tcp, $($depends,)*);
+            type Spawns = ();
 
             fn begin(
                 settings: ::aethereal_http::stack::StackSettings,

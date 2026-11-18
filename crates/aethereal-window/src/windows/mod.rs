@@ -18,7 +18,7 @@ use crate::event::{Event, Mode, Surface};
 use crate::window::{Window, WindowConfig, WindowId};
 use aethereal_actor::{
     Actor, Anyone, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, Source,
-    Top, Turn, child,
+    Spawn, Top, Turn, child,
 };
 use aethereal_data::{Bound, Plain};
 use core::mem;
@@ -240,6 +240,7 @@ impl Actor for Windows {
     type Handles =
         (Heard, OpenWindow, CloseWindow, SetMode, ListWindows, ResizeWindow, MoveWindow, AllowIme, ShowCursor);
     type Depends = ();
+    type Spawns = (Window,);
 
     /// Takes the source and the controller, and makes the actor of each window open, so a root made after it reaches
     /// each as it begins.

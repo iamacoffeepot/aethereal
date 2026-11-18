@@ -66,6 +66,7 @@ impl Actor for Library {
     type Key = ();
     type Handles = (Publish,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
@@ -106,6 +107,7 @@ impl Actor for LettingGo {
     type Key = ();
     type Handles = (PublishLettingGo,);
     type Depends = (echo::Mover,);
+    type Spawns = ();
 
     fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
@@ -183,6 +185,7 @@ impl Actor for Lookout {
     type Key = ();
     type Handles = (Ended, Recall);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(looks: Looks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if let Some(found) = turn.resolve(&looks.at) {

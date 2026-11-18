@@ -55,6 +55,7 @@ impl Actor for Counter {
     type Key = ();
     type Handles = (Pong,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
@@ -105,6 +106,7 @@ impl Actor for Echo {
     type Key = ();
     type Handles = (Ping, Increment);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { counted: 0 })

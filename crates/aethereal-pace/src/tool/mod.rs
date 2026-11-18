@@ -48,6 +48,7 @@ impl Actor for PaceTool {
     type Key = ();
     type Handles = (Call, Answer<PaceSet, Calling>, Answer<Advanced, Calling>);
     type Depends = (Pacer,);
+    type Spawns = ();
 
     fn begin(_: PaceToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

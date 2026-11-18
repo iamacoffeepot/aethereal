@@ -46,6 +46,7 @@ use std::{env, fs, process, thread};
 
 mod stacks;
 
+use aethereal_process::Processes;
 use stacks::{bound, stack};
 
 // The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and `Mcp` is asked
@@ -113,6 +114,7 @@ impl Actor for Caller {
         Answer<Archived, Asked>,
     );
     type Depends = (Sessions,);
+    type Spawns = ();
 
     fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
@@ -1333,6 +1335,7 @@ impl Actor for Recorder {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -1698,6 +1701,7 @@ impl Actor for Impostor {
     type Key = ();
     type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk, TrustedEngine);
     type Depends = (Sessions, Engines);
+    type Spawns = ();
 
     fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { shown: 0, heard: Vec::new() })
@@ -1808,6 +1812,7 @@ fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
         .root_with::<Files>(daemon.files())
         .root_with::<Docker>(daemon.docker())
         .root_with::<Engines>(engines)
+        .root::<Processes>()
         .root_with::<Sessions>(daemon.sessions(4, 3600))
         .root::<ChatToSessions>()
         .root::<Caller>()

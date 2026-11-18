@@ -45,6 +45,7 @@ impl Actor for Sender {
     type Key = ();
     type Handles = (Hold, Stop);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(sender: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(sender)

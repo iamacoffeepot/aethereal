@@ -129,6 +129,7 @@ impl Actor for StatsTool {
     type Key = ();
     type Handles = (Call, FrameStats, GpuTimes, Answer<GpuDescribed, Describing>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(_: StatsToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Renderer>(())).ask(&DescribeGpu, &Describing)?;

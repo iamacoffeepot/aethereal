@@ -149,6 +149,7 @@ impl Actor for Docker {
         Answer<Finished, Number>,
     );
     type Depends = (Http,);
+    type Spawns = ();
 
     fn begin(config: DockerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.window).unwrap_or(NonZeroU32::MIN);

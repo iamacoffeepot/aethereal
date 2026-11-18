@@ -201,6 +201,7 @@ impl Actor for Quitter {
     type Key = ();
     type Handles = (Answer<Ran, Nothing>, Answer<Slept, GivesUp>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
@@ -316,6 +317,7 @@ impl Actor for Staller {
     type Key = ();
     type Handles = (Answer<Ran, Nothing>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Stalls, &Nothing)?;

@@ -107,6 +107,7 @@ impl Actor for Backdrop {
         Answer<Placed, BackdropPlacing>,
     );
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(backed: Backed, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

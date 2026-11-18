@@ -9,7 +9,7 @@ use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine, table};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Answered, Bytes, Carries, Declared, Handled, Handles, Ordered, Owed, Protocol,
+    Actor, ActorRef, Actors, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed, Protocol,
     ProtocolRef, Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
@@ -284,9 +284,9 @@ impl<H: Steps + Builds> Harness<H> {
     /// # Errors
     ///
     /// Why the program did not start, or the engine refused to seat the outside.
-    pub fn of<R, I: 'static, O>(program: Program<H, R>) -> Result<Self, Unheard>
+    pub fn of<R, I: 'static, O, W>(program: Program<H, R>) -> Result<Self, Unheard>
     where
-        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        R: Bootstraps<H, I> + Ordered<O> + Fits<W> + 'static,
     {
         program.build().map_err(|error: ProgramError| Unheard::Program(error.to_string())).and_then(Self::over)
     }

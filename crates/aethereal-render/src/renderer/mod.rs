@@ -736,6 +736,7 @@ impl Actor for Renderer {
         Probed,
     );
     type Depends = (Window,);
+    type Spawns = ();
 
     fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         // The renderer's own fonts, their metrics put once, as blobs kept for the renderer's life (ADR-0052).

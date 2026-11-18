@@ -1,7 +1,10 @@
 //! The root that stands up the tools a program lists, and offers them to its holder (ADR-0037, ADR-0038).
 
 use crate::{Holder, Offer, Offered, Tool, ToolList, ToolSheet, Withdraw};
-use aethereal_actor::{Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, Receives, Top, Turn, path};
+use aethereal_actor::{
+    Actor, Answer, Answered, Beginning, ChildOf, Down, Each, Ending, Fault, Level, Pick, Receives, Spawn, Through, Top,
+    Turn, Whole, path,
+};
 use aethereal_data::{
     Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindName, Plain, Reader, Schema, Shape, Writer,
 };
@@ -83,6 +86,7 @@ impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
     type Key = ();
     type Handles = (Answer<Offered, Offering>,);
     type Depends = (R,);
+    type Spawns = Each<L>;
 
     fn begin(_: ToolboxConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut names = BTreeSet::new();
@@ -93,7 +97,7 @@ impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
             }
         }
         let mut offered = Vec::new();
-        for offer in L::stand_up(turn)? {
+        for offer in L::stand_up::<L, R, Whole>(turn)? {
             let worker = offer.worker;
             offered.extend(offer.tools.iter().map(|sheet| Withdraw { tool: sheet.name.clone(), worker }));
             turn.to(path::<R>(())).ask(&offer, &Offering)?;
@@ -141,9 +145,12 @@ impl<H: Host, L: ToolList, R: Holder> Bootstrap<H> for Toolbox<L, R> {
     }
 }
 
-/// One tool of a list: spawned, and offered.
-fn stood_up<T: Tool, L: ToolList, R: Holder>(turn: &mut Beginning<'_, Toolbox<L, R>>) -> Result<Offer, Fault> {
-    let Ok(me) = turn.spawn::<T>(&(), T::Config::default()) else {
+/// One tool of a list, which its toolbox's list `L` holds at the path `P`: spawned, and offered.
+fn stood_up<T: Tool, L: ToolList, R: Holder, P: Pick<L, Picked = T>>(
+    turn: &mut Beginning<'_, Toolbox<L, R>>,
+) -> Result<Offer, Fault> {
+    let spawned = Spawn::<Toolbox<L, R>, Through<P>>::spawn::<T>(turn, &(), T::Config::default());
+    let Ok(me) = spawned else {
         return Err(Fault::new(&Unlisted::Unspawned(T::NAME.to_string()))?);
     };
 
@@ -156,13 +163,15 @@ impl<T: Tool> ToolList for T {
         T::sheets()
     }
 
-    fn stand_up<L: ToolList, R: Holder>(turn: &mut Beginning<'_, Toolbox<L, R>>) -> Result<Vec<Offer>, Fault> {
-        Ok(vec![stood_up::<T, L, R>(turn)?])
+    fn stand_up<L: ToolList, R: Holder, P: Pick<L, Picked = Self>>(
+        turn: &mut Beginning<'_, Toolbox<L, R>>,
+    ) -> Result<Vec<Offer>, Fault> {
+        Ok(vec![stood_up::<T, L, R, P>(turn)?])
     }
 }
 
 macro_rules! tools {
-    ($( ($($name:ident)*) )*) => {$(
+    ($( ($($name:ident $place:literal)*) )*) => {$(
         impl<$($name: ToolList),*> ToolList for ($($name,)*) {
             fn sheets() -> Vec<ToolSheet> {
                 let sheets: Vec<Vec<ToolSheet>> = vec![$($name::sheets()),*];
@@ -171,8 +180,10 @@ macro_rules! tools {
             }
 
             #[allow(unused_variables)] // An empty list spawns nothing.
-            fn stand_up<L: ToolList, R: Holder>(turn: &mut Beginning<'_, Toolbox<L, R>>) -> Result<Vec<Offer>, Fault> {
-                let offers: Vec<Vec<Offer>> = vec![$($name::stand_up(turn)?),*];
+            fn stand_up<L: ToolList, R: Holder, P: Pick<L, Picked = Self>>(
+                turn: &mut Beginning<'_, Toolbox<L, R>>,
+            ) -> Result<Vec<Offer>, Fault> {
+                let offers: Vec<Vec<Offer>> = vec![$($name::stand_up::<L, R, Down<P, $place>>(turn)?),*];
 
                 Ok(offers.into_iter().flatten().collect())
             }
@@ -182,12 +193,12 @@ macro_rules! tools {
 
 tools! {
     ()
-    (A)
-    (A B)
-    (A B C)
-    (A B C D)
-    (A B C D E)
-    (A B C D E F)
-    (A B C D E F G)
-    (A B C D E F G H)
+    (A 0)
+    (A 0 B 1)
+    (A 0 B 1 C 2)
+    (A 0 B 1 C 2 D 3)
+    (A 0 B 1 C 2 D 3 E 4)
+    (A 0 B 1 C 2 D 3 E 4 F 5)
+    (A 0 B 1 C 2 D 3 E 4 F 5 G 6)
+    (A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7)
 }

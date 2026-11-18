@@ -14,6 +14,8 @@ use aethereal_link::{
     LinkSettings, ListEngines, MintFor, Minted, Origin, Outcome, REVISION, Refusal, TakeToken, Token, TokenFor, Trust,
     Up, Within,
 };
+use aethereal_process::Processes;
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
@@ -22,6 +24,7 @@ use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use std::{env, process};
 
 /// The most bytes of a frame, each way, at both ends.
 const MOST_BYTES: u32 = 64 * 1024;
@@ -151,6 +154,15 @@ fn frames<T: Plain + Send + 'static>(
     heard(harness, reader)
 }
 
+/// The store's settings for a hub: a directory of the test process's own in the system's temporary directory, which
+/// the store counts as it begins and no test here checks anything into. The hub holds the store and the process
+/// capability because the engines it spawns depend on them (ADR-0059).
+fn store(file: &str) -> StoreSettings {
+    let root = env::temp_dir().join(format!("aethereal-{file}-store-{}", process::id()));
+
+    StoreSettings { root: root.display().to_string(), ..StoreSettings::default() }
+}
+
 /// A hub listening for engines on a port of its choosing, and that port.
 fn hub() -> Result<(Harness<Headless>, u16), Unheard> {
     hub_with(EnginesSettings::default())
@@ -159,7 +171,12 @@ fn hub() -> Result<(Harness<Headless>, u16), Unheard> {
 /// A hub with `settings`, listening for engines on a port of its choosing, and that port.
 fn hub_with(settings: EnginesSettings) -> Result<(Harness<Headless>, u16), Unheard> {
     let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..settings };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Engines>(settings);
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Engines>(settings)
+        .root_with::<Store>(store("link"))
+        .root::<Processes>();
     let mut harness = Harness::of(program)?;
     let engines = harness.root::<Engines>();
     waiting::until(BUDGET, || {
@@ -524,6 +541,7 @@ impl Actor for Asker {
     type Key = ();
     type Handles = (CallWithin, Answer<Called, Relaying>);
     type Depends = (Engine,);
+    type Spawns = ();
 
     fn begin(_: AskerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

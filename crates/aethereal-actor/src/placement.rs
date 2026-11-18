@@ -1,6 +1,7 @@
 //! Where an actor may stand: the one place each type declares, beneath its parent's type or at the top (ADR-0022).
 
-use crate::{Actor, ActorRef, ErasedActorRef, Seated};
+use crate::declared::{At, Each, Many, One, Pick, Through, TypeList};
+use crate::{Actor, ActorRef, ErasedActorRef, Follow, Here, Seated, Skip};
 use aethereal_data::KindId;
 
 /// Where an actor of this type may stand: beneath an actor of its [`Parent`](Self::Parent) type, or at the top of
@@ -28,6 +29,7 @@ use aethereal_data::KindId;
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
@@ -105,22 +107,30 @@ pub struct Recursive;
 pub trait Placement {
     /// Who may spawn a child that stands here, as the engine reads it.
     const SPAWNER: Spawner;
+    /// Whether the program's build check walks a type that stands here when it finds it in a list of what an actor
+    /// spawns: [`Follow`] beneath an actor type or [`Anywhere`], and [`Skip`] at the [`Top`], where nothing spawns
+    /// it, or [`Recursive`], where only its own type does (ADR-0059).
+    type Walk;
 }
 
 impl Placement for Top {
     const SPAWNER: Spawner = Spawner::Nobody;
+    type Walk = Skip;
 }
 
 impl Placement for Anywhere {
     const SPAWNER: Spawner = Spawner::Anyone;
+    type Walk = Follow;
 }
 
 impl Placement for Recursive {
     const SPAWNER: Spawner = Spawner::Own;
+    type Walk = Skip;
 }
 
 impl<T: ChildOf> Placement for T {
     const SPAWNER: Spawner = Spawner::Type(KindId::of::<T>());
+    type Walk = Follow;
 }
 
 /// Who may spawn an actor of a type, as the engine reads the type's parent: what a guest's host checks a guest's
@@ -190,7 +200,7 @@ impl<Me> Parented<Me> for Anywhere {
 ///
 /// ```
 /// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # // An actor type whose `begin` spawns a `$child`, when one is named.
@@ -208,6 +218,7 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ($($child,)?);
 /// #
 /// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
@@ -241,7 +252,7 @@ impl<Me> Parented<Me> for Anywhere {
 ///
 /// ```compile_fail,E0277
 /// use aethereal_actor::{ChildOf, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # // An actor type whose `begin` spawns a `$child`, when one is named.
@@ -259,6 +270,7 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ($($child,)?);
 /// #
 /// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
@@ -292,7 +304,7 @@ impl<Me> Parented<Me> for Anywhere {
 ///
 /// ```compile_fail,E0277
 /// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
 /// # // An actor type whose `begin` spawns a `$child`, when one is named.
@@ -310,6 +322,7 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ($($child,)?);
 /// #
 /// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
@@ -346,6 +359,132 @@ impl<A, C> Admits<A, C> for Anywhere {}
 
 impl<C> Admits<C, C> for Recursive {}
 
+/// This list, the `Spawns` of an actor of type `Me`, lists `C`, at `I`, its place, which the compiler infers as
+/// [`Lists`](crate::Lists) finds a kind: a turn's `spawn` builds only when it does, beside [`Admits`], so the program's
+/// build check, which follows each type's list, walks every type an actor spawns (ADR-0059).
+///
+/// A type is found in a tuple, nested as deep as it nests, and in an [`Each<L>`] [`Through`] the path into `L` that
+/// the generic code that spawns it states.
+///
+/// A type that spawns what its list leaves out does not build, as `Host` spawning a `Lens` it does not list:
+///
+/// ```compile_fail,E0277
+/// use aethereal_actor::{ChildOf, Spawn, Top};
+/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
+/// # use aethereal_data::{Kind, KindName, Plain};
+/// #
+/// # // An actor type whose `begin` spawns a `$child`, when one is named, and which lists `$spawns`.
+/// # macro_rules! actor {
+/// #     ($name:ident, $spawns:ty $(, $child:ident)?) => {
+/// #         #[derive(Plain)]
+/// #         struct $name;
+/// #
+/// #         impl Kind for $name {
+/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
+/// #         }
+/// #
+/// #         impl Actor for $name {
+/// #             type Config = $name;
+/// #             type Key = ();
+/// #             type Handles = ();
+/// #             type Depends = ();
+/// #             type Spawns = $spawns;
+/// #
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
+/// #                 Ok(config)
+/// #             }
+/// #
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #     };
+/// # }
+/// // Lists the camera, and spawns the lens.
+/// actor!(Host, (Camera,), Lens);
+/// # actor!(Camera, ());
+/// # actor!(Lens, ());
+///
+/// impl ChildOf for Host {
+///     type Parent = Top;
+/// }
+///
+/// impl ChildOf for Camera {
+///     type Parent = Host;
+/// }
+///
+/// impl ChildOf for Lens {
+///     type Parent = Host;
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Me}` spawns `{C}`, which its `Spawns` does not list",
+    label = "a `{C}` is spawned here",
+    note = "an actor's `Spawns` lists the types it spawns, so the program's build check walks them: add `{C}` to \
+            `{Me}`'s"
+)]
+pub trait ListsChild<Me, C, I> {}
+
+impl<Me, C, L: TypeList, I> ListsChild<Me, C, I> for L where L::Form: ListedBy<L, Me, C, I> {}
+
+/// The list `L`, the `Spawns` of an actor of type `Me`, of this form, lists `C`, at `I`: a list of one when it is `C`,
+/// and a list of many when one of its entries lists it.
+#[diagnostic::on_unimplemented(
+    message = "`{Me}` spawns `{C}`, which its `Spawns` does not list",
+    label = "a `{C}` is spawned here",
+    note = "an actor's `Spawns` lists the types it spawns, so the program's build check walks them: add `{C}` to \
+            `{Me}`'s"
+)]
+pub trait ListedBy<L, Me, C, I> {}
+
+// A list of one type lists that type: the type sought is here.
+impl<Me, C> ListedBy<C, Me, C, Here> for One {}
+
+impl<L: ListsEach<Me, C, I>, Me, C, I> ListedBy<L, Me, C, I> for Many {}
+
+/// One entry of this list of many, the `Spawns` of an actor of type `Me`, lists `C`, at `I`, its place.
+#[diagnostic::on_unimplemented(
+    message = "`{Me}` spawns `{C}`, which its `Spawns` does not list",
+    label = "a `{C}` is spawned here",
+    note = "an actor's `Spawns` lists the types it spawns, so the program's build check walks them: add `{C}` to \
+            `{Me}`'s"
+)]
+pub trait ListsEach<Me, C, I> {}
+
+impl<Me, C, L, P: Pick<L, Picked = C>> ListsEach<Me, C, Through<P>> for Each<L> {}
+
+macro_rules! tuples {
+    ($( [$($name:ident $place:literal)*] )*) => {$(
+        tuples!(@lists [$($name)*] $($name $place)*);
+    )*};
+    (@lists $all:tt $($name:ident $place:literal)*) => {$(
+        tuples!(@list $all $name $place);
+    )*};
+    (@list [$($all:ident)*] $name:ident $place:literal) => {
+        impl<Me, C, I, $($all),*> ListsEach<Me, C, (At<$place>, I)> for ($($all,)*) where $name: ListsChild<Me, C, I> {}
+    };
+}
+
+tuples! {
+    [A 0]
+    [A 0 B 1]
+    [A 0 B 1 D 2]
+    [A 0 B 1 D 2 E 3]
+    [A 0 B 1 D 2 E 3 F 4]
+    [A 0 B 1 D 2 E 3 F 4 G 5]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10 O 11]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10 O 11 P 12]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10 O 11 P 12 Q 13]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10 O 11 P 12 Q 13 R 14]
+    [A 0 B 1 D 2 E 3 F 4 G 5 H 6 J 7 K 8 L 9 N 10 O 11 P 12 Q 13 R 14 S 15]
+}
+
 /// A place at the top: [`Top`], [`Recursive`], which is the top or beneath its own type, and [`Anywhere`].
 pub trait AtTop {}
 
@@ -379,6 +518,7 @@ impl AtTop for Anywhere {}
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)

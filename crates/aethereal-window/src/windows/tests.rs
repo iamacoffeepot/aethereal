@@ -57,6 +57,7 @@ impl Actor for Listener {
     type Key = ();
     type Handles = (Event,);
     type Depends = (Windows,);
+    type Spawns = ();
 
     fn begin(listens: Listens, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = listens.window;
