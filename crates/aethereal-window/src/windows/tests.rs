@@ -296,7 +296,12 @@ fn open() -> OpenWindow {
 /// Subscribes the outside to `window`, whose actor is found where the window's id says.
 fn subscribe(harness: &mut Harness<Bench>, window: WindowId) -> Result<(), Unheard> {
     let place = path::<Window>(window);
-    let found = harness.host().engine().table().reach(place.names(), KindId::of::<Window>());
+    let found = harness
+        .host()
+        .engine()
+        .table()
+        .found(place.names(), KindId::of::<Window>())
+        .expect("the window's actor is live");
 
     harness.tell(ActorRef::<Window>::found(found), &Subscribe)
 }

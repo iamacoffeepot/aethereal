@@ -39,7 +39,7 @@ use crate::log;
 use crate::stages::Stages;
 use crate::stats::Stats;
 use crate::stream::{self, Handed, Pieces, Streams};
-use crate::table::{self, Actors};
+use crate::table::Actors;
 use crate::unsent::Unsent;
 use crate::watch::{Notice, Watches};
 use crate::{
@@ -52,7 +52,7 @@ use aethereal_actor::{
     Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
     JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
     Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
-    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Submitted, Table, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -904,7 +904,7 @@ impl Engine {
         begin: impl FnOnce(
             Seated,
             &ActorPath,
-            &dyn aethereal_actor::Table,
+            &dyn Table,
             &mut Asked,
             &mut Instances,
             &mut Keeping,
@@ -919,7 +919,7 @@ impl Engine {
             return Err(Refused::KeyTaken);
         }
         self.staged(from.declared())?;
-        let live = |path: &ActorPath, kind| table::reach(&self.table, path, kind).seat != SeatNumber::NOWHERE;
+        let live = |path: &ActorPath, kind| self.table.holds(path, kind);
         if let Some(segment) = from.declared().missing(live) {
             return Err(Refused::Missing(segment.name.clone()));
         }
