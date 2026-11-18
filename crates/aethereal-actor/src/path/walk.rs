@@ -8,7 +8,7 @@
 //! one, so every one stands beneath a root of its type, which the walk starts at.
 //!
 //! ```
-//! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Fits, Recursive, Top};
+//! # use aethereal_actor::{Fault, Fits, Recursive, Top, actor};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -18,23 +18,10 @@
 //! #         #[kind(name = $named)]
 //! #         struct $name;
 //! #
-//! #         impl ChildOf for $name {
-//! #             type Parent = $parent;
-//! #         }
-//! #
-//! #         impl Actor for $name {
-//! #             type Config = $name;
-//! #             type Key = ();
-//! #             type Handles = ();
-//! #             type Depends = $depends;
-//! #             type Spawns = $spawns;
-//! #
-//! #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! #         #[actor(parent = $parent, depends($depends), spawns($spawns))]
+//! #         impl $name {
+//! #             fn begin(actor: $name) -> Result<Self, Fault> {
 //! #                 Ok(actor)
-//! #             }
-//! #
-//! #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #                 Ok(())
 //! #             }
 //! #         }
 //! #     };
@@ -57,7 +44,7 @@
 //! A program that lacks the root of a type it walks to does not build, however deep that type is spawned:
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Fits, Top};
+//! # use aethereal_actor::{Fault, Fits, Top, actor};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -67,23 +54,10 @@
 //! #         #[kind(name = $named)]
 //! #         struct $name;
 //! #
-//! #         impl ChildOf for $name {
-//! #             type Parent = $parent;
-//! #         }
-//! #
-//! #         impl Actor for $name {
-//! #             type Config = $name;
-//! #             type Key = ();
-//! #             type Handles = ();
-//! #             type Depends = $depends;
-//! #             type Spawns = $spawns;
-//! #
-//! #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! #         #[actor(parent = $parent, depends($depends), spawns($spawns))]
+//! #         impl $name {
+//! #             fn begin(actor: $name) -> Result<Self, Fault> {
 //! #                 Ok(actor)
-//! #             }
-//! #
-//! #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #                 Ok(())
 //! #             }
 //! #         }
 //! #     };
@@ -103,7 +77,7 @@
 //! Nor does one that lacks the root of a type a list type parameter lists, as a toolbox's tools are:
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Anywhere, Beginning, ChildOf, Each, Ending, Fault, Fits, Spawns, Top};
+//! # use aethereal_actor::{Anywhere, Fault, Fits, Spawns, Top, actor};
 //! # use aethereal_data::{Boundary, Decode, DecodeError, Encode, EncodeError, Kind, KindName, Plain, Reader, Schema};
 //! # use aethereal_data::{Shape, Writer};
 //! # use core::marker::PhantomData;
@@ -114,23 +88,10 @@
 //! #         #[kind(name = $named)]
 //! #         struct $name;
 //! #
-//! #         impl ChildOf for $name {
-//! #             type Parent = $parent;
-//! #         }
-//! #
-//! #         impl Actor for $name {
-//! #             type Config = $name;
-//! #             type Key = ();
-//! #             type Handles = ();
-//! #             type Depends = $depends;
-//! #             type Spawns = ();
-//! #
-//! #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! #         #[actor(parent = $parent, depends($depends))]
+//! #         impl $name {
+//! #             fn begin(actor: $name) -> Result<Self, Fault> {
 //! #                 Ok(actor)
-//! #             }
-//! #
-//! #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #                 Ok(())
 //! #             }
 //! #         }
 //! #     };
@@ -162,23 +123,10 @@
 //! #     }
 //! # }
 //! #
-//! # impl<L: Spawns + Send + 'static> ChildOf for Crate<L> {
-//! #     type Parent = Top;
-//! # }
-//! #
-//! # impl<L: Spawns + Send + 'static> Actor for Crate<L> {
-//! #     type Config = Packing;
-//! #     type Key = ();
-//! #     type Handles = ();
-//! #     type Depends = ();
-//! #     type Spawns = Each<L>;
-//! #
-//! #     fn begin(_: Packing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! # #[actor(spawns(L))]
+//! # impl<L: Spawns + Send + 'static> Crate<L> {
+//! #     fn begin(_: Packing) -> Result<Self, Fault> {
 //! #         Ok(Self(PhantomData))
-//! #     }
-//! #
-//! #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #         Ok(())
 //! #     }
 //! # }
 //! #

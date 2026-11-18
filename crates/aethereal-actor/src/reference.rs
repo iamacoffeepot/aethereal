@@ -388,7 +388,7 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 /// A send of a kind the receiver's type does not handle does not build:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Ending, Fault, Handles, Turn};
+/// use aethereal_actor::{Fault, Turn, actor};
 /// use aethereal_data::Plain;
 ///
 /// #[derive(Plain)]
@@ -407,39 +407,22 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 /// #[kind(name = "aether.example.door")]
 /// struct Door;
 ///
-/// impl Actor for Door {
-///     type Config = Door;
-///     type Key = ();
-///     type Handles = (Poke, Knock);
-///     type Depends = ();
-///     type Spawns = ();
-///
-///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #[actor]
+/// impl Door {
+///     fn begin(door: Door) -> Result<Self, Fault> {
 ///         Ok(door)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-///         Ok(())
-///     }
-/// }
-///
-/// impl Handles<Poke> for Door {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     #[tell]
+///     fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         // A door handles no `Shut`.
 ///         turn.to(turn.me()).send(&Shut)?;
 ///
 ///         Ok(())
 ///     }
-/// }
 ///
-/// impl Handles<Knock> for Door {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     #[tell]
+///     fn knock(&mut self, _: Knock) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }

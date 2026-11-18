@@ -3,10 +3,7 @@
 
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
-    Receives, Top, Turn, Unanswered,
-};
+use aethereal_actor::{Answered, Fault, ProtocolRef, Turn, Unanswered, actor, protocol};
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
 
@@ -57,34 +54,24 @@ struct Weigher {
     told: u64,
 }
 
-impl ChildOf for Weigher {
-    type Parent = Top;
-}
-
-impl Actor for Weigher {
-    type Config = Blank;
-    type Key = ();
-    type Handles = (Parcel, Told);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Weigher {
+    fn begin(_: Blank) -> Result<Self, Fault> {
         Ok(Self { asked: 0, told: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Parcel> for Weigher {
-    type From = Anyone;
-    type Returns = Receipt;
-
-    fn handle(&mut self, parcel: Parcel, _: &mut Turn<'_, Self>) -> Result<Receipt, Fault> {
+    #[request]
+    fn parcel(&mut self, parcel: Parcel) -> Result<Receipt, Fault> {
         self.asked += 1;
 
         Ok(Receipt { text: parcel.text })
+    }
+
+    #[tell]
+    fn told(&mut self, _: Told) -> Result<(), Fault> {
+        self.told += 1;
+
+        Ok(())
     }
 }
 
@@ -95,32 +82,14 @@ struct Told {
     parcel: Parcel,
 }
 
-impl Handles<Told> for Weigher {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Told, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.told += 1;
-
-        Ok(())
-    }
-}
-
 /// A config that holds nothing.
 #[derive(Plain)]
 #[kind(name = "aether.test.unreadable.blank")]
 struct Blank;
 
 /// What a sender asks its parcels of: the outside, as it takes every kind.
+#[protocol(Parcel(answers = Receipt))]
 struct Weighing;
-
-impl Protocol for Weighing {
-    type Kinds = (Parcel,);
-}
-
-impl Carries<Parcel> for Weighing {
-    type Answers = (Receipt,);
-}
 
 /// The order to ask the outside a parcel, keeping `at` until it is answered.
 #[derive(Plain)]
@@ -161,43 +130,21 @@ struct Sender {
     heard: Vec<Heard>,
 }
 
-impl ChildOf for Sender {
-    type Parent = Top;
-}
-
-impl Actor for Sender {
-    type Config = Asking;
-    type Key = ();
-    type Handles = (Send, Answer<Receipt, Sent>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(asking: Asking, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Sender {
+    fn begin(asking: Asking) -> Result<Self, Fault> {
         Ok(Self { of: asking.of, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Send> for Sender {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn send(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(self.of).ask(&parcel(WITHIN), &Sent { at })?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Receipt, Sent>> for Sender {
-    fn handle(
-        &mut self,
-        (answered, Sent { at }): (Answered<Receipt>, Sent),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn receipt(&mut self, (answered, Sent { at }): (Answered<Receipt>, Sent)) -> Result<(), Fault> {
         let heard = match answered {
             Answered::Yes(receipt) => Heard::Receipt { len: u64::try_from(receipt.text.len()).unwrap_or(u64::MAX), at },
             Answered::No(why) => Heard::No { why, at },

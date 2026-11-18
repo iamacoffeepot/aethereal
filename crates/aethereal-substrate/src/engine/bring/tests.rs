@@ -3,10 +3,8 @@
 use super::super::*;
 use crate::{Closed, Feed};
 use aethereal_actor::Time;
-use aethereal_actor::{
-    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, Spawn, Top, Turn,
-};
-use aethereal_actor::{Anyone, Entry};
+use aethereal_actor::{Controller, Fault, Handle, Recursive, Source, Turn};
+use aethereal_actor::{Entry, actor};
 use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
 use std::sync::Arc;
@@ -77,17 +75,8 @@ struct Window {
     heard: Vec<Heard>,
 }
 
-impl ChildOf for Window {
-    type Parent = Recursive;
-}
-
-impl Actor for Window {
-    type Config = WindowConfig;
-    type Key = u64;
-    type Handles = (Moved, Order, Lit);
-    type Depends = ();
-    type Spawns = (Self,);
-
+#[actor(key = u64, parent = Recursive, spawns(Self))]
+impl Window {
     fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowConfig { pointers, lights, orders, .. } = config;
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
@@ -99,16 +88,8 @@ impl Actor for Window {
         Ok(Self { pointers, lights, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Moved> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn moved(&mut self, moved: Moved, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_me = turn.sender() == turn.me().erase();
         let chain = turn.chain();
         let is_first = chain.depth == 0 && chain.root.sender == turn.me().id();
@@ -116,13 +97,9 @@ impl Handles<Moved> for Window {
 
         Ok(())
     }
-}
 
-impl Handles<Order> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Spawn(number) => {
                 let given = mem::take(&mut self.pointers).into_iter().map(|pointer| turn.give(pointer));
@@ -135,13 +112,9 @@ impl Handles<Order> for Window {
 
         Ok(())
     }
-}
 
-impl Handles<Lit> for Window {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn lit(&mut self, lit: Lit, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let took = lit.take && turn.take(lit.lamp).is_ok();
         self.heard.push(Heard::Lit { took });
 
@@ -350,17 +323,8 @@ struct Windows {
     control: Handle<Controller<Make>>,
 }
 
-impl ChildOf for Windows {
-    type Parent = Top;
-}
-
-impl Actor for Windows {
-    type Config = WindowsConfig;
-    type Key = ();
-    type Handles = (Asking,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Windows {
     fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowsConfig { control, orders } = config;
         let mut control = turn.take(control)?;
@@ -374,16 +338,8 @@ impl Actor for Windows {
         Ok(Self { control })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Asking> for Windows {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, asking: Asking, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn asking(&mut self, asking: Asking, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match asking {
             Asking::Window(number) => turn.open(&mut self.control)?.push(Make::Window(number)),
             Asking::Close => turn.close(),

@@ -2,9 +2,7 @@
 
 use super::*;
 use crate::{Bootstrap, root_id};
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Publisher, Root, Seated, Top, Turn,
-};
+use aethereal_actor::{Actor, Beginning, Fault, Given, Handle, Publisher, Root, Seated, actor};
 use aethereal_data::config::{ConfigError, ConfigFault};
 use aethereal_data::{ActorId, ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
 use core::error::Error;
@@ -152,27 +150,14 @@ macro_rules! root {
             values: Vec<u32>,
         }
 
-        impl ChildOf for $name {
-            type Parent = Top;
-        }
-
-        impl Actor for $name {
-            type Config = Line;
-            type Key = ();
-            type Handles = ();
-            type Depends = ();
-            type Spawns = ();
-
-            fn begin(line: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        #[actor]
+        impl $name {
+            fn begin(line: Line) -> Result<Self, Fault> {
                 if line.faults {
                     return Err(Fault::new(&line)?);
                 }
 
                 Ok(Self { values: line.values })
-            }
-
-            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-                Ok(())
             }
         }
     };
@@ -191,23 +176,10 @@ struct Scene {
     seconds: u32,
 }
 
-impl ChildOf for Scene {
-    type Parent = Top;
-}
-
-impl Actor for Scene {
-    type Config = SceneSettings;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(settings: SceneSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Scene {
+    fn begin(settings: SceneSettings) -> Result<Self, Fault> {
         Ok(Self { seconds: settings.seconds })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -316,23 +288,10 @@ macro_rules! publishing {
             publisher: Handle<Publisher>,
         }
 
-        impl ChildOf for $name {
-            type Parent = Top;
-        }
-
-        impl Actor for $name {
-            type Config = Publishes;
-            type Key = ();
-            type Handles = ();
-            type Depends = ();
-            type Spawns = ();
-
+        #[actor]
+        impl $name {
             fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self { publisher: turn.take(config.publisher)? })
-            }
-
-            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-                Ok(())
             }
         }
 
@@ -384,31 +343,14 @@ struct Sketcher;
 /// A root that strokes the canvas, which it depends on.
 macro_rules! drawing {
     ($name:ident) => {
-        impl ChildOf for $name {
-            type Parent = Top;
-        }
-
-        impl Actor for $name {
-            type Config = Line;
-            type Key = ();
-            type Handles = (Stroke,);
-            type Depends = (Canvas,);
-            type Spawns = ();
-
-            fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        #[actor(depends(Canvas))]
+        impl $name {
+            fn begin(_: Line) -> Result<Self, Fault> {
                 Ok(Self)
             }
 
-            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-                Ok(())
-            }
-        }
-
-        impl Handles<Stroke> for $name {
-            type From = Anyone;
-            type Returns = ();
-
-            fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+            #[tell]
+            fn stroke(&mut self, _: Stroke) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -429,31 +371,14 @@ macro_rules! drawing {
 drawing!(Painter);
 drawing!(Sketcher);
 
-impl ChildOf for Canvas {
-    type Parent = Top;
-}
-
-impl Actor for Canvas {
-    type Config = Line;
-    type Key = ();
-    type Handles = (Stroke,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Canvas {
+    fn begin(_: Line) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Stroke> for Canvas {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn stroke(&mut self, _: Stroke) -> Result<(), Fault> {
         Ok(())
     }
 }

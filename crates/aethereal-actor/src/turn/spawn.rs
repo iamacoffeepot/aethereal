@@ -24,15 +24,25 @@ pub trait Spawn<Me: Actor, I> {
     /// A type that spawns what stands beneath another does not build, though it lists it:
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Spawn, Top, Turn};
+    /// use aethereal_actor::{Fault, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
     /// #[kind(name = "aether.doc.host")]
     /// struct Host;
     ///
-    /// impl ChildOf for Host {
-    ///     type Parent = Top;
+    /// #[actor(spawns(Lens))]
+    /// impl Host {
+    ///     fn begin(host: Host) -> Result<Self, Fault> {
+    ///         Ok(host)
+    ///     }
+    ///
+    ///     #[tell]
+    ///     fn lens(&mut self, lens: Lens, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    ///         let _ = turn.spawn::<Lens>(&(), lens);
+    ///
+    ///         Ok(())
+    ///     }
     /// }
     ///
     /// // Stands beneath itself, not a `Host`.
@@ -40,50 +50,10 @@ pub trait Spawn<Me: Actor, I> {
     /// #[kind(name = "aether.doc.lens")]
     /// struct Lens;
     ///
-    /// impl ChildOf for Lens {
-    ///     type Parent = Lens;
-    /// }
-    ///
-    /// impl Actor for Lens {
-    ///     type Config = Lens;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor(parent = Lens)]
+    /// impl Lens {
+    ///     fn begin(lens: Lens) -> Result<Self, Fault> {
     ///         Ok(lens)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Actor for Host {
-    ///     type Config = Host;
-    ///     type Key = ();
-    ///     type Handles = (Lens,);
-    ///     type Depends = ();
-    ///     type Spawns = (Lens,);
-    ///
-    ///     fn begin(host: Host, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-    ///         Ok(host)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Lens> for Host {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-    ///         let _ = turn.spawn::<Lens>(&(), lens);
-    ///
-    ///         Ok(())
     ///     }
     /// }
     /// ```

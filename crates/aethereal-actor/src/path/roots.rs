@@ -6,7 +6,7 @@
 //! root, or one with a key, is a place no setup can say is filled, and is checked where its dependent is made.
 //!
 //! ```
-//! # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Top, Turn};
+//! # use aethereal_actor::{Fault, Ordered, Top, actor};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -20,31 +20,14 @@
 //! #         #[kind(name = $named)]
 //! #         struct $name;
 //! #
-//! #         impl ChildOf for $name {
-//! #             type Parent = $parent;
-//! #         }
-//! #
-//! #         impl Actor for $name {
-//! #             type Config = $name;
-//! #             type Key = $key;
-//! #             type Handles = (Note,);
-//! #             type Depends = $depends;
-//! #             type Spawns = ();
-//! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! #         #[actor(key = $key, parent = $parent, depends($depends))]
+//! #         impl $name {
+//! #             fn begin(root: $name) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #                 Ok(())
-//! #             }
-//! #         }
-//! #
-//! #         impl Handles<Note> for $name {
-//! #             type From = Anyone;
-//! #             type Returns = ();
-//! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+//! #             #[tell]
+//! #             fn note(&mut self, _: Note) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }
@@ -67,7 +50,7 @@
 //! or as it ends:
 //!
 //! ```compile_fail
-//! # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Ordered, Top, Turn};
+//! # use aethereal_actor::{Fault, Ordered, actor};
 //! # use aethereal_data::Plain;
 //! # use core::marker::PhantomData;
 //! #
@@ -81,31 +64,14 @@
 //! #         #[kind(name = $named)]
 //! #         struct $name;
 //! #
-//! #         impl ChildOf for $name {
-//! #             type Parent = Top;
-//! #         }
-//! #
-//! #         impl Actor for $name {
-//! #             type Config = $name;
-//! #             type Key = ();
-//! #             type Handles = (Note,);
-//! #             type Depends = $depends;
-//! #             type Spawns = ();
-//! #
-//! #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+//! #         #[actor(depends($depends))]
+//! #         impl $name {
+//! #             fn begin(root: $name) -> Result<Self, Fault> {
 //! #                 Ok(root)
 //! #             }
 //! #
-//! #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//! #                 Ok(())
-//! #             }
-//! #         }
-//! #
-//! #         impl Handles<Note> for $name {
-//! #             type From = Anyone;
-//! #             type Returns = ();
-//! #
-//! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+//! #             #[tell]
+//! #             fn note(&mut self, _: Note) -> Result<(), Fault> {
 //! #                 Ok(())
 //! #             }
 //! #         }

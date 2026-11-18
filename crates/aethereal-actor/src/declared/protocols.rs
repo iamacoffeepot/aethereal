@@ -107,7 +107,7 @@ impl Kinds for () {
 /// A board that does not handle a kind of the protocol does not conform:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, ActorRef, Beginning, Carries, Ending, Fault, Protocol, ProtocolRef};
+/// # use aethereal_actor::{ActorRef, Fault, ProtocolRef, actor, protocol};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -118,34 +118,18 @@ impl Kinds for () {
 /// # #[kind(name = "aether.example.tile_is")]
 /// # struct TileIs;
 /// #
+/// # #[protocol(WhichTile(answers = TileIs))]
 /// # struct Tiles;
-/// #
-/// # impl Protocol for Tiles {
-/// #     type Kinds = (WhichTile,);
-/// # }
-/// #
-/// # impl Carries<WhichTile> for Tiles {
-/// #     type Answers = (TileIs,);
-/// # }
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.board")]
 /// # struct Board;
 /// #
 /// /// Handles nothing, so takes no `WhichTile`.
-/// impl Actor for Board {
-///     type Config = Board;
-///     type Key = ();
-///     type Handles = ();
-///     type Depends = ();
-///     type Spawns = ();
-///
-///     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #[actor]
+/// impl Board {
+///     fn begin(board: Board) -> Result<Self, Fault> {
 ///         Ok(board)
-///     }
-///
-///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-///         Ok(())
 ///     }
 /// }
 ///
@@ -158,8 +142,8 @@ impl Kinds for () {
 /// conform:
 ///
 /// ```compile_fail,E0271
-/// # use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol};
-/// # use aethereal_actor::{ProtocolRef, Top, Turn};
+/// # use aethereal_actor::{ActorRef, Fault};
+/// # use aethereal_actor::{ProtocolRef, actor, protocol};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -174,46 +158,22 @@ impl Kinds for () {
 /// # #[kind(name = "aether.example.no_tile")]
 /// # struct NoTile;
 /// #
+/// # #[protocol(WhichTile(answers = TileIs))]
 /// # struct Tiles;
-/// #
-/// # impl Protocol for Tiles {
-/// #     type Kinds = (WhichTile,);
-/// # }
-/// #
-/// # impl Carries<WhichTile> for Tiles {
-/// #     type Answers = (TileIs,);
-/// # }
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.board")]
 /// # struct Board;
 /// #
-/// # impl ChildOf for Board {
-/// #     type Parent = Top;
-/// # }
-/// #
-/// # impl Actor for Board {
-/// #     type Config = Board;
-/// #     type Key = ();
-/// #     type Handles = (WhichTile,);
-/// #     type Depends = ();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #[actor]
+/// impl Board {
+/// #     fn begin(board: Board) -> Result<Self, Fault> {
 /// #         Ok(board)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// /// Answers `WhichTile` with a `NoTile`, where `Tiles` carries it as answered with a `TileIs`.
-/// impl Handles<WhichTile> for Board {
-///     type From = Anyone;
-///     type Returns = NoTile;
-///
-///     fn handle(&mut self, _: WhichTile, _: &mut Turn<'_, Self>) -> Result<NoTile, Fault> {
+///     /// Answers `WhichTile` with a `NoTile`, where `Tiles` carries it as answered with a `TileIs`.
+///     #[request]
+///     fn which_tile(&mut self, _: WhichTile) -> Result<NoTile, Fault> {
 ///         Ok(NoTile)
 ///     }
 /// }

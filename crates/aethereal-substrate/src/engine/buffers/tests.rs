@@ -3,10 +3,7 @@
 //! (ADR-0042).
 
 use super::super::*;
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, ChildOf, Ending, Fills, Handles, Job, Receives, Runner, Running, Services, Top,
-    Turn, path,
-};
+use aethereal_actor::{Answered, Fills, Job, Runner, Running, Services, Turn, actor, path};
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeSet;
 
@@ -155,33 +152,16 @@ struct Builder {
     took: Vec<Took>,
 }
 
-impl ChildOf for Builder {
-    type Parent = Top;
-}
-
-impl Actor for Builder {
-    type Config = Plan;
-    type Key = u64;
-    type Handles = (Plan, Lent, Answer<Filled, Plan>, Answer<Drew, Plan>);
-    type Depends = (Self,);
-    type Spawns = ();
-
+#[actor(key = u64, depends(Self))]
+impl Builder {
     fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&plan)?;
 
         Ok(Self { held: Vec::new(), took: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Plan> for Builder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn plan(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if plan.turns.is_empty() {
             return Ok(());
         }
@@ -232,21 +212,16 @@ impl Handles<Plan> for Builder {
 
         Ok(())
     }
-}
 
-impl Handles<Lent> for Builder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, lent: Lent, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn lent(&mut self, lent: Lent) -> Result<(), Fault> {
         self.held.push(lent.blob);
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Filled, Plan>> for Builder {
-    fn handle(&mut self, (filled, plan): (Answered<Filled>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn filled(&mut self, (filled, plan): (Answered<Filled>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Answered::Yes(Filled { blob }) = filled {
             self.held.push(blob);
         }
@@ -254,10 +229,9 @@ impl Receives<Answer<Filled, Plan>> for Builder {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Drew, Plan>> for Builder {
-    fn handle(&mut self, (drew, plan): (Answered<Drew>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn drew(&mut self, (drew, plan): (Answered<Drew>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Answered::Yes(Drew { capacity }) = drew {
             self.took.push(empty(capacity));
         }
