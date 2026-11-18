@@ -5,11 +5,11 @@
 #[cfg(test)]
 mod tests;
 
+use super::Bearer;
 use super::record::Conversation;
 use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
 use crate::{Access, Bind, ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
 use aethereal_data::write_json_string;
-use aethereal_mcp::Bearer;
 use aethereal_store::DROP_BOX;
 
 /// The variable that holds the bearer of a session's route in its container's environment, which its MCP config

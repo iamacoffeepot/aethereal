@@ -2,12 +2,15 @@
 //! sampled from the atlas. The fragment stage takes the median of the field's three channels, the distance to the
 //! glyph's edge, and turns it to coverage by how many of the frame's pixels a texel covers there, read off the
 //! screen-space derivative, so the edge is one pixel wide at every size; an outline is drawn at a second distance.
-//! A pipeline is made for each shape of pass a text joins.
+//! A colour glyph's texels are its own colours instead, sRGB times alpha: the fragment stage takes their mean over
+//! the pixel's footprint in the atlas, decodes it to linear light, and draws it as it is, with no outline, its text's
+//! colour giving it only its alpha. A pipeline is made for each shape of pass a text joins.
 
 #[cfg(test)]
 mod tests;
 
 use super::atlas::Slot;
+use super::generate::Ink;
 use super::layout::LaidGlyph;
 use super::{Clip, Colour, Layer, Outline};
 use crate::font::msdf::{BASE_PIXELS_PER_EM, DEFAULT_PADDING};
@@ -17,7 +20,8 @@ use crate::shape::{DepthFormat, Shape};
 use aethereal_math::Vec2;
 
 /// The glyph program. Each instance is a glyph: where its quad's top left is from the text's, and its size, in the
-/// frame's pixels; where its field lies in the atlas, in texels; and its run's colour. The uniforms are the
+/// frame's pixels; where its field lies in the atlas, in texels; its run's colour; and its ink, 0 for a distance field
+/// and 1 for a colour glyph. The uniforms are the
 /// placement's in the pass: the frame's size, where the text is, its clip, its outline's colour, its opacity, its
 /// depth, its outline's width in pixels, and how many texels the field reaches from 0 to 1.
 pub const GLYPH: &str = "
@@ -41,6 +45,8 @@ struct Corner {
     @location(0) texel: vec2<f32>,
     @location(1) pixel: vec2<f32>,
     @location(2) colour: vec4<f32>,
+    @location(3) @interpolate(flat) field: vec4<f32>,
+    @location(4) @interpolate(flat) ink: f32,
 }
 
 @vertex
@@ -50,24 +56,49 @@ fn corner(
     @location(1) size: vec2<f32>,
     @location(2) field: vec4<f32>,
     @location(3) colour: vec4<f32>,
+    @location(4) ink: f32,
 ) -> Corner {
     let right = index == 1u || index == 2u || index == 4u;
     let down = index == 2u || index == 4u || index == 5u;
     let unit = vec2(select(0.0, 1.0, right), select(0.0, 1.0, down));
     let pixel = placed.at + at + unit * size;
     let clip = vec2(pixel.x / placed.frame.x * 2.0 - 1.0, 1.0 - pixel.y / placed.frame.y * 2.0);
-    return Corner(vec4(clip, placed.depth, 1.0), field.xy + unit * field.zw, pixel, colour);
+    return Corner(vec4(clip, placed.depth, 1.0), field.xy + unit * field.zw, pixel, colour, field, ink);
 }
 
 fn median(channels: vec3<f32>) -> f32 {
     return max(min(channels.r, channels.g), min(max(channels.r, channels.g), channels.b));
 }
 
+// sRGB decoded to linear light, each channel: linear below 0.04045, the 2.4 power above it.
+fn decoded(encoded: vec3<f32>) -> vec3<f32> {
+    return select(pow((encoded + 0.055) / 1.055, vec3(2.4)), encoded / 12.92, encoded <= vec3(0.04045));
+}
+
+// A colour glyph's texels about `texel`: the mean of 4 by 4 samples spread over `footprint`, the texels one pixel
+// covers, and at least one texel, each kept to the centres of the glyph's own texels in `field`, so that shrinking
+// it does not alias and no neighbour's texel is read.
+fn painted(texel: vec2<f32>, footprint: vec2<f32>, field: vec4<f32>, texels: vec2<f32>) -> vec4<f32> {
+    let lowest = field.xy + 0.5;
+    let highest = field.xy + field.zw - 0.5;
+    let spread = max(footprint, vec2(1.0));
+    var sum = vec4(0.0);
+    for (var row = 0u; row < 4u; row++) {
+        for (var column = 0u; column < 4u; column++) {
+            let offset = (vec2(f32(column), f32(row)) + 0.5) / 4.0 - 0.5;
+            let at = clamp(texel + offset * spread, lowest, highest);
+            sum += textureSampleLevel(atlas, smoothly, at / texels, 0.0);
+        }
+    }
+    return sum / 16.0;
+}
+
 @fragment
 fn coverage(corner: Corner) -> @location(0) vec4<f32> {
     let texels = vec2<f32>(textureDimensions(atlas));
     let distance = median(textureSample(atlas, smoothly, corner.texel / texels).rgb);
-    let per_texel = dot(vec2(0.5), 1.0 / max(fwidth(corner.texel), vec2(1e-6)));
+    let footprint = fwidth(corner.texel);
+    let per_texel = dot(vec2(0.5), 1.0 / max(footprint, vec2(1e-6)));
     let pixels = (distance - 0.5) * placed.span * per_texel;
     let fill = clamp(pixels + 0.5, 0.0, 1.0) * corner.colour.a;
     let rim = clamp(pixels + placed.rim_width + 0.5, 0.0, 1.0) * placed.rim.a;
@@ -76,6 +107,11 @@ fn coverage(corner: Corner) -> @location(0) vec4<f32> {
     let inside = all(corner.pixel >= placed.clip.xy) && all(corner.pixel < placed.clip.zw);
     if !inside {
         discard;
+    }
+    if corner.ink > 0.5 {
+        let painted = painted(corner.texel, footprint, corner.field, texels);
+        let own = decoded(painted.rgb / max(painted.a, 1e-6));
+        return vec4(own, painted.a * corner.colour.a * placed.opacity);
     }
     return vec4(colour, alpha * placed.opacity);
 }
@@ -90,8 +126,9 @@ pub const FRAGMENT: &str = "coverage";
 /// The group [`GLYPH`] binds the picking step in, after the atlas's and a placement's (ADR-0055).
 pub const PICKING: u32 = 2;
 
-/// The bytes of one glyph's instance: two floats of where, two of its size, four of its field, four of its colour.
-pub const INSTANCE_BYTES: usize = 48;
+/// The bytes of one glyph's instance: two floats of where, two of its size, four of its field, four of its colour, and
+/// one of its ink.
+pub const INSTANCE_BYTES: usize = 52;
 
 /// The bytes of a placement's uniforms in one pass.
 pub const PLACED_BYTES: usize = 64;
@@ -229,6 +266,7 @@ fn pipeline(device: &wgpu::Device, layouts: &Layouts, shape: Shape, depthed: Dep
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 2 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 3 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 48, shader_location: 4 },
     ];
     let instances = wgpu::VertexBufferLayout {
         array_stride: INSTANCE_BYTES as u64,
@@ -296,7 +334,12 @@ pub fn instance(glyph: &LaidGlyph, slot: Slot, size: f32) -> Option<[u8; INSTANC
         field.height as f32,
     ];
 
-    Some(bytes(values.into_iter().chain(glyph.colour.channels())))
+    let ink = match field.ink {
+        Ink::Field => 0.0,
+        Ink::Colour => 1.0,
+    };
+
+    Some(bytes(values.into_iter().chain(glyph.colour.channels()).chain([ink])))
 }
 
 /// Where and how a placed text is drawn, as its uniforms say beside the frame's size.

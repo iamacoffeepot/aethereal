@@ -16,9 +16,8 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data", features = ["json"] }
 # The sessions' records and transcripts are kept in `Files`' `Save` namespace, asked as any actor asks it.
 aethereal-files = { path = "../aethereal-files" }
+# The client of Docker's Engine API, and the actor layer the sessions' port's stack asks of each request's bearer.
 aethereal-http = { path = "../aethereal-http" }
-# Each session's calls of the hub's tools come on `Mcp`'s route, bearing a bearer the capability tells it of.
-aethereal-mcp = { path = "../aethereal-mcp" }
 # Each session's drop box, the one directory of the machine its container is given, is the store's.
 aethereal-store = { path = "../aethereal-store" }
 aethereal-substrate = { path = "../aethereal-substrate" }

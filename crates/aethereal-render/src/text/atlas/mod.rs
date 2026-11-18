@@ -10,6 +10,7 @@ mod tests;
 pub mod texture;
 
 use super::faces::FontKey;
+use super::generate::{GeneratedField, Ink};
 use crate::font::GlyphId;
 use shelf::Shelves;
 use std::collections::HashMap;
@@ -21,14 +22,24 @@ pub struct GlyphKey {
     pub glyph: GlyphId,
 }
 
-/// A glyph's field as it was generated at the base size: its texels, and where its top left lies from the glyph's
-/// origin, right and up, in pixels.
+/// A glyph's field as it was generated at the base size: its texels, where its top left lies from the glyph's
+/// origin, right and up, in pixels, and how its texels are drawn: a distance field, or the glyph's own colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Field {
     pub width: u32,
     pub height: u32,
     pub left: i32,
     pub top: i32,
+    pub ink: Ink,
+}
+
+/// A glyph as its job generated it is laid in the atlas as it is.
+impl From<GeneratedField> for Field {
+    fn from(generated: GeneratedField) -> Self {
+        let GeneratedField { width, height, left, top, ink } = generated;
+
+        Self { width, height, left, top, ink }
+    }
 }
 
 impl Field {

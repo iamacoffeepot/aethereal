@@ -6,14 +6,15 @@ mod reply;
 mod tests;
 
 use aethereal_data::{Budget, JsonTree, JsonValue, from_json, from_value, read_json};
-use aethereal_http::{Method, Request, Status, base64};
-use aethereal_tools::Table;
+use aethereal_http::stack::Request;
+use aethereal_http::{Status, base64};
+use aethereal_tools::{Caller, Table};
 use core::str;
 pub use reply::{Reply, image, image_room, output, output_room, refused, value};
 
 /// The revision spoken, the only one (ADR-0037).
 const VERSION: &str = "2026-07-28";
-/// The most bytes a request's JSON may take to read. `Http` bounds the body before this.
+/// The most bytes a request's JSON may take to read. The body's gather bounds it before this.
 const READ_BYTES: usize = 256 * 1024 * 1024;
 
 /// `-32601`: no such method.
@@ -31,19 +32,15 @@ pub enum Routed {
     Call { id: String, tool: String, input: Vec<u8> },
 }
 
-/// What `request`, whose body's bytes are `body`, is, each row of ADR-0037's table in its order. `origins` are the
-/// origins allowed besides this machine's.
-pub fn route(request: &Request, body: &[u8], origins: &[String], table: &Table) -> Routed {
-    let is_allowed = request.header("origin").is_none_or(|origin| origin::is_allowed(origin, origins));
-    if !is_allowed {
-        return Routed::Respond(Reply::Empty(Status::Forbidden));
-    }
-    if request.path != "/mcp" {
-        return Routed::Respond(Reply::Empty(Status::NotFound));
-    }
-    if request.method != Method::Post {
-        return Routed::Respond(Reply::Empty(Status::MethodNotAllowed));
-    }
+/// Whether `request` comes from no page, or from a page of an origin it takes: this machine's, or one of `origins`.
+/// The first row of ADR-0037's table, checked before the body is read.
+pub fn is_from_allowed(request: &Request<Caller, ()>, origins: &[String]) -> bool {
+    request.header("origin").is_none_or(|origin| origin::is_allowed(origin, origins))
+}
+
+/// What `request`, whose body's bytes are `body`, is, each row of ADR-0037's table past its origin in its order. Its
+/// method and path are its stack's router's to check (ADR-0035), which asks only for `POST /mcp`.
+pub fn route(request: &Request<Caller, ()>, body: &[u8], table: &Table) -> Routed {
     let Ok(text) = str::from_utf8(body) else {
         return Routed::Respond(Reply::Empty(Status::BadRequest));
     };
@@ -124,7 +121,7 @@ fn id_text(id: &JsonValue<'_>) -> Option<String> {
 
 /// A request to answer.
 struct Rpc<'call, 'json> {
-    request: &'call Request,
+    request: &'call Request<Caller, ()>,
     tree: &'call JsonTree<'json>,
     id: String,
     method: &'call str,

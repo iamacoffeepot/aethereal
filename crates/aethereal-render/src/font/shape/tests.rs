@@ -40,3 +40,17 @@ fn a_character_the_font_lacks_is_drawn_missing_and_listed() {
     assert_eq!(glyphs, expected);
     assert_eq!(shaped.missing, vec![Missing { character: '\u{4e2d}', source: 1 }]);
 }
+
+#[test]
+fn a_variation_selector_is_not_drawn() {
+    // Catches U+FE0F, which follows most emoji typed or sent, drawn as the missing glyph: a heart would draw with a
+    // box after it, as no font maps the selector to a glyph.
+    let font = noto();
+    let font = font.metrics();
+    let shaped = font.shape("a\u{fe0f}b");
+
+    let glyphs = shaped.glyphs.iter().map(|glyph| glyph.source).collect::<Vec<_>>();
+
+    assert_eq!(glyphs, vec![0, 4]);
+    assert_eq!(shaped.missing, Vec::new());
+}

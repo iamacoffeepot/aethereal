@@ -5,7 +5,8 @@
 //! through `Files`, winds down and stops a session that is idle, and resumes it when it is spoken to. The host serves it
 //! one thing of its own, the read of the credential's file ([`Credential`]), beside the host's randomness and the
 //! store's stockroom, which each session's container is readied from: the bearer of its route to the hub's tools,
-//! which `Mcp` is told of, and its drop box (ADR-0057). Behind the `tools` feature,
+//! which it holds and checks each request on the sessions' port against as that port's stack's actor layer
+//! (ADR-0035), and its drop box (ADR-0057). Behind the `tools` feature,
 //! `SessionsTools` is the hub's six tools for it: `session_new`, `session_say`, `session_read`, `session_list`,
 //! `session_interrupt`, and `session_archive`.
 //!
@@ -33,8 +34,8 @@ pub use docker::{
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, CARGO, CLAUDE, Chat, Chatted, Conversation, Credential, Crediting, Ended,
-    Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions,
+    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Conversation, Credential, Crediting,
+    Ended, Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions,
     ListedSession, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned, ReadTranscript,
     Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed, SessionsSettings,
     ShowAsk, ShowEvents, ShowTabs, Showing, Since, Speaker, Standing, State, TARGET, Tab, Transcribed, Transcript,

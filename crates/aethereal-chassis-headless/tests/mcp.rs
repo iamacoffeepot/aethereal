@@ -1,4 +1,5 @@
-//! The MCP capability served on the native host over real HTTP, the test its tools' worker (ADR-0037, ADR-0036).
+//! The MCP capability served on the native host over real HTTP through stacks of the test's own (ADR-0035), the test
+//! its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
     Actor, ActorName, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault,
@@ -10,15 +11,15 @@ use aethereal_data::{
     ActorPath, Budget, Kind, PathSegment, Plain, Schema, SchemaNodes, from_bytes, from_json, to_bytes, to_json,
 };
 use aethereal_files::{Files, ReadTool, WriteTool};
-use aethereal_http::{Http, HttpSettings};
+use aethereal_http::stack::{Credentials, Head, Layer, LayerForm, Response, StackSettings, Step};
 use aethereal_link::{
     Down, EngineList, EngineTools, Engines, EnginesSettings, ListEngines, MintFor, Minted, Outcome, REVISION, Up,
     Within,
 };
-use aethereal_mcp::{Admit, Bearer, Dismiss, Mcp, McpSettings};
+use aethereal_mcp::{MarkOwner, Mcp, McpRoutes, McpSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program, Unbooted};
-use aethereal_tcp::Tcp;
+use aethereal_tcp::{Interface, Tcp};
 use aethereal_tools::{
     Call, Called, Caller, Offer, Offered, Output, Tool, ToolSheet, Toolbox, ToolboxConfig, Tooling, Withdraw,
 };
@@ -28,6 +29,10 @@ use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::{env, fs, process};
+
+mod stacks;
+
+use stacks::{bound, stack};
 
 /// What the test's tools read.
 #[derive(Debug, Plain)]
@@ -101,42 +106,86 @@ fn sheet(name: &str) -> ToolSheet {
     }
 }
 
-/// A host serving MCP on a port of its choosing, and that port.
-fn served(settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
-    served_over(HttpSettings::default(), settings)
+/// A stand-in for the sessions' actor layer: a pure layer that reads the bearer token `<n>` as session `n`, and
+/// answers any other request with a challenge, so a test sends a session's call without minting its bearer.
+#[derive(Debug, Default, Clone, Plain)]
+struct Badge;
+
+impl LayerForm for Badge {
+    type Form = Self;
 }
 
-/// The engine `http` needs and no more: what `Http` itself says of it.
-fn engine_for(http: &HttpSettings) -> EngineSettings {
-    let read_limit = http.most_read_bytes().try_into().unwrap_or(u32::MAX);
+impl Layer for Badge {
+    type In = ();
+    type Out = Caller;
+
+    fn inbound(&mut self, head: &Head, (): ()) -> Step<Caller> {
+        let session = match &head.credentials {
+            Credentials::Bearer { token } => token.parse().ok(),
+            Credentials::None | Credentials::Basic { .. } | Credentials::Other { .. } => None,
+        };
+
+        session.map_or_else(
+            || Step::Answer(Response::challenge("Bearer", "test")),
+            |session| Step::Pass(Caller::Session { session }),
+        )
+    }
+}
+
+stack!(LocalStack, "test.mcp.local_stack", "local_stack", (MarkOwner, McpRoutes), []);
+stack!(BadgeStack, "test.mcp.badge_stack", "badge_stack", (Badge, McpRoutes), []);
+
+/// A stack's settings as a test serves it: any port the host picks, on the loopback.
+fn on_loopback() -> StackSettings {
+    StackSettings { port: 0, interface: Interface::Loopback, ..StackSettings::default() }
+}
+
+/// The engine a stack of `stack`'s settings needs and no more: what the stack itself says of it.
+fn engine_for(stack: &StackSettings) -> EngineSettings {
+    let read_limit = stack.most_read_bytes().try_into().unwrap_or(u32::MAX);
 
     EngineSettings { read_limit, mail_bytes: 1 << 24, ..EngineSettings::default() }
 }
 
-/// `settings` with both ports any the host picks, the route's on the loopback, as a test reaches it.
-fn on_loopback(settings: McpSettings) -> McpSettings {
-    McpSettings { port: 0, route_port: 0, route_interface: String::from("127.0.0.1"), ..settings }
+/// The roots of every program of this test, the last made first.
+type Served = (BadgeStack, (LocalStack, (Mcp, (Tcp, ()))));
+
+/// The program every test starts from, on an engine of `engine`'s settings: `Mcp` of `settings`, served by a
+/// [`LocalStack`] and a [`BadgeStack`] of `stack`'s settings.
+fn program_with(engine: EngineSettings, stack: StackSettings, settings: McpSettings) -> Program<Headless, Served> {
+    Headless::program()
+        .with_engine(engine)
+        .root::<Tcp>()
+        .root_with::<Mcp>(settings)
+        .root_with::<LocalStack>(stack.clone())
+        .root_with::<BadgeStack>(stack)
 }
 
-/// A host serving MCP over `http` on a port of its choosing, and that port.
-fn served_over(http: HttpSettings, settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
-    let settings = on_loopback(settings);
-    let mut harness = Harness::of(
-        Headless::program()
-            .with_engine(engine_for(&http))
-            .root::<Tcp>()
-            .root_with::<Http>(http)
-            .root_with::<Mcp>(settings),
-    )?;
+/// A host serving MCP on a port of its choosing, and that port, the owner's.
+fn served(settings: McpSettings) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
+    served_over(on_loopback(), settings)
+}
+
+/// A host serving MCP through stacks of `stack`'s settings, and the owner's port.
+fn served_over(
+    stack: StackSettings,
+    settings: McpSettings,
+) -> Result<(Harness<Headless>, ActorRef<Mcp>, u16), Unheard> {
+    let mut harness = Harness::of(program_with(engine_for(&stack), stack, settings))?;
     let mcp = harness.root::<Mcp>();
-    for _ in 0..1000 {
-        let served = harness.state(mcp)?;
-        if let (Some(port), Some(_)) = (served.port(), served.route_port()) {
-            return Ok((harness, mcp, port));
-        }
-        harness.step();
-    }
-    panic!("`Mcp` is served, and its route");
+    let port = port_of(&mut harness);
+
+    Ok((harness, mcp, port))
+}
+
+/// The owner's port `harness` serves on, once `Tcp` has bound it.
+fn port_of(harness: &mut Harness<Headless>) -> u16 {
+    bound(harness, |stack: &LocalStack| stack.serving.port())
+}
+
+/// The port `harness` serves sessions' calls on, read by [`Badge`], once `Tcp` has bound it.
+fn badge_port_of(harness: &mut Harness<Headless>) -> u16 {
+    bound(harness, |stack: &BadgeStack| stack.serving.port())
 }
 
 /// A host holding the tool `say`, the test its worker.
@@ -385,14 +434,9 @@ fn a_call_reaches_the_worker_as_bytes_and_its_output_comes_back_as_json() -> Res
     Ok(())
 }
 
-/// `rpc` bearing `bearer`, as a session's container sends it.
-fn bearing(rpc: Rpc, bearer: Bearer) -> Post {
-    borne(&Post::of(rpc), bearer)
-}
-
-/// `post` bearing `bearer`, as a session's container sends it.
-fn borne(post: &Post, bearer: Bearer) -> Post {
-    Post { authorization: Some(format!("Bearer {}", bearer.hex())), ..*post }
+/// `post` bearing the token `token`, as a session's container sends it.
+fn borne(post: &Post, token: &str) -> Post {
+    Post { authorization: Some(format!("Bearer {token}")), ..*post }
 }
 
 /// The caller of the call `request` brings the host's worker, `say` answered once it is asked.
@@ -408,33 +452,19 @@ fn caller_of(harness: &mut Harness<Headless>, port: u16, request: &Post) -> Resu
 }
 
 #[test]
-fn the_route_lets_in_only_a_bearer_it_was_told_of_and_forwards_its_session_as_the_caller() -> Result<(), Unheard> {
-    // Catches a call on the sessions' route that bears no bearer, another's, or one let go of reaching a tool; a call
-    // on the route forwarded as the owner's, so a session could mint a trusted engine; another session's bearer named
-    // as this one's; and a bearer sent on the owner's own port read as a session's (ADR-0057).
+fn each_call_is_forwarded_as_the_caller_its_stack_s_layers_attached() -> Result<(), Unheard> {
+    // Catches the owner's layer passing anything but the owner, so a call on the owner's port is forwarded as a
+    // session's; a bearer sent on the owner's port read as a session's; and the caller a layer attached not forwarded
+    // with the call, or forwarded as another's, so a worker could not tell one session's call from another's or from
+    // the owner's (ADR-0057).
     let (mut harness, port) = holding_say()?;
-    let mcp = harness.root::<Mcp>();
-    let Some(route) = harness.state(mcp)?.route_port() else {
-        panic!("the route is served");
-    };
-    let (three, four) = (Caller::Session { session: 3 }, Caller::Session { session: 4 });
-    let (bearer, other, stranger) = (Bearer([0x5a; 16]), Bearer([0xa5; 16]), Bearer([0x3c; 16]));
-    harness.tell(mcp, &Admit { bearer, caller: three })?;
-    harness.tell(mcp, &Admit { bearer: other, caller: four })?;
+    let badge = badge_port_of(&mut harness);
+    let call = Post::of(Rpc::CallSay);
 
-    for refused in [Post::of(Rpc::CallSay), bearing(Rpc::CallSay, stranger), bearing(Rpc::List, stranger)] {
-        let read = answered(&mut harness, route, &refused);
-        assert_eq!(read.status, 401, "{read:?}");
-    }
-    assert_eq!(harness.rest(), Vec::new());
-    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, bearer))?, three);
-    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, other))?, four);
-    assert_eq!(caller_of(&mut harness, port, &bearing(Rpc::CallSay, bearer))?, Caller::Owner);
-
-    harness.tell(mcp, &Dismiss { caller: three })?;
-    let read = answered(&mut harness, route, &bearing(Rpc::CallSay, bearer));
-    assert_eq!(read.status, 401, "{read:?}");
-    assert_eq!(caller_of(&mut harness, route, &bearing(Rpc::CallSay, other))?, four);
+    assert_eq!(caller_of(&mut harness, port, &call)?, Caller::Owner);
+    assert_eq!(caller_of(&mut harness, port, &borne(&call, "3"))?, Caller::Owner);
+    assert_eq!(caller_of(&mut harness, badge, &borne(&call, "3"))?, Caller::Session { session: 3 });
+    assert_eq!(caller_of(&mut harness, badge, &borne(&call, "4"))?, Caller::Session { session: 4 });
 
     Ok(())
 }
@@ -488,15 +518,17 @@ fn arguments_that_are_no_input_are_a_result_and_never_reach_the_worker() -> Resu
 #[test]
 fn each_request_is_answered_as_the_table_says() -> Result<(), Unheard> {
     // Catches a row of ADR-0037's table dropped or moved, each case one a conforming client never sends or a server
-    // that took it would misread.
+    // that took it would misread; and a path or method its stack's router does not take reaching `Mcp`, which is the
+    // router's `404` or `405` before the origin is read.
     let (mut harness, port) = holding_say()?;
     let conforming = Post::of(Rpc::List);
     let cases = [
         (Post { origin: Some("http://evil.test"), ..conforming.clone() }, 403, ""),
-        (Post { origin: Some("http://evil.test"), path: "/other", ..conforming.clone() }, 403, ""),
+        (Post { origin: Some("http://evil.test"), path: "/other", ..conforming.clone() }, 404, ""),
         (Post { path: "/other", ..conforming.clone() }, 404, ""),
         (Post { verb: "GET", ..conforming.clone() }, 405, ""),
         (Post { verb: "DELETE", ..conforming.clone() }, 405, ""),
+        (Post { path: "/mcp/", ..conforming.clone() }, 404, ""),
         (Post { body: Some("[]"), ..conforming.clone() }, 400, ""),
         (Post { body: Some("not json"), ..conforming.clone() }, 400, ""),
         (Post { body: Some("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"), ..conforming.clone() }, 400, ""),
@@ -725,12 +757,12 @@ fn a_call_past_the_most_out_is_a_result_and_a_slot_comes_back() -> Result<(), Un
 }
 
 #[test]
-fn a_call_its_tool_never_answers_frees_its_slot_at_the_http_deadline() -> Result<(), Unheard> {
-    // Catches #355: `Mcp`'s ask to a tool that holds the call and never answers kept a slot of `most_calls` after the
-    // client was answered `504`, so with one slot every call after the first was refused. Its ask inherits the
-    // exchange's deadline, and expires with it.
-    let http = HttpSettings { answer_within_millis: 200, ..HttpSettings::default() };
-    let (mut harness, mcp, port) = served_over(http, McpSettings { most_calls: 1, ..McpSettings::default() })?;
+fn a_call_its_tool_never_answers_is_refused_at_its_deadline_and_frees_its_slot() -> Result<(), Unheard> {
+    // Catches #355: `Mcp`'s ask to a tool that holds the call and never answers kept a slot of `most_calls`, so with
+    // one slot every call after the first was refused. A stack asks its handler with no deadline (ADR-0035), so `Mcp`
+    // states its own, `call_within_millis`, and the call expires with it.
+    let settings = McpSettings { most_calls: 1, call_within_millis: 100, ..McpSettings::default() };
+    let (mut harness, mcp, port) = served(settings)?;
     let worker = harness.protocol::<Tooling>();
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
@@ -738,7 +770,9 @@ fn a_call_its_tool_never_answers_frees_its_slot_at_the_http_deadline() -> Result
     let first = client(port, &Post::of(Rpc::CallSay));
     let _never_answered = harness.asked::<Call>()?;
     let read = heard(&mut harness, first);
-    assert_eq!(read.status, 504, "{read:?}");
+    assert_eq!(read.status, 200, "{read:?}");
+    assert!(read.body.contains("Expired"), "{read:?}");
+    assert!(read.body.contains("\"isError\":true"), "{read:?}");
 
     let again = client(port, &Post::of(Rpc::CallSay));
     let call = harness.asked::<Call>()?;
@@ -750,7 +784,7 @@ fn a_call_its_tool_never_answers_frees_its_slot_at_the_http_deadline() -> Result
 }
 
 #[test]
-fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Result<(), Unheard> {
+fn the_largest_request_a_stack_takes_is_read_within_the_limit_it_asks_for() -> Result<(), Unheard> {
     // Catches `most_read_bytes` counting a head by its bytes alone, as a list charges each element whole: a head of the
     // most headers that fit would be mail `Mcp` cannot read, and never handles, however it is written.
     let (mut harness, _, port) = served_over(modest(), McpSettings::default())?;
@@ -765,9 +799,9 @@ fn the_largest_request_http_takes_is_read_within_the_limit_it_asks_for() -> Resu
     Ok(())
 }
 
-/// An HTTP server of small requests, whose engine's read limit, as [`engine_for`] gives it, is modest.
-fn modest() -> HttpSettings {
-    HttpSettings { most_head_bytes: 2048, most_body_bytes: 256, chunk_bytes: 256, ..HttpSettings::default() }
+/// A stack of small requests, whose engine's read limit, as [`engine_for`] gives it, is modest.
+fn modest() -> StackSettings {
+    StackSettings { most_head_bytes: 2048, chunk_bytes: 256, ..on_loopback() }
 }
 
 #[test]
@@ -986,30 +1020,9 @@ impl Tool for Reaching {
     }
 }
 
-/// The roots of every toolbox test's program, the last made first.
-type Served = (Mcp, (Http, (Tcp, ())));
-
 /// The program every toolbox test starts from: `Mcp` served, on a port of its choosing.
 fn program() -> Program<Headless, Served> {
-    let http = HttpSettings::default();
-
-    Headless::program()
-        .with_engine(engine_for(&http))
-        .root::<Tcp>()
-        .root_with::<Http>(http)
-        .root_with::<Mcp>(on_loopback(McpSettings::default()))
-}
-
-/// The port `harness` serves on, once `Http` has bound it.
-fn port_of(harness: &mut Harness<Headless>) -> Result<u16, Unheard> {
-    let mcp = harness.root::<Mcp>();
-    for _ in 0..1000 {
-        if let Some(port) = harness.state(mcp)?.port() {
-            return Ok(port);
-        }
-        harness.step();
-    }
-    panic!("`Mcp` is served");
+    program_with(engine_for(&on_loopback()), on_loopback(), McpSettings::default())
 }
 
 #[test]
@@ -1017,7 +1030,7 @@ fn a_toolbox_stands_up_each_tool_and_a_call_reaches_it() -> Result<(), Unheard> 
     // Catches a tool not spawned, not offered, or offered under the wrong worker, and a generic actor's seat or mail
     // going astray, which no other test can as it is the first of them.
     let mut harness = Harness::of(program().root::<Toolbox<(Say1, Other), Mcp>>())?;
-    let port = port_of(&mut harness)?;
+    let port = port_of(&mut harness);
     for _ in 0..16 {
         harness.step();
     }
@@ -1044,7 +1057,7 @@ fn a_name_listed_twice_stops_the_program_as_it_starts() {
 fn a_list_in_groups_stands_up_the_tools_of_each() -> Result<(), Unheard> {
     // Catches a group's tools left unspawned or unoffered, which leaves a list past eight short with nothing said.
     let mut harness = Harness::of(program().root::<Toolbox<((Say1,), ((Other,),)), Mcp>>())?;
-    let port = port_of(&mut harness)?;
+    let port = port_of(&mut harness);
     for _ in 0..16 {
         harness.step();
     }
@@ -1168,7 +1181,7 @@ fn read_tool_answers_a_file_over_mcp_and_says_what_it_could_not_read() -> Result
     };
     let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool,), Mcp>>();
     let mut harness = Harness::of(program)?;
-    let port = port_of(&mut harness)?;
+    let port = port_of(&mut harness);
     for _ in 0..16 {
         harness.step();
     }
@@ -1214,7 +1227,7 @@ fn write_tool_writes_a_save_over_mcp_that_read_file_reads_back() -> Result<(), U
     };
     let program = program().root_with::<Files>(roots).root::<Toolbox<(ReadTool, WriteTool), Mcp>>();
     let mut harness = Harness::of(program)?;
-    let port = port_of(&mut harness)?;
+    let port = port_of(&mut harness);
     for _ in 0..16 {
         harness.step();
     }
@@ -1283,29 +1296,26 @@ fn engine_list(harness: &mut Harness<Headless>) -> Result<EngineList, Unheard> {
     Ok(list)
 }
 
-/// A hub over `http`, serving MCP with the hub's tools, with one call out to each engine, and an engine linked to it
-/// holding `say`, played by a socket: the hub, its MCP port, and the engine's connection.
-fn hub_with_an_engine(http: HttpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
-    let (mut harness, port, link_port) = hub(http)?;
+/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine, and an engine linked to
+/// it holding `say`, played by a socket: the hub, its owner's port, and the engine's connection.
+fn hub_with_an_engine(settings: McpSettings) -> Result<(Harness<Headless>, u16, TcpStream), Unheard> {
+    let (mut harness, port, link_port) = hub(settings)?;
     let stream = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
 
     Ok((harness, port, stream))
 }
 
-/// A hub over `http`, serving MCP with the hub's tools, with one call out to each engine: the hub, its MCP port, and
-/// the port engines link on.
-fn hub(http: HttpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
+/// A hub serving MCP as `settings` say with the hub's tools, with one call out to each engine: the hub, its owner's
+/// port, and the port engines link on.
+fn hub(settings: McpSettings) -> Result<(Harness<Headless>, u16, u16), Unheard> {
     let engines = EnginesSettings { port: 0, most_calls: 1, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
-    let read_limit = engine_for(&http).read_limit.max(LINK_BYTES);
-    let program = Headless::program()
-        .with_engine(EngineSettings { read_limit, ..engine_for(&http) })
-        .root::<Tcp>()
-        .root_with::<Http>(http)
-        .root_with::<Mcp>(on_loopback(McpSettings::default()))
-        .root_with::<Engines>(engines)
-        .root::<Toolbox<(EngineTools,), Mcp>>();
+    let stack = on_loopback();
+    let read_limit = engine_for(&stack).read_limit.max(LINK_BYTES);
+    let engine = EngineSettings { read_limit, ..engine_for(&stack) };
+    let program =
+        program_with(engine, stack, settings).root_with::<Engines>(engines).root::<Toolbox<(EngineTools,), Mcp>>();
     let mut harness = Harness::of(program)?;
-    let port = port_of(&mut harness)?;
+    let port = port_of(&mut harness);
     let engines = harness.root::<Engines>();
     waiting::until(BUDGET, || {
         harness.step();
@@ -1351,13 +1361,14 @@ fn call_say_on_the_engine() -> Post {
 }
 
 #[test]
-fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_slot() -> Result<(), Unheard> {
-    // Catches the link's hop left out of HTTP's deadline: `EngineTools` asks the engine from the turn that reads its
-    // tools, not the one that holds the call, so an ask there that states no deadline is due never, `Engine` keeps
-    // the call after the client was answered `504`, and with one call out every `call_tool` of the engine after it is
-    // refused. Catches too a call written with no time left, or more than HTTP gave it.
-    let http = HttpSettings { answer_within_millis: 300, ..HttpSettings::default() };
-    let (mut harness, port, stream) = hub_with_an_engine(http)?;
+fn call_tool_of_a_tool_that_never_answers_is_refused_at_mcp_s_deadline_and_frees_the_engines_slot()
+-> Result<(), Unheard> {
+    // Catches the link's hop left out of the call's deadline: `EngineTools` asks the engine from the turn that reads
+    // its tools, not the one that holds the call, so an ask there that states no deadline is due never, `Engine` keeps
+    // the call after the client was answered, and with one call out every `call_tool` of the engine after it is
+    // refused. Catches too a call written with no time left, or more than `Mcp` gave it.
+    let (mut harness, port, stream) =
+        hub_with_an_engine(McpSettings { call_within_millis: 300, ..McpSettings::default() })?;
 
     let first = client(port, &call_say_on_the_engine());
     #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
@@ -1368,7 +1379,7 @@ fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_
         (down, stream)
     });
     let read = heard(&mut harness, first);
-    assert_eq!(read.status, 504, "{read:?}");
+    assert!(read.body.contains("Expired"), "{read:?}");
     let Ok((written, stream)) = silent.join() else {
         panic!("the engine's side read the call");
     };
@@ -1385,7 +1396,7 @@ fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_
         harness.step();
         harness.state(engine).is_ok_and(|engine| engine.calls_out() == 0)
     });
-    assert_eq!(harness.state(engine)?.calls_out(), 0, "the call's slot is freed at HTTP's deadline");
+    assert_eq!(harness.state(engine)?.calls_out(), 0, "the call's slot is freed at `Mcp`'s deadline");
 
     let again = client(port, &call_say_on_the_engine());
     #[allow(clippy::disallowed_methods)] // The engine's side is a native thread of its own, outside the engine.
@@ -1408,40 +1419,26 @@ fn call_tool_of_a_tool_that_never_answers_is_answered_504_and_frees_the_engines_
     Ok(())
 }
 
-/// A hub with the owner's engine `scene` linked as engine 0 and session 3's engine `work` as engine 1, its sessions'
-/// route served, with session 3's bearer and session 4's admitted.
+/// A hub with the owner's engine `scene` linked as engine 0 and session 3's engine `work` as engine 1, sessions'
+/// calls served on a port of their own, whose layer reads each session from its bearer.
 struct SessionsHub {
     harness: Harness<Headless>,
-    /// The owner's own port.
+    /// The owner's port.
     port: u16,
-    /// The sessions' route.
-    route: u16,
-    /// Session 3's bearer.
-    three: Bearer,
-    /// Session 4's bearer.
-    four: Bearer,
+    /// The sessions' port.
+    badge: u16,
     /// The engines' connections, kept open while the test runs.
     engines: [TcpStream; 2],
 }
 
-/// The hub of [`SessionsHub`], once both engines are listed and the route is served.
+/// The hub of [`SessionsHub`], once both engines are listed and the sessions' port is served.
 fn sessions_hub() -> Result<SessionsHub, Unheard> {
-    let (mut harness, port, link_port) = hub(HttpSettings::default())?;
+    let (mut harness, port, link_port) = hub(McpSettings::default())?;
     let owner_s = linked(&mut harness, link_port, Caller::Owner, "scene", 1)?;
     let session_s = linked(&mut harness, link_port, Caller::Session { session: 3 }, "work", 2)?;
-    let mcp = harness.root::<Mcp>();
-    waiting::until(BUDGET, || {
-        harness.step();
-        harness.state(mcp).is_ok_and(|mcp| mcp.route_port().is_some())
-    });
-    let Some(route) = harness.state(mcp)?.route_port() else {
-        panic!("the route is served");
-    };
-    let (three, four) = (Bearer([0x5a; 16]), Bearer([0xa5; 16]));
-    harness.tell(mcp, &Admit { bearer: three, caller: Caller::Session { session: 3 } })?;
-    harness.tell(mcp, &Admit { bearer: four, caller: Caller::Session { session: 4 } })?;
+    let badge = badge_port_of(&mut harness);
 
-    Ok(SessionsHub { harness, port, route, three, four, engines: [owner_s, session_s] })
+    Ok(SessionsHub { harness, port, badge, engines: [owner_s, session_s] })
 }
 
 /// `describe_engine` of engine `engine`'s tools by name.
@@ -1472,26 +1469,26 @@ fn a_session_reaches_only_the_engines_it_started_and_the_owner_reaches_every_one
     // session could drive, capture, or end it; a session reaching another session's engine, as if being untrusted were
     // enough; a session refused its own engine; an id no engine has refused other than the owner's engine is, which
     // would tell a session which ids the owner runs; and the owner's own calls checked or refused (ADR-0057). Each
-    // call goes over the real route, so the caller is what `Mcp` read from the bearer.
-    let SessionsHub { mut harness, port, route, three, four, engines: _engines } = sessions_hub()?;
+    // call goes over real HTTP, so the caller is what its stack's layer attached.
+    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub()?;
     let say_on = |engine: u32| {
         call_tool("call_tool", &format!("{{\"engine\":{engine},\"tool\":\"say\",\"input\":{{\"text\":\"hi\"}}}}"))
     };
     let terminate = call_tool("terminate_engine", "{\"engine\":0}");
 
     for refused in [describe(0), say_on(0), terminate] {
-        let read = answered(&mut harness, route, &borne(&refused, three));
+        let read = answered(&mut harness, badge, &borne(&refused, "3"));
         assert!(unreached(&read, 0), "{read:?}");
     }
     harness.settle();
     assert_eq!(engine_list(&mut harness)?.engines.len(), 2, "the owner's engine is not terminated");
 
-    let read = answered(&mut harness, route, &borne(&describe(1), four));
+    let read = answered(&mut harness, badge, &borne(&describe(1), "4"));
     assert!(unreached(&read, 1), "another session's engine is refused: {read:?}");
-    let read = answered(&mut harness, route, &borne(&describe(9), three));
+    let read = answered(&mut harness, badge, &borne(&describe(9), "3"));
     assert!(unreached(&read, 9), "an id no engine has is refused as the owner's engine is: {read:?}");
 
-    let read = answered(&mut harness, route, &borne(&describe(1), three));
+    let read = answered(&mut harness, badge, &borne(&describe(1), "3"));
     assert!(describes_say(&read), "a session reaches its own engine: {read:?}");
     for engine in [0, 1] {
         let read = answered(&mut harness, port, &describe(engine));
@@ -1505,14 +1502,14 @@ fn a_session_reaches_only_the_engines_it_started_and_the_owner_reaches_every_one
 fn a_session_s_list_engines_shows_only_its_own_and_the_owner_s_shows_every_one() -> Result<(), Unheard> {
     // Catches a session's `list_engines` showing the owner's engine or another session's, which it cannot reach and
     // whose names are not its own to read, and the owner's list cut by the filter meant for sessions (ADR-0057).
-    let SessionsHub { mut harness, port, route, three, four, engines: _engines } = sessions_hub()?;
+    let SessionsHub { mut harness, port, badge, engines: _engines } = sessions_hub()?;
     let list = call_tool("list_engines", "{}");
 
     let shown = |read: &Read| (read.body.contains("\"work\""), read.body.contains("\"scene\""));
 
-    let read = answered(&mut harness, route, &borne(&list, three));
+    let read = answered(&mut harness, badge, &borne(&list, "3"));
     assert_eq!(shown(&read), (true, false), "session 3 is shown its own engine alone: {read:?}");
-    let read = answered(&mut harness, route, &borne(&list, four));
+    let read = answered(&mut harness, badge, &borne(&list, "4"));
     assert_eq!(shown(&read), (false, false), "session 4 is shown neither: {read:?}");
     let read = answered(&mut harness, port, &list);
     assert_eq!(shown(&read), (true, true), "the owner is shown both: {read:?}");
