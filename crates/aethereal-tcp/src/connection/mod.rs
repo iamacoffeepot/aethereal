@@ -1,8 +1,10 @@
 //! A connection: its socket, owned by an actor that reads it as a stream paced by its reader's credit, and writes
 //! what it is asked, each call made in the handler that makes it possible, and waiting for the socket through the
-//! host's poller when a call would wait (ADR-0033). Its write half ends apart from its read half: when its holder
-//! finishes writing, or a write fails, it reads on until the read half ends. An accepted connection and a dialed one
-//! stand in two places, so they are two types, which share what they do.
+//! host's poller when a call would wait (ADR-0033). Its halves end apart: when its holder finishes writing, or a write
+//! fails, it reads on until the read half ends; and when its peer finishes writing, its read stream ends `Peer` and it
+//! writes on until it has written what it was asked and was asked to finish. It closes once both halves have ended, or
+//! once it is hung up. An accepted connection and a dialed one stand in two places, so they are two types, which share
+//! what they do.
 
 mod accepted;
 mod dialed;
@@ -16,8 +18,8 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Answer, Answered, Beginning, Bytes, Ended, Enough, Fault, Given, Handle, Held, Later, More, Open, Receives, Reply,
-    Serving, Stream, StreamKey, Turn, Unsent, protocol,
+    Answer, Answered, Beginning, Bytes, Ended, Enough, ErasedActorRef, Fault, Given, Handle, Held, Later, More, Open,
+    Receives, Reply, Serving, Stream, StreamKey, Turn, Unsent, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -35,8 +37,8 @@ pub struct ConnectionConfig {
     pub most_unsent_bytes: u32,
 }
 
-/// A connection's stream of frames: opened with [`Read`], its parts each a [`Frame`], ended with how the connection
-/// hung up (ADR-0017). Its reader's credit is how many frames the connection may send before it stops reading its
+/// A connection's stream of frames: opened with [`Read`], its parts each a [`Frame`], ended with how its read half
+/// ended (ADR-0017). Its reader's credit is how many frames the connection may send before it stops reading its
 /// socket, so a reader that falls behind slows the peer.
 pub struct Reading;
 
@@ -58,11 +60,12 @@ pub struct Frame {
     pub bytes: Bytes,
 }
 
-/// How a connection hung up: the answer that ends its stream.
+/// How a connection's read half ended, as it hung up or as its peer finished writing: the answer that ends its stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.tcp.hung_up")]
 pub enum HungUp {
-    /// The other side closed.
+    /// The peer finished writing, and sends nothing more. A peer that shut only its write half still reads, so the
+    /// connection writes on until it is finished or hung up.
     Peer,
     /// This side asked.
     Shut,
@@ -104,7 +107,8 @@ pub enum Wrote {
 pub struct Shut;
 
 /// Asks a connection to finish writing: once every write it holds is written, it shuts its socket's write half, so
-/// the peer reads to its end, and the connection reads on until its read half ends.
+/// the peer reads to its end, and the connection reads on until its read half ends; one whose peer has already
+/// finished writing then closes.
 #[derive(Debug, Plain)]
 #[kind(name = "aether.tcp.finish")]
 pub struct Finish;
@@ -113,13 +117,25 @@ pub struct Finish;
 #[protocol(Write(answers = Wrote), Finish, Shut)]
 pub struct Writing;
 
-/// Who reads a connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-enum Reader {
-    /// No one yet: the connection does not read its socket.
+/// Where a connection's reading stands. Its writing goes on whichever case it is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+enum ReadHalf {
+    /// No one reads it yet: the connection does not read its socket.
     Waiting,
-    /// The stream `key` names.
-    Reading(StreamKey),
+    /// `reader` reads it, through the stream `stream` names.
+    Reading { stream: StreamKey, reader: ErasedActorRef },
+    /// The peer finished writing: `reader`'s stream ended `Peer`, and the socket is never read again. Only the reader
+    /// ending, not its stream, still hangs the connection up.
+    Ended { reader: ErasedActorRef },
+}
+
+/// What a connection does once its peer finishes writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum AfterPeer {
+    /// It writes on: a TCP peer that shut its write half still reads what it is sent.
+    WritesOn,
+    /// It hangs up whole, as it ends its reader's stream: a program closes its output as it exits.
+    HangsUp,
 }
 
 /// Where a connection's writing stands. Its reading goes on whichever case it is in.
@@ -192,15 +208,29 @@ pub struct Connection {
     /// The bytes it last told the engine it holds unsent, so it tells again only when they change (ADR-0053).
     told_unsent: u64,
     write_half: WriteHalf,
+    after_peer: AfterPeer,
     reading: Serving<Reading>,
-    reader: Reader,
+    read_half: ReadHalf,
     readable: Wait,
     writable: Wait,
 }
 
 impl Connection {
     /// The connection `config` gives, which makes no call on its socket until it has a reader with credit or a write.
+    /// Once its peer finishes writing, it writes on until it is finished.
     pub fn begin<A>(config: ConnectionConfig, turn: &mut Beginning<'_, A>) -> Result<Self, Fault> {
+        Self::begun(config, AfterPeer::WritesOn, turn)
+    }
+
+    /// The connection `config` gives, as [`begin`](Self::begin) makes it, except that once its peer finishes writing
+    /// it hangs up whole, every write unsent answered `HungUp`: for a program's pipe, whose program closes its output
+    /// as it exits.
+    pub fn begin_ending_with_peer<A>(config: ConnectionConfig, turn: &mut Beginning<'_, A>) -> Result<Self, Fault> {
+        Self::begun(config, AfterPeer::HangsUp, turn)
+    }
+
+    /// The connection `config` gives, which does as `after_peer` says once its peer finishes writing.
+    fn begun<A>(config: ConnectionConfig, after_peer: AfterPeer, turn: &mut Beginning<'_, A>) -> Result<Self, Fault> {
         let socket = turn.take(config.socket)?;
 
         Ok(Self {
@@ -212,28 +242,34 @@ impl Connection {
             most_unsent_bytes: u64::from(config.most_unsent_bytes),
             told_unsent: 0,
             write_half: WriteHalf::Open,
+            after_peer,
             reading: Serving::new(),
-            reader: Reader::Waiting,
+            read_half: ReadHalf::Waiting,
             readable: Wait::Not,
             writable: Wait::Not,
         })
     }
 
-    /// Opens the stream `open` asks for: the connection's reader, or a second, finished at once as `Busy`. The reader's
-    /// credit follows the request, and its `More` is what reads.
+    /// Opens the stream `open` asks for: the connection's reader; or a second, finished at once as `Busy`; or one
+    /// opened once the peer has finished writing, finished at once as `Peer`. The reader's credit follows the request,
+    /// and its `More` is what reads.
     pub fn open<A: Receives<Ended>>(
         &mut self,
         turn: &mut Turn<'_, A>,
         open: Open<Reading>,
     ) -> Result<Later<HungUp>, Fault> {
-        let (key, Read, later) = self.reading.open(turn, open)?;
-        if let Reader::Reading(_) = self.reader {
-            if let Some(second) = self.reading.take(key) {
-                second.finish(turn, &HungUp::Busy)?;
+        let (stream, Read, later) = self.reading.open(turn, open)?;
+        let refused = match self.read_half {
+            ReadHalf::Waiting => {
+                self.read_half = ReadHalf::Reading { stream, reader: turn.sender() };
+                return Ok(later);
             }
-            return Ok(later);
+            ReadHalf::Reading { .. } => HungUp::Busy,
+            ReadHalf::Ended { .. } => HungUp::Peer,
+        };
+        if let Some(second) = self.reading.take(stream) {
+            second.finish(turn, &refused)?;
         }
-        self.reader = Reader::Reading(key);
 
         Ok(later)
     }
@@ -254,19 +290,20 @@ impl Connection {
         let Some(stopped) = self.reading.stop(turn, enough) else {
             return Ok(());
         };
-        self.reader = Reader::Waiting;
+        self.read_half = ReadHalf::Waiting;
         stopped.finish(turn, &HungUp::Shut)?;
 
         self.hang_up(turn, HungUp::Shut)
     }
 
-    /// An actor watched has ended: when it was the reader, no one is left to read, and the connection hangs up.
+    /// An actor watched has ended: its streams are let go of, and when it was the reader, even one whose stream the
+    /// peer's end has finished, no one is left to read or to finish writing, and the connection hangs up.
     pub fn ended<A>(&mut self, turn: &mut Turn<'_, A>, ended: &Ended) -> Result<(), Fault> {
-        let gone = self.reading.ended(ended);
-        if gone.is_empty() {
+        drop(self.reading.ended(ended));
+        if !self.read_half.is_read_by(ended.actor()) {
             return Ok(());
         }
-        self.reader = Reader::Waiting;
+        self.read_half = ReadHalf::Waiting;
 
         self.hang_up(turn, HungUp::Shut)
     }
@@ -368,7 +405,8 @@ impl Connection {
     }
 
     /// Shuts its socket's write half, everything asked of it written: the peer reads to its end. A shut the socket
-    /// refuses fails the write half.
+    /// refuses fails the write half. A connection whose peer has finished writing has then nothing left to do, and
+    /// closes.
     fn shut_writing<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         let Ok(socket) = turn.resource(&self.socket) else {
             return self.fail_writing(turn);
@@ -378,12 +416,16 @@ impl Connection {
         }
         self.write_half = WriteHalf::Finished;
 
+        if let ReadHalf::Ended { .. } = self.read_half {
+            return self.hang_up(turn, HungUp::Peer);
+        }
+
         Ok(())
     }
 
     /// Its socket failed a write: it answers every write unsent `HungUp`, stops its wait for the socket to be
     /// writable, and takes no more writes, but reads on, so what the peer sent before it stopped reading still
-    /// arrives, and the connection ends when its read half does.
+    /// arrives, and the connection ends when its read half does, at once when it already has.
     fn fail_writing<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         self.write_half = WriteHalf::Failed;
         for unsent in self.unsent.drain(..) {
@@ -395,6 +437,10 @@ impl Connection {
         }
         self.writable = Wait::Not;
         self.tell_unsent(turn);
+
+        if let ReadHalf::Ended { .. } = self.read_half {
+            return self.hang_up(turn, HungUp::Reset);
+        }
 
         Ok(())
     }
@@ -409,9 +455,10 @@ impl Connection {
     }
 
     /// Reads, frames, and sends its reader as many frames as its credit allows. A read that would wait waits for the
-    /// socket to be readable; one stopped for want of credit waits for the reader's `More`.
+    /// socket to be readable; one stopped for want of credit waits for the reader's `More`; and one that reads the
+    /// peer's end, every whole frame before it sent, ends the read half.
     fn read<A: Receives<Answer<Readied, Interest>>>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
-        let Reader::Reading(key) = self.reader else {
+        let ReadHalf::Reading { stream: key, .. } = self.read_half else {
             return Ok(());
         };
         loop {
@@ -451,9 +498,38 @@ impl Connection {
             match filled {
                 Filled::Full => {}
                 Filled::Blocked => return self.wait(turn, Interest::Readable),
-                Filled::Closed => return self.hang_up(turn, HungUp::Peer),
+                Filled::Closed => return self.end_reading(turn),
             }
         }
+    }
+
+    /// The peer has finished writing: the reader's stream ends `Peer`, and the read half with it, for good, what it
+    /// read past the last whole frame dropped. The connection writes on until it has written what it was asked and was
+    /// asked to finish. One whose writing is finished or has failed has nothing left to do, and one begun to end with
+    /// its peer does the same: it hangs up.
+    fn end_reading<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
+        let ReadHalf::Reading { stream, reader } = self.read_half else {
+            return Ok(());
+        };
+        let writes_on = match self.write_half {
+            WriteHalf::Open | WriteHalf::Finishing => self.after_peer == AfterPeer::WritesOn,
+            WriteHalf::Finished | WriteHalf::Failed => false,
+        };
+        if !writes_on {
+            return self.hang_up(turn, HungUp::Peer);
+        }
+
+        if let Some(streaming) = self.reading.take(stream) {
+            streaming.finish(turn, &HungUp::Peer)?;
+        }
+        self.read_half = ReadHalf::Ended { reader };
+        self.read = Vec::new();
+        if let Wait::On(job) = self.readable {
+            turn.cancel(job);
+        }
+        self.readable = Wait::Not;
+
+        Ok(())
     }
 
     /// Runs a [`Ready`] for `interest`, unless one is in flight already.
@@ -551,12 +627,12 @@ impl Connection {
     /// Ends the reader's stream with `why`, answers every write not sent, stops its waits for the socket, and closes
     /// the connection, whose socket the engine drops after its closing turn (ADR-0010).
     fn hang_up<A>(&mut self, turn: &mut Turn<'_, A>, why: HungUp) -> Result<(), Fault> {
-        if let Reader::Reading(key) = self.reader
-            && let Some(stream) = self.reading.take(key)
+        if let ReadHalf::Reading { stream, .. } = self.read_half
+            && let Some(stream) = self.reading.take(stream)
         {
             stream.finish(turn, &why)?;
         }
-        self.reader = Reader::Waiting;
+        self.read_half = ReadHalf::Waiting;
         for unsent in self.unsent.drain(..) {
             turn.answer(unsent.held, &Wrote::HungUp)?;
         }
@@ -570,6 +646,16 @@ impl Connection {
         turn.close();
 
         Ok(())
+    }
+}
+
+impl ReadHalf {
+    /// Whether `actor` is its reader, whether or not its stream has ended.
+    fn is_read_by(self, actor: ErasedActorRef) -> bool {
+        match self {
+            Self::Reading { reader, .. } | Self::Ended { reader } => reader == actor,
+            Self::Waiting => false,
+        }
     }
 }
 

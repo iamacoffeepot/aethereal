@@ -10,5 +10,9 @@ description = "The TCP capability: a root whose listeners and connections own th
 aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 
+# The error codes an accept fails with, which a listener reads to tell one connection's failure from a broken socket.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
 [lints]
 workspace = true

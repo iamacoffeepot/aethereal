@@ -22,8 +22,8 @@ pub(super) struct Connection<F> {
     pub accepted: ActorRef<Accepted>,
     /// Where it came from.
     pub peer: SocketAddress,
-    /// The stream the stack reads it through.
-    pub reader: Number,
+    /// Whether its client still writes to it, and the stream the stack reads it through while it does.
+    pub read_side: ReadSide,
     /// Its layers' forms, made from the template as it was accepted: its pure layers' values, and a reference to each
     /// actor layer.
     pub layers: F,
@@ -36,6 +36,15 @@ pub(super) struct Connection<F> {
     /// How many phases with a deadline it has entered: the number of the one it is in.
     phases: u64,
     sleeping: Sleeping,
+}
+
+/// Whether a connection's client still writes to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+pub(super) enum ReadSide {
+    /// It does: the stack reads it through the stream this numbers.
+    Open(Number),
+    /// It finished writing: its stream has ended `Peer`, nothing more comes, and no credit is granted.
+    Ended,
 }
 
 /// Where a connection is in its requests.
@@ -163,7 +172,7 @@ impl<F> Connection<F> {
         Self {
             accepted,
             peer,
-            reader,
+            read_side: ReadSide::Open(reader),
             layers,
             buffer: Vec::new(),
             withheld: 0,
@@ -180,6 +189,25 @@ impl<F> Connection<F> {
             self.phase,
             Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Outflow(_) | Phase::Closing
         )
+    }
+
+    /// Whether its client has finished writing to it, so nothing more is read from it.
+    pub const fn is_read_out(&self) -> bool {
+        matches!(self.read_side, ReadSide::Ended)
+    }
+
+    /// Its client finished writing: nothing more is read from it, and what it withheld is never granted. The request
+    /// it serves, when it has one, closes it once answered, as no next request can come.
+    pub const fn stop_reading(&mut self) {
+        self.read_side = ReadSide::Ended;
+        self.withheld = 0;
+        match &mut self.phase {
+            Phase::Entering(Entering { owed, .. })
+            | Phase::Out(Out { owed, .. })
+            | Phase::Returning(Returning { owed, .. }) => owed.closes = true,
+            Phase::Outflow(outflow) => outflow.closes = true,
+            Phase::Idle { .. } | Phase::Head { .. } | Phase::Closing | Phase::Draining(_) => {}
+        }
     }
 
     /// Whether it is between requests, so the credit it withheld is granted and what it buffered is parsed.

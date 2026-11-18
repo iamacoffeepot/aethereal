@@ -23,7 +23,7 @@ pub struct TcpSettings {
     /// How many threads dial.
     #[flag]
     pub dialers: u32,
-    /// The milliseconds a dial tries each address.
+    /// The milliseconds a dial gives its name's lookup, and then tries each address.
     #[flag]
     pub dial_within_millis: u32,
 }
