@@ -16,6 +16,8 @@ aethereal-files = { path = "../crates/aethereal-files" }
 determinator = "0.12.0"
 guppy = "0.17.26"
 serde_json = "1"
+# `cargo xtask affected`: the root manifest and the lockfile, compared section by section between the base and the head.
+toml = "1"
 # The bindings' version is the one the browser chassis depends on, so the glue matches the module it binds.
 wasm-bindgen-cli-support = "=0.2.129"
 

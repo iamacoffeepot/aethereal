@@ -80,11 +80,13 @@ jobs:
       - run: cargo xtask check clippy
 
   # A pull request runs the tests of the packages its change can fail, which `cargo xtask affected` selects
-  # (`xtask/src/affected/`): the packages its changed paths sit in, and every package building on one of them. The
-  # selection is conservative: a path that shapes every build or test (the manifests, the lockfile, the toolchain,
-  # `.cargo/`, `.config/`, `clippy.toml`, this file, and xtask's files that select or run the suite) runs everything,
-  # as does a path no package and no rule claims. Only the tests narrow: Clippy and Browser host compile every package
-  # on every pull request.
+  # (`xtask/src/affected/`): the packages its changed paths sit in, and every package building on one of them; and,
+  # where it changes a manifest or the lockfile, every member whose build the change to the package graph reaches,
+  # found by comparing the graph at `HEAD^1`, loaded from a temporary worktree of it, with the graph at the head. The
+  # selection is conservative: a path that shapes every build or test (the toolchain, `.cargo/`, `.config/`,
+  # `clippy.toml`, this file, and xtask's files that select or run the suite) runs everything, as do a root manifest
+  # section other than its dependency and member lists, a base graph that cannot be loaded, and a path no package and
+  # no rule claims. Only the tests narrow: Clippy and Browser host compile every package on every pull request.
   #
   # A push to `main` runs every test, whatever changed. `main` squash-merges, so it tests the exact tree that landed,
   # and a package a selection missed fails there: a miss delays a red signal to the merge, never loses it.

@@ -1,22 +1,29 @@
-//! What selects every package before the graph is read, and how determinator reads the paths that do not: the files that
-//! shape every build or test, and the ones that reach none.
+//! What selects every package before the graph is read, which paths reshape the graph, and how determinator reads the
+//! paths that do not: the files that shape every build or test, the manifests and the lockfile, and the ones that
+//! reach none.
 
+use crate::affected::select::WORKSPACE_SCANNERS;
 use determinator::rules::{DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathRule};
 use guppy::graph::PackageGraph;
 
-/// Paths whose change can reach every package's build or tests: the package graph, the toolchain, cargo's and
-/// nextest's configuration, CI's workflow, and the parts of xtask that run the suite or parse what it runs. Any one
-/// selects every package before the graph is read.
+/// The workspace's lockfile, relative to its root.
+pub const LOCKFILE: &str = "Cargo.lock";
+
+/// The name of every package's manifest, and the path of the workspace's root manifest.
+pub const MANIFEST: &str = "Cargo.toml";
+
+/// Paths whose change can reach every package's build or tests: the toolchain, cargo's and nextest's configuration,
+/// CI's workflow, and the parts of xtask that run the suite or parse what it runs. Any one selects every package
+/// before the graph is read.
 ///
-/// That is also what lets [`super::select::select`] hand determinator one graph as both the old and the new: a change
-/// that could reshape the graph never reaches it, as a member's dependency edited always changes `Cargo.lock`.
+/// The root manifest and the lockfile are not here: what they change is read from the graph before the change and the
+/// graph after it ([`super::select`]), and only a root manifest section the graph does not hold selects every package
+/// ([`super::manifest`]).
 ///
 /// `clippy.toml` configures the toolchain's lints rather than a test, and is here with the rest of the toolchain's
 /// configuration: it changes rarely, and a run of everything when it does costs minutes. A change elsewhere in xtask
 /// selects xtask through the graph, as any package's does.
 const EVERY_EXACT: &[&str] = &[
-    "Cargo.toml",
-    "Cargo.lock",
     "rust-toolchain.toml",
     "clippy.toml",
     ".github/workflows/ci.yml",
@@ -49,9 +56,21 @@ pub fn screen(changed: &[String]) -> Option<&str> {
         .find(|path| EVERY_EXACT.contains(path) || EVERY_PREFIX.iter().any(|prefix| path.starts_with(prefix)))
 }
 
+/// Whether a change to `changed` can reshape the package graph: it changes the lockfile or a manifest, the only files
+/// `cargo metadata` reads that [`screen`] does not already hold.
+pub fn reshaping(changed: &[String]) -> bool {
+    changed.iter().any(|path| path == LOCKFILE || path.rsplit('/').next() == Some(MANIFEST))
+}
+
 /// The path rules determinator applies before its defaults and before it maps a path to its nearest package: the
-/// [`IGNORED`] paths, then one rule for each member inside another member's directory, marking the enclosing member
-/// changed as well as the nested one.
+/// [`IGNORED`] paths, the root manifest, then one rule for each member inside another member's directory, marking the
+/// enclosing member changed as well as the nested one.
+///
+/// The root manifest marks the [`WORKSPACE_SCANNERS`] alone, in place of determinator's default rule, which marks every
+/// package for it. By the time a path reaches determinator, [`super::manifest`] has found that the manifest's change is
+/// limited to the dependency and member lists, and what those change in any member's build is the graph diff's to find;
+/// what is left is the file itself, which xtask's invariants read the members from. The lockfile needs no rule here:
+/// determinator's default ignores it, for the graph diff to read.
 ///
 /// A member nested in another is built by it, or may be: the headless chassis's build script builds its guests
 /// (`guests/echo`, a member cargo resolves as a path dev-dependency) for wasm32, on every build of the chassis, its
@@ -63,6 +82,13 @@ pub fn determinator_rules(graph: &PackageGraph) -> DeterminatorRules {
     rules.path_rules.push(PathRule {
         globs: IGNORED.iter().map(|glob| (*glob).to_owned()).collect(),
         mark_changed: DeterminatorMarkChanged::Packages(Vec::new()),
+        post_rule: DeterminatorPostRule::Skip,
+    });
+    rules.path_rules.push(PathRule {
+        globs: vec![MANIFEST.to_owned()],
+        mark_changed: DeterminatorMarkChanged::Packages(
+            WORKSPACE_SCANNERS.iter().map(|name| (*name).to_owned()).collect(),
+        ),
         post_rule: DeterminatorPostRule::Skip,
     });
 
@@ -95,11 +121,10 @@ mod tests {
 
     #[test]
     fn the_screen_holds_what_shapes_every_build_and_nothing_else() {
-        // Catches an entry dropped from the screen, which lets a change to the graph, the toolchain, or what runs the
-        // suite run a stale subset, and one widened past it, which runs everything for a crate's own source.
+        // Catches an entry dropped from the screen, which lets a change to the toolchain or what runs the suite run a
+        // stale subset, and one widened past it, which runs everything for a crate's own source or for a manifest or
+        // lockfile the graph diff reads.
         for path in [
-            "Cargo.toml",
-            "Cargo.lock",
             "rust-toolchain.toml",
             "clippy.toml",
             ".cargo/config.toml",
@@ -116,6 +141,8 @@ mod tests {
         }
 
         for path in [
+            "Cargo.toml",
+            "Cargo.lock",
             "crates/aethereal-ui/src/lib.rs",
             "crates/aethereal-ui/Cargo.toml",
             "crates/aethereal-chassis-headless/guests/echo/Cargo.lock",

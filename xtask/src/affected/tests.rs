@@ -46,7 +46,7 @@ fn a_file_moved_between_packages_changes_both() {
 /// What a change to `changed` selects in this workspace.
 fn selected(workspace: &Workspace, changed: &[&str]) -> Selection {
     let changed: Vec<String> = changed.iter().map(|path| (*path).to_owned()).collect();
-    let Ok(selection) = workspace.select(&changed) else {
+    let Ok(selection) = workspace.select_paths(&changed) else {
         panic!("a selection is computed for {changed:?}");
     };
     selection
@@ -96,11 +96,12 @@ fn a_change_to_a_package_s_own_tests_selects_that_package_alone() {
 
 #[test]
 fn a_path_that_shapes_every_build_selects_every_package_and_documents_select_none() {
-    // Catches the screen bypassed, which hands a lockfile or CI change to the graph, and documents that select a
+    // Catches the screen bypassed, which hands a toolchain or CI change to the graph, and documents that select a
     // package, which runs tests CI's own `paths-ignore` would have skipped.
     let workspace = loaded();
+    let workflow = ".github/workflows/ci.yml";
 
-    assert_eq!(selected(&workspace, &["Cargo.lock"]), Selection::Every(Every::Shaping(String::from("Cargo.lock"))));
+    assert_eq!(selected(&workspace, &[workflow]), Selection::Every(Every::Shaping(workflow.to_owned())));
     assert_eq!(
         selected(&workspace, &["docs/adr/0001-entry.md", "crates/aethereal-render/fonts/README.md"]),
         Selection::Nothing

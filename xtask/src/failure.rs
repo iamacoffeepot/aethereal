@@ -22,7 +22,6 @@ impl Failure {
     }
 
     /// What is printed for it.
-    #[cfg(test)]
     pub fn message(&self) -> &str {
         &self.message
     }

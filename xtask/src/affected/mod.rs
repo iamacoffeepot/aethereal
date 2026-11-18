@@ -3,21 +3,34 @@
 //!
 //! It diffs the checkout against a base, maps each changed path onto the workspace's package graph (guppy and
 //! determinator), and takes the reverse-dependency closure: the package a path sits in, and every package that builds on
-//! it through any dependency, dev and build ones included, with every feature on.
+//! it through any dependency, dev and build ones included, with every feature on. Where the change touches a manifest or
+//! the lockfile, it also compares the package graph at the base with the graph at the head, and adds every member whose
+//! simulated build the change reaches: a dependency's version, source, or features, or an edge, changed.
 //!
 //! ```text
 //! git diff <base> HEAD ──> changed paths ──> rules::screen ──> a hit: every package
 //!                                                  │
+//!                                                  ├─> a manifest or Cargo.lock changed: the base's graph, from a
+//!                                                  │   worktree of it ([`base`]), once the root manifest's change is
+//!                                                  │   limited to its dependency and member lists ([`manifest`]) and
+//!                                                  │   no checksum changed under one version ([`lockfile`]); any of
+//!                                                  │   those that fails: every package
+//!                                                  │
 //!                                                  └─> test_targets::partition ──> under a package's `tests/`: that package
 //!                                                           │
-//!                                                           └─> determinator: path rules, then the nearest package,
-//!                                                               then every package building on it
+//!                                                           └─> determinator, base graph against head graph, under
+//!                                                               each [`simulation`]: path rules, then the nearest
+//!                                                               package, then every package building on it; and every
+//!                                                               member whose simulated build differs between the two
 //! ```
 //!
 //! **A missed package is the one failure this must never have.** A slow suite costs minutes; a miss costs a bisect. So
 //! the selection is conservative by construction:
 //!
-//! - a path that shapes the package graph, the toolchain, or how the tests run selects every package ([`rules`]);
+//! - a path that shapes the toolchain or how the tests run selects every package ([`rules`]), as does a root manifest
+//!   section the graph does not hold ([`manifest`]);
+//! - a base graph that cannot be loaded, a manifest or lockfile that cannot be read, a checksum changed under one
+//!   version, or a member taken out of the workspace selects every package ([`select`]);
 //! - a changed path that no package and no rule claims selects every package (determinator's own fallback);
 //! - a push to `main` runs every test whatever changed, so a miss here delays a red signal to the merge, never loses it.
 //!
@@ -27,16 +40,21 @@
 //! What cargo's graph cannot see, a file one package reads by path from another, a guest crate one package builds, is
 //! checked by the test-only `invariants`, which every narrowed selection runs: xtask is selected with any package.
 
+mod base;
 pub mod graph;
 #[cfg(test)]
 mod invariants;
+mod lockfile;
+mod manifest;
 mod rules;
 pub mod select;
+mod simulation;
 mod test_targets;
 
 use crate::cargo;
 use crate::check::{self, Job, Tests};
 use crate::failure::Failure;
+use base::BaseTree;
 use select::{Every, Selection};
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
@@ -72,7 +90,7 @@ pub fn run(request: &Request) -> Result<(), Failure> {
     };
 
     let changed = changed_paths(root, &base, "HEAD")?;
-    let selection = graph::Workspace::load()?.select(&changed)?;
+    let selection = graph::Workspace::load()?.select(&changed, &BaseTree::new(root, &base))?;
     println!("{}", report(&selection, changed.len()));
     if request.github_output {
         write_github_output(&selection)?;
@@ -101,6 +119,16 @@ fn changed_paths(root: &Path, from: &str, to: &str) -> Result<Vec<String>, Failu
 fn report(selection: &Selection, changed: usize) -> String {
     match selection {
         Selection::Every(Every::Shaping(path)) => format!("selected tests=all changed={changed} shaping={path}"),
+        Selection::Every(Every::Section(section)) => {
+            format!("selected tests=all changed={changed} shaping=Cargo.toml section={section}")
+        }
+        Selection::Every(Every::Checksum(package)) => {
+            format!("selected tests=all changed={changed} shaping=Cargo.lock checksum={package}")
+        }
+        Selection::Every(Every::Removed(member)) => format!("selected tests=all changed={changed} removed={member}"),
+        Selection::Every(Every::Unknown(reason)) => {
+            format!("selected tests=all changed={changed} reached=unknown\n{reason}")
+        }
         Selection::Every(Every::Reached) => format!("selected tests=all changed={changed} reached=every-package"),
         Selection::Packages(packages) => {
             let names: Vec<&str> = packages.iter().map(String::as_str).collect();
