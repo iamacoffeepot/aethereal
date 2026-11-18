@@ -3,7 +3,9 @@
 use super::super::*;
 use crate::{Closed, Feed};
 use aethereal_actor::Time;
-use aethereal_actor::{Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, Top, Turn};
+use aethereal_actor::{
+    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, Spawn, Top, Turn,
+};
 use aethereal_actor::{Anyone, Entry};
 use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
@@ -84,6 +86,7 @@ impl Actor for Window {
     type Key = u64;
     type Handles = (Moved, Order, Lit);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowConfig { pointers, lights, orders, .. } = config;
@@ -353,6 +356,7 @@ impl Actor for Windows {
     type Key = ();
     type Handles = (Asking,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowsConfig { control, orders } = config;

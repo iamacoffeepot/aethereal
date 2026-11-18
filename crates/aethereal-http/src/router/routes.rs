@@ -36,6 +36,7 @@ use core::marker::PhantomData;
 /// #             type Key = ();
 /// #             type Handles = (Request<(), ()>,);
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(handler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(handler)
@@ -108,6 +109,7 @@ use core::marker::PhantomData;
 /// #             type Key = ();
 /// #             type Handles = (Request<(), ()>,);
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(handler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(handler)

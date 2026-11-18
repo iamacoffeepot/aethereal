@@ -24,7 +24,7 @@ pub use root_list::{Drawn, RootList};
 pub use settings::{ENGINE, EngineSettings, RUNNING};
 
 use crate::{Engine, Setup};
-use aethereal_actor::{Cycle, Guests, JobList, Links, Ordered};
+use aethereal_actor::{Cycle, Fits, Guests, JobList, Links, Ordered};
 use aethereal_data::Budget;
 use aethereal_data::config::{Configuration, FlagTable, Flags, Overlay, Parts, RootSettings};
 use core::marker::PhantomData;
@@ -103,6 +103,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #     type Key = ();
 /// #     type Handles = ();
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(Self)
@@ -169,6 +170,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(Self)
@@ -265,6 +267,7 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #             type Key = ();
 /// #             type Handles = ();
 /// #             type Depends = ();
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(Self)
@@ -440,6 +443,7 @@ impl<H: Host, R, D> Program<H, R, D> {
     /// #     type Key = ();
     /// #     type Handles = ();
     /// #     type Depends = ();
+    /// #     type Spawns = ();
     /// #
     /// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #         Ok(Self)
@@ -540,15 +544,16 @@ impl<H: Host, R, D> Program<H, R, D> {
     }
 
     /// Bootstraps the program, then runs it on its host: it builds only when each root reaches at a typed path only
-    /// roots listed before it (`Ordered`, ADR-0022), each root's needs are provided by roots listed before it, and its
-    /// root list names only its roots (`RootList`, ADR-0055).
+    /// roots listed before it (`Ordered`, ADR-0022), every type the program walks to from its roots, through what each
+    /// spawns, depends only on types beneath its roots (`Fits`, ADR-0059), each root's needs are provided by roots
+    /// listed before it, and its root list names only its roots (`RootList`, ADR-0055).
     ///
     /// # Errors
     ///
     /// Why the program did not start, as [`ProgramError`] says, or did not run to its end, as the host's error says.
-    pub fn run<I: 'static, O, L>(self) -> Result<H::Exit, H::Error>
+    pub fn run<I: 'static, O, W, L>(self) -> Result<H::Exit, H::Error>
     where
-        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        R: Bootstraps<H, I> + Ordered<O> + Fits<W> + 'static,
         D: RootList<R, L>,
     {
         H::run(self.settle()?)
@@ -560,10 +565,10 @@ impl<H: Host, R, D> Program<H, R, D> {
     /// # Errors
     ///
     /// Why the program did not start, as [`ProgramError`] says.
-    pub fn build<I: 'static, O, L>(self) -> Result<H, ProgramError>
+    pub fn build<I: 'static, O, W, L>(self) -> Result<H, ProgramError>
     where
         H: Builds,
-        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        R: Bootstraps<H, I> + Ordered<O> + Fits<W> + 'static,
         D: RootList<R, L>,
     {
         H::build(self.settle()?)

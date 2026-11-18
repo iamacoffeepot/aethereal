@@ -49,6 +49,7 @@ impl Actor for Pipe {
     type Key = u64;
     type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: PipeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);

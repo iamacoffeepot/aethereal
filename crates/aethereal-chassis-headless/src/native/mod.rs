@@ -20,7 +20,7 @@ mod tests;
 pub use error::{LaunchError, NativeError};
 pub use name::ProgramName;
 
-use aethereal_actor::Ordered;
+use aethereal_actor::{Fits, Ordered};
 use aethereal_data::Budget;
 use aethereal_substrate::{Bootstraps, Host, Program, RootList};
 use command_line::Asked;
@@ -118,9 +118,9 @@ pub trait NativeLayers<H: Host, R, D>: Sized {
     ///
     /// [`LaunchError::Read`] when the invocation was refused, as [`NativeError`] says, and [`LaunchError::Ran`] with
     /// the host's own error when the program did not run to its end.
-    fn launch<I: 'static, O, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
+    fn launch<I: 'static, O, W, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
     where
-        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        R: Bootstraps<H, I> + Ordered<O> + Fits<W> + 'static,
         D: RootList<R, L>;
 }
 
@@ -142,9 +142,9 @@ impl<H: Host, R, D> NativeLayers<H, R, D> for Program<H, R, D> {
     }
 
     #[allow(clippy::print_stdout)] // What a person asked of the command line is printed for them to read.
-    fn launch<I: 'static, O, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
+    fn launch<I: 'static, O, W, L>(self, name: &str) -> Result<Launched<H::Exit>, LaunchError<H::Error>>
     where
-        R: Bootstraps<H, I> + Ordered<O> + 'static,
+        R: Bootstraps<H, I> + Ordered<O> + Fits<W> + 'static,
         D: RootList<R, L>,
     {
         let launched = match self.read(name, Invocation::of_process())? {

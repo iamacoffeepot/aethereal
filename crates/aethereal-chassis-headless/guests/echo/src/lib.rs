@@ -7,8 +7,8 @@ pub use moving::{Breaker, Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
     ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Level, On, Origin, Portability, Protocol,
-    ProtocolRef, Receives, Recursive, Refused, Resource, Runner, Running, Start, Stop, Tick, Top, Turn, Unanswered,
-    Upgrade, Upgrades, Within, parent, path,
+    ProtocolRef, Receives, Recursive, Refused, Resource, Runner, Running, Spawn, Start, Stop, Tick, Top, Turn,
+    Unanswered, Upgrade, Upgrades, Within, parent, path,
 };
 use aethereal_data::{
     ActorPath, Bound, Decode, DecodeError, Encode, EncodeError, KindId, KindName, Plain, Schema, Shape, Writer,
@@ -75,6 +75,7 @@ impl Actor for Echo {
     type Key = ();
     type Handles = (Ping, Parcel, Increment, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.log(Level::Info, "echo began");
@@ -152,6 +153,7 @@ impl Actor for Mirror {
     type Key = ();
     type Handles = (Ping, Shut, Crash);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -205,6 +207,7 @@ impl Actor for Starter {
     type Key = ();
     type Handles = (On<Start>, On<Stop>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -249,6 +252,7 @@ impl Actor for Ticker {
     type Key = ();
     type Handles = (On<Tick>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
@@ -282,6 +286,7 @@ impl Actor for Metronome {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Ticker,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Ticker>(&(), EchoConfig);
@@ -369,6 +374,7 @@ impl Actor for Foreman {
     type Key = ();
     type Handles = (Go, CallOff, Shut, Answer<Pong, Shift>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let blob = turn.put(vec![7; 3]).map_err(|why| unhatched(&why))?;
@@ -447,6 +453,7 @@ impl Actor for Overseer {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Apprentice,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.spawn::<Apprentice>(&(), Chore { n: 7 }).map_err(|why| unhatched(&why))?;
@@ -474,6 +481,7 @@ impl Actor for Apprentice {
     type Key = ();
     type Handles = (Answer<Pong, Shift>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(chore: Chore, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let at = chore.n;
@@ -513,6 +521,7 @@ impl Actor for Timekeeper {
     type Key = ();
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -550,6 +559,7 @@ impl Actor for Responder {
     type Key = u64;
     type Handles = (Ping, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })
@@ -595,6 +605,7 @@ impl Actor for Doomed {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         panic!("a doomed actor crashes as it begins");
@@ -634,6 +645,7 @@ impl Actor for Brood {
     type Key = ();
     type Handles = (Grow,);
     type Depends = ();
+    type Spawns = (Adder,);
 
     fn begin(config: BroodConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.children {
@@ -690,6 +702,7 @@ impl Actor for Adder {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if config.deeper > 0 {
@@ -739,6 +752,7 @@ impl Actor for Seeker {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
@@ -771,6 +785,7 @@ impl Actor for Caster {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
@@ -825,6 +840,7 @@ impl Actor for Watcher {
     type Key = ();
     type Handles = (Ended,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(watching: Watching, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(tell) = turn.resolve(&watching.tell).and_then(|found| turn.cast(found)) else {
@@ -879,6 +895,7 @@ impl Actor for Reporter {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { key: config.by })
@@ -930,6 +947,7 @@ impl Actor for Chick {
     type Key = u64;
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.parent()).send(&Pong { n: 100 + config.by })?;
@@ -958,6 +976,7 @@ impl Actor for FakeChick {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -990,6 +1009,7 @@ impl Actor for Stray {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -1041,6 +1061,7 @@ impl Actor for Hatcher {
     type Key = ();
     type Handles = (Pong, Grow);
     type Depends = ();
+    type Spawns = (Boomerang, Reporter, Chick, Stray, FakeChick);
 
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let reporter = turn.spawn_from::<Reporter>(Origin::Blob(&hatch.other), &7, &AddBy { by: 20, deeper: 0 });
@@ -1116,6 +1137,7 @@ impl Actor for Boomerang {
     type Key = ();
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = (Reporter,);
 
     fn begin(home: Home, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&home.home), &0, &AddBy { by: 0, deeper: 0 });
@@ -1157,6 +1179,7 @@ impl Actor for Heir {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Reporter,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from(Origin::Head, &5, &AddBy { by: 1, deeper: 0 });
@@ -1203,6 +1226,7 @@ impl Actor for Librarian {
     type Key = ();
     type Handles = (Ping, Book, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(shelf: Shelf, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let n = turn.read(&shelf.book).len() as u64;
@@ -1286,6 +1310,7 @@ impl Actor for Forger {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(forge: Forge, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let forged = forged(BlobId::new(forge.engine, forge.bits));
@@ -1316,6 +1341,7 @@ impl Actor for Hoarder {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(forge: Forge, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { forged: forged(BlobId::new(forge.engine, forge.bits)) })
@@ -1342,6 +1368,7 @@ impl Actor for Spendthrift {
     type Key = ();
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = (Librarian,);
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -1393,6 +1420,7 @@ impl Actor for Parting {
     type Key = u64;
     type Handles = (Ping, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(farewell: Farewell, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(tell) = turn.resolve(&farewell.tell).and_then(|found| turn.cast(found)) else {
@@ -1457,6 +1485,7 @@ impl Actor for Archive {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Reader,);
 
     fn begin(stacks: Stacks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..stacks.readers {
@@ -1490,6 +1519,7 @@ impl Actor for Reader {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(book: Book, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { book: book.blob })
@@ -1586,6 +1616,7 @@ impl Actor for Porter {
     type Key = u64;
     type Handles = (Hand,);
     type Depends = ();
+    type Spawns = (Self, Bearer);
 
     fn begin(config: Porting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Porting { to, lamps, how } = config;
@@ -1652,6 +1683,7 @@ impl Actor for Bearer {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: Porting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Porting { to, lamps, .. } = config;
@@ -1743,6 +1775,7 @@ impl Actor for Querent {
     type Key = ();
     type Handles = (Query, Answer<Pong, Which>);
     type Depends = ();
+    type Spawns = (Echo,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
@@ -1805,6 +1838,7 @@ impl Actor for Opener {
     type Key = u64;
     type Handles = (Answer<Pong, Which>, Heard);
     type Depends = ();
+    type Spawns = (Echo, Self, Inlet);
 
     fn begin(opening: Opening, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo: ActorRef<Echo> = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
@@ -1863,6 +1897,7 @@ impl Actor for Inlet {
     type Key = ();
     type Handles = (Answer<Pong, Which>,);
     type Depends = ();
+    type Spawns = (Echo,);
 
     fn begin(ping: Ping, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
@@ -1903,6 +1938,7 @@ impl Actor for Shelver {
     type Key = ();
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -1980,6 +2016,7 @@ impl Actor for Envoy {
     type Key = ();
     type Handles = (Ping, Answer<Pong, Which>);
     type Depends = ();
+    type Spawns = (Steward,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let steward = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
@@ -2045,6 +2082,7 @@ impl Actor for Steward {
     type Key = ();
     type Handles = (Ping, Weigh, Release, Answer<Pong, Kept>);
     type Depends = ();
+    type Spawns = (Echo,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
@@ -2163,6 +2201,7 @@ impl Actor for Stasher {
     type Key = ();
     type Handles = (Stash, Answer<Pong, Stashed>);
     type Depends = ();
+    type Spawns = (Echo,);
 
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
@@ -2215,6 +2254,7 @@ impl Actor for Nestling {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(book: Book, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let n = 200 + turn.read(&book.blob).len() as u64;
@@ -2243,6 +2283,7 @@ impl Actor for Nester {
     type Key = ();
     type Handles = (Book, Pong);
     type Depends = ();
+    type Spawns = (Nestling,);
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -2299,6 +2340,7 @@ impl Actor for Bell {
     type Key = u64;
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -2338,6 +2380,7 @@ impl Actor for Ringer {
     type Key = ();
     type Handles = (Answer<Pong, Ringing>,);
     type Depends = (Bell,);
+    type Spawns = ();
 
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Bell>(0)).ask(&Ping { n: 4 }, &Ringing)?;
@@ -2378,6 +2421,7 @@ impl Actor for Steeple {
     type Key = ();
     type Handles = (Ping,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -2411,6 +2455,7 @@ impl Actor for Sexton {
     type Key = ();
     type Handles = ();
     type Depends = (Steeple,);
+    type Spawns = ();
 
     fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -2438,6 +2483,7 @@ impl Actor for Chimer {
     type Key = ();
     type Handles = (On<Start>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -2480,6 +2526,7 @@ impl Actor for Usher {
     type Key = ();
     type Handles = (On<Start>,);
     type Depends = ();
+    type Spawns = (Echo,);
 
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
@@ -2534,6 +2581,7 @@ impl Actor for Litter {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Homebody,);
 
     fn begin(config: LitterConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.children {
@@ -2594,6 +2642,7 @@ impl Actor for Homebody {
     type Key = u64;
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: HomebodyConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { tether: Tether })

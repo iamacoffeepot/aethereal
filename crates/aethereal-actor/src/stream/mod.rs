@@ -107,6 +107,7 @@ use core::marker::PhantomData;
 ///     type Key = ();
 ///     type Handles = (Part<Files>, Part<Logs>);
 ///     type Depends = ();
+///     type Spawns = ();
 ///
 ///     fn begin(reader: Reader, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(reader)

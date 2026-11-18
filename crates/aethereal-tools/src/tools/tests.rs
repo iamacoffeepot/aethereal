@@ -43,6 +43,7 @@ impl Actor for Length {
     type Key = ();
     type Handles = (Call,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: LengthConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

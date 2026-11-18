@@ -35,6 +35,7 @@ impl Actor for Subscriber {
     type Key = ();
     type Handles = (Event, Keyed, Probed);
     type Depends = (Window,);
+    type Spawns = ();
 
     fn begin(_: InputToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let hears = KeysEntry { actor: turn.me().protocol(), entry: 0, keys: KeySet::All, blocks: true };

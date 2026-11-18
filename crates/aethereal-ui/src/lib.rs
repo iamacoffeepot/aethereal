@@ -100,6 +100,7 @@
 //!     type Key = ();
 //!     type Handles = aethereal_ui::handles![];
 //!     type Depends = aethereal_ui::depends!();
+//!     type Spawns = ();
 //!
 //!     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 //!         let target = Target::of::<Interface>(frame);

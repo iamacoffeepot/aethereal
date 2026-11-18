@@ -164,6 +164,7 @@ impl Actor for Builder {
     type Key = u64;
     type Handles = (Plan, Lent, Answer<Filled, Plan>, Answer<Drew, Plan>);
     type Depends = (Self,);
+    type Spawns = ();
 
     fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&plan)?;

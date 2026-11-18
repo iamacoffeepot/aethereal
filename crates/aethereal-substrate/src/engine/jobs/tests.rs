@@ -6,7 +6,7 @@ use super::*;
 use crate::harness::Jobbed;
 use aethereal_actor::{
     Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Resource, Runner, Running,
-    Services, Time, Top, Turn, Unanswered, path,
+    Services, Spawn, Time, Top, Turn, Unanswered, path,
 };
 use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Plain};
@@ -407,6 +407,7 @@ impl Actor for Worker {
         Answer<Bumped, Which>,
     );
     type Depends = ();
+    type Spawns = (Failing, Newborn);
 
     fn begin(_: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
@@ -612,6 +613,7 @@ impl Actor for Failing {
     type Key = ();
     type Handles = (Answer<Doubled, Which>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Unlinked, &which)?;
@@ -646,6 +648,7 @@ impl Actor for Newborn {
     type Key = ();
     type Handles = (Answer<Doubled, Which>,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Double { n: 10 * which.at }, &which)?;
@@ -684,6 +687,7 @@ impl Actor for Poker {
     type Key = u64;
     type Handles = ();
     type Depends = (Worker,);
+    type Spawns = ();
 
     fn begin(go: Go, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Worker>(())).send(&go)?;

@@ -403,6 +403,7 @@ impl Actor for LogsTool {
     type Key = ();
     type Handles = (Call,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: LogsToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)

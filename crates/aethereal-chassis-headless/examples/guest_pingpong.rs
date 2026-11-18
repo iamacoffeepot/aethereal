@@ -47,6 +47,7 @@ impl Actor for Pinger {
     type Key = u64;
     type Handles = (Pong,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));

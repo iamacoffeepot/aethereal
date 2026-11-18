@@ -43,6 +43,7 @@ impl Actor for Talker {
     type Key = ();
     type Handles = (Say, GiveUp);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(talker: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(talker)

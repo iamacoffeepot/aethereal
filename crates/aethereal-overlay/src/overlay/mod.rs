@@ -168,6 +168,7 @@ impl Actor for Overlay {
         ChatWord,
     ];
     type Depends = aethereal_ui::depends!(Tools);
+    type Spawns = (OverlayTools,);
 
     /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
     /// which hears the backtick, and spawns the worker of its tools and offers them.

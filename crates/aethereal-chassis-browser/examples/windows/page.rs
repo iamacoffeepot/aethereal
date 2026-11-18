@@ -3,8 +3,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Tick,
-    Top, Turn, child, path,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Spawn,
+    Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_browser::{Browser, WindowsSettings};
 use aethereal_data::{Bound, Plain, TypedKey};
@@ -148,6 +148,7 @@ impl Actor for Stage {
     type Key = ();
     type Handles = ();
     type Depends = (Renderer,);
+    type Spawns = (Scene,);
 
     fn begin(staged: Staged, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut entries = Vec::with_capacity(staged.scenes.len());
@@ -261,6 +262,7 @@ impl Actor for Scene {
         Answer<Opened, Nothing>,
     );
     type Depends = (Renderer, Windows);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();

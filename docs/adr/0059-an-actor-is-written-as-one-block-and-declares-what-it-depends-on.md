@@ -204,7 +204,7 @@ The macro copies the struct's generics onto each impl it writes, so a protocol's
 
 **`#[actor(depends(Renderer, Lens))]` names the actor types the actor reaches by typed path, and their roots are derived.** `depends(T)` takes any actor type. Its chain to the top comes from `ChildOf` (ADR-0022): `path::<Lens>(())` runs `Host`, then `Camera`, then `Lens`, so `depends(Lens)` has the root `Host`. `turn.to(path::<L>(keys))` and `turn.found(&path::<L>(keys))` build when `L`'s root is the root of something the actor depends on: `depends(Lens)` admits `path::<Camera>(())` too, and `depends(Windows)` admits `path::<Window>(id)`, as `Window` is a keyed child of the singleton root `Windows`. The list is kept on the actor's type, as a tuple, and each type in it is found as `Lists` finds a kind (`declared/lists.rs`), by its root: two types of one root are one entry, as a path beneath that root could be found at either, so a type that depends on two of them does not build. A path whose root is in none of its chains fails as an import left out does, with a diagnostic written for it: "`Simulator` reaches `Lens` beneath `Host`, the root of nothing it depends on".
 
-- **A type parameter that is a list counts as the types it lists**, nested as deep as `ToolList` nests: `#[actor(depends(L))] impl<L: TunableList> TuningTool<L>` depends on each root `L` lists (ADR-0050).
+- **A type parameter that is a list counts as the types it lists**, nested as deep as `ToolList` nests: `#[actor(depends(L))] impl<L: TunableList> TuningTool<L>` depends on each root `L` lists (ADR-0050). Written as the actor's associated type, the entry is `Each<L>`: a list is one actor type, `()`, a tuple of lists, or `Each<L>`, and each step of what reads one goes by which it is. The generic code that reaches a type `L` lists names none of them, so it reaches it through `L` itself: a tuning tool's lookup states that its actor's `Depends` is `Each<Self>`, which makes the list's own tuple the one its roots are found in, and a toolbox's walk of its nested list carries the path into `L` to where it stands (`Pick`, `Through`), from which the next step's path follows.
 
 ```rust
 #[actor(depends(Renderer))]
@@ -249,9 +249,10 @@ impl<L: ToolList, R: Holder> Toolbox<L, R> {
 ```
 
 - **`#[actor(spawns(…))]` lists the types an actor spawns.** A type parameter that is a list counts as the types it lists, as in `depends`.
-- **`turn.spawn::<C>` builds only when `C` is in the spawner's `spawns`**, found with `Lists`, beside the check that `C` may stand beneath the spawner's type (ADR-0022).
+- **`turn.spawn::<C>` builds only when `C` is in the spawner's `spawns`**, found with `Lists`, beside the check that `C` may stand beneath the spawner's type (ADR-0022). A spawn is a method of the trait `Spawn<Me, I>`, which the turn and the `begin` implement: `C` is named at the call and its place `I` in the list inferred, which a method's own type parameters cannot do while one of them is named, so `Spawn` is brought into scope where an actor spawns.
 - **The program's build check starts at each root and follows `spawns`, recursively**, checking that every type's `depends` lead to roots the program has. It is a recursive trait check of the same kind as `Ordered`, its index inferred. So a child's reach is checked when the program is built, however deep it is spawned: a tool's `depends` is checked through its toolbox's `spawns` (ADR-0037).
 - **A parent repeats nothing from its children.** Its `depends` is what it reaches itself. The engine this repository succeeds declares spawned children the same way, `#[actor(spawns(..))]`.
+- **The walk does not follow a `Recursive` type from a list, nor one that stands at the `Top`.** Only its own type spawns a `Recursive` type (ADR-0022: `Admits`), so every actor of one stands beneath a root of its type, where the walk starts and checks its `depends`; its own type in its own list is already checked, and following it would lead the walk back into itself, a trait check that does not end. A `Top` type is spawned by nothing. The walk follows every other type, its children among them, so a `Recursive` type's other children are checked too. Where a type stands says which (`Placement::Walk`: `Follow` or `Skip`), so no step compares two types. A type that stands `Anywhere` and lists its own type, or two such types that list each other, would still lead the walk round: the compiler refuses that program, as a check past its recursion limit.
 - **It costs one recursive trait check per root at build,** and its compile time grows with the tree's depth.
 
 ### A guard is checked at the call
@@ -291,7 +292,8 @@ impl Inventory {
 
 ### What the guest host checks
 
-- **A guest's section carries its `depends` in place of each handler's sends** (ADR-0015).
+- **A guest's section carries its `depends` in place of each handler's sends, and its `spawns`, as the kind of each type it lists** (ADR-0015).
+- **The guest host checks each spawn a guest's turn makes against its spawner's `spawns`,** beside where the child's type stands (ADR-0022), as a native spawn is checked where it is built: a spawn of a type the list leaves out fails the turn, as a send past the declaration does.
 - **With no declared sends, the guest host checks three things of each send a guest makes:** that its receiver lists the kind, or the guest's turn fails; the receiver's guard, at delivery, as for any sender (ADR-0058); and that a send at a typed path reaches a root of the guest's own `depends`. A guest reaches a typed path through its host's lookup of it, which names no sender, so the host checks the path there, against the `depends` of the types the guest's code makes, and the call fails where none holds its root.
 - **These are the checks a native actor's build makes, repeated at run time,** as a guest may not have been compiled with the library. They are not a security boundary: access control between actors is out of scope for this ADR.
 
@@ -395,7 +397,6 @@ fn gathered(
 ## To verify when implementing
 
 - **That `Admits<A, Me, I>` does not clash with the placement trait of the same name,** `Admits<A, C>` (`aethereal-actor/src/placement.rs`), which the spawn's check reads (ADR-0022); one of them is renamed if it does.
-- **That the walk through `spawns` ends on a type that spawns its own type** (`Recursive`, ADR-0022): a trait check that follows that entry back into itself does not end.
 
 ## Alternatives considered
 

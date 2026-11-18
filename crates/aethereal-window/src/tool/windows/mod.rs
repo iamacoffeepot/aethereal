@@ -49,6 +49,7 @@ impl Actor for WindowTool {
     type Handles =
         (Call, Answer<WindowList, Placing>, Answer<Resized, Placing>, Answer<Moved, Placing>, Answer<ModeSet, Placing>);
     type Depends = (Windows,);
+    type Spawns = ();
 
     fn begin(_: WindowToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

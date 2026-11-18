@@ -25,6 +25,7 @@ macro_rules! actor {
             type Key = $key;
             type Handles = (Order,);
             type Depends = $depends;
+            type Spawns = ();
 
             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(config)

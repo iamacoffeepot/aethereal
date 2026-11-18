@@ -28,6 +28,7 @@ use alloc::vec::Vec;
 /// #     type Key = ();
 /// #     type Handles = ();
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #     fn begin(_: HudConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(Self { health: 100.0, saving: false, show_cooldowns: false })
 /// #     }

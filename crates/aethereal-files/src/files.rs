@@ -89,6 +89,7 @@ impl Actor for Files {
         Answer<FilesListed, Scanning>,
     );
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: FilesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { waiting: BTreeMap::new(), writing: BTreeMap::new(), listing: BTreeMap::new(), next: 0 })

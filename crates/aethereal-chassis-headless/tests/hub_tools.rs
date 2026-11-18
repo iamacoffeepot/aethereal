@@ -14,6 +14,8 @@ use aethereal_link::{
     EngineListing, EngineTools, Engines, EnginesSettings, JsonSheet, Link, LinkSettings, ListEngines, MintFor,
     MintToken, Minted, Origin, Outcome, REVISION, Token, ToolSummary, ToolsShown, Trust, Up, Within,
 };
+use aethereal_process::Processes;
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Asked, Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
@@ -24,8 +26,10 @@ use aethereal_tools::{
 use std::io::{Read as _, Write as _};
 use std::iter;
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::{env, fs, process};
 
 /// The most bytes of a frame, each way.
 const MOST_BYTES: u32 = 64 * 1024;
@@ -75,6 +79,7 @@ impl Actor for Stand {
     type Key = ();
     type Handles = (Offer, Withdraw);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: StandConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { table: Table::new() })
@@ -226,11 +231,44 @@ fn answered_call(harness: &mut Harness<Headless>, stream: TcpStream, called: Out
     heard(harness, peer)
 }
 
-/// A hub: `Tcp`, `Engines` on a port of its choosing, and a toolbox of `EngineTools` offering to the stand-in holder,
-/// with that port and the tools' worker.
-fn hub() -> Result<(Harness<Headless>, u16, ProtocolRef<Tooling>), Unheard> {
+/// A directory for one test, named for it, removed when dropped: the store a hub keeps beneath `store/`.
+struct Dir(PathBuf);
+
+impl Dir {
+    /// An empty directory for `test`.
+    fn new(test: &str) -> Self {
+        let root = env::temp_dir().join(format!("aethereal-hub-tools-{}-{test}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        assert!(fs::create_dir_all(&root).is_ok(), "the test's directory is made");
+
+        Self(root)
+    }
+
+    /// The store's settings for a hub, kept here, which the store counts as it begins and no test here checks anything
+    /// into. The hub holds the store and the process capability because the engines it spawns depend on them
+    /// (ADR-0059).
+    fn store(&self) -> StoreSettings {
+        StoreSettings { root: self.0.join("store").display().to_string(), ..StoreSettings::default() }
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A hub: `Tcp`, `Engines` on a port of its choosing, the store kept in `dir` and the process capability the engines
+/// it spawns depend on, and a toolbox of `EngineTools` offering to the stand-in holder, with that port and the tools'
+/// worker.
+fn hub(dir: &Dir) -> Result<(Harness<Headless>, u16, ProtocolRef<Tooling>), Unheard> {
     let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..EnginesSettings::default() };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Engines>(settings);
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Engines>(settings)
+        .root_with::<Store>(dir.store())
+        .root::<Processes>();
     let mut harness = Harness::of(program)?;
     harness.add_root::<Stand>(&(), StandConfig)?;
     harness.add_root::<Toolbox<(EngineTools,), Stand>>(&(), ToolboxConfig)?;
@@ -370,7 +408,8 @@ fn call_say(input: Json) -> EngineCall {
 fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<(), Unheard> {
     // Catches `Engines` not asked, and an engine's id, name, or count of tools lost or swapped converting the link's
     // listing to the agent's.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("list");
+    let (mut harness, port, worker) = hub(&dir)?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let listing = called(&mut harness, worker, "list_engines", &ListEngines)?;
@@ -394,7 +433,8 @@ fn list_engines_shows_each_engine_by_its_id_name_and_count_of_tools() -> Result<
 fn describe_engine_writes_each_sheet_asked_for_with_its_input_and_output_as_json_schema() -> Result<(), Unheard> {
     // Catches a schema written other than as JSON Schema, the input and output swapped, a sheet's name or description
     // lost or cut, a sheet asked for left out, and sheets answered in the order asked rather than the engine's.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("describe");
+    let (mut harness, port, worker) = hub(&dir)?;
     let _stream = linked_engine(&mut harness, port, vec![sheet(), listen_sheet()]);
 
     let describing = called(&mut harness, worker, "describe_engine", &sheets_of(0, &["listen", "say"]))?;
@@ -421,7 +461,8 @@ fn describe_engine_writes_each_sheet_asked_for_with_its_input_and_output_as_json
 fn describe_engine_lists_every_tool_by_its_name_and_first_sentence_alone() -> Result<(), Unheard> {
     // Catches a tool left out of the names, a description not cut to its first sentence, and the sheets answered when
     // only names were asked for, which is what the names are there to spare.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("describe_names");
+    let (mut harness, port, worker) = hub(&dir)?;
     let _stream = linked_engine(&mut harness, port, vec![sheet(), listen_sheet()]);
 
     let names = DescribeTools { engine: 0, show: None };
@@ -439,7 +480,8 @@ fn describe_engine_lists_every_tool_by_its_name_and_first_sentence_alone() -> Re
 fn call_tool_sends_the_bytes_its_json_input_is_and_answers_the_engines_bytes_as_json() -> Result<(), Unheard> {
     // Catches input converted by the wrong schema or not at all, a call written with another revision than the set
     // it was converted with, and output answered as bytes or converted by the input's schema.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("call");
+    let (mut harness, port, worker) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
     let say = Say { text: String::from("hello") };
     let said = Said { length: 5 };
@@ -460,7 +502,8 @@ fn call_tool_sends_the_bytes_its_json_input_is_and_answers_the_engines_bytes_as_
 fn input_not_of_the_tools_schema_is_refused_and_never_written() -> Result<(), Unheard> {
     // Catches input sent unchecked, which the engine would read as bytes its schema does not: the refused call,
     // written, would be the engine's call 0, ahead of the good one.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("input_refused");
+    let (mut harness, port, worker) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
     let Ok(wrong) = Json::parse("{\"text\":5}", &mut Budget::new(WALK_BYTES)) else {
         panic!("the input is JSON");
@@ -486,7 +529,8 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
     // Catches an ask answered `No` taken for something else, an engine with no set yet taken for one with no tools,
     // and a tool not found left unanswered, sent anyway, or its sheet silently left out of a description: each
     // refusal says which it is.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("unknown");
+    let (mut harness, port, worker) = hub(&dir)?;
     let _stream = linked_engine(&mut harness, port, vec![sheet()]);
     let silent_hello = hello(&mut harness, "silent");
     let mut silent = dialed(port);
@@ -517,7 +561,8 @@ fn an_unknown_engine_one_with_no_tools_yet_and_an_unknown_tool_are_each_refused_
 #[test]
 fn an_engines_refusal_passes_through_as_it_gave_it() -> Result<(), Unheard> {
     // Catches the engine's reason replaced or dropped, which is all the agent has to act on.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("refusal");
+    let (mut harness, port, worker) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
@@ -531,7 +576,8 @@ fn an_engines_refusal_passes_through_as_it_gave_it() -> Result<(), Unheard> {
 #[test]
 fn an_output_not_of_the_tools_schema_is_refused() -> Result<(), Unheard> {
     // Catches bytes the engine sent answered unchecked, which the agent would read as a value they are not.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("output_refused");
+    let (mut harness, port, worker) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
@@ -547,7 +593,8 @@ fn an_output_not_of_the_tools_schema_is_refused() -> Result<(), Unheard> {
 fn call_tool_answers_an_engines_image_as_it_is_and_describe_engine_shows_it_as_an_image() -> Result<(), Unheard> {
     // Catches an engine's image written as a value of `EngineAnswer`, dropped, or its text lost on the way, and an
     // image tool described by a schema it does not have.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("image");
+    let (mut harness, port, worker) = hub(&dir)?;
     let looks = ToolSheet { output: Output::Image, ..sheet() };
     let stream = linked_engine(&mut harness, port, vec![looks]);
     let say = json_of(&Say { text: String::from("hello") });
@@ -579,7 +626,8 @@ fn call_tool_answers_an_engines_image_as_it_is_and_describe_engine_shows_it_as_a
 fn an_image_from_a_tool_whose_sheet_says_a_value_is_refused() -> Result<(), Unheard> {
     // Catches an image passed on as if the tool's sheet allowed one, which the agent's client would be handed for a
     // tool it was told answers JSON.
-    let (mut harness, port, worker) = hub()?;
+    let dir = Dir::new("image_refused");
+    let (mut harness, port, worker) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, vec![sheet()]);
 
     let calling = ask(&mut harness, worker, "call_tool", &call_say(json_of(&Say { text: String::from("hello") })))?;
@@ -611,7 +659,8 @@ fn an_engine_a_session_minted_a_token_for_links_untrusted_and_one_of_the_owner_s
     // its `Engine`, as trusted, which would hand it the owner's sessions, or the owner's engine kept from them. Each
     // engine is a real `Link`, so what the hub decides is decided over the real link, from a `Hello` that says nothing
     // of trust (ADR-0057).
-    let (mut hub, _, worker) = hub()?;
+    let dir = Dir::new("trust");
+    let (mut hub, _, worker) = hub(&dir)?;
     let asked = ask_by(&mut hub, worker, Caller::Session { session: 5 }, "mint_token", &MintToken)?;
     let answered = hub.answer(asked)?;
     let by_session: Minted = output(&mut hub, answered);
@@ -652,7 +701,8 @@ fn an_engine_a_session_minted_a_token_for_links_untrusted_and_one_of_the_owner_s
 fn mint_token_answers_the_arguments_that_start_an_engine_that_links() -> Result<(), Unheard> {
     // Catches arguments that name the wrong flag, the wrong port or host, or a token written in a form `--hub-token`
     // does not read, and a token the tool answers that `Engines` does not hold: the engine would never be listed.
-    let (mut hub, _, worker) = hub()?;
+    let dir = Dir::new("mint");
+    let (mut hub, _, worker) = hub(&dir)?;
 
     let minting = called(&mut hub, worker, "mint_token", &MintToken)?;
     let minted: Minted = output(&mut hub, minting);

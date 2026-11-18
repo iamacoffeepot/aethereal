@@ -43,6 +43,7 @@ pub struct Parent<P> {
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
@@ -58,6 +59,7 @@ pub struct Parent<P> {
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)
@@ -221,6 +223,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
@@ -236,6 +239,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)
@@ -295,6 +299,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
@@ -310,6 +315,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)

@@ -90,6 +90,7 @@ impl Actor for Source {
     type Key = ();
     type Handles = (Request<(), ()>, Open<OutboundBody>, More, Enough, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let part_bytes = usize::try_from(plan.part_bytes).unwrap_or(usize::MAX);
@@ -262,6 +263,7 @@ impl Actor for BenchStack {
         Answer<SourceEnd, Number>,
     );
     type Depends = (Tcp, Source);
+    type Spawns = ();
 
     fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let layers: Layers<(Source,)> = layers(turn)?;

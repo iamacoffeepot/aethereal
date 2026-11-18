@@ -80,6 +80,7 @@ impl Actor for Mcp {
     type Key = ();
     type Handles = (Request<Caller, ()>, Answer<Gathered, Reading>, Offer, Withdraw, Answer<Called, Calling>, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(settings: McpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { settings, table: Table::new(), waiting: BTreeMap::new(), next: 0 })

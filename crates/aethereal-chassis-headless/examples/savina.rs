@@ -45,7 +45,8 @@
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 
 use aethereal_actor::{
-    Actor, ActorRef, Admits, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Root, Top, Turn, parent,
+    Actor, ActorRef, Admits, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ListsChild, Root, Spawn,
+    Top, Turn, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Plain};
@@ -159,6 +160,7 @@ impl Actor for Pinger {
     type Key = u64;
     type Handles = (Ready, Pong);
     type Depends = ();
+    type Spawns = (Ponger,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
@@ -210,6 +212,7 @@ impl Actor for Ponger {
     type Key = u64;
     type Handles = (Ping, Ready);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -245,6 +248,7 @@ impl Actor for Producer {
     type Key = u64;
     type Handles = (Ready, Total);
     type Depends = ();
+    type Spawns = (Counter,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
@@ -298,6 +302,7 @@ impl Actor for BeginProducer {
     type Key = u64;
     type Handles = (Total,);
     type Depends = ();
+    type Spawns = (Counter,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
@@ -342,6 +347,7 @@ impl Actor for Counter {
     type Key = u64;
     type Handles = (Increment, Retrieve, Ready);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
@@ -389,6 +395,7 @@ impl Actor for Forker {
     type Key = u64;
     type Handles = (Ready,);
     type Depends = ();
+    type Spawns = (Forked,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let workers: Vec<ActorRef<Forked>> = (0..FORKS).map(|number| spawned(turn, number)).collect();
@@ -430,6 +437,7 @@ impl Actor for Forked {
     type Key = u64;
     type Handles = (Work, Ready);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -468,6 +476,7 @@ impl Actor for Crowd {
     type Key = u64;
     type Handles = (Ready,);
     type Depends = ();
+    type Spawns = (Pinging,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let actors: Vec<ActorRef<Pinging>> = (0..BIG_ACTORS).map(|number| spawned(turn, number)).collect();
@@ -529,6 +538,7 @@ impl Actor for Pinging {
     type Key = u64;
     type Handles = (Neighbour, Start, Ping, Pong, Ready);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { neighbours: Vec::new(), random: config.number * 0x9e37_79b9_7f4a_7c15 + 1 })
@@ -607,6 +617,7 @@ impl Actor for FibRoot {
     type Key = u64;
     type Handles = (Ready, Response);
     type Depends = ();
+    type Spawns = (Fib,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let first: ActorRef<Fib> = spawned(turn, 0);
@@ -657,6 +668,7 @@ impl Actor for Fib {
     type Key = u64;
     type Handles = (Request, Response, Ready);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { sum: 0, answers: 0 })
@@ -729,6 +741,7 @@ impl Actor for Sieve {
     type Key = u64;
     type Handles = (Ready,);
     type Depends = ();
+    type Spawns = (Filter,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
@@ -784,6 +797,7 @@ impl Actor for Filter {
     type Key = u64;
     type Handles = (Candidate, Exit, Ready);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(first: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { primes: vec![first.number], next: Next::Last })
@@ -876,6 +890,7 @@ impl Actor for Churn {
     type Key = u64;
     type Handles = (Ready, Died);
     type Depends = ();
+    type Spawns = (Mortal,);
 
     /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
     fn begin(config: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -929,6 +944,7 @@ impl Actor for Mortal {
     type Key = u64;
     type Handles = (Live, Ready);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -1044,6 +1060,7 @@ impl Actor for Region {
     type Key = u64;
     type Handles = (Ready, Moved, Expired);
     type Depends = ();
+    type Spawns = (Body,);
 
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let places: Vec<ActorRef<Body>> = (0..WORLD_BODIES).map(|place| spawned(turn, place)).collect();
@@ -1114,6 +1131,7 @@ impl Actor for Body {
     type Key = u64;
     type Handles = (Frame, Nudge, Over, Ready);
     type Depends = ();
+    type Spawns = ();
 
     /// A body made from `number` has the frames it lives in its upper half, and its place in the lower; a body made
     /// as its region begins, numbered by its place alone, lives a share of a life, so that bodies expire a few a
@@ -1260,10 +1278,12 @@ macro_rules! answers_ready {
 answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
-fn spawned<Me, A>(turn: &mut Beginning<'_, Me>, number: u64) -> ActorRef<A>
+fn spawned<Me, A, I>(turn: &mut Beginning<'_, Me>, number: u64) -> ActorRef<A>
 where
+    Me: Actor,
     A: ChildOf + Actor<Config = Number, Key = u64>,
     A::Parent: Admits<Me, A>,
+    Me::Spawns: ListsChild<Me, A, I>,
 {
     let Ok(child) = turn.spawn(&number, Number { number }) else {
         panic!("a child begins");

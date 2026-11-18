@@ -131,6 +131,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// #             type Key = $key;
     /// #             type Handles = ();
     /// #             type Depends = ();
+    /// #             type Spawns = ();
     /// #
     /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #                 Ok(actor)
@@ -174,6 +175,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// #             type Key = $key;
     /// #             type Handles = ();
     /// #             type Depends = ();
+    /// #             type Spawns = ();
     /// #
     /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #                 Ok(actor)

@@ -54,6 +54,7 @@ impl Actor for Doubler {
     type Key = ();
     type Handles = (Ping, Silence);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(doubler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(doubler)
@@ -116,6 +117,7 @@ impl Actor for Relay {
     type Key = ();
     type Handles = (Note, Ping, Answer<Pong, Waiting>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(report: Report, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { report: report.to })
@@ -351,6 +353,7 @@ impl Actor for Passer {
     type Key = ();
     type Handles = (Pass,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(passer: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(passer)
@@ -498,6 +501,7 @@ impl Actor for Caster {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(caster: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(caster)

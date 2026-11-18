@@ -63,6 +63,7 @@ impl Actor for Pinger {
     type Key = u64;
     type Handles = (Pong,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
@@ -110,6 +111,7 @@ impl Actor for NativeResponder {
     type Key = u64;
     type Handles = (Ping, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })

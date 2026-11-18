@@ -44,6 +44,7 @@ impl Actor for Dial {
     type Key = ();
     type Handles = (ReadTuning, Tune);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: DialConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { level: 3, name: String::from("gain"), marks: vec![0, 5, 10] })

@@ -180,6 +180,7 @@ impl Actor for Holder {
     type Key = ();
     type Handles = (Hold, Part<Reading>, Answer<HungUp, Number>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {

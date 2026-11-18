@@ -82,6 +82,7 @@ impl Actor for Controls {
     type Key = ();
     type Handles = (Subscribe, Unsubscribe, Control, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: ControlsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;

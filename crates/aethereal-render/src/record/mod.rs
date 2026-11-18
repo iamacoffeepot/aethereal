@@ -253,6 +253,7 @@ impl Actor for RecordTool {
         Answer<FileWritten, Filing>,
     );
     type Depends = (Pacer, Renderer, Files);
+    type Spawns = ();
 
     fn begin(_: RecordToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { clip: Clipping::Idle, next: 0 })

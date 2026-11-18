@@ -58,6 +58,7 @@ use core::marker::PhantomData;
 ///     type Key = ();
 ///     type Handles = (Answer<TileIs, Looking>, Answer<TileIs, Glancing>);
 ///     type Depends = ();
+///     type Spawns = ();
 ///
 ///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(pointer)
@@ -180,6 +181,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
@@ -195,6 +197,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
 /// #     type Depends = (Greeter,);
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
@@ -265,6 +268,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
@@ -280,6 +284,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
 /// #     type Depends = (Greeter,);
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
@@ -314,7 +319,7 @@ pub struct Asking {
 ///
 /// ```
 /// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
-/// # use aethereal_actor::{Receives, Top, Turn};
+/// # use aethereal_actor::{Receives, Spawn, Top, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -346,6 +351,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
@@ -379,6 +385,7 @@ pub struct Asking {
 ///     type Key = ();
 ///     type Handles = (Answer<Hi, Waiting>,);
 ///     type Depends = (Greeter,);
+///     type Spawns = (Greeter,);
 ///
 ///     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         let Ok(greeter) = turn.spawn::<Greeter>(&(), Greeter) else {
@@ -399,7 +406,7 @@ pub struct Asking {
 ///
 /// ```compile_fail
 /// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
-/// # use aethereal_actor::{Receives, Top, Turn};
+/// # use aethereal_actor::{Receives, Spawn, Top, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -431,6 +438,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
 /// #     type Depends = ();
+/// #     type Spawns = ();
 /// #
 /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
@@ -446,6 +454,7 @@ pub struct Asking {
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
 /// #     type Depends = (Greeter,);
+/// #     type Spawns = (Greeter,);
 /// #
 /// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let Ok(greeter) = turn.spawn::<Greeter>(&(), Greeter) else {
@@ -521,6 +530,7 @@ pub struct Asking {
 ///     type Key = ();
 ///     type Handles = ();
 ///     type Depends = ();
+///     type Spawns = ();
 ///
 ///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(pointer)

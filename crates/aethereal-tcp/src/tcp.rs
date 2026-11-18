@@ -7,7 +7,7 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handles, Held,
-    Receives, Top, Turn,
+    Receives, Spawn, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -199,6 +199,7 @@ impl Actor for Tcp {
     type Key = ();
     type Handles = (Listen, Connect, ConnectUnix, Answer<Reached, Dialing>, Answer<ReachedUnix, DialingUnix>, Ended);
     type Depends = ();
+    type Spawns = (Dialed, Listener);
 
     fn begin(config: TcpConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {

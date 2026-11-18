@@ -87,6 +87,7 @@ impl Actor for Follower {
     type Key = ();
     type Handles = (Order, Part<Receiving>, Answer<Finished, Number>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
@@ -240,6 +241,7 @@ impl Actor for Echo {
     type Key = ();
     type Handles = (Request<(), ()>, Answer<Gathered, Echoing>);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: EchoSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: Vec::new() })

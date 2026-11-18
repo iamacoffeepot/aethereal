@@ -157,6 +157,7 @@ impl Actor for Client {
         Answer<Wrote, Requesting>,
     );
     type Depends = ();
+    type Spawns = ();
 
     /// Opens its connection's stream: it reads from the first, so a connection that hangs up while idle is noticed.
     fn begin(config: ClientConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

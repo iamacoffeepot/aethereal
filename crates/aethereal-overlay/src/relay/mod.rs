@@ -55,6 +55,7 @@ impl Actor for ChatRelay {
     type Key = ();
     type Handles = (ShowTabs, ShowEvents, ShowAsk, Chat);
     type Depends = (Overlay, Link);
+    type Spawns = ();
 
     /// Tells the overlay it relays the chat, then listens to the link, so the overlay holds it before the link shows
     /// anything.

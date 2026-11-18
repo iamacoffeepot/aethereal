@@ -187,6 +187,7 @@ impl Actor for Typist {
     type Key = u64;
     type Handles = (Event, Keyed);
     type Depends = (Window,);
+    type Spawns = ();
 
     fn begin(typist: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(WINDOW)).send(&Subscribe)?;

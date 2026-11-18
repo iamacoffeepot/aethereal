@@ -2,7 +2,7 @@
 
 use crate::{
     Actors, Beginning, BlobId, Chain, ChildOf, Children, Closing, Declared, Depends, Due, Ending, Fault, HandledList,
-    Holds, Instances, Item, Moving, Puts, Seated, Seats, Table, Tie, Turning, Upgraded, Within,
+    Holds, Instances, Item, Moving, Puts, Seated, Seats, Spawns, Table, Tie, Turning, Upgraded, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -31,6 +31,10 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     /// The actor types it reaches by typed path, as it begins, in a handler, or as it ends: a tuple of them, `()` for
     /// none. A typed path builds as a target when its root is the root of one of them (ADR-0059).
     type Depends: Depends;
+    /// The actor types it spawns: a list of them, `()` for none. A spawn builds only for a type it lists, and the
+    /// program's build check follows the list from each root, so what a child reaches is checked however deep it is
+    /// spawned (ADR-0059).
+    type Spawns: Spawns;
 
     /// Makes the actor from `config`. It runs inside the turn of the parent that spawns it.
     fn begin(config: Self::Config, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault>;

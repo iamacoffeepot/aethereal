@@ -114,6 +114,7 @@ impl Actor for Mover {
     type Key = ();
     type Handles = (Probe, Keep, LetGo, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self::new(config.holds))
@@ -209,6 +210,7 @@ impl Actor for Keeper {
     type Key = ();
     type Handles = (Probe,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
@@ -297,6 +299,7 @@ impl Actor for Stubborn {
     type Key = ();
     type Handles = (Probe, LetGo);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self::new(config.holds))
@@ -382,6 +385,7 @@ impl Actor for Breaker {
     type Key = ();
     type Handles = (Probe, LetGo);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: MoverConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { count: 0, holds: config.holds })

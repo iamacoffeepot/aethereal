@@ -7,8 +7,8 @@ mod tests;
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, PathTo,
-    ProtocolRef, ReadTuning, Receives, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Depends, Each, Ending, Fault, Handles,
+    Held, PathTo, ProtocolRef, ReadTuning, Receives, Rooted, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
 };
 use aethereal_data::config::{Declared, Settings};
 use aethereal_data::{
@@ -83,14 +83,14 @@ pub struct Listed {
     pub fields: &'static [Declared],
 }
 
-/// The roots a [`TuningTool`] lists: a tuple of [`Tunable`] roots.
-pub trait TunableList: Send + 'static {
+/// The roots a [`TuningTool`] lists: a tuple of [`Tunable`] roots, which it depends on (ADR-0059).
+pub trait TunableList: Depends + Send + Sized + 'static {
     /// Each root, in the order listed.
     fn listed() -> Vec<Listed>;
 
-    /// The root at `at` in the list, as one tuned, as of the step's start: none when it is past the last, or not
-    /// live.
-    fn found<M>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>>;
+    /// The root at `at` in the list, as one tuned, as of the step's start, found by the actor `turn` is of, which
+    /// depends on the list: none when it is past the last, or not live.
+    fn found<M: Actor<Depends = Each<Self>>>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>>;
 }
 
 /// The root `A`, as listed.
@@ -104,21 +104,19 @@ fn listed<A: Tunable + ChildOf + PathTo<Keys = ()>>() -> Listed {
 
 macro_rules! tunables {
     ($( ($($name:ident)*) )*) => {$(
-        impl<$($name: Tunable + ChildOf + PathTo<Keys = ()> + Send),*> TunableList for ($($name,)*) {
+        impl<$($name: Tunable + ChildOf + PathTo<Keys = ()> + Rooted + Send),*> TunableList for ($($name,)*) {
             fn listed() -> Vec<Listed> {
                 vec![$(listed::<$name>()),*]
             }
 
             #[allow(unused_variables, unused_mut, unused_assignments)] // An empty list finds nothing.
-            fn found<M>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>> {
+            fn found<M: Actor<Depends = Each<Self>>>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>> {
                 let mut place = 0;
                 $(
-                    // The tool lists its roots by a type parameter, which its `Depends` cannot name until a list
-                    // counts as the types it lists: each is looked up by its path, and cast to what it is tuned
-                    // through, as a send at it is checked when it is made (ADR-0059).
+                    // The tool depends on the roots it lists, as its `Depends` is this list: each is found at its
+                    // typed path, and is tuned through what every tunable root takes (ADR-0059).
                     if place == at {
-                        let found = turn.resolve(path::<$name>(()).names());
-                        return found.and_then(|found| turn.cast::<Tunes>(found));
+                        return turn.found(&path::<$name>(())).map(ActorRef::protocol);
                     }
                     place += 1;
                 )*
@@ -232,7 +230,8 @@ impl<L: TunableList> Actor for TuningTool<L> {
     type Config = TuningToolConfig;
     type Key = ();
     type Handles = (Call, Answer<Tuning, Reading>, Answer<Tuned, Setting>);
-    type Depends = ();
+    type Depends = Each<L>;
+    type Spawns = ();
 
     fn begin(_: TuningToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: Calls { pending: BTreeMap::new(), next: 0 }, list: PhantomData })

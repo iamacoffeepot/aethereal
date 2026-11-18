@@ -147,6 +147,7 @@ impl Actor for OverlayTools {
     type Key = ();
     type Handles = (Call, Answer<ThemesShown, Answering>, Answer<Worded, Answering>);
     type Depends = (Overlay,);
+    type Spawns = ();
 
     fn begin(_: OverlayToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

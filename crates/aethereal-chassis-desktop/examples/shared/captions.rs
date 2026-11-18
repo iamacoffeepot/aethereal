@@ -82,6 +82,7 @@ impl Actor for Captions {
     type Key = ();
     type Handles = (On<Start>, Answer<TextMade, Caption>, Answer<TextPlaced, Caption>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(captioned: Captioned, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

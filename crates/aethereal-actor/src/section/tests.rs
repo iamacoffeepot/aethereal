@@ -71,6 +71,7 @@ fn section_of_a_point(state: SchemaNodes) -> Vec<u8> {
         keyed: Key::Singleton,
         spawner: Spawned::Anyone,
         depends: vec![],
+        spawns: vec![],
         handlers: vec![],
         state,
     };

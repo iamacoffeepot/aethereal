@@ -104,6 +104,7 @@ impl Actor for Session {
         Answer<EventsDone, Number>,
     );
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {

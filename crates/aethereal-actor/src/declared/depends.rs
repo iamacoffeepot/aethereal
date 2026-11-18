@@ -2,10 +2,12 @@
 //! stand beneath (ADR-0022, ADR-0059).
 
 use super::At;
-use crate::{Actor, Beneath, ChildOf, PathTo, Rooted, TypeSegment};
+use super::list::{Each, Joined, Tuple, TypeList};
+use crate::{Actor, Beneath, ChildOf, Here, PathTo, Rooted, TypeSegment};
 use core::marker::PhantomData;
 
-/// The actor types an actor reaches by typed path: a tuple of up to 16 of them, `()` for none (ADR-0059).
+/// The actor types an actor reaches by typed path, a list of them (ADR-0059): `()` for none, one type, a tuple of up
+/// to 16 lists, nested, or [`Each<L>`] for a list type parameter, as the types it lists.
 ///
 /// A type's root is found up its `ChildOf` chain ([`Rooted`]), and a typed path builds as a target when its root is the
 /// root of a type listed here: `(Windows,)` admits `path::<Window>(id)`, as `Window` is a keyed child of the singleton
@@ -13,17 +15,29 @@ use core::marker::PhantomData;
 /// one entry: a path beneath it could be found at either, and is not inferred.
 ///
 /// The engine reads the same list as the last segment of each type's typed path: a spawn is refused while a chain of
-/// singletons in it holds no live actor, and a root is made after each singleton root it names (ADR-0022).
-pub trait Depends {
-    /// The last segment of each type's typed path, in order.
+/// singletons in it holds no live actor, and a root is made after each singleton root it names (ADR-0022). The
+/// program's build check reads it too, for every type it walks: each type's root must be a root of the program.
+pub trait Depends: TypeList {
+    /// The last segment of each type's typed path, in order, its nested lists' joined.
     const CHAINS: &'static [&'static TypeSegment];
-    /// The root of each type, in order: what the root of a typed path an actor sends at is found among.
+    /// The root of each type, in order, a tuple for each tuple: what the root of a typed path an actor sends at is
+    /// found among.
     type Roots;
 }
 
 impl Depends for () {
     const CHAINS: &'static [&'static TypeSegment] = &[];
     type Roots = ();
+}
+
+impl<T: ChildOf + PathTo + Rooted> Depends for T {
+    const CHAINS: &'static [&'static TypeSegment] = &[Last::<T>::SEGMENT];
+    type Roots = T::Root;
+}
+
+impl<L: Depends> Depends for Each<L> {
+    const CHAINS: &'static [&'static TypeSegment] = L::CHAINS;
+    type Roots = L::Roots;
 }
 
 /// The last segment of the typed path to `L`, which every path to a type that declares where it stands has.
@@ -66,6 +80,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #             type Key = ();
 /// #             type Handles = (Poke,);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(actor)
@@ -121,6 +136,7 @@ impl<L: ChildOf + PathTo> Last<L> {
 /// #             type Key = ();
 /// #             type Handles = (Poke,);
 /// #             type Depends = $depends;
+/// #             type Spawns = ();
 /// #
 /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(actor)
@@ -175,11 +191,19 @@ pub trait RootIs<Me, L, A> {}
 
 impl<Me, L, R> RootIs<Me, L, R> for R {}
 
+// The roots of one type are its root: the root sought is here.
+impl<Me, L, R: RootIs<Me, L, X>, X> RootsHold<Me, L, R, Here> for X {}
+
 macro_rules! tuples {
     ($( [$($name:ident $place:literal)*] )*) => {$(
-        impl<$($name: ChildOf + PathTo + Rooted),*> Depends for ($($name,)*) {
-            const CHAINS: &'static [&'static TypeSegment] = &[$(Last::<$name>::SEGMENT),*];
-            type Roots = ($($name::Root,)*);
+        impl<$($name: Depends),*> Depends for ($($name,)*) {
+            const CHAINS: &'static [&'static TypeSegment] = Tuple::<($($name,)*)>::CHAINS.entries();
+            type Roots = ($($name::Roots,)*);
+        }
+
+        impl<$($name: Depends),*> Tuple<($($name,)*)> {
+            /// The chains of each list, joined.
+            const CHAINS: &'static Joined<&'static TypeSegment> = &Joined::of(&[$($name::CHAINS),*]);
         }
 
         tuples!(@holds [$($name)*] $($name $place)*);
@@ -188,7 +212,11 @@ macro_rules! tuples {
         tuples!(@hold $all $name $place);
     )*};
     (@hold [$($all:ident)*] $name:ident $place:literal) => {
-        impl<Me, L, R: RootIs<Me, L, $name>, $($all),*> RootsHold<Me, L, R, At<$place>> for ($($all,)*) {}
+        impl<Me, Reached, Root, Place, $($all),*> RootsHold<Me, Reached, Root, (At<$place>, Place)> for ($($all,)*)
+        where
+            $name: RootsHold<Me, Reached, Root, Place>,
+        {
+        }
     };
 }
 

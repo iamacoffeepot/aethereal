@@ -77,9 +77,9 @@ pub use buffer::{Buffer, BufferGroup, Pool};
 #[cfg(feature = "std")]
 pub use controller::{Controller, Requests};
 pub use declared::{
-    At, CarriedBy, Carries, Conforms, Covers, Declared, Depends, DependsOn, Handled, HandledBy, HandledList, Handler,
-    Handles, Kinds, Last, Listed, Lists, Others, Protocol, Reached, Received, Receives, Role, RootIs, RootsHold,
-    StateSchema, Untaken,
+    At, CarriedBy, Carries, Conforms, Covers, Declared, Depends, DependsOn, Down, Each, Handled, HandledBy,
+    HandledList, Handler, Handles, Kinds, Last, Listed, Lists, Many, One, Others, Pick, Protocol, Reached, Received,
+    Receives, Role, RootIs, RootsHold, Spawns, StateSchema, Through, TypeList, Untaken, Whole,
 };
 pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
@@ -101,10 +101,12 @@ pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Reco
 pub use mail::{Mail, MailId};
 pub use moves::{Behind, HeadMoves, Moves, Standing, Standings};
 pub use path::{
-    Beneath, Child, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, RootAbove, Rooted, There,
-    TypeSegment, child, parent, path,
+    Beneath, Child, Fits, Follow, HasRoot, Here, HoldsRoot, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed,
+    RootAbove, Rooted, Skip, There, TypeSegment, Walked, child, parent, path,
 };
-pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};
+pub use placement::{
+    Admits, Anywhere, AtTop, ChildOf, ListsChild, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top,
+};
 pub use portable::{OldFields, OldState, Portability, Portable, TakeOverError};
 pub use publisher::Publisher;
 #[cfg(feature = "std")]
@@ -136,7 +138,7 @@ pub use tuning::{ReadTuning, Tunable, Tune, Tuned, Tunes, Tuning};
 pub use turn::Origin;
 pub use turn::{
     Above, Asked, Beginning, Broke, Buffers, Chain, Closing, Doing, Ending, FalseSend, FalseStage, FalseWatch, Forged,
-    Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Stood, Toward, Trapped, Turn, Turning,
+    Garbled, Hosted, Leaves, Lives, Logger, Mailing, Refused, Request, Spawn, Stood, Toward, Trapped, Turn, Turning,
     Unspawned, Vantage, Why,
 };
 pub use upgrade::{Moving, Upgrade, Upgraded, Upgrades};

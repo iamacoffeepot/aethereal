@@ -242,6 +242,7 @@ impl Actor for Rimmer {
         Answer<Placed, Placing>,
     );
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

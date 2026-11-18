@@ -23,6 +23,7 @@ pub use spawning::{Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated};
 pub use tokens::{MintFor, MintToken, Minted, Minting, TakeToken, TokenFor};
 
 use crate::{Token, Trust};
+use aethereal_actor::Spawn as _;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
     Number, Part, Receives, Streams, Subscribers, Taken, Top, Turn, path,
@@ -252,6 +253,7 @@ impl Actor for Engines {
         HearTrusted,
     );
     type Depends = (Tcp,);
+    type Spawns = (Engine, Spawned);
 
     /// Asks `Tcp` to listen on its port.
     fn begin(settings: EnginesSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

@@ -99,6 +99,7 @@ impl Actor for Hall {
     type Key = u64;
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(hall: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(hall)
@@ -123,6 +124,7 @@ impl Actor for Door {
     type Key = u64;
     type Handles = (Knock, Shut);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(door: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(door)

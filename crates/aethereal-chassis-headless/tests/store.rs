@@ -352,6 +352,7 @@ impl Actor for Holder {
     type Key = ();
     type Handles = (HoldFor, LaunchFor, Leave, Answer<Held, Holding>, Answer<Launched, Launching>);
     type Depends = (Store,);
+    type Spawns = ();
 
     fn begin(_: HolderConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { waiting: Vec::new(), launching: Vec::new() })

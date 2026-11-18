@@ -96,6 +96,7 @@ impl Actor for SessionsTools {
         Answer<Archived, Asking>,
     );
     type Depends = (Sessions,);
+    type Spawns = ();
 
     fn begin(_: SessionsToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

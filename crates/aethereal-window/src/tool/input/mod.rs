@@ -72,6 +72,7 @@ impl Actor for InputTool {
     type Key = ();
     type Handles = (Call, Answer<Performed, Sending>);
     type Depends = (Window,);
+    type Spawns = ();
 
     fn begin(_: InputToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

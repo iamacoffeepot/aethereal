@@ -14,14 +14,18 @@ use aethereal_link::{
     LinkSettings, ListEngines, MintFor, Minted, Origin, Outcome, REVISION, Refusal, TakeToken, Token, TokenFor, Trust,
     Up, Within,
 };
+use aethereal_process::Processes;
+use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host, Lifecycle};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{Call, Called, Caller, Offer, Offered, Output, ToolSheet, Tooling, Tools, Withdraw};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use std::{env, fs, process};
 
 /// The most bytes of a frame, each way, at both ends.
 const MOST_BYTES: u32 = 64 * 1024;
@@ -151,15 +155,47 @@ fn frames<T: Plain + Send + 'static>(
     heard(harness, reader)
 }
 
-/// A hub listening for engines on a port of its choosing, and that port.
-fn hub() -> Result<(Harness<Headless>, u16), Unheard> {
-    hub_with(EnginesSettings::default())
+/// A directory for one test, named for it, removed when dropped: the store a hub keeps beneath `store/`.
+struct Dir(PathBuf);
+
+impl Dir {
+    /// An empty directory for `test`.
+    fn new(test: &str) -> Self {
+        let root = env::temp_dir().join(format!("aethereal-link-{}-{test}", process::id()));
+        let _ = fs::remove_dir_all(&root);
+        assert!(fs::create_dir_all(&root).is_ok(), "the test's directory is made");
+
+        Self(root)
+    }
+
+    /// The store's settings for a hub, kept here, which the store counts as it begins and no test here checks anything
+    /// into. The hub holds the store and the process capability because the engines it spawns depend on them
+    /// (ADR-0059).
+    fn store(&self) -> StoreSettings {
+        StoreSettings { root: self.0.join("store").display().to_string(), ..StoreSettings::default() }
+    }
 }
 
-/// A hub with `settings`, listening for engines on a port of its choosing, and that port.
-fn hub_with(settings: EnginesSettings) -> Result<(Harness<Headless>, u16), Unheard> {
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A hub keeping its store in `dir`, listening for engines on a port of its choosing, and that port.
+fn hub(dir: &Dir) -> Result<(Harness<Headless>, u16), Unheard> {
+    hub_with(dir, EnginesSettings::default())
+}
+
+/// A hub with `settings`, keeping its store in `dir`, listening for engines on a port of its choosing, and that port.
+fn hub_with(dir: &Dir, settings: EnginesSettings) -> Result<(Harness<Headless>, u16), Unheard> {
     let settings = EnginesSettings { port: 0, most_bytes: MOST_BYTES, ..settings };
-    let program = Headless::program().with_engine(engine()).root::<Tcp>().root_with::<Engines>(settings);
+    let program = Headless::program()
+        .with_engine(engine())
+        .root::<Tcp>()
+        .root_with::<Engines>(settings)
+        .root_with::<Store>(dir.store())
+        .root::<Processes>();
     let mut harness = Harness::of(program)?;
     let engines = harness.root::<Engines>();
     waiting::until(BUDGET, || {
@@ -258,7 +294,8 @@ fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described(
     // Catches a minted token not kept, so no engine could link, a `Hello`'s name or a set not kept, a set sent while
     // the token is taken lost, a tool count never told to `Engines`, an engine listed under another id, and a
     // description that is not the latest set with its revision.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("listed");
+    let (mut harness, port) = hub(&dir)?;
     let token = minted(&mut harness)?;
     let mut stream = dialed(port);
     send(&mut stream, &hello("scene", token));
@@ -293,7 +330,8 @@ fn an_engines_hello_with_a_minted_token_and_latest_set_are_listed_and_described(
 fn a_call_is_written_down_and_answered_with_what_the_engine_sends_up() -> Result<(), Unheard> {
     // Catches a call written with the wrong number, revision, tool, or input, a request not held for the engine's
     // answer, an answer matched to the wrong call, and a call asked with no deadline written with a time left.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("called");
+    let (mut harness, port) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, 3, vec![sheet("say")])?;
     let engines = harness.root::<Engines>();
     let Some(engine) = harness.state(engines)?.engine(0) else {
@@ -328,7 +366,8 @@ fn a_call_is_written_down_and_answered_with_what_the_engine_sends_up() -> Result
 fn an_engine_of_another_revision_is_refused_and_hung_up_on() -> Result<(), Unheard> {
     // Catches a revision not checked, a refusal that does not name the hub's revision, a connection left open after
     // it, and a refused engine listed.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("revision");
+    let (mut harness, port) = hub(&dir)?;
     let token = minted(&mut harness)?;
     let mut stream = dialed(port);
     send(&mut stream, &Up::Hello { revision: REVISION + 1, name: String::from("future"), token });
@@ -346,7 +385,8 @@ fn an_engine_of_another_revision_is_refused_and_hung_up_on() -> Result<(), Unhea
 fn an_engine_of_the_revision_before_calls_carried_their_time_is_refused() -> Result<(), Unheard> {
     // Catches `REVISION` left at 1 when `Down::Call` gained `within`: a build of revision 1, which the store keeps,
     // would be linked and misread every call the hub writes it.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("revision_before");
+    let (mut harness, port) = hub(&dir)?;
     let token = minted(&mut harness)?;
     let mut stream = dialed(port);
     send(&mut stream, &Up::Hello { revision: 1, name: String::from("stored"), token });
@@ -363,7 +403,8 @@ fn an_engine_of_the_revision_before_calls_carried_their_time_is_refused() -> Res
 fn a_token_the_hub_never_minted_is_refused_and_hung_up_on() -> Result<(), Unheard> {
     // Catches a token not checked, which lets any process on the machine link, a refusal that does not say it was the
     // token, a connection left open after it, and an engine listed before its token was taken.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("unminted");
+    let (mut harness, port) = hub(&dir)?;
     let mut stream = dialed(port);
     send(&mut stream, &hello("stranger", Token([7; 16])));
     send(&mut stream, &Up::Sheets { revision: 1, tools: vec![sheet("say")] });
@@ -381,7 +422,8 @@ fn a_token_the_hub_never_minted_is_refused_and_hung_up_on() -> Result<(), Unhear
 fn a_token_is_good_for_one_hello_and_refused_the_second_time() -> Result<(), Unheard> {
     // Catches a token left in the table once a `Hello` brought it, which a process that read it from the process list
     // after the engine linked could link with.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("token_once");
+    let (mut harness, port) = hub(&dir)?;
     let token = minted(&mut harness)?;
     let mut first = dialed(port);
     send(&mut first, &hello("scene", token));
@@ -413,7 +455,8 @@ fn a_token_asked_for_by_an_actor_that_is_no_engine_is_refused_and_left_for_its_e
     // Catches `Engines` taking a token for any sender: an actor that is no engine, holding the token, would spend it
     // and learn what it was for and whether its engine is trusted, and the engine that brings it would be refused
     // (#586).
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("no_engine");
+    let (mut harness, port) = hub(&dir)?;
     let token = minted(&mut harness)?;
     let engines = harness.root::<Engines>();
 
@@ -435,7 +478,8 @@ fn a_token_asked_for_by_an_actor_that_is_no_engine_is_refused_and_left_for_its_e
 fn a_token_brought_once_its_time_has_passed_is_refused() -> Result<(), Unheard> {
     // Catches a token that never expires, so one minted for an engine never started stays good for good. The hub's
     // tokens are good for no time at all, so the `Hello` comes after its time whatever the machine's speed.
-    let (mut harness, port) = hub_with(EnginesSettings { token_within_millis: 0, ..EnginesSettings::default() })?;
+    let dir = Dir::new("token_late");
+    let (mut harness, port) = hub_with(&dir, EnginesSettings { token_within_millis: 0, ..EnginesSettings::default() })?;
     let token = minted(&mut harness)?;
     let mut stream = dialed(port);
     send(&mut stream, &hello("late", token));
@@ -452,7 +496,8 @@ fn a_token_brought_once_its_time_has_passed_is_refused() -> Result<(), Unheard> 
 fn an_engine_whose_connection_closes_leaves_the_list_and_its_call_is_answered_no() -> Result<(), Unheard> {
     // Catches an engine left listed after its connection went, a held call left waiting for good, and an ask of a
     // gone engine that is not answered `No`, which the hub's tools read as no such engine.
-    let (mut harness, port) = hub()?;
+    let dir = Dir::new("closed");
+    let (mut harness, port) = hub(&dir)?;
     let stream = linked_engine(&mut harness, port, 1, vec![sheet("say")])?;
     let engines = harness.root::<Engines>();
     let Some(engine) = harness.state(engines)?.engine(0) else {
@@ -524,6 +569,7 @@ impl Actor for Asker {
     type Key = ();
     type Handles = (CallWithin, Answer<Called, Relaying>);
     type Depends = (Engine,);
+    type Spawns = ();
 
     fn begin(_: AskerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
@@ -595,10 +641,10 @@ fn out_of_time(heard: &Answered<Heard>) -> bool {
 }
 
 /// A hub with one call out to each engine and an asker, an engine linked with `say`, and a call the asker gave
-/// `WITHIN_MILLIS` that the engine never answers, once its slot is freed: the frame written for it, the engine's
-/// connection, and the engine.
-fn lapsed() -> Result<(Harness<Headless>, Down, TcpStream, ActorRef<Engine>), Unheard> {
-    let (mut harness, port) = hub_with(EnginesSettings { most_calls: 1, ..EnginesSettings::default() })?;
+/// `WITHIN_MILLIS` that the engine never answers, once its slot is freed, the hub's store kept in `dir`: the frame
+/// written for it, the engine's connection, and the engine.
+fn lapsed(dir: &Dir) -> Result<(Harness<Headless>, Down, TcpStream, ActorRef<Engine>), Unheard> {
+    let (mut harness, port) = hub_with(dir, EnginesSettings { most_calls: 1, ..EnginesSettings::default() })?;
     harness.add_root::<Asker>(&(), AskerConfig)?;
     let stream = linked_engine(&mut harness, port, 1, vec![sheet("say")])?;
     let (engine, asker) = (first_engine(&mut harness)?, harness.root::<Asker>());
@@ -657,7 +703,8 @@ fn a_call_the_engine_never_answers_frees_its_slot_at_its_deadline() -> Result<()
     // every call after it, "too many calls of the engine are out", for good: #355 at the link. Catches too a call
     // written with no time left, or with more than its asker gave it, as a deadline written as the time on the hub's
     // clock is.
-    let (mut harness, written, stream, engine) = lapsed()?;
+    let dir = Dir::new("lapsed_frees");
+    let (mut harness, written, stream, engine) = lapsed(&dir)?;
     let Down::Call { call: 0, within: Within::Millis(left), .. } = written else {
         panic!("the call is written with the time it has left: {written:?}");
     };
@@ -680,7 +727,8 @@ fn a_call_the_engine_never_answers_frees_its_slot_at_its_deadline() -> Result<()
 fn a_called_that_comes_once_its_call_has_lapsed_is_passed_over() -> Result<(), Unheard> {
     // Catches a late `Called` matched to the call out now, which would answer it with the lapsed call's output, a
     // late frame read as out of turn, which would end the engine's link, and an answer that reaches anyone twice.
-    let (mut harness, _, stream, engine) = lapsed()?;
+    let dir = Dir::new("lapsed_late");
+    let (mut harness, _, stream, engine) = lapsed(&dir)?;
     let (late, output) = (bytes_of(&Said { length: 0 }), bytes_of(&Said { length: 5 }));
 
     let call = say_call(&mut harness)?;

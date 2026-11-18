@@ -75,6 +75,7 @@ impl Actor for Reporter {
     type Key = ();
     type Handles = (Event, Keyed, Control);
     type Depends = (Renderer, Controls);
+    type Spawns = ();
 
     fn begin(watches: Watches, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(watches.window.actor()).send(&window::Subscribe)?;

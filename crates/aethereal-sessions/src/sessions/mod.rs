@@ -223,6 +223,7 @@ impl Actor for Sessions {
         Outbound,
     );
     type Depends = (Docker, Files);
+    type Spawns = ();
 
     /// Reads the index of its sessions through `Files`.
     fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {

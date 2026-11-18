@@ -4,7 +4,7 @@ use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles,
-    Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Time, Top, Turn, Unanswered,
+    Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Spawn, Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -102,6 +102,7 @@ impl Actor for Mute {
     type Key = u64;
     type Handles = (Query, Release);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), dues: Vec::new() })
@@ -160,6 +161,7 @@ impl Actor for Relay {
     type Key = ();
     type Handles = (Query, Forward, Answer<Reply, Pending>, Answer<Slept, Pending>);
     type Depends = ();
+    type Spawns = (Mute,);
 
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(mute) = turn.spawn(&1, Blank) else {
@@ -278,6 +280,7 @@ impl Actor for Asker {
     type Key = ();
     type Handles = (Order, Answer<Reply, Pending>);
     type Depends = ();
+    type Spawns = (Relay, Mute);
 
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let (Ok(relay), Ok(mute)) = (turn.spawn(&(), Blank), turn.spawn(&0, Blank)) else {

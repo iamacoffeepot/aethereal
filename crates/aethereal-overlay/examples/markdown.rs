@@ -175,6 +175,7 @@ impl Actor for Reply {
     type Key = ();
     type Handles = aethereal_ui::handles![Event, On<Tick>, Answer<Read, Shooting>];
     type Depends = aethereal_ui::depends!();
+    type Spawns = ();
 
     fn begin(config: ReplyConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(config.window.actor()).send(&window::Subscribe)?;

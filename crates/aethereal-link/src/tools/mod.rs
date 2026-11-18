@@ -176,6 +176,7 @@ impl Actor for EngineTools {
         Answer<Terminated, Asking>,
     );
     type Depends = (Engines,);
+    type Spawns = ();
 
     fn begin(_: EngineToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

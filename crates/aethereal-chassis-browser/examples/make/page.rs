@@ -73,6 +73,7 @@ impl Actor for Maker {
     type Key = ();
     type Handles = (On<Start>, Answer<Meshed, Asked>, Answer<Textured, Asked>, Answer<Programmed, Asked>);
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

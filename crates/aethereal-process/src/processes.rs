@@ -4,7 +4,7 @@ use crate::jobs::{Launch, Launched, Launching, Raise, Raised, Raising};
 use crate::{Environment, Exits, Invocation, Pipe, PipeConfig, Process, ProcessConfig, Signal, Stdio};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    ProtocolRef, Receives, Top, Turn,
+    ProtocolRef, Receives, Spawn, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::Shut;
@@ -87,6 +87,7 @@ impl Actor for Processes {
     type Key = ();
     type Handles = (Start, Answer<Launched, Launching>, Answer<Raised, Raising>);
     type Depends = ();
+    type Spawns = (Pipe, Process);
 
     fn begin(config: ProcessesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { config, waiting: BTreeMap::new(), next: 0 })

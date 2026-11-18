@@ -4,7 +4,7 @@
 use Name::{A, B, L};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
-    More, Number, Open, Part, Receives, Seated, Serving, Stream, StreamKey, Streams, Taken, Time, Top, Turn,
+    More, Number, Open, Part, Receives, Seated, Serving, Spawn, Stream, StreamKey, Streams, Taken, Time, Top, Turn,
     Unanswered, Unsent,
 };
 use aethereal_data::{Bound, Plain};
@@ -251,6 +251,7 @@ impl Actor for Library {
     type Key = u64;
     type Handles = (Open<Files>, Open<Logs>, More, Enough, Ended);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
@@ -495,6 +496,7 @@ impl Actor for Reader {
     type Key = ();
     type Handles = (Order, Part<Files>, Part<Logs>, Answer<ReadDone, Number>, Answer<LogDone, Number>);
     type Depends = ();
+    type Spawns = (Library,);
 
     fn begin(config: ReaderConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(library) = turn.spawn(&1, Blank) else {

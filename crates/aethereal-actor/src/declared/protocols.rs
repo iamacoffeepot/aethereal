@@ -127,6 +127,7 @@ impl Kinds for () {
 ///     type Key = ();
 ///     type Handles = ();
 ///     type Depends = ();
+///     type Spawns = ();
 ///
 ///     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(board)

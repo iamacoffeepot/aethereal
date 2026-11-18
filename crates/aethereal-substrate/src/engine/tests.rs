@@ -7,7 +7,7 @@ use crate::{ByActor, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anywhere, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Recursive, Table, Top, Turn, Unanswered, Why, child, path,
+    Recursive, Spawn, Table, Top, Turn, Unanswered, Why, child, path,
 };
 use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -622,6 +622,7 @@ impl Actor for Node {
     type Key = u64;
     type Handles = (Note, Ended);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for number in config.spawns {
@@ -1604,6 +1605,7 @@ impl Actor for Holder {
     type Key = ();
     type Handles = (Note, Given);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for note in config.to_self {
@@ -2005,6 +2007,7 @@ impl Actor for Clocked {
     type Key = u64;
     type Handles = (Note, Finished);
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(config: ClockedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ClockedConfig { number, to_self } = config;
@@ -2231,6 +2234,7 @@ macro_rules! listening {
             type Key = u64;
             type Handles = (Note,);
             type Depends = ();
+            type Spawns = ();
 
             fn begin(listener: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(listener)
@@ -2271,6 +2275,7 @@ impl Actor for Caller {
     type Key = ();
     type Handles = ();
     type Depends = (Listener,);
+    type Spawns = ();
 
     fn begin(caller: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Listener>(0)).send(&caller.note)?;
@@ -2368,6 +2373,7 @@ macro_rules! answering {
             type Key = u64;
             type Handles = (Question,);
             type Depends = ();
+            type Spawns = ();
 
             fn begin(oracle: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(oracle)
@@ -2410,6 +2416,7 @@ impl Actor for Seer {
     type Key = ();
     type Handles = (Answer<Reply, Wondering>, Ended);
     type Depends = (Oracle,);
+    type Spawns = ();
 
     fn begin(seer: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Oracle>(0)).ask(&Question, &Wondering)?;
@@ -2493,6 +2500,7 @@ impl Actor for Sibyl {
     type Key = ();
     type Handles = (Question,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(sibyl: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(sibyl)
@@ -2530,6 +2538,7 @@ impl Actor for Pilgrim {
     type Key = ();
     type Handles = (Answer<Reply, Wondering>,);
     type Depends = ();
+    type Spawns = (Sibyl,);
 
     fn begin(pilgrim: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(sibyl) = turn.spawn::<Sibyl>(&(), Sibyl) else {
@@ -2600,6 +2609,7 @@ macro_rules! lighthouse {
             type Key = ();
             type Handles = (Note,);
             type Depends = ();
+            type Spawns = ();
 
             fn begin(lighthouse: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(lighthouse)
@@ -2639,6 +2649,7 @@ macro_rules! reaching {
             type Key = ();
             type Handles = (Note,);
             type Depends = $depends;
+            type Spawns = ();
 
             fn begin(reaching: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(reaching)
@@ -2711,6 +2722,7 @@ impl Actor for Harbor {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = (Pilot, Smuggler);
 
     fn begin(_: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let pilot: Result<ActorRef<Pilot>, _> = turn.spawn(&(), Pilot);
@@ -2759,6 +2771,7 @@ macro_rules! harbored {
             type Key = ();
             type Handles = ();
             type Depends = ($reaches,);
+            type Spawns = ();
 
             fn begin(child: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(child)
@@ -2817,6 +2830,7 @@ impl Actor for Barracks {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = (Squad, Scout);
 
     fn begin(barracks: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let squad: Result<ActorRef<Squad>, _> = turn.spawn(&(), Squad);
@@ -2856,6 +2870,7 @@ impl Actor for Squad {
     type Key = ();
     type Handles = (Note,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(squad: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.parent()).send(&said(Word::Squad))?;
@@ -2896,6 +2911,7 @@ impl Actor for Scout {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = ();
 
     fn begin(_: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let parent = turn.parent().and_then(|parent| turn.cast::<(Note,)>(parent));
@@ -2931,6 +2947,7 @@ impl Actor for Cell {
     type Key = ();
     type Handles = ();
     type Depends = ();
+    type Spawns = (Self,);
 
     fn begin(cell: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let parent: Option<ActorRef<Self>> = turn.parent();

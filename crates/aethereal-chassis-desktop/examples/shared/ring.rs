@@ -307,6 +307,7 @@ impl Actor for Scene {
         Answer<Placed, MadeAll>,
     );
     type Depends = (Renderer,);
+    type Spawns = ();
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();

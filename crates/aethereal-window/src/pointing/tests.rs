@@ -380,6 +380,7 @@ impl Actor for Prober {
     type Key = ();
     type Handles = (ProbeOrder, Probed);
     type Depends = (Window,);
+    type Spawns = ();
 
     fn begin(prober: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(prober)
@@ -433,6 +434,7 @@ impl Actor for Widget {
     type Key = ();
     type Handles = (Pointed,);
     type Depends = ();
+    type Spawns = ();
 
     fn begin(widget: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(widget)

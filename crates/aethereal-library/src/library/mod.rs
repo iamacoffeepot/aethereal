@@ -122,6 +122,7 @@ impl Actor for Library {
     type Key = ();
     type Handles = (Answer<FilesListed, Listing>, Answer<FileRead, ReadingModule>, Defaults, PublishModule);
     type Depends = (Files,);
+    type Spawns = ();
 
     fn begin(config: LibraryConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let publisher = turn.take(config.publisher)?;

@@ -77,6 +77,7 @@ impl Actor for ReadTool {
     type Key = ();
     type Handles = (Call, Answer<FileRead, Calling>);
     type Depends = (Files,);
+    type Spawns = ();
 
     fn begin(_: ReadToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
@@ -197,6 +198,7 @@ impl Actor for WriteTool {
     type Key = ();
     type Handles = (Call, Answer<FileWritten, Calling>);
     type Depends = (Files,);
+    type Spawns = ();
 
     fn begin(_: WriteToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })

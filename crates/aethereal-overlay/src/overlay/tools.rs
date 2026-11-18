@@ -10,7 +10,7 @@ use super::console::Offering;
 use crate::tools::{
     ChatWord, Choice, Marked, OverlayTools, OverlayToolsConfig, ThemesShown, Worded, chat_sheets, chosen,
 };
-use aethereal_actor::{ActorRef, Anyone, Beginning, Carries, Fault, Handles, Turn, path};
+use aethereal_actor::{ActorRef, Anyone, Beginning, Carries, Fault, Handles, Spawn, Turn, path};
 use aethereal_data::Kind;
 use aethereal_tools::{Offer, Tool, Tools, Unlisted};
 
