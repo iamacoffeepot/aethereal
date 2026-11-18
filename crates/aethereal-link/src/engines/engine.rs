@@ -4,11 +4,11 @@ use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, To
 use crate::frames::{self, Written};
 use crate::{Down, REVISION, Refusal, Token, Trust, Up, Within};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles, Held, JobId,
-    Level, Number, Part, Receives, Sleep, Slept, Streams, Taken, Time, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles, Held,
+    JobId, Level, Number, Part, ProtocolRef, Receives, Sleep, Slept, Streams, Subscribers, Taken, Time, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
-use aethereal_sessions::{Chat, Chatted, Joined, Numbered, Sessions, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, Chatted, Joined, Numbered, ShowAsk, ShowEvents, ShowTabs};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
 use aethereal_tools::Called;
 use core::mem;
@@ -23,6 +23,19 @@ pub struct EngineConfig {
     pub connection: ActorRef<Accepted>,
     pub most_calls: u32,
     pub most_bytes: u32,
+}
+
+/// What a trusted engine's chat is told to: the sessions' [`Joined`] as it is trusted, and [`Chatted`] for each chat
+/// frame, from the engine's own actor (ADR-0057).
+pub type Chatting = (Joined, Chatted);
+
+/// Tells an engine where its chat goes: to `to`, which is told [`Joined`] once the hub trusts the engine, at once when
+/// it does already, and each chat frame after as [`Chatted`], both from the engine's own actor, so the sessions take
+/// them as that engine's and no other's. An untrusted engine holds `to` and tells it nothing.
+#[derive(Debug, Bound)]
+#[kind(name = "aether.link.chat_to")]
+pub struct ChatTo {
+    pub to: ProtocolRef<Chatting>,
 }
 
 /// What an engine keeps for a write: whether it closes once the write is sent.
@@ -96,11 +109,14 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// is out of turn, and each call it holds is then answered `No`. Asked to [`Shut`] by `Engines`, it shuts the
 /// connection and closes.
 ///
-/// It keeps whether the hub trusts the engine, as `Engines` answers the take of its token (ADR-0057). A trusted
-/// engine [`Joined`] the sessions as it links, and each chat frame it sends is told to them as [`Chatted`], with the
-/// engine's id added, so a frame names no engine and none can claim to be another; what the sessions show it is
-/// written down as [`Down::Sessions`], [`Down::Show`], and [`Down::Ask`]. A chat frame from an engine not trusted, or
-/// not yet, is dropped and logged, and nothing of the chat is written to one.
+/// It keeps whether the hub trusts the engine, as `Engines` answers the take of its token (ADR-0057). It depends on no
+/// sessions: an actor that takes the chat, in a hub that runs sessions, hears of each trusted engine from `Engines`
+/// and tells it [`ChatTo`] where its chat goes, and the engine keeps each place it is told. A trusted engine tells
+/// each that it [`Joined`], as it links or as it is told the place, and tells each chat frame it sends to them as
+/// [`Chatted`], with the engine's id added, so a frame names no engine and none can claim to be another; what the
+/// sessions show it is written down as [`Down::Sessions`], [`Down::Show`], and [`Down::Ask`]. A chat frame from an
+/// engine not trusted, or not yet, or with nowhere to go, is dropped and logged, and nothing of the chat is written to
+/// one not trusted.
 #[derive(Bound)]
 #[kind(name = "aether.link.engine")]
 pub struct Engine {
@@ -113,6 +129,8 @@ pub struct Engine {
     /// Each call written and not yet answered, nor its deadline come, by its number.
     calls: BTreeMap<u64, Out>,
     next: u64,
+    /// Where its chat goes, as each actor that told it [`ChatTo`] named: told only once the hub trusts it.
+    chat_to: Subscribers<Chatting>,
 }
 
 impl Engine {
@@ -161,6 +179,8 @@ impl Actor for Engine {
         ShowTabs,
         ShowEvents,
         ShowAsk,
+        ChatTo,
+        Ended,
     );
     type Depends = (Engines,);
 
@@ -178,6 +198,7 @@ impl Actor for Engine {
             said: Said::Nothing,
             calls: BTreeMap::new(),
             next: 0,
+            chat_to: Subscribers::new(),
         })
     }
 
@@ -265,8 +286,8 @@ impl Receives<Answer<Wrote, Sent>> for Engine {
 
 impl Receives<Answer<TokenFor, Vouching>> for Engine {
     /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a trusted
-    /// engine joins the sessions, to be shown them, when the hub serves any. A token `Engines` does not hold is
-    /// refused, and the connection shut once the refusal is sent.
+    /// engine joins wherever its chat goes, to be shown the sessions. A token `Engines` does not hold is refused, and
+    /// the connection shut once the refusal is sent.
     fn handle(
         &mut self,
         (answered, Vouching): (Answered<TokenFor>, Vouching),
@@ -284,14 +305,36 @@ impl Receives<Answer<TokenFor, Vouching>> for Engine {
         let shown = shown(&name, &tools);
         self.said = Said::Linked { name, tools, trust };
         turn.to(turn.parent()).send(&shown)?;
-        // The hub may run no sessions, so an engine depends on none: it looks them up at their path, as what may not be
-        // there, and reaches them through what it tells them (ADR-0059).
-        let sessions =
-            turn.resolve(path::<Sessions>(()).names()).and_then(|found| turn.cast::<(Joined, Chatted)>(found));
-        if let (true, Some(sessions)) = (trust.is_trusted(), sessions) {
-            let joined = Joined { engine: self.id };
-            turn.to(sessions).send(&joined)?;
+        if trust.is_trusted() {
+            turn.to(&self.chat_to).send(&Joined { engine: self.id })?;
         }
+
+        Ok(())
+    }
+}
+
+impl Handles<ChatTo> for Engine {
+    type From = Anyone;
+
+    /// Keeps where its chat goes, and joins there at once when the hub trusts the engine already; a place it keeps
+    /// already is not joined again. An engine not trusted, or not yet, keeps the place and tells it nothing: it joins
+    /// as it is trusted, and an untrusted engine never does.
+    fn handle(&mut self, chat_to: ChatTo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let ChatTo { to } = chat_to;
+        let added = self.chat_to.subscribe(turn, to);
+        let trusted = self.is_trusted();
+        if added && trusted {
+            turn.to(to).send(&Joined { engine: self.id })?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Receives<Ended> for Engine {
+    /// A place its chat went to has ended, and is let go.
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.chat_to.ended(&ended);
 
         Ok(())
     }
@@ -505,19 +548,18 @@ impl Engine {
         self.trust().is_some_and(Trust::is_trusted)
     }
 
-    /// What the owner did at the engine, as a chat frame says: told to the sessions, with the engine's id, when the
-    /// engine is trusted, and dropped and logged otherwise, so code an untrusted engine runs never acts on a session
+    /// What the owner did at the engine, as a chat frame says: told wherever its chat goes, with the engine's id, when
+    /// the engine is trusted, and dropped and logged otherwise, so code an untrusted engine runs never acts on a session
     /// (ADR-0057). A chat frame before `Hello` is out of turn, as any frame is.
     fn chatted(&self, turn: &mut Turn<'_, Self>, chat: Chat) -> Result<(), Fault> {
         let id = self.id;
         match &self.said {
             Said::Linked { trust: Trust::Trusted, .. } => {
-                let found = turn.resolve(path::<Sessions>(()).names());
-                let Some(sessions) = found.and_then(|found| turn.cast::<(Joined, Chatted)>(found)) else {
-                    turn.log(Level::Info, format_args!("a chat frame from engine {id} was dropped: no sessions here"));
+                if self.chat_to.references().is_empty() {
+                    turn.log(Level::Info, format_args!("a chat frame from engine {id} was dropped: nothing takes it"));
                     return Ok(());
-                };
-                turn.to(sessions).send(&Chatted { engine: id, chat })?;
+                }
+                turn.to(&self.chat_to).send(&Chatted { engine: id, chat })?;
             }
             Said::Linked { trust: Trust::Untrusted { session }, .. } => {
                 turn.log(Level::Warn, format_args!("a chat frame from engine {id}, session {session}'s, was dropped"));

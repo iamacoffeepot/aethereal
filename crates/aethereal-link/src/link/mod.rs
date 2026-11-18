@@ -95,7 +95,7 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// `read_limit` above what its tools answer, so that each is served.
 ///
 /// A trusted engine's link carries chat too (ADR-0057): the sessions, events, and asks the hub shows the engine are
-/// handed to each actor that [`Listen`]s, the dev overlay's console among them, and the sessions' [`Chat`] an actor
+/// handed to each actor that [`Listen`]s, the dev overlay's chat relay among them, and the sessions' [`Chat`] an actor
 /// tells it is written up as its frame.
 #[derive(Bound)]
 #[kind(name = "aether.link")]

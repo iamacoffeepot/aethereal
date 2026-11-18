@@ -109,13 +109,11 @@ impl Overlay {
 /// Each cycle's time is kept, and the program's time for the tabs' pulsing icons, the marks told since the last stamped
 /// with it and printed, the charts cut, the figures, the GPU's figures, and the engine's memory for the meters worked
 /// out again when they are due and the memory kept in the meters' histories, and the engine's log read when it is due.
-/// The first looks for the engine's link and listens to it, every root of the program having begun. While the console
-/// is open its line is given its screen's focus back, should a press have taken it elsewhere, so the console goes on
-/// typing into it; but not while a selection stands in the scrollback or a transcript, or is being dragged out, so the
-/// copy chord reaches what has the focus. Heard only while the overlay is shown.
+/// While the console is open its line is given its screen's focus back, should a press have taken it elsewhere, so the
+/// console goes on typing into it; but not while a selection stands in the scrollback or a transcript, or is being
+/// dragged out, so the copy chord reaches what has the focus. Heard only while the overlay is shown.
 impl Receives<On<Tick>> for Overlay {
     fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.listen(turn)?;
         self.now_nanos = tick.elapsed_nanos;
         self.frames.tick(&tick);
         self.marks.keep_since(tick.elapsed_nanos);

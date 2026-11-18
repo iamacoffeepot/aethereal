@@ -9,7 +9,7 @@
 //! Prepare ──> view (`view`): the band's primitives and the console's widgets ──> the library lays out and draws
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
-//! first shown ──> Listen to the link ──> ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the link (ADR-0057)
+//! a relay's Relays ──> kept;  its ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the relay (ADR-0057)
 //! begun ──> spawn OverlayTools ──> Offer `mark`, `memory`, `set_theme` with it as their worker
 //! first listed ──> Offer the chat's words with the same worker
 //! the worker's Marked ──> a mark kept;  Choice ──> the palette of the theme named, ThemesShown;
@@ -36,6 +36,7 @@ use crate::layout::CONSOLE_SHARE;
 use crate::lines::FrameLines;
 use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
+use crate::relay::Relays;
 use crate::stop::Stop;
 use crate::tools::{ChatWord, Choice, Marked, OverlayTools};
 use aethereal_actor::{Actor, ActorRef, Answer, Beginning, ChildOf, Ending, Fault, On, Tick, Top, path};
@@ -124,9 +125,10 @@ pub struct Overlay {
     logs_since: u64,
     /// The program's time from which the log is next read.
     logs_due_nanos: u64,
-    /// The chat the engine's link shows it, which the console shows once the hub lists the sessions (ADR-0057).
+    /// The chat the engine's link shows it through its relay, which the console shows once the hub lists the sessions
+    /// (ADR-0057).
     chats: Chats,
-    /// The engine's link, once looked for.
+    /// What carries the chat to the engine's link, once an actor says it does.
     linking: Linking,
     /// The share of the window's height the console takes, as its grip was last dragged: the engine's own, never sent.
     console_share: f32,
@@ -159,6 +161,7 @@ impl Actor for Overlay {
         ShowTabs,
         ShowEvents,
         ShowAsk,
+        Relays,
         Choice,
         ChatWord,
     ];
@@ -192,7 +195,7 @@ impl Actor for Overlay {
             logs_since: 0,
             logs_due_nanos: 0,
             chats: Chats::default(),
-            linking: Linking::Unlooked,
+            linking: Linking::Unlinked,
             console_share: CONSOLE_SHARE,
             now_nanos: 0,
             palette: Palette::default(),

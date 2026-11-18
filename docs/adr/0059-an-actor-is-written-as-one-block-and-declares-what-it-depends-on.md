@@ -237,6 +237,7 @@ impl Simulator {
 - **A spawn is refused, before the child's `begin` runs, when a chain in its `depends` with no keyed segment holds no live actor** (ADR-0022: `Refused::Missing`), as `Declared::missing` checks a path of singletons today. It reads the child's `depends` where it read its declared paths.
 - **Only a keyed actor could exist and may not.** Its place is filled and emptied as the program runs, so neither the build nor a spawn can say it is there. `turn.to(path)` stays allowed for any path into a tree the actor depends on, and behaves as it does today: an empty place drops a tell and answers an ask as gone (ADR-0022). `turn.found(&path)`, which answers `Option`, is for code that needs to know.
 - **A reference needs no entry.** An `ActorRef`, a `ProtocolRef`, and the sender a guard hands on were proven when they were made (ADR-0016, ADR-0058).
+- **A dependency is never optional.** An actor depends on what it reaches outright, or does not reach it: `depends` has no optional entry, and no root is looked up by its name to reach one some programs lack. What only some programs need is an actor of its own, which depends on both sides and is listed only where both stand, and which registers itself with the actor it serves; that actor keeps whatever registers, and does without when nothing has. So a publisher never names its listeners. The dev overlay keeps the `ChatRelay` that tells it `Relays`, and depends on no link; `Engines` tells each actor that asks to `HearTrusted` every engine the hub trusts, and in a hub that runs sessions, `ChatToSessions` points each at `Sessions` (ADR-0057).
 
 ### A parent declares what it spawns, and the program walks the tree
 
@@ -403,6 +404,7 @@ fn gathered(
 - **Declare nothing at all.** It loses the check, as the program is built, that it holds the roots an actor needs, which saves a run.
 - **Derive the sends with a nightly `rustc_private` driver.** It ties every build to nightly and to the compiler's internals.
 - **`depends` naming only root types.** A type in it says where in the tree the actor reaches, and its root is derived from its chain, so a root type is one case of it.
+- **An optional dependency,** `maybe(…)` in `depends`, or a root looked up by its name and cast to what is sent. A program could then lack what an actor reaches with nothing checked at build, and the dependency would point from a publisher to its listeners. An actor of its own, listed where both sides stand, keeps every dependency checked.
 - **Every path into a tree through `found`.** Only a keyed actor could exist and may not, and a tell to an empty place is already dropped and an ask answered as gone, so an `Option` at every call says nothing the send does not.
 - **A parent's `depends` covering its children's.** Every parent would restate its subtree's reach, and a generic parent, such as a toolbox of any tools, could not write what its children reach.
 - **The answer on the kind,** `#[kind(answers = …)]`. An actor layer answers `Inbound<In>` with `Inward<its Out>` (ADR-0035), so the kind cannot fix its answer.

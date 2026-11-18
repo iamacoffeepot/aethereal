@@ -4,7 +4,8 @@
 //! `capture_frame`, which shows the agent what the window draws (ADR-0043), and `send_input`, which presses the
 //! backtick for it (ADR-0046), and `render_stats`, which reads the renderer's frame statistics (ADR-0053). The
 //! overlay's console calls the same tools, and the overlay's own `mark` and `memory`, from the window: the tools root
-//! is listed before the overlay, which subscribes to it and offers its own as it begins.
+//! is listed before the overlay, which subscribes to it and offers its own as it begins. The chat relay, listed after
+//! the overlay and the link, carries the console's chat between them when the hub trusts the engine (ADR-0057).
 //!
 //! With a hub from the `aethereal-hub` crate running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-overlay --example overlay -- <those
@@ -21,7 +22,7 @@ use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
-use aethereal_overlay::Overlay;
+use aethereal_overlay::{ChatRelay, Overlay};
 use aethereal_pace::{PaceTool, Pacer};
 use aethereal_render::{CaptureTool, RecordTool, Renderer, StatsTool, TargetTool};
 use aethereal_substrate::{EngineSettings, Host};
@@ -60,7 +61,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Launches the backdrop with the overlay listed, the root list drawing the overlay over the backdrop, the link to the hub beside them, and a toolbox of the renderer's,
+/// Launches the backdrop with the overlay listed, the root list drawing the overlay over the backdrop, the link to the hub beside them with the chat relay between the two, and a toolbox of the renderer's,
 /// the window's, the pacer's, and the logs' tools offered to the tools the link hands the hub, on as many workers as the machine has cores, at most
 /// four, with what its command line and environment set over that.
 fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
@@ -89,6 +90,7 @@ fn run() -> Result<Launched<Exit>, Box<dyn Error>> {
         .root::<Files>()
         .root::<Tcp>()
         .root_with::<Link>(link)
+        .root::<ChatRelay>()
         .root::<Toolbox<
             (CaptureTool, RecordTool, TargetTool, StatsTool, LogsTool, InputTool, WindowTool, PaceTool),
             Tools,
