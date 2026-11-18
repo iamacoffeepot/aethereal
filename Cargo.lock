@@ -160,6 +160,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-hub"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-chassis-headless",
+ "aethereal-data",
+ "aethereal-files",
+ "aethereal-http",
+ "aethereal-link",
+ "aethereal-mcp",
+ "aethereal-process",
+ "aethereal-sessions",
+ "aethereal-store",
+ "aethereal-substrate",
+ "aethereal-tcp",
+ "aethereal-tools",
+]
+
+[[package]]
 name = "aethereal-library"
 version = "0.1.0"
 dependencies = [
