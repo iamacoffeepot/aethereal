@@ -10,7 +10,7 @@ use super::console::Offering;
 use crate::tools::{
     ChatWord, Choice, Marked, OverlayTools, OverlayToolsConfig, ThemesShown, Worded, chat_sheets, chosen,
 };
-use aethereal_actor::{ActorRef, Anyone, Beginning, Fault, Handles, Spawn, Turn, path};
+use aethereal_actor::{ActorRef, Beginning, Fault, Spawn, Turn, path};
 use aethereal_data::Kind;
 use aethereal_tools::{Offer, Tool, Tools, Unlisted};
 
@@ -38,40 +38,29 @@ impl Overlay {
     }
 }
 
-/// A mark, kept to be pinned at the next `Tick`'s time: its tick is drawn on the chart from then, and it is printed
-/// in the mark's ink then.
-impl Handles<Marked> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, marked: Marked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Overlay {
+    /// A mark, kept to be pinned at the next `Tick`'s time: its tick is drawn on the chart from then, and it is printed
+    /// in the mark's ink then.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_marked(&mut self, marked: Marked) -> Result<(), Fault> {
         self.marks.wait(marked.text);
 
         Ok(())
     }
-}
 
-/// A theme chosen through `set_theme`: the palette changed to the theme it names, for the next frame to draw in, and
-/// answered the themes and the one in use.
-impl Handles<Choice> for Overlay {
-    type From = Anyone;
-    type Returns = ThemesShown;
-
-    fn handle(&mut self, choice: Choice, _: &mut Turn<'_, Self>) -> Result<ThemesShown, Fault> {
+    /// A theme chosen through `set_theme`: the palette changed to the theme it names, for the next frame to draw in,
+    /// and answered the themes and the one in use.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_choice(&mut self, choice: Choice) -> Result<ThemesShown, Fault> {
         let (palette, shown) = chosen(&self.palette, choice);
         self.palette = palette;
 
         Ok(shown)
     }
-}
 
-/// One of the chat's words, which its worker took only from the owner: the chat it comes to told the link, or refused
-/// for a session the chat does not list.
-impl Handles<ChatWord> for Overlay {
-    type From = Anyone;
-    type Returns = Worded;
-
-    fn handle(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<Worded, Fault> {
+    /// One of the chat's words, which its worker took only from the owner: the chat it comes to told the link, or
+    /// refused for a session the chat does not list.
+    pub(super) fn handle_chat_word(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<Worded, Fault> {
         let chat = match word {
             ChatWord::New { name } => Ok(self.chats.make(name)),
             ChatWord::Stop(which) => self.chats.stop(&which),

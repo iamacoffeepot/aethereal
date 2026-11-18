@@ -15,7 +15,7 @@ use crate::prelude::*;
 use crate::table::{Focus, Table};
 use crate::widget::Laid;
 use crate::widgets::Text;
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
+use aethereal_actor::{Beginning, Fault, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::draw_list::Entry;
 use aethereal_render::frame::Frame;
@@ -107,25 +107,12 @@ impl Board {
     }
 }
 
-impl ChildOf for Board {
-    type Parent = Top;
-}
-
-impl Actor for Board {
-    type Config = Frame;
-    type Key = ();
-    type Handles = aethereal_ui::handles![];
-    type Depends = crate::depends!();
-    type Spawns = ();
-
+#[actor(with(aethereal_ui::screen))]
+impl Board {
     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 
         Ok(Self::first(ui))
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

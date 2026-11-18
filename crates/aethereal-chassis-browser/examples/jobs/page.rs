@@ -3,8 +3,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Job, JobId, On, Receives, Render, Runner, Running,
-    Sleep, Slept, Start, Tick, Time, Top, Turn, path,
+    Answered, Beginning, Fault, Job, JobId, Render, Runner, Running, Sleep, Slept, Start, Tick, Time, Turn, actor, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -171,26 +170,8 @@ enum Sleeping {
     Check,
 }
 
-impl ChildOf for Prober {
-    type Parent = Top;
-}
-
-impl Actor for Prober {
-    type Config = Shows;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        On<Tick>,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Shape>,
-        Answer<Programmed, Making>,
-        Answer<Summed, Summing>,
-        Answer<Slept, Sleeping>,
-        Answer<Placed, Nothing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Prober {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
@@ -198,7 +179,165 @@ impl Actor for Prober {
         Ok(Self { window: shows.window, frames: 0, stage: Stage::Making })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Nothing)?;
+
+        Ok(())
+    }
+
+    #[on]
+    fn tick(&mut self, _: Tick) -> Result<(), Fault> {
+        self.frames += 1;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            say(format!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let square = bytes([-1.0_f32, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0].map(f32::to_bits));
+        let (vertices, indices) = match (turn.put(square), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
+            (Ok(vertices), Ok(indices)) => (vertices, indices),
+            (Err(why), _) | (_, Err(why)) => {
+                say(format!("nothing asked: {why}"));
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &shape)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(&mut self, (answered, shape): (Answered<Meshed>, Shape), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(square)) = answered else {
+            say(format!("the square was not made: {answered:?}"));
+            return Ok(());
+        };
+        let summed = match program(turn, square_at("-0.5", "0.2, 0.8, 0.3"), shape) {
+            Ok(summed) => summed,
+            Err(why) => {
+                say(why);
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&summed, &Making::Summed { shape, square })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, making): (Answered<Programmed>, Making),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(made)) = answered else {
+            say(format!("a program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let (next, shape, asked) = match making {
+            Making::Summed { shape, square } => {
+                (square_at("0.0", "0.3, 0.5, 1.0"), shape, Making::Slept { shape, square, summed: made })
+            }
+            Making::Slept { shape, square, summed } => {
+                (square_at("0.5", "1.0, 1.0, 1.0"), shape, Making::Checked { square, summed, slept: made })
+            }
+            Making::Checked { square, summed, slept } => {
+                let programs = Programs { summed, slept, checked: made };
+                self.stage = Stage::Running { square, programs, given_up: GivenUp::Unanswered, placed: Vec::new() };
+                return self.run_jobs(turn);
+            }
+        };
+        let program = match program(turn, next, shape) {
+            Ok(program) => program,
+            Err(why) => {
+                say(why);
+                return Ok(());
+            }
+        };
+        turn.to(path::<Renderer>(())).ask(&program, &asked)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn summed(
+        &mut self,
+        (answered, summing): (Answered<Summed>, Summing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let total = match answered {
+            Answered::Yes(Summed { total }) => total,
+            Answered::No(why) => {
+                say(format!("unanswered sum={why:?}"));
+                return Ok(());
+            }
+        };
+        let frames_after = self.frames - summing.frame;
+        say(format!("summed total={total} frames_after={frames_after} at_millis={}", millis(turn.now())));
+        turn.cancel(summing.give_up);
+
+        self.place(turn, |programs| programs.summed)
+    }
+
+    #[answer]
+    fn slept(
+        &mut self,
+        (answered, sleeping): (Answered<Slept>, Sleeping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        if let Answered::No(why) = answered {
+            say(format!("unanswered sleep={why:?}"));
+            return Ok(());
+        }
+        match sleeping {
+            Sleeping::Shown { ran, until } => {
+                let now = turn.now();
+                say(format!(
+                    "slept asked_millis={} after_millis={} at_millis={}",
+                    millis(until) - millis(ran),
+                    millis(now) - millis(ran),
+                    millis(now)
+                ));
+                self.place(turn, |programs| programs.slept)
+            }
+            Sleeping::GivenUp => {
+                say(String::from("answered given_up=true"));
+                if let Stage::Running { given_up, .. } = &mut self.stage {
+                    *given_up = GivenUp::Answered;
+                }
+                Ok(())
+            }
+            Sleeping::Check => {
+                let Stage::Running { given_up: GivenUp::Unanswered, .. } = self.stage else {
+                    say(String::from("checked given_up_answered=true"));
+                    return Ok(());
+                };
+                say(String::from("checked given_up_answered=false"));
+                self.place(turn, |programs| programs.checked)
+            }
+        }
+    }
+
+    /// A square placed is listed after those placed before it.
+    #[answer]
+    fn placed(&mut self, (answered, _): (Answered<Placed>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Placed::Made(square)) = answered else {
+            say(format!("unplaced square={answered:?}"));
+            return Ok(());
+        };
+        let Stage::Running { placed, .. } = &mut self.stage else {
+            return Ok(());
+        };
+        placed.push(square);
+        let entries = placed.iter().map(|placement| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
+
         Ok(())
     }
 }
@@ -251,103 +390,12 @@ fn program(turn: &mut Turn<'_, Prober>, wgsl: String, shape: Shape) -> Result<Cr
     Ok(program)
 }
 
-impl Receives<On<Start>> for Prober {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Nothing)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Prober {
-    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.frames += 1;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Prober {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            say(format!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let square = bytes([-1.0_f32, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0].map(f32::to_bits));
-        let (vertices, indices) = match (turn.put(square), turn.put(bytes([0, 1, 2, 0, 2, 3]))) {
-            (Ok(vertices), Ok(indices)) => (vertices, indices),
-            (Err(why), _) | (_, Err(why)) => {
-                say(format!("nothing asked: {why}"));
-                return Ok(());
-            }
-        };
-        turn.to(path::<Renderer>(())).ask(&CreateMesh { layout: corners(), vertices, indices }, &shape)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Meshed, Shape>> for Prober {
-    fn handle(&mut self, (answered, shape): (Answered<Meshed>, Shape), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(square)) = answered else {
-            say(format!("the square was not made: {answered:?}"));
-            return Ok(());
-        };
-        let summed = match program(turn, square_at("-0.5", "0.2, 0.8, 0.3"), shape) {
-            Ok(summed) => summed,
-            Err(why) => {
-                say(why);
-                return Ok(());
-            }
-        };
-        turn.to(path::<Renderer>(())).ask(&summed, &Making::Summed { shape, square })?;
-
-        Ok(())
-    }
-}
-
 /// How long the shown sleep sleeps, and when the check is run, after the jobs are.
 const SHOWN: Duration = Duration::from_secs(1);
 const CHECKED: Duration = Duration::from_secs(3);
 
 /// How long the sleep given up on would sleep: past the sum's answer, which gives up on it.
 const GIVEN_UP: Duration = Duration::from_secs(2);
-
-impl Receives<Answer<Programmed, Making>> for Prober {
-    fn handle(
-        &mut self,
-        (answered, making): (Answered<Programmed>, Making),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(made)) = answered else {
-            say(format!("a program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let (next, shape, asked) = match making {
-            Making::Summed { shape, square } => {
-                (square_at("0.0", "0.3, 0.5, 1.0"), shape, Making::Slept { shape, square, summed: made })
-            }
-            Making::Slept { shape, square, summed } => {
-                (square_at("0.5", "1.0, 1.0, 1.0"), shape, Making::Checked { square, summed, slept: made })
-            }
-            Making::Checked { square, summed, slept } => {
-                let programs = Programs { summed, slept, checked: made };
-                self.stage = Stage::Running { square, programs, given_up: GivenUp::Unanswered, placed: Vec::new() };
-                return self.run_jobs(turn);
-            }
-        };
-        let program = match program(turn, next, shape) {
-            Ok(program) => program,
-            Err(why) => {
-                say(why);
-                return Ok(());
-            }
-        };
-        turn.to(path::<Renderer>(())).ask(&program, &asked)?;
-
-        Ok(())
-    }
-}
 
 impl Prober {
     /// Runs its jobs at the time of the turn `turn`: the sleep it gives up on, the sum that gives up on it, the sleep
@@ -380,83 +428,4 @@ impl Prober {
 /// The milliseconds of `time`, from when the page opened.
 const fn millis(time: Time) -> u64 {
     time.nanos() / 1_000_000
-}
-
-impl Receives<Answer<Summed, Summing>> for Prober {
-    fn handle(
-        &mut self,
-        (answered, summing): (Answered<Summed>, Summing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let total = match answered {
-            Answered::Yes(Summed { total }) => total,
-            Answered::No(why) => {
-                say(format!("unanswered sum={why:?}"));
-                return Ok(());
-            }
-        };
-        let frames_after = self.frames - summing.frame;
-        say(format!("summed total={total} frames_after={frames_after} at_millis={}", millis(turn.now())));
-        turn.cancel(summing.give_up);
-
-        self.place(turn, |programs| programs.summed)
-    }
-}
-
-impl Receives<Answer<Slept, Sleeping>> for Prober {
-    fn handle(
-        &mut self,
-        (answered, sleeping): (Answered<Slept>, Sleeping),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        if let Answered::No(why) = answered {
-            say(format!("unanswered sleep={why:?}"));
-            return Ok(());
-        }
-        match sleeping {
-            Sleeping::Shown { ran, until } => {
-                let now = turn.now();
-                say(format!(
-                    "slept asked_millis={} after_millis={} at_millis={}",
-                    millis(until) - millis(ran),
-                    millis(now) - millis(ran),
-                    millis(now)
-                ));
-                self.place(turn, |programs| programs.slept)
-            }
-            Sleeping::GivenUp => {
-                say(String::from("answered given_up=true"));
-                if let Stage::Running { given_up, .. } = &mut self.stage {
-                    *given_up = GivenUp::Answered;
-                }
-                Ok(())
-            }
-            Sleeping::Check => {
-                let Stage::Running { given_up: GivenUp::Unanswered, .. } = self.stage else {
-                    say(String::from("checked given_up_answered=true"));
-                    return Ok(());
-                };
-                say(String::from("checked given_up_answered=false"));
-                self.place(turn, |programs| programs.checked)
-            }
-        }
-    }
-}
-
-/// A square placed is listed after those placed before it.
-impl Receives<Answer<Placed, Nothing>> for Prober {
-    fn handle(&mut self, (answered, _): (Answered<Placed>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Placed::Made(square)) = answered else {
-            say(format!("unplaced square={answered:?}"));
-            return Ok(());
-        };
-        let Stage::Running { placed, .. } = &mut self.stage else {
-            return Ok(());
-        };
-        placed.push(square);
-        let entries = placed.iter().map(|placement| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
-        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
-
-        Ok(())
-    }
 }

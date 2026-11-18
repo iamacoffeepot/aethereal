@@ -3,9 +3,7 @@
 //! made one ask after another, as it starts, placed in the window's main pass, and listed, first in the program's root
 //! list, beneath the overlay (ADR-0021, ADR-0023, ADR-0055).
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Start, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Start, Turn, actor, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
@@ -94,49 +92,23 @@ pub struct BackdropMeshed {
 #[kind(name = "aether.example.backdrop_placing")]
 pub struct BackdropPlacing;
 
-impl ChildOf for Backdrop {
-    type Parent = Top;
-}
-
-impl Actor for Backdrop {
-    type Config = Backed;
-    type Key = ();
-    type Handles = (
-        On<Start>,
-        Answer<Shaped, BackdropAsked>,
-        Answer<Meshed, BackdropShaped>,
-        Answer<Programmed, BackdropMeshed>,
-        Answer<Placed, BackdropPlacing>,
-    );
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Backdrop {
     fn begin(backed: Backed, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self { window: backed.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// How the triangle's corners are laid out: a place of two floats, in clip space.
-fn corner() -> VertexLayout {
-    VertexLayout { stride: 8, attributes: vec![Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 }] }
-}
-
-impl Receives<On<Start>> for Backdrop {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &BackdropAsked)?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shaped, BackdropAsked>> for Backdrop {
-    fn handle(
+    #[answer]
+    fn shaped(
         &mut self,
         (answered, _): (Answered<Shaped>, BackdropAsked),
         turn: &mut Turn<'_, Self>,
@@ -157,10 +129,9 @@ impl Receives<Answer<Shaped, BackdropAsked>> for Backdrop {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Meshed, BackdropShaped>> for Backdrop {
-    fn handle(
+    #[answer]
+    fn meshed(
         &mut self,
         (answered, shaped): (Answered<Meshed>, BackdropShaped),
         turn: &mut Turn<'_, Self>,
@@ -188,10 +159,9 @@ impl Receives<Answer<Meshed, BackdropShaped>> for Backdrop {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Programmed, BackdropMeshed>> for Backdrop {
-    fn handle(
+    #[answer]
+    fn programmed(
         &mut self,
         (answered, meshed): (Answered<Programmed>, BackdropMeshed),
         turn: &mut Turn<'_, Self>,
@@ -206,10 +176,9 @@ impl Receives<Answer<Programmed, BackdropMeshed>> for Backdrop {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Placed, BackdropPlacing>> for Backdrop {
-    fn handle(
+    #[answer]
+    fn placed(
         &mut self,
         (answered, _): (Answered<Placed>, BackdropPlacing),
         turn: &mut Turn<'_, Self>,
@@ -223,4 +192,9 @@ impl Receives<Answer<Placed, BackdropPlacing>> for Backdrop {
 
         Ok(())
     }
+}
+
+/// How the triangle's corners are laid out: a place of two floats, in clip space.
+fn corner() -> VertexLayout {
+    VertexLayout { stride: 8, attributes: vec![Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 }] }
 }

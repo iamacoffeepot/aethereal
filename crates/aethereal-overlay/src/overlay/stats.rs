@@ -11,7 +11,7 @@ use crate::console::Logged;
 use crate::gpu::{GpuFigures, GpuTiming};
 use crate::layout::Scale;
 use crate::meters::{EngineMemory, MOST_METER_COLUMNS, Meter};
-use aethereal_actor::{Anyone, Fault, Handles, Level, On, Receives, Tick, Turn};
+use aethereal_actor::{Fault, Level, Tick, Turn};
 use aethereal_data::Plain;
 use aethereal_render::stats::{FrameDrawing, FrameStats, GpuTimes};
 use aethereal_ui::{ItemKey, KeyPath, Screen, Viewport};
@@ -47,13 +47,11 @@ impl Columns {
     }
 }
 
-/// A resize lays the overlay's screen out again at the window's new size; the overlay hears nothing else of its window
-/// raw.
-impl Handles<Event> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Overlay {
+    /// A resize lays the overlay's screen out again at the window's new size; the overlay hears nothing else of its
+    /// window raw.
+    #[allow(clippy::needless_pass_by_value, reason = "the mail its handler is handed, taken as it is handed")]
+    pub(super) fn handle_event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -107,14 +105,17 @@ impl Overlay {
     }
 }
 
-/// Each cycle's time is kept, and the program's time for the tabs' pulsing icons, the marks told since the last stamped
-/// with it and printed, the charts cut, the figures, the GPU's figures, and the engine's memory for the meters worked
-/// out again when they are due and the memory kept in the meters' histories, and the engine's log read when it is due.
-/// While the console is open its line is given its screen's focus back, should a press have taken it elsewhere, so the
-/// console goes on typing into it; but not while a selection stands in the scrollback or a transcript, or is being
-/// dragged out, so the copy chord reaches what has the focus. Heard only while the overlay is shown.
-impl Receives<On<Tick>> for Overlay {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Overlay {
+    /// Each cycle's time is kept, and the program's time for the tabs' pulsing icons, the marks told since the last
+    /// stamped with it and printed, the charts cut, the figures, the GPU's figures, and the engine's memory for the
+    /// meters worked out again when they are due and the memory kept in the meters' histories, and the engine's log
+    /// read when it is due. While the console is open its line is given its screen's focus back, should a press have
+    /// taken it elsewhere, so the console goes on typing into it; but not while a selection stands in the scrollback or
+    /// a transcript, or is being dragged out, so the copy chord reaches what has the focus. Heard only while the
+    /// overlay is shown.
+    #[allow(clippy::needless_pass_by_value, reason = "the mail its handler is handed, taken as it is handed")]
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.now_nanos = tick.elapsed_nanos;
         self.frames.tick(&tick);
         self.marks.keep_since(tick.elapsed_nanos);
@@ -157,16 +158,12 @@ impl Receives<On<Tick>> for Overlay {
 
         Ok(())
     }
-}
 
-/// The budget each frame's statistics bring, which the chart is drawn against; whether its cycle drew, which keeps it
-/// in the chart or leaves it out; the values of a frame drawn for the lines' rows; and its GPU memory for the GPU
-/// meter. Heard only while the overlay is shown.
-impl Handles<FrameStats> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// The budget each frame's statistics bring, which the chart is drawn against; whether its cycle drew, which keeps
+    /// it in the chart or leaves it out; the values of a frame drawn for the lines' rows; and its GPU memory for the
+    /// GPU meter. Heard only while the overlay is shown.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_frame_stats(&mut self, stats: FrameStats) -> Result<(), Fault> {
         self.budget = stats.budget;
         self.frames.framed(&stats);
         if let FrameDrawing::Drawn(drawn) = stats.drawn {
@@ -176,15 +173,11 @@ impl Handles<FrameStats> for Overlay {
 
         Ok(())
     }
-}
 
-/// The GPU's time over a frame's passes, kept for its graph; or that the device has none, which the graph's place
-/// says. Heard only while the overlay is shown.
-impl Handles<GpuTimes> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, told: GpuTimes, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// The GPU's time over a frame's passes, kept for its graph; or that the device has none, which the graph's place
+    /// says. Heard only while the overlay is shown.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_gpu_times(&mut self, told: GpuTimes) -> Result<(), Fault> {
         self.gpu.heard(told);
 
         Ok(())

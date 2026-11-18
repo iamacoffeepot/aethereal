@@ -14,7 +14,7 @@
 //! It takes what it relays only from the actor whose it is: the shows from the link, and the chat from the overlay.
 
 use crate::overlay::Overlay;
-use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+use aethereal_actor::{ActorRef, Beginning, Fault, Turn, actor, path};
 use aethereal_data::Plain;
 use aethereal_link::{Link, Listen};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
@@ -32,10 +32,6 @@ pub struct Relays;
 #[kind(name = "aether.overlay.chat_relay")]
 pub struct ChatRelay;
 
-impl ChildOf for ChatRelay {
-    type Parent = Top;
-}
-
 /// It stands up on every host that lists the overlay and a link.
 impl<H: Host> Bootstrap<H> for ChatRelay {
     const SECTION: &'static str = "chat_relay";
@@ -50,13 +46,8 @@ impl<H: Host> Bootstrap<H> for ChatRelay {
     }
 }
 
-impl Actor for ChatRelay {
-    type Config = Self;
-    type Key = ();
-    type Handles = (ShowTabs, ShowEvents, ShowAsk, Chat);
-    type Depends = (Overlay, Link);
-    type Spawns = ();
-
+#[actor(depends(Overlay, Link))]
+impl ChatRelay {
     /// Tells the overlay it relays the chat, then listens to the link, so the overlay holds it before the link shows
     /// anything.
     fn begin(relay: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -66,53 +57,33 @@ impl Actor for ChatRelay {
         Ok(relay)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// The sessions the hub lists, told to the overlay.
-impl Handles<ShowTabs> for ChatRelay {
-    type From = ActorRef<Link>;
-    type Returns = ();
-
-    fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
+    /// The sessions the hub lists, told to the overlay.
+    #[tell]
+    fn show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&shown)?;
 
         Ok(())
     }
-}
 
-/// Events of a tab open, told to the overlay.
-impl Handles<ShowEvents> for ChatRelay {
-    type From = ActorRef<Link>;
-    type Returns = ();
-
-    fn handle(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
+    /// Events of a tab open, told to the overlay.
+    #[tell]
+    fn show_events(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&shown)?;
 
         Ok(())
     }
-}
 
-/// An ask that waits on the owner, told to the overlay.
-impl Handles<ShowAsk> for ChatRelay {
-    type From = ActorRef<Link>;
-    type Returns = ();
-
-    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
+    /// An ask that waits on the owner, told to the overlay.
+    #[tell]
+    fn show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&ask)?;
 
         Ok(())
     }
-}
 
-/// What the owner did at the console, told to the link.
-impl Handles<Chat> for ChatRelay {
-    type From = ActorRef<Overlay>;
-    type Returns = ();
-
-    fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self, ActorRef<Overlay>>) -> Result<(), Fault> {
+    /// What the owner did at the console, told to the link.
+    #[tell]
+    fn chat(&mut self, chat: Chat, turn: &mut Turn<'_, Self, ActorRef<Overlay>>) -> Result<(), Fault> {
         turn.to(path::<Link>(())).send(&chat)?;
 
         Ok(())

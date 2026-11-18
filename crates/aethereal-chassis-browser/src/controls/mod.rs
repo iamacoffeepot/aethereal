@@ -12,10 +12,7 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use listen::listen;
 
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Receives, Source,
-    Subscribers, Top, Turn,
-};
+use aethereal_actor::{Beginning, Ended, Fault, Given, Handle, Level, Source, Subscribers, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
 
@@ -65,11 +62,6 @@ pub struct Controls {
     standing: BTreeMap<String, Value>,
 }
 
-/// The controls root is a root, made by the chassis that listens to the page.
-impl ChildOf for Controls {
-    type Parent = Top;
-}
-
 /// What the controls root is made from: the source the chassis feeds the page's controls onto.
 #[derive(Bound)]
 #[kind(name = "aether.controls.config")]
@@ -77,30 +69,18 @@ pub struct ControlsConfig {
     pub source: Given<Source<Control>>,
 }
 
-impl Actor for Controls {
-    type Config = ControlsConfig;
-    type Key = ();
-    type Handles = (Subscribe, Unsubscribe, Control, Ended);
-    type Depends = ();
-    type Spawns = ();
-
+// The controls root is a root, made by the chassis that listens to the page.
+#[actor]
+impl Controls {
     fn begin(config: ControlsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
 
         Ok(Self { source, listeners: Subscribers::new(), standing: BTreeMap::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Adds the sender, and sends it every control as it stands: nothing, when it is subscribed already.
-impl Handles<Subscribe> for Controls {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Adds the sender, and sends it every control as it stands: nothing, when it is subscribed already.
+    #[tell]
+    fn subscribe(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(listener) = turn.cast::<(Control,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle the page's controls asked to be sent them");
@@ -117,26 +97,18 @@ impl Handles<Subscribe> for Controls {
 
         Ok(())
     }
-}
 
-impl Handles<Unsubscribe> for Controls {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn unsubscribe(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listeners.unsubscribe(turn.sender());
 
         Ok(())
     }
-}
 
-/// What the source brought, from this actor to itself (ADR-0010), kept and sent on to every subscriber. A control
-/// another actor sends is not the page's, and is neither kept nor sent on.
-impl Handles<Control> for Controls {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, control: Control, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// What the source brought, from this actor to itself (ADR-0010), kept and sent on to every subscriber. A control
+    /// another actor sends is not the page's, and is neither kept nor sent on.
+    #[tell]
+    fn control(&mut self, control: Control, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();
         let is_brought = turn.sender() == me.into();
         if !is_brought {
@@ -148,10 +120,9 @@ impl Handles<Control> for Controls {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Controls {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
         self.listeners.ended(&ended);
 
         Ok(())

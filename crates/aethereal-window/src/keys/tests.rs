@@ -9,9 +9,7 @@ use crate::perform::{Input, Perform};
 use crate::pointing::tests::{ProbeOrder, Prober, found};
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{
-    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, SeatNumber, Seated, Top, Turn, path,
-};
+use aethereal_actor::{ActorRef, Beginning, Fault, SeatNumber, Seated, actor, path};
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Turned, Unheard};
@@ -178,42 +176,21 @@ fn the_window_losing_the_keyboard_forgets_the_keys_down() {
 #[kind(name = "aether.test.typist")]
 struct Typist;
 
-impl ChildOf for Typist {
-    type Parent = Top;
-}
-
-impl Actor for Typist {
-    type Config = Self;
-    type Key = u64;
-    type Handles = (Event, Keyed);
-    type Depends = (Window,);
-    type Spawns = ();
-
+#[actor(key = u64, depends(Window))]
+impl Typist {
     fn begin(typist: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(WINDOW)).send(&Subscribe)?;
 
         Ok(typist)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, _: Event) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Event> for Typist {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Keyed> for Typist {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn keyed(&mut self, _: Keyed) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -234,7 +234,7 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 /// A bag whose slots each drag their item and take one dropped on them, in markup:
 ///
 /// ```
-/// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
+/// use aethereal_actor::{Beginning, Fault, Turn, actor};
 /// use aethereal_data::{Bound, Plain};
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
@@ -295,25 +295,12 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 ///     }
 /// }
 /// #
-/// # impl ChildOf for Bag {
-/// #     type Parent = Top;
-/// # }
-/// #
-/// # impl Actor for Bag {
-/// #     type Config = Frame;
-/// #     type Key = ();
-/// #     type Handles = aethereal_ui::handles![];
-/// #     type Depends = aethereal_ui::depends!();
-/// #     type Spawns = ();
-/// #
+/// # #[actor(with(aethereal_ui::screen))]
+/// # impl Bag {
 /// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 /// #         let slots = vec![Slot { at: 0, item: ItemId(1) }, Slot { at: 1, item: ItemId(2) }];
 /// #         Ok(Self { slots, dropped: Vec::new(), ui })
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
 /// #     }
 /// # }
 /// ```

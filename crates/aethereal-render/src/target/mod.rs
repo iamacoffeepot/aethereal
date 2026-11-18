@@ -7,10 +7,7 @@ mod tests;
 use crate::Renderer;
 use crate::frame::{Frame, TargetKind};
 use crate::readback::{ReadFrameTarget, ReadRefused, Region, TargetPixels};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_window::WindowId;
@@ -88,22 +85,53 @@ pub struct TargetTool {
     next: u64,
 }
 
-impl ChildOf for TargetTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for TargetTool {
-    type Config = TargetToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<TargetPixels, Targeting>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
-    fn begin(_: TargetToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Renderer))]
+impl TargetTool {
+    fn begin(_: TargetToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Holds the call, and asks the renderer for the region around the pixel.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let Ok(asked) = from_bytes::<ReadTarget>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
+            return Ok(Reply::Now(Called::Refused(String::from("that is no target to read"))));
+        };
+        let reach = asked.around.unwrap_or(0);
+        if reach > MOST_AROUND {
+            return Ok(Reply::Now(Called::Refused(format!("`around` is at most {MOST_AROUND}"))));
+        }
+        let targeting = Targeting { call: self.next };
+        let read =
+            ReadFrameTarget { frame: Frame::Main(asked.window), target: asked.target, region: around(asked.at, reach) };
+        turn.to(path::<Renderer>(())).ask(&read, &targeting)?;
+        self.next += 1;
+        let (held, later) = turn.hold();
+        self.calls.insert(targeting.call, held);
+
+        Ok(Reply::Later(later))
+    }
+
+    /// The renderer read the region, or would not: the call is answered with its values, or why.
+    #[answer]
+    fn target_pixels(
+        &mut self,
+        (answered, Targeting { call }): (Answered<TargetPixels>, Targeting),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&call) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(TargetPixels::Read { region, kind, pixels }) => {
+                let values = values(kind, turn.read(&pixels));
+                Called::output(turn, to_bytes(&TargetRead { region, values })?)
+            }
+            Answered::Yes(TargetPixels::Refused(why)) => Called::Refused(String::from(unread(why))),
+            Answered::No(why) => Called::Refused(format!("the renderer did not answer: {why:?}")),
+        };
+        turn.answer(held, &called)?;
+
         Ok(())
     }
 }
@@ -126,55 +154,6 @@ impl Tool for TargetTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-/// Holds the call, and asks the renderer for the region around the pixel.
-impl Handles<Call> for TargetTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let Ok(asked) = from_bytes::<ReadTarget>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            return Ok(Reply::Now(Called::Refused(String::from("that is no target to read"))));
-        };
-        let reach = asked.around.unwrap_or(0);
-        if reach > MOST_AROUND {
-            return Ok(Reply::Now(Called::Refused(format!("`around` is at most {MOST_AROUND}"))));
-        }
-        let targeting = Targeting { call: self.next };
-        let read =
-            ReadFrameTarget { frame: Frame::Main(asked.window), target: asked.target, region: around(asked.at, reach) };
-        turn.to(path::<Renderer>(())).ask(&read, &targeting)?;
-        self.next += 1;
-        let (held, later) = turn.hold();
-        self.calls.insert(targeting.call, held);
-
-        Ok(Reply::Later(later))
-    }
-}
-
-/// The renderer read the region, or would not: the call is answered with its values, or why.
-impl Receives<Answer<TargetPixels, Targeting>> for TargetTool {
-    fn handle(
-        &mut self,
-        (answered, Targeting { call }): (Answered<TargetPixels>, Targeting),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(held) = self.calls.remove(&call) else {
-            return Ok(());
-        };
-        let called = match answered {
-            Answered::Yes(TargetPixels::Read { region, kind, pixels }) => {
-                let values = values(kind, turn.read(&pixels));
-                Called::output(turn, to_bytes(&TargetRead { region, values })?)
-            }
-            Answered::Yes(TargetPixels::Refused(why)) => Called::Refused(String::from(unread(why))),
-            Answered::No(why) => Called::Refused(format!("the renderer did not answer: {why:?}")),
-        };
-        turn.answer(held, &called)?;
-
-        Ok(())
     }
 }
 

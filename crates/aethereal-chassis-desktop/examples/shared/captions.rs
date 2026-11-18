@@ -4,9 +4,7 @@
 //! is made, and listed, top to bottom, in the captions' draw list, which the program's root list calls after the ring
 //! (ADR-0055).
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Start, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Start, Turn, actor, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
@@ -73,24 +71,66 @@ struct Line {
     clip: Clip,
 }
 
-impl ChildOf for Captions {
-    type Parent = Top;
-}
-
-impl Actor for Captions {
-    type Config = Captioned;
-    type Key = ();
-    type Handles = (On<Start>, Answer<TextMade, Caption>, Answer<TextPlaced, Caption>);
-    type Depends = (Renderer,);
-    type Spawns = ();
-
+#[actor(depends(Renderer))]
+impl Captions {
     fn begin(captioned: Captioned, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self { window: captioned.window, placed: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        for (line, at) in lines().into_iter().zip(0..) {
+            turn.to(path::<Renderer>(())).ask(&line.text, &Caption { line: at })?;
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn text_made(
+        &mut self,
+        (answered, caption): (Answered<TextMade>, Caption),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(TextMade::Made(text)) = answered else {
+            turn.log(Level::Error, format_args!("{caption:?} was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Some(line) = lines().into_iter().nth(caption.line as usize) else {
+            return Ok(());
+        };
+        let place = PlaceText {
+            text,
+            at: line.at,
+            layer: Layer::Over,
+            opacity: 1.0,
+            clip: line.clip,
+            joins: vec![TextJoin::to::<Main>(Frame::Main(self.window))],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &caption)?;
+
+        Ok(())
+    }
+
+    /// A line placed is listed in its place among the others, top to bottom.
+    #[answer]
+    fn text_placed(
+        &mut self,
+        (answered, caption): (Answered<TextPlaced>, Caption),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(TextPlaced::Made(placement)) = answered else {
+            turn.log(Level::Error, format_args!("{caption:?} was not placed: {answered:?}"));
+            return Ok(());
+        };
+        let at = self.placed.partition_point(|(line, _)| *line < caption.line);
+        self.placed.insert(at, (caption.line, placement));
+        let entries =
+            self.placed.iter().map(|(_, placement)| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
+        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
+
         Ok(())
     }
 }
@@ -144,62 +184,4 @@ fn lines() -> Vec<Line> {
             clip,
         ),
     ]
-}
-
-impl Receives<On<Start>> for Captions {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        for (line, at) in lines().into_iter().zip(0..) {
-            turn.to(path::<Renderer>(())).ask(&line.text, &Caption { line: at })?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<TextMade, Caption>> for Captions {
-    fn handle(
-        &mut self,
-        (answered, caption): (Answered<TextMade>, Caption),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(TextMade::Made(text)) = answered else {
-            turn.log(Level::Error, format_args!("{caption:?} was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Some(line) = lines().into_iter().nth(caption.line as usize) else {
-            return Ok(());
-        };
-        let place = PlaceText {
-            text,
-            at: line.at,
-            layer: Layer::Over,
-            opacity: 1.0,
-            clip: line.clip,
-            joins: vec![TextJoin::to::<Main>(Frame::Main(self.window))],
-        };
-        turn.to(path::<Renderer>(())).ask(&place, &caption)?;
-
-        Ok(())
-    }
-}
-
-/// A line placed is listed in its place among the others, top to bottom.
-impl Receives<Answer<TextPlaced, Caption>> for Captions {
-    fn handle(
-        &mut self,
-        (answered, caption): (Answered<TextPlaced>, Caption),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(TextPlaced::Made(placement)) = answered else {
-            turn.log(Level::Error, format_args!("{caption:?} was not placed: {answered:?}"));
-            return Ok(());
-        };
-        let at = self.placed.partition_point(|(line, _)| *line < caption.line);
-        self.placed.insert(at, (caption.line, placement));
-        let entries =
-            self.placed.iter().map(|(_, placement)| Entry::Draw { placement: *placement, pointer: Pointer::Ignores });
-        turn.to(path::<Renderer>(())).send(&DrawList { entries: entries.collect() })?;
-
-        Ok(())
-    }
 }

@@ -13,7 +13,7 @@ use crate::stats::{
     self, Alive, DescribeGpu, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuDescribed, GpuMemory, GpuTimes,
     SubscribeFrameStats, SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, ProtocolRef, Subscribers, Turn};
+use aethereal_actor::{Ended, Fault, Level, ProtocolRef, Subscribers, Turn};
 use aethereal_data::Bound;
 use std::mem;
 
@@ -166,13 +166,15 @@ impl Last {
     }
 }
 
-/// Adds the sender, which must handle [`FrameStats`], to those sent each frame's statistics: from the next frame
-/// drawn, the renderer counts what it draws and writes for them.
-impl Handles<SubscribeFrameStats> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: SubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Renderer {
+    /// Adds the sender, which must handle [`FrameStats`], to those sent each frame's statistics: from the next frame
+    /// drawn, the renderer counts what it draws and writes for them.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_subscribe_frame_stats(
+        &mut self,
+        _: SubscribeFrameStats,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(subscriber) = turn.cast::<(FrameStats,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle `FrameStats` asked to be sent them");
@@ -182,28 +184,27 @@ impl Handles<SubscribeFrameStats> for Renderer {
 
         Ok(())
     }
-}
 
-/// Removes the sender from those sent each frame's statistics: once none is left, nothing is counted.
-impl Handles<UnsubscribeFrameStats> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: UnsubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Removes the sender from those sent each frame's statistics: once none is left, nothing is counted.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_unsubscribe_frame_stats(
+        &mut self,
+        _: UnsubscribeFrameStats,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         let sender = turn.sender();
         self.watch.remove(|subscribers| subscribers.unsubscribe(sender));
 
         Ok(())
     }
-}
 
-/// Adds the sender, which must handle [`GpuTimes`], to those sent each frame's pass times, from the next frame drawn;
-/// on a device without timestamps it is told so, and not added.
-impl Handles<SubscribeGpuTimes> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: SubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Adds the sender, which must handle [`GpuTimes`], to those sent each frame's pass times, from the next frame
+    /// drawn; on a device without timestamps it is told so, and not added.
+    pub(super) fn handle_subscribe_gpu_times(
+        &mut self,
+        _: SubscribeGpuTimes,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(subscriber) = turn.cast::<(GpuTimes,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle `GpuTimes` asked to be sent them");
@@ -218,30 +219,29 @@ impl Handles<SubscribeGpuTimes> for Renderer {
 
         Ok(())
     }
-}
 
-/// Removes the sender from those sent each frame's pass times: once none is left, and no one asked [`TimeFrame`],
-/// no frame is timed.
-///
-/// [`TimeFrame`]: crate::timing::TimeFrame
-impl Handles<UnsubscribeGpuTimes> for Renderer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: UnsubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Removes the sender from those sent each frame's pass times: once none is left, and no one asked [`TimeFrame`],
+    /// no frame is timed.
+    ///
+    /// [`TimeFrame`]: crate::timing::TimeFrame
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_unsubscribe_gpu_times(
+        &mut self,
+        _: UnsubscribeGpuTimes,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         let sender = turn.sender();
         self.timed.unsubscribe(sender);
 
         Ok(())
     }
-}
 
-/// Answers the adapter the renderer draws on.
-impl Handles<DescribeGpu> for Renderer {
-    type From = Anyone;
-    type Returns = GpuDescribed;
-
-    fn handle(&mut self, _: DescribeGpu, turn: &mut Turn<'_, Self>) -> Result<GpuDescribed, Fault> {
+    /// Answers the adapter the renderer draws on.
+    pub(super) fn handle_describe_gpu(
+        &mut self,
+        _: DescribeGpu,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<GpuDescribed, Fault> {
         Ok(GpuDescribed::of(&turn.open(&mut self.gpu)?.device().adapter_info()))
     }
 }

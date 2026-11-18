@@ -5,7 +5,7 @@
 use super::Overlay;
 use super::chat::Reports;
 use crate::console::Command;
-use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, Level, Receives, Turn, path};
+use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use aethereal_data::Plain;
 use aethereal_tools::{CallTool, Called, Offered, Output, Sheets, Tools};
 
@@ -52,24 +52,20 @@ impl Overlay {
     }
 }
 
-/// What the tools root holds, kept for the console's next line: sent as the overlay subscribes, and again after each
-/// change.
-impl Handles<Sheets> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Overlay {
+    /// What the tools root holds, kept for the console's next line: sent as the overlay subscribes, and again after
+    /// each change.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_sheets(&mut self, sheets: Sheets) -> Result<(), Fault> {
         self.console.hear(sheets);
 
         Ok(())
     }
-}
 
-/// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
-/// refusal in the error's ink, and reported to the session whose tab was open as it was typed. The call stops showing as running,
-/// whichever came.
-impl Receives<Answer<Called, Calling>> for Overlay {
-    fn handle(
+    /// A tool's answer to the console's line, printed: a value in the forms its flags read, an image as one line, and a
+    /// refusal in the error's ink, and reported to the session whose tab was open as it was typed. The call stops
+    /// showing as running, whichever came.
+    pub(super) fn handle_called(
         &mut self,
         (answered, Calling { tool, output, reports }): (Answered<Called>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -91,12 +87,12 @@ impl Receives<Answer<Called, Calling>> for Overlay {
 
         self.report(turn, reports, &printed)
     }
-}
 
-/// An offer of the overlay's own tools, or the chat's words, that the tools root refused is logged: the console works
-/// on without them.
-impl Receives<Answer<Offered, Offering>> for Overlay {
-    fn handle(
+    /// An offer of the overlay's own tools, or the chat's words, that the tools root refused is logged: the console
+    /// works on without them.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    #[allow(clippy::unused_self, reason = "its handler's body, which takes the actor as every handler does")]
+    pub(super) fn handle_offered(
         &mut self,
         (answered, Offering): (Answered<Offered>, Offering),
         turn: &mut Turn<'_, Self>,

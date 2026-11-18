@@ -14,46 +14,27 @@ use crate::table::Focus;
 use crate::tree::{KeyPath, Node, Segment, Tree};
 use crate::widget::{Anchor, Stand};
 use crate::widgets::{Button, Opened, Popup, Scroll, Stack};
-use aethereal_actor::{
-    Actor, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, SeatNumber, Seated,
-    Turn, child,
-};
+use aethereal_actor::{ActorRef, Anywhere, Fault, ProtocolRef, SeatNumber, Seated, actor, child};
 use aethereal_data::{ActorId, Plain};
 use aethereal_math::{Rect2, Vec2};
+use aethereal_render::Renderer;
 use aethereal_render::draw_list::{Area, Callee, Clip, Entry, Pointer};
 use aethereal_render::text::Colour;
-use aethereal_window::{AllowIme, Button as Pressed, PointerEvent};
+use aethereal_window::{AllowIme, Button as Pressed, PointerEvent, Windows};
 
 /// A child the tests' screens place, keyed by a number: it takes its size, and does nothing with it.
 #[derive(Debug, Plain)]
 #[kind(name = "aether.test.ui.minimap")]
 struct Minimap;
 
-impl ChildOf for Minimap {
-    type Parent = Anywhere;
-}
-
-impl Actor for Minimap {
-    type Config = Self;
-    type Key = u64;
-    type Handles = (Resize,);
-    type Depends = crate::depends!();
-    type Spawns = ();
-
-    fn begin(minimap: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere, depends(Renderer, Windows))]
+impl Minimap {
+    fn begin(minimap: Self) -> Result<Self, Fault> {
         Ok(minimap)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Resize> for Minimap {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Resize, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn resize(&mut self, _: Resize) -> Result<(), Fault> {
         Ok(())
     }
 }

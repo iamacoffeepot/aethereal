@@ -39,12 +39,12 @@ pub type Resizes = (Resize,);
 /// time it builds, so a tree whose children stand as they stood compares equal and is skipped.
 ///
 /// ```
-/// use aethereal_actor::{Actor, Beginning, ChildOf, Fault, Spawn, Top, child};
+/// use aethereal_actor::{Beginning, Fault, actor, child};
 /// use aethereal_data::{Bound, Plain};
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
 /// use aethereal_ui::prelude::*;
-/// # use aethereal_actor::{Ending, Path};
+/// # use aethereal_actor::Path;
 /// # use aethereal_render::Renderer;
 /// # use aethereal_render::frame::ShapeOf;
 /// #
@@ -54,10 +54,6 @@ pub type Resizes = (Resize,);
 /// #[kind(name = "aether.example.minimap")]
 /// pub struct Minimap {
 ///     ui: Screen,
-/// }
-///
-/// impl ChildOf for Minimap {
-///     type Parent = Hud;
 /// }
 ///
 /// /// A HUD that places the minimap in a slot of its tree.
@@ -83,13 +79,8 @@ pub type Resizes = (Resize,);
 ///     }
 /// }
 ///
-/// impl Actor for Hud {
-///     type Config = Frame;
-///     type Key = ();
-///     type Handles = aethereal_ui::handles![];
-///     type Depends = aethereal_ui::depends!();
-///     type Spawns = (Minimap,);
-///
+/// #[actor(with(aethereal_ui::screen), spawns(Minimap))]
+/// impl Hud {
 ///     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         let Ok(spawned) = turn.spawn::<Minimap>(&(), frame) else {
 ///             return Err(Fault::new(&NoMinimap)?);
@@ -99,28 +90,17 @@ pub type Resizes = (Resize,);
 ///
 ///         Ok(Self { minimap, ui })
 ///     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
 /// }
-/// #
-/// # impl Actor for Minimap {
-/// #     type Config = Frame;
-/// #     type Key = ();
-/// #     type Handles = aethereal_ui::handles![];
-/// #     type Depends = aethereal_ui::depends!();
-/// #     type Spawns = ();
-/// #
-/// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
-/// #         Ok(Self { ui })
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
+///
+/// // The minimap stands beneath the HUD, which spawns it.
+/// #[actor(parent = Hud, with(aethereal_ui::screen))]
+/// impl Minimap {
+///     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
+///
+///         Ok(Self { ui })
+///     }
+/// }
 /// #
 /// # aethereal_ui::view! { Minimap, ui, Stack {} }
 /// #
@@ -128,10 +108,6 @@ pub type Resizes = (Resize,);
 /// # }
 /// #
 /// # impl Controls for Minimap {
-/// # }
-/// #
-/// # impl ChildOf for Hud {
-/// #     type Parent = Top;
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]

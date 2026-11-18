@@ -27,8 +27,8 @@ pub use words::{ChatWord, NewSession, Worded, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Against, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats,
-    Fault, Figures, Handles, Held, LARGEST, Later, Process, ProtocolRef, Receives, Reply, Turn, path,
+    ActorName, ActorRef, Against, Answered, Anywhere, EngineStats, Fault, Figures, Held, LARGEST, Later, Process,
+    ProtocolRef, Reply, Turn, actor, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -138,61 +138,17 @@ enum Order {
     Word(ChatWord),
 }
 
-impl ChildOf for OverlayTools {
-    type Parent = Anywhere;
-}
-
-impl Actor for OverlayTools {
-    type Config = OverlayToolsConfig;
-    type Key = ();
-    type Handles = (Call, Answer<ThemesShown, Answering>, Answer<Worded, Answering>);
-    type Depends = (Overlay,);
-    type Spawns = ();
-
-    fn begin(_: OverlayToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Overlay))]
+impl OverlayTools {
+    fn begin(_: OverlayToolsConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// What the overlay offers as it begins: `mark`, `memory`, and `set_theme`, in every engine, trusted or not. The chat's
-/// words, served by the same worker, are offered apart, once the hub shows the overlay the chat ([`chat_sheets`]).
-impl Tool for OverlayTools {
-    fn sheets() -> Vec<ToolSheet> {
-        let mark = "Pins a mark at this moment on the dev overlay. The mark is a tick in the mark's ink on the overlay's frame \
-                    chart at this time, sliding left with the columns for sixty seconds, and a line in the mark's ink in its \
-                    console's scrollback. Answers once the overlay has been told.";
-        let memory = format!(
-            "Prints the engine's memory against its limits. It reads them as the step began: `process`, the \
-             program's memory as its chassis reads it; `blobs`, the bytes the blob store holds against its most; \
-             `backlog`, the most bytes any one actor holds unsent against its most; `guests`, every guest's memory \
-             added up; and the guests with the most memory and the actors holding the most bytes unsent, each by \
-             path, the most first, at most `most` of each ({LARGEST} when left out, and never more)."
-        );
-
-        vec![
-            ToolSheet::of::<Mark>(MARK, mark, Output::Value(SchemaNodes::of(&Done::SHAPE))),
-            ToolSheet::of::<Memory>(MEMORY, &memory, Output::Value(SchemaNodes::of(&MemoryShown::SHAPE))),
-            theme_sheet(),
-        ]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// A call read: `memory` answered at once, a mark told to the overlay and answered done, and a theme or a chat's word
-/// held and asked of the overlay, answered once the overlay answers. A call whose input is not its tool's, or a chat's
-/// word a session calls, is refused.
-impl Handles<Call> for OverlayTools {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// A call read: `memory` answered at once, a mark told to the overlay and answered done, and a theme or a chat's
+    /// word held and asked of the overlay, answered once the overlay answers. A call whose input is not its tool's, or
+    /// a chat's word a session calls, is refused.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         let order = match call.tool.as_str() {
             MARK => read(MARK, input).map(Order::Mark),
@@ -232,11 +188,10 @@ impl Handles<Call> for OverlayTools {
             Err(why) => Ok(Reply::Now(Called::Refused(why))),
         }
     }
-}
 
-/// The overlay chose the theme, and answered the themes and the one in use; or no overlay answered.
-impl Receives<Answer<ThemesShown, Answering>> for OverlayTools {
-    fn handle(
+    /// The overlay chose the theme, and answered the themes and the one in use; or no overlay answered.
+    #[answer]
+    fn themes_shown(
         &mut self,
         (answered, answering): (Answered<ThemesShown>, Answering),
         turn: &mut Turn<'_, Self>,
@@ -248,11 +203,10 @@ impl Receives<Answer<ThemesShown, Answering>> for OverlayTools {
 
         self.answer(answering, &called, turn)
     }
-}
 
-/// The overlay told the link the chat a word came to, or said why it told nothing; or no overlay answered.
-impl Receives<Answer<Worded, Answering>> for OverlayTools {
-    fn handle(
+    /// The overlay told the link the chat a word came to, or said why it told nothing; or no overlay answered.
+    #[answer]
+    fn worded(
         &mut self,
         (answered, answering): (Answered<Worded>, Answering),
         turn: &mut Turn<'_, Self>,
@@ -264,6 +218,33 @@ impl Receives<Answer<Worded, Answering>> for OverlayTools {
         };
 
         self.answer(answering, &called, turn)
+    }
+}
+
+/// What the overlay offers as it begins: `mark`, `memory`, and `set_theme`, in every engine, trusted or not. The chat's
+/// words, served by the same worker, are offered apart, once the hub shows the overlay the chat ([`chat_sheets`]).
+impl Tool for OverlayTools {
+    fn sheets() -> Vec<ToolSheet> {
+        let mark = "Pins a mark at this moment on the dev overlay. The mark is a tick in the mark's ink on the overlay's frame \
+                    chart at this time, sliding left with the columns for sixty seconds, and a line in the mark's ink in its \
+                    console's scrollback. Answers once the overlay has been told.";
+        let memory = format!(
+            "Prints the engine's memory against its limits. It reads them as the step began: `process`, the \
+             program's memory as its chassis reads it; `blobs`, the bytes the blob store holds against its most; \
+             `backlog`, the most bytes any one actor holds unsent against its most; `guests`, every guest's memory \
+             added up; and the guests with the most memory and the actors holding the most bytes unsent, each by \
+             path, the most first, at most `most` of each ({LARGEST} when left out, and never more)."
+        );
+
+        vec![
+            ToolSheet::of::<Mark>(MARK, mark, Output::Value(SchemaNodes::of(&Done::SHAPE))),
+            ToolSheet::of::<Memory>(MEMORY, &memory, Output::Value(SchemaNodes::of(&MemoryShown::SHAPE))),
+            theme_sheet(),
+        ]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

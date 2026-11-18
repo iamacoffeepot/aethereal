@@ -19,10 +19,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Spawn,
-    Start, Tick, Top, Turn, child, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Render, Spawn, Start, Tick, Turn, actor, child, path};
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
@@ -185,10 +182,6 @@ struct Director {
     windows: Vec<WindowId>,
 }
 
-impl ChildOf for Director {
-    type Parent = Top;
-}
-
 /// The keys the director hears in a window: `N` and Escape.
 fn directing() -> KeySet {
     KeySet::of(["KeyN", "Escape"])
@@ -228,13 +221,8 @@ fn another() -> OpenWindow {
     OpenWindow { title: String::from("aethereal: another"), size: Logical { width: 480.0, height: 480.0 } }
 }
 
-impl Actor for Director {
-    type Config = Directs;
-    type Key = ();
-    type Handles = (On<Start>, Keyed, Answer<Opened, Nothing>);
-    type Depends = (Renderer, Windows);
-    type Spawns = (Scene,);
-
+#[actor(depends(Renderer, Windows), spawns(Scene))]
+impl Director {
     fn begin(directs: Directs, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         let shows = Shows { window: directs.first, runs: directs.runs, count: RING, warm: true };
@@ -247,29 +235,20 @@ impl Actor for Director {
         Ok(director)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-/// Asks for a second window as the program starts, when it runs for a time, so a timed run shows a window
-/// opened on request.
-impl Receives<On<Start>> for Director {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Asks for a second window as the program starts, when it runs for a time, so a timed run shows a window
+    /// opened on request.
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Runs::For { .. } = self.runs {
             turn.to(path::<Windows>(())).ask(&another(), &Nothing)?;
         }
 
         Ok(())
     }
-}
 
-/// `N` in any window asks for another; Escape in any quits.
-impl Handles<Keyed> for Director {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// `N` in any window asks for another; Escape in any quits.
+    #[tell]
+    fn keyed(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let KeyEvent::KeyDown { code, repeat: false, .. } = keyed.event else {
             return Ok(());
         };
@@ -283,11 +262,10 @@ impl Handles<Keyed> for Director {
 
         Ok(())
     }
-}
 
-/// The window asked for, printed as it is answered, and a scene made for it once it is open.
-impl Receives<Answer<Opened, Nothing>> for Director {
-    fn handle(&mut self, (answered, _): (Answered<Opened>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// The window asked for, printed as it is answered, and a scene made for it once it is open.
+    #[answer]
+    fn opened(&mut self, (answered, _): (Answered<Opened>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Opened::Window { window, surface }) => {
                 let Surface { width, height, scale } = surface;
@@ -355,10 +333,6 @@ enum Ring {
     Drawing { placement: PlacementId, instances: InstancesId, uniforms: UniformsId },
 }
 
-impl ChildOf for Scene {
-    type Parent = Director;
-}
-
 /// What was learned before the mesh was asked for: the shape the program draws into.
 #[derive(Plain)]
 #[kind(name = "aether.example.learned")]
@@ -399,24 +373,8 @@ struct MadeAll {
     uniforms: UniformsId,
 }
 
-impl Actor for Scene {
-    type Config = Shows;
-    type Key = WindowId;
-    type Handles = (
-        On<Tick>,
-        Event,
-        Keyed,
-        Answer<Shaped, Nothing>,
-        Answer<Meshed, Learned>,
-        Answer<Programmed, MadeMesh>,
-        Answer<Instanced, MadeProgram>,
-        Answer<Uniformed, MadeInstances>,
-        Answer<Placed, MadeAll>,
-        Answer<ModeSet, Nothing>,
-    );
-    type Depends = (Renderer, Windows);
-    type Spawns = ();
-
+#[actor(key = WindowId, parent = Director, depends(Renderer, Windows))]
+impl Scene {
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
@@ -441,7 +399,252 @@ impl Actor for Scene {
         Ok(scene)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.intervals.push(tick.delta_nanos);
+        let ran = self.runs.over(tick.elapsed_nanos);
+        if ran {
+            self.print_intervals();
+            turn.quit();
+        }
+
+        let step_millis = tick.delta_nanos / 1_000_000;
+        self.turned_millis = if self.held > 0 {
+            self.turned_millis.wrapping_add(TURN_MILLIS).saturating_sub(step_millis) % TURN_MILLIS
+        } else {
+            self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
+        };
+        let Ring::Drawing { instances, uniforms, .. } = self.ring else {
+            return Ok(());
+        };
+        let records = ring(self.turned_millis, self.count, self.warm);
+        let (Ok(records), Ok(bytes)) = (turn.put(records), turn.put(self.look())) else {
+            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
+            return Ok(());
+        };
+        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?.send(&WriteUniforms {
+            uniforms,
+            first: 0,
+            bytes,
+        })?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let window = self.window.to_name();
+        match event {
+            Event::PointerMoved { x, y } => {
+                // A surface is some thousands of pixels across, which an f32 holds exactly.
+                #[allow(clippy::cast_precision_loss)]
+                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+                self.middle_x = (x / width).mul_add(2.0, -1.0);
+                self.middle_y = (y / height).mul_add(-2.0, 1.0);
+            }
+            Event::PointerDown { x, y, button } => {
+                println!("pointer_down window={window} x={x} y={y} button={button:?}");
+            }
+            Event::PointerUp { x, y, button } => println!("pointer_up window={window} x={x} y={y} button={button:?}"),
+            Event::Wheel { x, y, delta_x, delta_y } => {
+                println!("wheel window={window} x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
+            }
+            Event::Resized(surface) => {
+                let Surface { width, height, scale } = surface;
+                println!("resized window={window} width={width} height={height} scale={scale}");
+                (self.width, self.height) = (surface.width, surface.height);
+            }
+            Event::Moded(mode) => {
+                println!("moded window={window} mode={mode:?}");
+                self.mode = mode;
+            }
+            Event::FocusGained => println!("focus=gained window={window}"),
+            Event::FocusLost => {
+                println!("focus=lost window={window}");
+                self.held = 0;
+            }
+            Event::CloseRequested => println!("close_requested window={window}"),
+            Event::Closed => {
+                println!("closed window={window}");
+                self.print_intervals();
+                turn.close();
+            }
+            // Keys and text come through the scene's list, never raw (ADR-0055).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } | Event::Composing { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn keyed(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let window = self.window.to_name();
+        match keyed.event {
+            KeyEvent::KeyDown { code, key, repeat } => {
+                println!("key_down window={window} code={code} key={key:?} repeat={repeat}");
+                if !repeat {
+                    self.held += 1;
+                }
+                let toggles = code == "F11" && !repeat;
+                if toggles {
+                    let set = SetMode { window: self.window, mode: self.toggled() };
+                    turn.to(path::<Windows>(())).ask(&set, &Nothing)?;
+                }
+            }
+            KeyEvent::KeyUp { code, key } => {
+                println!("key_up window={window} code={code} key={key:?}");
+                self.held = self.held.saturating_sub(1);
+            }
+            KeyEvent::Text { text } => println!("text window={window} text={text:?}"),
+            KeyEvent::Composing { text, caret } => println!("composing window={window} text={text:?} caret={caret}"),
+        }
+
+        Ok(())
+    }
+
+    #[answer]
+    fn shaped(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(Shaped::Shape(shape)) = answered else {
+            turn.log(Level::Error, format_args!("the window's main pass has no shape: {answered:?}"));
+            return Ok(());
+        };
+        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
+        let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
+            turn.log(Level::Error, "the triangle was not asked for: its bytes were not put");
+            return Ok(());
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
+        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn meshed(
+        &mut self,
+        (answered, learned): (Answered<Meshed>, Learned),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Meshed::Made(mesh)) = answered else {
+            turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
+            turn.log(Level::Error, "the program was not asked for: its text was not put");
+            return Ok(());
+        };
+        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
+        let shade = CreateProgram {
+            wgsl,
+            vertex: String::from("place"),
+            fragment: String::from("shade"),
+            layout: VertexLayout { stride: 8, attributes: vec![position] },
+            instances: PerInstance::Records(record()),
+            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
+            reads: Vec::new(),
+            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
+            shape: learned.shape,
+        };
+        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn programmed(
+        &mut self,
+        (answered, made): (Answered<Programmed>, MadeMesh),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Programmed::Made(program)) = answered else {
+            turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(records) = turn.put(ring(0, self.count, self.warm)) else {
+            turn.log(Level::Error, "the instances were not asked for: their records were not put");
+            return Ok(());
+        };
+        let instances = CreateInstances { layout: record(), capacity: u32::from(self.count), records };
+        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn instanced(
+        &mut self,
+        (answered, made): (Answered<Instanced>, MadeProgram),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Instanced::Made(instances)) = answered else {
+            turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
+            return Ok(());
+        };
+        let Ok(bytes) = turn.put(self.look()) else {
+            turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
+            return Ok(());
+        };
+        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
+        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn uniformed(
+        &mut self,
+        (answered, made): (Answered<Uniformed>, MadeInstances),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
+            turn.log(Level::Error, format_args!("the uniforms were not made: {answered:?}"));
+            return Ok(());
+        };
+        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
+        let place = Place {
+            mesh: made.mesh,
+            instances: Drawn::Records(made.instances),
+            joins: vec![Join::to::<Main>(Frame::Main(self.window), made.program, bindings)],
+        };
+        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
+
+        Ok(())
+    }
+
+    #[answer]
+    fn placed(
+        &mut self,
+        (answered, made): (Answered<Placed>, MadeAll),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        match answered {
+            Answered::Yes(Placed::Made(placement)) => {
+                self.ring = Ring::Drawing { placement, instances: made.instances, uniforms: made.uniforms };
+                turn.to(path::<Renderer>(())).send(&self.list())?;
+            }
+            Answered::Yes(Placed::Refused(why)) => {
+                turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
+            }
+            Answered::No(why) => turn.log(Level::Error, format_args!("the ring was not placed: {why:?}")),
+        }
+
+        Ok(())
+    }
+
+    /// The mode asked for on F11, printed as it is answered.
+    #[answer]
+    fn mode_set(&mut self, (answered, _): (Answered<ModeSet>, Nothing)) -> Result<(), Fault> {
+        let window = self.window.to_name();
+        match answered {
+            Answered::Yes(ModeSet::Set { surface }) => {
+                let Surface { width, height, scale } = surface;
+                println!("mode_set window={window} width={width} height={height} scale={scale}");
+            }
+            Answered::Yes(ModeSet::Refused(why)) => println!("refused mode window={window} why={why:?}"),
+            Answered::No(why) => println!("unanswered mode window={window} why={why:?}"),
+        }
+
         Ok(())
     }
 }
@@ -526,275 +729,10 @@ impl Scene {
     }
 }
 
-impl Handles<Keyed> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let window = self.window.to_name();
-        match keyed.event {
-            KeyEvent::KeyDown { code, key, repeat } => {
-                println!("key_down window={window} code={code} key={key:?} repeat={repeat}");
-                if !repeat {
-                    self.held += 1;
-                }
-                let toggles = code == "F11" && !repeat;
-                if toggles {
-                    let set = SetMode { window: self.window, mode: self.toggled() };
-                    turn.to(path::<Windows>(())).ask(&set, &Nothing)?;
-                }
-            }
-            KeyEvent::KeyUp { code, key } => {
-                println!("key_up window={window} code={code} key={key:?}");
-                self.held = self.held.saturating_sub(1);
-            }
-            KeyEvent::Text { text } => println!("text window={window} text={text:?}"),
-            KeyEvent::Composing { text, caret } => println!("composing window={window} text={text:?} caret={caret}"),
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Scene {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let window = self.window.to_name();
-        match event {
-            Event::PointerMoved { x, y } => {
-                // A surface is some thousands of pixels across, which an f32 holds exactly.
-                #[allow(clippy::cast_precision_loss)]
-                let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
-                self.middle_x = (x / width).mul_add(2.0, -1.0);
-                self.middle_y = (y / height).mul_add(-2.0, 1.0);
-            }
-            Event::PointerDown { x, y, button } => {
-                println!("pointer_down window={window} x={x} y={y} button={button:?}");
-            }
-            Event::PointerUp { x, y, button } => println!("pointer_up window={window} x={x} y={y} button={button:?}"),
-            Event::Wheel { x, y, delta_x, delta_y } => {
-                println!("wheel window={window} x={x} y={y} delta_x={delta_x} delta_y={delta_y}");
-            }
-            Event::Resized(surface) => {
-                let Surface { width, height, scale } = surface;
-                println!("resized window={window} width={width} height={height} scale={scale}");
-                (self.width, self.height) = (surface.width, surface.height);
-            }
-            Event::Moded(mode) => {
-                println!("moded window={window} mode={mode:?}");
-                self.mode = mode;
-            }
-            Event::FocusGained => println!("focus=gained window={window}"),
-            Event::FocusLost => {
-                println!("focus=lost window={window}");
-                self.held = 0;
-            }
-            Event::CloseRequested => println!("close_requested window={window}"),
-            Event::Closed => {
-                println!("closed window={window}");
-                self.print_intervals();
-                turn.close();
-            }
-            // Keys and text come through the scene's list, never raw (ADR-0055).
-            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Text { .. } | Event::Composing { .. } => {}
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Shaped, Nothing>> for Scene {
-    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Answered::Yes(Shaped::Shape(shape)) = answered else {
-            turn.log(Level::Error, format_args!("the window's main pass has no shape: {answered:?}"));
-            return Ok(());
-        };
-        let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
-        let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
-            turn.log(Level::Error, "the triangle was not asked for: its bytes were not put");
-            return Ok(());
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let triangle = CreateMesh { layout: VertexLayout { stride: 8, attributes: vec![position] }, vertices, indices };
-        turn.to(path::<Renderer>(())).ask(&triangle, &Learned { shape })?;
-
-        Ok(())
-    }
-}
-
 /// How a record of the ring is laid out: a place, then a colour.
 fn record() -> VertexLayout {
     let offset = Attribute { location: 1, format: VertexFormat::Float32x2, offset: 0 };
     let colour = Attribute { location: 2, format: VertexFormat::Unorm8x4, offset: 8 };
 
     VertexLayout { stride: 12, attributes: vec![offset, colour] }
-}
-
-impl Receives<Answer<Meshed, Learned>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Meshed::Made(mesh)) = answered else {
-            turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(wgsl) = turn.put(Vec::from(SHADE)) else {
-            turn.log(Level::Error, "the program was not asked for: its text was not put");
-            return Ok(());
-        };
-        let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
-        let shade = CreateProgram {
-            wgsl,
-            vertex: String::from("place"),
-            fragment: String::from("shade"),
-            layout: VertexLayout { stride: 8, attributes: vec![position] },
-            instances: PerInstance::Records(record()),
-            bindings: vec![Binding { group: 0, binding: 0, kind: BindingKind::Uniform { bytes: 16 } }],
-            reads: Vec::new(),
-            state: Fixed { blend: Blend::Opaque, depth: Depth::Off, cull: Cull::None, coverage: Coverage::Off },
-            shape: learned.shape,
-        };
-        turn.to(path::<Renderer>(())).ask(&shade, &MadeMesh { shape: learned.shape, mesh })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Programmed, MadeMesh>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Programmed::Made(program)) = answered else {
-            turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(records) = turn.put(ring(0, self.count, self.warm)) else {
-            turn.log(Level::Error, "the instances were not asked for: their records were not put");
-            return Ok(());
-        };
-        let instances = CreateInstances { layout: record(), capacity: u32::from(self.count), records };
-        turn.to(path::<Renderer>(())).ask(&instances, &MadeProgram { mesh: made.mesh, program })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Instanced, MadeProgram>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Instanced::Made(instances)) = answered else {
-            turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
-            return Ok(());
-        };
-        let Ok(bytes) = turn.put(self.look()) else {
-            turn.log(Level::Error, "the uniforms were not asked for: their bytes were not put");
-            return Ok(());
-        };
-        let made = MadeInstances { mesh: made.mesh, program: made.program, instances };
-        turn.to(path::<Renderer>(())).ask(&CreateUniforms { bytes }, &made)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Uniformed>, MadeInstances),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
-            turn.log(Level::Error, format_args!("the uniforms were not made: {answered:?}"));
-            return Ok(());
-        };
-        let bindings = vec![Bind { group: 0, binding: 0, to: Resource::Uniforms(uniforms) }];
-        let place = Place {
-            mesh: made.mesh,
-            instances: Drawn::Records(made.instances),
-            joins: vec![Join::to::<Main>(Frame::Main(self.window), made.program, bindings)],
-        };
-        turn.to(path::<Renderer>(())).ask(&place, &MadeAll { instances: made.instances, uniforms })?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Placed, MadeAll>> for Scene {
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(Placed::Made(placement)) => {
-                self.ring = Ring::Drawing { placement, instances: made.instances, uniforms: made.uniforms };
-                turn.to(path::<Renderer>(())).send(&self.list())?;
-            }
-            Answered::Yes(Placed::Refused(why)) => {
-                turn.log(Level::Error, format_args!("the ring was not placed: {why:?}"));
-            }
-            Answered::No(why) => turn.log(Level::Error, format_args!("the ring was not placed: {why:?}")),
-        }
-
-        Ok(())
-    }
-}
-
-/// The mode asked for on F11, printed as it is answered.
-impl Receives<Answer<ModeSet, Nothing>> for Scene {
-    fn handle(&mut self, (answered, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let window = self.window.to_name();
-        match answered {
-            Answered::Yes(ModeSet::Set { surface }) => {
-                let Surface { width, height, scale } = surface;
-                println!("mode_set window={window} width={width} height={height} scale={scale}");
-            }
-            Answered::Yes(ModeSet::Refused(why)) => println!("refused mode window={window} why={why:?}"),
-            Answered::No(why) => println!("unanswered mode window={window} why={why:?}"),
-        }
-
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Scene {
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.intervals.push(tick.delta_nanos);
-        let ran = self.runs.over(tick.elapsed_nanos);
-        if ran {
-            self.print_intervals();
-            turn.quit();
-        }
-
-        let step_millis = tick.delta_nanos / 1_000_000;
-        self.turned_millis = if self.held > 0 {
-            self.turned_millis.wrapping_add(TURN_MILLIS).saturating_sub(step_millis) % TURN_MILLIS
-        } else {
-            self.turned_millis.wrapping_add(step_millis) % TURN_MILLIS
-        };
-        let Ring::Drawing { instances, uniforms, .. } = self.ring else {
-            return Ok(());
-        };
-        let records = ring(self.turned_millis, self.count, self.warm);
-        let (Ok(records), Ok(bytes)) = (turn.put(records), turn.put(self.look())) else {
-            turn.log(Level::Warn, "a frame was not written: its bytes were not put");
-            return Ok(());
-        };
-        turn.to(path::<Renderer>(())).send(&WriteInstances { instances, first: 0, records })?.send(&WriteUniforms {
-            uniforms,
-            first: 0,
-            bytes,
-        })?;
-
-        Ok(())
-    }
 }

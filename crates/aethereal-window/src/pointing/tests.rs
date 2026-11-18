@@ -7,9 +7,7 @@ use crate::host::{Hosting, Opening, WindowFeed};
 use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{
-    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, SeatNumber, Seated, Table, Top, Turn, path,
-};
+use aethereal_actor::{ActorRef, Fault, SeatNumber, Seated, Table, Turn, actor, path};
 use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};
@@ -371,31 +369,14 @@ pub enum ProbeOrder {
 #[kind(name = "aether.test.prober")]
 pub struct Prober;
 
-impl ChildOf for Prober {
-    type Parent = Top;
-}
-
-impl Actor for Prober {
-    type Config = Self;
-    type Key = ();
-    type Handles = (ProbeOrder, Probed);
-    type Depends = (Window,);
-    type Spawns = ();
-
-    fn begin(prober: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Window))]
+impl Prober {
+    fn begin(prober: Self) -> Result<Self, Fault> {
         Ok(prober)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<ProbeOrder> for Prober {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn probe_order(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = path::<Window>(WINDOW);
         match order {
             ProbeOrder::Subscribe => {
@@ -411,13 +392,9 @@ impl Handles<ProbeOrder> for Prober {
 
         Ok(())
     }
-}
 
-impl Handles<Probed> for Prober {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn probed(&mut self, _: Probed) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -427,31 +404,14 @@ impl Handles<Probed> for Prober {
 #[kind(name = "aether.test.widget")]
 struct Widget;
 
-impl ChildOf for Widget {
-    type Parent = Top;
-}
-
-impl Actor for Widget {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Pointed,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(widget: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Widget {
+    fn begin(widget: Self) -> Result<Self, Fault> {
         Ok(widget)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Pointed> for Widget {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Pointed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pointed(&mut self, _: Pointed) -> Result<(), Fault> {
         Ok(())
     }
 }

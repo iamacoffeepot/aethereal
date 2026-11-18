@@ -8,7 +8,7 @@ use super::Overlay;
 use crate::chat::{Typed, typed};
 use crate::console::Command;
 use crate::relay::Relays;
-use aethereal_actor::{Anyone, Fault, Handles, Level, ProtocolRef, Speaks, Turn};
+use aethereal_actor::{Fault, Level, ProtocolRef, Speaks, Turn};
 use aethereal_data::{Bound, Plain};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
 
@@ -96,26 +96,19 @@ fn cut(printed: &str) -> &str {
     &printed[..end]
 }
 
-/// An actor that carries the chat to the engine's link: what the owner does is told to it from then on, in place of
-/// any that told it before.
-impl Handles<Relays> for Overlay {
-    type From = Speaks<(Chat,)>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Relays, turn: &mut Turn<'_, Self, Speaks<(Chat,)>>) -> Result<(), Fault> {
+impl Overlay {
+    /// An actor that carries the chat to the engine's link: what the owner does is told to it from then on, in place of
+    /// any that told it before.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_relays(&mut self, _: Relays, turn: &mut Turn<'_, Self, Speaks<(Chat,)>>) -> Result<(), Fault> {
         self.linking = Linking::Linked(*turn.from());
 
         Ok(())
     }
-}
 
-/// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told, and offers the
-/// chat's words, as only an engine the hub trusts is shown the sessions.
-impl Handles<ShowTabs> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told, and offers the
+    /// chat's words, as only an engine the hub trusts is shown the sessions.
+    pub(super) fn handle_show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let first = !self.chats.is_listed();
         let chat = self.chats.listed(shown.tabs);
         self.tell(turn, chat)?;
@@ -125,26 +118,19 @@ impl Handles<ShowTabs> for Overlay {
 
         Ok(())
     }
-}
 
-/// Events of a tab open, taken into its transcript.
-impl Handles<ShowEvents> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, shown: ShowEvents, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// Events of a tab open, taken into its transcript.
+    #[allow(clippy::needless_pass_by_value, reason = "the mail its handler is handed, taken as it is handed")]
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_show_events(&mut self, shown: ShowEvents) -> Result<(), Fault> {
         self.chats.shown(shown.session, &shown.events);
 
         Ok(())
     }
-}
 
-/// An ask that waits on the owner, kept until answered.
-impl Handles<ShowAsk> for Overlay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// An ask that waits on the owner, kept until answered.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("session {} asks: {}", ask.session, ask.what));
         self.chats.asked(ask);
 
