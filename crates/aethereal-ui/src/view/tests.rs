@@ -107,6 +107,7 @@ aethereal_ui::view! { Shop, ui,
                 click => self.select(ware.id),
                 drag: ware.id,
                 drop => self.place(ware.slot),
+                drop_accepted => self.sell(),
                 drop_outside => self.discard(),
             }
         }
@@ -150,6 +151,11 @@ impl Shop {
 
     fn place(&mut self, _: &mut Turn<'_, Self, ShopSends>, slot: u32, ware: WareId) -> Result<(), Fault> {
         self.wares.iter_mut().filter(|held| held.id == ware).for_each(|held| held.slot = slot);
+        Ok(())
+    }
+
+    fn sell(&mut self, _: &mut Turn<'_, Self, ShopSends>, ware: WareId) -> Result<(), Fault> {
+        self.wares.retain(|held| held.id != ware);
         Ok(())
     }
 
@@ -243,13 +249,14 @@ fn text(segment: Segment, text: &str) -> Node {
     node(segment, Text::new(text), vec![])
 }
 
-/// The slot of a ware, keyed by its id: the composite's button, dragged with its id and taking drops into its slot.
+/// The slot of a ware, keyed by its id: the composite's button, dragged with its id, sold when a target takes it, and
+/// taking drops into its slot.
 fn slot(ware: WareId, name: &str, slot: u32) -> Node {
     let key = Segment::Item(ItemKey::from(ware));
     let label = text(Segment::Place(0), name);
 
     node(key, Button::new(ShopEvent::Select(ware)), vec![label])
-        .with_drag(DragSource::new(ware).outside(ShopEvent::Discard))
+        .with_drag(DragSource::new(ware).accepted(ShopEvent::Sell).outside(ShopEvent::Discard))
         .with_drop(DropTarget::new(ShopEvent::Place(slot), Shop::place))
 }
 

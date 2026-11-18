@@ -10,7 +10,7 @@
 use super::reference::{Reference, SUBSET};
 use super::text::Text;
 use super::{
-    Call, Drag, Dropping, Element, Event, Field, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown, Value,
+    Call, Drag, Dropping, Element, Event, Field, Kind, Look, Memo, Naming, Raising, Repeat, Rest, Shown, Value,
 };
 use crate::style::Property;
 use proc_macro2::Span;
@@ -202,7 +202,8 @@ fn set(input: ParseStream<'_>, name: Ident, element: &mut Element) -> syn::Resul
     Ok(())
 }
 
-/// The event `name`'s call, read into `element`: a drop, a drag's `drop_outside`, or a field of its widget.
+/// The event `name`'s call, read into `element`: a drop, a drag's `drop_accepted` or `drop_outside`, or a field of its
+/// widget.
 fn raise(input: ParseStream<'_>, name: Ident, element: &mut Element) -> syn::Result<()> {
     let twice = || syn::Error::new(name.span(), format!("`{name}` is given twice"));
     match name.to_string().as_str() {
@@ -213,12 +214,19 @@ fn raise(input: ParseStream<'_>, name: Ident, element: &mut Element) -> syn::Res
             }
             element.drop = Dropping::Takes(input.parse()?);
         }
-        "drop_outside" => {
-            let unset = matches!(element.outside, Outside::Nothing);
+        "drop_accepted" => {
+            let unset = matches!(element.accepted, Raising::Nothing);
             if !unset {
                 return Err(twice());
             }
-            element.outside = Outside::Raises(input.parse()?);
+            element.accepted = Raising::Raises(input.parse()?);
+        }
+        "drop_outside" => {
+            let unset = matches!(element.outside, Raising::Nothing);
+            if !unset {
+                return Err(twice());
+            }
+            element.outside = Raising::Raises(input.parse()?);
         }
         _ => element.events.push(Event { name, call: input.parse()? }),
     }

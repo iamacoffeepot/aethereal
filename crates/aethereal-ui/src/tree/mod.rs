@@ -283,7 +283,7 @@ impl Node {
         Self { memo: Memo::Built(inputs), ..self }
     }
 
-    /// It, dragged as `source` says: what the markup's `drag`, and its `drop_outside`, compile into.
+    /// It, dragged as `source` says: what the markup's `drag`, and its `drop_accepted` and `drop_outside`, compile into.
     #[must_use]
     pub fn with_drag(self, source: DragSource) -> Self {
         Self { drag: Some(source), ..self }

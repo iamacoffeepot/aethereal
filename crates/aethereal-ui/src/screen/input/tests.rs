@@ -35,6 +35,7 @@ pub(in crate::screen) enum Ev {
     Slid,
     Opened,
     Placed(u32),
+    LetGo,
     Discarded,
 }
 

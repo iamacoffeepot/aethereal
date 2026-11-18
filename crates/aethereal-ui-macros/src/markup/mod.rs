@@ -7,9 +7,9 @@
 //! ```
 //!
 //! A lowercase name is a keyword: the element `child`, and the settings `style`, `show`, `items`, `drag`, and `name`,
-//! and the events `drop` and `drop_outside`, which belong to the node rather than the widget; and `memo`, written alone
-//! among the settings, which keeps a composite while what the markup writes into it stands. Every other name is a field
-//! of the widget's type.
+//! and the events `drop`, `drop_accepted`, and `drop_outside`, which belong to the node rather than the widget; and
+//! `memo`, written alone among the settings, which keeps a composite while what the markup writes into it stands. Every
+//! other name is a field of the widget's type.
 
 mod check;
 mod emit;
@@ -42,7 +42,8 @@ pub struct Element {
     pub repeat: Repeat,
     pub drag: Drag,
     pub drop: Dropping,
-    pub outside: Outside,
+    pub accepted: Raising,
+    pub outside: Raising,
     pub rest: Rest,
     pub memo: Memo,
     pub children: Vec<Self>,
@@ -135,11 +136,22 @@ pub enum Dropping {
     Takes(Call),
 }
 
-/// What a drag from an element raises when nothing takes it.
-pub enum Outside {
+/// What a drag from an element raises at one of its ends: when a target takes it, its `drop_accepted`, or when nothing
+/// does, its `drop_outside`.
+pub enum Raising {
     Nothing,
-    /// This event, with the payload: `drop_outside => self.discard()`.
+    /// This event, with the payload: `drop_accepted => self.let_go()`, `drop_outside => self.discard()`.
     Raises(Call),
+}
+
+impl Raising {
+    /// The call it raises, when it raises one.
+    pub const fn call(&self) -> Option<&Call> {
+        match self {
+            Self::Nothing => None,
+            Self::Raises(call) => Some(call),
+        }
+    }
 }
 
 /// Whether an element is built at every view, or kept while what its markup writes into it stands.
@@ -171,7 +183,8 @@ impl Element {
             repeat: Repeat::Once,
             drag: Drag::Fixed,
             drop: Dropping::Refuses,
-            outside: Outside::Nothing,
+            accepted: Raising::Nothing,
+            outside: Raising::Nothing,
             rest: Rest::Written,
             memo: Memo::Built,
             children: Vec::new(),

@@ -1,13 +1,14 @@
 //! Drag and drop between two screens in one window, in an engine linked to a hub (ADR-0056: Drag and drop is one
 //! path). A root screen places two shelves, sibling child actors of one type, one at each side of the window with a
 //! gap of nothing between them. Each shelf is a keyed list of fruit and of stones, each item dragged by a press and a
-//! move: a release over the other shelf mails it the drop, which it takes and answers by telling the source the item
-//! moved; the right shelf takes no stones, so it refuses one and the source puts it back; and a release over the gap,
-//! where nothing is, puts the item back too. Each shelf logs what it took, what moved away, and what it put back.
+//! move: a release over the other shelf mails it the drop, which it takes, and its library answers that it did, so the
+//! source lets the item go; the right shelf takes no stones, so its library refuses one and the source puts it back;
+//! and a release over the gap, where nothing is, puts the item back too. A release over the item's own shelf lets it go
+//! and takes it in again, at the end of its list. Each shelf logs what it took, what it let go, and what it put back.
 //!
 //! ```text
 //! press on an item ──> move past DRAG_THRESHOLD ──> release over the other shelf ──> Dropped, mailed to it
-//!     ├─> it takes the kind ──> its take_* runs ──> Moved, replied ──> the source lets the item go
+//!     ├─> it takes the kind ──> its take_* runs ──> DropAccepted, replied ──> the source's let_go_* lets it go
 //!     ├─> it takes no stones ──> DropRefused, replied ──> the source's keep_stone puts it back
 //!     └─> release over the gap ──> the source's keep_* puts it back
 //! ```
@@ -22,8 +23,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{
-    Actor, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, Prepare, Render, Tells, Tick,
-    ToSender, Top, Turn, child, path,
+    Actor, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, Prepare, Render, Tells, Tick, Top,
+    Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -70,14 +71,6 @@ pub struct Fruit(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.example.stone")]
 pub struct Stone(u32);
-
-/// What a shelf that took an item dropped from the other replies to it: the item, which the source lets go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.example.moved")]
-pub enum Moved {
-    Fruit(Fruit),
-    Stone(Stone),
-}
 
 /// Which side of the window a shelf stands at: its key. The left takes fruit and stones, the right only fruit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -188,14 +181,22 @@ aethereal_ui::view! { Shelf, ui,
     Column { style: shelf, drop => self.take_fruit(),
         Text { style: heading, "{self.title()}" }
         Column { style: list, items: self.fruit as fruit key fruit.0,
-            Stack { style: fruit_item, drag: fruit, drop_outside => self.keep_fruit(),
+            Stack {
+                style: fruit_item,
+                drag: fruit,
+                drop_accepted => self.let_go_fruit(),
+                drop_outside => self.keep_fruit(),
                 Text { style: label, "fruit {fruit.0}" }
             }
         }
         Column { style: bin, show: self.takes_stones(), drop => self.take_stone(),
             Text { style: heading, "stones" }
             Column { style: list, items: self.stones as stone key stone.0,
-                Stack { style: stone_item, drag: stone, drop_outside => self.keep_stone(),
+                Stack {
+                    style: stone_item,
+                    drag: stone,
+                    drop_accepted => self.let_go_stone(),
+                    drop_outside => self.keep_stone(),
                     Text { style: label, "stone {stone.0}" }
                 }
             }
@@ -213,8 +214,8 @@ impl Controls for Shelves {
 #[aethereal_ui::events]
 impl Shelves {}
 
-/// What a shelf's methods send: the reply that tells the source an item it dropped here moved.
-type ShelfSends = aethereal_ui::sends![ToSender<Moved>];
+/// What a shelf's methods send: none of their own.
+type ShelfSends = aethereal_ui::sends![];
 
 impl Controls for Shelf {
     type Sends = ShelfSends;
@@ -235,28 +236,34 @@ impl Shelf {
         self.hand == Hand::Left
     }
 
-    /// Takes `fruit`, dropped on it, and tells the shelf it came from that it moved; one dropped back on its own shelf
-    /// stays where it was.
+    /// Takes `fruit`, dropped on it: the library answers the shelf it came from that it was taken. One dropped back on
+    /// its own shelf was let go of first, so it moves to the end.
     fn take_fruit(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, fruit: Fruit) -> Result<(), Fault> {
-        if self.fruit.contains(&fruit) {
-            return Ok(());
-        }
         self.fruit.push(fruit);
         turn.log(Level::Info, format_args!("took fruit {}", fruit.0));
-
-        Ok(turn.reply(&Moved::Fruit(fruit))?)
+        Ok(())
     }
 
-    /// Takes `stone`, dropped on its bin, and tells the shelf it came from that it moved; one dropped back on its own
-    /// shelf stays where it was.
+    /// Takes `stone`, dropped on its bin: the library answers the shelf it came from that it was taken. One dropped
+    /// back on its own shelf was let go of first, so it moves to the end.
     fn take_stone(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, stone: Stone) -> Result<(), Fault> {
-        if self.stones.contains(&stone) {
-            return Ok(());
-        }
         self.stones.push(stone);
         turn.log(Level::Info, format_args!("took stone {}", stone.0));
+        Ok(())
+    }
 
-        Ok(turn.reply(&Moved::Stone(stone))?)
+    /// Lets go of `fruit`, which a shelf took.
+    fn let_go_fruit(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, fruit: Fruit) -> Result<(), Fault> {
+        self.fruit.retain(|kept| *kept != fruit);
+        turn.log(Level::Info, format_args!("let fruit {} go", fruit.0));
+        Ok(())
+    }
+
+    /// Lets go of `stone`, which a shelf took.
+    fn let_go_stone(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, stone: Stone) -> Result<(), Fault> {
+        self.stones.retain(|kept| *kept != stone);
+        turn.log(Level::Info, format_args!("let stone {} go", stone.0));
+        Ok(())
     }
 
     /// Puts `fruit` back, which nothing under its release took: it never left the shelf.
@@ -331,7 +338,7 @@ impl Handles<Event> for Shelves {
 impl Actor for Shelf {
     type Config = ShelfConfig;
     type Key = Hand;
-    type Handles = aethereal_ui::handles![Moved];
+    type Handles = aethereal_ui::handles![];
     type BeginSends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
     type EndSends = ();
 
@@ -347,22 +354,6 @@ impl Actor for Shelf {
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Moved> for Shelf {
-    type Sends = ();
-    type From = Anyone;
-
-    /// Lets go of the item another shelf took.
-    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        match moved {
-            Moved::Fruit(fruit) => self.fruit.retain(|kept| *kept != fruit),
-            Moved::Stone(stone) => self.stones.retain(|kept| *kept != stone),
-        }
-        turn.log(Level::Info, format_args!("{moved:?} moved away"));
-
         Ok(())
     }
 }
