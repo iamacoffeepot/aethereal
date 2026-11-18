@@ -1,30 +1,35 @@
 //! A stack's layers, listed as one tuple of types in the order a request passes them (ADR-0035): pure layers and actor
-//! layers, in any order, and last the handler. The tuple says what each layer is held as, what the layers attach along
-//! it, what the stack's sends list to ask its actor layers, and how the stack walks a request, a response, and each
-//! part of a body through them.
+//! layers, in any order, and last the layer that answers, a handler or a routes type. The tuple says what each layer is
+//! held as, what the layers attach along it, what the stack's sends list to ask its actor layers and its handlers, and
+//! how the stack walks a request, a response, and each part of a body through them.
 
 use super::actor::{Parked, ParkedResponse};
-use super::walks::{Ask, Formed, Returned, Taker, Unasked, Walked, Walks, unlayered};
+use super::last::LastLayer;
+use super::walks::{Ask, Formed, Returned, Taker, Walked, Walks};
 use super::{BodyPart, Head, Layer, LayerForm, Leaving, Response, StackSends};
 use crate::Status;
-use aethereal_actor::{Actor, ActorRef, At, Beginning, ChildOf, Fault, Lists, PathTo, Time, Turn, Within, path};
+use aethereal_actor::{At, Beginning, Fault, Lists, Time, Turn, Within};
 use aethereal_data::{Bound, Decode, Encode, KindName, Plain};
 use core::any::Any;
 
 /// A stack's layers, as one tuple of types: up to five layers, pure or actor, in any order, each whose `In` is the
-/// `Out` of the one before it, the first's `()`; and last its handler, an actor that is a singleton root, asked a
-/// [`Request`](super::Request) of what the layers attached. A pure layer's `In` and `Out` are its [`Layer`]'s, and an
-/// actor layer's those of the [`Inbound`](super::Inbound) it handles and the [`Inward`](super::Inward) it says it
-/// answers it with.
+/// `Out` of the one before it, the first's `()`; and last the layer that answers, a handler or a routes type, whose
+/// handlers are asked a [`Request`](super::Request) of what the layers attached. A pure layer's `In` and `Out` are its
+/// [`Layer`]'s, and an actor layer's those of the [`Inbound`](super::Inbound) it handles and the
+/// [`Inward`](super::Inward) it says it answers it with.
 pub trait LayerList: 'static {
-    /// The tuple of its layers' forms: what the stack holds to use them, written out by the compiler from the list.
-    type Forms: Encode<Within> + Decode<Within> + Clone;
-    /// The handler: the last layer, which answers.
-    type Handler: Actor;
-    /// What the layers attach to a request, which the handler is asked with.
+    /// The tuple of its layers' forms, the last's with them: the template the stack holds, written out by the compiler
+    /// from the list.
+    type Forms: Encode<Within> + Decode<Within>;
+    /// The forms of the layers before the last: the set each connection holds of its own, made from the template.
+    type Values: Encode<Within> + Decode<Within>;
+    /// The last layer, as the stack holds it: the handler, or the routes' router.
+    type Last: LastLayer<Self::Attached>;
+    /// What the layers attach to a request, which its handler is asked with.
     type Attached: Plain;
-    /// What the stack's sends list to ask its actor layers, ten in all: for each place before the handler, in order,
-    /// its ask on the way in and its ask on the way out, [`Unasked`] for a pure layer and for each place past the last.
+    /// What the stack's sends list to ask its actor layers and its handlers, twelve in all: for each layer before the
+    /// last, in order, its ask on the way in and its ask on the way out, [`Unasked`](super::Unasked) for a pure layer;
+    /// then the last layer's ask of each of its handlers, as many as the places left.
     type Asked: Slot<At<0>>
         + Slot<At<1>>
         + Slot<At<2>>
@@ -34,29 +39,35 @@ pub trait LayerList: 'static {
         + Slot<At<6>>
         + Slot<At<7>>
         + Slot<At<8>>
-        + Slot<At<9>>;
-    /// How many layers stand before the handler.
+        + Slot<At<9>>
+        + Slot<At<10>>
+        + Slot<At<11>>;
+    /// How many layers stand before the last.
     const LAYERS: usize;
 
-    /// Each layer as the stack holds it: a pure layer made with `Default`, and an actor layer and the handler found
-    /// at their typed paths as `turn` sees the engine.
+    /// Each layer as the stack holds it: a pure layer made with `Default`, an actor layer and a lone handler found at
+    /// their typed paths as `turn` sees the engine, and a routes type's router compiled from its routes.
     ///
     /// # Errors
     ///
-    /// The fault [`Unlayered`], naming the type of an actor layer or the handler that is not live.
+    /// The fault [`Unlayered`], naming the type of an actor layer or a lone handler that is not live; or
+    /// [`Unroutable`](crate::Unroutable), when a routes type's routes are refused.
     fn found<Me, S>(turn: &Beginning<'_, Me, S>) -> Result<Self::Forms, Fault>;
 
-    /// The handler, as `forms` hold it.
-    fn handler(forms: &Self::Forms) -> ActorRef<Self::Handler>;
+    /// A connection's own set of the forms of the layers before the last, made from `forms` as they stand.
+    fn made(forms: &Self::Forms) -> Self::Values;
 
-    /// Passes `head` in through each layer of `forms`, in order, from the first: what they attached; the response of
+    /// The last layer, as `forms` hold it.
+    fn last(forms: &Self::Forms) -> &Self::Last;
+
+    /// Passes `head` in through each layer of `values`, in order, from the first: what they attached; the response of
     /// the one that answered; or the actor layer it is parked at, asked keeping `parked` until it answers by `due`.
     ///
     /// # Errors
     ///
     /// The fault of an ask that does not encode.
     fn inbound<Me>(
-        forms: &mut Self::Forms,
+        values: &mut Self::Values,
         head: &Head,
         turn: &mut Turn<'_, Me, StackSends<Self>>,
         parked: Parked,
@@ -71,7 +82,7 @@ pub trait LayerList: 'static {
     ///
     /// The fault of an ask that does not encode.
     fn resume<Me, X: 'static>(
-        forms: &mut Self::Forms,
+        values: &mut Self::Values,
         at: usize,
         attached: X,
         head: &Head,
@@ -80,14 +91,14 @@ pub trait LayerList: 'static {
         due: Time,
     ) -> Result<Entered<Self::Attached>, Fault>;
 
-    /// Hands the layer at `at` of `forms` a response on its way out to the request `head`: an actor layer is asked,
+    /// Hands the layer at `at` of `values` a response on its way out to the request `head`: an actor layer is asked,
     /// keeping `parked` until it answers by `due`.
     ///
     /// # Errors
     ///
     /// The fault of an ask that does not encode.
     fn outbound<Me>(
-        forms: &mut Self::Forms,
+        values: &mut Self::Values,
         at: usize,
         head: &Head,
         leaving: &mut Leaving<'_>,
@@ -96,20 +107,20 @@ pub trait LayerList: 'static {
         due: Time,
     ) -> Result<Returned, Fault>;
 
-    /// What the layer at `at` of `forms` is, as a part of a body reaches it.
-    fn taker(forms: &Self::Forms, at: usize) -> Taker;
+    /// What the layer at `at` of `values` is, as a part of a body reaches it.
+    fn taker(values: &Self::Values, at: usize) -> Taker;
 
-    /// Hands the pure layer at `at` of `forms` a part of the request's body.
-    fn inbound_body(forms: &mut Self::Forms, at: usize, part: &mut BodyPart<'_>);
+    /// Hands the pure layer at `at` of `values` a part of the request's body.
+    fn inbound_body(values: &mut Self::Values, at: usize, part: &mut BodyPart<'_>);
 
-    /// Hands the pure layer at `at` of `forms` a part of the response's body.
-    fn outbound_body(forms: &mut Self::Forms, at: usize, part: &mut BodyPart<'_>);
+    /// Hands the pure layer at `at` of `values` a part of the response's body.
+    fn outbound_body(values: &mut Self::Values, at: usize, part: &mut BodyPart<'_>);
 }
 
 /// What became of a request on its way in through a stack's layers.
 #[derive(Debug)]
 pub enum Entered<A> {
-    /// Every layer passed it, attaching `A`: it goes on to the handler.
+    /// Every layer passed it, attaching `A`: it goes on to the last layer.
     Passed(A),
     /// The layer at `at` answered it with `response`, which turns back through the layers before that one.
     Answered { at: usize, response: Response },
@@ -133,12 +144,14 @@ pub struct Layers<T: LayerList> {
     forms: T::Forms,
 }
 
-/// The stack's layers, `T`, read from the annotation, each built as what it is: a pure layer with `Default`, and an
-/// actor layer and the handler found at their typed paths with the begin's turn.
+/// The stack's layers, `T`, read from the annotation, each built as what it is: a pure layer with `Default`, an actor
+/// layer and a lone handler found at their typed paths with the begin's turn, and a routes type's router compiled from
+/// its routes.
 ///
 /// # Errors
 ///
-/// The fault [`Unlayered`], naming the type of an actor layer or the handler that is not live.
+/// The fault [`Unlayered`], naming the type of an actor layer or a lone handler that is not live; or
+/// [`Unroutable`](crate::Unroutable), when a routes type's routes are refused.
 pub fn layers<T: LayerList, Me, S>(turn: &Beginning<'_, Me, S>) -> Result<Layers<T>, Fault> {
     Ok(Layers { forms: T::found(turn)? })
 }
@@ -154,9 +167,14 @@ impl<T: LayerList> Layers<T> {
         self.forms.slot()
     }
 
-    /// A set of each layer's form, made from the template as it stands: a new connection's.
-    pub(super) fn made(&self) -> T::Forms {
-        self.forms.clone()
+    /// A set of the forms of the layers before the last, made from the template as it stands: a new connection's.
+    pub(super) fn made(&self) -> T::Values {
+        T::made(&self.forms)
+    }
+
+    /// The last layer, which every connection shares.
+    pub(super) fn last(&self) -> &T::Last {
+        T::last(&self.forms)
     }
 }
 
@@ -179,6 +197,8 @@ fn untaken<A>(at: usize) -> Entered<A> {
 pub trait Slot<I> {
     /// What stands there.
     type Item;
+    /// Where it stands.
+    const PLACE: usize;
 
     /// What stands there, to change.
     fn slot(&mut self) -> &mut Self::Item;
@@ -194,6 +214,7 @@ macro_rules! slots {
     (@slot [$($all:ident)*] $name:ident $place:tt) => {
         impl<$($all),*> Slot<At<$place>> for ($($all,)*) {
             type Item = $name;
+            const PLACE: usize = $place;
 
             fn slot(&mut self) -> &mut $name {
                 &mut self.$place
@@ -213,31 +234,36 @@ slots! {
     [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7]
     [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8]
     [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11]
 }
 
-/// A handler alone, with no layer before it, is handed every request as it came, with nothing attached.
-impl<H> LayerList for (H,)
+/// The last layer alone, with no layer before it: its handlers are handed every request as it came, with nothing
+/// attached, and it has every place of the stack's sends for them.
+impl<L> LayerList for (L,)
 where
-    H: Actor + ChildOf + PathTo<Keys = ()>,
+    L: LayerForm + 'static,
+    L::Form: LastLayer<()>,
 {
-    type Forms = (<H as LayerForm>::Form,);
-    type Handler = H;
+    type Forms = (L::Form,);
+    type Values = ();
+    type Last = L::Form;
     type Attached = ();
-    type Asked = (Unasked, Unasked, Unasked, Unasked, Unasked, Unasked, Unasked, Unasked, Unasked, Unasked);
+    type Asked = <L::Form as LastLayer<()>>::Asked;
     const LAYERS: usize = 0;
 
     fn found<Me, S>(turn: &Beginning<'_, Me, S>) -> Result<Self::Forms, Fault> {
-        let handler = turn.found(&path::<H>(())).ok_or_else(unlayered::<H>)?;
-
-        Ok((handler,))
+        Ok((L::Form::found(turn)?,))
     }
 
-    fn handler(forms: &Self::Forms) -> ActorRef<H> {
-        forms.0
+    fn made(_: &Self::Forms) -> Self::Values {}
+
+    fn last(forms: &Self::Forms) -> &Self::Last {
+        &forms.0
     }
 
     fn inbound<Me>(
-        _: &mut Self::Forms,
+        (): &mut Self::Values,
         _: &Head,
         _: &mut Turn<'_, Me, StackSends<Self>>,
         _: Parked,
@@ -247,7 +273,7 @@ where
     }
 
     fn resume<Me, X: 'static>(
-        _: &mut Self::Forms,
+        (): &mut Self::Values,
         at: usize,
         _: X,
         _: &Head,
@@ -259,7 +285,7 @@ where
     }
 
     fn outbound<Me>(
-        _: &mut Self::Forms,
+        (): &mut Self::Values,
         _: usize,
         _: &Head,
         _: &mut Leaving<'_>,
@@ -270,26 +296,26 @@ where
         Ok(Returned::Passed)
     }
 
-    fn taker(_: &Self::Forms, _: usize) -> Taker {
+    fn taker((): &Self::Values, _: usize) -> Taker {
         Taker::Pure
     }
 
-    fn inbound_body(_: &mut Self::Forms, _: usize, _: &mut BodyPart<'_>) {}
+    fn inbound_body((): &mut Self::Values, _: usize, _: &mut BodyPart<'_>) {}
 
-    fn outbound_body(_: &mut Self::Forms, _: usize, _: &mut BodyPart<'_>) {}
+    fn outbound_body((): &mut Self::Values, _: usize, _: &mut BodyPart<'_>) {}
 }
 
-/// Layers, each named with its place and the places in the stack's sends of its asks in and out, then the handler with
-/// its place, and an [`Unasked`] for each place of the ten past the last layer's. The bounds that chain each layer's
-/// `In` to the `Out` before it are gathered one layer at a time, carrying what is attached so far, and each layer
-/// keeps the `In` it takes.
+/// Layers, each named with its place and the places in the stack's sends of its asks in and out, then the last layer
+/// with its place, and the places of the last layer's asks of its handlers that the places left hold. The bounds that
+/// chain each layer's `In` to the `Out` before it are gathered one layer at a time, carrying what is attached so far,
+/// and each layer keeps the `In` it takes.
 macro_rules! layered {
-    ($( [$($layer:ident $at:tt $in:tt $out:tt)+] $handler:ident $last:tt [$($unasked:ident)*]; )*) => {$(
-        layered!(@chain [] [()] [] [$($layer $at $in $out)+] $handler $last [$($unasked)*]);
+    ($( [$($layer:ident $at:tt $in:tt $out:tt)+] $last:ident $place:tt [$($handler:tt)*]; )*) => {$(
+        layered!(@chain [] [()] [] [$($layer $at $in $out)+] $last $place [$($handler)*]);
     )*};
     (
         @chain [$($bounds:tt)*] [$attached:ty] [$($walked:tt)*] [$layer:ident $at:tt $in:tt $out:tt $($rest:tt)*]
-        $handler:ident $last:tt $unasked:tt
+        $last:ident $place:tt $handlers:tt
     ) => {
         layered!(
             @chain
@@ -297,44 +323,51 @@ macro_rules! layered {
             [<<$layer as LayerForm>::Form as Walks<$attached>>::Out]
             [$($walked)* [$layer $at $in $out [$attached]]]
             [$($rest)*]
-            $handler
             $last
-            $unasked
+            $place
+            $handlers
         );
     };
     (
         @chain [$($bounds:tt)*] [$attached:ty] [$([$layer:ident $at:tt $in:tt $out:tt [$taken:ty]])+] []
-        $handler:ident $last:tt [$($unasked:ident)*]
+        $last:ident $place:tt [$($handler:tt)*]
     ) => {
-        impl<$($layer,)+ $handler> LayerList for ($($layer,)+ $handler,)
+        impl<$($layer,)+ $last> LayerList for ($($layer,)+ $last,)
         where
             $($bounds)*
-            $handler: Actor + ChildOf + PathTo<Keys = ()>,
+            $last: LayerForm + 'static,
+            <$last as LayerForm>::Form: LastLayer<$attached>,
         {
-            type Forms = ($(<$layer as LayerForm>::Form,)+ <$handler as LayerForm>::Form,);
-            type Handler = $handler;
+            type Forms = ($(<$layer as LayerForm>::Form,)+ <$last as LayerForm>::Form,);
+            type Values = ($(<$layer as LayerForm>::Form,)+);
+            type Last = <$last as LayerForm>::Form;
             type Attached = $attached;
             type Asked = (
                 $(
                     <<$layer as LayerForm>::Form as Walks<$taken>>::Inbound,
                     <<$layer as LayerForm>::Form as Formed>::Outbound,
                 )+
-                $($unasked,)*
+                $(<<<$last as LayerForm>::Form as LastLayer<$attached>>::Asked as Slot<At<$handler>>>::Item,)*
             );
-            const LAYERS: usize = $last;
+            const LAYERS: usize = $place;
 
             fn found<Me, S>(turn: &Beginning<'_, Me, S>) -> Result<Self::Forms, Fault> {
-                let handler = turn.found(&path::<$handler>(())).ok_or_else(unlayered::<$handler>)?;
-
-                Ok(($(<<$layer as LayerForm>::Form as Formed>::found(turn)?,)+ handler,))
+                Ok((
+                    $(<<$layer as LayerForm>::Form as Formed>::found(turn)?,)+
+                    <<$last as LayerForm>::Form as LastLayer<$attached>>::found(turn)?,
+                ))
             }
 
-            fn handler(forms: &Self::Forms) -> ActorRef<$handler> {
-                forms.$last
+            fn made(forms: &Self::Forms) -> Self::Values {
+                ($(forms.$at.clone(),)+)
+            }
+
+            fn last(forms: &Self::Forms) -> &Self::Last {
+                &forms.$place
             }
 
             fn inbound<Me>(
-                forms: &mut Self::Forms,
+                values: &mut Self::Values,
                 head: &Head,
                 turn: &mut Turn<'_, Me, StackSends<Self>>,
                 parked: Parked,
@@ -342,12 +375,12 @@ macro_rules! layered {
             ) -> Result<Entered<$attached>, Fault> {
                 let attached = ();
 
-                layered!(@walk forms head turn parked due attached [$([$layer $at $in $out [$taken]])+])
+                layered!(@walk values head turn parked due attached [$([$layer $at $in $out [$taken]])+])
             }
 
-            #[allow(unused_variables, reason = "a list of one layer resumes at its handler, and walks no layer more")]
+            #[allow(unused_variables, reason = "a list of one layer resumes at its last, and walks no layer more")]
             fn resume<Me, X: 'static>(
-                forms: &mut Self::Forms,
+                values: &mut Self::Values,
                 at: usize,
                 attached: X,
                 head: &Head,
@@ -355,13 +388,13 @@ macro_rules! layered {
                 parked: Parked,
                 due: Time,
             ) -> Result<Entered<$attached>, Fault> {
-                layered!(@resume forms at head turn parked due attached [$([$layer $at $in $out [$taken]])+]);
+                layered!(@resume values at head turn parked due attached [$([$layer $at $in $out [$taken]])+]);
 
                 Ok(untaken(at))
             }
 
             fn outbound<Me>(
-                forms: &mut Self::Forms,
+                values: &mut Self::Values,
                 at: usize,
                 head: &Head,
                 leaving: &mut Leaving<'_>,
@@ -373,7 +406,7 @@ macro_rules! layered {
                     if at == $at {
                         let ask: Ask<At<$out>, ParkedResponse> = Ask::new(parked.at($at), due);
                         return <<$layer as LayerForm>::Form as Formed>::outbound(
-                            &mut forms.$at,
+                            &mut values.$at,
                             head,
                             leaving,
                             turn,
@@ -385,49 +418,49 @@ macro_rules! layered {
                 Ok(Returned::Passed)
             }
 
-            fn taker(forms: &Self::Forms, at: usize) -> Taker {
+            fn taker(values: &Self::Values, at: usize) -> Taker {
                 match at {
-                    $($at => <<$layer as LayerForm>::Form as Formed>::taker(&forms.$at),)+
+                    $($at => <<$layer as LayerForm>::Form as Formed>::taker(&values.$at),)+
                     _ => Taker::Pure,
                 }
             }
 
-            fn inbound_body(forms: &mut Self::Forms, at: usize, part: &mut BodyPart<'_>) {
+            fn inbound_body(values: &mut Self::Values, at: usize, part: &mut BodyPart<'_>) {
                 match at {
-                    $($at => <<$layer as LayerForm>::Form as Formed>::inbound_body(&mut forms.$at, part),)+
+                    $($at => <<$layer as LayerForm>::Form as Formed>::inbound_body(&mut values.$at, part),)+
                     _ => {}
                 }
             }
 
-            fn outbound_body(forms: &mut Self::Forms, at: usize, part: &mut BodyPart<'_>) {
+            fn outbound_body(values: &mut Self::Values, at: usize, part: &mut BodyPart<'_>) {
                 match at {
-                    $($at => <<$layer as LayerForm>::Form as Formed>::outbound_body(&mut forms.$at, part),)+
+                    $($at => <<$layer as LayerForm>::Form as Formed>::outbound_body(&mut values.$at, part),)+
                     _ => {}
                 }
             }
         }
     };
-    (@walk $forms:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident []) => {
+    (@walk $values:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident []) => {
         Ok(Entered::Passed($attached))
     };
     (
-        @walk $forms:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident
+        @walk $values:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident
         [[$layer:ident $at:tt $in:tt $out:tt [$taken:ty]] $($rest:tt)*]
     ) => {{
         let ask: Ask<At<$in>, Parked> = Ask::new($parked.at($at), $due);
         let walked =
-            <<$layer as LayerForm>::Form as Walks<$taken>>::inbound(&mut $forms.$at, $head, $attached, $turn, ask)?;
+            <<$layer as LayerForm>::Form as Walks<$taken>>::inbound(&mut $values.$at, $head, $attached, $turn, ask)?;
         let $attached = match walked {
             Walked::Passed(attached) => attached,
             Walked::Answered(response) => return Ok(Entered::Answered { at: $at, response }),
             Walked::Parked => return Ok(Entered::Parked { at: $at }),
         };
 
-        layered!(@walk $forms $head $turn $parked $due $attached [$($rest)*])
+        layered!(@walk $values $head $turn $parked $due $attached [$($rest)*])
     }};
-    (@resume $forms:ident $from:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident []) => {};
+    (@resume $values:ident $from:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident []) => {};
     (
-        @resume $forms:ident $from:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident
+        @resume $values:ident $from:ident $head:ident $turn:ident $parked:ident $due:ident $attached:ident
         [[$layer:ident $at:tt $in:tt $out:tt [$taken:ty]] $($rest:tt)*]
     ) => {
         if $from == $at {
@@ -436,17 +469,17 @@ macro_rules! layered {
                 return Ok(untaken($at));
             };
 
-            return layered!(@walk $forms $head $turn $parked $due taken [$($rest)*]);
+            return layered!(@walk $values $head $turn $parked $due taken [$($rest)*]);
         }
 
-        layered!(@resume $forms $from $head $turn $parked $due $attached [$($rest)*]);
+        layered!(@resume $values $from $head $turn $parked $due $attached [$($rest)*]);
     };
 }
 
 layered! {
-    [L0 0 12 13] H 1 [Unasked Unasked Unasked Unasked Unasked Unasked Unasked Unasked];
-    [L0 0 12 13 L1 1 14 15] H 2 [Unasked Unasked Unasked Unasked Unasked Unasked];
-    [L0 0 12 13 L1 1 14 15 L2 2 16 17] H 3 [Unasked Unasked Unasked Unasked];
-    [L0 0 12 13 L1 1 14 15 L2 2 16 17 L3 3 18 19] H 4 [Unasked Unasked];
-    [L0 0 12 13 L1 1 14 15 L2 2 16 17 L3 3 18 19 L4 4 20 21] H 5 [];
+    [L0 0 11 12] H 1 [0 1 2 3 4 5 6 7 8 9];
+    [L0 0 11 12 L1 1 13 14] H 2 [0 1 2 3 4 5 6 7];
+    [L0 0 11 12 L1 1 13 14 L2 2 15 16] H 3 [0 1 2 3 4 5];
+    [L0 0 11 12 L1 1 13 14 L2 2 15 16 L3 3 17 18] H 4 [0 1 2 3];
+    [L0 0 11 12 L1 1 13 14 L2 2 15 16 L3 3 17 18 L4 4 19 20] H 5 [0 1];
 }

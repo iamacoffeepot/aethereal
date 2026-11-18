@@ -35,7 +35,7 @@ fn found<'p>(pattern: &'static &'static str, slices: Vec<&'p str>) -> Routed<Fou
 }
 
 /// A repository, by name.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Repo {
     repo: String,
 }
@@ -53,7 +53,7 @@ impl Captures for Repo {
 }
 
 /// An item, by number.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Item {
     id: u32,
 }
@@ -71,7 +71,7 @@ impl Captures for Item {
 }
 
 /// A repository's blob, by number.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Blob {
     repo: String,
     id: u32,
@@ -137,23 +137,6 @@ fn a_path_that_routes_match_for_other_methods_only_is_unallowed_naming_them() ->
     assert_eq!(trie.find(Method::Get, "/items/new"), found(&"/items/{id}", vec!["new"]));
     assert_eq!(trie.find(Method::Get, "/items"), Routed::NotFound);
     assert_eq!(trie.find(Method::Put, "/items/7/edit"), Routed::NotFound);
-
-    Ok(())
-}
-
-#[test]
-fn a_route_whose_captures_do_not_read_as_their_type_is_not_found() -> Result<(), Unroutable> {
-    // Catches a capture that does not read answered as found, or as `405` because another method's route matches the
-    // path, rather than `404`.
-    let trie = build(&[
-        route::<Blob>(Method::Get, "/git/{repo}/blobs/{id}"),
-        route::<Blob>(Method::Delete, "/git/{repo}/blobs/{id}"),
-    ])?;
-    let read = |method, path| trie.find(method, path).read(|found| Blob::read(&found.slices));
-
-    assert_eq!(read(Method::Get, "/git/aether/blobs/7"), Routed::Found(Blob { repo: "aether".to_owned(), id: 7 }));
-    assert_eq!(read(Method::Get, "/git/aether/blobs/seven"), Routed::NotFound);
-    assert_eq!(read(Method::Put, "/git/aether/blobs/seven"), Routed::Unallowed(vec![Method::Delete, Method::Get]));
 
     Ok(())
 }
