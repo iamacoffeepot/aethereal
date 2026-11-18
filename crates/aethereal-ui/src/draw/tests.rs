@@ -9,7 +9,7 @@
 
 use super::{
     Binding, Content, FILL_BYTES, FILL_PROGRAM, FRAME_BYTES, PLACE, PROGRAM, RECORD_BYTES, SHADE, corner_layout,
-    corners, fill_layout, frame_bytes, layered, record, record_layout, triangles,
+    corners, fill, fill_layout, frame_bytes, layered, record, record_layout, triangles,
 };
 use crate::style::Edges;
 use crate::widget::{Piece, Quad, Sample, Slices};
@@ -225,8 +225,27 @@ fn drawn(device: &wgpu::Device, queue: &wgpu::Queue, drawing: &Drawing) -> Vec<V
     for quad in &drawing.quads {
         record(quad, &mut records);
     }
+    let count = u32::try_from(drawing.quads.len()).unwrap_or(0);
+
+    rendered(device, queue, drawing.frame, &records, count, |pass| {
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &own_group, &[]);
+        pass.set_bind_group(1, &shift_group, &[]);
+    })
+}
+
+/// Each pixel of a frame `width` by `height`, row by row, once `count` unit squares are drawn into it, cleared to
+/// nothing, on `device`, each placed by its record of `records`, with the pipeline and groups `bind` sets on the pass.
+fn rendered(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    (width, height): (u32, u32),
+    records: &[u8],
+    count: u32,
+    bind: impl FnOnce(&mut wgpu::RenderPass<'_>),
+) -> Vec<Vec<[u8; 4]>> {
     let corners = buffer(device, &corners(), wgpu::BufferUsages::VERTEX);
-    let instances = buffer(device, &records, wgpu::BufferUsages::VERTEX);
+    let instances = buffer(device, records, wgpu::BufferUsages::VERTEX);
     let indices = buffer(device, &triangles(), wgpu::BufferUsages::INDEX);
 
     let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
@@ -253,13 +272,10 @@ fn drawn(device: &wgpu::Device, queue: &wgpu::Queue, drawing: &Drawing) -> Vec<V
             color_attachments: &[Some(colour)],
             ..Default::default()
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &own_group, &[]);
-        pass.set_bind_group(1, &shift_group, &[]);
+        bind(&mut pass);
         pass.set_vertex_buffer(0, corners.slice(..));
         pass.set_vertex_buffer(1, instances.slice(..));
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-        let count = u32::try_from(drawing.quads.len()).unwrap_or(0);
         pass.draw_indexed(0..6, 0, 0..count);
     }
     let row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -512,4 +528,69 @@ fn a_run_of_plain_fills_writes_each_cut_to_its_clip_in_a_quarter_of_a_record() {
         panic!("a run holding a rounded quad stays the library's: {kept:?}");
     };
     assert_eq!(records.len(), 2 * RECORD_BYTES as usize);
+}
+
+/// Each pixel of the one row of a frame `width` pixels wide once the fill program draws `quads` into it, as plain fills,
+/// cleared to nothing, on `device`.
+fn filled(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, quads: &[Quad]) -> Vec<[u8; 4]> {
+    let pipeline = fill_pipeline(device);
+    let frame = buffer(device, &frame_bytes(width, 1), wgpu::BufferUsages::UNIFORM);
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() }],
+    });
+    let mut records: Vec<u8> = Vec::new();
+    for quad in quads {
+        fill(quad, &mut records);
+    }
+    let count = u32::try_from(quads.len()).unwrap_or(0);
+
+    let mut rows = rendered(device, queue, (width, 1), &records, count, |pass| {
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+    });
+
+    rows.swap_remove(0)
+}
+
+// A white box four pixels wide draws four whole pixels of white wherever it falls within a pixel, by either program,
+// and nothing of the pixels either side. Catches a box drawn where it was laid out, within a pixel: the pixels its edges
+// fall in are shaded by how much of each it covers, so a chart's column, sliding a fraction of a pixel each frame,
+// draws its edge pixels brighter and fainter frame by frame, and shimmers. A machine with no adapter, as CI's, skips it
+// and says so.
+#[test]
+fn on_a_gpu_a_box_draws_whole_pixels_wherever_it_falls_within_one() {
+    let (device, queue, adapter) = match adapter_device() {
+        Ok(opened) => opened,
+        Err(why) => {
+            eprintln!("skipped: no GPU adapter to draw the programs on: {why}");
+            return;
+        }
+    };
+    eprintln!("ran adapter={adapter:?}");
+    let whole = rect([0.0, 0.0], [8.0, 1.0]);
+    // A pixel's red is the white drawn over it, as it is blended over nothing: its alpha is blended again.
+    let lit = |row: &[[u8; 4]]| -> Vec<u8> { row.iter().map(|pixel| pixel[0]).collect() };
+
+    // A box from 1.5 on is moved to 2, a half rounded up.
+    let from_one = vec![0, 255, 255, 255, 255, 0, 0, 0];
+    let from_two = vec![0, 0, 255, 255, 255, 255, 0, 0];
+    let placed = [(0.0, &from_one), (0.25, &from_one), (0.5, &from_two), (0.75, &from_two)];
+
+    for (offset, expected) in placed {
+        let quad = rect([1.0 + offset, 0.0], [5.0 + offset, 1.0]);
+        let drawing = Drawing {
+            frame: (8, 1),
+            quads: vec![solid(quad, whole)],
+            texture: ((1, 1), vec![[255; 4]]),
+            shift: Vec2::ZERO,
+        };
+
+        let library = lit(&drawn(&device, &queue, &drawing)[0]);
+        let fills = lit(&filled(&device, &queue, 8, &[plain(quad, whole)]));
+
+        assert_eq!(&library, expected, "the library's program at {offset}, on {adapter}");
+        assert_eq!(&fills, expected, "the fill program at {offset}, on {adapter}");
+    }
 }
