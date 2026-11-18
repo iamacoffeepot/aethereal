@@ -23,12 +23,13 @@ The earlier engine put one window actor on the thread that runs the event loop, 
 impl ChildOf for Windows { type Parent = Top; }        // the window root: the source, and what is every window's
 impl ChildOf for Window  { type Parent = Windows; }    // one per window, keyed by its WindowId
 
-turn.to(path::<Window>(window)).send(&Subscribe)?;     // send me this window's events
+turn.to(shows.window).send(&Subscribe)?;               // send me this window's events: an ActorRef<Window> handed over at boot
+turn.to(path::<Window>(window)).send(&Subscribe)?;     // or by its typed path, beneath the root Windows
 ```
 
 - **The window root, `Windows`, holds what the host brings in, and anything that spans windows.** It makes an actor for each window beneath it, `Window`, keyed by the window's `WindowId`. Today nothing spans windows, so the root only routes.
 - **A `WindowId` is the window capability's number for a window**, `0` for the first opened, then `1`, never a host's own name for it: a page's canvas has none, and winit's `WindowId` is opaque and the host's. A chassis keeps its own map from its windows to the feed of each (below).
-- **An actor reaches a window by its typed path**, `path::<Window>(id)`, declared `Tells<Path<Window>, Subscribe>` (ADR-0022), and subscribes with one `Subscribe`; `Unsubscribe` takes it off, and a subscriber that ends is taken off by the watch `Subscribers` keeps (ADR-0016). A subscriber must handle `Event`: the window casts it to `(Event,)`, and logs and ignores one that does not.
+- **An actor reaches a window through the `ActorRef<Window>` it was handed, or by its typed path.** A root bootstrapped after the window root is handed each window opened at boot as an `ActorRef<Window>` (ADR-0029: `InitialWindows`), which its config carries, and needs nothing in its `depends`. `Window` is a keyed child of the singleton root `Windows`, so its typed path, `path::<Window>(id)`, needs `Windows` in the actor's `depends` (ADR-0022, ADR-0059). Either way the actor subscribes with one `Subscribe`; `Unsubscribe` takes it off, and a subscriber that ends is taken off by the watch `Subscribers` keeps (ADR-0016). A subscriber must handle `Event`: the window takes `Subscribe` from `Speaks<(Event,)>` (ADR-0058), so a native send of it from a type that does not handle `Event` does not build, and one from a guest is refused at delivery.
 
 ### What a window hears
 
@@ -67,12 +68,10 @@ pub enum Event {
 ```rust
 pub struct Heard { window: WindowId, event: Event }    // what the root's one source brings in
 
-impl Handles<Heard> for Windows {                      // brought from the source: from this actor to itself
-    type Sends = (ToType<Window, Event>,);
-    fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.to(child::<Window>(heard.window)).send(&heard.event)?;
-        Ok(())
-    }
+#[tell]                                                // in Windows' #[actor] block: brought from the source, from this actor to itself
+fn heard(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
+    turn.to(child::<Window>(heard.window)).send(&heard.event)?;
+    Ok(())
 }
 ```
 

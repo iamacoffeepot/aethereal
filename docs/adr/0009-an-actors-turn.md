@@ -22,20 +22,17 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> {
     type Config: Kind + Encode<Actors> + Decode<Actors>;
     type Key: ActorKey;                     // () for a singleton, a TypedKey otherwise
     type Handles;                           // what it handles, each with a handler of its own (ADR-0013)
-    type BeginSends;                        // what `begin` may send (ADR-0013)
-    type EndSends;                          // what `end` may send (ADR-0013)
 
-    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault>;
-    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault>;
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault>;
 }
 
 pub trait Handles<H>: Actor {
-    type Sends;
-    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault>;
+    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self>) -> Result<(), Fault>;
 }
 ```
 
-These are what the engine calls: `begin`, a `handle` of the handler for each item, and `end`. How each handler declares what it may send, and how the engine picks the handler for an item, are ADR-0013's.
+These are what the engine calls: `begin`, a `handle` of the handler for each item, and `end`. How the engine picks the handler for an item is ADR-0013's. An actor is written as one `#[actor]` block, which writes these impls from its methods (ADR-0059).
 
 An actor's life has three parts. `begin` makes it from a config, and runs inside the turn of the parent that spawns it; a root's runs when the chassis makes it. Each piece of mail after that is a turn of its own, a `handle`. `end` is its closing turn, and it runs once, whichever way the actor came to close.
 
@@ -117,7 +114,7 @@ pub enum Level {
 - **An actor's end is its own, and nothing else ends it.** `Close` closes the actor that asks for it, and an actor whose turn fails is closed by that failure. No effect closes another actor, and no actor has that authority over another, a parent over its child included. A parent that wants a child gone sends that child mail saying so, and the child closes itself.
 - **The engine does not end an actor's children when the actor ends.** Whether its children close with it is part of how the actor is written: it tells them by mail, and each closes itself. A child whose parent has ended is still live, and it still owns the paths beneath it.
 - **An actor's closing turn runs in the next step.** At the end of the step in which an actor closes, it is marked ended, and no more mail is delivered to it (ADR-0011). In the step after, it runs its `end` as a turn among that step's other turns, in no order among them.
-- **A `begin` and a closing turn have no sender.** Neither is brought about by a piece of mail it is handling, so neither names any mail, and neither offers `reply`.
+- **A `begin` and a closing turn have no sender.** Neither is brought about by a piece of mail it is handling, so neither names any mail, and neither answers one.
 - **`begin` is a first turn, and its `Beginning` offers less than a turn.** It offers no reply, since a `begin` has no mail of its own and a root's has none behind it at all; a parent that wants its child to answer someone puts that reference in the child's config. It offers no `Close`: an actor does not end in the turn that makes it. It may ask, and the answer comes in a later turn (ADR-0017).
 - **The closing turn runs once, and the actor ends whatever it returns.** `end` takes the actor by value, so there is no actor left to hand a second one. Its `Ending` offers what a last turn may ask for: sending, giving, logging, and answering a request the actor held (ADR-0017). It offers no spawn, `Close`, `Watch`, or ask, as the actor is gone before an ending or an answer could reach it. Asking for an effect can fail, so `end` returns a `Result`: on `Ok` the engine applies its effects, and on a `Fault` it applies the `Log` effects and drops the rest. Either way the engine then drops the actor and what it owned (ADR-0010).
 - **`end` runs whenever the actor's code can still be run and trusted.** That is after its own `Close`, and after a turn of its own returned a `Fault`. It does not run for a guest that trapped, since its memory can no longer be trusted, nor for a child that was never live. When the host itself goes away, nothing runs.

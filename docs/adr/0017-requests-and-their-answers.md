@@ -14,7 +14,7 @@ ADR-0012 tells an actor to keep what it sent mail for under the chain's root and
 
 Writing a number into every question kind and keeping a table of them is the other way: the asker makes the number, writes it in, files it, and checks it when an answer comes. Every step is the author's to forget, and a number made and not filed makes a true answer look stale. An earlier engine started there and moved the number into the engine, where no author handles it.
 
-What comes back is already typed. A named protocol says what each kind is answered with (ADR-0016: `Carries<K>::Answers`), and a sender through it handles those kinds, checked as a bound (`DeclaredBy`). What is not decided is how often an answer comes, and what the asker is told when none can.
+What comes back is already typed. A named protocol says what each kind is answered with (ADR-0016: `Carries<K>::Answers`), and a sender through it handles those kinds, checked as a bound. What is not decided is how often an answer comes, and what the asker is told when none can.
 
 ## Decision
 
@@ -28,10 +28,10 @@ turn.to(tiles).ask(&WhichTile { x, y }, &Looking { at: x })?;        // the requ
 
 - **The request's id is its mail's id,** its sender and that sender's count (ADR-0012: `MailId`). No other number is made, and the asker writes none.
 - **The engine keeps the context beside the asker,** in its seat, as it keeps what the asker owns (ADR-0010: `Keeping`), under the request's count. The context is a kind that crosses `Within`, so it is kept as a `Written`, the same for native code and a guest's: its bytes, and a pin on each blob they refer to, which go when the context does (ADR-0014). An actor that has never asked holds no more for it than a pointer's width.
-- **An ask (`turn.to(target).ask`, ADR-0016) builds only for a target that answers the kind with one kind, and only when the asker handles that answer.** The target is a named protocol, or an actor's type, asked at its typed path or through a reference to it, which says what it answers with `Carries` beside its handler (ADR-0022). Its turn's sends list the ask, `Asks<P, K>`, as they list any send, and the bound that checks a protocol's answers (`DeclaredBy`) checks this one. A tuple of kinds answers nothing, so nothing can be asked through one.
-- **A `begin` asks as a turn does,** its `BeginSends` listing the ask, and the answer comes to the actor in a turn after it. A child's `begin` runs in its parent's turn, so the engine notes beside each request who asked it, and files it beside that actor as it is seated: a root's beside the root, a child's beside the child. A `begin` that fails asks nothing, its requests dropped with its mail. A closing turn asks nothing: the actor is gone before an answer could reach it, so its target (`Toward<.., Leaves>`) has no `ask`.
+- **An ask (`turn.to(target).ask`, ADR-0016) builds only for a target that answers the kind with one kind, and only when the asker handles that answer.** The target is a named protocol, or an actor's type, asked at its typed path or through a reference to it, which says what it answers with `Carries` beside its handler (ADR-0022). The ask is checked at its call, as every send is: the asker has an `#[answer]` for that answer, with the context it passes (ADR-0059). A tuple of kinds answers nothing, so nothing can be asked through one.
+- **A `begin` asks as a turn does,** and the answer comes to the actor in a turn after it. A child's `begin` runs in its parent's turn, so the engine notes beside each request who asked it, and files it beside that actor as it is seated: a root's beside the root, a child's beside the child. A `begin` that fails asks nothing, its requests dropped with its mail. A closing turn asks nothing: the actor is gone before an answer could reach it, so its target (`Toward<.., Leaves>`) has no `ask`.
 
-**An answer is the receiver's reply to a request.** The receiver replies as it replies to any mail, `turn.reply(&answer)`, and when the mail it handles is a request, the reply answers it: the engine writes in the reply which request it answers. A request is answered once. A second reply to it in the same turn is refused, as a send its declaration does not allow is.
+**An answer is what the receiver's handler of the request returns.** The handler is a `#[request]`, whose return type is the answer (ADR-0059). It returns the answer, and the engine sends it to the asker, writing in it which request it answers; or it holds the request and returns the `Later` the hold made (below). A request is answered once.
 
 **The asker handles what became of its request, with its context.** It is handed to the handler of `Answer<A, C>`: whether the request was answered, and the context the engine kept, which leaves the engine with it:
 
@@ -42,13 +42,11 @@ pub enum Answered<A> {
 }
 pub enum Unanswered { Ended, Failed, Unreplied, Unreadable }
 
-impl Handles<Answer<TileIs, Looking>> for Pointer {
-    type Sends = ();
-    fn handle(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-        match answered {
-            Answered::Yes(tile) => { .. }
-            Answered::No(why) => { .. }
-        }
+#[answer]   // in Pointer's #[actor] block
+fn tile(&mut self, (answered, looking): (Answered<TileIs>, Looking), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    match answered {
+        Answered::Yes(tile) => { .. }
+        Answered::No(why) => { .. }
     }
 }
 ```
@@ -61,7 +59,7 @@ impl Handles<Answer<TileIs, Looking>> for Pointer {
 
 - `Ended`: the receiver had ended, or was gone, when the request was to be handed to it, or it held the request and ended before answering it;
 - `Failed`: the turn that handled the request failed;
-- `Unreplied`: the turn handled the request and neither replied nor held it, or the receiver held it and let it go without answering it;
+- `Unreplied`: the receiver held it and let it go without answering it, or a guest's turn handled it and neither answered nor held it, which a native handler cannot do, as it returns its answer or a `Later` (ADR-0059);
 - `Unreadable`: the receiver could not read the request within the engine's `read_limit`, or its bytes did not decode as its kind, so its handler did not run.
 
 What the engine says is mail too, of the engine's kind `Unanswered`, from the receiver to the asker. It is tied to the request as only the engine ties mail, so no actor can say it in the engine's place, and it is handed to the handler of the answer the asker asked for, whose kind the engine keeps with the context. `Failed` and `Unreplied` come after what the turn sent, as the receiver's next piece of mail. `Ended`, and `Unreplied` for a held request let go of, come after all the receiver sent.
@@ -79,10 +77,12 @@ An answer kind is a kind like any other, with nothing to implement for the case 
 **An answer that comes later is held.** A receiver that cannot answer in the turn of the request holds it, and answers from any later turn:
 
 ```rust
-let held: Held<Fetched> = turn.hold()?;          // in the turn of the request
+let (held, later) = turn.hold();                  // in the turn of the request, whose handler returns `later`
 self.waiting.push((path, held));                  // kept in the actor's state
 turn.answer(held, &Fetched::Got(blob))?;          // in a later turn
 ```
+
+- `turn.hold()` answers a `Held<A>` and a `Later<A>`, `A` the request's answer, and cannot fail. A `Later<A>` is made only by a hold, so a request's handler that returns one has held its request (ADR-0059).
 
 - `Held<A>` names one request this actor owes an answer of kind `A`. It crosses `Within` and no other boundary, so it is kept in the actor's state, and cannot be in mail. It is neither `Clone` nor `Copy`, and `answer` takes it by value, so it answers once, which the build checks.
 - The engine keeps the debt beside the receiver, in its seat. `answer` confirms the ticket names a debt this actor owes, of kind `A`, as `open` confirms a handle (ADR-0010), and fails the turn when it does not.
@@ -139,8 +139,8 @@ self.serving.take(key).map(|stream| stream.finish(turn, &ReadDone::Ok));        
 - Asking needs a named protocol or a type that carries the kind. An actor is asked through a protocol it conforms to (ADR-0016: `ActorRef::protocol`), or by its type, through a typed reference or at its typed path (ADR-0022).
 - An asker's seat holds what it is waiting for, and an answerer's what it owes. Both are dropped with the actor: an asker that ends drops its contexts, and the answers to it are dropped as mail to an ended actor is.
 - Mail says whether it asks, and which request it answers, in a tie of eight bytes that every piece carries (`Tie`): a request is marked, and an answer names its request by the count, which its receiver sent; what the engine says of an unanswered request is marked as the engine's. Every turn reads it, to find an answer's context and what it owes its source. Measured in steady state with fused hops, against the engine without it, a piece of mail cost about 10 percent more in `count`, 6 to 8 percent in `pingpong`, 4 percent in `big`, and 1 to 3 percent in `world`, `churn-wide`, and `fib`. About 4 points of `count` are the envelope's eight bytes, and the rest the reads each turn makes. Carrying the tie in the mail's payload, so mail that is no request stores nothing more, would take back most of the first; it is left until a load is bound by how fast mail goes.
-- A guest asks, replies, holds, and answers in records its host reads, and its host holds it to what it claims, as it does for resources (ADR-0015).
-- The reply through a tuple of kinds that nothing checks (ADR-0016) is unchanged for plain replies. A request cannot be sent through a tuple, so it cannot reach an asker that does not handle its answer.
+- A guest asks, answers, and holds in records its host reads, and its host holds it to what it claims, as it does for resources (ADR-0015).
+- A request cannot be sent through a tuple of kinds, so it cannot reach an asker that does not handle its answer.
 - **A request carries a deadline** (ADR-0041), inherited by the requests made for it, and the engine answers it `Expired` when it passes.
 - **A request is not cancelled.** An asker that stops waiting notes the request in its own state and passes over the answer when it comes. Every request is answered exactly once, so the note goes when the answer does. The context, and the pins on the blobs it refers to, stay in the asker's seat until then: until the receiver answers, ends, or lets the request go. A receiver that should stop the work it was asked for is told so by mail of a kind its protocol carries, as it is told anything else.
 - A stream costs the engine nothing new. Its parts are mail, so they fuse (ADR-0013) and join a run of sends as any mail does, and a held request keeps no stage but `Stop` from finishing (ADR-0020), so a long stream holds back no frame.

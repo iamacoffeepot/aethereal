@@ -81,7 +81,7 @@ pub struct SendInput { pub window: WindowId, pub inputs: Vec<Input> }
 - **A click is three inputs, as a person's is:** `PointerMoved` to the point, then `PointerDown` and `PointerUp` there. A held key is a `KeyDown` in one call and its `KeyUp` in a later one, with the clock advanced between them.
 ### `set_pace` and `advance`
 
-- **`PaceTool`, in `aethereal-pace` behind a new `tools` feature,** offers two tools that take the pacer's own kinds and answer its answers: `set_pace` takes `SetPace` and answers `PaceSet`, and `advance` takes `Advance` and answers `Advanced`. It asks `path::<Pacer>(())`. A program that lists it with no pacer made before it does not build (ADR-0022: `NeedsIn`), so the pacer is always there; any reason the engine gives for no answer is a refusal naming it.
+- **`PaceTool`, in `aethereal-pace` behind a new `tools` feature,** offers two tools that take the pacer's own kinds and answer its answers: `set_pace` takes `SetPace` and answers `PaceSet`, and `advance` takes `Advance` and answers `Advanced`. It asks `path::<Pacer>(())`, and so depends on `Pacer`. A program that lists it with no pacer made before it does not build (ADR-0022, ADR-0059: `depends`), so the pacer is always there; any reason the engine gives for no answer is a refusal naming it.
 - **It keeps no state.** A clock it held stays held until the agent sets it running, or `record_clip` sets it back to how it found it.
 - **The usual script:**
   1. `set_pace { pace: Held }`

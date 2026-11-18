@@ -38,7 +38,7 @@ agent ── call_tool { engine, tool: "actor_logs", input } ──> hub ══ 
 ### A turn reads a log
 
 ```rust
-impl Turn<'_, A, S> {
+impl<A, G> Turn<'_, A, G> {
     /// What `path` logged, live or ended, as the view stood when the step began.
     pub fn logged(&self, path: &ActorPath) -> Logged<'_>;
 }

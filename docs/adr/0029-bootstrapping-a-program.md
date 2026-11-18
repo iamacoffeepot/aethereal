@@ -16,7 +16,7 @@ Every program on the browser writes the same lines again with `open([canvas], ..
 
 ADR-0028 makes a program's configuration plain data, read once as the program is set up, and leaves the second half of a standard start open: how each root's config is built from the configuration and from what the host makes. That half decides what a section belongs to. A configuration whose sections are listed apart from the roots that read them can hold a section nothing reads, which is a setting that does nothing, the failure ADR-0028 exists to prevent. And it can lack a section a root reads, found only when the program runs.
 
-What a setup already checks: `Setup::ready` builds only when each root reaches at a typed path of a singleton root only a root made before it (`Ordered<I>`, `MadeAfter`, in `aethereal-actor/src/path/roots.rs`, ADR-0022). A root states whom it reaches in its sends (`BeginSends`, each handler's `Sends`, `EndSends`), never in its config. What a root's config holds beyond plain data is what the host made: a `Given` (ADR-0019), a source or a controller made in a pair whose other end the host keeps (`Setup::source`, `Setup::controller`), and values another root's setup made, such as the `WindowId` a window was opened under.
+What a setup already checks: `Setup::ready` builds only when the setup holds the root of every type each root depends on, and each root is made after every singleton root type it depends on (`Ordered<I>`, `MadeAfter`, in `aethereal-actor/src/path/roots.rs`, ADR-0022). A root states which roots it reaches in its `depends` (ADR-0059), never in its config. What a root's config holds beyond plain data is what the host made: a `Given` (ADR-0019), a source or a controller made in a pair whose other end the host keeps (`Setup::source`, `Setup::controller`), and values another root's setup made, such as the reference to a window it opened.
 
 ## Decision
 
@@ -67,7 +67,7 @@ pub trait Bootstrap<H: Host>: Root {
 - **A library or the program writes it for a root that needs no host:** `impl<H: Host> Bootstrap<H> for Scene`.
 - **Only the crate of the actor or of the host can write it.** `Bootstrap`, the host, and the actor would all be foreign to a program's crate, which Rust's orphan rule refuses. So a library ships a bootstrap for each actor it means to be a root, generic over the host where it needs none, and an actor shipped without one cannot be listed.
 - **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
-- **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
+- **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. `cx.begin` answers the root's `ActorRef<A>`, wrapping the `ActorId` that `Engine::add_root` answers, and `cx.found(&path)` is the lookup a turn has, for what the root spawned in its `begin`: a bootstrap hands over references, not ids. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
 - **A host end goes to the host through `cx.serve(end)`,** which builds only when the host serves that end (`Desktop: Serves<Hosting>`). A pair is made and split inside one bootstrap: its `Given` half goes into the root's config, its other half to `serve`, and neither leaves.
 
 ```rust
@@ -75,26 +75,29 @@ impl Bootstrap<Desktop> for Windows {
     const SECTION: &'static str = "windows";
     type Settings = WindowSettings;
     type Needs = ();
-    type Provides = Opened;
+    type Provides = (InitialWindows,);
 
-    async fn bootstrap(settings: WindowSettings, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<Opened, Unbuilt> {
+    async fn bootstrap(settings: WindowSettings, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<(InitialWindows,), Unbuilt> {
         let mut opening = Opening::new(cx.source(), cx.controller());
         // each window in `settings` opened on the screen, then:
         let (config, hosting) = opening.config();
         cx.begin(&(), config)?;
         cx.serve(hosting);
-        Ok(opened)
+        // each window's actor, which the root's begin made: cx.found(&path::<Window>(id)), an ActorRef<Window>
+        Ok((windows,))
     }
 }
 
 impl<H: Host> Bootstrap<H> for Scene {
     const SECTION: &'static str = "show";
     type Settings = Show;
-    type Needs = (Opened,);
+    type Needs = (InitialWindows,);
     type Provides = ();
 
-    async fn bootstrap(show: Show, (opened,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: opened.first(), seconds: show.seconds })
+    async fn bootstrap(show: Show, (windows,): (InitialWindows,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })?;   // an ActorRef<Window>
+
+        Ok(())
     }
 }
 ```
@@ -110,7 +113,7 @@ A section belongs to the root that reads it, so a composed section that nothing 
 
 | | when |
 |---|---|
-| a root reaches a singleton root not bootstrapped before it | compile, at `run` (`Ordered<I>`, as at `ready` now) |
+| a root, or a type the walk through its `spawns` reaches, depends on a type whose root the program does not bootstrap; a root depends on a singleton root not bootstrapped before it | compile, at `run` (`Ordered<I>`, as at `ready` now) |
 | a root needs what no root before it provides | compile, at `run` / `build`, naming the type |
 | a root the host does not bootstrap | compile, at `.root` |
 | a host end the host does not serve | compile, in the root's `bootstrap` |

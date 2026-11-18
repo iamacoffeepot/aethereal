@@ -39,7 +39,7 @@ tool <──Call── Tools <──CallTool── Link <══ Call { call, too
 // aethereal-tools
 pub trait Holder: Actor<Key = ()> + ChildOf<Parent = Top> + Carries<Offer, Answers = (Offered,)> + Handles<Withdraw> {}
 
-pub struct Toolbox<L, H> { /* .. */ }   // Asks<Path<H>, Offer, Offering>; Tells<Path<H>, Withdraw> as it ends
+pub struct Toolbox<L, H> { /* .. */ }   // #[actor(spawns(L), depends(H))]: asks H Offer, and tells it Withdraw as it ends
 
 // a hub                                        // an engine
 .root::<Mcp>()                                  .root::<Tools>()
@@ -67,7 +67,7 @@ pub struct LinkSettings {
 - **`Link` holds no tools; `Tools` does** (ADR-0053). `Tools` checks each offer with the shared `Table`, answers `Offered` in the turn that asks, and watches each worker, as `Mcp` does. It keeps the table, its revision, and the setting `most_tools`. A tool's offer never waits on the hub.
 - **`Link` dials once, in `begin`** (`Connect` with `LengthPrefixed { most_bytes }`). Once open, it writes `Hello`, then `Sheets` with every tool `Tools` holds: it subscribes to `Tools`, and writes each `Sheets` it is sent, with `Tools`'s revision. After each offer, withdrawal, or worker's end, `Tools` sends the whole set again, never a change, so the hub never holds a set that missed one. A set is bounded by the table's `most_tools`.
 - **Each set has a revision,** a count `Tools` keeps and raises with every change to what it holds. A `Call` names the revision of the set the hub converted it with, and `Tools` refuses a call of a revision it has changed since, saying the tools have changed, without asking the worker. So a tool replaced by one of another schema is never called with bytes written for the first, even where the new schema would read them.
-- **A call is asked of `Tools`** as `CallTool`, with the call's revision, within the call's time (ADR-0041), keyed by the call's number; `Tools` asks the worker that offered the tool (`Asks<Tooling, Call, _>`), and its answer is written back as `Called`. A worker that ends first, or a call not answered in time, is answered `No`, which `Link` writes as refused. A `Called` that would not fit in a frame is written as refused saying so, so an answer too large refuses the call and ends nothing.
+- **A call is asked of `Tools`** as `CallTool`, with the call's revision, within the call's time (ADR-0041), keyed by the call's number; `Tools` asks the worker that offered the tool, through its `ProtocolRef<Tooling>`, and its answer is written back as `Called`. A worker that ends first, or a call not answered in time, is answered `No`, which `Link` writes as refused. A `Called` that would not fit in a frame is written as refused saying so, so an answer too large refuses the call and ends nothing.
 - **`Link` ends its program when its connection ends,** when its dial is refused, or when the hub refuses its `Hello` (ADR-0040: `turn.quit`). Its token is spent, so it could never link again, and no engine outlives its link.
 
 ### The hub's `Engines`

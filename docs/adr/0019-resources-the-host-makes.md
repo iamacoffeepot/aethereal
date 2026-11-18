@@ -66,22 +66,21 @@ engine.bring();
 **The capability answers whoever asked.** An actor asks the capability for a window, and the capability holds the request until the host has made it (ADR-0017: `turn.hold`, `turn.answer`):
 
 ```rust
-impl Handles<OpenWindow> for Windows {
-    fn handle(&mut self, open: OpenWindow, turn: &mut Turn<'_, Self, ..>) -> Result<(), Fault> {
-        let id = self.next();
-        self.waiting.push((id, turn.hold()?));
-        turn.open(&mut self.control)?.push(Make::Window { id, title: open.title });
-        Ok(())
-    }
+#[request]                                     // in Windows' #[actor] block
+fn open(&mut self, open: OpenWindow, turn: &mut Turn<'_, Self>) -> Result<Later<Opened>, Fault> {
+    let id = self.next();
+    let (held, later) = turn.hold();
+    self.waiting.push((id, held));
+    turn.open(&mut self.control)?.push(Make::Window { id, title: open.title });
+    Ok(later)
 }
 
-impl Handles<Made> for Windows {               // brought from the source: from this actor to itself
-    fn handle(&mut self, made: Made, turn: &mut Turn<'_, Self, ..>) -> Result<(), Fault> {
-        let Made::Window { id, window } = made;
-        let taken = turn.take(window)?;
-        let window = turn.give(taken)?;
-        turn.answer(self.held(id)?, &Opened { window })
-    }
+#[tell]                                        // brought from the source: from this actor to itself
+fn made(&mut self, made: Made, turn: &mut Turn<'_, Self, ..>) -> Result<(), Fault> {
+    let Made::Window { id, window } = made;
+    let taken = turn.take(window)?;
+    let window = turn.give(taken)?;
+    turn.answer(self.held(id)?, &Opened { window })
 }
 ```
 

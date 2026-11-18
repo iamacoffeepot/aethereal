@@ -20,17 +20,17 @@ What the engine already has to build on:
 **An actor asks the window root for a window, and is answered once the host has made it.**
 
 ```rust
-type Sends = (Asks<Path<Windows>, OpenWindow, Inventory>, Asks<Path<Windows>, CloseWindow, Inventory>);
+#[actor(depends(Windows))] impl Hud { .. }                    // Hud, and Game, reach the window root by its typed path
 
 turn.to(path::<Windows>(())).ask(&OpenWindow { title, size: Logical { width: 640.0, height: 480.0 } }, &Inventory)?;
 
-impl Handles<Answer<Opened, Inventory>> for Hud { .. }        // Opened::Window { window, surface } | Opened::Refused(Unopened)
+#[answer] fn opened(&mut self, opened: (Answered<Opened>, Inventory), ..)   // Hud's: Opened::Window { window, surface } | Opened::Refused(Unopened)
 
 turn.to(path::<Windows>(())).ask(&CloseWindow { window }, &Inventory)?;
-impl Handles<Answer<Closed, Inventory>> for Hud { .. }        // Closed::Closed | Closed::Refused(Unclosed)
+#[answer] fn closed(&mut self, closed: (Answered<Closed>, Inventory), ..)   // Hud's: Closed::Closed | Closed::Refused(Unclosed)
 
 turn.to(path::<Windows>(())).ask(&SetMode { window, mode: Mode::Fullscreen }, &Toggle)?;
-impl Handles<Answer<ModeSet, Toggle>> for Game { .. }         // ModeSet::Set { surface } | ModeSet::Refused(Unset)
+#[answer] fn set(&mut self, set: (Answered<ModeSet>, Toggle), ..)          // Game's: ModeSet::Set { surface } | ModeSet::Refused(Unset)
 ```
 
 - **A window is opened at a size in the host's logical pixels**, the size a person sees whatever the screen, since its scale is the host's to know only once the window is on a screen. Its answer carries the surface as it was opened, its size in its pixels and its scale (ADR-0024: `Surface`), so the asker draws at the size the window is, as a subscriber learns from `Resized`.
