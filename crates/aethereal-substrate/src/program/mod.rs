@@ -528,6 +528,19 @@ impl<H: Host, R, D> Program<H, R, D> {
         Ok(changed.finish()?)
     }
 
+    /// The configuration the program's layers set over its defaults, decoded into its sections, as running it reads
+    /// it first: for a caller to check a command line the program would refuse, with nothing bootstrapped or run.
+    ///
+    /// # Errors
+    ///
+    /// [`ProgramError::Repeated`] as [`parts`](Self::parts) refuses, and [`ProgramError::Configuration`] for a field
+    /// that does not exist or a value of the wrong shape, naming the field's path and the layer that set it.
+    pub fn configuration(&self) -> Result<Configuration, ProgramError> {
+        let mut budget = Budget::new(CONFIGURATION_BYTES);
+
+        Ok(self.parts()?.configure(&self.layers, &mut budget)?)
+    }
+
     /// Bootstraps the program, then runs it on its host: it builds only when each root reaches at a typed path only
     /// roots listed before it (`Ordered`, ADR-0022), each root's needs are provided by roots listed before it, and its
     /// root list names only its roots (`RootList`, ADR-0055).
@@ -565,8 +578,7 @@ impl<H: Host, R, D> Program<H, R, D> {
         R: Bootstraps<H, I> + 'static,
         D: RootList<R, L>,
     {
-        let mut budget = Budget::new(CONFIGURATION_BYTES);
-        let mut configuration = self.parts()?.configure(&self.layers, &mut budget)?;
+        let mut configuration = self.configuration()?;
         let engine = EngineSettings::take(&mut configuration, ENGINE)?;
         let running = H::Running::take(&mut configuration, RUNNING)?;
 
