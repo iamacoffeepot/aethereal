@@ -8,49 +8,38 @@ use aethereal_data::KindId;
 /// the tree as a root when its parent is [`Top`].
 ///
 /// A type declares it once, as its parent is an associated type, so a type has one place, and a type with one parent
-/// above it, up to a root, has one path.
+/// above it, up to a root, has one path. An actor block declares it with `#[actor(parent = …)]`, which writes the
+/// type's `ChildOf`, its parent [`Top`] when `parent` is left out:
 ///
 /// ```
-/// use aethereal_actor::{ChildOf, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{ChildOf, Fault, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! actor {
-/// #     ($name:ident) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
-/// # actor!(Host);
-/// # actor!(Camera);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.camera")]
+/// # struct Camera;
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+/// #[actor(parent = Top)]
+/// impl Host {
+///     fn begin(host: Host) -> Result<Self, Fault> {
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Camera {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Camera {
+///     fn begin(camera: Camera) -> Result<Self, Fault> {
+///         Ok(camera)
+///     }
 /// }
+///
+/// fn beneath_a_host<C: ChildOf<Parent = Host>>() {}
+///
+/// beneath_a_host::<Camera>();
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not one actor type that declares where it stands",
@@ -195,155 +184,121 @@ impl<Me> Parented<Me> for Anywhere {
 /// the one parent, any type for [`Anywhere`], and `C`'s own for [`Recursive`]. [`Top`] admits no spawner. A turn's
 /// `spawn` builds only when it does (ADR-0022).
 ///
-/// A type may spawn what stands beneath it, and a tree of one type may spawn its own, as `Host` spawns a `Camera` and
-/// `Fib` a `Fib`:
+/// A type may spawn what stands beneath it, as the child's `#[actor(parent = …)]` declares, and a tree of one type may
+/// spawn its own, as `Host` spawns a `Camera` and `Fib` a `Fib`:
 ///
 /// ```
-/// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{Beginning, Fault, Recursive, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # // An actor type whose `begin` spawns a `$child`, when one is named.
-/// # macro_rules! actor {
-/// #     ($name:ident $(, $child:ident)?) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.camera")]
+/// # struct Camera;
 /// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ($($child,)?);
-/// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
-/// # actor!(Host, Camera);
-/// # actor!(Camera);
-/// # actor!(Fib, Fib);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.fib")]
+/// # struct Fib;
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+/// #[actor(parent = Top, spawns(Camera))]
+/// impl Host {
+///     fn begin(host: Host, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let _ = turn.spawn::<Camera>(&(), Camera);
+///
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Camera {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Camera {
+///     fn begin(camera: Camera) -> Result<Self, Fault> {
+///         Ok(camera)
+///     }
 /// }
 ///
-/// impl ChildOf for Fib {
-///     type Parent = Recursive;
+/// #[actor(parent = Recursive, spawns(Fib))]
+/// impl Fib {
+///     fn begin(fib: Fib, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let _ = turn.spawn::<Fib>(&(), Fib);
+///
+///         Ok(fib)
+///     }
 /// }
 /// ```
 ///
 /// A type that spawns what stands beneath another does not build, as `Host` spawning a `Lens`:
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ChildOf, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{Beginning, Fault, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # // An actor type whose `begin` spawns a `$child`, when one is named.
-/// # macro_rules! actor {
-/// #     ($name:ident $(, $child:ident)?) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.camera")]
+/// # struct Camera;
 /// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ($($child,)?);
-/// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
-/// # actor!(Host, Lens);
-/// # actor!(Camera);
-/// # actor!(Lens);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.lens")]
+/// # struct Lens;
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+/// #[actor(parent = Top, spawns(Lens))]
+/// impl Host {
+///     fn begin(host: Host, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let _ = turn.spawn::<Lens>(&(), Lens);
+///
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Camera {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Camera {
+///     fn begin(camera: Camera) -> Result<Self, Fault> {
+///         Ok(camera)
+///     }
 /// }
 ///
-/// impl ChildOf for Lens {
-///     type Parent = Camera;
+/// #[actor(parent = Camera)]
+/// impl Lens {
+///     fn begin(lens: Lens) -> Result<Self, Fault> {
+///         Ok(lens)
+///     }
 /// }
 /// ```
 ///
 /// Nor does one that spawns a tree of another type, as `Host` spawning a `Fib`:
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ChildOf, Recursive, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Spawn};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{Beginning, Fault, Recursive, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # // An actor type whose `begin` spawns a `$child`, when one is named.
-/// # macro_rules! actor {
-/// #     ($name:ident $(, $child:ident)?) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ($($child,)?);
-/// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
-/// # actor!(Host, Fib);
-/// # actor!(Fib);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.fib")]
+/// # struct Fib;
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+/// #[actor(parent = Top, spawns(Fib))]
+/// impl Host {
+///     fn begin(host: Host, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let _ = turn.spawn::<Fib>(&(), Fib);
+///
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Fib {
-///     type Parent = Recursive;
+/// #[actor(parent = Recursive)]
+/// impl Fib {
+///     fn begin(fib: Fib) -> Result<Self, Fault> {
+///         Ok(fib)
+///     }
 /// }
 /// ```
 #[diagnostic::on_unimplemented(
@@ -366,56 +321,47 @@ impl<C> PlacesBeneath<C, C> for Recursive {}
 /// A type is found in a tuple, nested as deep as it nests, and in an [`Each<L>`] [`Through`] the path into `L` that
 /// the generic code that spawns it states.
 ///
-/// A type that spawns what its list leaves out does not build, as `Host` spawning a `Lens` it does not list:
+/// A type that spawns what its list leaves out does not build, as `Host` spawning a `Lens` its `#[actor(spawns(…))]`
+/// does not list:
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ChildOf, Spawn, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{Beginning, Fault, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # // An actor type whose `begin` spawns a `$child`, when one is named, and which lists `$spawns`.
-/// # macro_rules! actor {
-/// #     ($name:ident, $spawns:ty $(, $child:ident)?) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.camera")]
+/// # struct Camera;
 /// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = $spawns;
-/// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.lens")]
+/// # struct Lens;
+///
 /// // Lists the camera, and spawns the lens.
-/// actor!(Host, (Camera,), Lens);
-/// # actor!(Camera, ());
-/// # actor!(Lens, ());
+/// #[actor(parent = Top, spawns(Camera))]
+/// impl Host {
+///     fn begin(host: Host, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         let _ = turn.spawn::<Lens>(&(), Lens);
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Camera {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Camera {
+///     fn begin(camera: Camera) -> Result<Self, Fault> {
+///         Ok(camera)
+///     }
 /// }
 ///
-/// impl ChildOf for Lens {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Lens {
+///     fn begin(lens: Lens) -> Result<Self, Fault> {
+///         Ok(lens)
+///     }
 /// }
 /// ```
 #[diagnostic::on_unimplemented(
@@ -500,45 +446,29 @@ impl AtTop for Anywhere {}
 /// A type that stands beneath another is not one, and the chassis cannot make it:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{ChildOf, Root, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault};
-/// # use aethereal_data::{Kind, KindName, Plain};
+/// use aethereal_actor::{Fault, Root, Top, actor};
+/// # use aethereal_data::Plain;
 /// #
-/// # macro_rules! actor {
-/// #     ($name:ident) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.host")]
+/// # struct Host;
 /// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ();
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
-/// # actor!(Host);
-/// # actor!(Camera);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.camera")]
+/// # struct Camera;
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
+/// #[actor(parent = Top)]
+/// impl Host {
+///     fn begin(host: Host) -> Result<Self, Fault> {
+///         Ok(host)
+///     }
 /// }
 ///
-/// impl ChildOf for Camera {
-///     type Parent = Host;
+/// #[actor(parent = Host)]
+/// impl Camera {
+///     fn begin(camera: Camera) -> Result<Self, Fault> {
+///         Ok(camera)
+///     }
 /// }
 ///
 /// fn made_by_the_chassis<R: Root>() {}

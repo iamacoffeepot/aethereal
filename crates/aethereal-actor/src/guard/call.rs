@@ -12,57 +12,33 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// mail it reads, is checked where the mail is delivered (ADR-0058), as is a send through a [`ProtocolRef`], which
 /// does not name its receiver's type.
 ///
+/// Each example writes its receiver with `#[actor]`, whose handler names its guard as its turn's second type argument,
+/// `Turn<'_, Self, G>`: the block writes `G` as the handler's [`Handles::From`](crate::Handles::From), which a send to
+/// it checks with `Admits`.
+///
 /// [`Anyone`](super::Anyone) hands on an [`ErasedActorRef`], which any sender can be, so a send to its handler builds from
 /// an actor of any type:
 ///
 /// ```
-/// use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
-/// # use aethereal_data::{Kind, KindName, Plain};
-/// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
-/// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
-/// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
+/// use aethereal_actor::{ActorRef, Anyone, Fault, Turn, actor};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.ready")]
 /// # struct Ready;
 /// #
-/// # actor!(Pinger, Top, Ready);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pinger")]
+/// # struct Pinger;
 ///
-/// impl Handles<Ready> for Pinger {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Ready, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Pinger {
+/// #     fn begin(pinger: Pinger) -> Result<Self, Fault> {
+/// #         Ok(pinger)
+/// #     }
+/// #
+///     #[tell]
+///     fn ready(&mut self, _: Ready, _: &mut Turn<'_, Self, Anyone>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -78,13 +54,13 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// `Pinger` whose handler takes it from a `Counter`.
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ActorRef, Fault, Handles, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
+/// use aethereal_actor::{ActorRef, Fault, Turn, actor};
+/// # use aethereal_actor::Top;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
+/// # // An actor type that stands beneath `$parent` and handles nothing.
 /// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
+/// #     ($name:ident, $parent:ty) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -92,23 +68,10 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
 /// #         }
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent)]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -118,15 +81,21 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// # #[kind(name = "aether.example.ready")]
 /// # struct Ready;
 /// #
-/// # actor!(Pinger, Top, Ready);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pinger")]
+/// # struct Pinger;
+/// #
 /// # actor!(Counter, Top);
 /// # actor!(Producer, Top);
 ///
-/// impl Handles<Ready> for Pinger {
-///     type From = ActorRef<Counter>;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Ready, _: &mut Turn<'_, Self, ActorRef<Counter>>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Pinger {
+/// #     fn begin(pinger: Pinger) -> Result<Self, Fault> {
+/// #         Ok(pinger)
+/// #     }
+/// #
+///     #[tell]
+///     fn ready(&mut self, _: Ready, _: &mut Turn<'_, Self, ActorRef<Counter>>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -143,13 +112,13 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 ///
 /// ```compile_fail,E0277
 /// use aethereal_actor::guard::Child;
-/// use aethereal_actor::{ActorRef, Fault, Handles, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
+/// use aethereal_actor::{ActorRef, Fault, Turn, actor};
+/// # use aethereal_actor::Top;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
+/// # // An actor type that stands beneath `$parent` and handles nothing.
 /// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
+/// #     ($name:ident, $parent:ty) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -157,23 +126,10 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
 /// #         }
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent)]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -183,15 +139,21 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// # #[kind(name = "aether.example.ready")]
 /// # struct Ready;
 /// #
-/// # actor!(Pinger, Top, Ready);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pinger")]
+/// # struct Pinger;
+/// #
 /// # actor!(Ponger, Pinger);
 /// # actor!(Counter, Top);
 ///
-/// impl Handles<Ready> for Pinger {
-///     type From = Child<Ponger>;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Ready, _: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Pinger {
+/// #     fn begin(pinger: Pinger) -> Result<Self, Fault> {
+/// #         Ok(pinger)
+/// #     }
+/// #
+///     #[tell]
+///     fn ready(&mut self, _: Ready, _: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -208,13 +170,13 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 ///
 /// ```compile_fail,E0277
 /// use aethereal_actor::guard::Parent;
-/// use aethereal_actor::{ActorRef, Fault, Handles, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
+/// use aethereal_actor::{ActorRef, Fault, Turn, actor};
+/// # use aethereal_actor::Top;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
+/// # // An actor type that stands beneath `$parent` and handles nothing.
 /// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
+/// #     ($name:ident, $parent:ty) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -222,23 +184,10 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
 /// #         }
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent)]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
@@ -248,15 +197,21 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// # #[kind(name = "aether.example.ready")]
 /// # struct Ready;
 /// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.ponger")]
+/// # struct Ponger;
+/// #
 /// # actor!(Pinger, Top);
-/// # actor!(Ponger, Pinger, Ready);
 /// # actor!(Counter, Top);
 ///
-/// impl Handles<Ready> for Ponger {
-///     type From = Parent;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Ready, _: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
+/// #[actor(parent = Pinger)]
+/// impl Ponger {
+/// #     fn begin(ponger: Ponger) -> Result<Self, Fault> {
+/// #         Ok(ponger)
+/// #     }
+/// #
+///     #[tell]
+///     fn ready(&mut self, _: Ready, _: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -272,48 +227,20 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// `P`: a `Producer` that handles `Pong` but not `Shut` may not subscribe to a `Pinger` that will send it both.
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Speaks, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
-/// # use aethereal_data::{Kind, KindName, Plain};
-/// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
-/// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
-/// #         #[derive(Plain)]
-/// #         struct $name;
-/// #
-/// #         impl Kind for $name {
-/// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
-/// #         }
-/// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-/// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #     };
-/// # }
+/// use aethereal_actor::{ActorRef, Fault, Speaks, Turn, actor};
+/// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.ready")]
 /// # struct Ready;
 /// #
-/// # actor!(Pinger, Top, Ready);
-/// # actor!(Producer, Top, Pong);
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pinger")]
+/// # struct Pinger;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.producer")]
+/// # struct Producer;
 ///
 /// #[derive(Plain)]
 /// #[kind(name = "aether.example.pong")]
@@ -323,20 +250,26 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// #[kind(name = "aether.example.shut")]
 /// struct Shut;
 ///
-/// impl Handles<Ready> for Pinger {
-///     type From = Speaks<(Pong, Shut)>;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Ready, _: &mut Turn<'_, Self, Speaks<(Pong, Shut)>>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Pinger {
+/// #     fn begin(pinger: Pinger) -> Result<Self, Fault> {
+/// #         Ok(pinger)
+/// #     }
+/// #
+///     #[tell]
+///     fn ready(&mut self, _: Ready, _: &mut Turn<'_, Self, Speaks<(Pong, Shut)>>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
 ///
-/// impl Handles<Pong> for Producer {
-///     type From = Anyone;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Producer {
+/// #     fn begin(producer: Producer) -> Result<Self, Fault> {
+/// #         Ok(producer)
+/// #     }
+/// #
+///     #[tell]
+///     fn pong(&mut self, _: Pong) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -353,13 +286,13 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// is the one held is read at delivery.
 ///
 /// ```compile_fail,E0277
-/// use aethereal_actor::{ActorRef, Checks, Fault, Guard, Handles, Sender, Sent, Turn};
-/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Top};
+/// use aethereal_actor::{ActorRef, Checks, Fault, Guard, Sender, Sent, Turn, actor};
+/// # use aethereal_actor::Top;
 /// # use aethereal_data::{Kind, KindName, Plain};
 /// #
-/// # // An actor type that stands beneath `$parent` and lists `$kind`s, each handled where the example writes it.
+/// # // An actor type that stands beneath `$parent` and handles nothing.
 /// # macro_rules! actor {
-/// #     ($name:ident, $parent:ty $(, $kind:ty)*) => {
+/// #     ($name:ident, $parent:ty) => {
 /// #         #[derive(Plain)]
 /// #         struct $name;
 /// #
@@ -367,36 +300,23 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 /// #             const NAME: KindName = KindName::new(concat!("aether.example.", stringify!($name)));
 /// #         }
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = $parent;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = ($($kind,)*);
-/// #             type Depends = ();
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(parent = $parent)]
+/// #         impl $name {
+/// #             fn begin(config: $name) -> Result<Self, Fault> {
 /// #                 Ok(config)
-/// #             }
-/// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
 /// #
 /// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.ready")]
-/// # struct Ready;
-/// #
-/// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.exited")]
 /// # struct Exited;
-/// # actor!(Spawned, Top, Exited);
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.spawned")]
+/// # struct Spawned;
+/// #
 /// # actor!(Process, Top);
 /// # actor!(Engines, Top);
 ///
@@ -413,11 +333,14 @@ use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 ///     }
 /// }
 ///
-/// impl Handles<Exited> for Spawned {
-///     type From = ItsProcess;
-///     type Returns = ();
-///
-///     fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self, ItsProcess>) -> Result<(), Fault> {
+/// #[actor]
+/// impl Spawned {
+/// #     fn begin(spawned: Spawned) -> Result<Self, Fault> {
+/// #         Ok(spawned)
+/// #     }
+/// #
+///     #[tell]
+///     fn exited(&mut self, _: Exited, _: &mut Turn<'_, Self, ItsProcess>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
