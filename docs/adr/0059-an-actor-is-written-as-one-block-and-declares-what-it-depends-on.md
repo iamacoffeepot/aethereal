@@ -300,13 +300,15 @@ impl Inventory {
 ### A bootstrap hands over references
 
 ```rust
-// a dependent's config holds the ActorRef<Window> its bootstrap was handed
-turn.to(shows.window).send(&window::Subscribe)?;   // no path, no Option, no depends entry
+// a dependent's config holds the InitialWindow its bootstrap was handed: the window's id and its ActorRef<Window>
+turn.to(shows.window.actor()).send(&window::Subscribe)?;   // no path, no Option, no depends entry
 ```
 
-- **`Bootstrapping::begin` answers `Result<ActorRef<A>, Unbuilt>`,** wrapping the `ActorId` that `Engine::add_root` already answers and `begin` drops today (ADR-0029).
-- **A bootstrap has `cx.found(&path)`,** the lookup a turn has, for what its root spawned in `begin`.
-- **So `InitialWindows` carries `ActorRef<Window>`s where it carried `WindowId`s,** and a dependent's config holds the `ActorRef<Window>` it is handed (ADR-0024).
+- **`Bootstrapping::begin` answers `Result<ActorRef<A>, Unbuilt>`,** the reference to the root where the engine seated it, which `begin` dropped as an `ActorId` before (ADR-0029). `begin_from` answers the same for a root a guest runs.
+- **A bootstrap has `cx.found(&path)`,** the lookup a turn has, for what its root spawned in `begin`. It builds only for a path whose root is the root `A` the bootstrap makes: `L::Root: FoundBy<L, A>`, which holds only when the two are one type, as `RootIs` checks a turn's path against its `depends`. A bootstrap finds nothing another root made; that root's bootstrap hands it over.
+- **What a root's `begin` spawned is in the table when its bootstrap's `found` runs.** The engine applies a root's `begin` and what it asked, the children it stood up among it, before `cx.begin` answers, so `found` runs after them with no change to when `begin` runs: the window root's bootstrap finds each window `Windows` made.
+- **So `InitialWindows` carries `InitialWindow`s where it carried `WindowId`s:** each is a window's `WindowId`, which the renderer names its frames by (`Frame::Main`, ADR-0025), and the `ActorRef<Window>` of its actor, made together, only by the window root's bootstrap, so the two cannot name two windows. A dependent's config holds the `InitialWindow` it is handed, and sends to the window through its reference; one that never sends to the window holds only the id (ADR-0024).
+- **`path::<Window>(id)` stays for a window an actor was not handed:** one opened while the program runs (ADR-0027), as the desktop windows example's scenes are, and one named in mail by its id, as the renderer reaches the window of a probe and the input tool the window it performs in. Those actors keep `Windows` in their `depends`.
 
 ### A turn is typed by its actor and its guard
 
@@ -394,7 +396,6 @@ fn gathered(
 
 ## To verify when implementing
 
-- **That the children a root's `begin` spawns are in the table when its bootstrap's `found` runs,** so a bootstrap finds each window `Windows` made.
 - **That `Admits<A, Me, I>` does not clash with the placement trait of the same name,** `Admits<A, C>` (`aethereal-actor/src/placement.rs`), which the spawn's check reads (ADR-0022); one of them is renamed if it does.
 
 ## Alternatives considered

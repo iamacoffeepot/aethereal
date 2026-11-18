@@ -40,7 +40,7 @@ use crate::relay::Relays;
 use crate::stop::Stop;
 use crate::tools::{ChatWord, Choice, Marked, OverlayTools};
 use aethereal_actor::{Actor, ActorRef, Answer, Beginning, ChildOf, Ending, Fault, On, Tick, Top, path};
-use aethereal_data::{Bound, Plain};
+use aethereal_data::Bound;
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
@@ -48,7 +48,7 @@ use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Target, Viewport};
-use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
+use aethereal_window::{self as window, Event, InitialWindow, InitialWindows};
 use chat::Linking;
 use stats::Columns;
 
@@ -71,15 +71,17 @@ impl<H: Host> Bootstrap<H> for Overlay {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), OverlayConfig { window: windows.first() })
+        cx.begin(&(), OverlayConfig { window: windows.first() })?;
+
+        Ok(())
     }
 }
 
 /// The overlay's config: the window it draws on.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.overlay.config")]
 pub struct OverlayConfig {
-    pub window: WindowId,
+    pub window: InitialWindow,
 }
 
 /// The dev overlay: it steps through its stops at each backtick its window hears, and while it is shown keeps each
@@ -171,8 +173,8 @@ impl Actor for Overlay {
     /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
     /// which hears the backtick, and spawns the worker of its tools and offers them.
     fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
-        let target = Target::of::<Interface>(Frame::Main(config.window));
+        turn.to(config.window.actor()).send(&window::Subscribe)?;
+        let target = Target::of::<Interface>(Frame::Main(config.window.id()));
         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
         turn.to(path::<Tools>(())).send(&aethereal_tools::Subscribe)?;
         let tools = Self::spawn_tools(turn)?;

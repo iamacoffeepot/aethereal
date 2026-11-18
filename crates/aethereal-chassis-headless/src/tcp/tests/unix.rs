@@ -202,7 +202,9 @@ impl Bootstrap<Headless> for Holder {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Asked)
+        cx.begin(&(), Asked)?;
+
+        Ok(())
     }
 }
 

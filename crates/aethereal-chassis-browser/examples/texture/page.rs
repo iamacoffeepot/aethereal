@@ -60,7 +60,9 @@ impl<H: Host> Bootstrap<H> for Claimer {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Nothing)
+        cx.begin(&(), Nothing)?;
+
+        Ok(())
     }
 }
 
@@ -76,7 +78,9 @@ impl<H: Host> Bootstrap<H> for Mapper {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first() })
+        cx.begin(&(), Shows { window: windows.first().id() })?;
+
+        Ok(())
     }
 }
 
@@ -88,7 +92,9 @@ impl<H: Host> Bootstrap<H> for Glower {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Nothing)
+        cx.begin(&(), Nothing)?;
+
+        Ok(())
     }
 }
 

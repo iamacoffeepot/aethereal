@@ -115,7 +115,9 @@ impl Bootstrap<Headless> for Source {
     type Provides = ();
 
     async fn bootstrap(plan: Plan, (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), plan)
+        cx.begin(&(), plan)?;
+
+        Ok(())
     }
 }
 
@@ -231,7 +233,9 @@ impl Bootstrap<Headless> for BenchStack {
     ) -> Result<(), Unbuilt> {
         settings.fit(cx)?;
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }
 

@@ -130,7 +130,9 @@ impl<H: Host> Bootstrap<H> for Http {
             return Err(Unbuilt::Failed(Box::new(BlobBytesTooLow { blob_bytes, needed })));
         }
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }
 

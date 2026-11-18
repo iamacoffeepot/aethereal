@@ -15,7 +15,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use bootstrap::{Bootstrap, Bootstrapping};
+pub use bootstrap::{Bootstrap, Bootstrapping, FoundBy};
 pub use error::{ProgramError, Reader, Unbuilt};
 pub use host::{Builds, Host, Serves};
 pub use listed::{Bootstraps, Composing, Stage};
@@ -208,7 +208,8 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 ///     type Provides = ();
 ///
 ///     async fn bootstrap((): (), (_,): (Opened,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-///         cx.begin(&(), Nothing)
+///         cx.begin(&(), Nothing)?;
+///         Ok(())
 ///     }
 /// }
 ///
@@ -295,7 +296,8 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 ///
 ///     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
 ///         cx.serve(Feed);
-///         cx.begin(&(), Nothing)
+///         cx.begin(&(), Nothing)?;
+///         Ok(())
 ///     }
 /// }
 /// ```

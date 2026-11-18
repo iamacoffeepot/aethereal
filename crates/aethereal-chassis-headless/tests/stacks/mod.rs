@@ -37,7 +37,9 @@ macro_rules! stack {
             ) -> Result<(), ::aethereal_substrate::Unbuilt> {
                 settings.fit(cx)?;
 
-                cx.begin(&(), settings)
+                cx.begin(&(), settings)?;
+
+                Ok(())
             }
         }
 

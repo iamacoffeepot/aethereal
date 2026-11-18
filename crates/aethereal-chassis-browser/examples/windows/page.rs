@@ -22,8 +22,8 @@ use aethereal_render::shape::Shape;
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_window::{
-    self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Logical, OpenWindow, Opened, Surface, Window,
-    WindowId, Windows,
+    self as window, Event, InitialWindow, InitialWindows, KeyEvent, KeySet, Keyed, Logical, OpenWindow, Opened,
+    Surface, WindowId, Windows,
 };
 use core::f32::consts::TAU;
 use wasm_bindgen::JsError;
@@ -86,16 +86,16 @@ struct Nothing;
 
 /// A scene's config: the window it draws on, how many triangles its ring has, and whether they are shaded warm, from
 /// red, or cool, from blue.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.shows")]
 struct Shows {
-    window: WindowId,
+    window: InitialWindow,
     count: u8,
     warm: bool,
 }
 
 /// The stage's config: what each scene shows.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.staged")]
 struct Staged {
     scenes: Vec<Shows>,
@@ -127,7 +127,9 @@ impl<H: Host> Bootstrap<H> for Stage {
             })
             .collect();
 
-        cx.begin(&(), Staged { scenes })
+        cx.begin(&(), Staged { scenes })?;
+
+        Ok(())
     }
 }
 
@@ -151,7 +153,7 @@ impl Actor for Stage {
     fn begin(staged: Staged, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut entries = Vec::with_capacity(staged.scenes.len());
         for shows in staged.scenes {
-            let window = shows.window;
+            let window = shows.window.id();
             if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
                 turn.log(Level::Error, format_args!("the scene of window {window:?} was refused: {refused}"));
             }
@@ -264,11 +266,11 @@ impl Actor for Scene {
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
-        let main = Frame::Main(shows.window);
-        turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
-        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(main), &Nothing)?;
+        turn.to(shows.window.actor()).send(&window::Subscribe)?;
+        let window = shows.window.id();
+        turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(window)), &Nothing)?;
         let scene = Self {
-            window: shows.window,
+            window,
             count: shows.count,
             warm: shows.warm,
             ring: Ring::Making,

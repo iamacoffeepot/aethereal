@@ -1,15 +1,18 @@
 //! The window root's tests: what a host pushes for a window reaches that window's subscribers alone, in order, once it
-//! says something new, after how the window stood, and nothing another actor sent reaches them; a window asked for
+//! says something new, after how the window stood, and nothing another actor sent reaches them, a root bootstrapped
+//! after the window root reaching each window through the actor its bootstrap was handed; a window asked for
 //! while the program runs is given the next id, is answered once its host has said, and closes as the root is asked,
 //! or as its close button says; and a mode asked for is set once its host has, or at once when the window has it.
 
 use super::*;
 use crate::event::{Button, Mode, Subscribe, Surface};
-use crate::host::{Hosting, Opening, WindowFeed};
+use crate::host::{Hosting, InitialWindow, InitialWindows, Opening, WindowFeed};
 use aethereal_actor::{ActorRef, Actors, Answered, Anyone, Table, Time, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
-use aethereal_substrate::{Clock, Engine, Setup};
+use aethereal_substrate::{
+    Bootstrap, Bootstrapping, Builds, Clock, Engine, Host, ProgramError, Settled, Setup, Unbuilt,
+};
 use std::num::NonZeroUsize;
 
 /// A clock that reads the same time always: the tests' steps take no time.
@@ -30,20 +33,20 @@ fn run(engine: &mut Engine) {
     }
 }
 
-/// What the listener listens to: the window it subscribes to.
-#[derive(Plain)]
+/// What the listener listens to: the window it subscribes to, as the window root's bootstrap handed it over.
+#[derive(Bound)]
 #[kind(name = "aether.test.listens")]
 struct Listens {
-    window: WindowId,
+    window: InitialWindow,
 }
 
 /// What another actor sends the window root and the window, which is not the host's.
 const FORGED: Event = Event::PointerMoved { x: -1.0, y: -1.0 };
 
-/// An actor that subscribes to one window twice, and sends the window root and the window an event of its own. The
-/// events it is sent are read from the turns the engine recorded. It stays an actor because what it does in its `begin`
-/// is under test: a root made after the window root reaches each window's actor there, which the outside, whose first
-/// mail is sent once every root has begun, cannot show.
+/// An actor that subscribes to one window twice, through the actor it was handed, and sends the window root and the
+/// window an event of its own. The events it is sent are read from the turns the engine recorded. It stays an actor
+/// because what it does in its `begin` is under test: a root bootstrapped after the window root reaches each window's
+/// actor there, which the outside, whose first mail is sent once every root has begun, cannot show.
 #[derive(Bound)]
 #[kind(name = "aether.test.listener")]
 struct Listener;
@@ -61,8 +64,8 @@ impl Actor for Listener {
 
     fn begin(listens: Listens, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = listens.window;
-        turn.to(path::<Window>(window)).send(&Subscribe)?.send(&Subscribe)?.send(&FORGED)?;
-        turn.to(path::<Windows>(())).send(&Heard::Event { window, event: FORGED })?;
+        turn.to(window.actor()).send(&Subscribe)?.send(&Subscribe)?.send(&FORGED)?;
+        turn.to(path::<Windows>(())).send(&Heard::Event { window: window.id(), event: FORGED })?;
 
         Ok(Self)
     }
@@ -87,6 +90,94 @@ fn heard_by_the_listener(engine: &mut Engine) -> Vec<Event> {
     engine.take_turned().iter().filter(|turn| turn.path == listener).filter_map(|turn| turn.read().ok()).collect()
 }
 
+/// A host of the tests' own: it keeps the engine its program bootstrapped, and what the window root's bootstrap kept
+/// on it, and runs nothing.
+struct Desk {
+    engine: Engine,
+    kept: Kept,
+}
+
+/// What the window root's bootstrap kept on the desk: the feed of each window it opened, in the order opened, and its
+/// end of the root's requests.
+#[derive(Default)]
+struct Kept {
+    feeds: Vec<WindowFeed>,
+    hostings: Vec<Hosting>,
+}
+
+/// The desk's own section, which sets nothing.
+#[derive(Plain, Debug, Default)]
+#[kind(name = "aether.test.desk.running")]
+#[settings]
+struct DeskRunning {}
+
+impl Host for Desk {
+    type Running = DeskRunning;
+    type Hosting<'host> = &'host mut Kept;
+    type Exit = Self;
+    type Error = ProgramError;
+
+    fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
+        Self::build(settled)
+    }
+}
+
+impl Builds for Desk {
+    fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
+        let mut kept = Kept::default();
+        let (engine, _) = pollster::block_on(settled.bootstrap(&mut kept))?;
+
+        Ok(Self { engine, kept })
+    }
+}
+
+/// Opens two windows as a host does, `first`, windowed and focused, then `second`, maximized, both small, each closed
+/// by the program alone; begins the root with them, keeps each one's feed on the desk, and provides each window with
+/// the actor the root made of it.
+impl Bootstrap<Desk> for Windows {
+    const SECTION: &'static str = "windows";
+    type Settings = ();
+    type Needs = ();
+    type Provides = (InitialWindows,);
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Desk, Self>) -> Result<(InitialWindows,), Unbuilt> {
+        let small = Surface { width: 640, height: 480, scale: 1.0 };
+        let mut opening = Opening::new(cx.source(), cx.controller());
+        let first = opening.open("first", small, Mode::Windowed, true);
+        let second = opening.open("second", small, Mode::Maximized, false);
+        let (mut config, hosting) = opening.config();
+        config.closing = Closing::ByProgram;
+        cx.begin(&(), config)?;
+
+        let windows = InitialWindows::found(cx, first.window(), &[second.window()])?;
+        cx.host().feeds.extend([first, second]);
+        cx.host().hostings.push(hosting);
+
+        Ok((windows,))
+    }
+}
+
+/// The listener listens to the second window the window root opened.
+impl Bootstrap<Desk> for Listener {
+    const SECTION: &'static str = "listener";
+    type Settings = ();
+    type Needs = (InitialWindows,);
+    type Provides = ();
+
+    async fn bootstrap(
+        (): (),
+        (windows,): (InitialWindows,),
+        cx: &mut Bootstrapping<'_, Desk, Self>,
+    ) -> Result<(), Unbuilt> {
+        let Some(window) = windows.all().nth(1) else {
+            return Err(Unbuilt::Failed("the window root opened no second window".into()));
+        };
+        cx.begin(&(), Listens { window })?;
+
+        Ok(())
+    }
+}
+
 /// An engine of one worker, set up with no cycle.
 fn setup() -> Setup<()> {
     Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0).with_cycle::<()>()
@@ -103,23 +194,19 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
     // sent the root or the window sent on as though the host heard it, a subscriber not sent how the window stood,
     // its mode among it, or sent it twice for subscribing twice, a resize to the size the window has, a mode it is
     // shown in, or a focus it has sent on, a turn of the wheel dropped as though it said nothing new, and a window's
-    // actor not made before a root made after the window root begins, so a subscription in its `begin` is lost.
-    let mut setup = setup();
+    // actor not made before a root bootstrapped after the window root begins, or not found by the window root's
+    // bootstrap, or handed over as another window's, so a subscription in its `begin` is lost or reaches the wrong
+    // window.
+    let Ok(mut desk) = Desk::program().with_cycle::<()>().root::<Windows>().root::<Listener>().build() else {
+        panic!("the window root and its listener bootstrap");
+    };
+    let engine = &mut desk.engine;
+    engine.record_turns();
+    let [first, second] = desk.kept.feeds.as_slice() else {
+        panic!("the window root's bootstrap opened two windows");
+    };
     let small = Surface { width: 640, height: 480, scale: 1.0 };
     let large = Surface { width: 1280, height: 960, scale: 2.0 };
-    let mut opening = Opening::new(setup.source::<Heard>(), setup.controller::<Windowing>());
-    let first = opening.open("first", small, Mode::Windowed, true);
-    let second = opening.open("second", small, Mode::Maximized, false);
-    let (mut config, _hosting) = opening.config();
-    config.closing = Closing::ByProgram;
-    let Ok(mut engine) = setup
-        .add_root::<Windows>(&(), config)
-        .and_then(|setup| setup.add_root::<Listener>(&(), Listens { window: second.window() }))
-        .map(Setup::ready)
-    else {
-        panic!("the window root and its listener begin");
-    };
-    engine.record_turns();
 
     let pushed = [
         first.push(Event::KeyDown { code: String::from("KeyW"), key: String::from("w"), repeat: false }),
@@ -140,7 +227,7 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         second.push(Event::CloseRequested),
     ];
     assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
-    run(&mut engine);
+    run(engine);
 
     let expected = [
         Event::Resized(small),
@@ -155,7 +242,7 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         Event::Wheel { x: 1.0, y: 2.0, delta_x: 0.0, delta_y: 80.0 },
         Event::CloseRequested,
     ];
-    assert_eq!(heard_by_the_listener(&mut engine), expected);
+    assert_eq!(heard_by_the_listener(engine), expected);
 }
 
 /// What reached the outside, as a test reads it from the queue (ADR-0036): an answer to what it asked, an event of a

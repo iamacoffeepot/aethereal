@@ -33,6 +33,8 @@ impl Bootstrap<Desktop> for Processes {
             let readiness = cx.host().readiness();
             cx.serve(readiness);
         }
-        cx.begin(&(), settings.config())
+        cx.begin(&(), settings.config())?;
+
+        Ok(())
     }
 }

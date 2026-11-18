@@ -43,6 +43,8 @@ impl Bootstrap<Headless> for Sessions {
         cx.serve(Service::<dyn Credential>::of(Arc::new(credential)));
         let randomness = SystemRandomness::open().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
         cx.serve(Service::<dyn Randomness>::of(Arc::new(randomness)));
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }

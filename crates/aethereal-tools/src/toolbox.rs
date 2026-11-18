@@ -141,7 +141,9 @@ impl<H: Host, L: ToolList, R: Holder> Bootstrap<H> for Toolbox<L, R> {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), ToolboxConfig)
+        cx.begin(&(), ToolboxConfig)?;
+
+        Ok(())
     }
 }
 

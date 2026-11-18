@@ -117,7 +117,9 @@ impl<H: Host> Bootstrap<H> for Docker {
     async fn bootstrap(settings: DockerSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         let config = settings.config().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
 
-        cx.begin(&(), config)
+        cx.begin(&(), config)?;
+
+        Ok(())
     }
 }
 

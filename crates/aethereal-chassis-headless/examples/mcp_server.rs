@@ -47,7 +47,9 @@ impl<H: Host> Bootstrap<H> for McpStack {
         let settings = StackSettings { interface: Interface::Loopback, ..settings };
         settings.fit(cx)?;
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }
 

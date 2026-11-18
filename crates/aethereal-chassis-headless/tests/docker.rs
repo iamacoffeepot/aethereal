@@ -136,7 +136,9 @@ impl Bootstrap<Headless> for Session {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)
+        cx.begin(&(), Unset)?;
+
+        Ok(())
     }
 }
 

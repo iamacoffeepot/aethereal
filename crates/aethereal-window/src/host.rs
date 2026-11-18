@@ -3,10 +3,11 @@
 //! window root's requests and say what it did with each (ADR-0024, ADR-0027, ADR-0051).
 
 use crate::event::{Event, Mode, Surface};
-use crate::window::{WindowConfig, WindowId};
-use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Unplaced, Unset, Windowing, WindowsConfig};
-use aethereal_actor::{Controller, Given, Requests, Source};
-use aethereal_substrate::{Closed, Feed};
+use crate::window::{Window, WindowConfig, WindowId};
+use crate::windows::{Closing, Heard, Initial, Unclosed, Unopened, Unplaced, Unset, Windowing, Windows, WindowsConfig};
+use aethereal_actor::{ActorRef, Controller, Given, Requests, Source, path};
+use aethereal_data::Bound;
+use aethereal_substrate::{Bootstrapping, Closed, Feed, Host, Unbuilt};
 use core::iter;
 
 /// The windows a chassis opens as it sets the program up, the source their events come in through, and the
@@ -244,29 +245,72 @@ impl WindowFeed {
 }
 
 /// The windows a host opened as it set the program up, in the order opened: what the host's bootstrap of the window
-/// root provides the roots bootstrapped after it, so a root is given the window it draws on (ADR-0029). There is at
-/// least one.
+/// root provides the roots bootstrapped after it, so a root is handed each window it draws on and the reference to its
+/// actor (ADR-0024, ADR-0029). There is at least one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitialWindows {
-    first: WindowId,
-    others: Vec<WindowId>,
+    first: InitialWindow,
+    others: Vec<InitialWindow>,
 }
 
 impl InitialWindows {
-    /// The windows `first`, then `others`, in the order opened.
-    #[must_use]
-    pub const fn new(first: WindowId, others: Vec<WindowId>) -> Self {
-        Self { first, others }
+    /// The windows `first`, then `others`, in the order opened, each with the actor the window root made of it in its
+    /// `begin`, found by the bootstrap that began it, `cx` (ADR-0029).
+    ///
+    /// # Errors
+    ///
+    /// [`Unbuilt::Failed`] naming a window the root made no actor of: one the root was not begun with, as a root that
+    /// began made an actor of each window it was begun with.
+    pub fn found<H: Host>(
+        cx: &Bootstrapping<'_, H, Windows>,
+        first: WindowId,
+        others: &[WindowId],
+    ) -> Result<Self, Unbuilt> {
+        let first = InitialWindow::found(cx, first)?;
+        let others = others.iter().map(|&window| InitialWindow::found(cx, window)).collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { first, others })
     }
 
     /// The first window opened.
     #[must_use]
-    pub const fn first(&self) -> WindowId {
+    pub const fn first(&self) -> InitialWindow {
         self.first
     }
 
     /// Every window opened, in the order opened.
-    pub fn all(&self) -> impl Iterator<Item = WindowId> {
+    pub fn all(&self) -> impl Iterator<Item = InitialWindow> {
         iter::once(self.first).chain(self.others.iter().copied())
+    }
+}
+
+/// A window opened as the program was set up: its id, which the renderer names its frames by (ADR-0025), and the
+/// reference to its actor, which an actor handed it sends to with nothing in its `depends` (ADR-0059). Only the window
+/// root's bootstrap makes one, finding the actor under the id, so the two always name one window.
+#[derive(Bound, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialWindow {
+    id: WindowId,
+    actor: ActorRef<Window>,
+}
+
+impl InitialWindow {
+    /// The window `id`, with the actor the window root made of it, found by the bootstrap that began the root, `cx`.
+    fn found<H: Host>(cx: &Bootstrapping<'_, H, Windows>, id: WindowId) -> Result<Self, Unbuilt> {
+        let unmade = || Unbuilt::Failed(format!("the window root made no actor of window {id:?}").into());
+        let actor = cx.found(&path::<Window>(id)).ok_or_else(unmade)?;
+
+        Ok(Self { id, actor })
+    }
+
+    /// The window's id: its actor's key, and what the renderer names its frames by.
+    #[must_use]
+    pub const fn id(self) -> WindowId {
+        self.id
+    }
+
+    /// The reference to the window's actor, which an actor subscribes to.
+    #[must_use]
+    pub const fn actor(self) -> ActorRef<Window> {
+        self.actor
     }
 }

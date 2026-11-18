@@ -126,6 +126,8 @@ impl Bootstrap<Headless> for Store {
         cx: &mut Bootstrapping<'_, Headless, Self>,
     ) -> Result<(), Unbuilt> {
         cx.serve(Service::<dyn Stockroom>::of(Arc::new(StoreDirectory::new(&settings))));
-        cx.begin(&(), settings.config())
+        cx.begin(&(), settings.config())?;
+
+        Ok(())
     }
 }

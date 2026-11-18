@@ -72,7 +72,9 @@ impl<H: Host> Bootstrap<H> for Counter {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), NothingKept)
+        cx.begin(&(), NothingKept)?;
+
+        Ok(())
     }
 }
 

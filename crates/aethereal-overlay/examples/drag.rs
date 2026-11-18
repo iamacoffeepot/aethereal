@@ -24,7 +24,6 @@
 
 use aethereal_actor::{
     Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Prepare, Render, Spawn, Tick, Top, Turn, child,
-    path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -40,7 +39,9 @@ use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuil
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox, Tools};
 use aethereal_ui::prelude::*;
-use aethereal_window::{self as window, Event, InitialWindows, InputTool, Mode, Window, WindowId, WindowTool, Windows};
+use aethereal_window::{
+    self as window, Event, InitialWindow, InitialWindows, InputTool, Mode, WindowId, WindowTool, Windows,
+};
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
@@ -108,10 +109,10 @@ pub struct Shelves {
 }
 
 /// The root screen's config: the window it draws on.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.shelves_config")]
 pub struct ShelvesConfig {
-    window: WindowId,
+    window: InitialWindow,
 }
 
 /// A shelf was not spawned, so the root screen does not begin.
@@ -148,7 +149,9 @@ impl<H: Host> Bootstrap<H> for Shelves {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), ShelvesConfig { window: windows.first() })
+        cx.begin(&(), ShelvesConfig { window: windows.first() })?;
+
+        Ok(())
     }
 }
 
@@ -287,8 +290,8 @@ impl Actor for Shelves {
     type Spawns = (Shelf,);
 
     fn begin(config: ShelvesConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
-        let frame = Frame::Main(config.window);
+        turn.to(config.window.actor()).send(&window::Subscribe)?;
+        let frame = Frame::Main(config.window.id());
         let (Ok(left), Ok(right)) = (
             turn.spawn::<Shelf>(&Hand::Left, ShelfConfig { frame, hand: Hand::Left }),
             turn.spawn::<Shelf>(&Hand::Right, ShelfConfig { frame, hand: Hand::Right }),
@@ -298,7 +301,7 @@ impl Actor for Shelves {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 
         Ok(Self {
-            window: config.window,
+            window: config.window.id(),
             left: Called::new(child::<Shelf>(Hand::Left), left),
             right: Called::new(child::<Shelf>(Hand::Right), right),
             ui,
