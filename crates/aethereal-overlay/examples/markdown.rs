@@ -24,7 +24,7 @@ use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuil
 use aethereal_ui::markdown::{Document, Images, MarkdownBlock, Prose};
 use aethereal_ui::pixels::Pixels;
 use aethereal_ui::prelude::*;
-use aethereal_window::{self as window, Event, InitialWindows, Mode, Window, WindowId, Windows};
+use aethereal_window::{self as window, Event, InitialWindow, InitialWindows, Mode, WindowId, Windows};
 use core::error::Error;
 use core::num::{NonZeroU32, NonZeroUsize};
 use std::process::ExitCode;
@@ -99,10 +99,10 @@ pub struct Reply {
 }
 
 /// The example's config: the window it draws on.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.markdown_config")]
 pub struct ReplyConfig {
-    window: WindowId,
+    window: InitialWindow,
 }
 
 /// The frame was asked for, to write as an image.
@@ -121,7 +121,9 @@ impl<H: Host> Bootstrap<H> for Reply {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), ReplyConfig { window: windows.first() })
+        cx.begin(&(), ReplyConfig { window: windows.first() })?;
+
+        Ok(())
     }
 }
 
@@ -175,9 +177,9 @@ impl Actor for Reply {
     type Depends = aethereal_ui::depends!();
 
     fn begin(config: ReplyConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
+        turn.to(config.window.actor()).send(&window::Subscribe)?;
         turn.subscribe::<Tick>();
-        let target = Target::of::<Interface>(Frame::Main(config.window));
+        let target = Target::of::<Interface>(Frame::Main(config.window.id()));
         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
 
         let images = match Pixels::decode(PIPELINE) {
@@ -189,7 +191,7 @@ impl Actor for Reply {
         };
 
         Ok(Self {
-            window: config.window,
+            window: config.window.id(),
             ui,
             document: Document::default(),
             images,

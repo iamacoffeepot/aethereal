@@ -67,7 +67,7 @@ pub trait Bootstrap<H: Host>: Root {
 - **A library or the program writes it for a root that needs no host:** `impl<H: Host> Bootstrap<H> for Scene`.
 - **Only the crate of the actor or of the host can write it.** `Bootstrap`, the host, and the actor would all be foreign to a program's crate, which Rust's orphan rule refuses. So a library ships a bootstrap for each actor it means to be a root, generic over the host where it needs none, and an actor shipped without one cannot be listed.
 - **An actor whose config is its settings opts in with `#[derive(Bootstrap)]`.** Its config is plain data, it needs nothing, and it provides nothing; the derive writes `bootstrap` as beginning it from its settings. It is a derive, not a blanket impl, because a blanket impl over every such actor would overlap every impl a host writes.
-- **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. `cx.begin` answers the root's `ActorRef<A>`, wrapping the `ActorId` that `Engine::add_root` answers, and `cx.found(&path)` is the lookup a turn has, for what the root spawned in its `begin`: a bootstrap hands over references, not ids. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
+- **`Bootstrapping<'_, H, A>` begins only `A`**, once for a singleton and once per key for an instanced root, so each `.root::<A>()` adds exactly `A` to the list `Ordered<I>` checks. `cx.begin` and `cx.begin_from` answer `Result<ActorRef<A>, Unbuilt>`, the root's reference where the engine seated it, and `cx.found(&path)` is the lookup a turn has, for what the root spawned in its `begin`: a bootstrap hands over references, not ids. A root's `begin` and what it asked, its children among it, are applied before `cx.begin` answers, so what the root spawned stands in the table when `found` runs. `found` builds only for a path beneath `A` (`FoundBy`): what another root made, its own bootstrap hands over. It makes handles (`hand`, `source`, `controller`), puts code and blobs, and reaches the host's own setup, such as the desktop's `Screen`.
 - **A host end goes to the host through `cx.serve(end)`,** which builds only when the host serves that end (`Desktop: Serves<Hosting>`). A pair is made and split inside one bootstrap: its `Given` half goes into the root's config, its other half to `serve`, and neither leaves.
 
 ```rust
@@ -83,8 +83,8 @@ impl Bootstrap<Desktop> for Windows {
         let (config, hosting) = opening.config();
         cx.begin(&(), config)?;
         cx.serve(hosting);
-        // each window's actor, which the root's begin made: cx.found(&path::<Window>(id)), an ActorRef<Window>
-        Ok((windows,))
+        // each window opened, with its actor, which the root's begin made: cx.found(&path::<Window>(id)), an ActorRef<Window>
+        Ok((InitialWindows::found(cx, first, others)?,))
     }
 }
 
@@ -95,7 +95,7 @@ impl<H: Host> Bootstrap<H> for Scene {
     type Provides = ();
 
     async fn bootstrap(show: Show, (windows,): (InitialWindows,), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })?;   // an ActorRef<Window>
+        cx.begin(&(), Shows { window: windows.first(), seconds: show.seconds })?;   // an InitialWindow: its id and ActorRef<Window>
 
         Ok(())
     }

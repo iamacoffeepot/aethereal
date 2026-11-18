@@ -36,7 +36,8 @@ impl Default for WindowsSettings {
 /// begins the window root with them, and gives the browser its end, which answers each window the root asks to open or
 /// close `NoHost`, as a page owns its canvases (ADR-0027). Each canvas is drawn at the size the page lays it out at,
 /// at the settings' density, and the browser keeps the page's listeners that feed each window what it hears; and serves
-/// its jobs the page's clipboard (ADR-0024: The clipboard). Provides the windows opened.
+/// its jobs the page's clipboard (ADR-0024: The clipboard). Provides the windows opened, each with the actor the root
+/// made of it.
 impl Bootstrap<Browser<Performance>> for Windows {
     const SECTION: &'static str = "windows";
     type Settings = WindowsSettings;
@@ -63,8 +64,7 @@ impl Bootstrap<Browser<Performance>> for Windows {
             opened.push(shown.window());
             cx.host().opened(canvas, shown);
         }
-        let mut opened = opened.into_iter();
-        let Some(first) = opened.next() else {
+        let Some((&first, others)) = opened.split_first() else {
             return Err(Unbuilt::Failed("the window root's settings name no canvas to open".into()));
         };
 
@@ -73,7 +73,7 @@ impl Bootstrap<Browser<Performance>> for Windows {
         cx.serve(hosting);
         cx.serve(Service::<dyn Clipboard>::of(Arc::new(PageClipboard)));
 
-        Ok((InitialWindows::new(first, opened.collect()),))
+        Ok((InitialWindows::found(cx, first, others)?,))
     }
 }
 

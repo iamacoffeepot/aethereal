@@ -137,7 +137,9 @@ impl Bootstrap<Headless> for Caller {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)
+        cx.begin(&(), Unset)?;
+
+        Ok(())
     }
 }
 
@@ -1353,7 +1355,9 @@ impl Bootstrap<Headless> for Recorder {
         let log = PathBuf::from(&roots.save).with_file_name("writes.log");
         let recording = Recording { directories: Directories::new(&roots), log };
         cx.serve(Service::<dyn Storage>::of(Arc::new(recording)));
-        cx.begin(&(), Unset)
+        cx.begin(&(), Unset)?;
+
+        Ok(())
     }
 }
 
@@ -1715,7 +1719,9 @@ impl Bootstrap<Headless> for Impostor {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)
+        cx.begin(&(), Unset)?;
+
+        Ok(())
     }
 }
 

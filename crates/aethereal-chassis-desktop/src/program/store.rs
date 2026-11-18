@@ -21,6 +21,8 @@ impl Bootstrap<Desktop> for Store {
         cx: &mut Bootstrapping<'_, Desktop, Self>,
     ) -> Result<(), Unbuilt> {
         cx.serve(Service::<dyn Stockroom>::of(Arc::new(StoreDirectory::new(&settings))));
-        cx.begin(&(), settings.config())
+        cx.begin(&(), settings.config())?;
+
+        Ok(())
     }
 }

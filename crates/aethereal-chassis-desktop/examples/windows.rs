@@ -167,7 +167,9 @@ impl<H: Host> Bootstrap<H> for Director {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Directs { first: windows.first(), runs: show.runs })
+        cx.begin(&(), Directs { first: windows.first().id(), runs: show.runs })?;
+
+        Ok(())
     }
 }
 

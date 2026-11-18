@@ -26,7 +26,7 @@ use aethereal_render::shape::Shape;
 use aethereal_render::texture::{TextureFormat, TextureId};
 use aethereal_render::uniforms::{CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{self as window, Event, InitialWindows, KeyEvent, KeySet, Keyed, Window, WindowId};
+use aethereal_window::{self as window, Event, InitialWindow, InitialWindows, KeyEvent, KeySet, Keyed, WindowId};
 use core::f32::consts::TAU;
 
 /// The triangles in the ring.
@@ -152,7 +152,9 @@ impl<H: Host> Bootstrap<H> for Scene {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first(), runs: show.runs, views: show.views })
+        cx.begin(&(), Shows { window: windows.first(), runs: show.runs, views: show.views })?;
+
+        Ok(())
     }
 }
 
@@ -162,10 +164,10 @@ impl<H: Host> Bootstrap<H> for Scene {
 pub struct Nothing;
 
 /// The scene's config: the window it draws on, how long it runs, and how many views of the ring it shows.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.shows")]
 pub struct Shows {
-    window: WindowId,
+    window: InitialWindow,
     runs: Runs,
     views: Views,
 }
@@ -304,14 +306,14 @@ impl Actor for Scene {
         Answer<Uniformed, Looking>,
         Answer<Placed, MadeAll>,
     );
-    type Depends = (Window, Renderer);
+    type Depends = (Renderer,);
 
     fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
-        turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
+        turn.to(shows.window.actor()).send(&window::Subscribe)?;
         let scene = Self {
-            window: shows.window,
+            window: shows.window.id(),
             runs: shows.runs,
             views: shows.views,
             onto: Onto::Window,

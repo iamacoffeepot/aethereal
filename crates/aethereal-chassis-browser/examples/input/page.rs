@@ -5,12 +5,12 @@ use crate::said::{Program, say};
 use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Render, Tick, Top, Turn, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_chassis_browser::controls::{self, Control, Controls};
-use aethereal_data::{Bound, Plain};
+use aethereal_data::Bound;
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::{DrawList, Entry};
 use aethereal_render::frame::Frame;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_window::{self as window, Event, InitialWindows, KeySet, Keyed, Window, WindowId, Windows};
+use aethereal_window::{self as window, Event, InitialWindow, InitialWindows, KeySet, Keyed, Windows};
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -36,10 +36,10 @@ pub async fn start() -> Result<Program, JsError> {
 }
 
 /// What the reporter watches: the window it subscribes to.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.example.watches")]
 struct Watches {
-    window: WindowId,
+    window: InitialWindow,
 }
 
 /// The reporter watches the one window the window root opened.
@@ -54,7 +54,9 @@ impl<H: Host> Bootstrap<H> for Reporter {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Watches { window: windows.first() })
+        cx.begin(&(), Watches { window: windows.first() })?;
+
+        Ok(())
     }
 }
 
@@ -72,11 +74,11 @@ impl Actor for Reporter {
     type Config = Watches;
     type Key = ();
     type Handles = (Event, Keyed, Control);
-    type Depends = (Window, Renderer, Controls);
+    type Depends = (Renderer, Controls);
 
     fn begin(watches: Watches, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        turn.to(path::<Window>(watches.window)).send(&window::Subscribe)?;
-        let hears = Entry::Keys { frame: Frame::Main(watches.window), keys: KeySet::All, blocks: true };
+        turn.to(watches.window.actor()).send(&window::Subscribe)?;
+        let hears = Entry::Keys { frame: Frame::Main(watches.window.id()), keys: KeySet::All, blocks: true };
         turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
         turn.to(path::<Controls>(())).send(&controls::Subscribe)?;
 

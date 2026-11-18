@@ -35,7 +35,9 @@ impl<H: Host> Bootstrap<H> for ChatToSessions {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Self)
+        cx.begin(&(), Self)?;
+
+        Ok(())
     }
 }
 

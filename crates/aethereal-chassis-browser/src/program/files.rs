@@ -21,6 +21,8 @@ impl Bootstrap<Browser<Performance>> for Files {
         cx: &mut Bootstrapping<'_, Browser<Performance>, Self>,
     ) -> Result<(), Unbuilt> {
         cx.serve(Service::<dyn Storage>::of(Arc::new(Fetching::new(&urls))));
-        cx.begin(&(), FilesConfig)
+        cx.begin(&(), FilesConfig)?;
+
+        Ok(())
     }
 }

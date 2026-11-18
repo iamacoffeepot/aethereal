@@ -67,7 +67,9 @@ impl<H: Host> Bootstrap<H> for Culler {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Shows { window: windows.first() })
+        cx.begin(&(), Shows { window: windows.first().id() })?;
+
+        Ok(())
     }
 }
 
