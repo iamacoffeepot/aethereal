@@ -384,7 +384,13 @@ impl<'markup> Emitter<'markup> {
             }
         };
 
-        quote_spanned!(spans::at(payload.span())=> .with_drag(::aethereal_ui::DragSource::new(#payload) #outside))
+        // A method call copies the payload out whether the reference names it or a list's binding lends it.
+        let copied = quote_spanned!(spans::at(payload.span())=> {
+            use ::aethereal_ui::__private::Lent as _;
+            (#payload).lent()
+        });
+
+        quote_spanned!(spans::at(payload.span())=> .with_drag(::aethereal_ui::DragSource::new(#copied) #outside))
     }
 
     /// The `.with_drop` of an element that takes drops: its event, and the method that names the payload's kind.

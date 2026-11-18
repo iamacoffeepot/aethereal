@@ -183,6 +183,7 @@ pub mod prelude {
 /// What [`screen!`], [`handles!`], and [`sends!`] name, so a screen's crate need not.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::drag::Lent;
     pub use aethereal_actor::{
         Answer, Answered, Anyone, Asks, Fault, Handles, On, Path, Prepare, Receives, Slept, ToAny, ToSender, Turn,
     };

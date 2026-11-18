@@ -125,6 +125,20 @@ impl<E: Event> Copied for E {
     }
 }
 
+/// What the markup's `drag` reads its payload through: a reference may name a field that holds the payload,
+/// `drag: item.id`, or a list's binding may be the payload itself, `items: self.ids as id key id.0 … drag: id`, which
+/// `items` lends; a method call copies it out of either, reading through the loan.
+#[doc(hidden)]
+pub trait Lent: Kind + Plain + Copy + PartialEq {
+    /// It, copied.
+    #[must_use]
+    fn lent(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Kind + Plain + Copy + PartialEq> Lent for T {}
+
 /// What the markup's `drag` and `drop_outside` compile into: a widget a press and a move drag, carrying `payload`,
 /// copied as the view was built; the cursor the window shows while it drags, its image or a closed hand; and the event
 /// it raises with the payload when nothing takes it, its `drop_outside`, when it has one.
