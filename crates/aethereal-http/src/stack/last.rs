@@ -218,7 +218,7 @@ where
 }
 
 /// Asks the handler of `route` the request `unrouted`, by the route numbered `at` among its routes: its captures read
-/// from `slices`, once for the path they make and once for the request, and the handler found live at that path.
+/// from `slices`, and the handler found live at the path they make.
 fn ask_routed<Me, S, H, A, C, I>(
     turn: &mut Turn<'_, Me, S>,
     route: &Route<H, C>,
@@ -236,13 +236,10 @@ where
     let Some(to) = route.path_of(at) else {
         return Ok(Handed::Unreached);
     };
-    let Some(keys) = C::read(slices) else {
-        return Ok(Handed::Unreached);
-    };
-    let Some(handler) = turn.found(&to(keys)) else {
-        return Ok(Handed::Unreached);
-    };
     let Some(captures) = C::read(slices) else {
+        return Ok(Handed::Unreached);
+    };
+    let Some(handler) = turn.found(&to(captures.clone())) else {
         return Ok(Handed::Unreached);
     };
 

@@ -6,7 +6,7 @@ use aethereal_data::Plain;
 ///
 /// A route's pattern names its captures `NAMES`, in this order, or it is refused
 /// [`Uncaptured`](crate::Unroutable::Uncaptured) as the router is built.
-pub trait Captures: Plain {
+pub trait Captures: Plain + Clone {
     /// The names a route's pattern captures, in the order they appear in it.
     const NAMES: &'static [&'static str];
 

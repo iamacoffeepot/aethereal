@@ -35,7 +35,7 @@ fn found<'p>(pattern: &'static &'static str, slices: Vec<&'p str>) -> Routed<Fou
 }
 
 /// A repository, by name.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Repo {
     repo: String,
 }
@@ -53,7 +53,7 @@ impl Captures for Repo {
 }
 
 /// An item, by number.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Item {
     id: u32,
 }
@@ -71,7 +71,7 @@ impl Captures for Item {
 }
 
 /// A repository's blob, by number.
-#[derive(Debug, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Blob {
     repo: String,
     id: u32,
