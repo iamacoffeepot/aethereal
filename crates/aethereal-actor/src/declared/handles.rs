@@ -71,8 +71,9 @@ use aethereal_data::{Decode, DecodeError, Kind, KindId};
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no handler of `{K}`",
-    label = "`{K}` is sent here to an actor of type `{Self}`",
-    note = "a send builds to a type that lists `{K}` in its `Handles` and has an `impl Handles<{K}>`"
+    label = "an actor of type `{Self}` is to handle `{K}` here",
+    note = "a send builds to a type that lists `{K}` in its `Handles` and has an `impl Handles<{K}>`, and a guard \
+            `Speaks<P>` admits a sender whose type has one for each kind of `P`"
 )]
 pub trait Handles<K: Kind>: Actor {
     /// Who may send it `K`: a guard, which hands the handler the sender it checked.

@@ -2,7 +2,9 @@
 //! (ADR-0016, ADR-0022).
 
 use crate::Vantage;
-use crate::{Actor, Admits, Anywhere, ChildOf, Handled, Handles, Listed, Lists, Reachable, Reaches, Seated};
+use crate::{
+    Actor, Admits, Anywhere, ChildOf, Handled, Handles, Listed, Lists, PlacesBeneath, Reachable, Reaches, Seated,
+};
 use aethereal_data::{Kind, KindId, PathSegment, Then};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -168,7 +170,7 @@ macro_rules! descent {
             $above: Descent<Last = $before>,
             $before: ChildOf,
             $last: ChildOf,
-            $last::Parent: Admits<$before, $last>,
+            $last::Parent: PlacesBeneath<$before, $last>,
             <$above as Descent>::Keys: Then<$last::Key>,
         {
             type First = <$above as Descent>::First;
@@ -364,7 +366,7 @@ pub fn child<D: Descent>(keys: D::Keys) -> Child<D> {
 
 impl<Me, D: Descent> Reachable<Me> for Child<D>
 where
-    <D::First as ChildOf>::Parent: Admits<Me, D::First>,
+    <D::First as ChildOf>::Parent: PlacesBeneath<Me, D::First>,
 {
     type Through = Self;
     type At = Seated;
@@ -379,5 +381,12 @@ where
     }
 }
 
-/// A place is sent to as an actor of its last type is: of a kind that type handles.
-impl<Me, D: Descent, K: Kind + Handled> Reaches<Me, K, ()> for Child<D> where D::Last: Actor + Handles<K> {}
+/// A place is sent to as an actor of its last type is: of a kind that type handles, from a sender its guard admits.
+impl<Me, D, K, I> Reaches<Me, K, I> for Child<D>
+where
+    D: Descent,
+    D::Last: Actor + Handles<K>,
+    <D::Last as Handles<K>>::From: Admits<D::Last, Me, I>,
+    K: Kind + Handled,
+{
+}

@@ -729,6 +729,14 @@ pub enum Reach<'a> {
 }
 
 impl Reach<'_> {
+    /// The same reach, lent for a shorter while.
+    pub(crate) fn reborrow(&mut self) -> Reach<'_> {
+        match self {
+            Self::Here(keeping) => Reach::Here(keeping),
+            Self::Claimed => Reach::Claimed,
+        }
+    }
+
     /// Keeps `value` as the actor's own, under `ticket`: refused in a guest's code, which makes no resource.
     pub(crate) fn keep<R: Resource>(&mut self, ticket: u64, value: R) -> Result<Handle<R>, Fault> {
         match self {

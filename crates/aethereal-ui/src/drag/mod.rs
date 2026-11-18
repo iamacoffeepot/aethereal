@@ -26,7 +26,7 @@ pub mod tests;
 
 use crate::input::{Erased, Event, Raised};
 use crate::tree::KeyPath;
-use aethereal_actor::{Bytes, Fault, Level, Turn};
+use aethereal_actor::{Bytes, Fault, Level, Speaks, Turn};
 use aethereal_data::{Bound, Budget, Kind, KindId, Plain, from_bytes, to_bytes};
 use aethereal_math::Vec2;
 use aethereal_window::{Cursor, CursorImage};
@@ -395,9 +395,10 @@ drop_methods! {
 /// What a drag dropped on another actor's entry mails it: the payload; the entry of its list the release was over, and
 /// the release's place in that entry's coordinates, as the window reported them; and the widget it was dragged from, in
 /// its sender's tree, which the answer hands back. A screen's library finds the target at the entry, raises its drop,
-/// and answers whether it took it; an actor that is not a screen handles it as it will, and answers too, once:
-/// [`Dropped::answer_source`] with [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with
-/// [`DropOutcome::Refused`] its `drop_outside`.
+/// and answers whether it took it; an actor that is not a screen handles it as it will, from
+/// [`Speaks<(DropAnswered,)>`](Speaks), and answers too, once: [`Dropped::answer_source`] with
+/// [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with [`DropOutcome::Refused`] its
+/// `drop_outside`.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.ui.dropped")]
 pub struct Dropped {
@@ -416,19 +417,19 @@ impl Dropped {
     }
 
     /// Mails its [`answer`](Self::answer) with `outcome` to the actor that dropped it, in the turn that handles it: a
-    /// drop is mailed as a tell to an actor cast to [`Drops`], so its source hears the answer as mail of its own, and
-    /// one that does not handle [`DropAnswered`] is told nothing, which is logged.
+    /// drop is mailed as a tell to an actor cast to [`Drops`], so its source hears the answer as mail of its own. The
+    /// turn's guard, [`Speaks<(DropAnswered,)>`](Speaks), admitted only a source that handles the answer, and handed it
+    /// on as the reference the answer is sent through (ADR-0058).
     ///
     /// # Errors
     ///
     /// Why the answer could not be written.
-    pub fn answer_source<A>(self, turn: &mut Turn<'_, A>, outcome: DropOutcome) -> Result<(), Fault> {
-        let sender = turn.sender();
-        let Some(source) = turn.cast::<(DropAnswered,)>(sender) else {
-            turn.log(Level::Warn, "a drop came from an actor that does not handle its answer");
-            return Ok(());
-        };
-        turn.to(source).send(&self.answer(outcome))?;
+    pub fn answer_source<A>(
+        self,
+        turn: &mut Turn<'_, A, Speaks<(DropAnswered,)>>,
+        outcome: DropOutcome,
+    ) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&self.answer(outcome))?;
 
         Ok(())
     }

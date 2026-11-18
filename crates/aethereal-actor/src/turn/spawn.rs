@@ -5,7 +5,7 @@
 use super::Origin;
 use super::{Beginning, Doing, Refused};
 use crate::guard::Guard;
-use crate::{Actor, ActorRef, Admits, ChildOf, ListsChild};
+use crate::{Actor, ActorRef, ChildOf, ListsChild, PlacesBeneath};
 
 /// What spawns a child: a turn, or a `begin`, of an actor of type `Me`, the child's type found in `Me`'s `Spawns` at
 /// `I`, its place, which the compiler infers (ADR-0059). A trait, so the place is inferred while the child's type is
@@ -15,7 +15,7 @@ use crate::{Actor, ActorRef, Admits, ChildOf, ListsChild};
 /// path into `L` it carries: `Spawn::<Me, Through<P>>::spawn::<T>(turn, &(), config)`.
 pub trait Spawn<Me: Actor, I> {
     /// Stands up a child of type `C` under `key`, running its `begin` here, and answers with a reference to it. It
-    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`Admits`]), and this actor's
+    /// builds only when `C` may stand beneath this actor's type, as its parent says ([`PlacesBeneath`]), and this actor's
     /// type lists `C` among what it spawns ([`ListsChild`]). `C` is inferred from where the reference goes, or named at
     /// the call, `turn.spawn::<Camera>(&(), config)` (ADR-0022, ADR-0059).
     ///
@@ -94,7 +94,7 @@ pub trait Spawn<Me: Actor, I> {
     fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>;
 
     /// Stands up a child of type `C` under `key` whose code is the blob `origin` names, running its `begin` here in the
@@ -110,7 +110,7 @@ pub trait Spawn<Me: Actor, I> {
     fn spawn_from<C>(&mut self, origin: Origin<'_>, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>;
 }
 
@@ -118,7 +118,7 @@ impl<Me: Actor, F: Guard<Me>, I> Spawn<Me, I> for Doing<'_, Me, F> {
     fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>,
     {
         self.seat.spawn::<C>(self.instances, key, config)
@@ -128,7 +128,7 @@ impl<Me: Actor, F: Guard<Me>, I> Spawn<Me, I> for Doing<'_, Me, F> {
     fn spawn_from<C>(&mut self, origin: Origin<'_>, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>,
     {
         self.seat.spawn_from::<C>(self.instances, origin, key, config)
@@ -139,7 +139,7 @@ impl<Me: Actor, I> Spawn<Me, I> for Beginning<'_, Me> {
     fn spawn<C>(&mut self, key: &C::Key, config: C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>,
     {
         self.seat.spawn::<C>(self.instances, key, config)
@@ -149,7 +149,7 @@ impl<Me: Actor, I> Spawn<Me, I> for Beginning<'_, Me> {
     fn spawn_from<C>(&mut self, origin: Origin<'_>, key: &C::Key, config: &C::Config) -> Result<ActorRef<C>, Refused>
     where
         C: ChildOf,
-        C::Parent: Admits<Me, C>,
+        C::Parent: PlacesBeneath<Me, C>,
         Me::Spawns: ListsChild<Me, C, I>,
     {
         self.seat.spawn_from::<C>(self.instances, origin, key, config)

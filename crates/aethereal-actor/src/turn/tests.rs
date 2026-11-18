@@ -4,8 +4,8 @@ use super::*;
 use crate::records::Staging;
 use crate::{
     Anyone, Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Handles, Hosted, How, Item,
-    Keeping, Kept, Mail, MailId, NotHeld, On, Payload, Protocol, Receives, Resource, Subscribers, Tick, Top, Unspawned,
-    child, parent, path,
+    Itself, Keeping, Kept, Mail, MailId, NotHeld, On, Payload, Protocol, Receives, Resource, Subscribers, Tick, Top,
+    Unspawned, child, parent, path,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, Plain};
 use alloc::string::ToString;
@@ -910,6 +910,42 @@ fn a_hold_of_what_the_turn_does_not_owe_fails_the_turn() {
     assert_eq!(settled(Tie::asks(7), 1), (true, false));
     assert_eq!(settled(Tie::asks(7), 2), (false, false));
     assert_eq!(settled(Tie::TELL, 1), (false, false));
+}
+
+#[test]
+fn a_turn_with_its_guard_set_aside_counts_its_mail_and_its_answer_as_the_turn_it_was_lent_from() {
+    // Catches a turn lent by `unguarded` that counts its mail apart from the guarded turn's, so two pieces share one
+    // count, and one whose answer the guarded turn does not see, so the request is answered twice.
+    let source = seated(9, 5);
+    let table = Listed(vec![(source, ActorPath::new("aether.test.source"))]);
+    let mut asked = Asked::new();
+    let instances = Box::leak(Box::default());
+    let opened = Turning::new(
+        ME,
+        &ROOT,
+        Above::Chassis,
+        &table,
+        &(),
+        &mut asked,
+        instances,
+        Keeps::Claimed,
+        0,
+        source,
+        CHAIN,
+        Tie::asks(7),
+        Due::Never,
+    );
+    let mut turn = opened.declaring::<Leaf, Itself>(Declared::of::<Leaf>(), ActorRef::new(source));
+    let leaf = ActorRef::<Leaf>::new(source);
+
+    let lent = turn.unguarded(|turn| turn.to(leaf).send(&Poke).is_ok() && turn.answer_now(&Poked).is_ok());
+    let sent = turn.to(leaf).send(&Poke).is_ok();
+    let answered_again = turn.answer_now(&Poked).is_ok();
+
+    assert!(lent && sent);
+    assert!(!answered_again, "the request was answered in the lent turn");
+    let counts: Vec<(u64, Tie)> = asked.into_parts().0.mailed.iter().map(|mailed| (mailed.count, mailed.tie)).collect();
+    assert_eq!(counts, [(1, Tie::TELL), (2, Tie::answers(7)), (3, Tie::TELL)]);
 }
 
 /// A resource, which a guest's host holds a guest to the claims of.

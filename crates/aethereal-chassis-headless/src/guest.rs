@@ -5604,7 +5604,7 @@ mod tests {
     impl Actor for Borrower {
         type Config = Volley;
         type Key = ();
-        type Handles = (echo::Book, Pong);
+        type Handles = (echo::Book, echo::Pong);
         type Depends = ();
         type Spawns = ();
 
@@ -5639,11 +5639,11 @@ mod tests {
         }
     }
 
-    impl Handles<Pong> for Borrower {
+    impl Handles<echo::Pong> for Borrower {
         type From = Anyone;
         type Returns = ();
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.read.push(pong.n);
 
             Ok(())

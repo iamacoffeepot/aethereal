@@ -183,7 +183,9 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::drag::Lent;
-    pub use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, On, Path, Prepare, Receives, Slept, Turn};
+    pub use aethereal_actor::{
+        Answer, Answered, Anyone, Fault, Handles, On, Path, Prepare, Receives, Slept, Speaks, Turn,
+    };
     pub use aethereal_render::Renderer;
     pub use aethereal_render::frame::Shaped;
     pub use aethereal_render::instances::Instanced;
@@ -361,13 +363,13 @@ macro_rules! screen {
         }
 
         impl $crate::__private::Handles<$crate::Dropped> for $screen {
-            type From = $crate::__private::Anyone;
+            type From = $crate::__private::Speaks<($crate::DropAnswered,)>;
             type Returns = ();
 
             fn handle(
                 &mut self,
                 dropped: $crate::Dropped,
-                turn: &mut $crate::__private::Turn<'_, Self>,
+                turn: &mut $crate::__private::Turn<'_, Self, $crate::__private::Speaks<($crate::DropAnswered,)>>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let payload = dropped.payload.payload(|blob| turn.read(blob));
                 match self.$field.dropped(dropped.entry, &payload) {

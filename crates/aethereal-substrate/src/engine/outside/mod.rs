@@ -15,16 +15,21 @@ use std::iter;
 use std::mem;
 use std::sync::Arc;
 
-/// The outside's type, which declares that it handles nothing: what the table knows it by. Its code is [`Taking`].
+/// The outside's type, which declares that it handles nothing: what the table knows it by, and the sender a harness's
+/// sends are checked as at their call (ADR-0059). Its code is [`Taking`].
+///
+/// As a sender it is admitted by a guard whose `Sent` any sender can be, [`Anyone`](aethereal_actor::Anyone), and by
+/// no guard that names a type of actor, or a protocol of any kind, as its type handles none: a test that hands a
+/// guarded handler its mail stands up the type the guard admits (ADR-0058).
 #[derive(Plain)]
 #[kind(name = "aether.outside")]
-struct OutsideSeat;
+pub struct Outside;
 
-impl ChildOf for OutsideSeat {
+impl ChildOf for Outside {
     type Parent = Top;
 }
 
-impl Actor for OutsideSeat {
+impl Actor for Outside {
     type Config = Self;
     type Key = ();
     type Handles = ();
@@ -43,7 +48,7 @@ impl Actor for OutsideSeat {
 /// What the table knows the outside by: a type that handles nothing, and that every kind may be cast to, as its code
 /// takes whatever it is handed.
 static DECLARED: Declared =
-    Declared::taking_every_kind(OutsideSeat::NAME, KindId::of::<OutsideSeat>(), StateSchema::of::<OutsideSeat>());
+    Declared::taking_every_kind(Outside::NAME, KindId::of::<Outside>(), StateSchema::of::<Outside>());
 
 /// What a piece of mail that reached the outside is to a request (ADR-0017).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +332,7 @@ impl Engine {
     pub fn seat_outside(&mut self) -> Result<(Seated, Arc<SegQueue<Arrival>>), Refused> {
         let arrivals = Arc::new(SegQueue::new());
         let taking = Taking { arrivals: Arc::clone(&arrivals), limit: self.read_limit };
-        let segment = PathSegment::new(OutsideSeat::NAME, &());
+        let segment = PathSegment::new(Outside::NAME, &());
         let declared = &DECLARED;
         self.recording = true;
         self.add_root_made(&segment, Code::Linked(declared), Vec::new(), |_, _, _, _, _, _| Ok(Box::new(taking)))?;

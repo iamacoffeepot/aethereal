@@ -36,6 +36,16 @@ impl<'a> Pool<'a> {
         Self { back: Back::Nowhere }
     }
 
+    /// The same pool, lent for a shorter while: what it hands out goes back to where this one's does.
+    pub(crate) fn reborrow(&mut self) -> Pool<'_> {
+        let back = match &mut self.back {
+            Back::To { spares, most_bytes } => Back::To { spares, most_bytes: *most_bytes },
+            Back::Nowhere => Back::Nowhere,
+        };
+
+        Pool { back }
+    }
+
     /// A buffer with room for at least `room` bytes, to fill and put: the smallest the actor keeps that is big enough
     /// and at most twice `room`, emptied, else a new one with room for `room`, as these are bytes the caller will
     /// write. Put, its buffer comes back to the actor once the blob is freed; dropped unput, it comes back as it drops,

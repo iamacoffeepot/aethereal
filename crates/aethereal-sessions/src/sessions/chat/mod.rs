@@ -20,7 +20,7 @@ use super::Sessions;
 use super::asked::Waiting;
 use super::asks::{Archived, Opened, Said, State};
 use super::transcript::{Entry, Numbered, Speaker};
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Held, Level, ProtocolRef, Receives, Turn};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Held, Level, ProtocolRef, Receives, Speaks, Turn};
 use aethereal_data::{ActorId, Bound, Plain, write_json_string};
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
@@ -182,31 +182,24 @@ impl Sessions {
 }
 
 impl Handles<Joined> for Sessions {
-    type From = Anyone;
+    type From = Speaks<Showing>;
     type Returns = ();
 
     /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
-    /// sender that takes nothing an engine is shown, one that names an engine another actor joined as, and one joined
-    /// as another engine already are each refused, and nothing joined changes.
-    fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// sender that takes nothing an engine is shown is refused by its guard; one that names an engine another actor
+    /// joined as, and one joined as another engine already, are each refused here, and nothing joined changes.
+    fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Speaks<Showing>>) -> Result<(), Fault> {
         let Joined { engine } = joined;
-        let sender = turn.sender();
-        let Some(shown) = turn.cast::<Showing>(sender) else {
-            turn.log(
-                Level::Warn,
-                format_args!("{sender:?}, which takes nothing an engine is shown, joined as {engine}"),
-            );
-            return Ok(());
-        };
-        match self.chats.joining(engine, sender.id()) {
+        let shown = *turn.from();
+        match self.chats.joining(engine, shown.id()) {
             Joining::New => turn.watch(shown),
             Joining::Again => {}
             Joining::Taken { by } => {
-                turn.log(Level::Warn, format_args!("{sender:?} joined as engine {engine}, which {by:?} joined as"));
+                turn.log(Level::Warn, format_args!("{shown:?} joined as engine {engine}, which {by:?} joined as"));
                 return Ok(());
             }
             Joining::Elsewhere { engine: joined } => {
-                turn.log(Level::Warn, format_args!("{sender:?} joined as engine {engine}, already engine {joined}"));
+                turn.log(Level::Warn, format_args!("{shown:?} joined as engine {engine}, already engine {joined}"));
                 return Ok(());
             }
         }

@@ -46,8 +46,8 @@
 
 use aethereal_actor::guard::Child;
 use aethereal_actor::{
-    Actor, ActorRef, Admits, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Guard, Handles, ListsChild, Root,
-    Spawn, Speaks, Top, Turn, parent,
+    Actor, ActorRef, Admits, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Guard, Handles, ListsChild,
+    PlacesBeneath, Root, Spawn, Speaks, Top, Turn, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Plain};
@@ -1284,7 +1284,11 @@ fn sieve_size() -> Size {
 }
 
 /// Tells the last of `children`, each of type `T`, that the program can start, so it answers from a turn.
-fn ready<Me, T: Handles<Ready>>(turn: &mut Beginning<'_, Me>, children: &[ActorRef<T>]) -> Result<(), Fault> {
+fn ready<Me, T>(turn: &mut Beginning<'_, Me>, children: &[ActorRef<T>]) -> Result<(), Fault>
+where
+    T: Handles<Ready>,
+    T::From: Admits<T, Me, ()>,
+{
     if let Some(last) = children.last() {
         turn.to(*last).send(&Ready)?;
     }
@@ -1316,7 +1320,7 @@ fn spawned<Me, A, I>(turn: &mut Beginning<'_, Me>, number: u64) -> ActorRef<A>
 where
     Me: Actor,
     A: ChildOf + Actor<Config = Number, Key = u64>,
-    A::Parent: Admits<Me, A>,
+    A::Parent: PlacesBeneath<Me, A>,
     Me::Spawns: ListsChild<Me, A, I>,
 {
     let Ok(child) = turn.spawn(&number, Number { number }) else {

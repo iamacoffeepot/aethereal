@@ -87,7 +87,7 @@ pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
-pub use guard::{Anyone, Checks, Guard, Itself, Sender, SenderTypes, Sent, Speaks};
+pub use guard::{Admits, Anyone, Checks, Guard, Itself, Sender, SenderTypes, Sent, SentBy, Speaks};
 pub use guests::{Birth, Guests, Link, Links, NoGuests, Unfit};
 #[cfg(feature = "std")]
 pub use guests::{Config, config_bytes};
@@ -107,7 +107,7 @@ pub use path::{
     RootAbove, Rooted, Skip, There, TypeSegment, Walked, child, parent, path,
 };
 pub use placement::{
-    Admits, Anywhere, AtTop, ChildOf, ListsChild, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top,
+    Anywhere, AtTop, ChildOf, ListsChild, ParentOf, Parented, Placement, PlacesBeneath, Recursive, Root, Spawner, Top,
 };
 pub use portable::{OldFields, OldState, Portability, Portable, TakeOverError};
 pub use publisher::Publisher;

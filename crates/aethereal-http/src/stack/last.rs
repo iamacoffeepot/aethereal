@@ -6,8 +6,8 @@ use super::{Answering, BodyHandle, Request, Response};
 use crate::Method;
 use crate::router::{Captures, Route};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Answer, AnswersByType, ChildOf, DependsOn, Due, Fault, Handled, PathTo, Receives, Turn,
-    Within,
+    Actor, ActorRef, Actors, Admits, Answer, AnswersByType, ChildOf, DependsOn, Due, Fault, Handled, Handles, PathTo,
+    Receives, Turn, Within,
 };
 use aethereal_data::{Decode, Encode, Kind, Plain};
 use aethereal_tcp::SocketAddress;
@@ -108,6 +108,7 @@ fn ask_handler<Me, H, A, C>(
 ) -> Result<Handed, Fault>
 where
     H: AnswersByType<Request<A, C>, Answer = Response>,
+    H::From: Admits<H, Me, ()>,
     Request<A, C>: Kind + Encode<Actors> + Handled,
     Me: Receives<Answer<Response, Answering>>,
 {
@@ -139,6 +140,7 @@ where
 impl<Me, A, H> AskedBy<Me, A, ()> for ActorRef<H>
 where
     H: AnswersByType<Request<A, ()>, Answer = Response>,
+    H::From: Admits<H, Me, ()>,
     Request<A, ()>: Kind + Encode<Actors> + Handled,
     Me: Receives<Answer<Response, Answering>>,
 {
@@ -166,6 +168,7 @@ fn ask_routed<Me, H, A, C, I>(
 ) -> Result<Handed, Fault>
 where
     H: ChildOf + PathTo + AnswersByType<Request<A, C>, Answer = Response>,
+    H::From: Admits<H, Me, ()>,
     C: Captures,
     Request<A, C>: Kind + Encode<Actors> + Handled,
     Me: Receives<Answer<Response, Answering>> + DependsOn<H, I>,
@@ -198,6 +201,7 @@ macro_rules! routed {
             Me: Receives<Answer<Response, Answering>>,
             $(
                 $handler: ChildOf + PathTo + AnswersByType<Request<A, $captures>, Answer = Response>,
+                <$handler as Handles<Request<A, $captures>>>::From: Admits<$handler, Me, ()>,
                 $captures: Captures,
                 Request<A, $captures>: Kind + Encode<Actors> + Handled,
                 Me: DependsOn<$handler, $index>,

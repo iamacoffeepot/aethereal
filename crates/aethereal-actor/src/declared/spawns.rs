@@ -9,7 +9,7 @@ use aethereal_data::KindId;
 /// nested, or [`Each<L>`] for a list type parameter, as the types it lists.
 ///
 /// A turn's `spawn::<C>` builds only when `C` is listed here ([`ListsChild`](crate::ListsChild)), beside the check that
-/// `C` may stand beneath the spawner's type ([`Admits`](crate::Admits)). The program's build check follows the list
+/// `C` may stand beneath the spawner's type ([`PlacesBeneath`](crate::PlacesBeneath)). The program's build check follows the list
 /// from each root, so a child's reach is checked however deep it is spawned. The engine reads the same list as the
 /// kind of each type, which a guest's host checks each spawn its turn makes against (ADR-0015).
 pub trait Spawns: TypeList {
