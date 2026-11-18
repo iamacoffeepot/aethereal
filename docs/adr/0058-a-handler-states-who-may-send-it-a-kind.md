@@ -150,25 +150,32 @@ pub enum Peer {
 The derive writes the guard for every actor, its check for every kind, and its `Sent` impl, each read from the cases:
 
 ```rust
-impl<A: Actor> Guard<A> for Peer {
-    type Sent = Peer;
+impl<A> Guard<A> for Peer {
+    type Sent = Self;
 }
 
-impl<A: Actor, K> Checks<A, K> for Peer {
-    fn admits(_: &A, _: &K, sender: &Sender<'_>) -> Option<Peer> {
-        Peer::from_sender(sender)
+impl<A, K> Checks<A, K> for Peer {
+    fn admits(_: &A, _: &K, sender: &Sender<'_>) -> Option<Self> {
+        <Self as Sent>::from_sender(sender)
     }
 }
 
 impl Sent for Peer {
     const TYPES: SenderTypes = SenderTypes::AnyOf(&[<ActorRef<Exchange> as Sent>::TYPES, <ActorRef<Client> as Sent>::TYPES]);
 
-    fn from_sender(sender: &Sender<'_>) -> Option<Peer> {
-        ActorRef::<Exchange>::from_sender(sender)
-            .map(Peer::Exchange)
-            .or_else(|| ActorRef::<Client>::from_sender(sender).map(Peer::Client))
+    fn from_sender(sender: &Sender<'_>) -> Option<Self> {
+        if let Some(sent) = <ActorRef<Exchange> as Sent>::from_sender(sender) {
+            return Some(Self::Exchange(sent));
+        }
+        if let Some(sent) = <ActorRef<Client> as Sent>::from_sender(sender) {
+            return Some(Self::Client(sent));
+        }
+
+        None
     }
 }
+
+impl<Me, I> SentBy<Me, I> for Peer where (ActorRef<Exchange>, ActorRef<Client>): CasesSentBy<Me, I> {}
 ```
 
 The handler names it and matches:
@@ -186,9 +193,9 @@ fn request(&mut self, request: Request, turn: &mut Turn<'_, Self, Peer>) -> Resu
 The match is exhaustive: a third peer is a case added to `Peer`, and a match that does not take it does not build. The check and the types it states are both read from the cases, so they cannot drift: a case added is a type admitted and a type stated.
 
 - **Cases are tried in the order written, and the first that takes the sender wins.** The order matters only when a sender fits two cases, such as an `ActorRef<Exchange>` case beside a `ProtocolRef<P>` case for a protocol `P` that `Exchange` speaks: an exchange is handed as the case written first.
-- **The derive also writes `SentBy<Me, I>` for the enum,** holding when `Me` is one of its cases' types, found at `I` as `Lists<Me, I>` finds a kind, which the check at a send's call reads (below).
-- **`#[derive(Sent)]` writes the `Sent` impl alone,** for an enum a guard of a handler's own hands back: one that also reads the receiver's state or the mail, and writes its own `Guard` and `Checks`.
-- **The derives live in a new crate, `aethereal-actor-derive`,** beside `aethereal-actor` as `aethereal-data-derive` is beside `aethereal-data`: they derive the actor crate's traits, not the data layer's. `aethereal-actor` re-exports them beside the traits, as it re-exports `Portability` (`aethereal-actor/src/lib.rs:156`). The derives refuse, at compile time, a generic enum and a case that does not hold exactly one field.
+- **The derive also writes `SentBy<Me, I>` for the enum,** holding when `Me` is one of its cases' types, found at `I` as `Lists<Me, I>` finds a kind, which the check at a send's call reads (below). It holds through `CasesSentBy<Me, I>`, which the actor crate implements for a tuple of up to sixteen `Sent` types: `I` is a case's place and where that case's own `SentBy` finds `Me`. A sender that two cases admit, such as an `ActorRef<Exchange>` case beside an `ErasedActorRef` case, is found at two places, so its send does not build, the place left to infer; delivery takes it as the case written first.
+- **`#[derive(Sent)]` writes the `Sent` and `SentBy` impls alone,** for an enum a guard of a handler's own hands back: one that also reads the receiver's state or the mail, and writes its own `Guard` and `Checks`. Its `SentBy` is written with its `Sent`, as each library `Sent` type has its own, so a send to its handler is checked at the call too.
+- **The derives live in a new crate, `aethereal-actor-derive`,** beside `aethereal-actor` as `aethereal-data-derive` is beside `aethereal-data`: they derive the actor crate's traits, not the data layer's. `aethereal-actor` re-exports them beside the traits, `aethereal_actor::Guard` and `aethereal_actor::Sent`, with `#[actor]` and `#[protocol]`. The derives refuse, at compile time, a generic enum, an enum of no cases, and a case that does not hold exactly one field.
 - **There are no tuples of guards:** a named case says who sent the mail, where a position does not.
 
 ### A handler's own guard reads its state or the mail

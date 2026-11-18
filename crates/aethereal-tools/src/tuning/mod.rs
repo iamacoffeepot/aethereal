@@ -7,8 +7,8 @@ mod tests;
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Depends, Each, Ending, Fault, Handles,
-    Held, PathTo, ProtocolRef, ReadTuning, Receives, Reply, Rooted, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
+    Actor, ActorRef, Answered, Anywhere, ChildOf, Depends, Each, Fault, Held, PathTo, ProtocolRef, ReadTuning, Reply,
+    Rooted, Tunable, Tune, Tuned, Tunes, Tuning, Turn, actor, path,
 };
 use aethereal_data::config::{Declared, Settings};
 use aethereal_data::{
@@ -222,65 +222,15 @@ where
     }
 }
 
-impl<L: TunableList> ChildOf for TuningTool<L> {
-    type Parent = Anywhere;
-}
-
-impl<L: TunableList> Actor for TuningTool<L> {
-    type Config = TuningToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<Tuning, Reading>, Answer<Tuned, Setting>);
-    type Depends = Each<L>;
-    type Spawns = ();
-
-    fn begin(_: TuningToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(L))]
+impl<L: TunableList> TuningTool<L> {
+    fn begin(_: TuningToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: Calls { pending: BTreeMap::new(), next: 0 }, list: PhantomData })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl<L: TunableList> Tool for TuningTool<L> {
-    fn sheets() -> Vec<ToolSheet> {
-        let named: Vec<String> = L::listed().iter().map(|listed| listed.actor.to_string()).collect();
-        let listed = named.join(", ");
-
-        vec![
-            ToolSheet::json::<ListTuning>(
-                "list_tuning",
-                &format!(
-                    "Lists the tuning of each tunable root. Tuning is the values a root takes while the program \
-                     runs, unlike the settings it starts with. Each is answered with its actor's path, which names \
-                     it to `tune`, its values, their JSON Schema, and each field's doc comment, which says what the \
-                     field does and what it keeps to. The roots tuned here: {listed}."
-                ),
-                Output::Value(SchemaNodes::of(&TuningList::SHAPE)),
-            ),
-            ToolSheet::of::<TuneFields>(
-                "tune",
-                "Sets fields of one actor's tuning. `values` is an object of the fields to set, each replaced whole \
-                 by the value given and every other kept, checked against the tuning's schema before anything is \
-                 sent. The actor may refuse a value past what it can take, saying why. Answers only the fields it \
-                 set, as the actor then holds them; `list_tuning` reads the whole tuning. The next frame drawn is \
-                 drawn with it.",
-                Output::Value(SchemaNodes::of(&FieldsSet::SHAPE)),
-            ),
-        ]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-/// Reads each root's tuning for `list_tuning`, or the one root's for `tune`, and holds the call.
-impl<L: TunableList> Handles<Call> for TuningTool<L> {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    /// Reads each root's tuning for `list_tuning`, or the one root's for `tune`, and holds the call.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let number = self.calls.next;
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
@@ -328,11 +278,10 @@ impl<L: TunableList> Handles<Call> for TuningTool<L> {
 
         Ok(Reply::Later(later))
     }
-}
 
-/// A root's tuning, read: kept toward a `list_tuning`, or laid under the fields a `tune` sets and sent back whole.
-impl<L: TunableList> Receives<Answer<Tuning, Reading>> for TuningTool<L> {
-    fn handle(
+    /// A root's tuning, read: kept toward a `list_tuning`, or laid under the fields a `tune` sets and sent back whole.
+    #[answer]
+    fn read(
         &mut self,
         (answered, reading): (Answered<Tuning>, Reading),
         turn: &mut Turn<'_, Self>,
@@ -342,11 +291,10 @@ impl<L: TunableList> Receives<Answer<Tuning, Reading>> for TuningTool<L> {
             Reading::Tuning { call, at, values } => self.tuning(call, at, answered, &values, turn),
         }
     }
-}
 
-/// A tuning sent whole was taken, or refused: the `tune` is answered with the fields it set as they stand, or why.
-impl<L: TunableList> Receives<Answer<Tuned, Setting>> for TuningTool<L> {
-    fn handle(
+    /// A tuning sent whole was taken, or refused: the `tune` is answered with the fields it set as they stand, or why.
+    #[answer]
+    fn sent(
         &mut self,
         (answered, Setting { call, at, names }): (Answered<Tuned>, Setting),
         turn: &mut Turn<'_, Self>,
@@ -366,6 +314,39 @@ impl<L: TunableList> Receives<Answer<Tuned, Setting>> for TuningTool<L> {
         turn.answer(pending.into_held(), &called)?;
 
         Ok(())
+    }
+}
+
+impl<L: TunableList> Tool for TuningTool<L> {
+    fn sheets() -> Vec<ToolSheet> {
+        let named: Vec<String> = L::listed().iter().map(|listed| listed.actor.to_string()).collect();
+        let listed = named.join(", ");
+
+        vec![
+            ToolSheet::json::<ListTuning>(
+                "list_tuning",
+                &format!(
+                    "Lists the tuning of each tunable root. Tuning is the values a root takes while the program \
+                     runs, unlike the settings it starts with. Each is answered with its actor's path, which names \
+                     it to `tune`, its values, their JSON Schema, and each field's doc comment, which says what the \
+                     field does and what it keeps to. The roots tuned here: {listed}."
+                ),
+                Output::Value(SchemaNodes::of(&TuningList::SHAPE)),
+            ),
+            ToolSheet::of::<TuneFields>(
+                "tune",
+                "Sets fields of one actor's tuning. `values` is an object of the fields to set, each replaced whole \
+                 by the value given and every other kept, checked against the tuning's schema before anything is \
+                 sent. The actor may refuse a value past what it can take, saying why. Answers only the fields it \
+                 set, as the actor then holds them; `list_tuning` reads the whole tuning. The next frame drawn is \
+                 drawn with it.",
+                Output::Value(SchemaNodes::of(&FieldsSet::SHAPE)),
+            ),
+        ]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 

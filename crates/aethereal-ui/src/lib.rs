@@ -42,7 +42,7 @@
 //! the types of what those events copy, since the markup writes only their values:
 //!
 //! ```
-//! use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
+//! use aethereal_actor::{Beginning, Fault, Turn, actor};
 //! use aethereal_data::Bound;
 //! use aethereal_render::frame::Frame;
 //! use aethereal_render::pass::Interface;
@@ -90,27 +90,15 @@
 //!         Ok(())
 //!     }
 //! }
-//! #
-//! # impl ChildOf for Hud {
-//! #     type Parent = Top;
-//! # }
 //!
-//! impl Actor for Hud {
-//!     type Config = Frame;
-//!     type Key = ();
-//!     type Handles = aethereal_ui::handles![];
-//!     type Depends = aethereal_ui::depends!();
-//!     type Spawns = ();
-//!
+//! // The screen's actor: its own handlers, none here, and the library's, which `view!` writes (ADR-0059).
+//! #[actor(with(aethereal_ui::screen))]
+//! impl Hud {
 //!     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 //!         let target = Target::of::<Interface>(frame);
 //!         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
 //!
 //!         Ok(Self { gold: 100, price: 5, ui })
-//!     }
-//!
-//!     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-//!         Ok(())
 //!     }
 //! }
 //! ```
@@ -130,7 +118,7 @@ mod input;
 mod layout;
 pub mod markdown;
 pub mod pixels;
-mod screen;
+pub mod screen;
 mod style;
 mod table;
 mod tree;
@@ -202,7 +190,9 @@ pub mod __private {
 /// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, the clipboard's
 /// answers to a paste and a copy with the widget that asked, the size a
 /// screen that places it as a child mails it, a drag another actor dropped on it, and the answer, taken or refused, to
-/// one it dropped on another, one kind with its outcome; then each of `$own`, what the screen handles of its own.
+/// one it dropped on another, one kind with its outcome; then each of `$own`, what the screen handles of its own. An
+/// actor block writes it from `#[actor(with(aethereal_ui::screen))]`, of the kinds its own handlers take, in order
+/// (ADR-0059).
 #[macro_export]
 macro_rules! handles {
     ($($own:ty),* $(,)?) => {
@@ -234,7 +224,8 @@ macro_rules! handles {
 
 /// A screen's `Depends`: the roots the library reaches by typed path, the renderer, which makes and draws what the
 /// screen shows, and the windows, whose input method it stops; then each of `$own`, the types the screen's event
-/// methods and its `key` reach by typed path of their own, none of the renderer's or the windows' trees (ADR-0059).
+/// methods and its `key` reach by typed path of their own, none of the renderer's or the windows' trees (ADR-0059). An
+/// actor block writes it from `#[actor(with(aethereal_ui::screen), depends(…))]`, of the types its `depends` names.
 #[macro_export]
 macro_rules! depends {
     ($($own:ty),* $(,)?) => {

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{Caller, CommandLine, FlagsFault};
-use aethereal_actor::{Anyone, Top, tuning};
+use aethereal_actor::{Anyone, Beginning, Ending, Handles, Top, tuning};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Unheard};
 use std::num::NonZeroUsize;

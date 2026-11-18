@@ -2,7 +2,7 @@
 //! guard hands on (ADR-0058, ADR-0059).
 
 use super::Guard;
-use crate::{ActorRef, Conforms, ErasedActorRef, Listed, ProtocolRef};
+use crate::{ActorRef, At, Conforms, ErasedActorRef, Listed, ProtocolRef};
 
 /// A guard `G` of the actor type `A` admits a sender of type `Me`, found at `I`: what a send to an actor of type `A`
 /// builds on, beside that `A` handles the kind (ADR-0059).
@@ -456,3 +456,47 @@ impl<T> SentBy<T, ()> for ActorRef<T> {}
 /// made a `ProtocolRef<P>` by, [`Conforms`], so the reference the guard hands on is one `Me` could have made of itself
 /// (ADR-0016).
 impl<Me: Conforms<P>, P: Listed> SentBy<Me, ()> for ProtocolRef<P> {}
+
+/// One case of an enum of senders, the tuple of its cases' `Sent` types, can be an actor of type `Me`, found at `I`: the
+/// case's place, and where that case's own [`SentBy`] finds `Me`. What a derived guard's `SentBy` holds through, so a
+/// send to a handler it guards builds from a sender of any of its cases' types (ADR-0058).
+///
+/// A sender that two cases admit, such as an `ActorRef<Exchange>` case beside an `ErasedActorRef` case, is found at
+/// two places, so its send does not build: the index cannot be inferred.
+#[diagnostic::on_unimplemented(
+    message = "`{Me}` may not send this mail: the receiver's guard admits only the senders of its cases, `{Self}`",
+    label = "sent here by a `{Me}`",
+    note = "an enum guard admits, at a send's call, a sender that one of its cases' `Sent` types can be"
+)]
+pub trait CasesSentBy<Me, I> {}
+
+macro_rules! cases {
+    ($( [$($name:ident $place:literal)*] )*) => {$(
+        cases!(@cases [$($name)*] $($name $place)*);
+    )*};
+    (@cases $all:tt $($name:ident $place:literal)*) => {$(
+        cases!(@case $all $name $place);
+    )*};
+    (@case [$($all:ident)*] $name:ident $place:literal) => {
+        impl<Me, I, $($all),*> CasesSentBy<Me, (At<$place>, I)> for ($($all,)*) where $name: SentBy<Me, I> {}
+    };
+}
+
+cases! {
+    [T0 0]
+    [T0 0 T1 1]
+    [T0 0 T1 1 T2 2]
+    [T0 0 T1 1 T2 2 T3 3]
+    [T0 0 T1 1 T2 2 T3 3 T4 4]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11 T12 12]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11 T12 12 T13 13]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11 T12 12 T13 13 T14 14]
+    [T0 0 T1 1 T2 2 T3 3 T4 4 T5 5 T6 6 T7 7 T8 8 T9 9 T10 10 T11 11 T12 12 T13 13 T14 14 T15 15]
+}

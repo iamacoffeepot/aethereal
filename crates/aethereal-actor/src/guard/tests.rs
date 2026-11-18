@@ -1,10 +1,11 @@
-//! The guards' tests: which senders the library's guards that compare seats admit, and where dispatch hands what a
-//! guard refuses.
+//! The guards' tests: which senders the library's guards that compare seats admit, which case of a derived guard a
+//! sender is handed as, and where dispatch hands what a guard refuses.
 
 use super::{Itself, Parent};
 use crate::{
-    Above, Actor, Asked, Beginning, Chain, ChildOf, Declared, Due, Effect, Ending, Fault, Handles, Instances, Item,
-    Keeps, Level, Mail, MailId, Runs, SeatNumber, Seated, Table, Tie, Top, Turn, Turning, Unreadable, What,
+    Above, Actor, ActorRef, Asked, Beginning, Chain, ChildOf, Declared, Due, Effect, Ending, Fault, Guard, Handles,
+    Instances, Item, Keeps, Level, Mail, MailId, Runs, SeatNumber, Seated, Table, Tie, Top, Turn, Turning, Unreadable,
+    What, actor,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -181,11 +182,17 @@ impl Handed {
 
 /// What the door that stands beneath `HALL` did with mail of `kind` from `from`, with every actor here in the table.
 fn handed(kind: KindId, from: Seated) -> Handed {
+    handed_to(Door, kind, from)
+}
+
+/// What `actor`, seated where the door is, beneath `HALL`, did with mail of `kind` from `from`, with every actor here in
+/// the table, and a door beside it.
+fn handed_to<A: ChildOf>(actor: A, kind: KindId, from: Seated) -> Handed {
     let hall = Declared::of::<Hall>();
     let door = Declared::of::<Door>();
-    let table = Typed(vec![(HALL, hall), (OTHER_HALL, hall), (DOOR, door), (SIBLING, door)]);
+    let table = Typed(vec![(HALL, hall), (OTHER_HALL, hall), (DOOR, Declared::of::<A>()), (SIBLING, door)]);
     let mut asked = Asked::new();
-    let mut actor: Box<dyn Runs> = Box::new(Door);
+    let mut actor: Box<dyn Runs> = Box::new(actor);
     let mut instances = Instances::default();
     let chain = Chain { root: MailId { sender: from.id, count: 1 }, depth: 1 };
     let above = Above::Actor(HALL, hall);
@@ -235,4 +242,79 @@ fn parent_admits_the_actor_above_by_seat_and_refuses_another_of_its_type() {
     assert_eq!(own.lines, ["shut"]);
     assert!(!own.was_refused());
     assert!(other.was_refused());
+}
+
+/// Mail a bell takes from the hall it stands in or from a door.
+#[derive(Plain)]
+#[kind(name = "aether.test.ring")]
+struct Ring;
+
+/// Who may ring a bell: the hall, or a door.
+#[derive(Guard)]
+enum Visitor {
+    Hall(ActorRef<Hall>),
+    Door(ActorRef<Door>),
+}
+
+/// A bell in a hall, written as one block: it logs who rang it, as the case and the actor its guard handed on, and a knock from anyone but itself it refuses with a
+/// line of its own.
+#[derive(Plain)]
+#[kind(name = "aether.test.bell")]
+struct Bell;
+
+#[actor(key = u64, parent = Hall)]
+impl Bell {
+    fn begin(bell: Self) -> Result<Self, Fault> {
+        Ok(bell)
+    }
+
+    #[tell]
+    fn ring(&mut self, _: Ring, turn: &mut Turn<'_, Self, Visitor>) -> Result<(), Fault> {
+        let (by, sender) = match turn.from() {
+            Visitor::Hall(hall) => ("the hall", hall.id()),
+            Visitor::Door(door) => ("a door", door.id()),
+        };
+        turn.log(Level::Info, format_args!("rung by {by} {}", sender.bits()));
+
+        Ok(())
+    }
+
+    #[tell]
+    fn knock(&mut self, _: Knock, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
+        turn.log(Level::Info, "knocked");
+
+        Ok(())
+    }
+
+    #[refused]
+    fn knock_refused(&mut self, _: Knock, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        turn.log(Level::Info, "knock refused");
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_derived_guard_hands_the_case_of_the_senders_type_and_refuses_another() {
+    // Catches a derived guard that tries its cases in another order or hands a sender as the wrong case, and one that
+    // admits a sender of no case's type.
+    let hall = handed_to(Bell, KindId::of::<Ring>(), HALL);
+    let door = handed_to(Bell, KindId::of::<Ring>(), SIBLING);
+    let stranger = handed_to(Bell, KindId::of::<Ring>(), Seated { id: ActorId::new(9), seat: SeatNumber::new(8) });
+
+    assert_eq!(hall.lines, ["rung by the hall 1"]);
+    assert_eq!(door.lines, ["rung by a door 4"]);
+    assert!(stranger.was_refused());
+}
+
+#[test]
+fn a_refused_method_takes_what_its_kinds_guard_refused() {
+    // Catches a block that writes no `refused` for its `#[refused]`, which leaves the default, and one that hands the
+    // refused mail to the handler.
+    let own = handed_to(Bell, KindId::of::<Knock>(), DOOR);
+    let other = handed_to(Bell, KindId::of::<Knock>(), SIBLING);
+
+    assert_eq!(own.lines, ["knocked"]);
+    assert_eq!(other.lines, ["knock refused"]);
+    assert!(!other.was_refused());
 }

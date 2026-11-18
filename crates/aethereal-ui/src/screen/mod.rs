@@ -32,6 +32,11 @@
 //! Each turn returns [`Orders`], the mail the library sends, which the screen's handler sends through its turn
 //! ([`Orders::send`]); a turn of input returns [`Heard`], which the screen's handler takes in as
 //! [`take_in`](crate::take_in) says. The handlers themselves are written by [`screen!`](crate::screen!).
+//!
+//! It is the library an actor block takes in, `#[actor(with(aethereal_ui::screen))]` (ADR-0059): the block's `Handles`
+//! is [`handles!`] of the kinds its own handlers take, and its `Depends` is [`depends!`] of the types it depends on,
+//! each the library's list with the block's; the screen's markup, [`view!`](crate::view!), writes the library's
+//! handlers through [`screen!`](crate::screen!), beside the block.
 
 #[cfg(test)]
 mod again;
@@ -54,6 +59,7 @@ mod streaming;
 #[cfg(test)]
 mod tests;
 
+pub use crate::{depends, handles};
 pub use clipboard::{Clipping, Copying, Pasting};
 pub use drags::Landing;
 pub use input::{Heard, ImeAsked};

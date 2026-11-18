@@ -1,0 +1,19 @@
+[package]
+name = "aethereal-actor-derive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The macros of aethereal-actor: #[actor], #[protocol], and the derives of an enum guard"
+
+# Runs on the build machine only, as the data derives do; the actor crate re-exports it.
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+
+[lints]
+workspace = true

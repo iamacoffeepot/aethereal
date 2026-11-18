@@ -2,8 +2,7 @@
 
 use crate::{Holder, Offer, Offered, Tool, ToolList, ToolSheet, Withdraw};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Down, Each, Ending, Fault, Level, Pick, Receives, Spawn, Through, Top,
-    Turn, Whole, path,
+    Answered, Beginning, Down, Ending, Fault, Level, Pick, Spawn, Through, Turn, Whole, actor, path,
 };
 use aethereal_data::{
     Boundary, Decode, DecodeError, Encode, EncodeError, Field, Kind, KindName, Plain, Reader, Schema, Shape, Writer,
@@ -77,17 +76,8 @@ where
     }
 }
 
-impl<L: ToolList, R: Holder> ChildOf for Toolbox<L, R> {
-    type Parent = Top;
-}
-
-impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
-    type Config = ToolboxConfig;
-    type Key = ();
-    type Handles = (Answer<Offered, Offering>,);
-    type Depends = (R,);
-    type Spawns = Each<L>;
-
+#[actor(spawns(L), depends(R))]
+impl<L: ToolList, R: Holder> Toolbox<L, R> {
     fn begin(_: ToolboxConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut names = BTreeSet::new();
         for sheet in L::sheets() {
@@ -113,10 +103,9 @@ impl<L: ToolList, R: Holder> Actor for Toolbox<L, R> {
 
         Ok(())
     }
-}
 
-impl<L: ToolList, R: Holder> Receives<Answer<Offered, Offering>> for Toolbox<L, R> {
-    fn handle(
+    #[answer]
+    fn offered(
         &mut self,
         (answered, Offering): (Answered<Offered>, Offering),
         turn: &mut Turn<'_, Self>,
