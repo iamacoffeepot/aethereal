@@ -1,4 +1,4 @@
-# ADR-0059: An actor is written as one block, and declares only the roots it depends on
+# ADR-0059: An actor is written as one block, and declares what it depends on
 
 - **Status:** Proposed
 - **Date:** 2026-11-18
