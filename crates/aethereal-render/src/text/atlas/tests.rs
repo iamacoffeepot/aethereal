@@ -11,7 +11,7 @@ const fn key(glyph: u16) -> GlyphKey {
 
 /// A field `width` by `height` texels.
 const fn field(width: u32, height: u32) -> Field {
-    Field { width, height, left: 0, top: 0 }
+    Field { width, height, left: 0, top: 0, ink: Ink::Field }
 }
 
 /// Whether the boxes `a` and `b`, each a top left, a width, and a height, share a texel.

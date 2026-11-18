@@ -104,7 +104,8 @@ pub enum MetricsRefused {
     Font,
 }
 
-/// The font a text is laid out in: one of the renderer's own two, which have no fallbacks, or one an actor made.
+/// The font a text is laid out in: one of the renderer's own two, which fall back to the renderer's own colour emoji
+/// font, or one an actor made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Plain)]
 #[kind(name = "aether.render.font")]
 pub enum Font {
