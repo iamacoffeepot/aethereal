@@ -13,8 +13,8 @@ use super::{
 };
 use crate::Renderer;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, Tells, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -120,15 +120,6 @@ enum TimesHeard {
     Heard(GpuTimes),
 }
 
-/// What a turn of the tool may send: its subscriptions to the renderer, the end of them, and an answer to its caller.
-type Subscribing = (
-    ToSender<Called>,
-    Tells<Path<Renderer>, SubscribeFrameStats>,
-    Tells<Path<Renderer>, SubscribeGpuTimes>,
-    Tells<Path<Renderer>, UnsubscribeFrameStats>,
-    Tells<Path<Renderer>, UnsubscribeGpuTimes>,
-);
-
 impl ChildOf for StatsTool {
     type Parent = Anywhere;
 }
@@ -137,16 +128,15 @@ impl Actor for StatsTool {
     type Config = StatsToolConfig;
     type Key = ();
     type Handles = (Call, FrameStats, GpuTimes, Answer<GpuDescribed, Describing>);
-    type BeginSends = (Asks<Path<Renderer>, DescribeGpu, Describing>,);
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(_: StatsToolConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: StatsToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Renderer>(())).ask(&DescribeGpu, &Describing)?;
 
         Ok(Self { adapter: Adapter::Asked, reading: Reading::Idle })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -178,10 +168,9 @@ impl Tool for StatsTool {
 
 /// Holds the call, and subscribes to the renderer when it is the first to wait.
 impl Handles<Call> for StatsTool {
-    type Sends = Subscribing;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<ReadRenderStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             turn.reply(&Called::Refused(String::from("that is no ask of the render stats")))?;
             return Ok(());
@@ -203,10 +192,9 @@ impl Handles<Call> for StatsTool {
 
 /// Keeps the first frame's statistics heard while calls wait, and answers what it can.
 impl Handles<FrameStats> for StatsTool {
-    type Sends = Subscribing;
     type From = Anyone;
 
-    fn handle(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
+    fn handle(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Reading::Waiting { frame: frame @ FrameHeard::Awaited, .. } = &mut self.reading {
             *frame = FrameHeard::Heard(stats);
         }
@@ -217,10 +205,9 @@ impl Handles<FrameStats> for StatsTool {
 
 /// Keeps the first pass times heard while calls wait, and answers what it can.
 impl Handles<GpuTimes> for StatsTool {
-    type Sends = Subscribing;
     type From = Anyone;
 
-    fn handle(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
+    fn handle(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Reading::Waiting { times: times @ TimesHeard::Awaited, .. } = &mut self.reading {
             *times = TimesHeard::Heard(heard);
         }
@@ -231,12 +218,10 @@ impl Handles<GpuTimes> for StatsTool {
 
 /// Keeps the adapter, or why it was not told, and answers what it can.
 impl Receives<Answer<GpuDescribed, Describing>> for StatsTool {
-    type Sends = Subscribing;
-
     fn handle(
         &mut self,
         (answered, Describing): (Answered<GpuDescribed>, Describing),
-        turn: &mut Turn<'_, Self, Subscribing>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.adapter = match answered {
             Answered::Yes(described) => Adapter::Told(described),
@@ -249,7 +234,7 @@ impl Receives<Answer<GpuDescribed, Describing>> for StatsTool {
 
 impl StatsTool {
     /// Answers each call waiting that what is heard answers, and once none waits, lets go of the renderer.
-    fn answer(&mut self, turn: &mut Turn<'_, Self, Subscribing>) -> Result<(), Fault> {
+    fn answer(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Reading::Waiting { calls, frame: FrameHeard::Heard(stats), times } = &mut self.reading else {
             return Ok(());
         };

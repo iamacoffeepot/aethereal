@@ -79,15 +79,13 @@
 //! }
 //!
 //! /// What the HUD's methods send: none of their own.
-//! type HudSends = aethereal_ui::sends![];
 //!
 //! impl Controls for Hud {
-//!     type Sends = HudSends;
 //! }
 //!
 //! #[aethereal_ui::events]
 //! impl Hud {
-//!     fn spend(&mut self, _: &mut Turn<'_, Self, HudSends>, amount: u32) -> Result<(), Fault> {
+//!     fn spend(&mut self, _: &mut Turn<'_, Self>, amount: u32) -> Result<(), Fault> {
 //!         self.gold = self.gold.saturating_sub(amount);
 //!         Ok(())
 //!     }
@@ -101,17 +99,16 @@
 //!     type Config = Frame;
 //!     type Key = ();
 //!     type Handles = aethereal_ui::handles![];
-//!     type BeginSends = (aethereal_actor::Asks<aethereal_actor::Path<aethereal_render::Renderer>, aethereal_render::frame::ShapeOf, Shaping>,);
-//!     type EndSends = ();
+//!     type Depends = aethereal_ui::depends!();
 //!
-//!     fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+//!     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 //!         let target = Target::of::<Interface>(frame);
 //!         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
 //!
 //!         Ok(Self { gold: 100, price: 5, ui })
 //!     }
 //!
-//!     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+//!     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 //!         Ok(())
 //!     }
 //! }
@@ -152,8 +149,8 @@ pub use input::{
     Clip, Erased, Event, First, Hears, Held, Input, Key, Pointing, Raised, Raises, Raising, Selecting, Used, raising,
 };
 pub use screen::{
-    Clipping, Copying, DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Orders, Outcome, Pasting,
-    Picturing, Placing, Prepared, Programming, Rows, Screen, Sends, Shaping, Target, TextPlacing, Texting, Texturing,
+    Clipping, Copying, DrawKey, Heard, ImeAsked, Instancing, Landing, Meshing, MetricsAsked, Ordering, Orders, Outcome,
+    Pasting, Picturing, Placing, Prepared, Programming, Rows, Screen, Shaping, Target, TextPlacing, Texting, Texturing,
     Tipping, Uniforming, Viewport, Whitening,
 };
 pub use style::{Alignment, Border, Distribute, Edges, Gap, Length, Placed, SelfAlign, Space, Style, Track, rgb, rgba};
@@ -185,9 +182,8 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::drag::Lent;
-    pub use aethereal_actor::{
-        Answer, Answered, Anyone, Asks, Fault, Handles, On, Path, Prepare, Receives, Slept, ToAny, ToSender, Turn,
-    };
+    pub use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, On, Path, Prepare, Receives, Slept, Turn};
+    pub use aethereal_render::Renderer;
     pub use aethereal_render::frame::Shaped;
     pub use aethereal_render::instances::Instanced;
     pub use aethereal_render::mesh::Meshed;
@@ -233,23 +229,13 @@ macro_rules! handles {
     };
 }
 
-/// A screen's [`Controls::Sends`]: the library's ask of the window's input method, which input may make, its drop mailed
-/// to another actor, which a release may make, and its one answer to a drop, taken or refused, which a drop may make;
-/// then each of `$own`, what the screen's event methods and its `key` send of their own. A handler's sends are at most
-/// 24, so a screen's own are at most 21.
+/// A screen's `Depends`: the roots the library reaches by typed path, the renderer, which makes and draws what the
+/// screen shows, and the windows, whose input method it stops; then each of `$own`, the types the screen's event
+/// methods and its `key` reach by typed path of their own, none of the renderer's or the windows' trees (ADR-0059).
 #[macro_export]
-macro_rules! sends {
+macro_rules! depends {
     ($($own:ty),* $(,)?) => {
-        (
-            $crate::__private::Asks<
-                $crate::__private::Path<$crate::__private::Windows>,
-                $crate::__private::AllowIme,
-                $crate::ImeAsked,
-            >,
-            $crate::__private::ToAny<$crate::Drops, $crate::Dropped>,
-            $crate::__private::ToSender<$crate::DropAnswered>,
-            $($own,)*
-        )
+        ($crate::__private::Renderer, $crate::__private::Windows, $($own,)*)
     };
 }
 
@@ -268,12 +254,10 @@ macro_rules! sends {
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
         impl $crate::__private::Receives<$crate::__private::On<$crate::__private::Prepare>> for $screen {
-            type Sends = $crate::Sends;
-
             fn handle(
                 &mut self,
                 _: $crate::__private::Prepare,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let every = <Self as $crate::Controls>::takes_every_key(self);
                 self.$field.take_keys(every);
@@ -284,13 +268,12 @@ macro_rules! screen {
         }
 
         impl $crate::__private::Handles<$crate::__private::Pointed> for $screen {
-            type Sends = <Self as $crate::Controls>::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
                 pointed: $crate::__private::Pointed,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let heard = self.$field.pointed(pointed, turn.me().id(), turn.now());
                 $crate::screen!(@take $field, self, heard, turn)
@@ -298,13 +281,12 @@ macro_rules! screen {
         }
 
         impl $crate::__private::Handles<$crate::__private::Keyed> for $screen {
-            type Sends = <Self as $crate::Controls>::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
                 keyed: $crate::__private::Keyed,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let heard = self.$field.keyed(keyed, <Self as $crate::Controls>::FIRST);
                 $crate::screen!(@take $field, self, heard, turn)
@@ -314,12 +296,10 @@ macro_rules! screen {
         impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::FontMetrics, $crate::MetricsAsked>>
             for $screen
         {
-            type Sends = $crate::Sends;
-
             fn handle(
                 &mut self,
                 (answered, asked): ($crate::__private::Answered<$crate::__private::FontMetrics>, $crate::MetricsAsked),
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let orders = self.$field.metrics(answered, asked, |blob| turn.read(blob));
                 orders.send(turn)
@@ -341,12 +321,10 @@ macro_rules! screen {
         impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::Pasted, $crate::Pasting>>
             for $screen
         {
-            type Sends = <Self as $crate::Controls>::Sends;
-
             fn handle(
                 &mut self,
                 (answered, pasting): ($crate::__private::Answered<$crate::__private::Pasted>, $crate::Pasting),
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let heard = self.$field.pasted(answered, pasting, |blob| turn.read(blob));
                 $crate::screen!(@take $field, self, heard, turn)
@@ -356,12 +334,10 @@ macro_rules! screen {
         impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::Copied, $crate::Copying>>
             for $screen
         {
-            type Sends = <Self as $crate::Controls>::Sends;
-
             fn handle(
                 &mut self,
                 (answered, copying): ($crate::__private::Answered<$crate::__private::Copied>, $crate::Copying),
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let heard = self.$field.copied(answered, copying);
                 $crate::screen!(@take $field, self, heard, turn)
@@ -369,26 +345,24 @@ macro_rules! screen {
         }
 
         impl $crate::__private::Handles<$crate::Resize> for $screen {
-            type Sends = $crate::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
                 resize: $crate::Resize,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 self.$field.resize(resize.viewport).send(turn)
             }
         }
 
         impl $crate::__private::Handles<$crate::Dropped> for $screen {
-            type Sends = <Self as $crate::Controls>::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
                 dropped: $crate::Dropped,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let payload = dropped.payload.payload(|blob| turn.read(blob));
                 match self.$field.dropped(dropped.entry, &payload) {
@@ -402,13 +376,12 @@ macro_rules! screen {
         }
 
         impl $crate::__private::Handles<$crate::DropAnswered> for $screen {
-            type Sends = <Self as $crate::Controls>::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
                 answered: $crate::DropAnswered,
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let payload = answered.payload.payload(|blob| turn.read(blob));
                 let heard = self.$field.answered(&answered.source, payload, answered.outcome);
@@ -435,12 +408,10 @@ macro_rules! screen {
         impl $crate::__private::Receives<$crate::__private::Answer<$crate::__private::$answer, $crate::$context>>
             for $screen
         {
-            type Sends = $crate::Sends;
-
             fn handle(
                 &mut self,
                 (answered, context): ($crate::__private::Answered<$crate::__private::$answer>, $crate::$context),
-                turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
+                turn: &mut $crate::__private::Turn<'_, Self>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 self.$field.$method(answered, context).send(turn)
             }

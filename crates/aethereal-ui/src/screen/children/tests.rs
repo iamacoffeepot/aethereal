@@ -37,23 +37,21 @@ impl Actor for Minimap {
     type Config = Self;
     type Key = u64;
     type Handles = (Resize,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = crate::depends!();
 
-    fn begin(minimap: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(minimap: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(minimap)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Resize> for Minimap {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Resize, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Resize, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

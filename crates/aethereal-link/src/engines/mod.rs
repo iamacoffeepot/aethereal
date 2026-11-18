@@ -3,6 +3,7 @@
 
 mod asks;
 mod engine;
+mod hearing;
 mod randomness;
 mod settings;
 mod spawned;
@@ -13,7 +14,8 @@ pub use asks::{
     CallEngine, DescribeEngine, Described, EngineList, EngineListing, EngineTrust, ExitedEngine, ListEngines, Origin,
     Shown, TrustOf,
 };
-pub use engine::{Engine, EngineConfig, Lapsing, Sent, Vouching};
+pub use engine::{ChatTo, Chatting, Engine, EngineConfig, Lapsing, Sent, Vouching};
+pub use hearing::{HearTrusted, Hearing, TrustedEngine};
 
 pub use settings::EnginesSettings;
 pub use spawned::{Booting, Fetching, LinkedAs, Patience, Runs, Spawned, SpawnedConfig};
@@ -22,14 +24,13 @@ pub use tokens::{MintFor, MintToken, Minted, Minting, TakeToken, TokenFor};
 
 use crate::{Token, Trust};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
-    Level, More, Number, Open, Part, Path, Receives, Streamed, Streams, Taken, ToAny, ToSender, ToType, Top, Turn,
-    path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level,
+    Number, Part, Receives, Streams, Subscribers, Taken, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_process::Exited;
 use aethereal_store::{Binary, StoreHash};
-use aethereal_tcp::{Accept, Accepted, Accepting, Framing, Interface, Listen, Listening, Shut, Tcp, Unbound};
+use aethereal_tcp::{Accept, Accepting, Framing, Interface, Listen, Listening, Shut, Tcp, Unbound};
 use aethereal_tools::Caller;
 use core::mem;
 use core::time::Duration;
@@ -153,6 +154,10 @@ const ACCEPTING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// Each engine tells it the name it gave and how many tools it holds as they change, so its list is answered at once,
 /// and it watches each engine and spawn, dropping one from its list when it ends.
 ///
+/// An actor that takes what trusted engines say asks it to [`HearTrusted`], and is told each engine the hub trusts as
+/// a [`TrustedEngine`]: those linked already as it asks, and each after as its token is taken (ADR-0057). Neither it nor
+/// its engines name what hears them.
+///
 /// It stands up on a host that serves it randomness: each native host's crate bootstraps it, serving the system's,
 /// and checks its settings with [`EnginesSettings::check`].
 #[derive(Bound)]
@@ -170,6 +175,8 @@ pub struct Engines {
     next_spawn: u64,
     /// The last `most_exited` spawned engines that ended, the latest last.
     exited: Vec<ExitedEngine>,
+    /// The actors told each engine the hub trusts.
+    hearers: Subscribers<Hearing>,
 }
 
 impl Engines {
@@ -242,12 +249,12 @@ impl Actor for Engines {
         Spawn,
         Exited,
         TerminateEngine,
+        HearTrusted,
     );
-    type BeginSends = (Asks<Path<Tcp>, Listen, Binding>,);
-    type EndSends = ();
+    type Depends = (Tcp,);
 
     /// Asks `Tcp` to listen on its port.
-    fn begin(settings: EnginesSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(settings: EnginesSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let framing = Framing::LengthPrefixed { most_bytes: settings.most_bytes };
         let listen = Listen { port: settings.port, interface: Interface::Settings, framing };
         turn.to(path::<Tcp>(())).ask(&listen, &Binding)?;
@@ -262,23 +269,22 @@ impl Actor for Engines {
             spawns: BTreeMap::new(),
             next_spawn: 0,
             exited: Vec::new(),
+            hearers: Subscribers::new(),
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Listening, Binding>> for Engines {
-    type Sends = (Asks<Streamed<Accepting>, Open<Accepting>, Number>, ToAny<Streamed<Accepting>, More>);
-
     /// Bound, it accepts on its listener, answers each token minted meanwhile, and spawns each engine asked for
     /// meanwhile; otherwise it fails, and each request is answered that it went unanswered.
     fn handle(
         &mut self,
         (answered, Binding): (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Listening::Bound { listener, port }) = answered else {
             turn.log(Level::Error, format_args!("no port to listen for engines on: {answered:?}"));
@@ -300,11 +306,10 @@ impl Receives<Answer<Listening, Binding>> for Engines {
 }
 
 impl Handles<Part<Accepting>> for Engines {
-    type Sends = (ToAny<Streamed<Accepting>, More>, ToType<Accepted, Shut>);
     type From = Anyone;
 
     /// A connection accepted: an engine is spawned for it, unless the root holds its most, when it is shut.
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.accepting.part(turn, part)? else {
             return Ok(());
         };
@@ -336,13 +341,11 @@ impl Handles<Part<Accepting>> for Engines {
 }
 
 impl Receives<Answer<Unbound, Number>> for Engines {
-    type Sends = ();
-
     /// Its listener stopped: no engine can link again, and it fails.
     fn handle(
         &mut self,
         (answered, number): (Answered<Unbound>, Number),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.accepting.answered(number);
         turn.log(Level::Error, format_args!("the listener for engines stopped: {answered:?}"));
@@ -352,24 +355,23 @@ impl Receives<Answer<Unbound, Number>> for Engines {
 }
 
 impl Receives<Ended> for Engines {
-    type Sends = ();
-
-    /// An engine or a spawn has ended: an engine leaves its list, and a spawn's token goes with it.
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    /// An engine or a spawn has ended: an engine leaves its list, and a spawn's token goes with it. An actor that
+    /// heard of trusted engines has ended, and is let go.
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id();
         self.linked.retain(|_, linked| linked.engine.id() != gone);
         self.spawn_ended(gone);
+        self.hearers.ended(&ended);
 
         Ok(())
     }
 }
 
 impl Handles<Shown> for Engines {
-    type Sends = ();
     type From = Anyone;
 
     /// What one of its own engines shows, once its token is taken: from any other actor, it is passed over.
-    fn handle(&mut self, shown: Shown, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, shown: Shown, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let linked = self.linked.values_mut().find(|linked| linked.engine.id() == sender.id());
         if let Some(Linked { standing: Standing::Linked { shows, .. }, .. }) = linked {
@@ -381,10 +383,9 @@ impl Handles<Shown> for Engines {
 }
 
 impl Handles<ListEngines> for Engines {
-    type Sends = (ToSender<EngineList>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: ListEngines, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ListEngines, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let engines = self.linked.iter().filter_map(|(&engine, linked)| linked.listing(engine)).collect();
         turn.reply(&EngineList { engines, exited: self.exited.clone() })?;
 
@@ -393,12 +394,11 @@ impl Handles<ListEngines> for Engines {
 }
 
 impl Handles<TrustOf> for Engines {
-    type Sends = (ToSender<EngineTrust>,);
     type From = Anyone;
 
     /// The trust of the engine linked under the id asked, decided as its token was taken: an engine whose token has
     /// not been taken is not linked.
-    fn handle(&mut self, asked: TrustOf, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, asked: TrustOf, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let trust = self.linked.get(&asked.engine).map_or(EngineTrust::NotLinked, Linked::trust);
         turn.reply(&trust)?;
 
@@ -407,11 +407,10 @@ impl Handles<TrustOf> for Engines {
 }
 
 impl Handles<MintFor> for Engines {
-    type Sends = (ToSender<Minted>,);
     type From = Anyone;
 
     /// Holds the request, and draws a token for it from the host's randomness.
-    fn handle(&mut self, mint: MintFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, mint: MintFor, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         turn.run(&Draw, &Minting::External { held, by: mint.by })?;
 
@@ -420,8 +419,6 @@ impl Handles<MintFor> for Engines {
 }
 
 impl Receives<Answer<Drawn, Minting>> for Engines {
-    type Sends = ();
-
     /// A token drawn: for an engine started outside the hub, kept in the table, and answered with the arguments to
     /// start it with, or kept waiting for the port; for a spawn, its engine spawned, or kept waiting for the port. A
     /// draw that came to nothing answers a spawn `Refused`, and a token's request nothing, and the engine tells its
@@ -429,7 +426,7 @@ impl Receives<Answer<Drawn, Minting>> for Engines {
     fn handle(
         &mut self,
         (answered, minting): (Answered<Drawn>, Minting),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Drawn::Token(token)) = answered else {
             turn.log(Level::Error, format_args!("no token was drawn: {answered:?}"));
@@ -459,14 +456,14 @@ impl Receives<Answer<Drawn, Minting>> for Engines {
 }
 
 impl Handles<TakeToken> for Engines {
-    type Sends = (ToSender<TokenFor>, ToType<Spawned, LinkedAs>);
     type From = Anyone;
 
     /// Takes the token out of the table: what it was for and whether its engine is trusted, or that it is unknown,
     /// once used, expired, or its spawn ended too. The engine that asked is linked from then on, with where it came
-    /// from, and a spawn's told its id. Only an engine connected here takes a token: any other sender is answered
-    /// that it is unknown, and the token stays in the table for its engine.
-    fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    /// from, and a spawn's told its id; one the hub trusts is told, after its answer, to each actor that hears of
+    /// trusted engines. Only an engine connected here takes a token: any other sender is answered that it is unknown,
+    /// and the token stays in the table for its engine.
+    fn handle(&mut self, take: TakeToken, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let linked = self.linked.iter_mut().find(|(_, linked)| linked.engine.id() == sender.id());
         let Some((&engine, linked)) = linked else {
@@ -483,8 +480,12 @@ impl Handles<TakeToken> for Engines {
         if let Came::Spawned { spawned, .. } = &came {
             turn.to(*spawned).send(&LinkedAs { engine })?;
         }
+        let trusted = came.trust().is_trusted();
         linked.standing = Standing::Linked { came, shows: Shows::Nothing };
         turn.reply(&token_for)?;
+        if trusted {
+            turn.to(&self.hearers).send(&TrustedEngine { engine: linked.engine })?;
+        }
 
         Ok(())
     }
@@ -501,6 +502,11 @@ impl From<Purpose> for Came {
 }
 
 impl Engines {
+    /// Each engine linked that the hub trusts, in the order of their ids.
+    fn trusted(&self) -> impl Iterator<Item = ActorRef<Engine>> + '_ {
+        self.linked.values().filter(|linked| linked.is_trusted()).map(|linked| linked.engine)
+    }
+
     /// The token `token` minted, with the arguments that start an engine linking to this hub at `port` with it.
     fn minted(&self, token: Token, port: u16) -> Minted {
         Minted { token, args: self.link_args(token, port) }
@@ -529,6 +535,14 @@ impl Linked {
         };
 
         Some(EngineListing { engine, name: name.clone(), tools: *tools, origin: came.origin(), trust: came.trust() })
+    }
+
+    /// Whether the hub trusts it: never before its token is taken.
+    fn is_trusted(&self) -> bool {
+        match &self.standing {
+            Standing::Linked { came, .. } => came.trust().is_trusted(),
+            Standing::Unproven => false,
+        }
     }
 
     /// Its trust, once its token is taken.

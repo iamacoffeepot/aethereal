@@ -2,8 +2,7 @@
 
 use super::Seat;
 use crate::{
-    Actors, Allows, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table,
-    Within,
+    Actors, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
 };
 use aethereal_data::{ActorId, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::marker::PhantomData;
@@ -13,18 +12,18 @@ use core::marker::PhantomData;
 /// `turn.to(renderer).ask(&mesh, &made)?.ask(&texture, &made)?`, and the target may be bound once and sent to many
 /// times. It holds the turn while it lives.
 ///
-/// What it sends to is `R`, whose markers the sends of `S` must list, as each verb says; `At` is where it found the
-/// target, and `Mode` says whether the actor lives on to be answered: [`Lives`] for a turn or a `begin`, and
+/// What it sends to is `R`, which each send and ask is checked against at its call, for an actor of type `Me`, as each
+/// verb says (ADR-0059); `At` is where it found the target, and `Mode` says whether the actor lives on to be answered: [`Lives`] for a turn or a `begin`, and
 /// [`Leaves`] for an actor's closing turn, which asks nothing.
 ///
 /// What it asks is due when the request the turn handles is, or `Never` when it handles none, unless
 /// [`within`](Self::within) states a deadline of its own (ADR-0041).
-pub struct Toward<'t, 'a, S, R, At, Mode> {
+pub struct Toward<'t, 'a, Me, R, At, Mode> {
     seat: &'t mut Seat<'a>,
     at: At,
     /// When what it asks is due: inherited from the turn's request, or stated.
     due: Due,
-    sends: PhantomData<fn() -> S>,
+    sender: PhantomData<fn() -> Me>,
     through: PhantomData<fn() -> R>,
     mode: PhantomData<Mode>,
 }
@@ -36,27 +35,26 @@ pub enum Lives {}
 /// come.
 pub enum Leaves {}
 
-impl<'t, 'a, S, R, At, Mode> Toward<'t, 'a, S, R, At, Mode> {
+impl<'t, 'a, Me, R, At, Mode> Toward<'t, 'a, Me, R, At, Mode> {
     pub(super) fn new(seat: &'t mut Seat<'a>, at: At) -> Self {
         let due = seat.due;
 
-        Self { seat, at, due, sends: PhantomData, through: PhantomData, mode: PhantomData }
+        Self { seat, at, due, sender: PhantomData, through: PhantomData, mode: PhantomData }
     }
 }
 
-impl<S, R, Mode> Toward<'_, '_, S, R, Seated, Mode> {
+impl<Me, R, Mode> Toward<'_, '_, Me, R, Seated, Mode> {
     /// Sends `mail` to the actor. It is delivered after the turn, in a later step.
     ///
-    /// It builds only when the turn's sends list what the target [`Reaches`] by: [`ToType<T, K>`](crate::ToType) for
-    /// an [`ActorRef<T>`](crate::ActorRef), [`ToAny<P, K>`](crate::ToAny) for a
-    /// [`ProtocolRef<P>`](crate::ProtocolRef), and [`Tells<Path<L>, K>`](crate::Tells) for a
-    /// [`Path<L>`](crate::Path). What a reference reaches is proven, so nothing is checked when it is sent; mail to a
-    /// path that held no live actor of its type is dropped, as mail to an actor that has gone is.
+    /// It builds only when the target [`Reaches`] `K` from this actor: an [`ActorRef<T>`](crate::ActorRef) whose `T`
+    /// handles `K`, a [`ProtocolRef<P>`](crate::ProtocolRef) one of whose kinds `K` is, or a [`Path<L>`](crate::Path)
+    /// whose `L` handles `K`, beneath a root of a type this actor depends on (ADR-0059). What a reference reaches is
+    /// proven, so nothing is checked when it is sent; mail to a path that held no live actor of its type is dropped, as
+    /// mail to an actor that has gone is.
     pub fn send<K, I>(&mut self, mail: &K) -> Result<&mut Self, EncodeError>
     where
-        R: Reaches<K>,
+        R: Reaches<Me, K, I>,
         K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
     {
         self.seat.write(self.at, mail)?;
 
@@ -64,7 +62,7 @@ impl<S, R, Mode> Toward<'_, '_, S, R, Seated, Mode> {
     }
 }
 
-impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
+impl<Me, R> Toward<'_, '_, Me, R, Seated, Lives> {
     /// States when what it asks is due, in place of the deadline it would inherit: a [`Due`], or a
     /// [`Time`](crate::Time) it is due at. At that time the engine answers the request
     /// [`Unanswered::Expired`](crate::Unanswered::Expired), and an answer that comes later is dropped (ADR-0041).
@@ -82,10 +80,10 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
     /// Asks `mail` of the actor, keeping `context` until the request is answered, when the asker is handed what
     /// became of it with the context, as [`Answer<A, C>`](crate::Answer) (ADR-0017, ADR-0022).
     ///
-    /// It builds only when the turn's sends list what the target is [`Askable`] by: [`Asks<P, K, C>`](crate::Asks)
-    /// for a [`ProtocolRef<P>`](crate::ProtocolRef), where `P` answers `K` with one kind, and `Asks<Path<L>, K, C>`
-    /// for a [`Path<L>`](crate::Path) and `Asks<ActorRef<L>, K, C>` for an [`ActorRef<L>`](crate::ActorRef), where
-    /// `L` does, as [`AnswersByType`](crate::AnswersByType) says; and the actor handles that answer with `C`. A path
+    /// It builds only when the target is [`Askable`] from this actor: a [`ProtocolRef<P>`](crate::ProtocolRef), where
+    /// `P` answers `K` with one kind, or a [`Path<L>`](crate::Path) or an [`ActorRef<L>`](crate::ActorRef), where `L`
+    /// does, as [`AnswersByType`](crate::AnswersByType) says, a path beneath a root of a type this actor depends on;
+    /// and this actor handles that answer with `C`. A path
     /// that held no live actor of its type is asked as an actor that has gone: the request is answered
     /// [`Unanswered::Ended`](crate::Unanswered::Ended).
     ///
@@ -93,10 +91,9 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
     /// handles, or `Never` (ADR-0041).
     pub fn ask<K, C, I>(&mut self, mail: &K, context: &C) -> Result<&mut Self, EncodeError>
     where
-        R: Askable<K, C>,
+        R: Askable<Me, K, C, I>,
         K: Kind + Encode<Actors>,
         C: Kind + Encode<Within>,
-        S: Allows<R::Marker, I>,
     {
         self.seat.request(self.at, mail, KindId::of::<R::Answer>(), context, self.due)?;
 
@@ -104,17 +101,16 @@ impl<S, R> Toward<'_, '_, S, R, Seated, Lives> {
     }
 }
 
-impl<S, R: Proven, Mode> Toward<'_, '_, S, R, &[R], Mode> {
+impl<Me, R: Proven, Mode> Toward<'_, '_, Me, R, &[R], Mode> {
     /// Sends `mail` to each actor the references refer to, in their order: each its own piece of mail, as if each were
     /// sent alone, and the bytes written once for all of them. What they reach is proven, so nothing is checked when
     /// it is sent.
     ///
-    /// It builds only when the turn's sends list what the references [`Reaches`] by, as a send to one does.
+    /// It builds only when the references [`Reaches`] `K`, as a send to one does.
     pub fn send<K, I>(&mut self, mail: &K) -> Result<&mut Self, EncodeError>
     where
-        R: Reaches<K>,
+        R: Reaches<Me, K, I>,
         K: Kind + Encode<Actors>,
-        S: Allows<R::Marker, I>,
     {
         self.seat.write_to_all(self.at.iter().map(|reference| reference.seated()), mail)?;
 

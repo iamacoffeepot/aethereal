@@ -6,16 +6,16 @@
 use super::body::{Carried, Ending, Layered, Walk, walk};
 use super::connection::{Passing, Phase};
 use super::respond::put_head;
-use super::{Carries, Deadline, Owed, Reaches, Reads, Sending, Serving, StackSends, Stepping};
+use super::{Carries, Deadline, Owed, Reaches, Reads, Sending, Serving};
 use crate::stack::actor::{ParkedPart, Standing, Way, held, place};
 use crate::stack::chunk;
 use crate::stack::pooled::put;
 use crate::stack::response_head::Frame;
-use crate::stack::{AsksEach, Gathering, LayerList, OutboundPart, OutboundParts, PartStep, ResponseHead, Stack};
+use crate::stack::{AskedBy, Gathering, OutboundPart, OutboundParts, PartStep, ResponseHead, Stack, WalkedBy};
 use crate::stack::{InboundBody, OutboundBody, ResponseLength, SendBody, SourceEnd, StreamedBody};
 use aethereal_actor::{
-    Allows, Answer, Answered, Asks, Bytes, Conforms, Doing, Enough, Fault, Guard, Handles, Level, More, Number, Open,
-    Part, Pool, ProtocolRef, Receives, Refused, Slept, Streamed, Streams, Taken, Time, ToAny, Turn,
+    Answer, Answered, Bytes, Conforms, Doing, Fault, Guard, Handles, Level, Number, Part, Pool, ProtocolRef, Receives,
+    Refused, Slept, Streamed, Streams, Taken, Time, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Accepting, HungUp, Reading, Unbound, Write, Writing, Wrote};
@@ -104,17 +104,14 @@ impl Outflow {
 /// # Errors
 ///
 /// The fault of an open or a stop that does not encode.
-pub(super) fn abandon<Me, Sends, IA, IM, IS>(
+pub(super) fn abandon<Me>(
     sources: &mut Streams<OutboundBody, u64>,
     number: u64,
     streamed: StreamedBody,
-    turn: &mut Turn<'_, Me, Sends>,
+    turn: &mut Turn<'_, Me>,
 ) -> Result<(), Fault>
 where
     Me: Handles<Part<OutboundBody>> + Receives<Answer<SourceEnd, Number>>,
-    Sends: Allows<Asks<Streamed<OutboundBody>, Open<OutboundBody>, Number>, IA>
-        + Allows<ToAny<Streamed<OutboundBody>, More>, IM>
-        + Allows<ToAny<Streamed<OutboundBody>, Enough>, IS>,
 {
     let StreamedBody { source, body, .. } = streamed;
     let opened = sources.open(turn, source, SendBody { body }, number)?;
@@ -129,10 +126,10 @@ where
 /// # Errors
 ///
 /// The engine had no room to put a size line.
-fn framed<Me, S, F: Guard<Me>>(
+fn framed<Me, F: Guard<Me>>(
     outflow: &Outflow,
     parts: usize,
-    (doing, pool): (&mut Doing<'_, Me, S, F>, &mut Pool<'_>),
+    (doing, pool): (&mut Doing<'_, Me, F>, &mut Pool<'_>),
 ) -> Result<Vec<Bytes>, Refused> {
     let chunked = outflow.frame == Frame::Chunked;
     let mut written = Vec::with_capacity(parts * 2);
@@ -150,9 +147,14 @@ fn framed<Me, S, F: Guard<Me>>(
     Ok(written)
 }
 
-impl<S, T: LayerList> Serving<S, T>
+impl<S, T> Serving<S, T>
 where
-    S: Receives<Answer<Slept, Deadline>> + Handles<Part<OutboundBody>> + Receives<Answer<SourceEnd, Number>>,
+    S: Receives<Answer<Slept, Deadline>>
+        + Handles<Part<OutboundBody>>
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// Writes the head `head` of the streamed response to the request numbered `request` on the connection numbered
     /// `number`, as `owed` says, its body `streamed`, which passes back out through the layers before `before`: framed
@@ -161,7 +163,7 @@ where
     /// connection enters `Outflow`. A response with no body to send, to a `HEAD` or of a status that has none, is
     /// written as its head alone, and its source's stream is opened and stopped at once.
     #[allow(clippy::too_many_arguments, reason = "a streamed response is handed on with what it is owed")]
-    pub(super) fn send_streamed<Own>(
+    pub(super) fn send_streamed(
         &mut self,
         number: u64,
         request: u64,
@@ -169,7 +171,7 @@ where
         mut head: ResponseHead,
         streamed: StreamedBody,
         owed: Owed,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         let frame = match head.take_length() {
             ResponseLength::Known(length) => Frame::Length(length),
@@ -232,13 +234,13 @@ where
     /// parked until it answers. What every layer passed is queued. Whether the next part may follow it: not while one
     /// is parked, nor once the connection has closed, as it does when a layer refuses the part or it runs past the
     /// body's length.
-    fn flow_out<Own>(
+    fn flow_out(
         &mut self,
         number: u64,
         below: usize,
         carried: Carried,
         end: bool,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<bool, Fault> {
         let due = self.due(turn);
         let Some(connection) = self.connections.get_mut(&number) else {
@@ -249,7 +251,7 @@ where
         };
         let (doing, pool) = turn.split();
         let layered = Layered { values: &mut connection.layers, order: (0..below).rev(), run: T::outbound_body };
-        let walked: Walk<OutboundParts> = walk::<T, _, _, _, _, _>(layered, &[], carried, end, (doing, pool));
+        let walked: Walk<OutboundParts> = walk::<T, _, _, _, _>(layered, &[], carried, end, (doing, pool));
 
         let carried = match walked {
             Walk::Through(carried) => carried,
@@ -278,13 +280,7 @@ where
     /// Queues what the layers passed of a part of the streamed response on the connection numbered `number`, or of its
     /// end when `end`, to be written: a part they passed as nothing is granted back to the source at once. A sized body
     /// that runs past its length closes the connection, cut short. Whether the next part may follow it.
-    fn queue<Own>(
-        &mut self,
-        number: u64,
-        carried: Carried,
-        end: bool,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<bool, Fault> {
+    fn queue(&mut self, number: u64, carried: Carried, end: bool, turn: &mut Turn<'_, S>) -> Result<bool, Fault> {
         let length = match &carried {
             Carried::Came => 0,
             Carried::Blob(bytes) => turn.read(bytes).len(),
@@ -338,8 +334,10 @@ where
         + Receives<Answer<HungUp, Number>>
         + Receives<Answer<Slept, Deadline>>
         + Handles<Part<OutboundBody>>
-        + Receives<Answer<SourceEnd, Number>>,
-    T: LayerList,
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// A source sent a part of a streamed response's body: it is taken without granting for it, passed back out
     /// through the layers once the parts before it have, and written once the write before it is sent. A part of no
@@ -348,14 +346,10 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn take_part<Is, Ks, Js>(
-        &mut self,
-        part: Part<OutboundBody>,
-        turn: &mut Stepping<'_, S, T>,
-    ) -> Result<(), Fault>
+    pub fn take_part<Js>(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let Some(Taken { number: stream, value, kept }) = self.sources.part_held(turn, part) else {
             return Ok(());
@@ -386,14 +380,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn end_source<Is, Ks, Js>(
+    pub fn end_source<Js>(
         &mut self,
         (answered, stream): (Answered<SourceEnd>, Number),
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let Some(number) = self.sources.answered(stream) else {
             return Ok(());
@@ -421,15 +415,15 @@ where
     /// names, as `answered` says: what it passed goes on out through the layers before it, and the parts after it
     /// follow. One that refused it, or did not answer, closes the connection, the body cut short, and its source is
     /// stopped.
-    pub(super) fn passed_out<Is, Ks, Js>(
+    pub(super) fn passed_out<Js>(
         &mut self,
         standing: Standing,
         answered: Answered<PartStep>,
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let number = standing.connection;
         let now = turn.now();
@@ -463,16 +457,16 @@ where
     /// written. Nothing of a write the connection is too full to take was taken, so it is written again, its first
     /// part alone; the connection holds nothing else of the response unsent, so a part that alone does not fit never
     /// will, and the connection closes. A write the connection hung up on closes it, and its source is stopped.
-    pub(super) fn flowed<Is, Ks, Js>(
+    pub(super) fn flowed<Js>(
         &mut self,
         number: u64,
         answered: &Answered<Wrote>,
         parts: u32,
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
@@ -505,10 +499,10 @@ where
     /// Passes the parts the source of the streamed response on the connection numbered `number` has sent back out
     /// through its layers, one at a time and in order, then its end once the source has ended it, and writes what
     /// they passed.
-    fn pass_out<Is, Ks, Js>(&mut self, number: u64, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault>
+    fn pass_out<Js>(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         loop {
             let Some(connection) = self.connections.get_mut(&number) else {
@@ -540,10 +534,10 @@ where
 
     /// Writes what is queued of the streamed response on the connection numbered `number` when no write is out; or,
     /// once the body's end has passed every layer and every byte is sent, ends the body as its frame says.
-    fn pump<Is, Ks, Js>(&mut self, number: u64, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault>
+    fn pump<Js>(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let Some(connection) = self.connections.get(&number) else {
             return Ok(());
@@ -566,7 +560,7 @@ where
 
     /// Writes the first `parts` of what is queued of the streamed response on the connection numbered `number` as one
     /// write, each framed as the body is.
-    fn write_out<Own>(&mut self, number: u64, parts: usize, turn: &mut Stepping<'_, S, T, Own>) -> Result<(), Fault> {
+    fn write_out(&mut self, number: u64, parts: usize, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
@@ -589,10 +583,10 @@ where
     /// sized body that came short of its length closes the connection, cut short; a chunked body is ended with its last
     /// chunk; and a body delimited by the close is ended by it. The connection then takes its next request, or closes
     /// as its request said.
-    fn finish_outflow<Is, Ks, Js>(&mut self, number: u64, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault>
+    fn finish_outflow<Js>(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());

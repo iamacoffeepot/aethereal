@@ -5,8 +5,8 @@ use super::super::*;
 use super::*;
 use crate::harness::Jobbed;
 use aethereal_actor::{
-    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Path, Resource, Runner,
-    Running, Services, Tells, Time, Top, Turn, Unanswered, path,
+    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Resource, Runner, Running,
+    Services, Time, Top, Turn, Unanswered, path,
 };
 use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Plain};
@@ -406,10 +406,9 @@ impl Actor for Worker {
         Answer<Lit, Which>,
         Answer<Bumped, Which>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
 
         Ok(Self {
@@ -421,16 +420,15 @@ impl Actor for Worker {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Go> for Worker {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let which = Which { at: go.at };
         let id = match go.what {
             What::Double => turn.run(&Double { n: 10 * go.at }, &which)?,
@@ -529,9 +527,7 @@ impl Handles<Go> for Worker {
 }
 
 impl Receives<Answer<Doubled, Which>> for Worker {
-    type Sends = ();
-
-    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(doubled) => Done::Doubled(doubled.n),
             Answered::No(why) => Done::No(why),
@@ -543,9 +539,7 @@ impl Receives<Answer<Doubled, Which>> for Worker {
 }
 
 impl Receives<Answer<Rang, GiveUp>> for Worker {
-    type Sends = ();
-
-    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.gave_up.push(give_up.on.mail().count);
         turn.cancel(give_up.on);
 
@@ -554,9 +548,7 @@ impl Receives<Answer<Rang, GiveUp>> for Worker {
 }
 
 impl Receives<Answer<Shrunk, Which>> for Worker {
-    type Sends = ();
-
-    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Shrunk { first, kept, second }) => {
                 let (first, kept, second) = (turn.read(&first), turn.read(&kept), turn.read(&second));
@@ -572,9 +564,7 @@ impl Receives<Answer<Shrunk, Which>> for Worker {
 }
 
 impl Receives<Answer<Lit, Which>> for Worker {
-    type Sends = ();
-
-    fn handle(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Lit { first, second }) => {
                 let (mut first, mut second) = (turn.take(first)?, turn.take(second)?);
@@ -590,9 +580,7 @@ impl Receives<Answer<Lit, Which>> for Worker {
 }
 
 impl Receives<Answer<Bumped, Which>> for Worker {
-    type Sends = ();
-
-    fn handle(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Bumped { counters }) => {
                 let mut counts = Vec::new();
@@ -623,24 +611,21 @@ impl Actor for Failing {
     type Config = Which;
     type Key = ();
     type Handles = (Answer<Doubled, Which>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(which: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Unlinked, &which)?;
 
         Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()))
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Doubled, Which>> for Failing {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -660,24 +645,21 @@ impl Actor for Newborn {
     type Config = Which;
     type Key = ();
     type Handles = (Answer<Doubled, Which>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(which: Which, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Double { n: 10 * which.at }, &which)?;
 
         Ok(Self { done: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Doubled, Which>> for Newborn {
-    type Sends = ();
-
-    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(doubled) => Done::Doubled(doubled.n),
             Answered::No(why) => Done::No(why),
@@ -701,16 +683,15 @@ impl Actor for Poker {
     type Config = Go;
     type Key = u64;
     type Handles = ();
-    type BeginSends = (Tells<Path<Worker>, Go>,);
-    type EndSends = ();
+    type Depends = (Worker,);
 
-    fn begin(go: Go, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(go: Go, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Worker>(())).send(&go)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -13,46 +13,65 @@ use super::program::{Asked, Meshing, MetricsAsked, Programming, Uniforming, Whit
 use crate::child::{Resize, Resizes};
 use crate::draw::{FRAME_BYTES, PLACE, SHADE, corner_layout, corners, fill_layout, record_layout, triangles};
 use crate::pixels::Pixels;
-use aethereal_actor::{
-    Allows, Answer, Asks, Fault, Level, Path, ProtocolRef, Receives, Sleep, Slept, Tells, ToAny, Turn, path,
-};
+use aethereal_actor::{Answer, DependsOn, Fault, Level, ProtocolRef, Receives, Sleep, Slept, Turn, path};
 use aethereal_render::draw_list::{DrawList, Entry};
+use aethereal_render::instances::Instanced;
 use aethereal_render::instances::{CreateInstances, InstancesId, WriteInstances};
+use aethereal_render::mesh::Meshed;
 use aethereal_render::mesh::{CreateMesh, VertexLayout};
 use aethereal_render::placement::Place;
+use aethereal_render::placement::Placed;
+use aethereal_render::program::Programmed;
 use aethereal_render::program::{
     Binding, BindingKind, Blend, Coverage, CreateProgram, Cull, Depth, Fixed, PerInstance,
 };
 use aethereal_render::shape::Shape;
 use aethereal_render::text::{CreateText, Font, MoveText, PlaceText, ReadMetrics, WriteText};
+use aethereal_render::text::{FontMetrics, TextMade, TextPlaced};
+use aethereal_render::texture::Textured;
 use aethereal_render::texture::{CreateTexture, TextureFormat};
+use aethereal_render::uniforms::Uniformed;
 use aethereal_render::uniforms::{CreateUniforms, UniformsId, WriteUniforms};
 use aethereal_render::{Release, Renderer};
-use aethereal_window::{AllowIme, Windows};
+use aethereal_window::{AllowIme, ImeAllowed, Windows};
 use core::time::Duration;
 
-/// Every send a screen's library makes, as a handler of its declares them: the asks that make what it draws and that
-/// read a font's metrics, the tells that write, move, release, and list them, the ask that stops the window's input
-/// method when the text input that had focus goes, and the size each child it places is told.
-pub type Sends = (
-    Asks<Path<Renderer>, CreateMesh, Meshing>,
-    Asks<Path<Renderer>, CreateProgram, Programming>,
-    Asks<Path<Renderer>, CreateUniforms, Uniforming>,
-    Asks<Path<Renderer>, CreateTexture, Texturing>,
-    Asks<Path<Renderer>, ReadMetrics, MetricsAsked>,
-    Asks<Path<Renderer>, CreateInstances, Instancing>,
-    Asks<Path<Renderer>, Place, Placing>,
-    Asks<Path<Renderer>, CreateText, Texting>,
-    Asks<Path<Renderer>, PlaceText, TextPlacing>,
-    Tells<Path<Renderer>, WriteInstances>,
-    Tells<Path<Renderer>, WriteUniforms>,
-    Tells<Path<Renderer>, WriteText>,
-    Tells<Path<Renderer>, MoveText>,
-    Tells<Path<Renderer>, Release>,
-    Tells<Path<Renderer>, DrawList>,
-    Asks<Path<Windows>, AllowIme, ImeAsked>,
-    ToAny<Resizes, Resize>,
-);
+/// A screen's type, as its library's orders are sent on its behalf: it depends on the renderer and the windows, found
+/// at `R` and `W` in its `Depends`, which the compiler infers, and handles the answer to each ask the library makes,
+/// with the ask's context (ADR-0059). A screen's `Depends` is [`depends!`](crate::depends!) of its own.
+pub trait Ordering<R, W>:
+    DependsOn<Renderer, R>
+    + DependsOn<Windows, W>
+    + Receives<Answer<Meshed, Meshing>>
+    + Receives<Answer<Programmed, Programming>>
+    + Receives<Answer<Uniformed, Uniforming>>
+    + Receives<Answer<Textured, Texturing>>
+    + Receives<Answer<FontMetrics, MetricsAsked>>
+    + Receives<Answer<Instanced, Instancing>>
+    + Receives<Answer<Placed, Placing>>
+    + Receives<Answer<TextMade, Texting>>
+    + Receives<Answer<TextPlaced, TextPlacing>>
+    + Receives<Answer<ImeAllowed, ImeAsked>>
+    + Receives<Answer<Slept, Tipping>>
+{
+}
+
+impl<A, R, W> Ordering<R, W> for A where
+    A: DependsOn<Renderer, R>
+        + DependsOn<Windows, W>
+        + Receives<Answer<Meshed, Meshing>>
+        + Receives<Answer<Programmed, Programming>>
+        + Receives<Answer<Uniformed, Uniforming>>
+        + Receives<Answer<Textured, Texturing>>
+        + Receives<Answer<FontMetrics, MetricsAsked>>
+        + Receives<Answer<Instanced, Instancing>>
+        + Receives<Answer<Placed, Placing>>
+        + Receives<Answer<TextMade, Texting>>
+        + Receives<Answer<TextPlaced, TextPlacing>>
+        + Receives<Answer<ImeAllowed, ImeAsked>>
+        + Receives<Answer<Slept, Tipping>>
+{
+}
 
 /// What one of a screen's turns decided to send, in order.
 #[derive(Debug, Default)]
@@ -205,30 +224,7 @@ impl Orders {
     /// # Errors
     ///
     /// A fault when a send or a job was not written.
-    pub fn send<A, S, I0, I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, I13, I14, I15, I16>(
-        self,
-        turn: &mut Turn<'_, A, S>,
-    ) -> Result<(), Fault>
-    where
-        A: Receives<Answer<Slept, Tipping>>,
-        S: Allows<Asks<Path<Renderer>, CreateMesh, Meshing>, I0>
-            + Allows<Asks<Path<Renderer>, CreateProgram, Programming>, I1>
-            + Allows<Asks<Path<Renderer>, CreateUniforms, Uniforming>, I2>
-            + Allows<Asks<Path<Renderer>, CreateTexture, Texturing>, I3>
-            + Allows<Asks<Path<Renderer>, ReadMetrics, MetricsAsked>, I4>
-            + Allows<Asks<Path<Renderer>, CreateInstances, Instancing>, I5>
-            + Allows<Asks<Path<Renderer>, Place, Placing>, I6>
-            + Allows<Asks<Path<Renderer>, CreateText, Texting>, I7>
-            + Allows<Asks<Path<Renderer>, PlaceText, TextPlacing>, I8>
-            + Allows<Tells<Path<Renderer>, WriteInstances>, I9>
-            + Allows<Tells<Path<Renderer>, WriteUniforms>, I10>
-            + Allows<Tells<Path<Renderer>, WriteText>, I11>
-            + Allows<Tells<Path<Renderer>, MoveText>, I12>
-            + Allows<Tells<Path<Renderer>, Release>, I13>
-            + Allows<Tells<Path<Renderer>, DrawList>, I14>
-            + Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I15>
-            + Allows<ToAny<Resizes, Resize>, I16>,
-    {
+    pub fn send<A: Ordering<R, W>, R, W>(self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         for order in self.orders {
             let renderer = path::<Renderer>(());
             match order {

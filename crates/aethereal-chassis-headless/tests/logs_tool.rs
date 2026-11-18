@@ -42,23 +42,21 @@ impl Actor for Talker {
     type Config = Self;
     type Key = ();
     type Handles = (Say, GiveUp);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(talker: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(talker: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(talker)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Say> for Talker {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, Say { level, text }: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let level = match level {
             LogLevel::Debug => Level::Debug,
             LogLevel::Info => Level::Info,
@@ -72,10 +70,9 @@ impl Handles<Say> for Talker {
 }
 
 impl Handles<GiveUp> for Talker {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, give_up: GiveUp, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Error, "giving up");
 
         Err(Fault::new(&give_up)?)

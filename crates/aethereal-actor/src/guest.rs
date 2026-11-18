@@ -982,8 +982,7 @@ fn write_sends(out: &mut Vec<u8>, asked: &Asked, asks: &[Lying], sends_at: usize
 
 /// What the piece of mail `mailed` is to a request, as its host is told: its own of `asks`, the next that its sender
 /// asked of that count, when it asks one, and the next of `answers`, the debts the turns answered, when it answers that
-/// one. A reply to the request a turn handles is no such answer: its host tells it from what the turn's handler
-/// declares.
+/// one: or a reply to the request the turn handles, as an answer that is no debt's is.
 fn requesting(
     mailed: &crate::Mailed,
     asks: &mut slice::Iter<'_, Lying>,
@@ -1004,7 +1003,7 @@ fn requesting(
             if is_held {
                 Requesting::Answers { request }
             } else {
-                Requesting::Not
+                Requesting::Replies
             }
         }
         Tied::Tell | Tied::Unanswered(_) => Requesting::Not,

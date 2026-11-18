@@ -16,10 +16,10 @@
 #[cfg(test)]
 mod tests;
 
+use super::Sessions;
 use super::asked::Waiting;
 use super::asks::{Archived, Opened, Said, State};
 use super::transcript::{Entry, Numbered, Speaker};
-use super::{Acts, Does, Sessions};
 use aethereal_actor::{Anyone, Ended, Fault, Handles, Held, Level, ProtocolRef, Receives, Turn};
 use aethereal_data::{ActorId, Bound, Plain, write_json_string};
 use core::fmt::Write as _;
@@ -182,13 +182,12 @@ impl Sessions {
 }
 
 impl Handles<Joined> for Sessions {
-    type Sends = Acts;
     type From = Anyone;
 
     /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
     /// sender that takes nothing an engine is shown, one that names an engine another actor joined as, and one joined
     /// as another engine already are each refused, and nothing joined changes.
-    fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
+    fn handle(&mut self, joined: Joined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Joined { engine } = joined;
         let sender = turn.sender();
         let Some(shown) = turn.cast::<Showing>(sender) else {
@@ -221,10 +220,8 @@ impl Handles<Joined> for Sessions {
 }
 
 impl Receives<Ended> for Sessions {
-    type Sends = ();
-
     /// An engine that joined has ended: its tabs end with it. A turn running carries on, and an ask waits on.
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id();
         self.chats.engines.retain(|_, watcher| watcher.shown.id() != gone);
 
@@ -233,12 +230,11 @@ impl Receives<Ended> for Sessions {
 }
 
 impl Handles<Chatted> for Sessions {
-    type Sends = Acts;
     type From = Anyone;
 
     /// What a trusted engine's owner did: taken only from the actor that joined as that engine, and done once the
     /// capability has found its sessions.
-    fn handle(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
+    fn handle(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Chatted { engine, chat } = chatted;
         let sender = turn.sender();
         let joined = self.chats.engines.get(&engine).map(|watcher| watcher.shown.id());
@@ -256,7 +252,7 @@ impl Handles<Chatted> for Sessions {
 
 impl Sessions {
     /// Does what the owner at `engine` did.
-    pub(super) fn chat<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, engine: u32, chat: Chat) -> Result<(), Fault> {
+    pub(super) fn chat(&mut self, turn: &mut Turn<'_, Self>, engine: u32, chat: Chat) -> Result<(), Fault> {
         let by = Speaker::Engine { engine };
         match chat {
             Chat::Say { session, text } => {
@@ -310,7 +306,7 @@ impl Sessions {
 
     /// Shows each joined engine what changed: every tab, when any changed, and every event after the last shown of
     /// each tab it has open, a few at a time.
-    pub(super) fn show<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    pub(super) fn show(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let tabs = self.tabs();
         if tabs != self.chats.shown {
             for watcher in self.chats.engines.values() {
@@ -339,9 +335,9 @@ impl Sessions {
 
     /// Claude Code in `session` asks whether it may use `tool` with `input`, by its control request `request`: the
     /// ask is numbered, kept until the owner answers it, and shown to every joined engine.
-    pub(super) fn asked<S: Does>(
+    pub(super) fn asked(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         request: String,
         tool: &str,
@@ -361,13 +357,7 @@ impl Sessions {
     /// The owner at `engine` answered the ask numbered `ask`: Claude Code is told, through the control response it
     /// reads on its stdin, and the transcript notes it. An ask answered already, or of a container gone, is passed
     /// over.
-    fn answer<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        engine: u32,
-        ask: u64,
-        allow: bool,
-    ) -> Result<(), Fault> {
+    fn answer(&mut self, turn: &mut Turn<'_, Self>, engine: u32, ask: u64, allow: bool) -> Result<(), Fault> {
         let Some(question) = self.chats.questions.remove(&ask) else {
             turn.log(Level::Info, format_args!("engine {engine} answered ask {ask}, which waits no more"));
             return Ok(());

@@ -14,12 +14,11 @@ use crate::frames::{self, Written};
 use crate::limits;
 use crate::{Down, Outcome, REVISION, Refusal, Up};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles,
-    Level, More, Number, Open, Part, Path, Receives, Streamed, Streams, Subscribers, Taken, Tells, ToAny, ToType, Top,
-    Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Level, Number,
+    Part, Receives, Streams, Subscribers, Taken, Top, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, ShowAsk, ShowEvents};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Connect, Connected, Dialed, Framing, HungUp, Read, Reading, Shut, Tcp, Write, Writing, Wrote};
 use aethereal_tools::{CallTool, Called, Sheets, Subscribe, Tools};
@@ -96,7 +95,7 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// `read_limit` above what its tools answer, so that each is served.
 ///
 /// A trusted engine's link carries chat too (ADR-0057): the sessions, events, and asks the hub shows the engine are
-/// handed to each actor that [`Listen`]s, the dev overlay's console among them, and the sessions' [`Chat`] an actor
+/// handed to each actor that [`Listen`]s, the dev overlay's chat relay among them, and the sessions' [`Chat`] an actor
 /// tells it is written up as its frame.
 #[derive(Bound)]
 #[kind(name = "aether.link")]
@@ -148,11 +147,10 @@ impl Actor for Link {
         Chat,
         Ended,
     );
-    type BeginSends = (Tells<Path<Tools>, Subscribe>, Asks<Path<Tcp>, Connect, Connecting>);
-    type EndSends = ();
+    type Depends = (Tools, Tcp);
 
     /// Subscribes to the engine's tools, and dials its hub.
-    fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: LinkConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Tools>(())).send(&Subscribe)?;
         turn.to(path::<Tcp>(())).ask(&connect(&config), &Connecting)?;
 
@@ -168,17 +166,16 @@ impl Actor for Link {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Sheets> for Link {
-    type Sends = (Asks<Writing, Write, Sending>,);
     type From = Anyone;
 
     /// The engine's tools as `Tools` now holds them: kept, and written to the hub when connected.
-    fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, sheets: Sheets, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.set = Set::Heard(sheets);
 
         self.write_sheets(turn)
@@ -186,15 +183,12 @@ impl Handles<Sheets> for Link {
 }
 
 impl Receives<Answer<Connected, Connecting>> for Link {
-    type Sends =
-        (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>, Asks<Writing, Write, Sending>);
-
     /// Connected, it reads the connection and writes `Hello`, with its token, and the set; otherwise the link has
     /// ended.
     fn handle(
         &mut self,
         (answered, Connecting): (Answered<Connected>, Connecting),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Connected::Open { connection, .. }) = answered else {
             turn.log(Level::Warn, format_args!("the hub was not reached: {answered:?}"));
@@ -211,20 +205,11 @@ impl Receives<Answer<Connected, Connecting>> for Link {
 }
 
 impl Handles<Part<Reading>> for Link {
-    type Sends = (
-        ToAny<Streamed<Reading>, More>,
-        Asks<Writing, Write, Sending>,
-        Asks<Path<Tools>, CallTool, Calling>,
-        ToType<Dialed, Shut>,
-        ToAny<Listening, ShowTabs>,
-        ToAny<Listening, ShowEvents>,
-        ToAny<Listening, ShowAsk>,
-    );
     type From = Anyone;
 
     /// A frame from the hub: a call, asked of the engine's tools; the chat it shows a trusted engine, handed to each
     /// listener; or a refusal, which ends the link, as a frame that does not read does.
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { number, value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
         };
@@ -263,13 +248,11 @@ impl Handles<Part<Reading>> for Link {
 }
 
 impl Receives<Answer<HungUp, Number>> for Link {
-    type Sends = ();
-
     /// The connection's stream has ended: when it is the open connection's, the link has ended.
     fn handle(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.reading.answered(number);
         if !self.line.is_read_by(number) {
@@ -283,13 +266,11 @@ impl Receives<Answer<HungUp, Number>> for Link {
 }
 
 impl Receives<Answer<Wrote, Sending>> for Link {
-    type Sends = (ToType<Dialed, Shut>,);
-
     /// A write to the open connection that was not sent ends the link.
     fn handle(
         &mut self,
         (answered, sending): (Answered<Wrote>, Sending),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let is_sent = answered == Answered::Yes(Wrote::Sent);
         let is_current = self.line.is_read_by(sending.reader);
@@ -304,13 +285,11 @@ impl Receives<Answer<Wrote, Sending>> for Link {
 }
 
 impl Receives<Answer<Called, Calling>> for Link {
-    type Sends = (Asks<Writing, Write, Sending>,);
-
     /// What `Tools` answered, written to the hub: one that comes once the link has ended is dropped.
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(call) = self.calls.remove(&number) else {
             return Ok(());
@@ -329,13 +308,10 @@ impl Link {
     /// The hub's call `call`, asked of `Tools` due as `due` says, so a tool that never answers is refused at the time
     /// the hub stops waiting (ADR-0041). `Tools` refuses a call of a set it has changed since, in the turn it looks the
     /// tool up, and a tool it does not hold.
-    fn call<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, call: u64, due: Due, asked: &CallTool) -> Result<(), Fault>
-    where
-        S: Allows<Asks<Path<Tools>, CallTool, Calling>, I>,
-    {
+    fn call(&mut self, turn: &mut Turn<'_, Self>, call: u64, due: Due, asked: &CallTool) -> Result<(), Fault> {
         let number = self.next;
         self.next += 1;
-        turn.to(path::<Tools>(())).within(due).ask::<_, _, I>(asked, &Calling { number })?;
+        turn.to(path::<Tools>(())).within(due).ask(asked, &Calling { number })?;
         self.calls.insert(number, call);
 
         Ok(())
@@ -343,10 +319,7 @@ impl Link {
 
     /// Writes what the call `call` came to, its output read into the frame, or a refusal in its place when it would not
     /// fit in one.
-    fn answer<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, call: u64, called: Called) -> Result<(), Fault>
-    where
-        S: Allows<Asks<Writing, Write, Sending>, I>,
-    {
+    fn answer(&mut self, turn: &mut Turn<'_, Self>, call: u64, called: Called) -> Result<(), Fault> {
         let called = Outcome::of(called, turn);
         let written = frames::written(&Up::Called { call, called }, self.config.most_bytes)?;
         let bytes = match written {
@@ -357,15 +330,12 @@ impl Link {
             }
         };
 
-        self.write::<_, I>(turn, bytes)
+        self.write(turn, bytes)
     }
 
     /// Writes the set `Tools` last sent, when it has sent one and the root is connected. A set too large for a frame
     /// is not written, and the hub keeps the set before it, whose calls are then refused as changed.
-    fn write_sheets<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<Asks<Writing, Write, Sending>, I>,
-    {
+    fn write_sheets(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Set::Heard(Sheets { revision, tools }) = &self.set else {
             return Ok(());
         };
@@ -376,16 +346,13 @@ impl Link {
             return Ok(());
         };
 
-        self.write::<_, I>(turn, bytes)
+        self.write(turn, bytes)
     }
 
     /// Writes the frame `bytes`, put as a blob, to the open connection: with none open, nothing is written. Before the
     /// dial is answered, the connection is written the whole set once it opens; after the link has ended, nothing is. A
     /// frame the engine has no room to hold ends the link, as a write not sent does.
-    fn write<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, bytes: Vec<u8>) -> Result<(), Fault>
-    where
-        S: Allows<Asks<Writing, Write, Sending>, I>,
-    {
+    fn write(&mut self, turn: &mut Turn<'_, Self>, bytes: Vec<u8>) -> Result<(), Fault> {
         let Line::Open { connection, reader } = self.line else {
             return Ok(());
         };
@@ -394,19 +361,15 @@ impl Link {
             self.end_link(turn);
             return Ok(());
         };
-        turn.to(connection.protocol::<Writing, _>())
-            .ask::<_, _, I>(&Write { parts: vec![frame] }, &Sending { reader })?;
+        turn.to(connection.protocol::<Writing>()).ask(&Write { parts: vec![frame] }, &Sending { reader })?;
 
         Ok(())
     }
 
     /// Shuts the open connection, and ends the link.
-    fn hang_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<ToType<Dialed, Shut>, I>,
-    {
+    fn hang_up(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Line::Open { connection, .. } = self.line {
-            turn.to(connection).send::<_, I>(&Shut)?;
+            turn.to(connection).send(&Shut)?;
         }
         self.end_link(turn);
 
@@ -415,7 +378,7 @@ impl Link {
 
     /// Ends the link: asks the program to stop, and forgets the calls of the connection, whose answers are then
     /// dropped.
-    fn end_link<S>(&mut self, turn: &mut Turn<'_, Self, S>) {
+    fn end_link(&mut self, turn: &mut Turn<'_, Self>) {
         turn.quit();
         self.line = Line::Ended;
         self.calls.clear();

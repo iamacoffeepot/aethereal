@@ -16,8 +16,8 @@ use crate::framing::Framed;
 use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
-    Allows, Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, More, Open, Part,
-    Protocol, Receives, Serving, Stream, StreamKey, ToAny, ToSender, Turn, Unsent,
+    Answer, Answered, Beginning, Bytes, Carries, Ended, Enough, Fault, Given, Handle, Held, More, Open, Protocol,
+    Receives, Serving, Stream, StreamKey, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -176,7 +176,7 @@ struct Pending {
 
 impl Pending {
     /// Its prefix and the bytes of each of its parts, in the order they are written.
-    fn pieces<'p, A, S>(&'p self, turn: &'p Turn<'_, A, S>) -> impl Iterator<Item = &'p [u8]> {
+    fn pieces<'p, A>(&'p self, turn: &'p Turn<'_, A>) -> impl Iterator<Item = &'p [u8]> {
         let parts = self.parts.iter().map(|part| turn.read(part));
 
         iter::once(&self.prefix[..]).chain(parts)
@@ -213,12 +213,9 @@ pub struct Connection {
     writable: Wait,
 }
 
-/// What a connection's actor sends as it reads: the parts of its reader's stream.
-type Parts = ToAny<(Part<Reading>,), Part<Reading>>;
-
 impl Connection {
     /// The connection `config` gives, which makes no call on its socket until it has a reader with credit or a write.
-    pub fn begin<A, S>(config: ConnectionConfig, turn: &mut Beginning<'_, A, S>) -> Result<Self, Fault> {
+    pub fn begin<A>(config: ConnectionConfig, turn: &mut Beginning<'_, A>) -> Result<Self, Fault> {
         let socket = turn.take(config.socket)?;
 
         Ok(Self {
@@ -239,15 +236,8 @@ impl Connection {
 
     /// Opens the stream `open` asks for: the connection's reader, or a second, finished at once as `Busy`. The reader's
     /// credit follows the request, and its `More` is what reads.
-    pub fn open<A: Receives<Ended>, S, I>(
-        &mut self,
-        turn: &mut Turn<'_, A, S>,
-        open: Open<Reading>,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<ToSender<HungUp>, I>,
-    {
-        let (key, Read) = self.reading.open::<_, _, I>(turn, open)?;
+    pub fn open<A: Receives<Ended>>(&mut self, turn: &mut Turn<'_, A>, open: Open<Reading>) -> Result<(), Fault> {
+        let (key, Read) = self.reading.open(turn, open)?;
         if let Reader::Reading(_) = self.reader {
             if let Some(second) = self.reading.take(key) {
                 second.finish(turn, &HungUp::Busy)?;
@@ -260,21 +250,18 @@ impl Connection {
     }
 
     /// Adds the credit `more` grants to the reader's stream, and reads with it.
-    pub fn more<A: Receives<Answer<Readied, Interest>>, S, I>(
+    pub fn more<A: Receives<Answer<Readied, Interest>>>(
         &mut self,
-        turn: &mut Turn<'_, A, S>,
+        turn: &mut Turn<'_, A>,
         more: &More,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    ) -> Result<(), Fault> {
         self.reading.more(turn, more);
 
         self.read(turn)
     }
 
     /// The reader stops reading: the connection hangs up.
-    pub fn enough<A, S>(&mut self, turn: &mut Turn<'_, A, S>, enough: &Enough) -> Result<(), Fault> {
+    pub fn enough<A>(&mut self, turn: &mut Turn<'_, A>, enough: &Enough) -> Result<(), Fault> {
         let Some(stopped) = self.reading.stop(turn, enough) else {
             return Ok(());
         };
@@ -285,7 +272,7 @@ impl Connection {
     }
 
     /// An actor watched has ended: when it was the reader, no one is left to read, and the connection hangs up.
-    pub fn ended<A, S>(&mut self, turn: &mut Turn<'_, A, S>, ended: &Ended) -> Result<(), Fault> {
+    pub fn ended<A>(&mut self, turn: &mut Turn<'_, A>, ended: &Ended) -> Result<(), Fault> {
         let gone = self.reading.ended(ended);
         if gone.is_empty() {
             return Ok(());
@@ -298,22 +285,19 @@ impl Connection {
     /// Takes `write` to send, and writes what the socket takes of it now; or answers `Full` when it would put the
     /// connection past what it holds unsent, `Finished` once it was asked to finish, and `HungUp` once its socket
     /// failed a write.
-    pub fn write<A: Receives<Answer<Readied, Interest>>, S, I>(
+    pub fn write<A: Receives<Answer<Readied, Interest>>>(
         &mut self,
-        turn: &mut Turn<'_, A, S>,
+        turn: &mut Turn<'_, A>,
         write: Write,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<ToSender<Wrote>, I>,
-    {
+    ) -> Result<(), Fault> {
         match self.write_half {
             WriteHalf::Open => {}
             WriteHalf::Finishing | WriteHalf::Finished => {
-                turn.reply::<_, I>(&Wrote::Finished)?;
+                turn.reply(&Wrote::Finished)?;
                 return Ok(());
             }
             WriteHalf::Failed => {
-                turn.reply::<_, I>(&Wrote::HungUp)?;
+                turn.reply(&Wrote::HungUp)?;
                 return Ok(());
             }
         }
@@ -322,10 +306,10 @@ impl Connection {
         let length = (prefix.len() + parts_length) as u64;
         let fits = self.waiting() + length <= self.most_unsent_bytes;
         if !fits {
-            turn.reply::<_, I>(&Wrote::Full)?;
+            turn.reply(&Wrote::Full)?;
             return Ok(());
         }
-        let held = turn.hold::<Wrote, I>()?;
+        let held = turn.hold::<Wrote>()?;
         self.unsent.push(Pending { prefix, parts: write.parts, length, held });
 
         self.send(turn)
@@ -333,10 +317,7 @@ impl Connection {
 
     /// Asked to finish writing: it shuts its write half once what it holds unsent is written, and at once when nothing
     /// is. A second ask, or one after a write failed, changes nothing.
-    pub fn finish<A: Receives<Answer<Readied, Interest>>, S>(
-        &mut self,
-        turn: &mut Turn<'_, A, S>,
-    ) -> Result<(), Fault> {
+    pub fn finish<A: Receives<Answer<Readied, Interest>>>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         if self.write_half != WriteHalf::Open {
             return Ok(());
         }
@@ -347,14 +328,11 @@ impl Connection {
 
     /// What a wait for the socket came to: it is ready for `interest`, or may be, so the calls that waited on it are
     /// made again; or the host has no poller, and the socket can never be waited on, so the connection hangs up.
-    pub fn readied<A: Receives<Answer<Readied, Interest>>, S, I>(
+    pub fn readied<A: Receives<Answer<Readied, Interest>>>(
         &mut self,
-        turn: &mut Turn<'_, A, S>,
+        turn: &mut Turn<'_, A>,
         (readied, interest): (Answered<Readied>, Interest),
-    ) -> Result<(), Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    ) -> Result<(), Fault> {
         match interest {
             Interest::Readable => self.readable = Wait::Not,
             Interest::Writable => self.writable = Wait::Not,
@@ -371,7 +349,7 @@ impl Connection {
     }
 
     /// Asked to hang up: it does.
-    pub fn shut<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    pub fn shut<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         self.hang_up(turn, HungUp::Shut)
     }
 
@@ -385,7 +363,7 @@ impl Connection {
     /// the socket would not take waits for it to be writable. Once all is written, a connection finishing shuts its
     /// write half. What it then holds unsent, it tells the engine when that has changed, for the engine's backlog
     /// (ADR-0053).
-    fn send<A: Receives<Answer<Readied, Interest>>, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    fn send<A: Receives<Answer<Readied, Interest>>>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         let mut sent = Vec::new();
         let written = self.write_unsent(turn, &mut sent);
         for held in sent {
@@ -408,7 +386,7 @@ impl Connection {
 
     /// Shuts its socket's write half, everything asked of it written: the peer reads to its end. A shut the socket
     /// refuses fails the write half.
-    fn shut_writing<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    fn shut_writing<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         let Ok(socket) = turn.resource(&self.socket) else {
             return self.fail_writing(turn);
         };
@@ -423,7 +401,7 @@ impl Connection {
     /// Its socket failed a write: it answers every write unsent `HungUp`, stops its wait for the socket to be
     /// writable, and takes no more writes, but reads on, so what the peer sent before it stopped reading still
     /// arrives, and the connection ends when its read half does.
-    fn fail_writing<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault> {
+    fn fail_writing<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         self.write_half = WriteHalf::Failed;
         for unsent in self.unsent.drain(..) {
             turn.answer(unsent.held, &Wrote::HungUp)?;
@@ -439,7 +417,7 @@ impl Connection {
     }
 
     /// Tells the engine the bytes it holds unsent, when they have changed since it last told it (ADR-0053).
-    fn tell_unsent<A, S>(&mut self, turn: &mut Turn<'_, A, S>) {
+    fn tell_unsent<A>(&mut self, turn: &mut Turn<'_, A>) {
         let waiting = self.waiting();
         if waiting != self.told_unsent {
             turn.holds_unsent(waiting, self.most_unsent_bytes);
@@ -449,10 +427,7 @@ impl Connection {
 
     /// Reads, frames, and sends its reader as many frames as its credit allows. A read that would wait waits for the
     /// socket to be readable; one stopped for want of credit waits for the reader's `More`.
-    fn read<A: Receives<Answer<Readied, Interest>>, S, I>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<(), Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn read<A: Receives<Answer<Readied, Interest>>>(&mut self, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
         let Reader::Reading(key) = self.reader else {
             return Ok(());
         };
@@ -481,7 +456,7 @@ impl Connection {
                         let Some(stream) = self.reading.get_mut(key) else {
                             return Ok(());
                         };
-                        if let Err(Unsent::Unwritable(error)) = stream.send::<_, _, I>(turn, Frame { bytes: frame }) {
+                        if let Err(Unsent::Unwritable(error)) = stream.send(turn, Frame { bytes: frame }) {
                             return Err(error.into());
                         }
                     }
@@ -499,9 +474,9 @@ impl Connection {
     }
 
     /// Runs a [`Ready`] for `interest`, unless one is in flight already.
-    fn wait<A: Receives<Answer<Readied, Interest>>, S>(
+    fn wait<A: Receives<Answer<Readied, Interest>>>(
         &mut self,
-        turn: &mut Turn<'_, A, S>,
+        turn: &mut Turn<'_, A>,
         interest: Interest,
     ) -> Result<(), Fault> {
         let waits = match interest {
@@ -524,7 +499,7 @@ impl Connection {
     /// Writes unsent bytes until the socket would wait, each write's prefix and parts with gathered writes, noting in
     /// `sent` each write whose bytes all went. The socket and the parts' bytes are both shared borrows of the turn, so
     /// they are held together: the kernel writes a socket through `&` (ADR-0042).
-    fn write_unsent<A, S>(&mut self, turn: &Turn<'_, A, S>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
+    fn write_unsent<A>(&mut self, turn: &Turn<'_, A>, sent: &mut Vec<Held<Wrote>>) -> Result<(), HungUp> {
         let Ok(socket) = turn.resource(&self.socket) else {
             return Err(HungUp::Reset);
         };
@@ -544,7 +519,7 @@ impl Connection {
 
     /// Reads what its socket holds into what it has read and not framed, up to what its framing keeps, and says how
     /// it stopped. The bytes are read into that buffer itself, which the connection keeps from read to read.
-    fn fill<A, S>(&mut self, turn: &mut Turn<'_, A, S>) -> Result<Filled, HungUp> {
+    fn fill<A>(&mut self, turn: &mut Turn<'_, A>) -> Result<Filled, HungUp> {
         let most = self.framing.most();
         let Ok(socket) = turn.open(&mut self.socket) else {
             return Err(HungUp::Reset);
@@ -574,7 +549,7 @@ impl Connection {
     /// read buffer itself when the frame is all of it and fills at least half of it, by the rule a kept buffer is
     /// handed out by (ADR-0042), so a large frame is put where it was read; else a copy, in a buffer the turn hands
     /// out.
-    fn cut<A, S>(&mut self, turn: &mut Turn<'_, A, S>, skip: usize, bytes: usize) -> Vec<u8> {
+    fn cut<A>(&mut self, turn: &mut Turn<'_, A>, skip: usize, bytes: usize) -> Vec<u8> {
         let end = skip + bytes;
         let is_all = skip == 0 && end == self.read.len();
         let fills = bytes.saturating_mul(2) >= self.read.capacity();
@@ -592,7 +567,7 @@ impl Connection {
 
     /// Ends the reader's stream with `why`, answers every write not sent, stops its waits for the socket, and closes
     /// the connection, whose socket the engine drops after its closing turn (ADR-0010).
-    fn hang_up<A, S>(&mut self, turn: &mut Turn<'_, A, S>, why: HungUp) -> Result<(), Fault> {
+    fn hang_up<A>(&mut self, turn: &mut Turn<'_, A>, why: HungUp) -> Result<(), Fault> {
         if let Reader::Reading(key) = self.reader
             && let Some(stream) = self.reading.take(key)
         {

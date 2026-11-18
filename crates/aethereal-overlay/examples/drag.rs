@@ -23,8 +23,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{
-    Actor, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, Path, Prepare, Render, Tells, Tick, Top,
-    Turn, child, path,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Prepare, Render, Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -33,7 +32,7 @@ use aethereal_data::{Bound, KeyName, Plain, TypedKey};
 use aethereal_files::Files;
 use aethereal_link::{Link, LinkSettings};
 use aethereal_pace::{PaceTool, Pacer};
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::{CaptureTool, Renderer};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -204,22 +203,12 @@ aethereal_ui::view! { Shelf, ui,
     }
 }
 
-/// What the root screen's methods send: none of their own.
-type ShelvesSends = aethereal_ui::sends![];
-
-impl Controls for Shelves {
-    type Sends = ShelvesSends;
-}
+impl Controls for Shelves {}
 
 #[aethereal_ui::events]
 impl Shelves {}
 
-/// What a shelf's methods send: none of their own.
-type ShelfSends = aethereal_ui::sends![];
-
-impl Controls for Shelf {
-    type Sends = ShelfSends;
-}
+impl Controls for Shelf {}
 
 #[aethereal_ui::events]
 impl Shelf {
@@ -238,7 +227,7 @@ impl Shelf {
 
     /// Takes `fruit`, dropped on it: the library answers the shelf it came from that it was taken. One dropped back on
     /// its own shelf was let go of first, so it moves to the end.
-    fn take_fruit(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, fruit: Fruit) -> Result<(), Fault> {
+    fn take_fruit(&mut self, turn: &mut Turn<'_, Self>, fruit: Fruit) -> Result<(), Fault> {
         self.fruit.push(fruit);
         turn.log(Level::Info, format_args!("took fruit {}", fruit.0));
         Ok(())
@@ -246,21 +235,21 @@ impl Shelf {
 
     /// Takes `stone`, dropped on its bin: the library answers the shelf it came from that it was taken. One dropped
     /// back on its own shelf was let go of first, so it moves to the end.
-    fn take_stone(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, stone: Stone) -> Result<(), Fault> {
+    fn take_stone(&mut self, turn: &mut Turn<'_, Self>, stone: Stone) -> Result<(), Fault> {
         self.stones.push(stone);
         turn.log(Level::Info, format_args!("took stone {}", stone.0));
         Ok(())
     }
 
     /// Lets go of `fruit`, which a shelf took.
-    fn let_go_fruit(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, fruit: Fruit) -> Result<(), Fault> {
+    fn let_go_fruit(&mut self, turn: &mut Turn<'_, Self>, fruit: Fruit) -> Result<(), Fault> {
         self.fruit.retain(|kept| *kept != fruit);
         turn.log(Level::Info, format_args!("let fruit {} go", fruit.0));
         Ok(())
     }
 
     /// Lets go of `stone`, which a shelf took.
-    fn let_go_stone(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, stone: Stone) -> Result<(), Fault> {
+    fn let_go_stone(&mut self, turn: &mut Turn<'_, Self>, stone: Stone) -> Result<(), Fault> {
         self.stones.retain(|kept| *kept != stone);
         turn.log(Level::Info, format_args!("let stone {} go", stone.0));
         Ok(())
@@ -268,14 +257,14 @@ impl Shelf {
 
     /// Puts `fruit` back, which nothing under its release took: it never left the shelf.
     #[allow(clippy::unused_self)]
-    fn keep_fruit(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, fruit: Fruit) -> Result<(), Fault> {
+    fn keep_fruit(&mut self, turn: &mut Turn<'_, Self>, fruit: Fruit) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("put fruit {} back", fruit.0));
         Ok(())
     }
 
     /// Puts `stone` back, which nothing under its release took, or the shelf it was dropped on refused.
     #[allow(clippy::unused_self)]
-    fn keep_stone(&mut self, turn: &mut Turn<'_, Self, ShelfSends>, stone: Stone) -> Result<(), Fault> {
+    fn keep_stone(&mut self, turn: &mut Turn<'_, Self>, stone: Stone) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("put stone {} back", stone.0));
         Ok(())
     }
@@ -293,10 +282,9 @@ impl Actor for Shelves {
     type Config = ShelvesConfig;
     type Key = ();
     type Handles = aethereal_ui::handles![Event];
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Shaping>);
-    type EndSends = ();
+    type Depends = aethereal_ui::depends!();
 
-    fn begin(config: ShelvesConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ShelvesConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
         let frame = Frame::Main(config.window);
         let (Ok(left), Ok(right)) = (
@@ -315,16 +303,15 @@ impl Actor for Shelves {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Shelves {
-    type Sends = aethereal_ui::Sends;
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -339,11 +326,10 @@ impl Actor for Shelf {
     type Config = ShelfConfig;
     type Key = Hand;
     type Handles = aethereal_ui::handles![];
-    type BeginSends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
-    type EndSends = ();
+    type Depends = aethereal_ui::depends!();
 
     /// The left shelf begins with three fruit and two stones, the right with two fruit.
-    fn begin(config: ShelfConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ShelfConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(config.frame), Viewport::window(1, 1, 1.0), turn)?;
         let (fruit, stones) = match config.hand {
             Hand::Left => (vec![Fruit(1), Fruit(2), Fruit(3)], vec![Stone(1), Stone(2)]),
@@ -353,7 +339,7 @@ impl Actor for Shelf {
         Ok(Self { hand: config.hand, fruit, stones, ui })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

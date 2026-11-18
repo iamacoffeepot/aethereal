@@ -3,14 +3,14 @@
 use crate::McpSettings;
 use crate::front::{self, Reply, Routed};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Receives,
-    ToSender, Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Receives, Top,
+    Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::Status;
-use aethereal_http::stack::{FromStack, Gather, Gathered, Gathering, Request, Response};
+use aethereal_http::stack::{FromStack, Gathered, Request, Response};
 use aethereal_substrate::Bootstrap;
-use aethereal_tools::{Call, Called, Caller, HeldTool, Holder, Offer, Offered, Output, Table, Tooling, Withdraw};
+use aethereal_tools::{Call, Called, Caller, HeldTool, Holder, Offer, Offered, Output, Table, Withdraw};
 use core::time::Duration;
 use std::collections::BTreeMap;
 
@@ -79,29 +79,23 @@ impl Actor for Mcp {
     type Config = McpSettings;
     type Key = ();
     type Handles = (Request<Caller, ()>, Answer<Gathered, Reading>, Offer, Withdraw, Answer<Called, Calling>, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: McpSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: McpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { settings, table: Table::new(), waiting: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Request<Caller, ()>> for Mcp {
-    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Reading>);
     type From = FromStack;
 
     /// A request from an origin it does not take is answered `403` unread; any other is held, and its body gathered
     /// whole.
-    fn handle(
-        &mut self,
-        request: Request<Caller, ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<Caller, ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         if !front::is_from_allowed(&request, &self.settings.origins) {
             return Ok(turn.reply(&Response::empty(Status::Forbidden))?);
         }
@@ -115,15 +109,13 @@ impl Handles<Request<Caller, ()>> for Mcp {
 }
 
 impl Receives<Answer<Gathered, Reading>> for Mcp {
-    type Sends = (Asks<Tooling, Call, Calling>,);
-
     /// The body is read: the request is answered now, or its call is forwarded to its tool's worker and the request
     /// held until the worker answers. A body past `most_body_bytes` is answered `413`; one the stack could not read is
     /// answered `400`, which the stack passes over when it has closed the connection or answers in its place.
     fn handle(
         &mut self,
         (gathered, Reading { held, request }): (Answered<Gathered>, Reading),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let body = match gathered {
             Answered::Yes(Gathered::Whole(body)) => body,
@@ -165,10 +157,9 @@ impl Receives<Answer<Gathered, Reading>> for Mcp {
 }
 
 impl Handles<Offer> for Mcp {
-    type Sends = (ToSender<Offered>,);
     type From = Anyone;
 
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let room = usize::try_from(self.settings.most_tools).unwrap_or(usize::MAX);
         let offered = self.table.take(offer.tools, offer.worker, room);
         if offered == Offered::Yes {
@@ -181,10 +172,9 @@ impl Handles<Offer> for Mcp {
 }
 
 impl Handles<Withdraw> for Mcp {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);
 
         Ok(())
@@ -192,12 +182,10 @@ impl Handles<Withdraw> for Mcp {
 }
 
 impl Receives<Answer<Called, Calling>> for Mcp {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Waiting { held, id, output }) = self.waiting.remove(&number) else {
             return Ok(());
@@ -234,9 +222,7 @@ impl Receives<Answer<Called, Calling>> for Mcp {
 }
 
 impl Receives<Ended> for Mcp {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.table.ended(ended.actor());
 
         Ok(())
@@ -245,7 +231,7 @@ impl Receives<Ended> for Mcp {
 
 /// `reply` as a response, its JSON put as a blob: one the engine has no room to hold is answered `503` with no body,
 /// which needs none (ADR-0042).
-fn response<S>(turn: &mut Turn<'_, Mcp, S>, reply: Reply) -> Response {
+fn response(turn: &mut Turn<'_, Mcp>, reply: Reply) -> Response {
     let (status, body) = match reply {
         Reply::Empty(status) => return Response::empty(status),
         Reply::Json { status, body } => (status, body),

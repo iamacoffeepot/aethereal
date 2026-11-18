@@ -15,11 +15,10 @@ use crate::prelude::*;
 use crate::table::{Focus, Table};
 use crate::widget::Laid;
 use crate::widgets::Text;
-use aethereal_actor::{Actor, Asks, Beginning, ChildOf, Ending, Fault, Path, Top, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
 use aethereal_data::{Bound, Plain};
-use aethereal_render::Renderer;
 use aethereal_render::draw_list::Entry;
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::text::Font;
 
@@ -89,12 +88,7 @@ aethereal_ui::view! { Board, ui,
     }
 }
 
-/// What the board's methods send: none of their own.
-type BoardSends = aethereal_ui::sends![];
-
-impl Controls for Board {
-    type Sends = BoardSends;
-}
+impl Controls for Board {}
 
 #[aethereal_ui::events]
 impl Board {
@@ -102,12 +96,12 @@ impl Board {
         self.query.clone()
     }
 
-    fn pick(&mut self, _: &mut Turn<'_, Self, BoardSends>, id: u32) -> Result<(), Fault> {
+    fn pick(&mut self, _: &mut Turn<'_, Self>, id: u32) -> Result<(), Fault> {
         self.chosen = id;
         Ok(())
     }
 
-    fn search(&mut self, _: &mut Turn<'_, Self, BoardSends>, query: String) -> Result<(), Fault> {
+    fn search(&mut self, _: &mut Turn<'_, Self>, query: String) -> Result<(), Fault> {
         self.query = query;
         Ok(())
     }
@@ -121,16 +115,15 @@ impl Actor for Board {
     type Config = Frame;
     type Key = ();
     type Handles = aethereal_ui::handles![];
-    type BeginSends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
-    type EndSends = ();
+    type Depends = crate::depends!();
 
-    fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 
         Ok(Self::first(ui))
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

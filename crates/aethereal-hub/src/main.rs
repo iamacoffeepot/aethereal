@@ -2,9 +2,10 @@
 //! for an engine started by hand, spawn an engine from its store, and terminate one (ADR-0037, ADR-0038, ADR-0040),
 //! and check binaries into its store, list them, and pin them (ADR-0039). It lists `Processes`, which starts each
 //! engine it spawns, and `actor_logs`, which reads what its own actors logged (ADR-0044). It runs the Claude sessions
-//! its caller opens, each in a Docker container of its own, and offers them as the `session_*` tools (ADR-0057). Its
-//! own tool `describe_hub` answers the commit it was built from and the link revision it speaks (ADR-0038). It runs no
-//! cycle: its sockets wake it as they are ready (ADR-0033).
+//! its caller opens, each in a Docker container of its own, and offers them as the `session_*` tools (ADR-0057), and
+//! puts each trusted engine's chat through to them with `ChatToSessions`. Its own tool `describe_hub` answers the
+//! commit it was built from and the link revision it speaks (ADR-0038). It runs no cycle: its sockets wake it as they
+//! are ready (ADR-0033).
 //!
 //! `Mcp` and `Engines` each suggest `--most-calls`, `Engines` and `Store` each suggest `--most-bytes`, and `Http` and
 //! `Docker` each suggest `--window`, so this program names them apart: `--mcp-most-calls` for MCP, `--link-port`,
@@ -38,7 +39,7 @@ use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_files::Files;
 use aethereal_http::{Http, HttpSettings};
-use aethereal_link::{EngineTools, Engines, EnginesSettings};
+use aethereal_link::{ChatToSessions, EngineTools, Engines, EnginesSettings};
 use aethereal_mcp::{Mcp, McpSettings};
 use aethereal_process::Processes;
 use aethereal_sessions::{Docker, DockerSettings, Sessions, SessionsTools};
@@ -58,7 +59,13 @@ type HubTools = Toolbox<(EngineTools, StoreTools, LogsTool, SessionsTools, Descr
 /// The hub's roots, the last listed first.
 type Roots = (
     ContainerStack,
-    (LocalStack, (HubTools, (Sessions, (Docker, (Files, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ()))))))))))),
+    (
+        LocalStack,
+        (
+            HubTools,
+            (ChatToSessions, (Sessions, (Docker, (Files, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ())))))))))),
+        ),
+    ),
 );
 
 /// The hub: its roots, the engine's settings they need, and its flags named apart.
@@ -81,6 +88,7 @@ fn hub() -> Program<Headless, Roots> {
         .root::<Files>()
         .root::<Docker>()
         .root::<Sessions>()
+        .root::<ChatToSessions>()
         .root::<HubTools>()
         .root_with::<LocalStack>(local)
         .root_with::<ContainerStack>(container)

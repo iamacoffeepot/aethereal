@@ -14,7 +14,7 @@ pub(crate) use listen::listen;
 
 use aethereal_actor::{
     Actor, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Given, Handle, Handles, Level, Receives, Source,
-    Subscribers, ToAny, Top, Turn,
+    Subscribers, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -81,26 +81,24 @@ impl Actor for Controls {
     type Config = ControlsConfig;
     type Key = ();
     type Handles = (Subscribe, Unsubscribe, Control, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ControlsConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ControlsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
 
         Ok(Self { source, listeners: Subscribers::new(), standing: BTreeMap::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// Adds the sender, and sends it every control as it stands: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Controls {
-    type Sends = (ToAny<(Control,), Control>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(listener) = turn.cast::<(Control,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle the page's controls asked to be sent them");
@@ -120,10 +118,9 @@ impl Handles<Subscribe> for Controls {
 }
 
 impl Handles<Unsubscribe> for Controls {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Unsubscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listeners.unsubscribe(turn.sender());
 
         Ok(())
@@ -133,10 +130,9 @@ impl Handles<Unsubscribe> for Controls {
 /// What the source brought, from this actor to itself (ADR-0010), kept and sent on to every subscriber. A control
 /// another actor sends is not the page's, and is neither kept nor sent on.
 impl Handles<Control> for Controls {
-    type Sends = (ToAny<(Control,), Control>,);
     type From = Anyone;
 
-    fn handle(&mut self, control: Control, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, control: Control, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();
         let is_brought = turn.sender() == me.into();
         if !is_brought {
@@ -151,9 +147,7 @@ impl Handles<Control> for Controls {
 }
 
 impl Receives<Ended> for Controls {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listeners.ended(&ended);
 
         Ok(())

@@ -200,17 +200,16 @@ impl Actor for Quitter {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>, Answer<Slept, GivesUp>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
         turn.run(&Sleep { until: Time::from_nanos(10) }, &GivesUp { on })?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -244,21 +243,13 @@ fn seen(engine: &mut Engine) -> Vec<Seen> {
 }
 
 impl Receives<Answer<Ran, Nothing>> for Quitter {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Slept, GivesUp>> for Quitter {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (_, gives_up): (Answered<Slept>, GivesUp),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (_, gives_up): (Answered<Slept>, GivesUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.cancel(gives_up.on);
         let unpolled = turn.run(&Forever, &Nothing)?;
         turn.cancel(unpolled);
@@ -324,24 +315,21 @@ impl Actor for Staller {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Stalls, &Nothing)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Ran, Nothing>> for Staller {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

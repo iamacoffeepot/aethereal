@@ -1,8 +1,8 @@
 //! An actor: the calls the engine makes of it (ADR-0009, ADR-0013).
 
 use crate::{
-    Actors, Beginning, BlobId, Chain, ChildOf, Children, Closing, Declared, DeclaredBy, Due, Ending, Fault,
-    HandledList, Holds, Instances, Item, Moving, Puts, Seated, Seats, Sends, Table, Tie, Turning, Upgraded, Within,
+    Actors, Beginning, BlobId, Chain, ChildOf, Children, Closing, Declared, Depends, Due, Ending, Fault, HandledList,
+    Holds, Instances, Item, Moving, Puts, Seated, Seats, Table, Tie, Turning, Upgraded, Within,
 };
 use aethereal_data::{ActorKey, Decode, Encode, Kind};
 use alloc::boxed::Box;
@@ -12,8 +12,9 @@ use core::any::Any;
 /// and ended once (ADR-0009).
 ///
 /// What an actor handles is a tuple of the things it has a
-/// [`Handles`](crate::Handles) impl for, and each turn it runs declares what it
-/// may send (ADR-0013). A handler changes its own state and nothing else:
+/// [`Handles`](crate::Handles) impl for, and what it reaches by typed path a
+/// tuple of the actor types it depends on (ADR-0013, ADR-0059). Each send is
+/// checked where it is written. A handler changes its own state and nothing else:
 /// everything it wants of the engine it asks for through its turn, and nothing
 /// it asks for happens during the turn.
 ///
@@ -27,16 +28,15 @@ pub trait Actor: Kind + Encode<Within> + Decode<Within> + Send + Sized + 'static
     /// [`Others`](crate::Others) when it falls back. Items from one source come in the order that source caused
     /// them, so an actor handles what another sent it before it is shown that the other has ended.
     type Handles: HandledList<Self>;
-    /// What its `begin` may send.
-    type BeginSends: Sends + DeclaredBy<Self>;
-    /// What its closing turn may send.
-    type EndSends: Sends + DeclaredBy<Self>;
+    /// The actor types it reaches by typed path, as it begins, in a handler, or as it ends: a tuple of them, `()` for
+    /// none. A typed path builds as a target when its root is the root of one of them (ADR-0059).
+    type Depends: Depends;
 
     /// Makes the actor from `config`. It runs inside the turn of the parent that spawns it.
-    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault>;
+    fn begin(config: Self::Config, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault>;
 
     /// The actor's closing turn. It runs once, and the actor ends whatever it returns.
-    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault>;
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault>;
 }
 
 /// An actor the engine runs without naming its type: its items prepared in batches, then taken a turn at a time

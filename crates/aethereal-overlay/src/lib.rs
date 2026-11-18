@@ -31,9 +31,10 @@
 //! called and not yet heard from shows at the prompt's right end. The overlay offers tools of its own, `mark`, `memory`,
 //! and `set_theme`, which an agent may call too, all served by one worker that mails the overlay what needs its state.
 //!
-//! In an engine its hub trusts, the console is the chat with Claude's sessions (ADR-0057): the overlay listens to the
-//! engine's link, the sessions show as tabs beneath the prompt, the console's own first, and with a session's tab open
-//! its transcript shows in place of the scrollback, and a line goes to the session; `!` on an empty line puts the tab
+//! In an engine its hub trusts, the console is the chat with Claude's sessions (ADR-0057): [`ChatRelay`], a root a
+//! program with a link lists after the overlay and the link, carries the chat between them; the sessions show as tabs
+//! beneath the prompt, the console's own first, and with a session's tab open its transcript shows in place of the
+//! scrollback, and a line goes to the session; `!` on an empty line puts the tab
 //! in `!` mode, where a line runs here and is sent to the session with what it printed, as the console's own tab is
 //! always, and Backspace on an empty line puts it back. Escape on a line typed empties it, on an empty one leaves `!`
 //! mode, and in chat mode stops the session's turn. The chat's words,
@@ -53,9 +54,11 @@ mod lines;
 mod marks;
 mod meters;
 mod overlay;
+mod relay;
 mod stop;
 mod tools;
 mod widgets;
 
 pub use overlay::{Overlay, OverlayConfig};
+pub use relay::{ChatRelay, Relays};
 pub use stop::Stop;

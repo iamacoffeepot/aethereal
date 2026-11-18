@@ -10,13 +10,12 @@
 //! An untrusted engine is shown nothing, so its listeners hear nothing, and an engine's console shows no chat until
 //! the hub has shown it the sessions.
 
-use super::{Link, Sending};
+use super::Link;
 use crate::Up;
 use crate::frames::{self, Written};
-use aethereal_actor::{Allows, Anyone, Asks, Ended, Fault, Handles, Level, Receives, ToAny, Turn};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, Receives, Turn};
 use aethereal_data::Plain;
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs, Tab};
-use aethereal_tcp::{Write, Writing};
 
 /// What a listener is shown: the kinds of the sessions' `Showing`, which the hub's `Engine` is told.
 pub type Listening = (ShowTabs, ShowEvents, ShowAsk);
@@ -59,38 +58,29 @@ impl Shown {
 
 impl Link {
     /// The sessions the hub listed, kept and shown to each listener.
-    pub(super) fn tabs<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, tabs: Vec<Tab>) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<Listening, ShowTabs>, I>,
-    {
+    pub(super) fn tabs(&mut self, turn: &mut Turn<'_, Self>, tabs: Vec<Tab>) -> Result<(), Fault> {
         self.shown.listed(&tabs);
         let shown = ShowTabs { tabs };
         for listener in self.listeners.references() {
-            turn.to(*listener).send::<_, I>(&shown)?;
+            turn.to(*listener).send(&shown)?;
         }
 
         Ok(())
     }
 
     /// Events of a tab the engine has open, shown to each listener.
-    pub(super) fn events<S, I>(&self, turn: &mut Turn<'_, Self, S>, shown: &ShowEvents) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<Listening, ShowEvents>, I>,
-    {
+    pub(super) fn events(&self, turn: &mut Turn<'_, Self>, shown: &ShowEvents) -> Result<(), Fault> {
         for listener in self.listeners.references() {
-            turn.to(*listener).send::<_, I>(shown)?;
+            turn.to(*listener).send(shown)?;
         }
 
         Ok(())
     }
 
     /// An ask that waits on the owner, kept and shown to each listener.
-    pub(super) fn ask<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, ask: ShowAsk) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<Listening, ShowAsk>, I>,
-    {
+    pub(super) fn ask(&mut self, turn: &mut Turn<'_, Self>, ask: ShowAsk) -> Result<(), Fault> {
         for listener in self.listeners.references() {
-            turn.to(*listener).send::<_, I>(&ask)?;
+            turn.to(*listener).send(&ask)?;
         }
         self.shown.asked(ask);
 
@@ -101,10 +91,9 @@ impl Link {
 /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or the
 /// hub has shown nothing.
 impl Handles<Listen> for Link {
-    type Sends = (ToAny<Listening, ShowTabs>, ToAny<Listening, ShowAsk>);
     type From = Anyone;
 
-    fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(listener) = turn.cast::<Listening>(sender) else {
             turn.log(Level::Warn, "an actor that is not shown the chat asked to listen to it");
@@ -129,10 +118,9 @@ impl Handles<Listen> for Link {
 /// What the engine's owner did, written up as its frame when the link is open: the hub takes it only from a trusted
 /// engine. A frame too large for the link is not written, and logged.
 impl Handles<Chat> for Link {
-    type Sends = (Asks<Writing, Write, Sending>,);
     type From = Anyone;
 
-    fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let written = frames::written(&Up::from(chat), self.config.most_bytes)?;
         let Written::Fits(bytes) = written else {
             turn.log(Level::Warn, "a chat frame is too large for the link, and was not written");
@@ -145,9 +133,7 @@ impl Handles<Chat> for Link {
 
 /// A listener has ended, and is let go.
 impl Receives<Ended> for Link {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listeners.ended(&ended);
 
         Ok(())

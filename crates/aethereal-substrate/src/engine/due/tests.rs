@@ -3,8 +3,8 @@
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Carries, ChildOf, Due, Ending, Fault,
-    Handles, Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Time, ToSender, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles,
+    Held, Protocol, ProtocolRef, Receives, Sleep, Slept, Time, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -101,23 +101,21 @@ impl Actor for Mute {
     type Config = Blank;
     type Key = u64;
     type Handles = (Query, Release);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), dues: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Query> for Mute {
-    type Sends = (ToSender<Reply>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.dues.push(held.due());
         self.held.push(held);
@@ -127,10 +125,9 @@ impl Handles<Query> for Mute {
 }
 
 impl Handles<Release> for Mute {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Release, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in self.held.drain(..) {
             turn.answer(held, &Reply)?;
         }
@@ -162,10 +159,9 @@ impl Actor for Relay {
     type Config = Blank;
     type Key = ();
     type Handles = (Query, Forward, Answer<Reply, Pending>, Answer<Slept, Pending>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Blank, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(mute) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Blank)?);
         };
@@ -173,22 +169,21 @@ impl Actor for Relay {
         Ok(Self { mute, held: Vec::new(), dues: Vec::new(), heard: Vec::new(), slept: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Query> for Relay {
-    type Sends = (ToSender<Reply>, Asks<Queries, Query, Pending>);
     type From = Anyone;
 
-    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.dues.push(held.due());
         self.held.push(held);
         match query.onward {
             Onward::Asks => {
-                turn.to(self.mute.protocol()).ask(&Query { onward: Onward::Waits }, &Pending)?;
+                turn.to(self.mute.protocol::<Queries>()).ask(&Query { onward: Onward::Waits }, &Pending)?;
             }
             Onward::Runs => {
                 turn.run(&Sleep { until: Time::from_nanos(u64::MAX) }, &Pending)?;
@@ -201,12 +196,13 @@ impl Handles<Query> for Relay {
 }
 
 impl Handles<Forward> for Relay {
-    type Sends = (Asks<Queries, Query, Pending>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Forward, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Forward, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in &self.held {
-            turn.to(self.mute.protocol()).within(held.due()).ask(&Query { onward: Onward::Waits }, &Pending)?;
+            turn.to(self.mute.protocol::<Queries>())
+                .within(held.due())
+                .ask(&Query { onward: Onward::Waits }, &Pending)?;
         }
 
         Ok(())
@@ -214,12 +210,10 @@ impl Handles<Forward> for Relay {
 }
 
 impl Receives<Answer<Reply, Pending>> for Relay {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Pending): (Answered<Reply>, Pending),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.heard.push(Heard::of(&answered));
         // It answers what it holds whatever it heard, as a hop frees its slot: past its deadline, the engine drops it.
@@ -232,9 +226,7 @@ impl Receives<Answer<Reply, Pending>> for Relay {
 }
 
 impl Receives<Answer<Slept, Pending>> for Relay {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Slept>, Pending), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Slept>, Pending), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.slept += 1;
 
         Ok(())
@@ -285,10 +277,9 @@ impl Actor for Asker {
     type Config = Blank;
     type Key = ();
     type Handles = (Order, Answer<Reply, Pending>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Blank, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let (Ok(relay), Ok(mute)) = (turn.spawn(&(), Blank), turn.spawn(&0, Blank)) else {
             return Err(Fault::new(&Blank)?);
         };
@@ -296,16 +287,15 @@ impl Actor for Asker {
         Ok(Self { relay, mute, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Order> for Asker {
-    type Sends = (Asks<Queries, Query, Pending>,);
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let to: ProtocolRef<Queries> = match order.whom {
             Whom::Relay => self.relay.protocol(),
             Whom::Mute => self.mute.protocol(),
@@ -325,13 +315,7 @@ impl Handles<Order> for Asker {
 }
 
 impl Receives<Answer<Reply, Pending>> for Asker {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, Pending): (Answered<Reply>, Pending),
-        _: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, Pending): (Answered<Reply>, Pending), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.heard.push(Heard::of(&answered));
 
         Ok(())

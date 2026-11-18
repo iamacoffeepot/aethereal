@@ -5,22 +5,19 @@ use crate::records::Staging;
 use crate::resource::{Reach, Resources};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
-    Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Role,
-    Runs, SeatNumber, Seated, Seats, Sending, Spares, Submitted, Table, Target, Tie, Unreadable, What, Written, carry,
-    take_claimed,
+    Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Runs,
+    SeatNumber, Seated, Seats, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry, take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
-/// A turn as a host runs it: the guest's sends and lines are handed in after its code ran, each send checked against
-/// what the handler that ran declares (ADR-0015).
+/// A turn as a host runs it: the guest's sends and lines are handed in after its code ran, each send checked as a
+/// native send is at its call, against its receiver's type (ADR-0015, ADR-0059).
 pub struct Hosted<'a> {
     seat: Seat<'a>,
-    /// What the turn that ran may send.
-    sends: &'static [Sending],
-    /// Who a send to the sender reaches.
+    /// Who a reply reaches.
     source: Source,
     chain: Chain,
     /// The children the turn spawned, in the order it spawned them, whose `begin`s send and log as themselves.
@@ -64,8 +61,10 @@ enum Source {
 /// What a piece of mail a guest's code sent is to a request, as its code says: its host checks it (ADR-0017).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Request {
-    /// Nothing the code says: whether it replies to the item handled is told from what its handler declares.
+    /// Nothing the code says: a tell.
     Not,
+    /// It replies to the item the turn handles, which answers it when it is a request (ADR-0017).
+    Replies,
     /// It asks a request, to be answered with a kind `answer` names, keeping `context`, with the pins its host made for
     /// it (ADR-0014), and due as `due` says: what the guest's code stated, or the deadline its library inherited for it
     /// from the request its turn handles, as a native turn's ask inherits (ADR-0041).
@@ -153,29 +152,23 @@ impl Broke {
 }
 
 impl<'a> Turning<'a> {
-    /// The turn of the handler for `role` of an actor whose type declares `declared`, as a host runs it, and the
-    /// instances of its part it was lent, for the host to take the instance its code runs in from.
+    /// The turn of an actor whose type declares `declared`, as a host runs it, and the instances of its part it was
+    /// lent, for the host to take the instance its code runs in from.
     #[must_use]
-    pub fn hosted(self, declared: &'static Declared, role: Role) -> (Hosted<'a>, &'a mut Instances) {
+    pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, &'a mut Instances) {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
-        let handler = declared.handlers().iter().find(|handler| handler.role() == role);
-        let sends = handler.map_or(&[][..], |handler| handler.sends());
         let owing = Owing::Item(tie);
         // A guest puts by handing its bytes to its host, and its jobs are lent nothing, so its host's turn reaches the
         // actor's resources alone (ADR-0042).
         let keeps = keeps.reach();
         let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due };
 
-        (
-            Hosted { seat, sends, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing },
-            instances,
-        )
+        (Hosted { seat, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing }, instances)
     }
 }
 
 impl<'a> Closing<'a> {
-    /// The closing turn of an actor whose type declares `declared`, as a host runs it: the turn, which may send what
-    /// the type's `end` declares, why it runs, and the instances of its part, for the host to take the instance its
+    /// The closing turn of an actor whose type declares `declared`, as a host runs it: the turn, why it runs, and the instances of its part, for the host to take the instance its
     /// code runs in from (ADR-0009, ADR-0015).
     #[must_use]
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, Why, &'a mut Instances) {
@@ -185,14 +178,7 @@ impl<'a> Closing<'a> {
         let seat =
             Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing, due };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
-        let hosted = Hosted {
-            seat,
-            sends: declared.ends(),
-            source: Source::End,
-            chain,
-            spawned: Vec::new(),
-            sent: Sent::Nothing,
-        };
+        let hosted = Hosted { seat, source: Source::End, chain, spawned: Vec::new(), sent: Sent::Nothing };
 
         (hosted, why, instances)
     }
@@ -228,7 +214,7 @@ impl<'a> Hosted<'a> {
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
-        Self { seat, sends: declared.begins(), source: Source::Begin, chain, spawned: Vec::new(), sent: Sent::Nothing }
+        Self { seat, source: Source::Begin, chain, spawned: Vec::new(), sent: Sent::Nothing }
     }
 
     /// The actor whose turn this is.
@@ -278,17 +264,16 @@ impl<'a> Hosted<'a> {
         request: Request,
         #[cfg(feature = "std")] held: &[crate::Pinning],
     ) -> Result<(), FalseSend> {
-        let (sends, source) = if by == self.seat.me {
-            (self.sends, self.source)
-        } else {
-            let child = self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?;
-            (child.declared.begins(), Source::Begin)
-        };
-        // An answer to a held request goes to its asker, who held it to be answered so: the engine checks it is a debt
-        // the actor holds once the turn has run, and nothing is checked against the turn's sends (ADR-0017).
-        let is_held_answer = matches!(request, Request::Answers { .. });
-        let allowed = is_held_answer || sends.iter().any(|sending| self.allows(*sending, source, to, kind));
-        if !allowed {
+        if by != self.seat.me {
+            self.spawned.iter().find(|child| child.me == by).ok_or(FalseSend)?;
+        }
+        // A reply or an answer to a held request goes to its asker, which is handed it as what became of its request:
+        // the engine checks its kind against the request, and not against what the asker lists (ADR-0017). Any other
+        // send is of a kind its receiver lists, as a native send's build checks (ADR-0059). An actor the table no
+        // longer holds has ended, and its mail is dropped where it would be handed over.
+        let answers = matches!(request, Request::Replies | Request::Answers { .. });
+        let lists = answers || self.seat.declared_at(to.id).is_none_or(|receiver| receiver.lists(kind));
+        if !lists {
             return Err(FalseSend);
         }
         // Most mail refers to no blob, and is written with nothing kept beside it.
@@ -310,7 +295,8 @@ impl<'a> Hosted<'a> {
         };
         // A request is the mail that asks it, so it is counted as that mail is.
         let (tie, due) = match request {
-            Request::Not => (self.tie(by, to, kind)?, Due::Never),
+            Request::Not => (Tie::TELL, Due::Never),
+            Request::Replies => (self.reply(by, to)?, Due::Never),
             Request::Asks { answer, context, due } => (self.ask(by, count, answer, context, due)?, due),
             Request::Answers { request } => (self.answer(by, to, kind, request)?, Due::Never),
         };
@@ -372,16 +358,15 @@ impl<'a> Hosted<'a> {
         Ok(())
     }
 
-    /// What a send by `by` to `to` of mail of `kind` is to a request: the answer to the item handled, when that is a
-    /// request this turn has not answered and the send is a reply its handler declares (ADR-0017). A second answer is
-    /// a false send.
-    fn tie(&mut self, by: Seated, to: Seated, kind: KindId) -> Result<Tie, FalseSend> {
+    /// What a reply by `by` to `to` is to a request: the answer to the item handled, when that is a request this turn
+    /// has not answered (ADR-0017). A reply by another than the actor, or to another than the item's source, and a
+    /// second answer, are false sends.
+    fn reply(&mut self, by: Seated, to: Seated) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
         let is_to_source = matches!(self.source, Source::Item(source) if source == to);
-        let replies = self.sends.iter().any(|sending| sending.to() == Target::Sender && sending.kind() == kind);
-        let is_reply = is_mine && is_to_source && replies;
+        let is_reply = is_mine && is_to_source;
         if !is_reply {
-            return Ok(Tie::TELL);
+            return Err(FalseSend);
         }
         let (tie, owing) = self.seat.owing.reply().map_err(|_| FalseSend)?;
         self.seat.owing = owing;
@@ -810,24 +795,6 @@ impl<'a> Hosted<'a> {
             if is_other {
                 self.seat.asked.buffers.effects.push(Effect::new(other, What::Failed(fault.clone())));
             }
-        }
-    }
-
-    /// Whether `sending` sends mail of `kind` to the actor `to` names. An actor the table no longer holds has ended,
-    /// and its mail is dropped where it would be handed over, so any send of the kind reaches it.
-    fn allows(&self, sending: Sending, source: Source, to: Seated, kind: KindId) -> bool {
-        let is_kind = sending.kind() == kind;
-        if !is_kind {
-            return false;
-        }
-        match sending.to() {
-            Target::Sender => matches!(source, Source::Item(source) if source == to),
-            Target::Type(_, id) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == id),
-            Target::Handling(kinds) => {
-                let receiver = self.seat.declared_at(to.id);
-                receiver.is_none_or(|receiver| kinds.iter().all(|kind| receiver.lists(*kind)))
-            }
-            Target::Path(segment) => self.seat.declared_at(to.id).is_none_or(|receiver| receiver.id() == segment.kind),
         }
     }
 }

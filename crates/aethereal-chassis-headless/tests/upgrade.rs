@@ -6,8 +6,7 @@
 
 use aethereal_actor::{
     Actor, ActorName, ActorRef, Answered, Anyone, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Entry, Fault,
-    Given, Handle, Handles, How, Level, Path, Publisher, Receives, Root, Standing, Tells, ToSender, Top, Turn,
-    Unanswered, Upgrade, path,
+    Given, Handle, Handles, How, Level, Publisher, Receives, Root, Standing, Top, Turn, Unanswered, Upgrade, path,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -66,23 +65,21 @@ impl Actor for Library {
     type Config = Shelves;
     type Key = ();
     type Handles = (Publish,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Publish> for Library {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &publish.kind, &publish.blob);
         let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
@@ -108,23 +105,21 @@ impl Actor for LettingGo {
     type Config = Shelves;
     type Key = ();
     type Handles = (PublishLettingGo,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (echo::Mover,);
 
-    fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<PublishLettingGo> for LettingGo {
-    type Sends = (Tells<Path<echo::Mover>, echo::LetGo>,);
     type From = Anyone;
 
-    fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &echo::Mover::NAME, &publish.blob);
         let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
@@ -187,10 +182,9 @@ impl Actor for Lookout {
     type Config = Looks;
     type Key = ();
     type Handles = (Ended, Recall);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(looks: Looks, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(looks: Looks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if let Some(found) = turn.resolve(&looks.at) {
             turn.watch(found);
         }
@@ -198,15 +192,13 @@ impl Actor for Lookout {
         Ok(Self { seen: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Ended> for Lookout {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.seen.push(Sighting::from(ended.how()));
 
         Ok(())
@@ -218,10 +210,9 @@ impl Carries<Recall> for Lookout {
 }
 
 impl Handles<Recall> for Lookout {
-    type Sends = (ToSender<Sightings>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Recall, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Recall, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&Sightings { endings: self.seen.clone() })?;
 
         Ok(())

@@ -3,8 +3,8 @@
 
 use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn};
 use aethereal_data::Bound;
-use aethereal_http::stack::{Binding, ListenSends, Listened, Serving, StackSettings};
-use aethereal_mcp::{MarkOwner, McpRoutes};
+use aethereal_http::stack::{Binding, Listened, Serving, StackSettings};
+use aethereal_mcp::{MarkOwner, Mcp, McpRoutes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Interface, Listening};
 
@@ -19,7 +19,7 @@ pub struct LocalStack {
     serving: Serving<Self, LocalLayers>,
 }
 
-stack!(LocalStack, LocalLayers, []);
+stack!(LocalStack, LocalLayers, [], depends(Mcp));
 
 /// Its section, `local_stack`, is bound on the loopback whatever it names, as `MarkOwner` takes every request on the
 /// port for the owner's.
@@ -38,15 +38,9 @@ impl<H: Host> Bootstrap<H> for LocalStack {
 }
 
 impl Receives<Answer<Listening, Binding>> for LocalStack {
-    type Sends = ListenSends;
-
     /// With no port for the owner, the hub has nothing to serve: it quits, and as its listen rides the boot, the hub
     /// does not start (ADR-0020).
-    fn handle(
-        &mut self,
-        listening: (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
             turn.log(Level::Error, format_args!("no port for the owner, so the hub stops: {listened:?}"));

@@ -6,8 +6,8 @@
 //! hands its hub each set it hears, and asks it for each call the hub sends. It dials its hub once, as it begins, with
 //! the [`Token`] its hub minted for it, its required setting `--hub-token`, and ends its program when the link ends:
 //! no engine outlives its link. A trusted engine's link carries chat as well (ADR-0057): an actor of the engine, the
-//! dev overlay's console, [`Listen`]s to what the hub shows it of the sessions, and tells `Link` the sessions' `Chat`
-//! its owner did, which it writes up.
+//! dev overlay's chat relay in an engine that lists one, [`Listen`]s to what the hub shows it of the sessions, and
+//! tells `Link` the sessions' `Chat` its owner did, which it writes up.
 //!
 //! In a hub, [`Engines`] listens for engines, mints the tokens they link with, and keeps an [`Engine`] beneath itself
 //! for each one linked, keyed by its id. A token is good for one `Hello`: an engine is listed only once `Engines` has
@@ -16,6 +16,12 @@
 //! both. The hub's tools ask `Engines` to [`ListEngines`], to [`MintFor`], to [`SpawnFor`], or to
 //! [`TerminateEngine`], and ask an engine at `path::<Engine>(id)` to [`DescribeEngine`] or to [`CallEngine`]. For a
 //! session, they first ask `Engines` for the engine's [`TrustOf`], and reach only an engine that session started.
+//!
+//! A trusted engine's chat reaches the sessions through [`ChatToSessions`], a root a hub that runs sessions lists after
+//! `Engines` and `Sessions`: it asks `Engines` to [`HearTrusted`], is told each [`TrustedEngine`], those linked already
+//! among them, and tells each [`ChatTo`] the sessions, which the engine then tells that it joined and each chat frame,
+//! from its own actor. `Engines` and its engines name nothing that hears them, so a hub that runs no sessions lists no
+//! such root.
 //!
 //! Each token and spawn is asked for by a caller of the hub's tools, the owner or a session, and the engine that links
 //! with it is [`Trust`]ed only when the owner asked (ADR-0057). `Engines` decides it as the engine's token is taken,
@@ -62,6 +68,7 @@
 //! [`Offer`]: aethereal_tools::Offer
 //! [`Tools`]: aethereal_tools::Tools
 
+mod chat_to_sessions;
 mod engines;
 mod frames;
 mod limits;
@@ -71,11 +78,13 @@ mod token;
 mod tools;
 mod trust;
 
+pub use chat_to_sessions::ChatToSessions;
 pub use engines::{
-    Binding, Booting, CallEngine, DescribeEngine, Described, Engine, EngineConfig, EngineList, EngineListing,
-    EngineTrust, Engines, EnginesSettings, ExitedEngine, Fetching, Lapsing, LinkedAs, ListEngines, MintFor, MintToken,
-    Minted, Minting, Origin, Patience, Runs, Sent, Shown, Spawn, SpawnEngine, SpawnFor, Spawned, SpawnedConfig,
-    TakeToken, TerminateEngine, Terminated, TokenFor, TrustOf, Unlistened, Vouching,
+    Binding, Booting, CallEngine, ChatTo, Chatting, DescribeEngine, Described, Engine, EngineConfig, EngineList,
+    EngineListing, EngineTrust, Engines, EnginesSettings, ExitedEngine, Fetching, HearTrusted, Hearing, Lapsing,
+    LinkedAs, ListEngines, MintFor, MintToken, Minted, Minting, Origin, Patience, Runs, Sent, Shown, Spawn,
+    SpawnEngine, SpawnFor, Spawned, SpawnedConfig, TakeToken, TerminateEngine, Terminated, TokenFor, TrustOf,
+    TrustedEngine, Unlistened, Vouching,
 };
 pub use frames::{Down, Outcome, PORT, REVISION, Refusal, Up, Within};
 pub use limits::{BlobBytesTooLow, ReadLimitTooLow};

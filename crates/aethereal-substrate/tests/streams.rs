@@ -3,9 +3,9 @@
 
 use Name::{A, B, L};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ended, Ending, Enough,
-    Fault, Handles, More, Number, Open, Part, Receives, Seated, Serving, Stream, StreamKey, Streamed, Streams, Taken,
-    Time, ToAny, ToSender, ToType, Top, Turn, Unanswered, Unsent,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
+    More, Number, Open, Part, Receives, Seated, Serving, Stream, StreamKey, Streams, Taken, Time, Top, Turn,
+    Unanswered, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -250,10 +250,9 @@ impl Actor for Library {
     type Config = Blank;
     type Key = u64;
     type Handles = (Open<Files>, Open<Logs>, More, Enough, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             files: Serving::new(),
             logs: Serving::new(),
@@ -263,22 +262,19 @@ impl Actor for Library {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// Opens the stream `open` asks for, to send once credit comes.
-fn serve<S: Ends, Sends, I>(
+fn serve<S: Ends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
-    turn: &mut Turn<'_, Library, Sends>,
+    turn: &mut Turn<'_, Library>,
     open: Open<S>,
-) -> Result<(), Fault>
-where
-    Sends: Allows<ToSender<S::Done>, I>,
-{
-    let (key, asked) = serving.open::<_, _, I>(turn, open)?;
+) -> Result<(), Fault> {
+    let (key, asked) = serving.open(turn, open)?;
     let (chunks, close_after) = S::asked(asked);
     left.push(Left { key, next: 0, chunks, close_after });
 
@@ -287,16 +283,13 @@ where
 
 /// Sends the stream `key` as many chunks as its credit allows, finishing it once the last is sent, or closing the
 /// library once it has sent as many as the stream asked it to close after.
-fn pump<S: Ends, Sends, I>(
+fn pump<S: Ends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
     served: &mut Vec<Served>,
-    turn: &mut Turn<'_, Library, Sends>,
+    turn: &mut Turn<'_, Library>,
     key: StreamKey,
-) -> Result<(), Fault>
-where
-    Sends: Allows<ToAny<(Part<S>,), Part<S>>, I>,
-{
+) -> Result<(), Fault> {
     let Some(place) = left.iter().position(|stream| stream.key == key) else {
         return Ok(());
     };
@@ -306,7 +299,7 @@ where
     let stream = &mut left[place];
     let mut sent = 0;
     while stream.next < stream.chunks {
-        match streaming.send::<_, _, I>(turn, S::part(stream.next)) {
+        match streaming.send(turn, S::part(stream.next)) {
             Ok(()) => {}
             Err(Unsent::NoCredit(_)) => break,
             Err(Unsent::Unwritable(error)) => return Err(error.into()),
@@ -334,11 +327,11 @@ where
 }
 
 /// Finishes the stream `enough` stops.
-fn stop<S: Ends, Sends>(
+fn stop<S: Ends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
     served: &mut Vec<Served>,
-    turn: &mut Turn<'_, Library, Sends>,
+    turn: &mut Turn<'_, Library>,
     enough: &Enough,
 ) -> Result<bool, Fault> {
     let Some(streaming) = serving.stop(turn, enough) else {
@@ -353,28 +346,25 @@ fn stop<S: Ends, Sends>(
 }
 
 impl Handles<Open<Files>> for Library {
-    type Sends = (ToSender<ReadDone>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         serve(&mut self.files, &mut self.files_left, turn, open)
     }
 }
 
 impl Handles<Open<Logs>> for Library {
-    type Sends = (ToSender<LogDone>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         serve(&mut self.logs, &mut self.logs_left, turn, open)
     }
 }
 
 impl Handles<More> for Library {
-    type Sends = (ToAny<(Part<Files>,), Part<Files>>, ToAny<(Part<Logs>,), Part<Logs>>);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(key) = self.files.more(turn, &more) {
             return pump(&mut self.files, &mut self.files_left, &mut self.served, turn, key);
         }
@@ -387,10 +377,9 @@ impl Handles<More> for Library {
 }
 
 impl Handles<Enough> for Library {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let stopped = stop(&mut self.files, &mut self.files_left, &mut self.served, turn, &enough)?;
         if !stopped {
             stop(&mut self.logs, &mut self.logs_left, &mut self.served, turn, &enough)?;
@@ -401,9 +390,7 @@ impl Handles<Enough> for Library {
 }
 
 impl Receives<Ended> for Library {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = self.files.ended(&ended).len() + self.logs.ended(&ended).len();
         self.served.push(Served::AskerGone(u64::try_from(gone).unwrap_or(u64::MAX)));
 
@@ -507,10 +494,9 @@ impl Actor for Reader {
     type Config = ReaderConfig;
     type Key = ();
     type Handles = (Order, Part<Files>, Part<Logs>, Answer<ReadDone, Number>, Answer<LogDone, Number>);
-    type BeginSends = (ToType<Self, Order>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ReaderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ReaderConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(library) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Trouble::NoLibrary)?);
         };
@@ -524,7 +510,7 @@ impl Actor for Reader {
         Ok(Self { library, files: Streams::new(window), logs: Streams::new(window), took: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -543,15 +529,9 @@ fn opening<S: Ends>(order: Order) -> (S::Open, Tag) {
 }
 
 impl Handles<Order> for Reader {
-    type Sends = (
-        Asks<Streamed<Files>, Open<Files>, Number>,
-        ToAny<Streamed<Files>, More>,
-        Asks<Streamed<Logs>, Open<Logs>, Number>,
-        ToAny<Streamed<Logs>, More>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order.which {
             Which::Files => {
                 let (read, tag) = opening::<Files>(order);
@@ -568,16 +548,13 @@ impl Handles<Order> for Reader {
 }
 
 /// Takes `part`, keeping it, and stops its stream or closes the reader when what it kept says to.
-fn take<S: Ends, Sends, IM, IE>(
+fn take<S: Ends>(
     streams: &mut Streams<S, Tag>,
     took: &mut Vec<Took>,
-    turn: &mut Turn<'_, Reader, Sends>,
+    turn: &mut Turn<'_, Reader>,
     part: Part<S>,
-) -> Result<(), Fault>
-where
-    Sends: Allows<ToAny<Streamed<S>, More>, IM> + Allows<ToAny<Streamed<S>, Enough>, IE>,
-{
-    let Some(Taken { number, value: chunk, kept: tag }) = streams.part::<_, _, IM>(turn, part)? else {
+) -> Result<(), Fault> {
+    let Some(Taken { number, value: chunk, kept: tag }) = streams.part(turn, part)? else {
         return Ok(());
     };
     took.push(Took::Part { name: tag.name, index: S::index(&chunk) });
@@ -585,7 +562,7 @@ where
     let stops = tag.stop_after == Some(tag.taken);
     let leaves = tag.close_after_first;
     if stops {
-        streams.stop::<_, _, IE>(turn, number)?;
+        streams.stop(turn, number)?;
     }
     if leaves {
         turn.close();
@@ -595,19 +572,17 @@ where
 }
 
 impl Handles<Part<Files>> for Reader {
-    type Sends = (ToAny<Streamed<Files>, More>, ToAny<Streamed<Files>, Enough>);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Files>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Files>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         take(&mut self.files, &mut self.took, turn, part)
     }
 }
 
 impl Handles<Part<Logs>> for Reader {
-    type Sends = (ToAny<Streamed<Logs>, More>, ToAny<Streamed<Logs>, Enough>);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Logs>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Logs>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         take(&mut self.logs, &mut self.took, turn, part)
     }
 }
@@ -624,12 +599,10 @@ fn ended<S: Ends>(tag: Option<Tag>, answered: Answered<S::Done>) -> Took {
 }
 
 impl Receives<Answer<ReadDone, Number>> for Reader {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, number): (Answered<ReadDone>, Number),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.took.push(ended::<Files>(self.files.answered(number), answered));
 
@@ -638,13 +611,7 @@ impl Receives<Answer<ReadDone, Number>> for Reader {
 }
 
 impl Receives<Answer<LogDone, Number>> for Reader {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<LogDone>, Number),
-        _: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, number): (Answered<LogDone>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.took.push(ended::<Logs>(self.logs.answered(number), answered));
 
         Ok(())

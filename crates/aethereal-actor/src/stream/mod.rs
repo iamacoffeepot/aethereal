@@ -106,32 +106,29 @@ use core::marker::PhantomData;
 ///     type Config = Reader;
 ///     type Key = ();
 ///     type Handles = (Part<Files>, Part<Logs>);
-///     type BeginSends = ();
-///     type EndSends = ();
+///     type Depends = ();
 ///
-///     fn begin(reader: Reader, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+///     fn begin(reader: Reader, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(reader)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
 ///
 /// impl Handles<Part<Files>> for Reader {
-///     type Sends = ();
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
 ///
 /// impl Handles<Part<Logs>> for Reader {
-///     type Sends = ();
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }

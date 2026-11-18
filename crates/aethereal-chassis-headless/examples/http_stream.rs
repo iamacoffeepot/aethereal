@@ -16,16 +16,15 @@
 
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Beginning, Bytes, Carries, ChildOf, Ended, Ending, Enough, Fault, Handles, Level,
-    More, Number, Open, Part, Receives, Serving, Slept, ToAny, ToSender, Top, Turn,
+    More, Number, Open, Part, Receives, Serving, Slept, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::stack::{
-    Answering, Binding, Deadline, FromStack, Gather, GatherSends, InboundBody, Layers, ListenSends, Listened,
-    OutboundBody, Outward, ParkedPart, ParkedResponse, PartStep, ReadSends, Request, Response, ResponseBody,
-    ResponseBytes, ResponseLength, Sending, Serving as StackServing, SourceEnd, Stack, StackSends, StackSettings,
-    StreamedBody, layers,
+    Answering, Binding, Deadline, FromStack, Gather, InboundBody, Layers, Listened, OutboundBody, Outward, ParkedPart,
+    ParkedResponse, PartStep, Request, Response, ResponseBody, ResponseBytes, ResponseLength, Sending,
+    Serving as StackServing, SourceEnd, Stack, StackSettings, StreamedBody, layers,
 };
 use aethereal_http::{Header, Status};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -90,10 +89,9 @@ impl Actor for Source {
     type Config = Plan;
     type Key = ();
     type Handles = (Request<(), ()>, Open<OutboundBody>, More, Enough, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(plan: Plan, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let part_bytes = usize::try_from(plan.part_bytes).unwrap_or(usize::MAX);
         let mut part = Vec::from(turn.buffer(part_bytes));
         part.resize(part_bytes, b'x');
@@ -104,7 +102,7 @@ impl Actor for Source {
         Ok(Self { plan, part, serving: Serving::new(), sent: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -125,10 +123,9 @@ impl Carries<Request<(), ()>> for Source {
 }
 
 impl Handles<Request<(), ()>> for Source {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let length = match self.plan.framing {
             Framing::Chunked => ResponseLength::Unknown,
             Framing::Known => ResponseLength::Known(u64::from(self.plan.parts) * u64::from(self.plan.part_bytes)),
@@ -145,10 +142,9 @@ impl Handles<Request<(), ()>> for Source {
 }
 
 impl Handles<Open<OutboundBody>> for Source {
-    type Sends = (ToSender<SourceEnd>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.open(turn, open)?;
         self.sent = 0;
 
@@ -157,10 +153,9 @@ impl Handles<Open<OutboundBody>> for Source {
 }
 
 impl Handles<More> for Source {
-    type Sends = (ToAny<(Part<OutboundBody>,), Part<OutboundBody>>,);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(key) = self.serving.more(turn, &more) else {
             return Ok(());
         };
@@ -192,10 +187,9 @@ impl Handles<More> for Source {
 }
 
 impl Handles<Enough> for Source {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(stopped) = self.serving.stop(turn, &enough) {
             stopped.finish(turn, &SourceEnd::Stopped)?;
         }
@@ -205,9 +199,7 @@ impl Handles<Enough> for Source {
 }
 
 impl Receives<Ended> for Source {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.ended(&ended);
 
         Ok(())
@@ -265,16 +257,15 @@ impl Actor for BenchStack {
         Part<OutboundBody>,
         Answer<SourceEnd, Number>,
     );
-    type BeginSends = ListenSends;
-    type EndSends = ();
+    type Depends = (Tcp, Source);
 
-    fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let layers: Layers<(Source,)> = layers(turn)?;
 
         Ok(Self { serving: StackServing::listen(turn, &settings, layers)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -282,13 +273,7 @@ impl Actor for BenchStack {
 impl Stack for BenchStack {}
 
 impl Receives<Answer<Listening, Binding>> for BenchStack {
-    type Sends = ListenSends;
-
-    fn handle(
-        &mut self,
-        listening: (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
             turn.log(Level::Error, format_args!("no port to serve on: {listened:?}"));
@@ -299,177 +284,123 @@ impl Receives<Answer<Listening, Binding>> for BenchStack {
 }
 
 impl Handles<Part<Accepting>> for BenchStack {
-    type Sends = ListenSends;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.accept(part, turn)
     }
 }
 
 impl Receives<Answer<Unbound, Number>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        unbound: (Answered<Unbound>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, unbound: (Answered<Unbound>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.unbound(unbound, turn)
     }
 }
 
 impl Handles<Part<Reading>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.read(part, turn)
     }
 }
 
 impl Receives<Answer<HungUp, Number>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        hung_up: (Answered<HungUp>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, hung_up: (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.hung_up(hung_up, turn)
     }
 }
 
 impl Receives<Answer<Wrote, Sending>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        wrote: (Answered<Wrote>, Sending),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, wrote: (Answered<Wrote>, Sending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.wrote(wrote, turn)
     }
 }
 
 impl Receives<Answer<Response, Answering>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        answered: (Answered<Response>, Answering),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, answered: (Answered<Response>, Answering), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.answered(answered, turn)
     }
 }
 
 impl Receives<Answer<Slept, Deadline>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        slept: (Answered<Slept>, Deadline),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, slept: (Answered<Slept>, Deadline), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.slept(slept, turn)
     }
 }
 
 impl Handles<Gather> for BenchStack {
-    type Sends = GatherSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.gather(gather, turn)
     }
 }
 
 impl Handles<Shut> for BenchStack {
-    type Sends = StackSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.shut(turn)
     }
 }
 
 impl Receives<Answer<Outward, ParkedResponse>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
     fn handle(
         &mut self,
         returned: (Answered<Outward>, ParkedResponse),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.serving.returned(returned, turn)
     }
 }
 
 impl Handles<Open<InboundBody>> for BenchStack {
-    type Sends = ReadSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.open_body(open, turn)
     }
 }
 
 impl Handles<More> for BenchStack {
-    type Sends = StackSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.grant_body(&more, turn)
     }
 }
 
 impl Handles<Enough> for BenchStack {
-    type Sends = StackSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.stop_reading(&enough, turn)
     }
 }
 
 impl Receives<Ended> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.lose_reader(&ended, turn)
     }
 }
 
 impl Handles<Part<OutboundBody>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.take_part(part, turn)
     }
 }
 
 impl Receives<Answer<SourceEnd, Number>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        ended: (Answered<SourceEnd>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, ended: (Answered<SourceEnd>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.end_source(ended, turn)
     }
 }
 
 impl Receives<Answer<PartStep, ParkedPart>> for BenchStack {
-    type Sends = StackSends<(Source,)>;
-
-    fn handle(
-        &mut self,
-        passed: (Answered<PartStep>, ParkedPart),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, passed: (Answered<PartStep>, ParkedPart), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.passed(passed, turn)
     }
 }

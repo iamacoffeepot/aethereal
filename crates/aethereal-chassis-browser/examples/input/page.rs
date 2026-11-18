@@ -2,9 +2,7 @@
 //! key of the window in its draw list, and notes each event, key, and control it is sent.
 
 use crate::said::{Program, say};
-use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Render, Tells, Tick, Top, Turn, path,
-};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Render, Tick, Top, Turn, path};
 use aethereal_chassis_browser::Browser;
 use aethereal_chassis_browser::controls::{self, Control, Controls};
 use aethereal_data::{Bound, Plain};
@@ -74,14 +72,9 @@ impl Actor for Reporter {
     type Config = Watches;
     type Key = ();
     type Handles = (Event, Keyed, Control);
-    type BeginSends = (
-        Tells<Path<Window>, window::Subscribe>,
-        Tells<Path<Renderer>, DrawList>,
-        Tells<Path<Controls>, controls::Subscribe>,
-    );
-    type EndSends = ();
+    type Depends = (Window, Renderer, Controls);
 
-    fn begin(watches: Watches, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(watches: Watches, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(watches.window)).send(&window::Subscribe)?;
         let hears = Entry::Keys { frame: Frame::Main(watches.window), keys: KeySet::All, blocks: true };
         turn.to(path::<Renderer>(())).send(&DrawList { entries: vec![hears] })?;
@@ -90,16 +83,15 @@ impl Actor for Reporter {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Reporter {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("window {event:?}"));
 
         Ok(())
@@ -107,10 +99,9 @@ impl Handles<Event> for Reporter {
 }
 
 impl Handles<Keyed> for Reporter {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, keyed: Keyed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, keyed: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("window {:?}", keyed.event));
 
         Ok(())
@@ -118,10 +109,9 @@ impl Handles<Keyed> for Reporter {
 }
 
 impl Handles<Control> for Reporter {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, control: Control, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         say(format!("control {control:?}"));
 
         Ok(())

@@ -7,10 +7,9 @@
 use crate::prelude::*;
 use crate::widget::{Arrange, Axis, Draws, Laid, Lines, Stateless, Widget};
 use crate::widgets::{Keeps, Text};
-use aethereal_actor::{Actor, Asks, Beginning, ChildOf, Ending, Fault, Path, Top, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top, Turn};
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
-use aethereal_render::Renderer;
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 
 /// What a ware is told apart by, and what a drag of one carries.
@@ -131,12 +130,7 @@ aethereal_ui::view! { Shop, ui,
     }
 }
 
-/// What the shop's methods send: none of their own.
-type ShopSends = aethereal_ui::sends![];
-
-impl Controls for Shop {
-    type Sends = ShopSends;
-}
+impl Controls for Shop {}
 
 #[aethereal_ui::events]
 impl Shop {
@@ -144,48 +138,48 @@ impl Shop {
         self.wares.iter().find(|ware| ware.id == self.chosen)
     }
 
-    fn select(&mut self, _: &mut Turn<'_, Self, ShopSends>, ware: WareId) -> Result<(), Fault> {
+    fn select(&mut self, _: &mut Turn<'_, Self>, ware: WareId) -> Result<(), Fault> {
         self.chosen = ware;
         Ok(())
     }
 
-    fn place(&mut self, _: &mut Turn<'_, Self, ShopSends>, slot: u32, ware: WareId) -> Result<(), Fault> {
+    fn place(&mut self, _: &mut Turn<'_, Self>, slot: u32, ware: WareId) -> Result<(), Fault> {
         self.wares.iter_mut().filter(|held| held.id == ware).for_each(|held| held.slot = slot);
         Ok(())
     }
 
-    fn sell(&mut self, _: &mut Turn<'_, Self, ShopSends>, ware: WareId) -> Result<(), Fault> {
+    fn sell(&mut self, _: &mut Turn<'_, Self>, ware: WareId) -> Result<(), Fault> {
         self.wares.retain(|held| held.id != ware);
         Ok(())
     }
 
-    fn discard(&mut self, _: &mut Turn<'_, Self, ShopSends>, ware: WareId) -> Result<(), Fault> {
+    fn discard(&mut self, _: &mut Turn<'_, Self>, ware: WareId) -> Result<(), Fault> {
         self.wares.retain(|held| held.id != ware);
         Ok(())
     }
 
-    fn search(&mut self, _: &mut Turn<'_, Self, ShopSends>, query: String) -> Result<(), Fault> {
+    fn search(&mut self, _: &mut Turn<'_, Self>, query: String) -> Result<(), Fault> {
         self.query = query;
         Ok(())
     }
 
-    fn buy(&mut self, _: &mut Turn<'_, Self, ShopSends>, query: String) -> Result<(), Fault> {
+    fn buy(&mut self, _: &mut Turn<'_, Self>, query: String) -> Result<(), Fault> {
         self.query = query;
         self.open = true;
         Ok(())
     }
 
-    fn mute(&mut self, _: &mut Turn<'_, Self, ShopSends>, on: bool) -> Result<(), Fault> {
+    fn mute(&mut self, _: &mut Turn<'_, Self>, on: bool) -> Result<(), Fault> {
         self.muted = on;
         Ok(())
     }
 
-    fn set_volume(&mut self, _: &mut Turn<'_, Self, ShopSends>, volume: f32) -> Result<(), Fault> {
+    fn set_volume(&mut self, _: &mut Turn<'_, Self>, volume: f32) -> Result<(), Fault> {
         self.volume = volume;
         Ok(())
     }
 
-    fn open_tab(&mut self, _: &mut Turn<'_, Self, ShopSends>, tab: u32) -> Result<(), Fault> {
+    fn open_tab(&mut self, _: &mut Turn<'_, Self>, tab: u32) -> Result<(), Fault> {
         self.tab = tab;
         Ok(())
     }
@@ -199,16 +193,15 @@ impl Actor for Shop {
     type Config = Frame;
     type Key = ();
     type Handles = aethereal_ui::handles![];
-    type BeginSends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
-    type EndSends = ();
+    type Depends = crate::depends!();
 
-    fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 
         Ok(shop(ui))
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -6,8 +6,7 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells, Tick,
-    Top, Turn, path,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn, path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -16,7 +15,7 @@ use aethereal_render::compute::{ComputeId, Computed, CreateCompute};
 use aethereal_render::dispatch::{CreateDispatch, Dispatch, Dispatched, Invocations, Runs};
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::frame::builder::{FrameBuilder, Onto, depth};
-use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
+use aethereal_render::frame::{Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Bind, Drawn, Join, Place, Placed, Resource};
@@ -301,25 +300,22 @@ impl Actor for Culler {
         Answer<StorageContents, Read>,
         Answer<Timed, Nothing>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<On<Start>> for Culler {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -330,13 +326,7 @@ impl Receives<On<Start>> for Culler {
 }
 
 impl Receives<Answer<Shaped, Nothing>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -363,12 +353,10 @@ const fn stored(binding: u32, bytes: u32, access: Access) -> Binding {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, MeshId>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             say(format!("the quad was not made: {answered:?}"));
@@ -402,7 +390,7 @@ impl Receives<Answer<Meshed, Learned>> for Culler {
 
 /// The compute program of the cull's entry point `entry`, binding what that pass binds: the items at 0, the totals at
 /// 1, the visible list at 2, the arguments at 3, and the totals again at 4, to read the offsets.
-fn cull(entry: &str, turn: &mut Turn<'_, Culler, impl Sized>) -> Result<CreateCompute, String> {
+fn cull(entry: &str, turn: &mut Turn<'_, Culler>) -> Result<CreateCompute, String> {
     let bindings = match entry {
         "tally" => vec![stored(0, 8, Access::Read), stored(1, 4, Access::Write)],
         "offsets" => vec![stored(1, 4, Access::Write), stored(3, 20, Access::Write)],
@@ -414,12 +402,10 @@ fn cull(entry: &str, turn: &mut Turn<'_, Culler, impl Sized>) -> Result<CreateCo
 }
 
 impl Receives<Answer<Programmed, MeshId>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>,);
-
     fn handle(
         &mut self,
         (answered, mesh): (Answered<Programmed>, MeshId),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(dots)) = answered else {
             say(format!("the dots were not made: {answered:?}"));
@@ -439,12 +425,10 @@ impl Receives<Answer<Programmed, MeshId>> for Culler {
 }
 
 impl Receives<Answer<Computed, Computing>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateCompute, Computing>, Asks<Path<Renderer>, CreateStorage, Storing>);
-
     fn handle(
         &mut self,
         (answered, computing): (Answered<Computed>, Computing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Computed::Made(made)) = answered else {
             say(format!("a compute program was not made: {answered:?}"));
@@ -481,12 +465,10 @@ impl Receives<Answer<Computed, Computing>> for Culler {
 }
 
 impl Receives<Answer<Stored, Storing>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateStorage, Storing>, Asks<Path<Renderer>, CreateFrame, Made>);
-
     fn handle(
         &mut self,
         (answered, storing): (Answered<Stored>, Storing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Stored::Made(storage)) = answered else {
             say(format!("storage was not made: {answered:?}"));
@@ -555,13 +537,7 @@ fn bound(bindings: &[(u32, StorageId)]) -> Vec<Bind> {
 }
 
 impl Receives<Answer<Framed, Made>> for Culler {
-    type Sends = (Asks<Path<Renderer>, Place, Made>,);
-
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Framed>, Made),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, made): (Answered<Framed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Framed::Made(_)) = answered else {
             say(format!("the frame was not made: {answered:?}"));
             return Ok(());
@@ -608,13 +584,7 @@ fn dispatch(window: WindowId, dispatching: &Dispatching) -> CreateDispatch {
 }
 
 impl Receives<Answer<Placed, Made>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>,);
-
-    fn handle(
-        &mut self,
-        (answered, made): (Answered<Placed>, Made),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, made): (Answered<Placed>, Made), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("the dots were not placed: {answered:?}"));
             return Ok(());
@@ -632,12 +602,10 @@ impl Receives<Answer<Placed, Made>> for Culler {
 
 /// Each pass's dispatch made, the next is asked for; the last made, the placement and the three are listed.
 impl Receives<Answer<Dispatched, Dispatching>> for Culler {
-    type Sends = (Asks<Path<Renderer>, CreateDispatch, Dispatching>, Tells<Path<Renderer>, DrawList>);
-
     fn handle(
         &mut self,
         (answered, dispatching): (Answered<Dispatched>, Dispatching),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Dispatched::Made(dispatched)) = answered else {
             say(format!("a pass of the cull was not dispatched: {answered:?}"));
@@ -668,9 +636,7 @@ impl Receives<Answer<Dispatched, Dispatching>> for Culler {
 }
 
 impl Receives<On<Tick>> for Culler {
-    type Sends = (Asks<Path<Renderer>, ReadStorage, Read>, Asks<Path<Renderer>, TimeFrame, Nothing>);
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Running { arguments, visible, drawn } = *self else {
             return Ok(());
         };
@@ -689,12 +655,10 @@ impl Receives<On<Tick>> for Culler {
 }
 
 impl Receives<Answer<StorageContents, Read>> for Culler {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, read): (Answered<StorageContents>, Read),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(StorageContents::Read { bytes }) = answered else {
             say(format!("{read:?} was not read: {answered:?}"));
@@ -724,9 +688,7 @@ impl Receives<Answer<StorageContents, Read>> for Culler {
 }
 
 impl Receives<Answer<Timed, Nothing>> for Culler {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
             Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),

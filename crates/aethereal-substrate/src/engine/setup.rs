@@ -21,7 +21,7 @@ use std::task::Waker;
 /// checked as it is made, as every root is, which is what a root made once the engine runs is checked by.
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -31,7 +31,7 @@ use std::task::Waker;
 /// # struct Note;
 /// #
 /// # macro_rules! root {
-/// #     ($name:ident, $named:literal, $sends:ty) => {
+/// #     ($name:ident, $named:literal, $depends:ty) => {
 /// #         #[derive(Plain)]
 /// #         #[kind(name = $named)]
 /// #         struct $name;
@@ -44,30 +44,28 @@ use std::task::Waker;
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = (Note,);
-/// #             type BeginSends = $sends;
-/// #             type EndSends = ();
+/// #             type Depends = $depends;
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #
 /// #         impl Handles<Note> for $name {
-/// #             type Sends = ();
 /// #             type From = Anyone;
 /// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
 /// # root!(Lighthouse, "aether.example.lighthouse", ());
-/// # root!(Sailor, "aether.example.sailor", (Tells<Path<Lighthouse>, Note>,));
+/// # root!(Sailor, "aether.example.sailor", (Lighthouse,));
 /// #
 /// # fn main() -> Result<(), aethereal_actor::Refused> {
 /// // The sailor reaches the lighthouse, made before it.
@@ -82,7 +80,7 @@ use std::task::Waker;
 /// A setup whose root reaches one made after it does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Tells, Top, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -92,7 +90,7 @@ use std::task::Waker;
 /// # struct Note;
 /// #
 /// # macro_rules! root {
-/// #     ($name:ident, $named:literal, $sends:ty) => {
+/// #     ($name:ident, $named:literal, $depends:ty) => {
 /// #         #[derive(Plain)]
 /// #         #[kind(name = $named)]
 /// #         struct $name;
@@ -105,30 +103,28 @@ use std::task::Waker;
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = (Note,);
-/// #             type BeginSends = $sends;
-/// #             type EndSends = ();
+/// #             type Depends = $depends;
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #
 /// #         impl Handles<Note> for $name {
-/// #             type Sends = ();
 /// #             type From = Anyone;
 /// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
 /// # root!(Lighthouse, "aether.example.lighthouse", ());
-/// # root!(Sailor, "aether.example.sailor", (Tells<Path<Lighthouse>, Note>,));
+/// # root!(Sailor, "aether.example.sailor", (Lighthouse,));
 /// #
 /// # fn main() -> Result<(), aethereal_actor::Refused> {
 /// // The sailor reaches the lighthouse, made after it.

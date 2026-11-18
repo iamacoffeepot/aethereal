@@ -3,12 +3,10 @@
 use crate::{Exits, Processes};
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, More, Open,
-    Part, ProtocolRef, Receives, ToAny, ToSender, Turn,
+    ProtocolRef, Receives, Turn,
 };
 use aethereal_data::Bound;
-use aethereal_tcp::{
-    Connection, ConnectionConfig, Finish, Framing, HungUp, Interest, Readied, Reading, Shut, Socket, Write, Wrote,
-};
+use aethereal_tcp::{Connection, ConnectionConfig, Finish, Framing, Interest, Readied, Reading, Shut, Socket, Write};
 
 /// How a pipe cuts what the program writes: whatever arrived, in chunks of at most 64 KiB, as a connection reads an
 /// HTTP peer. The program's output is bytes whose framing, if any, is its reader's to parse.
@@ -50,10 +48,9 @@ impl Actor for Pipe {
     type Config = PipeConfig;
     type Key = u64;
     type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: PipeConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: PipeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);
         let connection =
             ConnectionConfig { socket: config.socket, framing: FRAMING, most_unsent_bytes: MOST_UNSENT_BYTES };
@@ -61,44 +58,39 @@ impl Actor for Pipe {
         Ok(Self { connection: Connection::begin(connection, turn)?, starter: config.starter })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Open<Reading>> for Pipe {
-    type Sends = (ToSender<HungUp>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.open(turn, open)
     }
 }
 
 impl Handles<More> for Pipe {
-    type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
     }
 }
 
 impl Handles<Enough> for Pipe {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
     }
 }
 
 impl Receives<Ended> for Pipe {
-    type Sends = ();
-
     /// The program's starter has ended, so no one wants its pipe, and it hangs up; or its reader has, which the
     /// connection meets.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if ended.actor().id() == self.starter.id() {
             return self.connection.shut(turn);
         }
@@ -108,41 +100,32 @@ impl Receives<Ended> for Pipe {
 }
 
 impl Handles<Write> for Pipe {
-    type Sends = (ToSender<Wrote>,);
     type From = Anyone;
 
-    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.write(turn, write)
     }
 }
 
 impl Handles<Finish> for Pipe {
-    type Sends = ();
     type From = Anyone;
 
     /// Ends the program's stdin, once what was written is: the program reads to its end.
-    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.finish(turn)
     }
 }
 
 impl Handles<Shut> for Pipe {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.shut(turn)
     }
 }
 
 impl Receives<Answer<Readied, Interest>> for Pipe {
-    type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
-
-    fn handle(
-        &mut self,
-        readied: (Answered<Readied>, Interest),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, readied: (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.readied(turn, readied)
     }
 }

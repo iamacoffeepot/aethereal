@@ -6,8 +6,8 @@ mod tests;
 
 use crate::windows::{ListWindows, ModeSet, MoveWindow, Moved, ResizeWindow, Resized, SetMode, WindowList, Windows};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -39,15 +39,6 @@ pub struct WindowTool {
     next: u64,
 }
 
-/// What every turn of the tool may send: an ask of the window root, and an answer to its caller.
-type Sends = (
-    Asks<Path<Windows>, ListWindows, Placing>,
-    Asks<Path<Windows>, ResizeWindow, Placing>,
-    Asks<Path<Windows>, MoveWindow, Placing>,
-    Asks<Path<Windows>, SetMode, Placing>,
-    ToSender<Called>,
-);
-
 impl ChildOf for WindowTool {
     type Parent = Anywhere;
 }
@@ -57,14 +48,13 @@ impl Actor for WindowTool {
     type Key = ();
     type Handles =
         (Call, Answer<WindowList, Placing>, Answer<Resized, Placing>, Answer<Moved, Placing>, Answer<ModeSet, Placing>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Windows,);
 
-    fn begin(_: WindowToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: WindowToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -110,10 +100,9 @@ impl Tool for WindowTool {
 
 /// Holds the call, and asks the window root what it was called with: answered once the root has answered.
 impl Handles<Call> for WindowTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let placing = Placing { call: self.next };
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
@@ -156,48 +145,40 @@ impl Handles<Call> for WindowTool {
 }
 
 impl Receives<Answer<WindowList, Placing>> for WindowTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<WindowList>, Placing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
 }
 
 impl Receives<Answer<Resized, Placing>> for WindowTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<Resized>, Placing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
 }
 
 impl Receives<Answer<Moved, Placing>> for WindowTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<Moved>, Placing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
 }
 
 impl Receives<Answer<ModeSet, Placing>> for WindowTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<ModeSet>, Placing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(placing, answered, turn)
     }
@@ -209,7 +190,7 @@ impl WindowTool {
         &mut self,
         Placing { call }: Placing,
         answered: Answered<A>,
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&call) else {
             return Ok(());
@@ -225,7 +206,7 @@ impl WindowTool {
 }
 
 /// Refuses a call whose input is not what its tool takes.
-fn untaken(turn: &mut Turn<'_, WindowTool, Sends>) -> Result<(), Fault> {
+fn untaken(turn: &mut Turn<'_, WindowTool>) -> Result<(), Fault> {
     turn.reply(&Called::Refused(String::from("that is not what the tool takes")))?;
 
     Ok(())

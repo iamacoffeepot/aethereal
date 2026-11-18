@@ -20,8 +20,8 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints what it heard and how its frames were paced.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Receives,
-    Render, Start, Tells, Tick, Top, Turn, child, path,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Receives, Render, Start,
+    Tick, Top, Turn, child, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
@@ -194,11 +194,7 @@ fn directing() -> KeySet {
 
 impl Director {
     /// Makes a scene for `window`, and sends the list that calls it and hears `N` and Escape in its window.
-    fn direct(
-        &mut self,
-        window: WindowId,
-        turn: &mut Turn<'_, Self, (Tells<Path<Renderer>, DrawList>,)>,
-    ) -> Result<(), Fault> {
+    fn direct(&mut self, window: WindowId, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let made = u8::try_from(self.windows.len()).unwrap_or(u8::MAX);
         let shows = Shows { window, runs: self.runs, count: RING >> (made % 3), warm: made.is_multiple_of(2) };
         if let Err(refused) = turn.spawn::<Scene>(&window, shows) {
@@ -234,10 +230,9 @@ impl Actor for Director {
     type Config = Directs;
     type Key = ();
     type Handles = (On<Start>, Keyed, Answer<Opened, Nothing>);
-    type BeginSends = (Tells<Path<Renderer>, DrawList>,);
-    type EndSends = ();
+    type Depends = (Renderer, Windows);
 
-    fn begin(directs: Directs, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(directs: Directs, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         let shows = Shows { window: directs.first, runs: directs.runs, count: RING, warm: true };
         if let Err(refused) = turn.spawn::<Scene>(&directs.first, shows) {
@@ -249,7 +244,7 @@ impl Actor for Director {
         Ok(director)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -257,9 +252,7 @@ impl Actor for Director {
 /// Asks for a second window as the program starts, when it runs for a time, so a timed run shows a window
 /// opened on request.
 impl Receives<On<Start>> for Director {
-    type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Runs::For { .. } = self.runs {
             turn.to(path::<Windows>(())).ask(&another(), &Nothing)?;
         }
@@ -270,10 +263,9 @@ impl Receives<On<Start>> for Director {
 
 /// `N` in any window asks for another; Escape in any quits.
 impl Handles<Keyed> for Director {
-    type Sends = (Asks<Path<Windows>, OpenWindow, Nothing>,);
     type From = Anyone;
 
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let KeyEvent::KeyDown { code, repeat: false, .. } = keyed.event else {
             return Ok(());
         };
@@ -291,13 +283,7 @@ impl Handles<Keyed> for Director {
 
 /// The window asked for, printed as it is answered, and a scene made for it once it is open.
 impl Receives<Answer<Opened, Nothing>> for Director {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Opened>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Opened>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Opened::Window { window, surface }) => {
                 let Surface { width, height, scale } = surface;
@@ -424,14 +410,9 @@ impl Actor for Scene {
         Answer<Placed, MadeAll>,
         Answer<ModeSet, Nothing>,
     );
-    type BeginSends = (
-        Tells<Path<Window>, window::Subscribe>,
-        Tells<Path<Renderer>, DrawList>,
-        Asks<Path<Renderer>, ShapeOf, Nothing>,
-    );
-    type EndSends = ();
+    type Depends = (Renderer, Windows);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(shows.window)), &Nothing)?;
@@ -455,7 +436,7 @@ impl Actor for Scene {
         Ok(scene)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -541,10 +522,9 @@ impl Scene {
 }
 
 impl Handles<Keyed> for Scene {
-    type Sends = (Asks<Path<Windows>, SetMode, Nothing>,);
     type From = Anyone;
 
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = self.window.to_name();
         match keyed.event {
             KeyEvent::KeyDown { code, key, repeat } => {
@@ -571,10 +551,9 @@ impl Handles<Keyed> for Scene {
 }
 
 impl Handles<Event> for Scene {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = self.window.to_name();
         match event {
             Event::PointerMoved { x, y } => {
@@ -620,13 +599,7 @@ impl Handles<Event> for Scene {
 }
 
 impl Receives<Answer<Shaped, Nothing>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             turn.log(Level::Error, format_args!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -653,12 +626,10 @@ fn record() -> VertexLayout {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
@@ -687,12 +658,10 @@ impl Receives<Answer<Meshed, Learned>> for Scene {
 }
 
 impl Receives<Answer<Programmed, MadeMesh>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(program)) = answered else {
             turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
@@ -710,12 +679,10 @@ impl Receives<Answer<Programmed, MadeMesh>> for Scene {
 }
 
 impl Receives<Answer<Instanced, MadeProgram>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Instanced::Made(instances)) = answered else {
             turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
@@ -733,12 +700,10 @@ impl Receives<Answer<Instanced, MadeProgram>> for Scene {
 }
 
 impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
-    type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Uniformed>, MadeInstances),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
             turn.log(Level::Error, format_args!("the uniforms were not made: {answered:?}"));
@@ -757,12 +722,10 @@ impl Receives<Answer<Uniformed, MadeInstances>> for Scene {
 }
 
 impl Receives<Answer<Placed, MadeAll>> for Scene {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Placed::Made(placement)) => {
@@ -781,9 +744,7 @@ impl Receives<Answer<Placed, MadeAll>> for Scene {
 
 /// The mode asked for on F11, printed as it is answered.
 impl Receives<Answer<ModeSet, Nothing>> for Scene {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<ModeSet>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = self.window.to_name();
         match answered {
             Answered::Yes(ModeSet::Set { surface }) => {
@@ -799,9 +760,7 @@ impl Receives<Answer<ModeSet, Nothing>> for Scene {
 }
 
 impl Receives<On<Tick>> for Scene {
-    type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
-
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.intervals.push(tick.delta_nanos);
         let ran = self.runs.over(tick.elapsed_nanos);
         if ran {

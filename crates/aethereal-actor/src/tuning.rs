@@ -1,7 +1,7 @@
 //! Tuning (ADR-0050): the values an actor takes while the program runs, one settings kind read whole and set whole by
 //! mail any actor may send, apart from the settings the program is set up with (ADR-0028).
 
-use crate::{Actor, ActorRef, Bytes, Carries, Fault, Handles, Protocol, ProtocolRef, ToSender, Turn};
+use crate::{Actor, ActorRef, Bytes, Carries, Fault, Handles, Protocol, ProtocolRef, Turn};
 use aethereal_data::config::Settings;
 use aethereal_data::{Bound, Budget, Plain, from_bytes, to_bytes};
 use alloc::string::String;
@@ -16,17 +16,15 @@ pub const MOST_TUNING_BYTES: usize = 64 * 1024;
 ///
 /// ```text
 /// impl Handles<ReadTuning> for Painter {
-///     type Sends = (ToSender<Tuning>,);
 ///     type From = Anyone;
-///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         tuning::read(self, turn)
 ///     }
 /// }
 ///
 /// impl Handles<Tune> for Painter {
-///     type Sends = (ToSender<Tuned>,);
 ///     type From = Anyone;
-///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         tuning::tune(self, &tune, turn)
 ///     }
 /// }
@@ -101,7 +99,7 @@ pub enum Tuned {
 /// # Errors
 ///
 /// A fault when its bytes cannot be written or put.
-pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A, (ToSender<Tuning>,)>) -> Result<(), Fault> {
+pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
     let tuning = tuning_of(actor, turn)?;
     turn.reply(&tuning)?;
 
@@ -113,7 +111,7 @@ pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A, (ToSender<Tuning>,)>) 
 /// # Errors
 ///
 /// A fault when its bytes cannot be written or put.
-pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A, (ToSender<Tuned>,)>) -> Result<(), Fault> {
+pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
     let read = from_bytes::<A::Tuning>(turn.read(&tune.bytes), &mut Budget::new(MOST_TUNING_BYTES));
     let tuned = match read {
         Ok(tuning) => match actor.tune(tuning) {
@@ -134,7 +132,7 @@ pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A, (ToSe
 pub struct Unheld;
 
 /// `actor`'s tuning as it stands, put as its bytes.
-fn tuning_of<A: Tunable, S>(actor: &A, turn: &mut Turn<'_, A, S>) -> Result<Tuning, Fault> {
+fn tuning_of<A: Tunable>(actor: &A, turn: &mut Turn<'_, A>) -> Result<Tuning, Fault> {
     let Ok(bytes) = turn.put(to_bytes(&actor.tuning())?) else {
         return Err(Fault::new(&Unheld)?);
     };

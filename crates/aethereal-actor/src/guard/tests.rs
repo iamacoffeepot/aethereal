@@ -98,14 +98,13 @@ impl Actor for Hall {
     type Config = Self;
     type Key = u64;
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(hall: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(hall: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(hall)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -123,23 +122,21 @@ impl Actor for Door {
     type Config = Self;
     type Key = u64;
     type Handles = (Knock, Shut);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(door: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(door: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(door)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Knock> for Door {
-    type Sends = ();
     type From = Itself;
 
-    fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, (), Itself>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
         turn.log(Level::Info, "knocked");
 
         Ok(())
@@ -147,10 +144,9 @@ impl Handles<Knock> for Door {
 }
 
 impl Handles<Shut> for Door {
-    type Sends = ();
     type From = Parent;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, (), Parent>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
         turn.log(Level::Info, "shut");
 
         Ok(())

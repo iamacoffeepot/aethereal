@@ -9,8 +9,8 @@ use super::chat::Chat;
 use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
-use super::{Does, Phase, Sessions};
-use aethereal_actor::{Anyone, Fault, Handles, Held, Level, ToSender, Turn};
+use super::{Phase, Sessions};
+use aethereal_actor::{Anyone, Fault, Handles, Held, Level, Turn};
 use aethereal_data::Bound;
 use core::fmt::Write as _;
 
@@ -49,42 +49,38 @@ pub(super) enum Waiting {
 }
 
 impl Handles<NewSession> for Sessions {
-    type Sends = acts!(ToSender<Opened>);
     type From = Anyone;
 
     /// A new session, numbered after every other, its first container started: answered once it runs.
-    fn handle(&mut self, new: NewSession, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, new: NewSession, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.take(turn, Waiting::New { held, name: new.name })
     }
 }
 
 impl Handles<Say> for Sessions {
-    type Sends = acts!(ToSender<Said>);
     type From = Anyone;
 
     /// A line for a session: written to it in order, a turn running or not; a stopped session is resumed first.
-    fn handle(&mut self, say: Say, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, say: Say, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.take(turn, Waiting::Say { held, session: say.session, text: say.text })
     }
 }
 
 impl Handles<ReadTranscript> for Sessions {
-    type Sends = acts!(ToSender<Transcribed>);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadTranscript, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadTranscript, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.take(turn, Waiting::Read { held, read })
     }
 }
 
 impl Handles<ListSessions> for Sessions {
-    type Sends = acts!(ToSender<Listed>);
     type From = Anyone;
 
-    fn handle(&mut self, ListSessions: ListSessions, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ListSessions: ListSessions, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = self.held.iter().map(|(&session, held)| held.listed(session)).collect();
         let listed = Listed { sessions, most_running: self.settings.most_running, strays: self.strays.clone() };
         turn.reply(&listed)?;
@@ -94,23 +90,21 @@ impl Handles<ListSessions> for Sessions {
 }
 
 impl Handles<Interrupt> for Sessions {
-    type Sends = acts!(ToSender<Interrupted>);
     type From = Anyone;
 
     /// The session's running turn interrupted, through the control request Claude Code reads on its stdin.
-    fn handle(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.take(turn, Waiting::Interrupt { held, session: interrupt.session })
     }
 }
 
 impl Handles<Archive> for Sessions {
-    type Sends = acts!(ToSender<Archived>);
     type From = Anyone;
 
     /// The session archived: its container stopped and removed, its transcript and home kept. Answered once no
     /// container of it is left.
-    fn handle(&mut self, archive: Archive, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, archive: Archive, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         self.take(turn, Waiting::Archive { held, session: archive.session })
     }
@@ -118,7 +112,7 @@ impl Handles<Archive> for Sessions {
 
 impl Sessions {
     /// Answers `waiting`, or holds it until the capability has found its sessions' containers.
-    pub(super) fn take<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, waiting: Waiting) -> Result<(), Fault> {
+    pub(super) fn take(&mut self, turn: &mut Turn<'_, Self>, waiting: Waiting) -> Result<(), Fault> {
         match &mut self.phase {
             Phase::Indexing { waiting: held }
             | Phase::Reading { waiting: held, .. }
@@ -148,9 +142,9 @@ impl Sessions {
 
     /// Opens a session named `name`, numbered after every other, its first container started: each of `opening` is
     /// answered once it runs.
-    pub(super) fn open<S: Does>(
+    pub(super) fn open(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         opening: Vec<Held<Opened>>,
         name: String,
     ) -> Result<(), Fault> {
@@ -185,9 +179,9 @@ impl Sessions {
     }
 
     /// Interrupts `session`'s running turn, as `by` asked.
-    pub(super) fn interrupt<S: Does>(
+    pub(super) fn interrupt(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         by: Speaker,
     ) -> Result<Interrupted, Fault> {
@@ -205,9 +199,9 @@ impl Sessions {
     }
 
     /// Archives `session`, answering each of `archiving` once no container of it is left.
-    pub(super) fn archive<S: Does>(
+    pub(super) fn archive(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         archiving: Vec<Held<Archived>>,
         session: u32,
     ) -> Result<(), Fault> {
@@ -233,9 +227,9 @@ impl Sessions {
 
     /// Takes `text` for `session`, as `by` said it: noted as said, and written to the session tagged with the engine it
     /// was typed at.
-    pub(super) fn say<S: Does>(
+    pub(super) fn say(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         by: Speaker,
         text: String,
@@ -248,9 +242,9 @@ impl Sessions {
     /// Takes `line`, a command the owner ran in `!` mode at the trusted engine `engine`, and what it `printed`, for
     /// `session`: noted as run, and written to the session as a line of its own, which starts a turn, as Claude Code's
     /// own `!` does (ADR-0057: The console is the chat).
-    pub(super) fn ran<S: Does>(
+    pub(super) fn ran(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         engine: u32,
         line: String,
@@ -263,9 +257,9 @@ impl Sessions {
 
     /// Takes the line `entry` notes for `session`, `written` as the session reads it: noted, and written to the
     /// session's stdin, kept until its container is attached, or resuming it, as the session stands.
-    fn take_line<S: Does>(
+    fn take_line(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         written: String,
         entry: Entry,
@@ -333,7 +327,7 @@ fn ran(engine: u32, line: &str, printed: &str) -> String {
 }
 
 /// Answers each of `held` with `answer`.
-fn answer_each<S>(turn: &mut Turn<'_, Sessions, S>, held: Vec<Held<Archived>>, answer: &Archived) -> Result<(), Fault> {
+fn answer_each(turn: &mut Turn<'_, Sessions>, held: Vec<Held<Archived>>, answer: &Archived) -> Result<(), Fault> {
     for held in held {
         turn.answer(held, answer)?;
     }

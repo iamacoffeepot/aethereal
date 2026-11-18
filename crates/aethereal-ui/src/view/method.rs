@@ -77,13 +77,7 @@ pub trait Method<A: View, Args, Marker> {
     /// # Errors
     ///
     /// The method's fault.
-    fn call(
-        self,
-        screen: &mut A,
-        turn: &mut Turn<'_, A, A::Sends>,
-        args: Args,
-        raised: Raised<A::Event>,
-    ) -> Result<(), Fault>;
+    fn call(self, screen: &mut A, turn: &mut Turn<'_, A>, args: Args, raised: Raised<A::Event>) -> Result<(), Fault>;
 }
 
 /// A method of each count of copied arguments, taking a hand after them or none.
@@ -91,12 +85,12 @@ macro_rules! methods {
     ($( [$($argument:ident $value:ident)*] )*) => {$(
         impl<A: View, F, $($argument,)*> Method<A, ($($argument,)*), fn($($argument,)*)> for F
         where
-            F: FnOnce(&mut A, &mut Turn<'_, A, A::Sends>, $($argument,)*) -> Result<(), Fault>,
+            F: FnOnce(&mut A, &mut Turn<'_, A>, $($argument,)*) -> Result<(), Fault>,
         {
             fn call(
                 self,
                 screen: &mut A,
-                turn: &mut Turn<'_, A, A::Sends>,
+                turn: &mut Turn<'_, A>,
                 ($($value,)*): ($($argument,)*),
                 raised: Raised<A::Event>,
             ) -> Result<(), Fault> {
@@ -109,12 +103,12 @@ macro_rules! methods {
 
         impl<A: View, F, $($argument,)* H: Handed> Method<A, ($($argument,)*), fn($($argument,)* H)> for F
         where
-            F: FnOnce(&mut A, &mut Turn<'_, A, A::Sends>, $($argument,)* H) -> Result<(), Fault>,
+            F: FnOnce(&mut A, &mut Turn<'_, A>, $($argument,)* H) -> Result<(), Fault>,
         {
             fn call(
                 self,
                 screen: &mut A,
-                turn: &mut Turn<'_, A, A::Sends>,
+                turn: &mut Turn<'_, A>,
                 ($($value,)*): ($($argument,)*),
                 raised: Raised<A::Event>,
             ) -> Result<(), Fault> {

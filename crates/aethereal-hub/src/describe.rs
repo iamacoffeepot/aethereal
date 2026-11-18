@@ -2,7 +2,7 @@
 //! (ADR-0038), so an agent can tell which tools and fixes the hub it talks to has.
 
 use aethereal_actor::{
-    Actor, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, ToSender, Turn,
+    Actor, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Turn,
 };
 use aethereal_data::{Plain, Schema, SchemaNodes, to_bytes};
 use aethereal_link::REVISION;
@@ -66,14 +66,13 @@ impl Actor for DescribeHubTool {
     type Config = DescribeHubToolConfig;
     type Key = ();
     type Handles = (Call,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: DescribeHubToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: DescribeHubToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -95,11 +94,10 @@ impl Tool for DescribeHubTool {
 }
 
 impl Handles<Call> for DescribeHubTool {
-    type Sends = (ToSender<Called>,);
     type From = Anyone;
 
     /// Its input holds nothing, so it is not read.
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let build = HubBuild { source: Source::built(), link_revision: REVISION };
         let called = Called::output(turn, to_bytes(&build)?);
         turn.reply(&called)?;

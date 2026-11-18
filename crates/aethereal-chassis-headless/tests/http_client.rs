@@ -3,13 +3,13 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, More,
-    Number, Open, Part, ProtocolRef, Receives, Streamed, Streams, ToAny, ToSender, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Number, Part,
+    ProtocolRef, Receives, Streams, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
-use aethereal_http::stack::{FromStack, Gather, Gathered, Gathering, Request, Response, StackSettings};
+use aethereal_http::stack::{FromStack, Gathered, Request, Response, StackSettings};
 use aethereal_http::{
     BlobBytesTooLow, Client, Connect, Connected, Failure, Fetch, Fetched, Finished, Follow, Header, Http, HttpSettings,
     Limit, Method, Outgoing, Peer, ReadLimitTooLow, Received, Receiving, Reply, Status, Switch,
@@ -86,10 +86,9 @@ impl Actor for Follower {
     type Config = Unset;
     type Key = ();
     type Handles = (Order, Part<Receiving>, Answer<Finished, Number>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Unset)?);
         };
@@ -103,7 +102,7 @@ impl Actor for Follower {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -120,10 +119,9 @@ impl Bootstrap<Headless> for Follower {
 }
 
 impl Handles<Order> for Follower {
-    type Sends = (Asks<Streamed<Receiving>, Open<Receiving>, Number>, ToAny<Streamed<Receiving>, More>);
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Follow { client, follow, pace } => {
                 self.pace = pace;
@@ -142,10 +140,9 @@ impl Handles<Order> for Follower {
 }
 
 impl Handles<Part<Receiving>> for Follower {
-    type Sends = (ToAny<Streamed<Receiving>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.receiving.part_held(turn, part),
             Pace::Taking => self.receiving.part(turn, part)?,
@@ -168,12 +165,10 @@ impl Handles<Part<Receiving>> for Follower {
 }
 
 impl Receives<Answer<Finished, Number>> for Follower {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, number): (Answered<Finished>, Number),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.receiving.answered(number);
         if let Answered::Yes(finished) = answered {
@@ -242,14 +237,13 @@ impl Actor for Echo {
     type Config = EchoSettings;
     type Key = ();
     type Handles = (Request<(), ()>, Answer<Gathered, Echoing>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: EchoSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: EchoSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -259,14 +253,9 @@ impl Carries<Request<(), ()>> for Echo {
 }
 
 impl Handles<Request<(), ()>> for Echo {
-    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Echoing>);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        request: Request<(), ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let host = String::from(request.header("host").unwrap_or_default());
         self.asked.push(Asked { host, peer: request.peer });
         let echoing = Echoing { held: turn.hold()? };
@@ -277,12 +266,10 @@ impl Handles<Request<(), ()>> for Echo {
 }
 
 impl Receives<Answer<Gathered, Echoing>> for Echo {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (gathered, Echoing { held }): (Answered<Gathered>, Echoing),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let response = match gathered {
             Answered::Yes(Gathered::Whole(body)) => {
@@ -297,7 +284,7 @@ impl Receives<Answer<Gathered, Echoing>> for Echo {
     }
 }
 
-stack!(EchoStack, "aether.test.http_client.echo_stack", "echo_stack", (Echo,), []);
+stack!(EchoStack, "aether.test.http_client.echo_stack", "echo_stack", (Echo,), [], depends(Echo));
 
 /// A host running `settings`, with `Tcp`, `Http`, and a follower.
 fn host(settings: HttpSettings) -> Result<Harness<Headless>, Unheard> {

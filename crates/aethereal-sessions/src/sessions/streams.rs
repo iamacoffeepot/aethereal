@@ -5,19 +5,18 @@ use super::heard::{self, Heard};
 use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Stdin};
 use super::transcript::{Ended, Entry, Note};
-use super::{Acts, Does, Feed, Sessions, Typing};
+use super::{Feed, Sessions, Typing};
 use crate::{Attached, Attaching, Detached, Event, EventsDone, Logging, LogsDone, Output, Watching};
 use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, Level, Number, Part, Receives, Taken, Turn};
 use aethereal_tcp::{Write, Wrote};
 use core::mem;
 
 impl Handles<Part<Logging>> for Sessions {
-    type Sends = Acts;
     type From = Anyone;
 
     /// A piece of a container's output: each line it ends goes into the session's transcript, and says what it says
     /// of the session's turns.
-    fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value: Output { stream, bytes }, kept, .. }) = self.logging.part(turn, part)? else {
             return Ok(());
         };
@@ -49,13 +48,11 @@ impl Handles<Part<Logging>> for Sessions {
 }
 
 impl Receives<Answer<LogsDone, Number>> for Sessions {
-    type Sends = Acts;
-
     /// A container's logs ended, as they do once it stops: its state is asked for.
     fn handle(
         &mut self,
         (answered, number): (Answered<LogsDone>, Number),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Feed { session, run }) = self.logging.answered(number) else {
             return Ok(());
@@ -68,12 +65,11 @@ impl Receives<Answer<LogsDone, Number>> for Sessions {
 }
 
 impl Handles<Part<Attaching>> for Sessions {
-    type Sends = Acts;
     type From = Anyone;
 
     /// The container's stdin, attached: each line waiting is written. Its output is read from its logs instead, so
     /// what the attach carries is taken and let go.
-    fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, kept, .. }) = self.attaching.part(turn, part)? else {
             return Ok(());
         };
@@ -103,14 +99,8 @@ impl Handles<Part<Attaching>> for Sessions {
 }
 
 impl Receives<Answer<Detached, Number>> for Sessions {
-    type Sends = Acts;
-
     /// A container's attach ended: its state is asked for.
-    fn handle(
-        &mut self,
-        (_, number): (Answered<Detached>, Number),
-        turn: &mut Turn<'_, Self, Acts>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (_, number): (Answered<Detached>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Feed { session, run }) = self.attaching.answered(number) else {
             return Ok(());
         };
@@ -129,9 +119,9 @@ enum Closing {
 impl Sessions {
     /// The stream `number`, `closing`, of `session`'s run `run` ended: when it was the running container's, it is
     /// marked closed and the container's state asked for.
-    fn closed<S: Does>(
+    fn closed(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         run: u32,
         number: Number,
@@ -175,7 +165,7 @@ impl Sessions {
     }
 
     /// What an event of Claude's in `session` says of its turns and tasks, and what it asks the owner.
-    fn heard<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, heard: Heard) -> Result<(), Fault> {
+    fn heard(&mut self, turn: &mut Turn<'_, Self>, session: u32, heard: Heard) -> Result<(), Fault> {
         let heard = match heard {
             Heard::Asked { request, tool, input } => return self.asked(turn, session, request, &tool, input),
             other => other,
@@ -219,22 +209,12 @@ impl Sessions {
     }
 
     /// Writes `text` to `session`'s stdin as a user's message, once its stdin is attached.
-    pub(super) fn type_line<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        text: &str,
-    ) -> Result<(), Fault> {
+    pub(super) fn type_line(&mut self, turn: &mut Turn<'_, Self>, session: u32, text: &str) -> Result<(), Fault> {
         self.type_raw(turn, session, user_line(text))
     }
 
     /// Writes the interrupt control request to `session`'s stdin, numbered `number`.
-    pub(super) fn type_interrupt<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        number: u64,
-    ) -> Result<(), Fault> {
+    pub(super) fn type_interrupt(&mut self, turn: &mut Turn<'_, Self>, session: u32, number: u64) -> Result<(), Fault> {
         let line = format!(
             r#"{{"type":"control_request","request_id":"interrupt-{number}","request":{{"subtype":"interrupt"}}}}"#
         );
@@ -243,12 +223,7 @@ impl Sessions {
     }
 
     /// Writes `line`, whole, to `session`'s stdin, or keeps it until its stdin is attached.
-    pub(super) fn type_raw<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        line: String,
-    ) -> Result<(), Fault> {
+    pub(super) fn type_raw(&mut self, turn: &mut Turn<'_, Self>, session: u32, line: String) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
@@ -276,13 +251,11 @@ impl Sessions {
 }
 
 impl Receives<Answer<Wrote, Typing>> for Sessions {
-    type Sends = Acts;
-
     /// A write to a session's stdin: one that did not go is noted in its transcript.
     fn handle(
         &mut self,
         (answered, Typing { session }): (Answered<Wrote>, Typing),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let why = match answered {
             Answered::Yes(Wrote::Sent) => return Ok(()),
@@ -296,11 +269,10 @@ impl Receives<Answer<Wrote, Typing>> for Sessions {
 }
 
 impl Handles<Part<Watching>> for Sessions {
-    type Sends = Acts;
     type From = Anyone;
 
     /// An event of a container carrying the hub's label: a session's that died has ended.
-    fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self, Acts>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.watching.part(turn, part)? else {
             return Ok(());
         };
@@ -325,13 +297,11 @@ impl Handles<Part<Watching>> for Sessions {
 }
 
 impl Receives<Answer<EventsDone, Number>> for Sessions {
-    type Sends = Acts;
-
     /// Docker's events ended: a container that dies is then found as its logs end.
     fn handle(
         &mut self,
         (answered, number): (Answered<EventsDone>, Number),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.watching.answered(number);
         turn.log(Level::Warn, format_args!("Docker's events of the sessions' containers ended: {answered:?}"));

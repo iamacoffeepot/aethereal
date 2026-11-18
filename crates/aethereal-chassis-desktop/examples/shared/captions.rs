@@ -5,8 +5,7 @@
 //! (ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Start, Tells, Top,
-    Turn, path,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Start, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
@@ -80,16 +79,15 @@ impl Actor for Captions {
     type Config = Captioned;
     type Key = ();
     type Handles = (On<Start>, Answer<TextMade, Caption>, Answer<TextPlaced, Caption>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(captioned: Captioned, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(captioned: Captioned, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self { window: captioned.window, placed: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -146,9 +144,7 @@ fn lines() -> Vec<Line> {
 }
 
 impl Receives<On<Start>> for Captions {
-    type Sends = (Asks<Path<Renderer>, CreateText, Caption>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for (line, at) in lines().into_iter().zip(0..) {
             turn.to(path::<Renderer>(())).ask(&line.text, &Caption { line: at })?;
         }
@@ -158,12 +154,10 @@ impl Receives<On<Start>> for Captions {
 }
 
 impl Receives<Answer<TextMade, Caption>> for Captions {
-    type Sends = (Asks<Path<Renderer>, PlaceText, Caption>,);
-
     fn handle(
         &mut self,
         (answered, caption): (Answered<TextMade>, Caption),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(TextMade::Made(text)) = answered else {
             turn.log(Level::Error, format_args!("{caption:?} was not made: {answered:?}"));
@@ -188,12 +182,10 @@ impl Receives<Answer<TextMade, Caption>> for Captions {
 
 /// A line placed is listed in its place among the others, top to bottom.
 impl Receives<Answer<TextPlaced, Caption>> for Captions {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
     fn handle(
         &mut self,
         (answered, caption): (Answered<TextPlaced>, Caption),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(TextPlaced::Made(placement)) = answered else {
             turn.log(Level::Error, format_args!("{caption:?} was not placed: {answered:?}"));

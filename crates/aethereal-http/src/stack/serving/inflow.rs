@@ -5,21 +5,27 @@
 
 use super::body::{Carried, Ending, Layered, Walk, walk, write_continue};
 use super::connection::{Inflow, Out, Passing, Phase};
-use super::{Deadline, Serving, Stepping};
+use super::{Deadline, Sending, Serving};
 use crate::http1::body::{Decoded, Progress};
 use crate::stack::actor::{ParkedPart, Standing, Way, held};
 use crate::stack::request_head::Refusal;
 use crate::stack::{BodyBytes, BodyRead, InboundBody, OutboundBody, SourceEnd};
-use crate::stack::{InboundPart, InboundParts, LayerList};
+use crate::stack::{InboundPart, InboundParts, PartStep, WalkedBy};
 use aethereal_actor::{
-    Answer, Bytes, Ended, Enough, Fault, Handles, Level, More, Number, Open, Part, Receives, Slept, StreamKey,
-    ToSender, Unsent,
+    Answer, Bytes, Ended, Enough, Fault, Handles, Level, More, Number, Open, Part, Receives, Slept, StreamKey, Turn,
+    Unsent,
 };
 use aethereal_tcp::HungUp;
+use aethereal_tcp::Wrote;
 
-impl<S, T: LayerList> Serving<S, T>
+impl<S, T> Serving<S, T>
 where
-    S: Receives<Answer<Slept, Deadline>> + Handles<Part<OutboundBody>> + Receives<Answer<SourceEnd, Number>>,
+    S: Receives<Answer<Slept, Deadline>>
+        + Handles<Part<OutboundBody>>
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// A handler opens the stream that reads its request's body as it arrives: the body of the request out on its
     /// connection, when nothing reads it yet; a body of no bytes ends `Whole` at once; and one another stream or
@@ -29,11 +35,7 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn open_body(
-        &mut self,
-        open: Open<InboundBody>,
-        turn: &mut Stepping<'_, S, T, ToSender<BodyRead>>,
-    ) -> Result<(), Fault>
+    pub fn open_body(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, S>) -> Result<(), Fault>
     where
         S: Receives<Ended>,
     {
@@ -77,7 +79,7 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn grant_body(&mut self, more: &More, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault> {
+    pub fn grant_body(&mut self, more: &More, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(reader) = self.readers.more(turn, more) else {
             return Ok(());
         };
@@ -94,7 +96,7 @@ where
     /// # Errors
     ///
     /// The fault of an answer that does not encode, or of a sleep the engine would not run.
-    pub fn stop_reading(&mut self, enough: &Enough, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault> {
+    pub fn stop_reading(&mut self, enough: &Enough, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(stopped) = self.readers.stop(turn, enough) else {
             return Ok(());
         };
@@ -113,7 +115,7 @@ where
     /// # Errors
     ///
     /// The fault of a sleep the engine would not run.
-    pub fn lose_reader(&mut self, ended: &Ended, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault> {
+    pub fn lose_reader(&mut self, ended: &Ended, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         for lost in self.readers.ended(ended) {
             let reader = lost.key();
             drop(lost);
@@ -129,7 +131,7 @@ where
     /// reader may be sent a part: what is decoded passes through the layers in order and goes on the stream as one
     /// part, and the stream ends `Whole` where the body ends. While only more bytes would take it further, the
     /// connection is granted the credit it withheld. While a part waits on an actor layer, nothing more is read.
-    pub(super) fn stream<Own>(&mut self, number: u64, turn: &mut Stepping<'_, S, T, Own>) -> Result<(), Fault> {
+    pub(super) fn stream(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let most_line = self.settings.most_head_bytes;
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
@@ -182,13 +184,13 @@ where
     /// what the one before passed, and an actor layer whose type lists [`InboundPart`] is asked, and the part parked
     /// until it answers. What the last layer passes goes on the stream as one part, and the stream ends `Whole` after
     /// the end. Whether more of the body is to be read: not once it ends, while a part is parked, or once it stops.
-    pub(super) fn stream_on<Own>(
+    pub(super) fn stream_on(
         &mut self,
         number: u64,
         from: usize,
         carried: Carried,
         end: bool,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<bool, Fault> {
         let due = self.due(turn);
         let Some(connection) = self.connections.get_mut(&number) else {
@@ -201,7 +203,7 @@ where
         let reader = *reader;
         let (doing, pool) = turn.split();
         let layered = Layered { values: &mut connection.layers, order: from..T::LAYERS, run: T::inbound_body };
-        let walked: Walk<InboundParts> = walk::<T, _, _, _, _, _>(layered, &[], carried, end, (doing, pool));
+        let walked: Walk<InboundParts> = walk::<T, _, _, _, _>(layered, &[], carried, end, (doing, pool));
 
         let carried = match walked {
             Walk::Through(carried) => carried,
@@ -239,12 +241,12 @@ where
     /// The part last read of the body the connection numbered `number` streams to `reader` is on the stream: when it was
     /// the body's end, the stream ends `Whole`, and the connection awaits its handler's answer. Whether more of the
     /// body is to be read.
-    fn read_through<Own>(
+    fn read_through(
         &mut self,
         number: u64,
         reader: StreamKey,
         end: bool,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<bool, Fault> {
         if !end {
             return Ok(true);
@@ -264,12 +266,7 @@ where
 
     /// Sends the stream `reader` a part of the body it reads, `bytes`, which its credit allows: none is decoded
     /// without it.
-    fn send_part<Own>(
-        &mut self,
-        reader: StreamKey,
-        bytes: Bytes,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    fn send_part(&mut self, reader: StreamKey, bytes: Bytes, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(stream) = self.readers.get_mut(reader) else {
             return Ok(());
         };
@@ -293,7 +290,7 @@ where
     /// The body the connection numbered `number` streams is left unread, as its reader stopped or ended: the stack
     /// awaits the handler's answer, and closes the connection once it is written, since where the next request starts
     /// is not known.
-    fn leave_unread(&mut self, number: u64, turn: &mut Stepping<'_, S, T>) -> Result<(), Fault> {
+    fn leave_unread(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };

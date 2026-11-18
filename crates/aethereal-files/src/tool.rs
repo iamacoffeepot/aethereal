@@ -2,8 +2,8 @@
 
 use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile, Writes};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held,
-    Path, ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held,
+    ProtocolRef, Receives, Turn, path,
 };
 use aethereal_data::{
     Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
@@ -76,14 +76,13 @@ impl Actor for ReadTool {
     type Config = ReadToolConfig;
     type Key = ();
     type Handles = (Call, Answer<FileRead, Calling>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Files,);
 
-    fn begin(_: ReadToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ReadToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -103,10 +102,9 @@ impl Tool for ReadTool {
 }
 
 impl Handles<Call> for ReadTool {
-    type Sends = (Asks<Path<Files>, ReadFile, Calling>, ToSender<Called>);
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(read) = from_bytes::<ReadFile>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             // The schema says a string of any spelling, and a path is narrower.
             turn.reply(&Called::Refused(String::from("that is no path")))?;
@@ -123,12 +121,10 @@ impl Handles<Call> for ReadTool {
 }
 
 impl Receives<Answer<FileRead, Calling>> for ReadTool {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<FileRead>, Calling),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());
@@ -153,7 +149,7 @@ fn refused(why: &str) -> Called {
 
 /// What the tool answers of a file whose bytes are in the blob `bytes`: its text, as [`FileContents`], built in a buffer
 /// the turn hands out and put (ADR-0042).
-fn contents<S>(turn: &mut Turn<'_, ReadTool, S>, bytes: &Bytes) -> Result<Called, Fault> {
+fn contents(turn: &mut Turn<'_, ReadTool>, bytes: &Bytes) -> Result<Called, Fault> {
     let length = turn.read(bytes).len();
     if length > MOST_BYTES {
         return Ok(refused("the file is too large"));
@@ -200,14 +196,13 @@ impl Actor for WriteTool {
     type Config = WriteToolConfig;
     type Key = ();
     type Handles = (Call, Answer<FileWritten, Calling>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Files,);
 
-    fn begin(_: WriteToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: WriteToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -230,10 +225,9 @@ impl Tool for WriteTool {
 }
 
 impl Handles<Call> for WriteTool {
-    type Sends = (Asks<Path<Files>, WriteFile, Calling>, ToSender<Called>);
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
         if input.len() > WRITE_INPUT_BYTES {
             turn.reply(&refused("the text is too large"))?;
@@ -263,12 +257,10 @@ impl Handles<Call> for WriteTool {
 }
 
 impl Receives<Answer<FileWritten, Calling>> for WriteTool {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Calling { number }): (Answered<FileWritten>, Calling),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());

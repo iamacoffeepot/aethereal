@@ -3,8 +3,8 @@
 use super::{Harness, Ran, Unheard};
 use crate::Engine;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
-    Receives, ToAny, ToSender, ToType, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
+    Receives, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
@@ -53,14 +53,13 @@ impl Actor for Doubler {
     type Config = Self;
     type Key = ();
     type Handles = (Ping, Silence);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(doubler: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(doubler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(doubler)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -74,19 +73,17 @@ impl Carries<Silence> for Doubler {
 }
 
 impl Handles<Ping> for Doubler {
-    type Sends = (ToSender<Pong>,);
     type From = Anyone;
 
-    fn handle(&mut self, Ping(value): Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Ping(value): Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.reply(&Pong(value * 2))?)
     }
 }
 
 impl Handles<Silence> for Doubler {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Silence, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Silence, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -118,44 +115,35 @@ impl Actor for Relay {
     type Config = Report;
     type Key = ();
     type Handles = (Note, Ping, Answer<Pong, Waiting>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(report: Report, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(report: Report, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { report: report.to })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Relay {
-    type Sends = (ToAny<Listening, Note>,);
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).send(&note).map(|_| ())?)
     }
 }
 
 impl Handles<Ping> for Relay {
-    type Sends = (Asks<Listening, Ping, Waiting>,);
     type From = Anyone;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.to(self.report).ask(&ping, &Waiting).map(|_| ())?)
     }
 }
 
 impl Receives<Answer<Pong, Waiting>> for Relay {
-    type Sends = (ToAny<Listening, Note>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Pong>, Waiting),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Pong>, Waiting), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let note = match answered {
             Answered::Yes(Pong(value)) => Note(value),
             Answered::No(_) => Note(0),
@@ -362,23 +350,21 @@ impl Actor for Passer {
     type Config = Self;
     type Key = ();
     type Handles = (Pass,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(passer: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(passer: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(passer)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Pass> for Passer {
-    type Sends = (ToType<Self, Pass>,);
     type From = Anyone;
 
-    fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Pass(left): Pass, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.seen.push(left);
         if left == 0 {
             return Err(Fault::new(&Pass(left))?);
@@ -511,24 +497,22 @@ impl Actor for Caster {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(caster: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(caster: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(caster)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Caster {
-    type Sends = (ToAny<(Note,), Note>,);
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if let Some(sender) = turn.cast(turn.sender()) {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
             turn.to(sender).send(&note)?;
         }
 

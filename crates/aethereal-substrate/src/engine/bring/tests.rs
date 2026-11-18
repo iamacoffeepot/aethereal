@@ -3,9 +3,7 @@
 use super::super::*;
 use crate::{Closed, Feed};
 use aethereal_actor::Time;
-use aethereal_actor::{
-    Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, ToType, Top, Turn,
-};
+use aethereal_actor::{Actor, ChildOf, Controller, Ending, Fault, Handle, Handles, Recursive, Source, Top, Turn};
 use aethereal_actor::{Anyone, Entry};
 use aethereal_data::{Bound, Kind, Plain};
 use std::mem;
@@ -85,10 +83,9 @@ impl Actor for Window {
     type Config = WindowConfig;
     type Key = u64;
     type Handles = (Moved, Order, Lit);
-    type BeginSends = (ToType<Self, Order>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: WindowConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowConfig { pointers, lights, orders, .. } = config;
         let pointers = pointers.into_iter().map(|pointer| turn.take(pointer)).collect::<Result<_, _>>()?;
         let lights = lights.into_iter().map(|light| turn.take(light)).collect::<Result<_, _>>()?;
@@ -99,16 +96,15 @@ impl Actor for Window {
         Ok(Self { pointers, lights, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Moved> for Window {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, moved: Moved, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_me = turn.sender() == turn.me().erase();
         let chain = turn.chain();
         let is_first = chain.depth == 0 && chain.root.sender == turn.me().id();
@@ -119,10 +115,9 @@ impl Handles<Moved> for Window {
 }
 
 impl Handles<Order> for Window {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Spawn(number) => {
                 let given = mem::take(&mut self.pointers).into_iter().map(|pointer| turn.give(pointer));
@@ -138,10 +133,9 @@ impl Handles<Order> for Window {
 }
 
 impl Handles<Lit> for Window {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, lit: Lit, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let took = lit.take && turn.take(lit.lamp).is_ok();
         self.heard.push(Heard::Lit { took });
 
@@ -358,10 +352,9 @@ impl Actor for Windows {
     type Config = WindowsConfig;
     type Key = ();
     type Handles = (Asking,);
-    type BeginSends = (ToType<Self, Asking>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: WindowsConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let WindowsConfig { control, orders } = config;
         let mut control = turn.take(control)?;
         let controller = turn.open(&mut control)?;
@@ -374,16 +367,15 @@ impl Actor for Windows {
         Ok(Self { control })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Asking> for Windows {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, asking: Asking, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, asking: Asking, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match asking {
             Asking::Window(number) => turn.open(&mut self.control)?.push(Make::Window(number)),
             Asking::Close => turn.close(),

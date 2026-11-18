@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{Declared, DeclaredBy, Handler, Role, Sends};
+use super::{Declared, Handler, Role};
 use crate::guard::{Anyone, Checks};
 use crate::{
     Actor, Actors, Answer, Ended, ErasedActorRef, Fault, Item, Mail, On, Stage, Turn, Turning, Unreadable, Within,
@@ -9,22 +9,24 @@ use aethereal_data::{Decode, DecodeError, Kind, KindId};
 
 /// The actor handles mail of the kind `K`, from whoever its guard admits (ADR-0013, ADR-0058).
 ///
-/// `Sends` lists what the handler may send, and the turn it is given offers those sends and no other, so what it
-/// declares is what it can do. `From` is its guard: who may send it `K`, asked before the handler runs. What its guard
-/// refuses goes to [`refused`](Self::refused).
+/// `From` is its guard: who may send it `K`, asked before the handler runs. What its guard refuses goes to
+/// [`refused`](Self::refused). What the handler sends is checked at each send, against what it sends through.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no handler of `{K}`",
+    label = "`{K}` is sent here to an actor of type `{Self}`",
+    note = "a send builds to a type that lists `{K}` in its `Handles` and has an `impl Handles<{K}>`"
+)]
 pub trait Handles<K: Kind>: Actor {
-    /// What the handler may send: a tuple of markers, whatever comes back from which the actor handles.
-    type Sends: Sends + DeclaredBy<Self>;
     /// Who may send it `K`: a guard, which hands the handler the sender it checked.
     type From: Checks<Self, K>;
 
     /// Handles one piece of mail: a turn of its own, which holds the sender its guard checked.
-    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault>;
+    fn handle(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault>;
 
     /// Mail of `K` from a sender `From` refused: logged, naming the sender, and a request answered
     /// [`Unanswered::Unreadable`](crate::Unanswered::Unreadable); other mail is dropped. Its turn holds the sender as
     /// an [`ErasedActorRef`], as the guard checked nothing to hand on.
-    fn refused(&mut self, mail: K, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn refused(&mut self, mail: K, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.refuse(&mail)
     }
 }
@@ -32,11 +34,8 @@ pub trait Handles<K: Kind>: Actor {
 /// The actor takes `H`, which is not mail of a kind it lists: an answer, an ending, a stage, or its fallback (ADR-0013,
 /// ADR-0058). No sender chooses these, so none has a guard.
 pub trait Receives<H: Received>: Actor {
-    /// What the handler may send: a tuple of markers, whatever comes back from which the actor handles.
-    type Sends: Sends + DeclaredBy<Self>;
-
     /// Handles one item: a turn of its own.
-    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault>;
+    fn handle(&mut self, item: H::Item<'_>, turn: &mut Turn<'_, Self>) -> Result<(), Fault>;
 }
 
 /// Mail of any kind its receiver does not list: the receiver's fallback, which is handed the mail as it came
@@ -70,17 +69,12 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Rec
 /// What an actor of type `A` handles, reached through the trait for its role: [`Handles`] for mail of a kind,
 /// [`Receives`] for the rest (ADR-0058).
 pub trait Reached<A: Actor>: Handled {
-    /// What its handler may send.
-    type Sends: Sends;
-
     /// Hands `item` to the handler of `A` for it, in a turn of an actor whose type declares `declared`: or, when it is
     /// not to be handed, ends the turn as why says (ADR-0017).
     fn hand(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault>;
 }
 
 impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
-    type Sends = <A as Handles<K>>::Sends;
-
     #[allow(clippy::inline_always, reason = "once for every turn, in place of the call to the handler it wraps")]
     #[inline(always)]
     fn hand(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault> {
@@ -91,7 +85,7 @@ impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
         let admitted = <A::From as Checks<A, K>>::admits(actor, &mail, &turning.sender(declared));
 
         match admitted {
-            Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::Sends, A::From>(declared, from)),
+            Some(from) => A::handle(actor, mail, &mut turning.declaring::<A, A::From>(declared, from)),
             None => refuse(actor, mail, turning, declared),
         }
     }
@@ -109,14 +103,12 @@ fn refuse<A: Handles<K>, K: Kind>(
 ) -> Result<(), Fault> {
     let sender = ErasedActorRef::new(turning.source());
 
-    A::refused(actor, mail, &mut turning.declaring::<A, A::Sends, Anyone>(declared, sender))
+    A::refused(actor, mail, &mut turning.declaring::<A, Anyone>(declared, sender))
 }
 
 macro_rules! received {
     ($( [$($generics:tt)*] $handled:ty; )*) => {$(
         impl<A: Receives<$handled>, $($generics)*> Reached<A> for $handled {
-            type Sends = <A as Receives<$handled>>::Sends;
-
             #[allow(
                 clippy::inline_always,
                 reason = "once for every turn, in place of the call to the handler it wraps"
@@ -131,7 +123,7 @@ macro_rules! received {
                 match <$handled as Handled>::take(item) {
                     Ok(taken) => {
                         let sender = ErasedActorRef::new(turning.source());
-                        let mut turn = turning.declaring::<A, Self::Sends, Anyone>(declared, sender);
+                        let mut turn = turning.declaring::<A, Anyone>(declared, sender);
 
                         <A as Receives<$handled>>::handle(actor, taken, &mut turn)
                     }
@@ -220,7 +212,7 @@ impl Handled for Others {
 ///
 /// A tuple holds up to 64: an actor that handles more is several actors.
 pub trait HandledList<A: Actor>: 'static {
-    /// Each thing handled, and what its handler may send, as the engine reads them.
+    /// Each thing handled, as the engine reads them.
     const HANDLERS: &'static [Handler];
 
     /// Hands `item` to the handler for it: the one for its kind or for endings, else the fallback for mail, in a turn
@@ -237,8 +229,9 @@ fn role(item: &Item<'_>) -> Role {
     match item {
         Item::Mail(mail) => Role::Kind(mail.kind()),
         Item::Ended(_) => Role::Ended,
-        Item::Answer { mail, .. } => Role::Answer(mail.kind()),
-        Item::Unanswered { asking, .. } => Role::Answer(asking.answer),
+        // An answer is handed to the handler of the kind its request was asked for, whatever kind it came as, which
+        // reads one of another kind as unreadable (ADR-0017).
+        Item::Answer { asking, .. } | Item::Unanswered { asking, .. } => Role::Answer(asking.answer),
     }
 }
 
@@ -260,7 +253,7 @@ macro_rules! tuples {
     ($( [$($name:ident)*] )*) => {$(
         impl<A: Actor, $($name: Reached<A>),*> HandledList<A> for ($($name,)*) {
             const HANDLERS: &'static [Handler] =
-                &[$(Handler::new($name::ROLE, <<$name as Reached<A>>::Sends as Sends>::SENDINGS)),*];
+                &[$(Handler::new($name::ROLE)),*];
 
             fn dispatch(
                 actor: &mut A,

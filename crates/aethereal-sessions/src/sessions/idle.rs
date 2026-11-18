@@ -5,7 +5,7 @@
 
 use super::session::{Activity, Life, Then};
 use super::transcript::{Ended, Entry, Note, Since, Speaker, WindDown};
-use super::{Acts, Does, Resting, Sessions};
+use super::{Resting, Sessions};
 use aethereal_actor::{Answer, Answered, Fault, JobId, Receives, Sleep, Slept, Turn};
 use core::time::Duration;
 
@@ -14,7 +14,7 @@ const COMPACT: &str = "/compact";
 
 impl Sessions {
     /// `session`'s turn ended, or its last task: it is idle once no task runs, and waits the idle time.
-    pub(super) fn settle<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32) -> Result<(), Fault> {
+    pub(super) fn settle(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         let rest = self.rest();
         let idle_secs = self.settings.idle_secs;
         let Some(Life::Running(running)) = self.held.get_mut(&session).map(|held| &mut held.life) else {
@@ -33,7 +33,7 @@ impl Sessions {
     }
 
     /// The notice's turn ended: the session is asked to compact, within the deadline.
-    pub(super) fn compact<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32) -> Result<(), Fault> {
+    pub(super) fn compact(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         let rest = self.rest();
         let wind_down_secs = self.settings.wind_down_secs;
         let Some(Life::Running(running)) = self.held.get_mut(&session).map(|held| &mut held.life) else {
@@ -48,19 +48,17 @@ impl Sessions {
     }
 
     /// The compaction's turn ended: the session is stopped.
-    pub(super) fn wound_down<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32) -> Result<(), Fault> {
+    pub(super) fn wound_down(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         self.stop(turn, session, Ended::Idle, Then::Rest { lines: Vec::new() })
     }
 }
 
 impl Receives<Answer<Slept, Resting>> for Sessions {
-    type Sends = Acts;
-
     /// A session's idle time, or a step's deadline, is up: unless it was active since, it is wound down a step.
     fn handle(
         &mut self,
         (answered, Resting { session, rest }): (Answered<Slept>, Resting),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Slept) = answered else {
             return Ok(());
@@ -98,7 +96,7 @@ impl Receives<Answer<Slept, Resting>> for Sessions {
 
 impl Sessions {
     /// Tells `session`, idle, that it is about to be compacted, and waits for that turn within the deadline.
-    fn notice<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32) -> Result<(), Fault> {
+    fn notice(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         let rest = self.rest();
         let wind_down_secs = self.settings.wind_down_secs;
         let notice = self.settings.notice();
@@ -124,7 +122,7 @@ enum Due {
 }
 
 /// Waits `secs` on the timer for `session`'s rest `rest`.
-fn wait<S: Does>(turn: &mut Turn<'_, Sessions, S>, session: u32, rest: u64, secs: u32) -> Result<JobId, Fault> {
+fn wait(turn: &mut Turn<'_, Sessions>, session: u32, rest: u64, secs: u32) -> Result<JobId, Fault> {
     let until = turn.now() + Duration::from_secs(u64::from(secs));
 
     Ok(turn.run(&Sleep { until }, &Resting { session, rest })?)

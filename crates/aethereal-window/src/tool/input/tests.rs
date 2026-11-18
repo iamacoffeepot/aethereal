@@ -9,7 +9,7 @@ use crate::keys::{KeyEvent, KeySet, Keyed, KeysEntry, KeysListed};
 use crate::perform::{MOST_INPUTS, MOST_NAME_BYTES, MOST_TEXT_BYTES};
 use crate::pointing::{Probed, SubscribeProbes};
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{Anyone, Tells, Top};
+use aethereal_actor::{Anyone, Top};
 use aethereal_data::{ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Turned, Unheard};
@@ -34,11 +34,9 @@ impl Actor for Subscriber {
     type Config = InputToolConfig;
     type Key = ();
     type Handles = (Event, Keyed, Probed);
-    type BeginSends =
-        (Tells<Path<Window>, Subscribe>, Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, KeysListed>);
-    type EndSends = ();
+    type Depends = (Window,);
 
-    fn begin(_: InputToolConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: InputToolConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let hears = KeysEntry { actor: turn.me().protocol(), entry: 0, keys: KeySet::All, blocks: true };
         let window = path::<Window>(WindowId::nth(0));
         turn.to(window).send(&Subscribe)?.send(&SubscribeProbes)?.send(&KeysListed { entries: vec![hears] })?;
@@ -46,34 +44,31 @@ impl Actor for Subscriber {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Subscriber {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Keyed> for Subscriber {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Probed> for Subscriber {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

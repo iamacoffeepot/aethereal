@@ -1,34 +1,24 @@
 //! A program's root list: the roots its renderer draws, in draw order, fixed for the program's life (ADR-0055).
 
-use super::Unbuilt;
 use crate::root_id;
-use aethereal_actor::{Actor, ChildOf, Declared, HasRoot, Sending};
+use aethereal_actor::{Actor, ChildOf, HasRoot};
 use aethereal_data::{ActorId, PathSegment};
 
-/// One root a program's root list names: its id, and what its type declares.
+/// One root a program's root list names: its id.
 #[derive(Debug, Clone, Copy)]
 pub struct Drawn {
     id: ActorId,
-    declared: &'static Declared,
 }
 
 impl Drawn {
     /// The singleton root of type `A`.
     fn of<A: ChildOf + Actor<Key = ()>>() -> Self {
-        Self { id: root_id(&PathSegment::new(A::NAME, &())), declared: Declared::of::<A>() }
+        Self { id: root_id(&PathSegment::new(A::NAME, &())) }
     }
 
-    /// Its id, when its `begin` or one of its handlers may send `sending`, what draws it.
-    ///
-    /// # Errors
-    ///
-    /// [`Unbuilt::Undrawn`] naming it when none may.
-    pub(super) fn sending(self, sending: &Sending) -> Result<ActorId, Unbuilt> {
-        if self.declared.may_send(sending) {
-            Ok(self.id)
-        } else {
-            Err(Unbuilt::Undrawn { root: self.declared.name().clone() })
-        }
+    /// Its id.
+    pub(super) const fn id(self) -> ActorId {
+        self.id
     }
 }
 
@@ -55,14 +45,13 @@ impl Drawn {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -99,14 +88,13 @@ impl Drawn {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }

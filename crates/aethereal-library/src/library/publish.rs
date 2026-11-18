@@ -3,17 +3,16 @@
 
 use super::{Fetching, Library, ReadingModule, Stage};
 use crate::{ModulePublished, Numbered, PublishModule, Unloaded};
-use aethereal_actor::{Answered, Asks, Bytes, Fault, Handles, Path, ToSender, Turn, path};
+use aethereal_actor::{Answered, Bytes, Fault, Handles, Turn, path};
 use aethereal_actor::{Anyone, Level};
 use aethereal_data::{FilePath, to_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 
 /// Reads the module, once `Code` is published: answered once it is read.
 impl Handles<PublishModule> for Library {
-    type Sends = (Asks<Path<Files>, ReadFile, ReadingModule>, ToSender<ModulePublished>);
     type From = Anyone;
 
-    fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, publish: PublishModule, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_open = matches!(self.stage, Stage::Open);
         if !is_open {
             turn.reply(&ModulePublished::Unopened)?;
@@ -37,7 +36,7 @@ impl Library {
         &mut self,
         number: u64,
         answered: Answered<FileRead>,
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Fetching { held, path }) = self.fetching.remove(&number) else {
             return Ok(());
@@ -59,11 +58,11 @@ impl Library {
     /// # Errors
     ///
     /// Why the kinds it publishes did not encode.
-    fn publish_module<S>(
+    fn publish_module(
         &mut self,
         path: &FilePath,
         module: Bytes,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<ModulePublished, Fault> {
         let kinds = match turn.load_code(&module) {
             Ok(kinds) => kinds,

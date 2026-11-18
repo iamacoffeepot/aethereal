@@ -53,14 +53,14 @@ pub enum Called {
 impl Called {
     /// The output whose bytes, a value of the tool's output schema, are `bytes`, put in `turn`: refused, for the agent
     /// to read, when the engine has no room to hold it (ADR-0014). A buffer the turn handed out is put without a copy.
-    pub fn output<A, S>(turn: &mut Turn<'_, A, S>, bytes: Vec<u8>) -> Self {
+    pub fn output<A>(turn: &mut Turn<'_, A>, bytes: Vec<u8>) -> Self {
         turn.put(bytes)
             .map_or_else(|_| Self::Refused(String::from("the engine had no room to hold the output")), Self::Output)
     }
 
     /// The image whose PNG is `png`, put in `turn`, with `text` beside it: refused, for the agent to read, when the
     /// engine has no room to hold it (ADR-0014).
-    pub fn image<A, S>(turn: &mut Turn<'_, A, S>, png: Vec<u8>, text: String) -> Self {
+    pub fn image<A>(turn: &mut Turn<'_, A>, png: Vec<u8>, text: String) -> Self {
         turn.put(png).map_or_else(
             |_| Self::Refused(String::from("the engine had no room to hold the image")),
             |png| Self::Image { png, text },

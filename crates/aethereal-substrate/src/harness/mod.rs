@@ -379,9 +379,9 @@ impl<H: Steps> Harness<H> {
     /// # Errors
     ///
     /// Why it does not encode.
-    pub fn tell<R, K>(&mut self, target: R, kind: &K) -> Result<(), Unheard>
+    pub fn tell<R, K, I>(&mut self, target: R, kind: &K) -> Result<(), Unheard>
     where
-        R: Proven + Reaches<K>,
+        R: Proven + Reaches<(), K, I>,
         K: Kind + Encode<Actors>,
     {
         self.host.engine().send_outside(self.outside, target.seated(), kind, |_| Tie::TELL)?;

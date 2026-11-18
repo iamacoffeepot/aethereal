@@ -2,7 +2,7 @@
 //! ask and gives its routes to an empty router, which compiles them to the trie a request walks.
 
 use super::{Captures, Found, Routed, Trie, Unroutable};
-use crate::stack::{HandlerList, LastLayer, Picked, Reach, Request, Response, Slot};
+use crate::stack::{FoundBy, HandlerList, LastLayer, Picked, Reach, Request, Response, Slot};
 use crate::{Header, Method, Status};
 use aethereal_actor::{Actor, Beginning, Fault, Lists, Path};
 use aethereal_data::{Boundary, Decode, DecodeError, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 /// A routes type that lists both its handlers:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, ToSender, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// # use aethereal_http::stack::{FromStack, LayerForm, Request, Response};
 /// # use aethereal_http::{Method, Route, Router, Routes, Status, Unroutable};
@@ -35,14 +35,13 @@ use core::marker::PhantomData;
 /// #             type Config = Self;
 /// #             type Key = ();
 /// #             type Handles = (Request<(), ()>,);
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(handler: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(handler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(handler)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -52,13 +51,12 @@ use core::marker::PhantomData;
 /// #         }
 /// #
 /// #         impl Handles<Request<(), ()>> for $handler {
-/// #             type Sends = (ToSender<Response>,);
 /// #             type From = FromStack;
 /// #
 /// #             fn handle(
 /// #                 &mut self,
 /// #                 _: Request<(), ()>,
-/// #                 turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+/// #                 turn: &mut Turn<'_, Self, Self::From>,
 /// #             ) -> Result<(), Fault> {
 /// #                 Ok(turn.reply(&Response::empty(Status::Ok))?)
 /// #             }
@@ -87,10 +85,10 @@ use core::marker::PhantomData;
 /// }
 /// ```
 ///
-/// A route to a handler its routes type does not list does not build, as the stack's sends would not ask it:
+/// A route to a handler its routes type does not list does not build, as its router holds no place for it:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, ToSender, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// # use aethereal_http::stack::{FromStack, LayerForm, Request, Response};
 /// # use aethereal_http::{Method, Route, Router, Routes, Status, Unroutable};
@@ -109,14 +107,13 @@ use core::marker::PhantomData;
 /// #             type Config = Self;
 /// #             type Key = ();
 /// #             type Handles = (Request<(), ()>,);
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(handler: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(handler: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(handler)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -126,13 +123,12 @@ use core::marker::PhantomData;
 /// #         }
 /// #
 /// #         impl Handles<Request<(), ()>> for $handler {
-/// #             type Sends = (ToSender<Response>,);
 /// #             type From = FromStack;
 /// #
 /// #             fn handle(
 /// #                 &mut self,
 /// #                 _: Request<(), ()>,
-/// #                 turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+/// #                 turn: &mut Turn<'_, Self, Self::From>,
 /// #             ) -> Result<(), Fault> {
 /// #                 Ok(turn.reply(&Response::empty(Status::Ok))?)
 /// #             }
@@ -164,8 +160,8 @@ pub trait Routes: Sized + 'static {
     /// What the layers before it attach: `A` of every route's handler.
     type Attached: Plain;
     /// Every handler its router may ask, each a [`Route`] of the handler's type and its routes' captures type, in a
-    /// tuple: the stack's sends list one ask of each.
-    type Handlers: HandlerList<Self::Attached>;
+    /// tuple: the stack asks whichever a request reaches.
+    type Handlers: HandlerList;
 
     /// `router`, empty, with this type's routes.
     ///
@@ -257,11 +253,6 @@ impl<R: Routes> Clone for Router<R> {
 /// A router is the last layer of a stack with routes: it picks the handler by method and path.
 impl<R: Routes> LastLayer<R::Attached> for Router<R> {
     type Reaches = R::Handlers;
-    type Asked = <R::Handlers as HandlerList<R::Attached>>::Asked;
-
-    fn found<Me, S>(_: &Beginning<'_, Me, S>) -> Result<Self, Fault> {
-        Self::compiled().map_err(|unroutable| Fault::new(&unroutable).unwrap_or_else(Fault::from))
-    }
 
     fn picked<'p>(&self, method: Method, path: &'p str) -> Picked<'p> {
         match self.trie.find(method, path) {
@@ -273,6 +264,14 @@ impl<R: Routes> LastLayer<R::Attached> for Router<R> {
 
     fn reaches(&self) -> &R::Handlers {
         &self.handlers
+    }
+}
+
+/// A router is compiled from its routes as the stack begins, whoever the stack is: it finds no actor, as each request
+/// finds its handler at the path its captures make.
+impl<Me, R: Routes> FoundBy<Me, ()> for Router<R> {
+    fn found(_: &Beginning<'_, Me>) -> Result<Self, Fault> {
+        Self::compiled().map_err(|unroutable| Fault::new(&unroutable).unwrap_or_else(Fault::from))
     }
 }
 

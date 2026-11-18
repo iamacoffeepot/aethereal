@@ -89,9 +89,9 @@ fn a_connection_finished_writes_all_it_holds_before_its_peer_reads_the_end_and_r
     let mut wrote = Vec::new();
     for chunk in payload.chunks(1 << 20) {
         let parts = vec![pair.harness.put(chunk.to_vec())?];
-        wrote.push(pair.harness.ask(pair.connection.protocol::<Writing, _>(), &Write { parts })?);
+        wrote.push(pair.harness.ask(pair.connection.protocol::<Writing>(), &Write { parts })?);
     }
-    pair.harness.tell(pair.connection.protocol::<Writing, _>(), &Finish)?;
+    pair.harness.tell(pair.connection.protocol::<Writing>(), &Finish)?;
 
     let mut read = Vec::new();
     assert!(pair.read_to_end(&mut read), "the peer reads the end once every byte is written");
@@ -116,9 +116,9 @@ fn a_write_after_a_finish_is_answered_finished_and_never_reaches_the_peer() -> R
     // bytes its writer had said were the last.
     let mut pair = Pair::dial(TcpSettings::default())?;
 
-    pair.harness.tell(pair.connection.protocol::<Writing, _>(), &Finish)?;
+    pair.harness.tell(pair.connection.protocol::<Writing>(), &Finish)?;
     let parts = vec![pair.harness.put(b"late".to_vec())?];
-    let late = pair.harness.ask(pair.connection.protocol::<Writing, _>(), &Write { parts })?;
+    let late = pair.harness.ask(pair.connection.protocol::<Writing>(), &Write { parts })?;
 
     assert_eq!(pair.harness.answer(late)?, Answered::Yes(Wrote::Finished));
     let mut read = Vec::new();

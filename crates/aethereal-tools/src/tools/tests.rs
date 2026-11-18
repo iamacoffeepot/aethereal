@@ -3,7 +3,7 @@
 //! changed since is refused.
 
 use super::*;
-use crate::{Output, Tool, ToolFlag, ToolSheet, Toolbox, ToolboxConfig, Typed};
+use crate::{Output, Tool, ToolFlag, ToolSheet, Toolbox, ToolboxConfig, Tooling, Typed};
 use aethereal_actor::{ActorRef, Anyone, Anywhere, ProtocolRef};
 use aethereal_data::{Budget, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_substrate::Engine;
@@ -42,14 +42,13 @@ impl Actor for Length {
     type Config = LengthConfig;
     type Key = ();
     type Handles = (Call,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: LengthConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: LengthConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -65,10 +64,9 @@ impl Tool for Length {
 }
 
 impl Handles<Call> for Length {
-    type Sends = (ToSender<Called>,);
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1 << 16))
             .map(|say| Said { length: u32::try_from(say.text.len()).unwrap_or(u32::MAX) });
         let called = match said {

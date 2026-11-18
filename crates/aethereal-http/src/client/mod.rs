@@ -20,9 +20,8 @@ pub use settings::{ClientLimits, HttpSettings};
 use crate::Method;
 use crate::http1::body::{Body, Decoded, Progress};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
-    Held, Level, More, Number, Open, Part, Receives, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender,
-    Turn, Unsent,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held, Level,
+    More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Dialed, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
@@ -115,12 +114,6 @@ enum Written {
     Unsent(Failure),
 }
 
-/// What a client sends as it reads: the parts of the stream it sends a response to.
-type Parts = ToAny<(Part<Receiving>,), Part<Receiving>>;
-
-/// What a client sends its connection as it reads: credit.
-type Credit = ToAny<Streamed<Reading>, More>;
-
 /// A client on one connection `Tcp` dialed for it, beneath the root, keyed by the root's count (ADR-0035): asked a
 /// [`Fetch`], it writes the request and answers with the response whole; opened a [`Receiving`] stream, it writes the
 /// request and streams the response as it arrives, or hands over the connection once it switches protocols. It takes
@@ -163,11 +156,10 @@ impl Actor for Client {
         Answer<HungUp, Number>,
         Answer<Wrote, Requesting>,
     );
-    type BeginSends = (Asks<Streamed<Reading>, Open<Reading>, Number>, Credit);
-    type EndSends = ();
+    type Depends = ();
 
     /// Opens its connection's stream: it reads from the first, so a connection that hangs up while idle is noticed.
-    fn begin(config: ClientConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ClientConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.limits.window).unwrap_or(NonZeroU32::MIN);
         let mut reading = Streams::new(window);
         let reader = reading.open(turn, config.connection.protocol(), Read, ())?;
@@ -186,16 +178,15 @@ impl Actor for Client {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Fetch> for Client {
-    type Sends = (ToSender<Fetched>, Asks<Writing, Write, Requesting>);
     type From = Anyone;
 
-    fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let head_only = fetch.request.method == Method::Head;
         let written = self.write(turn, fetch.request, &Switch::Stay)?;
         match written {
@@ -211,10 +202,9 @@ impl Handles<Fetch> for Client {
 }
 
 impl Handles<Open<Receiving>> for Client {
-    type Sends = (ToSender<Finished>, Asks<Writing, Write, Requesting>);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (key, Follow { request, switch }) = self.serving.open(turn, open)?;
         let head_only = request.method == Method::Head;
         let switches = matches!(switch, Switch::To { .. });
@@ -229,10 +219,9 @@ impl Handles<Open<Receiving>> for Client {
 }
 
 impl Handles<More> for Client {
-    type Sends = (Parts, Credit);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(_) = self.serving.more(turn, &more) else {
             return Ok(());
         };
@@ -242,11 +231,10 @@ impl Handles<More> for Client {
 }
 
 impl Handles<Enough> for Client {
-    type Sends = ();
     type From = Anyone;
 
     /// Its asker stops the stream: the connection is left mid-response, or switched, so it closes.
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(stopped) = self.serving.stop(turn, &enough) else {
             return Ok(());
         };
@@ -258,11 +246,9 @@ impl Handles<Enough> for Client {
 }
 
 impl Receives<Ended> for Client {
-    type Sends = ();
-
     /// The asker of a stream it serves has ended: when the stream was still open, the connection is left
     /// mid-response, or switched, so it closes.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let left = self.serving.ended(&ended);
         if left.is_empty() {
             return Ok(());
@@ -274,19 +260,17 @@ impl Receives<Ended> for Client {
 }
 
 impl Handles<Shut> for Client {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.fail(turn, Failure::HungUp(HungUp::Shut))
     }
 }
 
 impl Handles<Part<Reading>> for Client {
-    type Sends = (Parts, Credit);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part_held(turn, part) else {
             return Ok(());
         };
@@ -298,14 +282,12 @@ impl Handles<Part<Reading>> for Client {
 }
 
 impl Receives<Answer<HungUp, Number>> for Client {
-    type Sends = (Parts, Credit);
-
     /// The connection's stream has ended: what the buffer holds is read on as far as it goes, and then the client
     /// closes.
     fn handle(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.reading.answered(number);
         let how = match answered {
@@ -319,14 +301,12 @@ impl Receives<Answer<HungUp, Number>> for Client {
 }
 
 impl Receives<Answer<Wrote, Requesting>> for Client {
-    type Sends = ();
-
     /// A request the connection would not take is answered so, and the client takes the next: nothing of it was
     /// written. A request sent waits on its response, and one the connection hung up on on the read stream's end.
     fn handle(
         &mut self,
         (answered, Requesting): (Answered<Wrote>, Requesting),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let is_full = answered == Answered::Yes(Wrote::Full);
         if !is_full {
@@ -347,10 +327,7 @@ impl Receives<Answer<Wrote, Requesting>> for Client {
 impl Client {
     /// Writes `request` to the connection, switching as `switch` says, when no other request is out: its head built
     /// in a buffer the turn hands out and put, and its body after it as a part of its own (ADR-0042).
-    fn write<S, I>(&self, turn: &mut Turn<'_, Self, S>, request: Outgoing, switch: &Switch) -> Result<Written, Fault>
-    where
-        S: Allows<Asks<Writing, Write, Requesting>, I>,
-    {
+    fn write(&self, turn: &mut Turn<'_, Self>, request: Outgoing, switch: &Switch) -> Result<Written, Fault> {
         let is_idle = matches!(self.phase, Phase::Idle);
         if !is_idle {
             return Ok(Written::Unsent(Failure::Busy));
@@ -370,7 +347,7 @@ impl Client {
         } else {
             vec![head, request.body]
         };
-        turn.to(self.connection.protocol::<Writing, _>()).ask::<_, _, I>(&Write { parts }, &Requesting)?;
+        turn.to(self.connection.protocol::<Writing>()).ask(&Write { parts }, &Requesting)?;
 
         Ok(Written::Asked)
     }
@@ -378,17 +355,14 @@ impl Client {
     /// Reads on as far as the buffer goes, then grants the connection the credit withheld when only more of its bytes
     /// would take the client further, or, when the connection has ended and nothing more will come, ends what is
     /// out.
-    fn advance<S, IP, IC>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<Parts, IP> + Allows<Credit, IC>,
-    {
-        let stalled = self.read::<_, IP>(turn)?;
+    fn advance(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let stalled = self.read(turn)?;
         match (stalled, self.line) {
             (Stalled::Closed | Stalled::Credit, _) => Ok(()),
             (Stalled::Bytes, Line::Ended(how)) => self.conclude(turn, how),
             (Stalled::Bytes, Line::Open) => {
                 if let Some(withheld) = NonZeroU32::new(self.withheld) {
-                    self.reading.grant::<_, _, IC>(turn, self.reader, withheld)?;
+                    self.reading.grant(turn, self.reader, withheld)?;
                 }
                 self.withheld = 0;
                 Ok(())
@@ -398,17 +372,14 @@ impl Client {
 
     /// Reads what the buffer holds as far as it goes: a response's head, then its body, or after a switch, the
     /// connection's bytes. It says what it then waits on.
-    fn read<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<Stalled, Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn read(&mut self, turn: &mut Turn<'_, Self>) -> Result<Stalled, Fault> {
         loop {
             let step = match self.phase {
                 Phase::Idle => self.unasked(turn),
-                Phase::Head { .. } => self.read_head::<_, I>(turn)?,
+                Phase::Head { .. } => self.read_head(turn)?,
                 Phase::Body { taker: Taker::Gathering { .. }, .. } => self.gather(turn)?,
-                Phase::Body { taker: Taker::Following(key), .. } => self.follow::<_, I>(turn, key)?,
-                Phase::Switched { key } => self.relay::<_, I>(turn, key)?,
+                Phase::Body { taker: Taker::Following(key), .. } => self.follow(turn, key)?,
+                Phase::Switched { key } => self.relay(turn, key)?,
             };
             if let Step::Stop(stalled) = step {
                 return Ok(stalled);
@@ -417,7 +388,7 @@ impl Client {
     }
 
     /// Between requests, bytes no request asked for: the server is not speaking HTTP to this client, which closes.
-    fn unasked<S>(&self, turn: &mut Turn<'_, Self, S>) -> Step {
+    fn unasked(&self, turn: &mut Turn<'_, Self>) -> Step {
         if self.buffer.is_empty() {
             return Step::Stop(Stalled::Bytes);
         }
@@ -429,10 +400,7 @@ impl Client {
 
     /// Parses the response's head at the front of the buffer, and goes on to its body or the switch it makes. An
     /// informational head is passed over, as the final one follows it.
-    fn read_head<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<Step, Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn read_head(&mut self, turn: &mut Turn<'_, Self>) -> Result<Step, Fault> {
         let Phase::Head { ref asker, head_only } = self.phase else {
             return Ok(Step::Again);
         };
@@ -462,15 +430,12 @@ impl Client {
             return Ok(Step::Again);
         };
 
-        self.headed::<_, I>(turn, asker, head)
+        self.headed(turn, asker, head)
     }
 
     /// Goes on from the response's `head`, which `asker` waits on: to its body, or to the switch it makes. A switch a
     /// request did not ask for, and a body past the client's limit by its length, end the client.
-    fn headed<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, asker: Asker, parsed: Head) -> Result<Step, Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn headed(&mut self, turn: &mut Turn<'_, Self>, asker: Asker, parsed: Head) -> Result<Step, Fault> {
         let Head { status, headers, framing, closes } = parsed;
         let switched = status == 101;
         let is_success = (200..300).contains(&status);
@@ -480,8 +445,8 @@ impl Client {
         match asker {
             Asker::Following { key, switches: true } if takes_over => {
                 self.phase = Phase::Switched { key };
-                let writing = self.connection.protocol::<Writing, _>();
-                self.send::<_, I>(turn, key, Received::Switched { head: reply, writing })?;
+                let writing = self.connection.protocol::<Writing>();
+                self.send(turn, key, Received::Switched { head: reply, writing })?;
                 Ok(Step::Again)
             }
             asker if switched => {
@@ -507,7 +472,7 @@ impl Client {
             }
             Asker::Following { key, .. } => {
                 self.phase = Phase::Body { taker: Taker::Following(key), body, closes };
-                self.send::<_, I>(turn, key, Received::Head(reply))?;
+                self.send(turn, key, Received::Head(reply))?;
                 Ok(Step::Again)
             }
         }
@@ -515,7 +480,7 @@ impl Client {
 
     /// Reads on the body of a response a fetch waits on, and answers the fetch once it is whole: a body past the
     /// client's limit ends it.
-    fn gather<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<Step, Fault> {
+    fn gather(&mut self, turn: &mut Turn<'_, Self>) -> Result<Step, Fault> {
         let most_line = self.limits.most_head_bytes;
         let most_body = usize::try_from(self.limits.most_body_bytes).unwrap_or(usize::MAX);
         let Phase::Body { taker: Taker::Gathering { body: ref mut gathered, .. }, ref mut body, .. } = self.phase
@@ -546,10 +511,7 @@ impl Client {
 
     /// Reads on the body of a response the stream `key` waits on, and sends what came of it as one part, while the
     /// stream has credit: the body is never held whole.
-    fn follow<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, key: StreamKey) -> Result<Step, Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn follow(&mut self, turn: &mut Turn<'_, Self>, key: StreamKey) -> Result<Step, Fault> {
         let has_bytes = !self.buffer.is_empty();
         let is_held = has_bytes && !self.serving.has_credit(key);
         if is_held {
@@ -581,7 +543,7 @@ impl Client {
                 self.fail(turn, Failure::NoRoom)?;
                 return Ok(Step::Stop(Stalled::Closed));
             };
-            self.send::<_, I>(turn, key, Received::Bytes(bytes))?;
+            self.send(turn, key, Received::Bytes(bytes))?;
         }
         match progress {
             Progress::More => Ok(Step::Stop(Stalled::Bytes)),
@@ -591,10 +553,7 @@ impl Client {
 
     /// Sends the stream `key` what the buffer holds of a connection that switched, as one part, while the stream has
     /// credit.
-    fn relay<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, key: StreamKey) -> Result<Step, Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn relay(&mut self, turn: &mut Turn<'_, Self>, key: StreamKey) -> Result<Step, Fault> {
         if self.buffer.is_empty() {
             return Ok(Step::Stop(Stalled::Bytes));
         }
@@ -609,14 +568,14 @@ impl Client {
             self.fail(turn, Failure::NoRoom)?;
             return Ok(Step::Stop(Stalled::Closed));
         };
-        self.send::<_, I>(turn, key, Received::Bytes(bytes))?;
+        self.send(turn, key, Received::Bytes(bytes))?;
 
         Ok(Step::Again)
     }
 
     /// The response's body has ended: its asker is answered, and the client takes the next request, or closes when
     /// the connection closes once the response is read.
-    fn done<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<Step, Fault> {
+    fn done(&mut self, turn: &mut Turn<'_, Self>) -> Result<Step, Fault> {
         let Phase::Body { taker, closes, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             return Ok(Step::Again);
         };
@@ -631,7 +590,7 @@ impl Client {
 
     /// The connection has ended, and the buffer gives nothing more: a body that runs until the connection closes is
     /// whole, and anything else out has failed. Either way the client closes.
-    fn conclude<S>(&mut self, turn: &mut Turn<'_, Self, S>, how: HungUp) -> Result<(), Fault> {
+    fn conclude(&mut self, turn: &mut Turn<'_, Self>, how: HungUp) -> Result<(), Fault> {
         let runs_to_close = matches!(self.phase, Phase::Body { body: Body::Close, .. });
         let ends_body = runs_to_close && how == HungUp::Peer;
         if !ends_body {
@@ -647,12 +606,7 @@ impl Client {
 
     /// Answers `taker` with the body it took, which has ended: a fetch with the response whole, and a stream with
     /// `finished`.
-    fn answer_whole<S>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        taker: Taker,
-        finished: &Finished,
-    ) -> Result<(), Fault> {
+    fn answer_whole(&mut self, turn: &mut Turn<'_, Self>, taker: Taker, finished: &Finished) -> Result<(), Fault> {
         match taker {
             Taker::Gathering { held, head, body } => {
                 let ReplyHead { status, headers } = head;
@@ -670,7 +624,7 @@ impl Client {
     /// Answers whoever waits on the response with `failure`, and closes: the connection is left mid-response, so no
     /// later request could be read on it. A stream of a switched connection that hung up has not failed: it is
     /// closed.
-    fn fail<S>(&mut self, turn: &mut Turn<'_, Self, S>, failure: Failure) -> Result<(), Fault> {
+    fn fail(&mut self, turn: &mut Turn<'_, Self>, failure: Failure) -> Result<(), Fault> {
         match mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => {}
             Phase::Head { asker: Asker::Fetching(held), .. }
@@ -695,14 +649,11 @@ impl Client {
     }
 
     /// Sends the stream `key` `part`, which its credit allows.
-    fn send<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, key: StreamKey, part: Received) -> Result<(), Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn send(&mut self, turn: &mut Turn<'_, Self>, key: StreamKey, part: Received) -> Result<(), Fault> {
         let Some(stream) = self.serving.get_mut(key) else {
             return Ok(());
         };
-        match stream.send::<_, _, I>(turn, part) {
+        match stream.send(turn, part) {
             Ok(()) => Ok(()),
             Err(Unsent::Unwritable(error)) => Err(error.into()),
             Err(Unsent::NoCredit(_)) => {
@@ -713,7 +664,7 @@ impl Client {
     }
 
     /// Ends the stream `key` with `finished`, when it is still served.
-    fn finish<S>(&mut self, turn: &mut Turn<'_, Self, S>, key: StreamKey, finished: &Finished) -> Result<(), Fault> {
+    fn finish(&mut self, turn: &mut Turn<'_, Self>, key: StreamKey, finished: &Finished) -> Result<(), Fault> {
         if let Some(stream) = self.serving.take(key) {
             stream.finish(turn, finished)?;
         }

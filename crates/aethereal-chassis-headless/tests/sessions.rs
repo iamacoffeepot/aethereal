@@ -4,8 +4,7 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Path, Receives, Tells,
-    Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Receives, Top, Turn, path,
 };
 use aethereal_actor::{Service, Spares};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -14,7 +13,10 @@ use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_b
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
 use aethereal_http::stack::StackSettings;
 use aethereal_http::{Http, HttpSettings};
-use aethereal_link::{Down, Engines, EnginesSettings, ListEngines, MintFor, Minted, REVISION, Up};
+use aethereal_link::{
+    ChatTo, ChatToSessions, Down, Engine, Engines, EnginesSettings, HearTrusted, ListEngines, MintFor, Minted,
+    REVISION, TrustedEngine, Up,
+};
 use aethereal_mcp::{Mcp, McpRoutes};
 use aethereal_sessions::{
     Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
@@ -48,7 +50,14 @@ use stacks::{bound, stack};
 
 // The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and `Mcp` is asked
 // it on `POST /mcp`.
-stack!(ContainerStack, "test.sessions.container_stack", "container_stack", (Sessions, McpRoutes), [By]);
+stack!(
+    ContainerStack,
+    "test.sessions.container_stack",
+    "container_stack",
+    (Sessions, McpRoutes),
+    [By],
+    depends(Sessions, Mcp)
+);
 
 /// The session id Claude names its conversation by in these tests.
 const CONVERSATION: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
@@ -103,10 +112,9 @@ impl Actor for Caller {
         Answer<Interrupted, Asked>,
         Answer<Archived, Asked>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Sessions,);
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             opened: Vec::new(),
             said: Vec::new(),
@@ -117,7 +125,7 @@ impl Actor for Caller {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -134,17 +142,9 @@ impl Bootstrap<Headless> for Caller {
 }
 
 impl Handles<Order> for Caller {
-    type Sends = (
-        Asks<Path<Sessions>, NewSession, Asked>,
-        Asks<Path<Sessions>, Say, Asked>,
-        Asks<Path<Sessions>, ReadTranscript, Asked>,
-        Asks<Path<Sessions>, ListSessions, Asked>,
-        Asks<Path<Sessions>, Interrupt, Asked>,
-        Asks<Path<Sessions>, Archive, Asked>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
         match order {
             Order::New(new) => turn.to(sessions).ask(&new, &Asked)?,
@@ -162,9 +162,7 @@ impl Handles<Order> for Caller {
 macro_rules! keeps {
     ($($answer:ty => $field:ident),*) => {$(
         impl Receives<Answer<$answer, Asked>> for Caller {
-            type Sends = ();
-
-            fn handle(&mut self, (answered, Asked): (Answered<$answer>, Asked), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, (answered, Asked): (Answered<$answer>, Asked), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 let Answered::Yes(answer) = answered else {
                     panic!("the sessions answer: {answered:?}");
                 };
@@ -1334,14 +1332,13 @@ impl Actor for Recorder {
     type Config = Unset;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1671,20 +1668,25 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
 /// The most bytes of a link's frame in the chat's hubs.
 const LINK_BYTES: u32 = 1 << 16;
 
-/// What the test tells the impostor to send the sessions as engine `engine`.
+/// What the test tells the impostor to do: send the sessions what engine `engine` would, tell engine `engine` its chat
+/// goes to the sessions, or hear of the engines the hub trusts.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.test.sessions.pose")]
 enum Pose {
     Join { engine: u32 },
     Say { engine: u32, session: u32, text: String },
+    Point { engine: u32 },
+    Hear,
 }
 
 /// A root that takes everything an engine is shown, as an `Engine` does, but is none: it joins and chats as whichever
-/// engine the test tells it, and counts what it is shown.
-#[derive(Plain)]
+/// engine the test tells it, counts what it is shown, points an engine's chat at the sessions, as any actor may, and
+/// keeps each trusted engine it is told of, in order, once it hears of them.
+#[derive(Bound)]
 #[kind(name = "aether.test.sessions.impostor")]
 struct Impostor {
     shown: u32,
+    heard: Vec<ActorRef<Engine>>,
 }
 
 impl ChildOf for Impostor {
@@ -1694,15 +1696,14 @@ impl ChildOf for Impostor {
 impl Actor for Impostor {
     type Config = Unset;
     type Key = ();
-    type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk);
-    type BeginSends = ();
-    type EndSends = ();
+    type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk, TrustedEngine);
+    type Depends = (Sessions, Engines);
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self { shown: 0 })
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        Ok(Self { shown: 0, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1719,10 +1720,9 @@ impl Bootstrap<Headless> for Impostor {
 }
 
 impl Handles<Pose> for Impostor {
-    type Sends = (Tells<Path<Sessions>, Joined>, Tells<Path<Sessions>, Chatted>);
     type From = Anyone;
 
-    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
         match pose {
             Pose::Join { engine } => {
@@ -1731,7 +1731,26 @@ impl Handles<Pose> for Impostor {
             Pose::Say { engine, session, text } => {
                 turn.to(sessions).send(&Chatted { engine, chat: Chat::Say { session, text } })?;
             }
+            Pose::Point { engine } => {
+                let Some(to) = turn.found(&sessions) else {
+                    panic!("the sessions are live");
+                };
+                turn.to(path::<Engine>(u64::from(engine))).send(&ChatTo { to: to.protocol() })?;
+            }
+            Pose::Hear => {
+                turn.to(path::<Engines>(())).send(&HearTrusted)?;
+            }
         }
+
+        Ok(())
+    }
+}
+
+impl Handles<TrustedEngine> for Impostor {
+    type From = Anyone;
+
+    fn handle(&mut self, trusted: TrustedEngine, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.heard.push(trusted.engine);
 
         Ok(())
     }
@@ -1740,10 +1759,9 @@ impl Handles<Pose> for Impostor {
 macro_rules! counts {
     ($($shown:ty),*) => {$(
         impl Handles<$shown> for Impostor {
-            type Sends = ();
             type From = Anyone;
 
-            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 self.shown += 1;
 
                 Ok(())
@@ -1763,6 +1781,13 @@ fn pose(harness: &mut Harness<Headless>, pose: &Pose) -> Result<(), Unheard> {
     Ok(())
 }
 
+/// The trusted engines the impostor was told of, in order.
+fn impostor_heard(harness: &mut Harness<Headless>) -> Result<Vec<ActorRef<Engine>>, Unheard> {
+    let impostor: ActorRef<Impostor> = harness.root::<Impostor>();
+
+    Ok(harness.state(impostor)?.heard.clone())
+}
+
 /// How many frames the impostor has been shown.
 fn impostor_shown(harness: &mut Harness<Headless>) -> Result<u32, Unheard> {
     let impostor: ActorRef<Impostor> = harness.root::<Impostor>();
@@ -1770,8 +1795,8 @@ fn impostor_shown(harness: &mut Harness<Headless>) -> Result<u32, Unheard> {
     Ok(harness.state(impostor)?.shown)
 }
 
-/// A hub as `hub` makes one, with `Engines` too, on a port of its choosing, so engines link and chat over the real
-/// link (ADR-0057), and the impostor.
+/// A hub as `hub` makes one, with `Engines` too, on a port of its choosing, and the root that puts each trusted
+/// engine's chat through to the sessions, so engines link and chat over the real link (ADR-0057), and the impostor.
 fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
     let engines = EnginesSettings { port: 0, most_bytes: LINK_BYTES, ..EnginesSettings::default() };
     let program = Headless::program()
@@ -1784,6 +1809,7 @@ fn chat_hub(daemon: &Daemon) -> Result<Harness<Headless>, Unheard> {
         .root_with::<Docker>(daemon.docker())
         .root_with::<Engines>(engines)
         .root_with::<Sessions>(daemon.sessions(4, 3600))
+        .root::<ChatToSessions>()
         .root::<Caller>()
         .root::<Impostor>();
 
@@ -1913,13 +1939,15 @@ fn shows_said_at(down: &Down, session: u32, engine: u32) -> bool {
 #[test]
 fn an_untrusted_engine_s_chat_is_dropped_and_it_is_shown_none_of_it() -> Result<(), Unheard> {
     // Catches a chat frame from an engine a session started acted on, so code a session just wrote could type to a
-    // real session, and such an engine joined to be shown the sessions, all over the real link (ADR-0057).
+    // real session, and such an engine joined to be shown the sessions, all over the real link (ADR-0057), even once
+    // an actor tells it that its chat goes to the sessions, which any actor may.
     let mut daemon = Daemon::new("chat-untrusted");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "chat")?;
     let id = daemon.made(0);
     let _trusted = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
     let mut untrusted = linked_as(&mut harness, &mut daemon, By::Session { session }, "session's", 2)?;
+    pose(&mut harness, &Pose::Point { engine: 1 })?;
 
     send_frame(&mut untrusted, &Up::Say { session, text: String::from("from code a session wrote") });
     send_frame(&mut untrusted, &Up::Interrupt { session });
@@ -2031,6 +2059,34 @@ fn an_ask_of_claude_s_is_shown_to_trusted_engines_and_their_answer_is_written_as
         r#""response":{"behavior":"allow","updatedInput":{"command":"ls"}}}}"#
     );
     assert_eq!(written, vec![String::from(expected)]);
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_that_hears_of_trusted_engines_is_told_those_linked_before_it_and_each_after_and_no_untrusted_one()
+-> Result<(), Unheard> {
+    // Catches an engine the hub trusted before the sessions' root heard of trusted engines left out, so its chat never
+    // reaches the sessions; an untrusted engine told as trusted, which would then be pointed at the sessions; an engine
+    // trusted after it heard not told; and one told twice (ADR-0057).
+    let mut daemon = Daemon::new("chat-hear");
+    let mut harness = chat_hub(&daemon)?;
+    let _owner_s = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+    let _session_s = linked_as(&mut harness, &mut daemon, By::Session { session: 1 }, "session's", 2)?;
+
+    pose(&mut harness, &Pose::Hear)?;
+    let before = impostor_heard(&mut harness)?;
+    let _after = linked_as(&mut harness, &mut daemon, By::Owner, "owner's after", 3)?;
+    harness.settle();
+
+    let engines = harness.root::<Engines>();
+    let first = harness.state(engines)?.engine(0);
+    let after = harness.state(engines)?.engine(2);
+    let heard = impostor_heard(&mut harness)?;
+    assert_eq!(before.first().copied(), first, "the engine trusted before it heard is told as it hears");
+    assert_eq!(before.len(), 1, "the untrusted engine is not told: {before:?}");
+    assert_eq!(heard.last().copied(), after, "the engine trusted after is told as its token is taken");
+    assert_eq!(heard.len(), 2, "each trusted engine is told once: {heard:?}");
 
     Ok(())
 }

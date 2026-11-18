@@ -1,31 +1,29 @@
-//! How the overlay's actor reaches the chat (ADR-0057: The console is the chat): it finds the engine's link once, as it
-//! is first shown, and listens to it; what the link shows it is taken into the console's chat, and what the owner does
-//! is told to the link, which writes it up to the hub. An engine with no link, or an untrusted one, which the hub shows
-//! no chat, keeps the console as it was.
+//! How the overlay's actor reaches the chat (ADR-0057: The console is the chat): it depends on no link. An actor that
+//! carries the chat to the engine's link, the [`ChatRelay`](crate::ChatRelay) a program with a link lists, tells it
+//! [`Relays`], and it keeps that actor; what the relay shows it is taken into the console's chat, and what the owner
+//! does is told to the relay, which tells the link, which writes it up to the hub. An engine with no link, which lists
+//! no relay, or an untrusted one, which the hub shows no chat, keeps the console as it was.
 
 use super::Overlay;
-use super::console::Offering;
 use crate::chat::{Typed, typed};
 use crate::console::Command;
-use aethereal_actor::{ActorRef, Allows, Anyone, Asks, Fault, Handles, Level, Path, ToType, Turn, path};
+use crate::relay::Relays;
+use aethereal_actor::{Anyone, Fault, Handles, Level, ProtocolRef, Speaks, Turn};
 use aethereal_data::{Bound, Plain};
-use aethereal_link::{Link, Listen};
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
-use aethereal_tools::{Offer, Tools};
 
 /// The most bytes of what a command run in `!` mode printed that are sent to the session: what a tool prints can be
 /// large, and the line it is sent as is read by Claude.
 const MOST_RAN_BYTES: usize = 16 * 1024;
 
-/// Whether the overlay has looked for the engine's link, and what it found.
+/// What carries the overlay's chat to the engine's link.
 #[derive(Debug, Bound)]
 pub enum Linking {
-    /// It has not looked: it looks once, as it is first shown, when every root of the program has begun.
-    Unlooked,
-    /// The engine's link, which it listens to.
-    Linked(ActorRef<Link>),
-    /// The engine has no link: the console never shows the chat.
+    /// Nothing has told it [`Relays`]: what the owner does goes nowhere, and the console shows no chat, as no hub lists
+    /// it the sessions.
     Unlinked,
+    /// The actor that told it [`Relays`] last, which it tells the chat.
+    Linked(ProtocolRef<(Chat,)>),
 }
 
 /// Where a command typed at the console reports what it printed.
@@ -38,35 +36,13 @@ pub enum Reports {
 }
 
 impl Overlay {
-    /// Finds the engine's link, once, and listens to it.
-    pub(super) fn listen<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<ToType<Link, Listen>, I>,
-    {
-        let Linking::Unlooked = self.linking else {
-            return Ok(());
-        };
-        self.linking = match turn.found(&path::<Link>(())) {
-            Some(link) => {
-                turn.to(link).send::<_, I>(&Listen)?;
-                Linking::Linked(link)
-            }
-            None => Linking::Unlinked,
-        };
-
-        Ok(())
-    }
-
-    /// Tells the link each of `chat`: nothing without one.
-    pub(super) fn tell<S, I>(&self, turn: &mut Turn<'_, Self, S>, chat: Vec<Chat>) -> Result<(), Fault>
-    where
-        S: Allows<ToType<Link, Chat>, I>,
-    {
-        let Linking::Linked(link) = self.linking else {
+    /// Tells what carries the chat to the link each of `chat`: nothing without one.
+    pub(super) fn tell(&self, turn: &mut Turn<'_, Self>, chat: Vec<Chat>) -> Result<(), Fault> {
+        let Linking::Linked(relay) = self.linking else {
             return Ok(());
         };
         for chat in chat {
-            turn.to(link).send::<_, I>(&chat)?;
+            turn.to(relay).send(&chat)?;
         }
 
         Ok(())
@@ -74,35 +50,24 @@ impl Overlay {
 
     /// Sends the session `reports` names a command run here and what it printed, as a line, which starts a turn:
     /// nothing when it reports here alone.
-    pub(super) fn report<S, I>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        reports: Reports,
-        printed: &str,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<ToType<Link, Chat>, I>,
-    {
+    pub(super) fn report(&mut self, turn: &mut Turn<'_, Self>, reports: Reports, printed: &str) -> Result<(), Fault> {
         let Reports::Session { session, line } = reports else {
             return Ok(());
         };
         let ran = self.chats.ran(session, line, String::from(cut(printed)));
 
-        self.tell::<_, I>(turn, vec![ran])
+        self.tell(turn, vec![ran])
     }
 
     /// Runs the line `line` typed with a session's tab open, by the tab's mode: said to it in chat mode, or in `!` mode
     /// run here and sent to it with what it printed. Answers the command a line run here comes to, for the overlay to
     /// call.
-    pub(super) fn chatted<S, I>(
+    pub(super) fn chatted(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         line: &str,
-    ) -> Result<(Command, Reports), Fault>
-    where
-        S: Allows<ToType<Link, Chat>, I>,
-    {
+    ) -> Result<(Command, Reports), Fault> {
         let (command, reports) = match typed(line, self.chats.mode()) {
             Typed::Blank => {
                 self.console.kept(line);
@@ -111,7 +76,7 @@ impl Overlay {
             Typed::Say(text) => {
                 self.console.kept(line);
                 let chat = self.chats.say(text);
-                self.tell::<_, I>(turn, chat)?;
+                self.tell(turn, chat)?;
                 (Command::Blank, Reports::Here)
             }
             Typed::Run(command) => (self.console.submitted(&command), Reports::Session { session, line: command }),
@@ -131,13 +96,24 @@ fn cut(printed: &str) -> &str {
     &printed[..end]
 }
 
+/// An actor that carries the chat to the engine's link: what the owner does is told to it from then on, in place of
+/// any that told it before.
+impl Handles<Relays> for Overlay {
+    type From = Speaks<(Chat,)>;
+
+    fn handle(&mut self, _: Relays, turn: &mut Turn<'_, Self, Speaks<(Chat,)>>) -> Result<(), Fault> {
+        self.linking = Linking::Linked(*turn.from());
+
+        Ok(())
+    }
+}
+
 /// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told, and offers the
 /// chat's words, as only an engine the hub trusts is shown the sessions.
 impl Handles<ShowTabs> for Overlay {
-    type Sends = (ToType<Link, Chat>, Asks<Path<Tools>, Offer, Offering>);
     type From = Anyone;
 
-    fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let first = !self.chats.is_listed();
         let chat = self.chats.listed(shown.tabs);
         self.tell(turn, chat)?;
@@ -151,10 +127,9 @@ impl Handles<ShowTabs> for Overlay {
 
 /// Events of a tab open, taken into its transcript.
 impl Handles<ShowEvents> for Overlay {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, shown: ShowEvents, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, shown: ShowEvents, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.chats.shown(shown.session, &shown.events);
 
         Ok(())
@@ -163,10 +138,9 @@ impl Handles<ShowEvents> for Overlay {
 
 /// An ask that waits on the owner, kept until answered.
 impl Handles<ShowAsk> for Overlay {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("session {} asks: {}", ask.session, ask.what));
         self.chats.asked(ask);
 

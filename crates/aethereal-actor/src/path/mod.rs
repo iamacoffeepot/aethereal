@@ -6,7 +6,7 @@ mod roots;
 mod tests;
 
 pub use relative::{Child, Parent, child, parent};
-pub use roots::{HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Placed, There};
+pub use roots::{HasRoot, Here, MadeAfter, NeedsIn, Ordered, Placed, There};
 
 use crate::{ChildOf, Top};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName, PathSegment, Then};
@@ -19,11 +19,10 @@ use core::marker::PhantomData;
 /// It holds for every type that declares where it stands, unless a type on the way stands
 /// [`Anywhere`](crate::Anywhere) or is [`Recursive`](crate::Recursive): neither names one place.
 ///
-/// A send at a path is declared with it, and builds only for a kind the path's type handles:
+/// A send at a path builds only for a kind the path's type handles, from an actor that depends on its root:
 ///
 /// ```
-/// use aethereal_actor::{Anyone, ChildOf, Path, Tells, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -31,58 +30,69 @@ use core::marker::PhantomData;
 /// # struct Poke;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.knock")]
+/// # struct Knock;
+/// #
+/// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
 /// #
 /// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $sends:ty) => {
+/// #     ($name:ident, $named:literal, $parent:ty, $depends:ty) => {
 /// #         #[derive(Plain)]
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
+/// #         impl ChildOf for $name {
+/// #             type Parent = $parent;
+/// #         }
+/// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;
 /// #             type Key = ();
-/// #             type Handles = (Poke,);
-/// #             type BeginSends = $sends;
-/// #             type EndSends = ();
+/// #             type Handles = (Poke, Knock);
+/// #             type Depends = $depends;
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #
 /// #         impl Handles<Poke> for $name {
-/// #             type Sends = ();
 /// #             type From = Anyone;
 /// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #
+/// #         impl Handles<Knock> for $name {
+/// #             type From = Anyone;
+/// #
+/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Host, "aether.example.host", ());
-/// # actor!(Caller, "aether.example.caller", (Tells<Path<Host>, Poke>,));
+/// actor!(Host, "aether.example.host", Top, ());
+/// actor!(Caller, "aether.example.caller", Top, (Host,));
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
-/// }
+/// fn poke(turn: &mut Turn<'_, Caller>) -> Result<(), Fault> {
+///     turn.to(path::<Host>(())).send(&Poke)?;
 ///
-/// impl ChildOf for Caller {
-///     type Parent = Top;
+///     Ok(())
 /// }
 /// ```
 ///
 /// One of a kind it does not handle does not build:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{Anyone, ChildOf, Path, Tells, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -90,58 +100,69 @@ use core::marker::PhantomData;
 /// # struct Poke;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.knock")]
+/// # struct Knock;
+/// #
+/// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
 /// #
 /// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $sends:ty) => {
+/// #     ($name:ident, $named:literal, $parent:ty, $depends:ty) => {
 /// #         #[derive(Plain)]
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
+/// #         impl ChildOf for $name {
+/// #             type Parent = $parent;
+/// #         }
+/// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;
 /// #             type Key = ();
-/// #             type Handles = (Poke,);
-/// #             type BeginSends = $sends;
-/// #             type EndSends = ();
+/// #             type Handles = (Poke, Knock);
+/// #             type Depends = $depends;
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #
 /// #         impl Handles<Poke> for $name {
-/// #             type Sends = ();
 /// #             type From = Anyone;
 /// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #
+/// #         impl Handles<Knock> for $name {
+/// #             type From = Anyone;
+/// #
+/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Host, "aether.example.host", ());
-/// # actor!(Caller, "aether.example.caller", (Tells<Path<Host>, Shut>,));
+/// actor!(Host, "aether.example.host", Top, ());
+/// actor!(Caller, "aether.example.caller", Top, (Host,));
 ///
-/// impl ChildOf for Host {
-///     type Parent = Top;
-/// }
+/// fn shut(turn: &mut Turn<'_, Caller>) -> Result<(), Fault> {
+///     turn.to(path::<Host>(())).send(&Shut)?;
 ///
-/// impl ChildOf for Caller {
-///     type Parent = Top;
+///     Ok(())
 /// }
 /// ```
 ///
 /// Nor does a path to a type that stands in no one place:
 ///
 /// ```compile_fail
-/// use aethereal_actor::{Anyone, Anywhere, ChildOf, Path, Tells, Top};
-/// # use aethereal_actor::{Actor, Beginning, Ending, Fault, Handles, Turn};
+/// # use aethereal_actor::{Actor, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -149,51 +170,58 @@ use core::marker::PhantomData;
 /// # struct Poke;
 /// #
 /// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.knock")]
+/// # struct Knock;
+/// #
+/// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.shut")]
 /// # struct Shut;
 /// #
 /// # macro_rules! actor {
-/// #     ($name:ident, $named:literal, $sends:ty) => {
+/// #     ($name:ident, $named:literal, $parent:ty, $depends:ty) => {
 /// #         #[derive(Plain)]
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
+/// #         impl ChildOf for $name {
+/// #             type Parent = $parent;
+/// #         }
+/// #
 /// #         impl Actor for $name {
 /// #             type Config = $name;
 /// #             type Key = ();
-/// #             type Handles = (Poke,);
-/// #             type BeginSends = $sends;
-/// #             type EndSends = ();
+/// #             type Handles = (Poke, Knock);
+/// #             type Depends = $depends;
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #
 /// #         impl Handles<Poke> for $name {
-/// #             type Sends = ();
 /// #             type From = Anyone;
 /// #
-/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #                 Ok(())
+/// #             }
+/// #         }
+/// #
+/// #         impl Handles<Knock> for $name {
+/// #             type From = Anyone;
+/// #
+/// #             fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
 /// #     };
 /// # }
-/// # actor!(Timer, "aether.example.timer", ());
-/// # actor!(Caller, "aether.example.caller", (Tells<Path<Timer>, Poke>,));
+/// actor!(Timer, "aether.example.timer", Anywhere, ());
 ///
-/// impl ChildOf for Timer {
-///     type Parent = Anywhere;
-/// }
-///
-/// impl ChildOf for Caller {
-///     type Parent = Top;
-/// }
+/// let timer = path::<Timer>(());
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` stands in no one place, so it has no typed path",
@@ -237,6 +265,34 @@ where
     }
 }
 
+/// The root of the typed path to a type: the type at its top, found up its `ChildOf` chain (ADR-0022, ADR-0059).
+pub trait Rooted: PathTo {
+    /// The type at the top of its path: itself, for a root.
+    type Root;
+}
+
+impl<T: ChildOf> Rooted for T
+where
+    T::Parent: PathTo + RootAbove<T>,
+    <T::Parent as PathTo>::Keys: Then<T::Key>,
+{
+    type Root = <T::Parent as RootAbove<T>>::Root;
+}
+
+/// The root of a type `T` that stands beneath this: `T` itself beneath the top, and this type's root beneath a type.
+pub trait RootAbove<T> {
+    /// The root.
+    type Root;
+}
+
+impl<T> RootAbove<T> for Top {
+    type Root = T;
+}
+
+impl<T, P: Rooted> RootAbove<T> for P {
+    type Root = P::Root;
+}
+
 /// What a path's last segment stands beneath, as a declaration holds it: the top, or the segment of a type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Beneath {
@@ -256,6 +312,17 @@ pub struct TypeSegment {
 }
 
 impl TypeSegment {
+    /// The segment at the top of the typed path this one ends: its root's.
+    #[must_use]
+    pub const fn root(&self) -> &Self {
+        let mut segment = self;
+        while let Beneath::Type(above) = segment.beneath {
+            segment = above;
+        }
+
+        segment
+    }
+
     /// The path to the place this segment names, when every segment on it is a singleton's, so its names alone
     /// spell it: what a spawn checks is live (ADR-0022). None when one is keyed, which no declaration can name the
     /// key of, or the path would be deeper than any path.

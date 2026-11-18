@@ -12,7 +12,7 @@ pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, U
 use crate::host::Clockwork;
 use aethereal_actor::{
     Actor, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, On, Source,
-    Stop, ToSender, Top, Turn,
+    Stop, Top, Turn,
 };
 use aethereal_actor::{Anyone, Receives, Requests};
 use aethereal_data::{Bound, Plain};
@@ -122,12 +122,11 @@ impl Actor for Pacer {
     type Config = PacerConfig;
     type Key = ();
     type Handles = (Paced, SetPace, Advance, ReadPace, On<Stop>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
     /// Takes the source and the controller, asks the host to hold the clock when the program starts held, and
     /// subscribes to `Stop`, after which no cycle runs.
-    fn begin(config: PacerConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: PacerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
         let mut control = turn.take(config.control)?;
         turn.subscribe::<Stop>();
@@ -142,7 +141,7 @@ impl Actor for Pacer {
         Ok(Self { source, control, limit_nanos: config.limit_nanos, clock })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -150,10 +149,9 @@ impl Actor for Pacer {
 /// Sets the clock as asked, and answers how it moved before. A clock set running while advances are held refuses
 /// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
 impl Handles<SetPace> for Pacer {
-    type Sends = (ToSender<PaceSet>,);
     type From = Anyone;
 
-    fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let was = self.pace();
         match (&mut self.clock, set.pace) {
             (Clock::Real, Pace::Held) => {
@@ -178,10 +176,9 @@ impl Handles<SetPace> for Pacer {
 /// Holds the advance, and asks the host for its first cycle when no other advance is under way: answered once its last
 /// cycle has finished. One the clock cannot run is refused at once.
 impl Handles<Advance> for Pacer {
-    type Sends = (ToSender<Advanced>,);
     type From = Anyone;
 
-    fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Advance { cycles, delta_nanos } = advance;
         let delta_nanos = delta_nanos.unwrap_or(SIXTIETH_NANOS);
         let refused = match &self.clock {
@@ -215,10 +212,9 @@ impl Handles<Advance> for Pacer {
 
 /// Answers how the clock moves.
 impl Handles<ReadPace> for Pacer {
-    type Sends = (ToSender<PaceRead>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: ReadPace, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ReadPace, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&PaceRead { pace: self.pace() })?;
 
         Ok(())
@@ -229,10 +225,9 @@ impl Handles<ReadPace> for Pacer {
 /// counts against the first advance held, answers that advance once it has none left, and asks the host for the next
 /// cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
 impl Handles<Paced> for Pacer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();
         let is_brought = turn.sender() == me.into();
         if !is_brought {
@@ -266,9 +261,7 @@ impl Handles<Paced> for Pacer {
 
 /// The program is stopping: every advance held is refused, and so is every one asked from now on.
 impl Receives<On<Stop>> for Pacer {
-    type Sends = ();
-
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Clock::Held(advancing) = &mut self.clock {
             for advance in advancing.drain(..) {
                 turn.answer(advance.held, &Advanced::Refused(Unadvanced::Stopping))?;

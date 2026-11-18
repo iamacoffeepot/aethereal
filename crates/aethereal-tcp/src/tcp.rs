@@ -7,7 +7,7 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Given, Handles, Held,
-    Receives, ToSender, ToType, Top, Turn,
+    Receives, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -198,10 +198,9 @@ impl Actor for Tcp {
     type Config = TcpConfig;
     type Key = ();
     type Handles = (Listen, Connect, ConnectUnix, Answer<Reached, Dialing>, Answer<ReachedUnix, DialingUnix>, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: TcpConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: TcpConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             config,
             listeners: BTreeMap::new(),
@@ -213,16 +212,15 @@ impl Actor for Tcp {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Listen> for Tcp {
-    type Sends = (ToSender<Listening>,);
     type From = Anyone;
 
-    fn handle(&mut self, listen: Listen, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, listen: Listen, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listening = self.listen(turn, &listen)?;
         turn.reply(&listening)?;
 
@@ -231,10 +229,9 @@ impl Handles<Listen> for Tcp {
 }
 
 impl Handles<Connect> for Tcp {
-    type Sends = (ToSender<Connected>,);
     type From = Anyone;
 
-    fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if self.is_full() {
             turn.reply(&Connected::Full)?;
             return Ok(());
@@ -250,10 +247,9 @@ impl Handles<Connect> for Tcp {
 }
 
 impl Handles<ConnectUnix> for Tcp {
-    type Sends = (ToSender<ConnectedUnix>,);
     type From = Anyone;
 
-    fn handle(&mut self, connect: ConnectUnix, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, connect: ConnectUnix, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let path = match connect.path.checked() {
             Ok(path) => String::from(path),
             Err(why) => {
@@ -276,12 +272,10 @@ impl Handles<ConnectUnix> for Tcp {
 }
 
 impl Receives<Answer<Reached, Dialing>> for Tcp {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, dialing): (Answered<Reached>, Dialing),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Waiting { held, framing, asker }) = self.waiting.remove(&dialing.number) else {
             return Ok(());
@@ -305,12 +299,10 @@ impl Receives<Answer<Reached, Dialing>> for Tcp {
 }
 
 impl Receives<Answer<ReachedUnix, DialingUnix>> for Tcp {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, dialing): (Answered<ReachedUnix>, DialingUnix),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Waiting { held, framing, asker }) = self.waiting_unix.remove(&dialing.number) else {
             return Ok(());
@@ -334,9 +326,7 @@ impl Receives<Answer<ReachedUnix, DialingUnix>> for Tcp {
 }
 
 impl Receives<Ended> for Tcp {
-    type Sends = (ToType<Listener, Shut>, ToType<Dialed, Shut>);
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id().bits();
         self.listeners.retain(|_, opened| opened.child.id().bits() != gone);
         self.dialed.retain(|_, opened| opened.child.id().bits() != gone);
@@ -358,7 +348,7 @@ impl Receives<Ended> for Tcp {
 
 impl Tcp {
     /// Binds `listen`'s port on the interface it names and stands a listener up on it, or says why not.
-    fn listen<S>(&mut self, turn: &mut Turn<'_, Self, S>, listen: &Listen) -> Result<Listening, Fault> {
+    fn listen(&mut self, turn: &mut Turn<'_, Self>, listen: &Listen) -> Result<Listening, Fault> {
         let is_full = self.listeners.len() >= usize::try_from(self.config.most_listeners).unwrap_or(usize::MAX);
         if is_full {
             return Ok(Listening::Full);
@@ -419,9 +409,9 @@ impl Tcp {
 
     /// Stands a connection up beneath the root on the socket a dial made, keyed `number`, for `asker`: unless `asker`
     /// has ended in the meantime, when the socket is not taken.
-    fn open<S>(
+    fn open(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         number: u64,
         socket: Given<Socket>,
         framing: Framing,
@@ -444,7 +434,7 @@ impl Tcp {
     }
 
     /// Watches the sender of the mail handled, once, and answers who it is.
-    fn watch_asker<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> u64 {
+    fn watch_asker(&mut self, turn: &mut Turn<'_, Self>) -> u64 {
         let asker = turn.sender();
         let id = asker.id().bits();
         let is_watched = self.askers.contains(&id);

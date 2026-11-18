@@ -5,8 +5,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn,
+    path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -14,7 +14,7 @@ use aethereal_render::Renderer;
 use aethereal_render::draw_list::{DrawList, Entry, Pointer};
 use aethereal_render::effect::{CreateEffect, EffectId, Effected, Read};
 use aethereal_render::frame::builder::{Effect, Float, FrameBuilder, depth, scale};
-use aethereal_render::frame::{CreateFrame, Ends, Frame, Framed, ShapeOf, Shaped};
+use aethereal_render::frame::{Ends, Frame, Framed, ShapeOf, Shaped};
 use aethereal_render::mesh::{Attribute, CreateMesh, MeshId, Meshed, VertexFormat, VertexLayout};
 use aethereal_render::pass::{Main, Pass};
 use aethereal_render::placement::{Drawn, Join, Place, Placed, PlacementId};
@@ -271,17 +271,16 @@ impl Actor for Framer {
         Answer<Pixels, Nothing>,
         Answer<Timed, Nothing>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -315,9 +314,7 @@ fn program(wgsl: Bytes, depth: Depth) -> CreateProgram {
 }
 
 impl Receives<On<Start>> for Framer {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -328,13 +325,7 @@ impl Receives<On<Start>> for Framer {
 }
 
 impl Receives<Answer<Shaped, Nothing>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -355,12 +346,10 @@ impl Receives<Answer<Shaped, Nothing>> for Framer {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             say(format!("the quad was not made: {answered:?}"));
@@ -388,12 +377,10 @@ impl Receives<Answer<Meshed, Learned>> for Framer {
 }
 
 impl Receives<Answer<Effected, Effecting>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateEffect, Effecting>, Asks<Path<Renderer>, CreateProgram, Making>);
-
     fn handle(
         &mut self,
         (answered, effecting): (Answered<Effected>, Effecting),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Effected::Made(effect)) = answered else {
             say(format!("an effect was not made: {answered:?}"));
@@ -469,12 +456,10 @@ impl Receives<Answer<Effected, Effecting>> for Framer {
 }
 
 impl Receives<Answer<Programmed, Making>> for Framer {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateFrame, MadePrograms>);
-
     fn handle(
         &mut self,
         (answered, making): (Answered<Programmed>, Making),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(made)) = answered else {
             say(format!("a program was not made: {answered:?}"));
@@ -517,12 +502,10 @@ impl Receives<Answer<Programmed, Making>> for Framer {
 }
 
 impl Receives<Answer<Framed, MadePrograms>> for Framer {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Framed>, MadePrograms),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Framed::Made(frame)) = answered else {
             say(format!("the frame was not made: {answered:?}"));
@@ -542,12 +525,10 @@ impl Receives<Answer<Framed, MadePrograms>> for Framer {
 
 /// The surface placed, the splat is asked for; the splat placed, both are listed.
 impl Receives<Answer<Placed, Placing>> for Framer {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>, Tells<Path<Renderer>, DrawList>);
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
@@ -576,9 +557,7 @@ impl Receives<Answer<Placed, Placing>> for Framer {
 }
 
 impl Receives<On<Tick>> for Framer {
-    type Sends = (Asks<Path<Renderer>, ReadBack, Nothing>, Asks<Path<Renderer>, TimeFrame, Nothing>);
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Drawing { window, drawn } = *self else {
             return Ok(());
         };
@@ -604,13 +583,7 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
 }
 
 impl Receives<Answer<Pixels, Nothing>> for Framer {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Pixels>, Nothing),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Pixels>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Pixels::Read { width, height, format, pixels }) = answered else {
             say(format!("nothing was read: {answered:?}"));
             return Ok(());
@@ -635,9 +608,7 @@ impl Receives<Answer<Pixels, Nothing>> for Framer {
 }
 
 impl Receives<Answer<Timed, Nothing>> for Framer {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
             Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),

@@ -36,16 +36,14 @@ pub use actor::{
 pub use gather::{Gather, Gathered, Gathering};
 pub use head::{Credentials, Head};
 pub use inbound_body::{BodyBytes, BodyLength, BodyRead, InboundBody, ReadBody};
-pub use last::{AsksEach, Handed, HandlerList, LastLayer, Picked, Reach, Slot12, Unrouted};
+pub use last::{AskedBy, Handed, HandlerList, LastLayer, Picked, Reach, Unrouted};
 pub use layer::{BodyPart, Layer, LayerForm, Leaving, Refused, Step};
-pub use layers::{Entered, LayerList, Layers, Slot, Unlayered, layers};
+pub use layers::{Entered, FoundLayers, LayerList, Layers, Slot, Unlayered, WalkedBy, layers};
 pub use message::{BodyHandle, Request, Response, ResponseBody, ResponseHead};
 pub use outbound_body::{OutboundBody, ResponseBytes, ResponseLength, SendBody, SourceEnd, StreamedBody};
-pub use serving::{
-    Answering, Binding, Deadline, GatherSends, ListenSends, Listened, ReadSends, Sending, Serving, StackSends,
-};
+pub use serving::{Answering, Binding, Deadline, Listened, Sending, Serving};
 pub use settings::StackSettings;
-pub use walks::{Ask, Formed, Returned, Taker, Unasked, Walked, Walks};
+pub use walks::{Ask, Formed, FoundBy, Returned, Taker, Walked, Walks, WalksFor};
 
 use aethereal_actor::{Actor, Handles, Speaks};
 use layer::Passed;

@@ -39,8 +39,8 @@ use crate::readback::{
 };
 use crate::shape::{ColourFormat, DepthFormat, Samples, Shape};
 use crate::stats::{
-    self, DescribeGpu, FrameDrawing, FrameStats, GpuDescribed, GpuMemory, GpuTimes, Ran, SubscribeFrameStats,
-    SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
+    self, DescribeGpu, FrameDrawing, GpuDescribed, GpuMemory, GpuTimes, Ran, SubscribeFrameStats, SubscribeGpuTimes,
+    Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
 use crate::storage::{self, CreateStorage, CreateZeroedStorage, StorageId, Stored, WriteStorage};
 use crate::surface::{Front, Present, Surfaced, WindowFormat};
@@ -54,13 +54,12 @@ use crate::texture::{self, CreateTexture, TextureFormat, TextureId, Textured};
 use crate::timing::{self, TimeFrame, Timed, TimingRefused};
 use crate::uniforms::{self, CreateUniforms, Uniformed, UniformsId, WriteUniforms};
 use aethereal_actor::{
-    Actor, Allows, Answer, Anyone, Beginning, Bytes, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle,
-    Handles, Held, Level, On, Path, Protocol, ProtocolRef, Receives, Render, Resource, Source, Subscribers, Tells,
-    ToAny, ToSender, Top, Turn, path,
+    Actor, Answer, Anyone, Beginning, Bytes, Carries, ChildOf, Controller, Ended, Ending, Fault, Given, Handle,
+    Handles, Held, Level, On, Protocol, ProtocolRef, Receives, Render, Resource, Source, Subscribers, Top, Turn, path,
 };
 use aethereal_data::{ActorId, Bound, PathSegment, Plain};
 use aethereal_math::{Rect2, Vec2};
-use aethereal_window::{Hearer, KeyHearer, KeysEntry, KeysListed, Picked, Probed, SubscribeProbes, Window, WindowId};
+use aethereal_window::{Hearer, KeyHearer, KeysEntry, KeysListed, Probed, SubscribeProbes, Window, WindowId};
 use groups::{Binds, Entry, Groups};
 use picking::{InPass, Picker, Picking, Probing, Stacks};
 use std::collections::HashMap;
@@ -736,10 +735,9 @@ impl Actor for Renderer {
         DescribeGpu,
         Probed,
     );
-    type BeginSends = (Tells<Path<Window>, SubscribeProbes>,);
-    type EndSends = ();
+    type Depends = (Window,);
 
-    fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: RendererConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         // The renderer's own fonts, their metrics put once, as blobs kept for the renderer's life (ADR-0052).
         let faces = match Faces::new(|bytes| turn.put(bytes)) {
             Ok(faces) => faces,
@@ -793,7 +791,7 @@ impl Actor for Renderer {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -805,10 +803,7 @@ impl Actor for Renderer {
 /// dispatches (ADR-0026), and the maker of each dispatch that runs once and ran is told so once the cycle's commands are
 /// submitted.
 impl Receives<On<Render>> for Renderer {
-    type Sends =
-        (ToAny<(FrameStats,), FrameStats>, Tells<Path<Window>, KeysListed>, ToAny<(DispatchRan,), DispatchRan>);
-
-    fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, render: Render, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let front = turn.open(&mut self.front)?;
         let handed = front.take();
         let budget = front.budget();
@@ -920,10 +915,9 @@ impl Receives<On<Render>> for Renderer {
 }
 
 impl Handles<ReadBack> for Renderer {
-    type Sends = (ToSender<Pixels>,);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadBack, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadBack, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -981,10 +975,9 @@ impl Handles<ReadBack> for Renderer {
 /// Copies the region asked of the frame's target now, as the last `Render` left it, and answers it once the chassis has
 /// mapped the copy (ADR-0048).
 impl Handles<ReadFrameTarget> for Renderer {
-    type Sends = (ToSender<TargetPixels>,);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadFrameTarget, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadFrameTarget, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -1011,10 +1004,9 @@ impl Handles<ReadFrameTarget> for Renderer {
 }
 
 impl Handles<ReadStorage> for Renderer {
-    type Sends = (ToSender<StorageContents>,);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;
@@ -1037,10 +1029,9 @@ impl Handles<ReadStorage> for Renderer {
 }
 
 impl Handles<TimeFrame> for Renderer {
-    type Sends = (ToSender<Timed>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: TimeFrame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: TimeFrame, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let features = turn.open(&mut self.gpu)?.device().features();
         if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
             turn.reply(&Timed::Refused(TimingRefused::Unsupported))?;
@@ -1057,10 +1048,9 @@ impl Handles<TimeFrame> for Renderer {
 /// Takes in a pointer event's place that a window's actor sent, to probe at the next frame drawn onto the window
 /// (ADR-0055). One from any other actor, or of a window the renderer does not draw to, is dropped.
 impl Handles<Probed> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, probed: Probed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, probed: Probed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = turn.found(&path::<Window>(probed.window));
         let sender = turn.sender();
         let is_window = window.is_some_and(|window| window.erase() == sender);
@@ -1078,10 +1068,9 @@ impl Handles<Probed> for Renderer {
 }
 
 impl Handles<Mapped> for Renderer {
-    type Sends = (ToAny<(GpuTimes,), GpuTimes>, Tells<Path<Window>, Picked>);
     type From = Anyone;
 
-    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, mapped: Mapped, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         // What the source brings comes from this actor to itself; a buffer is read only once the chassis says it is
         // mapped, as reading one that is not stops the program.
         let brought = turn.sender().id() == turn.me().id();
@@ -1163,10 +1152,9 @@ impl Handles<Mapped> for Renderer {
 /// and a window closed has its main frame dropped, with the targets made for it, so what joined only that frame is
 /// drawn nowhere until its maker releases it (ADR-0027).
 impl Handles<Surfaced> for Renderer {
-    type Sends = (Tells<Path<Window>, SubscribeProbes>, ToAny<(DispatchRan,), DispatchRan>);
     type From = Anyone;
 
-    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, surfaced: Surfaced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let brought = turn.sender().id() == turn.me().id();
         if !brought {
             turn.log(
@@ -1224,10 +1212,9 @@ fn mapped_bytes<T>(buffer: &wgpu::Buffer, read: impl FnOnce(&[u8]) -> T) -> Opti
 }
 
 impl Handles<CreateMesh> for Renderer {
-    type Sends = (ToSender<Meshed>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateMesh, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateMesh, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         // Copied out of the store: the bytes are read through the turn, as the GPU is opened through it.
         let vertices = turn.read(&create.vertices).to_vec();
         let indices = turn.read(&create.indices).to_vec();
@@ -1255,10 +1242,9 @@ impl Handles<CreateMesh> for Renderer {
 }
 
 impl Handles<CreateTexture> for Renderer {
-    type Sends = (ToSender<Textured>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateTexture, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateTexture, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let CreateTexture { width, height, format, pixels } = create;
         let pixels = turn.read(&pixels).to_vec();
         let most = turn.open(&mut self.gpu)?.device().limits().max_texture_dimension_2d;
@@ -1296,10 +1282,9 @@ impl Handles<CreateTexture> for Renderer {
 }
 
 impl Handles<CreateProgram> for Renderer {
-    type Sends = (ToSender<Programmed>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateProgram, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         // Copied out of the store, as a mesh's bytes are: the GPU is opened through the turn.
         let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
@@ -1323,10 +1308,9 @@ impl Handles<CreateProgram> for Renderer {
 }
 
 impl Handles<CreateCompute> for Renderer {
-    type Sends = (ToSender<Computed>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateCompute, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
         let checked = program::source(&bytes).and_then(|wgsl| Ok((wgsl, compute::check(&create, wgsl, &limits)?)));
@@ -1348,10 +1332,9 @@ impl Handles<CreateCompute> for Renderer {
 }
 
 impl Handles<CreateInstances> for Renderer {
-    type Sends = (ToSender<Instanced>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateInstances, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateInstances, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let CreateInstances { layout, capacity, records } = create;
         let records = turn.read(&records).to_vec();
         let most = turn.open(&mut self.gpu)?.device().limits().max_buffer_size;
@@ -1383,10 +1366,9 @@ impl Handles<CreateInstances> for Renderer {
 }
 
 impl Handles<WriteInstances> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, write: WriteInstances, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, write: WriteInstances, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let records = turn.read(&write.records).to_vec();
         let kept = turn.open(&mut self.kept)?;
@@ -1422,10 +1404,9 @@ impl Handles<WriteInstances> for Renderer {
 }
 
 impl Handles<CreateUniforms> for Renderer {
-    type Sends = (ToSender<Uniformed>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateUniforms, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateUniforms, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let bytes = turn.read(&create.bytes).to_vec();
         let most = turn.open(&mut self.gpu)?.device().limits().max_uniform_buffer_binding_size;
         let size = match uniforms::check(&bytes, most) {
@@ -1448,10 +1429,9 @@ impl Handles<CreateUniforms> for Renderer {
 }
 
 impl Handles<WriteUniforms> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, write: WriteUniforms, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, write: WriteUniforms, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let bytes = turn.read(&write.bytes).to_vec();
         let kept = turn.open(&mut self.kept)?;
@@ -1483,10 +1463,9 @@ impl Handles<WriteUniforms> for Renderer {
 }
 
 impl Handles<CreateStorage> for Renderer {
-    type Sends = (ToSender<Stored>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let bytes = turn.read(&create.bytes).to_vec();
         self.watch.uploaded(bytes.len());
         self.store(turn, bytes.len() as u64, |gpu| upload(gpu, &bytes, STORAGE_USAGE))
@@ -1494,10 +1473,9 @@ impl Handles<CreateStorage> for Renderer {
 }
 
 impl Handles<CreateZeroedStorage> for Renderer {
-    type Sends = (ToSender<Stored>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateZeroedStorage, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateZeroedStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         // WebGPU makes a buffer with every byte zero.
         self.store(turn, create.bytes, |gpu| {
             gpu.device().create_buffer(&wgpu::BufferDescriptor {
@@ -1511,10 +1489,9 @@ impl Handles<CreateZeroedStorage> for Renderer {
 }
 
 impl Handles<WriteStorage> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, write: WriteStorage, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let bytes = turn.read(&write.bytes).to_vec();
         let kept = turn.open(&mut self.kept)?;
@@ -1546,10 +1523,9 @@ impl Handles<WriteStorage> for Renderer {
 }
 
 impl Handles<Place> for Renderer {
-    type Sends = (ToSender<Placed>,);
     type From = Anyone;
 
-    fn handle(&mut self, place: Place, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, place: Place, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
         let placed = placement::check(&place, &*kept).and_then(|()| kept.placement(&device, &place));
@@ -1573,10 +1549,9 @@ impl Handles<Place> for Renderer {
 /// A dispatch, checked now and kept until released, or, when it runs once, until a cycle runs it or its frame goes, its
 /// maker kept to tell (ADR-0026).
 impl Handles<CreateDispatch> for Renderer {
-    type Sends = (ToSender<Dispatched>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateDispatch, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let by = sender.id();
         let told = match create.runs {
@@ -1623,10 +1598,9 @@ enum Told {
 /// (ADR-0031, ADR-0055). The
 /// sender is watched from the first list it sends, as from the first thing it made, so its list goes when it ends.
 impl Handles<DrawList> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, list: DrawList, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let hearers = (turn.cast::<Hearer>(sender), turn.cast::<KeyHearer>(sender));
         let entries: Result<Vec<Listed>, ListRefused> = list
@@ -1653,10 +1627,9 @@ impl Handles<DrawList> for Renderer {
 }
 
 impl Handles<ShapeOf> for Renderer {
-    type Sends = (ToSender<Shaped>,);
     type From = Anyone;
 
-    fn handle(&mut self, of: ShapeOf, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, of: ShapeOf, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let kept = turn.open(&mut self.kept)?;
         let shaped = match kept.pass(of.frame, of.pass) {
             Ok(fits) => Shaped::Shape(fits.shape),
@@ -1669,10 +1642,9 @@ impl Handles<ShapeOf> for Renderer {
 }
 
 impl Handles<CreateEffect> for Renderer {
-    type Sends = (ToSender<Effected>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateEffect, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let bytes = turn.read(&create.wgsl).to_vec();
         let limits = turn.open(&mut self.gpu)?.device().limits();
         let checked = program::source(&bytes).and_then(|wgsl| effect::check(&create, wgsl, &limits).map(|()| wgsl));
@@ -1694,10 +1666,9 @@ impl Handles<CreateEffect> for Renderer {
 }
 
 impl Handles<CreateFrame> for Renderer {
-    type Sends = (ToSender<Framed>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateFrame, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let device = turn.open(&mut self.gpu)?.device().clone();
         let kept = turn.open(&mut self.kept)?;
@@ -1736,10 +1707,9 @@ impl Handles<CreateFrame> for Renderer {
 /// Releases what the sender made, as it asks. A dispatch that runs once, released before it ran, never runs, and its
 /// maker, which released it, is not told.
 impl Handles<Release> for Renderer {
-    type Sends = (ToAny<(DispatchRan,), DispatchRan>,);
     type From = Anyone;
 
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let kept = turn.open(&mut self.kept)?;
         let released = kept.release(release, by);
@@ -1758,10 +1728,7 @@ impl Handles<Release> for Renderer {
 
 impl Renderer {
     /// Tells the maker of each dispatch of `once`, which ran once in a cycle whose commands are submitted, that it ran.
-    fn tell_ran<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, once: Vec<u64>) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<(DispatchRan,), DispatchRan>, I>,
-    {
+    fn tell_ran(&mut self, turn: &mut Turn<'_, Self>, once: Vec<u64>) -> Result<(), Fault> {
         for ran in once {
             for maker in owed_by(&mut self.owed.dispatches, ran) {
                 turn.to(maker).send(&DispatchRan::Ran(DispatchId { id: ran }))?;
@@ -1773,10 +1740,7 @@ impl Renderer {
 
     /// Tells the maker of each dispatch that runs once whose frame is gone for good that it never ran, why beside it,
     /// and takes it out of what is kept.
-    fn tell_unjoined<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<(DispatchRan,), DispatchRan>, I>,
-    {
+    fn tell_unjoined(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let unjoined = turn.open(&mut self.kept)?.unjoined();
         for (dispatch, why) in unjoined {
             let unrun = DispatchRan::Unrun { dispatch: DispatchId { id: dispatch }, why };
@@ -1790,7 +1754,7 @@ impl Renderer {
 
     /// Forgets the maker to tell of each dispatch that runs once and went untold: released by its maker, or with all
     /// its maker made as it ended.
-    fn untell_gone<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    fn untell_gone(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let kept = turn.open(&mut self.kept)?;
         self.owed.dispatches.retain(|(dispatch, _)| kept.dispatches.get(*dispatch).is_some());
 
@@ -1800,7 +1764,7 @@ impl Renderer {
 
 /// Logs each dispatch of `held`, which is not run until its frame is ordered again with the others that write what it
 /// writes.
-fn log_held<S>(turn: &mut Turn<'_, Renderer, S>, held: &[u64]) {
+fn log_held(turn: &mut Turn<'_, Renderer>, held: &[u64]) {
     for dispatch in held {
         turn.log(
             Level::Warn,
@@ -1810,9 +1774,7 @@ fn log_held<S>(turn: &mut Turn<'_, Renderer, S>, held: &[u64]) {
 }
 
 impl Receives<Ended> for Renderer {
-    type Sends = (ToAny<(DispatchRan,), DispatchRan>,);
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.watch.ended(&ended);
         self.timed.ended(&ended);
         let maker = ended.actor().id();
@@ -3460,7 +3422,7 @@ impl Renderer {
     /// it was refused.
     fn store(
         &mut self,
-        turn: &mut Turn<'_, Self, (ToSender<Stored>,)>,
+        turn: &mut Turn<'_, Self>,
         size: u64,
         buffer: impl FnOnce(&Gpu) -> wgpu::Buffer,
     ) -> Result<(), Fault> {
@@ -3483,11 +3445,7 @@ impl Renderer {
 
     /// Keeps what was just made for the sender of the mail being handled, under a new id, and watches the sender
     /// when it is the first thing it has made, so what it made is released when it ends. Answers the id.
-    fn made<S>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        keep: impl FnOnce(&mut Kept, u64, ActorId),
-    ) -> Result<u64, Fault> {
+    fn made(&mut self, turn: &mut Turn<'_, Self>, keep: impl FnOnce(&mut Kept, u64, ActorId)) -> Result<u64, Fault> {
         self.kept_for(turn, |kept, maker| {
             let id = kept.ids.next();
             keep(kept, id, maker);
@@ -3497,14 +3455,7 @@ impl Renderer {
 
     /// Sends each of `windows`, those a `Render` drew, the `Keys` entries its walk holds, when they have changed since
     /// it was last sent them (ADR-0055).
-    fn relist<S, I>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        windows: impl IntoIterator<Item = WindowId>,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<Tells<Path<Window>, KeysListed>, I>,
-    {
+    fn relist(&mut self, turn: &mut Turn<'_, Self>, windows: impl IntoIterator<Item = WindowId>) -> Result<(), Fault> {
         let relisted = turn.open(&mut self.kept)?.relisted(windows);
         for (window, listed) in relisted {
             turn.to(path::<Window>(window)).send(&listed)?;
@@ -3515,9 +3466,9 @@ impl Renderer {
 
     /// What `keep` makes of what is kept for the sender of the mail being handled, watching the sender when it is
     /// the first time it has made anything, so what it made is released when it ends.
-    fn kept_for<S, T>(
+    fn kept_for<T>(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         keep: impl FnOnce(&mut Kept, ActorId) -> T,
     ) -> Result<T, Fault> {
         let maker = turn.sender();

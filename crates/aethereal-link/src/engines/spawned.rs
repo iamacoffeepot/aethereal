@@ -3,8 +3,8 @@
 
 use super::{Engines, Spawn};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level,
-    Path, Receives, Sleep, Slept, ToType, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level, Receives,
+    Sleep, Slept, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_process::{Environment, Exited, Process, Processes, Start, Started, Stdio, Stop};
@@ -97,31 +97,28 @@ impl Actor for Spawned {
     type Key = u64;
     type Handles =
         (Answer<Launched, Fetching>, Answer<Started, Booting>, Answer<Slept, Patience>, Exited, LinkedAs, Stop);
-    type BeginSends = (Asks<Path<Store>, Launch, Fetching>,);
-    type EndSends = ();
+    type Depends = (Store, Processes);
 
     /// Asks the store for a launch copy of its binary.
-    fn begin(config: SpawnedConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: SpawnedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let SpawnedConfig { binary, args, link_within_millis } = config;
         turn.to(path::<Store>(())).ask(&Launch { binary }, &Fetching)?;
 
         Ok(Self { stage: Stage::Fetching { args, link_within_millis } })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Launched, Fetching>> for Spawned {
-    type Sends = (ToType<Engines, Runs>, Asks<Path<Processes>, Start, Booting>, ToType<Engines, Spawn>);
-
     /// A launch copy made: `Engines` is told the build it runs, and `Processes` asked to start it. Nothing stored, or
     /// no copy made, answers the spawn, and it ends.
     fn handle(
         &mut self,
         (answered, Fetching): (Answered<Launched>, Fetching),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Stage::Fetching { args, link_within_millis } = &mut self.stage else {
             return Ok(());
@@ -152,14 +149,12 @@ impl Receives<Answer<Launched, Fetching>> for Spawned {
 }
 
 impl Receives<Answer<Started, Booting>> for Spawned {
-    type Sends = (ToType<Engines, Spawn>,);
-
     /// Its program running, it waits for it to link, for `link_within_millis` at most; refused, it answers the spawn,
     /// and ends.
     fn handle(
         &mut self,
         (answered, Booting): (Answered<Started>, Booting),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Stage::Booting { link_within_millis } = self.stage else {
             return Ok(());
@@ -177,11 +172,9 @@ impl Receives<Answer<Started, Booting>> for Spawned {
 }
 
 impl Receives<Answer<Slept, Patience>> for Spawned {
-    type Sends = (ToType<Engines, Spawn>, ToType<Process, Stop>);
-
     /// Its program has not linked in its time, or this would have been cancelled: the spawn is answered `Unlinked`,
     /// and the process asked to stop.
-    fn handle(&mut self, _: (Answered<Slept>, Patience), turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Slept>, Patience), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Stage::Linking { process, .. } = self.stage else {
             return Ok(());
         };
@@ -194,12 +187,11 @@ impl Receives<Answer<Slept, Patience>> for Spawned {
 }
 
 impl Handles<Exited> for Spawned {
-    type Sends = (ToType<Engines, Spawn>, ToType<Engines, Exited>);
     type From = Anyone;
 
     /// Its program has exited, as its own process tells it: a spawn not yet answered is answered `Exited`, `Engines`
     /// is told how it exited, and it ends. From any other actor, it is passed over.
-    fn handle(&mut self, exited: Exited, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, exited: Exited, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (process, unanswered) = match self.stage {
             Stage::Linking { process, patience } => (process, Unanswered::Waiting(patience)),
             Stage::Linked { process } | Stage::Stopping { process } => (process, Unanswered::No),
@@ -222,12 +214,11 @@ impl Handles<Exited> for Spawned {
 }
 
 impl Handles<LinkedAs> for Spawned {
-    type Sends = (ToType<Engines, Spawn>,);
     type From = Anyone;
 
     /// Its engine linked, as `Engines` tells it: the spawn is answered `Linked`, unless it was answered already. From
     /// any other actor, it is passed over.
-    fn handle(&mut self, linked: LinkedAs, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, linked: LinkedAs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_parent = turn.sender().id() == turn.parent().id();
         let Stage::Linking { process, patience } = self.stage else {
             return Ok(());
@@ -244,12 +235,11 @@ impl Handles<LinkedAs> for Spawned {
 }
 
 impl Handles<Stop> for Spawned {
-    type Sends = (ToType<Process, Stop>,);
     type From = Anyone;
 
     /// `Engines` asks it to stop its engine: its process is asked to. A spawn not yet answered stays so, and is
     /// answered `Exited` once the program has. From any other actor, it is passed over.
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_parent = turn.sender().id() == turn.parent().id();
         if !is_from_parent {
             return Ok(());
@@ -278,11 +268,8 @@ enum Unanswered {
 }
 
 /// Tells `Engines` the spawn came to `spawn`, and ends: nothing of it is running.
-fn answer_and_end<S, I>(turn: &mut Turn<'_, Spawned, S>, spawn: &Spawn) -> Result<(), Fault>
-where
-    S: Allows<ToType<Engines, Spawn>, I>,
-{
-    turn.to(turn.parent()).send::<_, I>(spawn)?;
+fn answer_and_end(turn: &mut Turn<'_, Spawned>, spawn: &Spawn) -> Result<(), Fault> {
+    turn.to(turn.parent()).send(spawn)?;
     turn.close();
 
     Ok(())

@@ -7,8 +7,8 @@ mod tests;
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held,
-    PathTo, ProtocolRef, ReadTuning, Receives, ToSender, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, PathTo,
+    ProtocolRef, ReadTuning, Receives, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
 };
 use aethereal_data::config::{Declared, Settings};
 use aethereal_data::{
@@ -90,7 +90,7 @@ pub trait TunableList: Send + 'static {
 
     /// The root at `at` in the list, as one tuned, as of the step's start: none when it is past the last, or not
     /// live.
-    fn found<M, S>(turn: &Turn<'_, M, S>, at: usize) -> Option<ProtocolRef<Tunes>>;
+    fn found<M>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>>;
 }
 
 /// The root `A`, as listed.
@@ -110,11 +110,15 @@ macro_rules! tunables {
             }
 
             #[allow(unused_variables, unused_mut, unused_assignments)] // An empty list finds nothing.
-            fn found<M, S>(turn: &Turn<'_, M, S>, at: usize) -> Option<ProtocolRef<Tunes>> {
+            fn found<M>(turn: &Turn<'_, M>, at: usize) -> Option<ProtocolRef<Tunes>> {
                 let mut place = 0;
                 $(
+                    // The tool lists its roots by a type parameter, which its `Depends` cannot name until a list
+                    // counts as the types it lists: each is looked up by its path, and cast to what it is tuned
+                    // through, as a send at it is checked when it is made (ADR-0059).
                     if place == at {
-                        return turn.found(&path::<$name>(())).map($name::tunes);
+                        let found = turn.resolve(path::<$name>(()).names());
+                        return found.and_then(|found| turn.cast::<Tunes>(found));
                     }
                     place += 1;
                 )*
@@ -220,9 +224,6 @@ where
     }
 }
 
-/// What every turn of the tool may send: a read of a root's tuning, a tuning sent whole, and an answer to its caller.
-type Sends = (Asks<Tunes, ReadTuning, Reading>, Asks<Tunes, Tune, Setting>, ToSender<Called>);
-
 impl<L: TunableList> ChildOf for TuningTool<L> {
     type Parent = Anywhere;
 }
@@ -231,14 +232,13 @@ impl<L: TunableList> Actor for TuningTool<L> {
     type Config = TuningToolConfig;
     type Key = ();
     type Handles = (Call, Answer<Tuning, Reading>, Answer<Tuned, Setting>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: TuningToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: TuningToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: Calls { pending: BTreeMap::new(), next: 0 }, list: PhantomData })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -278,10 +278,9 @@ impl<L: TunableList> Tool for TuningTool<L> {
 
 /// Reads each root's tuning for `list_tuning`, or the one root's for `tune`, and holds the call.
 impl<L: TunableList> Handles<Call> for TuningTool<L> {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let number = self.calls.next;
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
@@ -335,12 +334,10 @@ impl<L: TunableList> Handles<Call> for TuningTool<L> {
 
 /// A root's tuning, read: kept toward a `list_tuning`, or laid under the fields a `tune` sets and sent back whole.
 impl<L: TunableList> Receives<Answer<Tuning, Reading>> for TuningTool<L> {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, reading): (Answered<Tuning>, Reading),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match reading {
             Reading::Listing { call, at } => self.listing(call, at, answered, turn),
@@ -351,12 +348,10 @@ impl<L: TunableList> Receives<Answer<Tuning, Reading>> for TuningTool<L> {
 
 /// A tuning sent whole was taken, or refused: the `tune` is answered with the fields it set as they stand, or why.
 impl<L: TunableList> Receives<Answer<Tuned, Setting>> for TuningTool<L> {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Setting { call, at, names }): (Answered<Tuned>, Setting),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(pending) = self.calls.pending.remove(&call) else {
             return Ok(());
@@ -383,7 +378,7 @@ impl<L: TunableList> TuningTool<L> {
         call: u64,
         at: u32,
         answered: Answered<Tuning>,
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Pending::Listing { read, left, .. }) = self.calls.pending.get_mut(&call) else {
             return Ok(());
@@ -416,7 +411,7 @@ impl<L: TunableList> TuningTool<L> {
         at: u32,
         answered: Answered<Tuning>,
         values: &Json,
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(tuning) = answered else {
             return self.refused(call, format!("the actor did not answer: {answered:?}"), turn);
@@ -442,7 +437,7 @@ impl<L: TunableList> TuningTool<L> {
     }
 
     /// Answers the call `call` with `why`, when it is held.
-    fn refused(&mut self, call: u64, why: String, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn refused(&mut self, call: u64, why: String, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(pending) = self.calls.pending.remove(&call) else {
             return Ok(());
         };
@@ -509,7 +504,7 @@ fn about<L: TunableList>(at: u32, bytes: &[u8]) -> Result<ActorTuning, String> {
 }
 
 /// Refuses the call being handled, saying `why`.
-fn refuse<L: TunableList>(turn: &mut Turn<'_, TuningTool<L>, Sends>, why: String) -> Result<(), Fault> {
+fn refuse<L: TunableList>(turn: &mut Turn<'_, TuningTool<L>>, why: String) -> Result<(), Fault> {
     turn.reply(&Called::Refused(why))?;
 
     Ok(())

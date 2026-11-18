@@ -11,8 +11,8 @@ use crate::capture::image::{self, Region};
 use crate::capture::{Crop, crop_or_whole, is_shown, longest_or_frame, unread};
 use crate::readback::{Pixels, ReadBack, Readable};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Bytes, ChildOf, Ending, Fault, Handle,
-    Handles, Held, Path, ProtocolRef, Receives, ToSender, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handle, Handles,
+    Held, ProtocolRef, Receives, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, DecodeError, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
@@ -236,15 +236,6 @@ enum Answering {
     Refused(String),
 }
 
-/// What every turn of the tool may send: an ask of the pacer, the renderer, or the files, and an answer to its caller.
-type Sends = (
-    Asks<Path<Pacer>, SetPace, Pacing>,
-    Asks<Path<Pacer>, Advance, Stepping>,
-    Asks<Path<Renderer>, ReadBack, Framing>,
-    Asks<Path<Files>, WriteFile, Filing>,
-    ToSender<Called>,
-);
-
 impl ChildOf for RecordTool {
     type Parent = Anywhere;
 }
@@ -261,14 +252,13 @@ impl Actor for RecordTool {
         Answer<ClipFinished, Filing>,
         Answer<FileWritten, Filing>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Pacer, Renderer, Files);
 
-    fn begin(_: RecordToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: RecordToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { clip: Clipping::Idle, next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -298,10 +288,9 @@ impl Tool for RecordTool {
 
 /// Checks the call, holds it, and asks the pacer to hold the clock: frames are drawn once it has.
 impl Handles<Call> for RecordTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<Record>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             turn.reply(&refused("that is no clip to record"))?;
             return Ok(());
@@ -335,12 +324,10 @@ impl Handles<Call> for RecordTool {
 
 /// The pacer held the clock, so the first frame is drawn; or it set the clock back, so the call is answered.
 impl Receives<Answer<PaceSet, Pacing>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Pacing { clip }): (Answered<PaceSet>, Pacing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -380,12 +367,10 @@ impl Receives<Answer<PaceSet, Pacing>> for RecordTool {
 
 /// A frame's cycle has run: only a refusal matters, as the frame read back is what moves the clip on.
 impl Receives<Answer<Advanced, Stepping>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Stepping { clip }): (Answered<Advanced>, Stepping),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -402,12 +387,10 @@ impl Receives<Answer<Advanced, Stepping>> for RecordTool {
 /// A frame was read back: it is checked and waits for the encoder, made at the first frame's size; it is encoded once
 /// the encoder is free, and the next frame drawn when there is room for it.
 impl Receives<Answer<Pixels, Framing>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Framing { clip, frame }): (Answered<Pixels>, Framing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -467,12 +450,10 @@ impl Receives<Answer<Pixels, Framing>> for RecordTool {
 /// A frame was encoded, and the encoder handed back: the next frame waiting is encoded, the next drawn when there is
 /// room for it, and the clip's MP4 finished once the last is in.
 impl Receives<Answer<FrameEncoded, Framing>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Framing { clip, frame }): (Answered<FrameEncoded>, Framing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -505,12 +486,10 @@ impl Receives<Answer<FrameEncoded, Framing>> for RecordTool {
 
 /// The clip's MP4 is finished: it is written into the program's saves.
 impl Receives<Answer<ClipFinished, Filing>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Filing { clip }): (Answered<ClipFinished>, Filing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -541,12 +520,10 @@ impl Receives<Answer<ClipFinished, Filing>> for RecordTool {
 
 /// The clip's MP4 is written: the clock is set back, and the call answered with the clip once it is.
 impl Receives<Answer<FileWritten, Filing>> for RecordTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Filing { clip }): (Answered<FileWritten>, Filing),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(recording) = self.recording(clip) else {
             return Ok(());
@@ -588,7 +565,7 @@ impl RecordTool {
 impl Frames {
     /// Gives the encoder to a job encoding the first frame waiting, when the tool holds it and one waits: frames are
     /// encoded one at a time, in the order they were read.
-    fn encode_next(&mut self, turn: &mut Turn<'_, RecordTool, Sends>, clip: u64) -> Result<(), Fault> {
+    fn encode_next(&mut self, turn: &mut Turn<'_, RecordTool>, clip: u64) -> Result<(), Fault> {
         let Encoder::Made { size, at } = &mut self.encoder else {
             return Ok(());
         };
@@ -615,7 +592,7 @@ impl Clip {
     /// Asks for the next frame, when no frame is being drawn, one is left to draw, and fewer than the most are read
     /// back and not yet encoded: the renderer for the next frame drawn onto the window, then the pacer for one cycle
     /// of its delta, which draws it.
-    fn draw_next(&mut self, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+    fn draw_next(&mut self, turn: &mut Turn<'_, RecordTool>) -> Result<(), Fault> {
         let Stage::Held { step: Step::Drawing(frames), .. } = &mut self.stage else {
             return Ok(());
         };
@@ -637,7 +614,7 @@ impl Clip {
     }
 
     /// Every frame is encoded, and the tool holds the encoder: it is given to a job that finishes the clip's MP4.
-    fn finish(&mut self, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+    fn finish(&mut self, turn: &mut Turn<'_, RecordTool>) -> Result<(), Fault> {
         let Stage::Held { step, .. } = &mut self.stage else {
             return Ok(());
         };
@@ -656,13 +633,13 @@ impl Clip {
     }
 
     /// The clip cannot go on, for `why`: the clock is set back, and the call refused once it is.
-    fn fail(&mut self, why: String, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+    fn fail(&mut self, why: String, turn: &mut Turn<'_, RecordTool>) -> Result<(), Fault> {
         self.restore(Answering::Refused(why), turn)
     }
 
     /// Asks the pacer to set the clock back as the clip found it, the call to be answered with `ending` once it has,
     /// and drops the encoder when the tool holds it. A clip already setting it back keeps the ending it had.
-    fn restore(&mut self, ending: Answering, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+    fn restore(&mut self, ending: Answering, turn: &mut Turn<'_, RecordTool>) -> Result<(), Fault> {
         let Stage::Held { was, .. } = self.stage else {
             return Ok(());
         };
@@ -677,7 +654,7 @@ impl Clip {
 /// Drops the encoder `left`, a clip's stage it has left, holds, when the tool holds it: given and carried by no mail,
 /// it is dropped as the turn ends, and the tool's log records it (ADR-0010). One a job holds is dropped with the job's
 /// answer, which the clip no longer takes.
-fn release(left: Stage, turn: &mut Turn<'_, RecordTool, Sends>) -> Result<(), Fault> {
+fn release(left: Stage, turn: &mut Turn<'_, RecordTool>) -> Result<(), Fault> {
     let Stage::Held { step: Step::Drawing(frames), .. } = left else {
         return Ok(());
     };

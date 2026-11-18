@@ -8,7 +8,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToSender, Top, Turn};
+use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
 use aethereal_actor::{Anyone, Bytes};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
@@ -62,28 +62,26 @@ impl Actor for Pinger {
     type Config = Volley;
     type Key = u64;
     type Handles = (Pong,);
-    type BeginSends = (ToAny<(Ping,), Ping>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
-        if let Some(responder) = turn.resolve(&responder).and_then(|found| turn.cast(found)) {
+        if let Some(responder) = turn.resolve(&responder).and_then(|found| turn.cast::<(Ping,)>(found)) {
             turn.to(responder).send(&Ping { n: volley.pings })?;
         }
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Pong> for Pinger {
-    type Sends = (ToSender<Ping>, ToSender<Shut>);
     type From = Anyone;
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if pong.n > 0 {
             turn.reply(&Ping { n: pong.n - 1 })?;
         } else {
@@ -111,23 +109,21 @@ impl Actor for NativeResponder {
     type Config = Volley;
     type Key = u64;
     type Handles = (Ping, Shut);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Ping> for NativeResponder {
-    type Sends = (ToSender<Pong>,);
     type From = Anyone;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.answered += 1;
         turn.reply(&Pong { n: ping.n })?;
 
@@ -136,10 +132,9 @@ impl Handles<Ping> for NativeResponder {
 }
 
 impl Handles<Shut> for NativeResponder {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())

@@ -51,16 +51,15 @@ impl Actor for Counter {
     type Config = NothingKept;
     type Key = ();
     type Handles = (Answer<Counted, NothingKept>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: NothingKept, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: NothingKept, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Count { n: 1 }, &NothingKept)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -77,9 +76,7 @@ impl<H: Host> Bootstrap<H> for Counter {
 }
 
 impl Receives<Answer<Counted, NothingKept>> for Counter {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Counted>, NothingKept), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Counted>, NothingKept), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

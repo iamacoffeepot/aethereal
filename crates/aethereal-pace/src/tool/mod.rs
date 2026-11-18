@@ -6,8 +6,8 @@ mod tests;
 
 use crate::pacer::{Advance, Advanced, PaceSet, Pacer, SetPace};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -39,9 +39,6 @@ pub struct PaceTool {
     next: u64,
 }
 
-/// What every turn of the tool may send: an ask of the pacer, and an answer to its caller.
-type Sends = (Asks<Path<Pacer>, SetPace, Calling>, Asks<Path<Pacer>, Advance, Calling>, ToSender<Called>);
-
 impl ChildOf for PaceTool {
     type Parent = Anywhere;
 }
@@ -50,14 +47,13 @@ impl Actor for PaceTool {
     type Config = PaceToolConfig;
     type Key = ();
     type Handles = (Call, Answer<PaceSet, Calling>, Answer<Advanced, Calling>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Pacer,);
 
-    fn begin(_: PaceToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: PaceToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -90,10 +86,9 @@ impl Tool for PaceTool {
 
 /// Holds the call, and asks the pacer what it was called with: answered once the pacer has answered.
 impl Handles<Call> for PaceTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let calling = Calling { call: self.next };
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
@@ -126,12 +121,10 @@ impl Handles<Call> for PaceTool {
 
 /// The pacer set the pace, or no pacer answered.
 impl Receives<Answer<PaceSet, Calling>> for PaceTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, calling): (Answered<PaceSet>, Calling),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(calling, answered, turn)
     }
@@ -139,12 +132,10 @@ impl Receives<Answer<PaceSet, Calling>> for PaceTool {
 
 /// The pacer ran the cycles, or refused them, or no pacer answered.
 impl Receives<Answer<Advanced, Calling>> for PaceTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, calling): (Answered<Advanced>, Calling),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.answer(calling, answered, turn)
     }
@@ -156,7 +147,7 @@ impl PaceTool {
         &mut self,
         Calling { call }: Calling,
         answered: Answered<A>,
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&call) else {
             return Ok(());

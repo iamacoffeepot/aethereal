@@ -9,8 +9,8 @@ pub use record::{BehindGuest, GuestStanding, HeadRecord, PublishRecord, Upgradin
 
 use crate::{Library, ModulePublished, Numbered, PublishModule, Unloaded};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves,
-    Path, ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves,
+    ProtocolRef, Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -64,9 +64,6 @@ pub struct LibraryTool {
     next: u64,
 }
 
-/// What every turn of the tool may send: an ask of the library, and an answer to its caller.
-type Sends = (Asks<Path<Library>, PublishModule, Calling>, ToSender<Called>);
-
 impl ChildOf for LibraryTool {
     type Parent = Anywhere;
 }
@@ -75,14 +72,13 @@ impl Actor for LibraryTool {
     type Config = LibraryToolConfig;
     type Key = ();
     type Handles = (Call, Answer<ModulePublished, Calling>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Library,);
 
-    fn begin(_: LibraryToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: LibraryToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -117,10 +113,9 @@ impl Tool for LibraryTool {
 
 /// `publish` is held and asked of the library; `upgrades` is answered at once.
 impl Handles<Call> for LibraryTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
         match call.tool.as_str() {
@@ -154,12 +149,10 @@ impl Handles<Call> for LibraryTool {
 
 /// The library published the module, or did not: the publish is answered either way.
 impl Receives<Answer<ModulePublished, Calling>> for LibraryTool {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Calling { call }): (Answered<ModulePublished>, Calling),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&call) else {
             return Ok(());

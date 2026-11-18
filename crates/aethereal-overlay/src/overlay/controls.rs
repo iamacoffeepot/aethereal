@@ -16,7 +16,7 @@
 
 use super::Overlay;
 use super::chat::Reports;
-use super::view::{OverlayNode, OverlaySends};
+use super::view::OverlayNode;
 use crate::chat::Open;
 use crate::console::Mode;
 use crate::layout::{LEAST_CONSOLE_SHARE, MOST_CONSOLE_SHARE};
@@ -46,8 +46,6 @@ const COMPLETE_KEY: &str = "Tab";
 const TAB_KEYS: [&str; 9] = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"];
 
 impl Controls for Overlay {
-    type Sends = OverlaySends;
-
     const HOTKEYS: &'static [&'static str] = &[STEP_KEY];
 
     const FIRST: &'static [First] = &[
@@ -72,7 +70,7 @@ impl Controls for Overlay {
         self.stop.console()
     }
 
-    fn key(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, key: Key) -> Result<(), Fault> {
+    fn key(&mut self, turn: &mut Turn<'_, Self>, key: Key) -> Result<(), Fault> {
         let console = self.stop.console();
         let switching = console && key.held.control;
         let choosing = console && key.held.alt;
@@ -116,7 +114,7 @@ impl Overlay {
     /// Takes in the line as its text input edited it: `!` typed on an empty line in chat mode puts the session's tab
     /// in `!` mode instead, and leaves the line empty.
     #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
-    pub(super) fn edit(&mut self, _: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
+    pub(super) fn edit(&mut self, _: &mut Turn<'_, Self>, line: String) -> Result<(), Fault> {
         let was_empty = self.console.line().is_empty();
         let bang = line == BANG;
         let chatting = self.chats.mode() == Mode::Chat;
@@ -134,7 +132,7 @@ impl Overlay {
 
     /// Backspace: on an empty line puts a session's tab back in chat mode, and otherwise is handed to the line, as
     /// though it had the screen's focus.
-    fn erase(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+    fn erase(&mut self, key: &Key, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if self.console.line().is_empty() {
             self.chats.switch(Mode::Chat);
             return Ok(());
@@ -149,7 +147,7 @@ impl Overlay {
     /// command that names a tool asked of the engine's tools root; with a session's open, said to it in chat mode, or
     /// in `!` mode run here and sent to it (ADR-0057). The scroll shown goes to its newest row.
     #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
-    pub(super) fn enter(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, line: String) -> Result<(), Fault> {
+    pub(super) fn enter(&mut self, turn: &mut Turn<'_, Self>, line: String) -> Result<(), Fault> {
         let (command, reports) = match self.chats.open() {
             Open::Console => (self.console.submitted(&line), Reports::Here),
             Open::Session(session) => self.chatted(turn, session, &line)?,
@@ -161,7 +159,7 @@ impl Overlay {
 
     /// Escape: with the console's own tab open, closes the console; with a session's, empties the line typed, or with
     /// none typed leaves `!` mode, or in chat mode stops the session's turn.
-    fn escape(&mut self, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+    fn escape(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if self.chats.open() == Open::Console {
             self.close();
             return Ok(());
@@ -190,7 +188,7 @@ impl Overlay {
     }
 
     /// Hands `key` to the scroll shown, which slides by it, though the line has the screen's focus.
-    fn scroll(&mut self, key: &Key, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+    fn scroll(&mut self, key: &Key, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let heard = self.ui.press_key(&self.scroll_shown(), key);
         take_in(self, heard, turn)?;
 
@@ -199,7 +197,7 @@ impl Overlay {
 
     /// Opens the tab at the place of `digit` among the tab keys, the console's own at the first: nothing for any other
     /// key, or a place past the last tab.
-    fn choose_by(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, digit: &str) -> Result<(), Fault> {
+    fn choose_by(&mut self, turn: &mut Turn<'_, Self>, digit: &str) -> Result<(), Fault> {
         let Some(place) = TAB_KEYS.iter().position(|code| *code == digit) else {
             return Ok(());
         };
@@ -211,7 +209,7 @@ impl Overlay {
     /// hears neither and draws nothing. Opening the console clears the count of warnings and errors, which the console
     /// shows, and gives its line the screen's focus, so it takes every key; the text the backtick typed is dropped, as
     /// the screen took its key.
-    fn step(&mut self, turn: &mut Turn<'_, Self, OverlaySends>) -> Result<(), Fault> {
+    fn step(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let was = self.stop;
         self.stop = was.next();
         match (was.draws(), self.stop.draws()) {
@@ -254,7 +252,7 @@ impl Overlay {
     /// The console's grip dragged `by` logical pixels down: the console taller by as much, within its least and most
     /// share of the window.
     #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
-    pub(super) fn resize(&mut self, _: &mut Turn<'_, Self, OverlaySends>, by: f32) -> Result<(), Fault> {
+    pub(super) fn resize(&mut self, _: &mut Turn<'_, Self>, by: f32) -> Result<(), Fault> {
         let viewport = self.ui.viewport();
         let tall = viewport.size.y / viewport.scale;
         if tall > 0.0 {
