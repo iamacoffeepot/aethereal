@@ -2,7 +2,7 @@
 //! its body, each actor layer asked and the response parked until it answers, and written to its connection, its head
 //! by the stack, its body after it as it is.
 
-use super::body::{Passage, pass};
+use super::body::{PASSED, Passage, pass};
 use super::connection::{Phase, Returning, Stage};
 use super::{Deadline, Owed, Sending, Serving, Stepping};
 use crate::response_head::{self, Frame};
@@ -72,21 +72,25 @@ where
             let at = place(returning.at);
             let reference = match T::taker(&connection.layers, at) {
                 Taker::Pure => {
-                    let mut spare = pool.buffer(0);
                     let bytes = match &returning.body {
                         ResponseBody::Empty => &[][..],
                         ResponseBody::Whole(bytes) => doing.read(bytes),
                     };
+                    let mut buffers = pool.buffers::<3>(bytes.len());
                     let run = |at, part: &mut BodyPart<'_>| T::outbound_body(&mut connection.layers, at, part);
-                    let passed = pass(bytes, true, at..=at, run, &mut spare);
-                    drop(spare);
+                    let passed = pass(bytes, true, at..=at, run, &mut buffers);
+                    // The buffers go back to the pool before the turn goes on: what the layer passed is put first.
                     match passed {
                         Ok(Passage::AsCame) => {}
-                        Ok(Passage::Rewritten(rewritten)) => match doing.put(rewritten) {
-                            Ok(bytes) => returning.body = ResponseBody::Whole(bytes),
-                            Err(_) => return self.unstored(number, turn),
-                        },
+                        Ok(Passage::Rewritten) => {
+                            let Ok(bytes) = doing.put(mem::take(&mut buffers[PASSED])) else {
+                                drop(buffers);
+                                return self.unstored(number, turn);
+                            };
+                            returning.body = ResponseBody::Whole(bytes);
+                        }
                         Err(refused) => {
+                            drop(buffers);
                             // Its head goes out with its length, which the refused body no longer has: it is cut
                             // short, as none.
                             turn.log(Level::Info, format!("a layer refused a response's body: {refused:?}"));
