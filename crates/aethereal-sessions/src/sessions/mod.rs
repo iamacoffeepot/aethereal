@@ -2,21 +2,6 @@
 //! of its own, writes lines to its stdin, reads its output into a numbered transcript, stops it when it is idle, and
 //! resumes it when it is spoken to.
 
-/// Everything the capability sends in a turn: requests of Docker, its streams and their credit, writes to stdin, reads
-/// and writes of its files, and what the trusted engines are shown; and, for a turn that handles an ask, the answer to
-/// it. One list, as each turn may start, stop, or write to any
-/// session, its markers always first and in this order, so [`Does`] finds each at its place.
-macro_rules! acts {
-    ($($answer:ty)?) => {
-        (
-            super::M0, super::M1, super::M2, super::M3, super::M4, super::M5, super::M6, super::M7, super::M8,
-            super::M9, super::M10, super::M11, super::M12, super::M13, super::M14, super::M15, super::M16, super::M17,
-            super::M18,
-            $($answer,)?
-        )
-    };
-}
-
 mod asked;
 mod asks;
 mod bearers;
@@ -51,17 +36,11 @@ pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettin
 pub use transcript::{Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
 pub use volumes::Homing;
 
-use crate::{
-    Attaching, ContainerId, Create, CreateVolume, Docker, Inspect, List, Logging, Remove, Start, Stop, Watching,
-};
-use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Asks, At, Beginning, ChildOf, Ending, Fault, More, Number, Open, Part, Path,
-    Streamed, Streams, ToAny, Top, Turn,
-};
+use crate::{Attaching, ContainerId, Docker, Logging, Watching};
+use aethereal_actor::{Actor, ActorRef, Answer, Beginning, ChildOf, Ending, Fault, Number, Part, Streams, Top, Turn};
 use aethereal_data::{Bound, Plain};
-use aethereal_files::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile};
+use aethereal_files::{FileRead, FileWritten, Files, Namespace, ReadFile};
 use aethereal_http::stack::{Inbound, Outbound};
-use aethereal_tcp::{Write, Writing};
 use asked::Waiting;
 use bearers::Bearers;
 use chat::Chats;
@@ -143,78 +122,6 @@ pub enum Unfound {
     Docker,
     /// The engine had no room to hold what it writes.
     NoRoom,
-}
-
-/// Each of what the capability sends, as [`acts!`] lists it.
-type M0 = Asks<Path<Docker>, Create, Asking>;
-type M1 = Asks<Path<Docker>, Start, Acting>;
-type M2 = Asks<Path<Docker>, Stop, Acting>;
-type M3 = Asks<Path<Docker>, Remove, Acting>;
-type M4 = Asks<Path<Docker>, Inspect, Asking>;
-type M5 = Asks<Path<Docker>, List, Reconciling>;
-type M6 = Asks<Streamed<Attaching>, Open<Attaching>, Number>;
-type M7 = ToAny<Streamed<Attaching>, More>;
-type M8 = Asks<Streamed<Logging>, Open<Logging>, Number>;
-type M9 = ToAny<Streamed<Logging>, More>;
-type M10 = Asks<Streamed<Watching>, Open<Watching>, Number>;
-type M11 = ToAny<Streamed<Watching>, More>;
-type M12 = Asks<Writing, Write, Typing>;
-type M13 = Asks<Path<Docker>, CreateVolume, Homing>;
-type M14 = Asks<Path<Files>, ReadFile, Loading>;
-type M15 = Asks<Path<Files>, WriteFile, Keeping>;
-type M16 = ToAny<Showing, ShowTabs>;
-type M17 = ToAny<Showing, ShowEvents>;
-type M18 = ToAny<Showing, ShowAsk>;
-
-/// The sends of a turn that handles no ask.
-type Acts = (M0, M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18);
-
-/// A turn's sends that list everything [`Acts`] does, at the same places: what the capability's helpers act through,
-/// whichever answer the turn's ask is answered with.
-trait Does:
-    Allows<M0, At<0>>
-    + Allows<M1, At<1>>
-    + Allows<M2, At<2>>
-    + Allows<M3, At<3>>
-    + Allows<M4, At<4>>
-    + Allows<M5, At<5>>
-    + Allows<M6, At<6>>
-    + Allows<M7, At<7>>
-    + Allows<M8, At<8>>
-    + Allows<M9, At<9>>
-    + Allows<M10, At<10>>
-    + Allows<M11, At<11>>
-    + Allows<M12, At<12>>
-    + Allows<M13, At<13>>
-    + Allows<M14, At<14>>
-    + Allows<M15, At<15>>
-    + Allows<M16, At<16>>
-    + Allows<M17, At<17>>
-    + Allows<M18, At<18>>
-{
-}
-
-impl<S> Does for S where
-    S: Allows<M0, At<0>>
-        + Allows<M1, At<1>>
-        + Allows<M2, At<2>>
-        + Allows<M3, At<3>>
-        + Allows<M4, At<4>>
-        + Allows<M5, At<5>>
-        + Allows<M6, At<6>>
-        + Allows<M7, At<7>>
-        + Allows<M8, At<8>>
-        + Allows<M9, At<9>>
-        + Allows<M10, At<10>>
-        + Allows<M11, At<11>>
-        + Allows<M12, At<12>>
-        + Allows<M13, At<13>>
-        + Allows<M14, At<14>>
-        + Allows<M15, At<15>>
-        + Allows<M16, At<16>>
-        + Allows<M17, At<17>>
-        + Allows<M18, At<18>>
-{
 }
 
 /// The sessions capability (ADR-0057): asked at its typed path, `path::<Sessions>(())`, to open a session
@@ -315,11 +222,10 @@ impl Actor for Sessions {
         Inbound<()>,
         Outbound,
     );
-    type BeginSends = (M14,);
-    type EndSends = ();
+    type Depends = (Docker, Files);
 
     /// Reads the index of its sessions through `Files`.
-    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self, (M14,)>) -> Result<Self, Fault> {
+    fn begin(settings: SessionsSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let index = ReadFile { namespace: Namespace::Save, path: saves::INDEX };
         turn.to(aethereal_actor::path::<Files>(())).ask(&index, &Loading::Index)?;
 
@@ -340,7 +246,7 @@ impl Actor for Sessions {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -375,7 +281,7 @@ impl Sessions {
     }
 
     /// When a request of Docker made now stops being waited for, `extra_secs` past the settings' deadline.
-    fn due<S: Does>(&self, turn: &Turn<'_, Self, S>, extra_secs: u32) -> aethereal_actor::Time {
+    fn due(&self, turn: &Turn<'_, Self>, extra_secs: u32) -> aethereal_actor::Time {
         let secs = u64::from(self.settings.deadline_secs) + u64::from(extra_secs);
 
         turn.now() + Duration::from_secs(secs)

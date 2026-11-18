@@ -50,11 +50,11 @@ pub use streams::{
 };
 
 use aethereal_actor::{
-    Actor, Allows, Answer, Answered, Asks, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, More, Number,
-    Open, Part, Path, Protocol, Receives, Serving, Streamed, Streams, ToAny, ToType, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, More, Number, Open, Part,
+    Protocol, Receives, Serving, Streams, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
-use aethereal_http::{Client, Connect, Connected, Fetch, Fetched, Finished, Http, Peer, Receiving, Unreached};
+use aethereal_http::{Connect, Connected, Fetch, Fetched, Finished, Http, Peer, Receiving, Unreached};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Shut, SocketPath};
 use relay::Relay;
@@ -86,39 +86,6 @@ impl Protocol for Fetches {
 impl Carries<Fetch> for Fetches {
     type Answers = (Fetched,);
 }
-
-/// A dial asked of `Http`.
-type Dial = Asks<Path<Http>, Connect, Dialing>;
-
-/// A request asked of `Http`'s client, answered whole.
-type Fetching = Asks<Fetches, Fetch, Calling>;
-
-/// A hang-up of `Http`'s client, once what it was dialed for is done.
-type HangUp = ToType<Client, Shut>;
-
-/// A stream of a response opened on `Http`'s client.
-type Following = Asks<Streamed<Receiving>, Open<Receiving>, Number>;
-
-/// Credit granted to `Http`'s client for a stream of a response.
-type Credit = ToAny<Streamed<Receiving>, More>;
-
-/// A stream of a response stopped.
-type Stopping = ToAny<Streamed<Receiving>, Enough>;
-
-/// What the client sends as `Http` answers a dial: the request asked, or the stream opened, on the client it dialed,
-/// and that client's hang-up when nothing waits on it.
-type Connecting = (Fetching, HangUp, Following, Credit);
-
-/// What the client sends as it relays a stream: parts to its asker, and to `Http`'s client credit, a stop, and a
-/// hang-up.
-type Relaying = (
-    ToAny<(Part<Attaching>,), Part<Attaching>>,
-    ToAny<(Part<Logging>,), Part<Logging>>,
-    ToAny<(Part<Watching>,), Part<Watching>>,
-    Credit,
-    Stopping,
-    HangUp,
-);
 
 /// The Docker client: asks Docker's Engine API, over its Unix socket, for what the hub's sessions need of their
 /// containers, as typed requests and streams, and nothing else (ADR-0057).
@@ -181,10 +148,9 @@ impl Actor for Docker {
         Part<Receiving>,
         Answer<Finished, Number>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Http,);
 
-    fn begin(config: DockerConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: DockerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.window).unwrap_or(NonZeroU32::MIN);
 
         Ok(Self {
@@ -199,20 +165,18 @@ impl Actor for Docker {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Connected, Dialing>> for Docker {
-    type Sends = Connecting;
-
     /// A connection `Http` dialed: the request it was for is asked on it, or the stream opened, and a connection
     /// nothing waits on any more is hung up. A dial that failed answers what it was for.
     fn handle(
         &mut self,
         (answered, Dialing { number }): (Answered<Connected>, Dialing),
-        turn: &mut Turn<'_, Self, Connecting>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let reached = match answered {
             Answered::Yes(Connected::Open { client }) => Ok(client),
@@ -238,11 +202,9 @@ impl Receives<Answer<Connected, Dialing>> for Docker {
 }
 
 impl Receives<Ended> for Docker {
-    type Sends = (Stopping,);
-
     /// An actor that opened streams has ended: each of its streams' connections is hung up, as nothing will take what
     /// comes on it.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let attaches = self.attaching.ended(&ended).into_iter().map(|stream| relay::Served::Attach(stream.key()));
         let logs = self.logging.ended(&ended).into_iter().map(|stream| relay::Served::Logs(stream.key()));
         let events = self.watching.ended(&ended).into_iter().map(|stream| relay::Served::Events(stream.key()));
@@ -257,14 +219,11 @@ impl Receives<Ended> for Docker {
 
 impl Docker {
     /// Asks `Http` to dial Docker's socket for a request or a stream, and answers the number it is kept by.
-    fn dial<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<u64, Fault>
-    where
-        S: Allows<Dial, I>,
-    {
+    fn dial(&mut self, turn: &mut Turn<'_, Self>) -> Result<u64, Fault> {
         let number = self.next;
         self.next += 1;
         let connect = Connect { peer: Peer::Unix { path: self.socket.clone() } };
-        turn.to(path::<Http>(())).ask::<_, _, I>(&connect, &Dialing { number })?;
+        turn.to(path::<Http>(())).ask(&connect, &Dialing { number })?;
 
         Ok(number)
     }

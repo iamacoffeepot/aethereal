@@ -8,8 +8,7 @@ use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{
-    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, SeatNumber, Seated, Table, Tells, Top,
-    Turn, path,
+    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, SeatNumber, Seated, Table, Top, Turn, path,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
@@ -380,23 +379,21 @@ impl Actor for Prober {
     type Config = Self;
     type Key = ();
     type Handles = (ProbeOrder, Probed);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Window,);
 
-    fn begin(prober: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(prober: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(prober)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<ProbeOrder> for Prober {
-    type Sends = (Tells<Path<Window>, SubscribeProbes>, Tells<Path<Window>, Picked>, Tells<Path<Window>, KeysListed>);
     type From = Anyone;
 
-    fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: ProbeOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let window = path::<Window>(WINDOW);
         match order {
             ProbeOrder::Subscribe => {
@@ -415,10 +412,9 @@ impl Handles<ProbeOrder> for Prober {
 }
 
 impl Handles<Probed> for Prober {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -436,23 +432,21 @@ impl Actor for Widget {
     type Config = Self;
     type Key = ();
     type Handles = (Pointed,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(widget: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(widget: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(widget)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Pointed> for Widget {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Pointed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Pointed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

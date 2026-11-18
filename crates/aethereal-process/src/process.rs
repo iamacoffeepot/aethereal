@@ -4,7 +4,7 @@ use crate::jobs::{Raise, Raised, Raising, Wait, Waited, Waiting};
 use crate::{Processes, Signal, Unwaited};
 use aethereal_actor::{
     Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, JobId, Level,
-    Protocol, ProtocolRef, Receives, Sleep, Slept, ToAny, Turn,
+    Protocol, ProtocolRef, Receives, Sleep, Slept, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -94,10 +94,9 @@ impl Actor for Process {
     type Config = ProcessConfig;
     type Key = u64;
     type Handles = (Stop, Ended, Answer<Waited, Waiting>, Answer<Slept, Grace>, Answer<Raised, Raising>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ProcessConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: ProcessConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);
         turn.run(&Wait { process: config.number }, &Waiting)?;
 
@@ -109,25 +108,22 @@ impl Actor for Process {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Stop> for Process {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.stop(turn)
     }
 }
 
 impl Receives<Ended> for Process {
-    type Sends = ();
-
     /// Its starter has ended, which is the one actor it watches: no one wants the program any more.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_starter = ended.actor().id() == self.starter.id();
         if is_starter {
             self.stop(turn)?;
@@ -138,13 +134,11 @@ impl Receives<Ended> for Process {
 }
 
 impl Receives<Answer<Waited, Waiting>> for Process {
-    type Sends = (ToAny<Exits, Exited>,);
-
     /// The program has exited: its starter is told how, and the process ends.
     fn handle(
         &mut self,
         (answered, Waiting): (Answered<Waited>, Waiting),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Waited::Exited { status, stderr }) = answered else {
             turn.log(Level::Error, format_args!("the exit of program {} was lost: {answered:?}", self.number));
@@ -161,11 +155,9 @@ impl Receives<Answer<Waited, Waiting>> for Process {
 }
 
 impl Receives<Answer<Slept, Grace>> for Process {
-    type Sends = ();
-
     /// The program's time to end has passed, and it has not exited, or this would have been cancelled: its group is
     /// killed.
-    fn handle(&mut self, _: (Answered<Slept>, Grace), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Slept>, Grace), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Raise { process: self.number, signal: Signal::Kill }, &Raising)?;
 
         Ok(())
@@ -173,17 +165,15 @@ impl Receives<Answer<Slept, Grace>> for Process {
 }
 
 impl Receives<Answer<Raised, Raising>> for Process {
-    type Sends = ();
-
     /// A signal was sent: what it came to is told by the program's exit.
-    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Process {
     /// Sends the program's group SIGTERM and sleeps for the time it is given to end, unless it was asked already.
-    fn stop<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    fn stop(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Stopping::Unasked = self.stopping else {
             return Ok(());
         };

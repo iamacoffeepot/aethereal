@@ -3,8 +3,8 @@
 //! plays to.
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Path,
-    Receives, ToSender, Top, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Receives,
+    Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -523,23 +523,21 @@ impl Actor for Asker {
     type Config = AskerConfig;
     type Key = ();
     type Handles = (CallWithin, Answer<Called, Relaying>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Engine,);
 
-    fn begin(_: AskerConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: AskerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<CallWithin> for Asker {
-    type Sends = (ToSender<Heard>, Asks<Path<Engine>, CallEngine, Relaying>);
     type From = Anyone;
 
-    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         let due = turn.now() + Duration::from_millis(asked.within_millis);
         turn.to(path::<Engine>(0)).within(due).ask(&asked.call, &Relaying { held })?;
@@ -549,12 +547,10 @@ impl Handles<CallWithin> for Asker {
 }
 
 impl Receives<Answer<Called, Relaying>> for Asker {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Relaying { held }): (Answered<Called>, Relaying),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let heard = match answered {
             Answered::Yes(called) => Heard::Called(called),

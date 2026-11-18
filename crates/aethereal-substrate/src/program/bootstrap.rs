@@ -3,7 +3,7 @@
 
 use super::{Host, Serves, Stage, Unbuilt};
 use crate::Feed;
-use aethereal_actor::{Actors, Bytes, Controller, Given, Marker, Publisher, Requests, Resource, Root, Source};
+use aethereal_actor::{Actors, Bytes, Controller, Given, Publisher, Requests, Resource, Root, Source};
 use aethereal_data::config::RootSettings;
 use aethereal_data::{ActorId, Encode, Kind};
 use core::marker::PhantomData;
@@ -152,14 +152,10 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     }
 
     /// The program's root list, for the renderer's config to carry: the id of each root it draws, in draw order
-    /// (ADR-0055). Each must be drawable: its `begin` or one of its handlers declares the send `M`, the renderer's
-    /// draw list.
-    ///
-    /// # Errors
-    ///
-    /// [`Unbuilt::Undrawn`] naming the first root of the list whose type declares no send `M`.
-    pub fn root_list<M: Marker>(&self) -> Result<Vec<ActorId>, Unbuilt> {
-        self.stage.root_list.iter().map(|drawn| drawn.sending(&M::SENDING)).collect()
+    /// (ADR-0055). Each is a root of the program, as its list's build checks; whether it draws is its own business.
+    #[must_use]
+    pub fn root_list(&self) -> Vec<ActorId> {
+        self.stage.root_list.iter().map(|drawn| drawn.id()).collect()
     }
 
     /// Gives the host `end`, the half of a pair that is the host's to keep: it builds only when the host serves it.

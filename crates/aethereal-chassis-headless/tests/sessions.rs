@@ -4,8 +4,7 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Path, Receives, Tells,
-    Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Receives, Top, Turn, path,
 };
 use aethereal_actor::{Service, Spares};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -48,7 +47,14 @@ use stacks::{bound, stack};
 
 // The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and `Mcp` is asked
 // it on `POST /mcp`.
-stack!(ContainerStack, "test.sessions.container_stack", "container_stack", (Sessions, McpRoutes), [By]);
+stack!(
+    ContainerStack,
+    "test.sessions.container_stack",
+    "container_stack",
+    (Sessions, McpRoutes),
+    [By],
+    depends(Sessions, Mcp)
+);
 
 /// The session id Claude names its conversation by in these tests.
 const CONVERSATION: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
@@ -103,10 +109,9 @@ impl Actor for Caller {
         Answer<Interrupted, Asked>,
         Answer<Archived, Asked>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Sessions,);
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             opened: Vec::new(),
             said: Vec::new(),
@@ -117,7 +122,7 @@ impl Actor for Caller {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -134,17 +139,9 @@ impl Bootstrap<Headless> for Caller {
 }
 
 impl Handles<Order> for Caller {
-    type Sends = (
-        Asks<Path<Sessions>, NewSession, Asked>,
-        Asks<Path<Sessions>, Say, Asked>,
-        Asks<Path<Sessions>, ReadTranscript, Asked>,
-        Asks<Path<Sessions>, ListSessions, Asked>,
-        Asks<Path<Sessions>, Interrupt, Asked>,
-        Asks<Path<Sessions>, Archive, Asked>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
         match order {
             Order::New(new) => turn.to(sessions).ask(&new, &Asked)?,
@@ -162,9 +159,7 @@ impl Handles<Order> for Caller {
 macro_rules! keeps {
     ($($answer:ty => $field:ident),*) => {$(
         impl Receives<Answer<$answer, Asked>> for Caller {
-            type Sends = ();
-
-            fn handle(&mut self, (answered, Asked): (Answered<$answer>, Asked), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, (answered, Asked): (Answered<$answer>, Asked), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 let Answered::Yes(answer) = answered else {
                     panic!("the sessions answer: {answered:?}");
                 };
@@ -1334,14 +1329,13 @@ impl Actor for Recorder {
     type Config = Unset;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1695,14 +1689,13 @@ impl Actor for Impostor {
     type Config = Unset;
     type Key = ();
     type Handles = (Pose, ShowTabs, ShowEvents, ShowAsk);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Sessions,);
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { shown: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1719,10 +1712,9 @@ impl Bootstrap<Headless> for Impostor {
 }
 
 impl Handles<Pose> for Impostor {
-    type Sends = (Tells<Path<Sessions>, Joined>, Tells<Path<Sessions>, Chatted>);
     type From = Anyone;
 
-    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pose: Pose, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sessions = path::<Sessions>(());
         match pose {
             Pose::Join { engine } => {
@@ -1740,10 +1732,9 @@ impl Handles<Pose> for Impostor {
 macro_rules! counts {
     ($($shown:ty),*) => {$(
         impl Handles<$shown> for Impostor {
-            type Sends = ();
             type From = Anyone;
 
-            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: $shown, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 self.shown += 1;
 
                 Ok(())

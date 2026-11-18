@@ -99,7 +99,7 @@ pub enum Outcome {
 impl Outcome {
     /// `called`, its output read in `turn` and copied in, to write into a frame.
     #[must_use]
-    pub fn of<A, S>(called: Called, turn: &Turn<'_, A, S>) -> Self {
+    pub fn of<A>(called: Called, turn: &Turn<'_, A>) -> Self {
         match called {
             Called::Output(bytes) => Self::Output(turn.read(&bytes).to_vec()),
             Called::Image { png, text } => Self::Image { png: turn.read(&png).to_vec(), text },
@@ -108,7 +108,7 @@ impl Outcome {
     }
 
     /// This as a [`Called`], its output put in `turn`: refused when the engine has no room to hold it.
-    pub fn into_called<A, S>(self, turn: &mut Turn<'_, A, S>) -> Called {
+    pub fn into_called<A>(self, turn: &mut Turn<'_, A>) -> Called {
         match self {
             Self::Output(bytes) => Called::output(turn, bytes),
             Self::Image { png, text } => Called::image(turn, png, text),

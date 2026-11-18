@@ -10,8 +10,7 @@ use crate::pointing::tests::{ProbeOrder, Prober, found};
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
 use aethereal_actor::{
-    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, SeatNumber, Seated, Tells, Top, Turn,
-    path,
+    Actor, ActorRef, Anyone, Beginning, ChildOf, Ending, Fault, Handles, SeatNumber, Seated, Top, Turn, path,
 };
 use aethereal_data::{ActorId, ActorPath, Kind, PathSegment};
 use aethereal_substrate::Engine;
@@ -187,34 +186,31 @@ impl Actor for Typist {
     type Config = Self;
     type Key = u64;
     type Handles = (Event, Keyed);
-    type BeginSends = (Tells<Path<Window>, Subscribe>,);
-    type EndSends = ();
+    type Depends = (Window,);
 
-    fn begin(typist: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(typist: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(WINDOW)).send(&Subscribe)?;
 
         Ok(typist)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Typist {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Keyed> for Typist {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

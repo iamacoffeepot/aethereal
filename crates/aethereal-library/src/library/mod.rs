@@ -7,8 +7,8 @@ mod start;
 
 use crate::{Defaulted, Defaults, ModulePublished, PublishModule};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Given, Handle, Held, Path,
-    Publisher, Receives, Refused, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Given, Handle, Held, Publisher,
+    Receives, Refused, Top, Turn, path,
 };
 use aethereal_data::{Bound, FilePath, KindName, Plain};
 use aethereal_files::{FileRead, Files, FilesListed, ListFiles, Namespace};
@@ -121,10 +121,9 @@ impl Actor for Library {
     type Config = LibraryConfig;
     type Key = ();
     type Handles = (Answer<FilesListed, Listing>, Answer<FileRead, ReadingModule>, Defaults, PublishModule);
-    type BeginSends = (Asks<Path<Files>, ListFiles, Listing>,);
-    type EndSends = ();
+    type Depends = (Files,);
 
-    fn begin(config: LibraryConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: LibraryConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let publisher = turn.take(config.publisher)?;
         turn.to(path::<Files>(())).ask(&ListFiles { namespace: Namespace::Code }, &Listing)?;
 
@@ -137,19 +136,17 @@ impl Actor for Library {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// A module of `Code` read, for what it was read for.
 impl Receives<Answer<FileRead, ReadingModule>> for Library {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, reading): (Answered<FileRead>, ReadingModule),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match reading {
             ReadingModule::Starting { path } => self.read_as_starting(path, answered, turn),
@@ -164,7 +161,7 @@ impl Library {
     /// # Errors
     ///
     /// Why the engine refused it, as `turn.publish` says.
-    fn publish<S>(&mut self, kind: &KindName, blob: &Bytes, turn: &mut Turn<'_, Self, S>) -> Result<u64, Refused> {
+    fn publish(&mut self, kind: &KindName, blob: &Bytes, turn: &mut Turn<'_, Self>) -> Result<u64, Refused> {
         let publish = turn.publish(&self.publisher, kind, blob)?;
         self.heads.insert(kind.clone());
 

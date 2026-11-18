@@ -5,8 +5,8 @@
 #![cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
-    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, ProtocolRef,
+    Receives, Streams, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -293,32 +293,29 @@ impl Actor for Starter {
     type Config = StarterConfig;
     type Key = ();
     type Handles = (Exited, Leave);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Exited> for Starter {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Leave> for Starter {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -398,10 +395,9 @@ impl Actor for Reader {
     type Config = StarterConfig;
     type Key = ();
     type Handles = (Follow, Part<Reading>, Answer<HungUp, Number>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&StarterConfig)?);
         };
@@ -409,7 +405,7 @@ impl Actor for Reader {
         Ok(Self { reading: Streams::new(window), bytes: Vec::new(), hung_up: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -426,10 +422,9 @@ impl Bootstrap<Headless> for Reader {
 }
 
 impl Handles<Follow> for Reader {
-    type Sends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type From = Anyone;
 
-    fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.open(turn, pipe.protocol(), Read, ())?;
 
         Ok(())
@@ -437,10 +432,9 @@ impl Handles<Follow> for Reader {
 }
 
 impl Handles<Part<Reading>> for Reader {
-    type Sends = (ToAny<Streamed<Reading>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {
             return Ok(());
         };
@@ -451,13 +445,7 @@ impl Handles<Part<Reading>> for Reader {
 }
 
 impl Receives<Answer<HungUp, Number>> for Reader {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<HungUp>, Number),
-        _: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.answered(number);
         if let Answered::Yes(hung_up) = answered {
             self.hung_up.push(hung_up);
@@ -541,9 +529,9 @@ fn bytes_written_to_cat_come_back_and_finish_ends_its_stdin_before_the_pipe_is_r
     let (process, pipe) = piped(&mut harness, &start)?;
 
     let parts = vec![harness.put(b"through ".to_vec())?, harness.put(b"cat".to_vec())?];
-    let wrote = harness.ask(pipe.protocol::<Writing, _>(), &Write { parts })?;
+    let wrote = harness.ask(pipe.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
-    harness.tell(pipe.protocol::<Writing, _>(), &Finish)?;
+    harness.tell(pipe.protocol::<Writing>(), &Finish)?;
     let exited = harness.heard::<Exited>()?;
     harness.settle();
     assert_eq!(exited.status, ExitStatus::Code(0), "cat read its stdin to its end: {}", exited.stderr);

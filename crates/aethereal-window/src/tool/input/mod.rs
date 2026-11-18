@@ -6,8 +6,8 @@ mod tests;
 use crate::perform::{Input, MOST_INPUTS, Perform, Performed, Unperformed, unperformable};
 use crate::window::{Window, WindowId};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -63,9 +63,6 @@ struct Sent {
     last: u32,
 }
 
-/// What every turn of the tool may send: an ask of a window's actor, and an answer to its caller.
-type Sends = (Asks<Path<Window>, Perform, Sending>, ToSender<Called>);
-
 impl ChildOf for InputTool {
     type Parent = Anywhere;
 }
@@ -74,14 +71,13 @@ impl Actor for InputTool {
     type Config = InputToolConfig;
     type Key = ();
     type Handles = (Call, Answer<Performed, Sending>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Window,);
 
-    fn begin(_: InputToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: InputToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -114,10 +110,9 @@ impl Tool for InputTool {
 /// Checks the inputs, holds the call, and asks the window's actor to perform each, in order: answered once the last
 /// is. A call of no inputs is answered at once, as there is nothing to perform.
 impl Handles<Call> for InputTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<SendInput>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             turn.reply(&Called::Refused(String::from("that is no input to send")))?;
             return Ok(());
@@ -148,12 +143,10 @@ impl Handles<Call> for InputTool {
 /// performed, or with the first refusal, and the answers after that are dropped. A window whose actor had ended, or
 /// never was, is not open.
 impl Receives<Answer<Performed, Sending>> for InputTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Sending { call, at }): (Answered<Performed>, Sending),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(sent) = self.calls.get(&call) else {
             return Ok(());

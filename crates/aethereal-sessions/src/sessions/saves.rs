@@ -4,7 +4,7 @@
 //! One write runs at a time, so a transcript's append is answered before its record is written, and each lands in the
 //! order made.
 
-use super::{Does, Sessions, Unfound};
+use super::{Sessions, Unfound};
 use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
 use aethereal_data::{DecodeError, FilePath, Plain, to_bytes};
 use aethereal_files::{FileWritten, Files, Namespace, WriteFile, Writes};
@@ -71,13 +71,11 @@ pub(super) enum Indexed {
 }
 
 impl Receives<Answer<FileWritten, Keeping>> for Sessions {
-    type Sends = super::Acts;
-
     /// A write is done: the next is sent, and once none waits, those of what changed meanwhile.
     fn handle(
         &mut self,
         (answered, Keeping): (Answered<FileWritten>, Keeping),
-        turn: &mut Turn<'_, Self, super::Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Lane::Writing { file, next } = mem::replace(&mut self.lane, Lane::Idle) else {
             return Ok(());
@@ -97,7 +95,7 @@ impl Receives<Answer<FileWritten, Keeping>> for Sessions {
 impl Sessions {
     /// Sends the writes of what has changed, unless one runs: the index first when a session was added, then each
     /// changed session's new transcript frames and its record.
-    pub(super) fn flush<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    pub(super) fn flush(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.show(turn)?;
         let is_writing = matches!(self.lane, Lane::Writing { .. });
         if is_writing {
@@ -130,7 +128,7 @@ impl Sessions {
     }
 
     /// Sends the first of `puts`, the rest to follow it one at a time, each once the one before is answered.
-    fn send<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, puts: Vec<Put>) -> Result<(), Fault> {
+    fn send(&mut self, turn: &mut Turn<'_, Self>, puts: Vec<Put>) -> Result<(), Fault> {
         let mut puts = puts.into_iter();
         let Some(Put { path: file, how, bytes }) = puts.next() else {
             return Ok(());

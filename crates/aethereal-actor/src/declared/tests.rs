@@ -7,7 +7,7 @@ use crate::{
     Item, Keeps, Level, Mail, MailId, Mailed, Receives, Recursive, Runs, SeatNumber, Seated, Spawner, Table, Tie, Turn,
     Turning, section,
 };
-use aethereal_data::{ActorId, ActorPath, Kind, PathSegment, Plain};
+use aethereal_data::{ActorId, ActorPath, Keyed, Kind, PathSegment, Plain};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
@@ -94,8 +94,8 @@ struct Kept;
 #[kind(name = "aether.test.stray")]
 struct Stray;
 
-/// An actor that handles kept mail, sends it on to keepers, to any actor that handles it, and back to its sender, and
-/// falls back on the rest, logging which handler it reached.
+/// An actor that handles kept mail and falls back on the rest, logging which handler it reached, and depends on the
+/// shelf.
 #[derive(Plain)]
 #[kind(name = "aether.test.keeper")]
 struct Keeper;
@@ -108,23 +108,21 @@ impl Actor for Keeper {
     type Config = Kept;
     type Key = ();
     type Handles = (Kept, Others);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Shelf,);
 
-    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Kept> for Keeper {
-    type Sends = (ToType<Self, Kept>, ToAny<(Kept,), Kept>, ToSender<Kept>);
     type From = Anyone;
 
-    fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Kept, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "kept");
 
         Ok(())
@@ -132,9 +130,7 @@ impl Handles<Kept> for Keeper {
 }
 
 impl Receives<Others> for Keeper {
-    type Sends = ();
-
-    fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Mail<'_>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "other");
 
         Ok(())
@@ -154,23 +150,69 @@ impl Actor for Strict {
     type Config = Kept;
     type Key = ();
     type Handles = (Kept,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Kept> for Strict {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Kept, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A root a keeper depends on, which handles nothing.
+#[derive(Plain)]
+#[kind(name = "aether.test.shelf")]
+struct Shelf;
+
+impl ChildOf for Shelf {
+    type Parent = crate::Top;
+}
+
+impl Actor for Shelf {
+    type Config = Kept;
+    type Key = ();
+    type Handles = ();
+    type Depends = ();
+
+    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// A keyed place beneath the shelf, which handles nothing.
+#[derive(Plain)]
+#[kind(name = "aether.test.slot")]
+struct Slot;
+
+impl ChildOf for Slot {
+    type Parent = Shelf;
+}
+
+impl Actor for Slot {
+    type Config = Kept;
+    type Key = u64;
+    type Handles = ();
+    type Depends = ();
+
+    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -188,22 +230,19 @@ impl Actor for Sink {
     type Config = Kept;
     type Key = u64;
     type Handles = (Others,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Kept, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Kept, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Others> for Sink {
-    type Sends = ();
-
-    fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Mail<'_>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -242,7 +281,7 @@ fn handed<A: ChildOf>(actor: A, kind: KindId) -> Vec<String> {
 }
 
 /// The mail a keeper's handler of kept mail sends when it runs `then` with the actors of `table`.
-fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Handles<Kept>>::Sends>)) -> Vec<Mailed> {
+fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper>)) -> Vec<Mailed> {
     let mut asked = Asked::new();
     let mut instances = Instances::default();
     let turning = Turning::new(
@@ -261,7 +300,7 @@ fn keeping(table: &Typed, then: impl FnOnce(&mut Turn<'_, Keeper, <Keeper as Han
         Due::Never,
     );
     let sender = ErasedActorRef::new(OTHER);
-    then(&mut turning.declaring::<Keeper, <Keeper as Handles<Kept>>::Sends, Anyone>(Declared::of::<Keeper>(), sender));
+    then(&mut turning.declaring::<Keeper, Anyone>(Declared::of::<Keeper>(), sender));
 
     asked.into_parts().0.mailed
 }
@@ -295,82 +334,60 @@ fn a_cast_finds_a_type_that_lists_every_kind_and_not_one_that_only_falls_back() 
     assert_eq!(cast(Declared::of::<Sink>()), Some(false));
 }
 
-/// A send of a stray to any actor that takes kept mail: of a kind its protocol does not hold.
-const STRAY_TO_KEEPERS: &[Sending] = &[<ToAny<(Kept,), Stray> as Marker>::SENDING];
-
 #[test]
-#[should_panic(expected = "the protocol does not hold")]
-fn a_declaration_whose_handler_sends_a_protocol_a_kind_outside_it_does_not_hold() {
-    // Catches a type built that declares, in a handler, a send of a kind to actors that need not take it.
-    const HANDLERS: &[Handler] = &[Handler::new(Role::Kind(KindId::of::<Kept>()), STRAY_TO_KEEPERS)];
-    let sending = Declared::new(
+#[should_panic(expected = "two types of one root")]
+fn a_declaration_that_depends_on_two_types_of_one_root_does_not_hold() {
+    // Catches a type built that depends on the shelf and a slot beneath it, where a typed path beneath the shelf could
+    // be found at either entry, so a send there would not be inferred (ADR-0059).
+    const DEPENDS: &[&TypeSegment] = &[Last::<Shelf>::SEGMENT, Last::<Slot>::SEGMENT];
+    let twice = Declared::new(
         Keeper::NAME,
         KindId::of::<Keeper>(),
         StateSchema::of::<Keeper>(),
         Keyed::Singleton,
         Spawner::Anyone,
-        &[],
-        HANDLERS,
-        &[],
-    );
-
-    let _ = sending.checked();
-}
-
-#[test]
-#[should_panic(expected = "the protocol does not hold")]
-fn a_declaration_whose_begin_sends_a_protocol_a_kind_outside_it_does_not_hold() {
-    // Catches the check of a protocol's kinds left out of a type's `begin`.
-    let beginning = Declared::new(
-        Keeper::NAME,
-        KindId::of::<Keeper>(),
-        StateSchema::of::<Keeper>(),
-        Keyed::Singleton,
-        Spawner::Anyone,
-        STRAY_TO_KEEPERS,
-        &[],
+        DEPENDS,
         &[],
     );
 
-    let _ = beginning.checked();
+    let _ = twice.checked();
 }
 
 #[test]
-#[should_panic(expected = "the protocol does not hold")]
-fn a_declaration_whose_closing_turn_sends_a_protocol_a_kind_outside_it_does_not_hold() {
-    // Catches the check of a protocol's kinds left out of a type's closing turn.
-    let ending = Declared::new(
-        Keeper::NAME,
-        KindId::of::<Keeper>(),
-        StateSchema::of::<Keeper>(),
-        Keyed::Singleton,
-        Spawner::Anyone,
-        &[],
-        &[],
-        STRAY_TO_KEEPERS,
-    );
-
-    let _ = ending.checked();
-}
-
-#[test]
-fn declaration_lists_each_handler_with_the_sends_its_impl_names() {
-    // Catches a handler's sends listed under another handler, or one dropped from the tuple the engine reads.
+fn declaration_lists_each_handler_and_the_path_to_each_type_it_depends_on() {
+    // Catches a handler dropped from the tuple the engine reads, and a type's depends read as another's or not at all,
+    // which the spawn check and a guest's host read (ADR-0022, ADR-0059).
     const KEPT: KindId = KindId::of::<Kept>();
-    const KEEPER: &KindName = &Keeper::NAME;
-    const SENDS: &[Sending] = &[
-        Sending::new(KEPT, Target::Type(KEEPER, KindId::of::<Keeper>())),
-        Sending::new(KEPT, Target::Handling(&[KEPT])),
-        Sending::new(KEPT, Target::Sender),
-    ];
     let keeper = Declared::of::<Keeper>();
-    let handlers = [Handler::new(Role::Kind(KEPT), SENDS), Handler::new(Role::Others, &[])];
+    let handlers = [Handler::new(Role::Kind(KEPT)), Handler::new(Role::Others)];
 
     assert_eq!(keeper.name(), &Keeper::NAME);
     assert_eq!(keeper.handlers(), handlers);
+    assert_eq!(keeper.depends(), [Last::<Shelf>::SEGMENT]);
     assert!(keeper.takes(KindId::of::<Stray>()));
     assert!(!keeper.lists(KindId::of::<Stray>()));
     assert!(!Declared::of::<Strict>().handles_endings());
+}
+
+#[test]
+fn the_spawn_check_finds_a_dependency_of_singletons_not_live_and_passes_a_keyed_one() {
+    // Catches the spawn check reading a keyed place, which actors fill and empty as the program runs, as missing, and
+    // one that misses the shelf a keeper depends on (ADR-0022, ADR-0059).
+    const SLOTTED: &[&TypeSegment] = &[Last::<Slot>::SEGMENT];
+    let slotted = Declared::new(
+        Keeper::NAME,
+        KindId::of::<Keeper>(),
+        StateSchema::of::<Keeper>(),
+        Keyed::Singleton,
+        Spawner::Anyone,
+        SLOTTED,
+        &[],
+    );
+    let nothing_live = |_: &ActorPath, _: KindId| false;
+
+    assert_eq!(Declared::of::<Keeper>().missing(nothing_live), Some(Last::<Shelf>::SEGMENT));
+    assert_eq!(Declared::of::<Keeper>().missing(|_, _| true), None);
+    assert_eq!(slotted.missing(nothing_live), None);
 }
 
 #[test]
@@ -379,7 +396,8 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed,
     // or one type's spawner read as another's), so a host reads a declaration other than the one the guest was built
     // with (ADR-0015, ADR-0022); or a state's schema read as another type's, or not kept (ADR-0054).
-    const TYPES: &[&Declared] = &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>()];
+    const TYPES: &[&Declared] =
+        &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>(), Declared::of::<Slot>()];
     const ROOM: usize = section::room(TYPES);
     const LEN: usize = section::len::<ROOM>(TYPES);
     const BYTES: [u8; LEN] = section::bytes::<LEN, ROOM>(TYPES);

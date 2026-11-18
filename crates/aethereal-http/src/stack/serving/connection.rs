@@ -224,12 +224,12 @@ impl<F> Connection<F> {
     }
 
     /// Enters `phase`, and sleeps until its deadline, in place of the last phase's sleep, which it cancels.
-    pub fn enter<Me, S>(
+    pub fn enter<Me>(
         &mut self,
         phase: Phase,
         number: u64,
         settings: &StackSettings,
-        turn: &mut Turn<'_, Me, S>,
+        turn: &mut Turn<'_, Me>,
     ) -> Result<(), Fault>
     where
         Me: Receives<Answer<Slept, Deadline>>,
@@ -241,12 +241,7 @@ impl<F> Connection<F> {
 
     /// Sleeps until the deadline of the phase it is in, in place of the last phase's sleep, which it cancels: a
     /// closing connection sleeps for none. Its number, `number`, names it to the sleep's answer.
-    pub fn time<Me, S>(
-        &mut self,
-        number: u64,
-        settings: &StackSettings,
-        turn: &mut Turn<'_, Me, S>,
-    ) -> Result<(), Fault>
+    pub fn time<Me>(&mut self, number: u64, settings: &StackSettings, turn: &mut Turn<'_, Me>) -> Result<(), Fault>
     where
         Me: Receives<Answer<Slept, Deadline>>,
     {
@@ -264,7 +259,7 @@ impl<F> Connection<F> {
     }
 
     /// Cancels the sleep it runs, when it runs one.
-    pub fn unsleep<Me, S>(&mut self, turn: &mut Turn<'_, Me, S>) {
+    pub fn unsleep<Me>(&mut self, turn: &mut Turn<'_, Me>) {
         if let Sleeping::On(job) = self.sleeping {
             turn.cancel(job);
         }

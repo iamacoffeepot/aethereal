@@ -239,7 +239,6 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
 /// use aethereal_ui::prelude::*;
-/// # use aethereal_actor::{Asks, Path};
 /// # use aethereal_render::Renderer;
 /// # use aethereal_render::frame::ShapeOf;
 ///
@@ -270,17 +269,13 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 ///     }
 /// }
 ///
-/// /// What the bag's methods send: none of their own.
-/// type BagSends = aethereal_ui::sends![];
-///
 /// impl Controls for Bag {
-///     type Sends = BagSends;
 /// }
 ///
 /// #[aethereal_ui::events]
 /// impl Bag {
 ///     /// Puts `item` in the slot at `at`, and what that slot held where `item` was: the payload comes last.
-///     fn place(&mut self, _: &mut Turn<'_, Self, BagSends>, at: u32, item: ItemId) -> Result<(), Fault> {
+///     fn place(&mut self, _: &mut Turn<'_, Self>, at: u32, item: ItemId) -> Result<(), Fault> {
 ///         let from = self.slots.iter().position(|slot| slot.item == item);
 ///         let to = self.slots.iter().position(|slot| slot.at == at);
 ///         if let (Some(from), Some(to)) = (from, to) {
@@ -292,7 +287,7 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 ///     }
 ///
 ///     /// Drops `item` out of the bag, where nothing took it.
-///     fn discard(&mut self, _: &mut Turn<'_, Self, BagSends>, item: ItemId) -> Result<(), Fault> {
+///     fn discard(&mut self, _: &mut Turn<'_, Self>, item: ItemId) -> Result<(), Fault> {
 ///         self.slots.retain(|slot| slot.item != item);
 ///         self.dropped.push(item);
 ///
@@ -308,16 +303,15 @@ fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
 /// #     type Config = Frame;
 /// #     type Key = ();
 /// #     type Handles = aethereal_ui::handles![];
-/// #     type BeginSends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
-/// #     type EndSends = ();
+/// #     type Depends = aethereal_ui::depends!();
 /// #
-/// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 /// #         let slots = vec![Slot { at: 0, item: ItemId(1) }, Slot { at: 1, item: ItemId(2) }];
 /// #         Ok(Self { slots, dropped: Vec::new(), ui })
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -452,10 +446,10 @@ pub type Drops = (Dropped,);
 /// # Errors
 ///
 /// What `method` returns.
-pub fn dropped<A, S, T: Kind + Plain>(
-    turn: &mut Turn<'_, A, S>,
+pub fn dropped<A, T: Kind + Plain>(
+    turn: &mut Turn<'_, A>,
     payload: &Payload,
-    method: impl FnOnce(&mut Turn<'_, A, S>, T) -> Result<(), Fault>,
+    method: impl FnOnce(&mut Turn<'_, A>, T) -> Result<(), Fault>,
 ) -> Result<(), Fault> {
     let Some(value) = payload.read::<T>() else {
         turn.log(Level::Error, format!("a payload came of a kind its method does not take: {payload:?}"));

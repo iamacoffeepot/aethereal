@@ -44,23 +44,21 @@ impl Actor for Sender {
     type Config = Self;
     type Key = ();
     type Handles = (Hold, Stop);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(sender: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(sender: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(sender)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Hold> for Sender {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, Hold { bytes }: Hold, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, Hold { bytes }: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.holds_unsent(bytes, MOST_UNSENT);
 
         Ok(())
@@ -68,10 +66,9 @@ impl Handles<Hold> for Sender {
 }
 
 impl Handles<Stop> for Sender {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, Stop: Stop, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, Stop: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())

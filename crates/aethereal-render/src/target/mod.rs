@@ -8,8 +8,8 @@ use crate::Renderer;
 use crate::frame::{Frame, TargetKind};
 use crate::readback::{ReadFrameTarget, ReadRefused, Region, TargetPixels};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -88,9 +88,6 @@ pub struct TargetTool {
     next: u64,
 }
 
-/// What every turn of the tool may send: an ask of the renderer, and an answer to its caller.
-type Sends = (Asks<Path<Renderer>, ReadFrameTarget, Targeting>, ToSender<Called>);
-
 impl ChildOf for TargetTool {
     type Parent = Anywhere;
 }
@@ -99,14 +96,13 @@ impl Actor for TargetTool {
     type Config = TargetToolConfig;
     type Key = ();
     type Handles = (Call, Answer<TargetPixels, Targeting>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(_: TargetToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: TargetToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -134,10 +130,9 @@ impl Tool for TargetTool {
 
 /// Holds the call, and asks the renderer for the region around the pixel.
 impl Handles<Call> for TargetTool {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Ok(asked) = from_bytes::<ReadTarget>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             turn.reply(&Called::Refused(String::from("that is no target to read")))?;
             return Ok(());
@@ -160,12 +155,10 @@ impl Handles<Call> for TargetTool {
 
 /// The renderer read the region, or would not: the call is answered with its values, or why.
 impl Receives<Answer<TargetPixels, Targeting>> for TargetTool {
-    type Sends = Sends;
-
     fn handle(
         &mut self,
         (answered, Targeting { call }): (Answered<TargetPixels>, Targeting),
-        turn: &mut Turn<'_, Self, Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&call) else {
             return Ok(());

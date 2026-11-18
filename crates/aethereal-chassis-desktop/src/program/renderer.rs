@@ -6,9 +6,7 @@ use crate::budgeting;
 use crate::gpu::{self, OnScreen, Unopened};
 use crate::running::Desktop;
 use crate::serving::{Drawing, Kept};
-use aethereal_actor::{Path, Tells};
 use aethereal_data::Plain;
-use aethereal_render::draw_list::DrawList;
 use aethereal_render::surface::{Front, WindowSurface};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
@@ -75,7 +73,7 @@ impl Bootstrap<Desktop> for Renderer {
         let (mapping, requests) = cx.controller();
         let (mapped, mappings) = cx.source();
         let (surfaced, surfacing) = cx.source();
-        let roots = cx.root_list::<Tells<Path<Self>, DrawList>>()?;
+        let roots = cx.root_list();
         cx.begin(&(), RendererConfig { gpu, front, presenting, windows: formats, mapping, mapped, surfaced, roots })?;
 
         cx.serve(Drawing {

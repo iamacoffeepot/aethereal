@@ -38,18 +38,15 @@ use crate::marks::Marks;
 use crate::meters::{EngineMemory, MeterHistories};
 use crate::stop::Stop;
 use crate::tools::{ChatWord, Choice, Marked, OverlayTools};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Tells, Tick, Top, path,
-};
+use aethereal_actor::{Actor, ActorRef, Answer, Beginning, ChildOf, Ending, Fault, On, Tick, Top, path};
 use aethereal_data::{Bound, Plain};
-use aethereal_render::Renderer;
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
 use aethereal_sessions::{ShowAsk, ShowEvents, ShowTabs};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_tools::{Called, Offer, Offered, Sheets, Tools};
-use aethereal_ui::{Screen, Shaping, Target, Viewport};
+use aethereal_tools::{Called, Offered, Sheets, Tools};
+use aethereal_ui::{Screen, Target, Viewport};
 use aethereal_window::{self as window, Event, InitialWindows, Window, WindowId};
 use chat::Linking;
 use stats::Columns;
@@ -165,17 +162,11 @@ impl Actor for Overlay {
         Choice,
         ChatWord,
     ];
-    type BeginSends = (
-        Tells<Path<Window>, window::Subscribe>,
-        Asks<Path<Renderer>, ShapeOf, Shaping>,
-        Tells<Path<Tools>, aethereal_tools::Subscribe>,
-        Asks<Path<Tools>, Offer, Offering>,
-    );
-    type EndSends = ();
+    type Depends = aethereal_ui::depends!(Tools);
 
     /// Subscribes to its window and to the engine's tools, begins its screen in the window's interface pass, hidden,
     /// which hears the backtick, and spawns the worker of its tools and offers them.
-    fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: OverlayConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
         let target = Target::of::<Interface>(Frame::Main(config.window));
         let ui = Screen::begin(target, Viewport::window(1, 1, 1.0), turn)?;
@@ -209,7 +200,7 @@ impl Actor for Overlay {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

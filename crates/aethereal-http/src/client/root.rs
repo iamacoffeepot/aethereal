@@ -4,8 +4,8 @@
 use crate::http1::fit::{BlobBytesTooLow, ReadLimitTooLow};
 use crate::{Client, ClientConfig, HttpSettings};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault,
-    Handles, Held, Path, Receives, ToSender, ToType, Top, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
+    Receives, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -147,24 +147,21 @@ impl Actor for Http {
     type Config = HttpSettings;
     type Key = ();
     type Handles = (Connect, Answer<tcp::Connected, Reaching>, Answer<ConnectedUnix, ReachingUnix>, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Tcp,);
 
-    fn begin(settings: HttpSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: HttpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { settings, clients: BTreeMap::new(), connecting: BTreeMap::new(), askers: Vec::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Connect> for Http {
-    type Sends =
-        (Asks<Path<Tcp>, tcp::Connect, Reaching>, Asks<Path<Tcp>, ConnectUnix, ReachingUnix>, ToSender<Connected>);
     type From = Anyone;
 
-    fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, connect: Connect, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let open = self.clients.len() + self.connecting.len();
         let is_full = open >= usize::try_from(self.settings.most_clients).unwrap_or(usize::MAX);
         if is_full {
@@ -200,12 +197,10 @@ impl Handles<Connect> for Http {
 }
 
 impl Receives<Answer<tcp::Connected, Reaching>> for Http {
-    type Sends = (ToType<Dialed, Shut>,);
-
     fn handle(
         &mut self,
         (answered, reaching): (Answered<tcp::Connected>, Reaching),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(connecting) = self.connecting.remove(&reaching.number) else {
             return Ok(());
@@ -227,12 +222,10 @@ impl Receives<Answer<tcp::Connected, Reaching>> for Http {
 }
 
 impl Receives<Answer<ConnectedUnix, ReachingUnix>> for Http {
-    type Sends = (ToType<Dialed, Shut>,);
-
     fn handle(
         &mut self,
         (answered, reaching): (Answered<ConnectedUnix>, ReachingUnix),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(connecting) = self.connecting.remove(&reaching.number) else {
             return Ok(());
@@ -255,9 +248,7 @@ impl Receives<Answer<ConnectedUnix, ReachingUnix>> for Http {
 }
 
 impl Receives<Ended> for Http {
-    type Sends = (ToType<Client, Shut>,);
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let gone = ended.actor().id().bits();
         self.clients.retain(|_, opened| opened.client.id().bits() != gone);
         let was_asker = self.askers.contains(&gone);
@@ -276,26 +267,23 @@ impl Receives<Ended> for Http {
 impl Http {
     /// Stands a client up, keyed `number`, on the connection `Tcp` dialed for `asker`, writing `host` as each request's
     /// `Host`; or shuts the connection and says why not.
-    fn stand_client<S, I>(
+    fn stand_client(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         number: u64,
         connection: ActorRef<Dialed>,
         host: String,
         asker: u64,
-    ) -> Result<Connected, Fault>
-    where
-        S: Allows<ToType<Dialed, Shut>, I>,
-    {
+    ) -> Result<Connected, Fault> {
         let is_asked = self.askers.contains(&asker);
         if !is_asked {
             // Its asker has ended: no one is left to ask the client anything.
-            turn.to(connection).send::<_, I>(&Shut)?;
+            turn.to(connection).send(&Shut)?;
             return Ok(Connected::Full);
         }
         let config = ClientConfig { connection, host, limits: self.settings.client_limits() };
         let Ok(client) = turn.spawn::<Client>(&number, config) else {
-            turn.to(connection).send::<_, I>(&Shut)?;
+            turn.to(connection).send(&Shut)?;
             return Ok(Connected::Full);
         };
         turn.watch(client);
@@ -305,7 +293,7 @@ impl Http {
     }
 
     /// Watches the sender of the mail handled, once, and answers who it is.
-    fn watch_asker<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> u64 {
+    fn watch_asker(&mut self, turn: &mut Turn<'_, Self>) -> u64 {
         let asker = turn.sender();
         let id = asker.id().bits();
         let is_watched = self.askers.contains(&id);

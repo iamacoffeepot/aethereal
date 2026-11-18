@@ -6,18 +6,18 @@
 use super::body::{Ending, PASSED, Passage, pass};
 use super::connection::{Phase, Returning, Stage};
 use super::outflow::abandon;
-use super::{Carries, Deadline, Owed, Sending, Serving, Stepping};
+use super::{Carries, Deadline, Owed, Sending, Serving};
 use crate::stack::actor::{ParkedPart, ParkedResponse, Standing, Way, place};
 use crate::stack::response_head::{self, Frame};
 use crate::stack::{
-    BodyPart, LayerList, Leaving, OutboundPart, OutboundParts, Outward, Response, ResponseBody, ResponseHead, Returned,
-    Taker,
+    BodyPart, Leaving, OutboundPart, OutboundParts, Outward, PartStep, Response, ResponseBody, ResponseHead, Returned,
+    Taker, WalkedBy,
 };
 use crate::stack::{OutboundBody, SourceEnd};
 use aethereal_actor::{
     Answer, Bytes, Fault, Guard, Handles, Level, Number, Part, ProtocolRef, Receives, Refused, Slept, Turn,
 };
-use aethereal_tcp::{HungUp, Write, Writing};
+use aethereal_tcp::{HungUp, Write, Writing, Wrote};
 use core::mem;
 
 /// A response's body as it is written with its head when no source streams it.
@@ -35,8 +35,8 @@ pub(super) enum Unstreamed {
 /// # Errors
 ///
 /// The engine had no room to put it.
-pub(super) fn put_head<Me, S, F: Guard<Me>>(
-    turn: &mut Turn<'_, Me, S, F>,
+pub(super) fn put_head<Me, F: Guard<Me>>(
+    turn: &mut Turn<'_, Me, F>,
     head: &ResponseHead,
     frame: Frame,
     closes: bool,
@@ -53,19 +53,24 @@ pub(super) fn put_head<Me, S, F: Guard<Me>>(
     put
 }
 
-impl<S, T: LayerList> Serving<S, T>
+impl<S, T> Serving<S, T>
 where
-    S: Receives<Answer<Slept, Deadline>> + Handles<Part<OutboundBody>> + Receives<Answer<SourceEnd, Number>>,
+    S: Receives<Answer<Slept, Deadline>>
+        + Handles<Part<OutboundBody>>
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// Passes `returning`, its head standing at a layer, back out through each layer before it, in reverse: its head
     /// through every one, a layer that answers in its place starting its own response from there, and a streamed body
     /// it answered in place of told at once it will not be read; then its body through the layers its head passed. An
     /// actor layer is asked, and the response parked until it answers. It is written as its `owed` says.
-    pub(super) fn respond<Own>(
+    pub(super) fn respond(
         &mut self,
         number: u64,
         mut returning: Returning,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         let due = self.due(turn);
         let Some(connection) = self.connections.get_mut(&number) else {
@@ -103,12 +108,7 @@ where
     /// it untouched. A layer that refuses it closes the connection, the response unwritten. Once every layer has
     /// passed it, the response is written. A streamed body is written as its head, and passes the layers a part at a
     /// time once its source sends them.
-    fn respond_body<Own>(
-        &mut self,
-        number: u64,
-        mut returning: Returning,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    fn respond_body(&mut self, number: u64, mut returning: Returning, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         if let ResponseBody::Streamed(streamed) = returning.body {
             let Returning { request, response, owed, body_before, .. } = returning;
             return self.send_streamed(number, request, body_before, response, streamed, owed, turn);
@@ -183,12 +183,12 @@ where
     /// out it goes on from before that layer, the head as the layer passed it, or the layer's answer, or a status in
     /// its place when it did not answer, which goes out as the layer's answer would; a streamed body answered in place
     /// of is told at once it will not be read.
-    pub(super) fn returned_head<Own>(
+    pub(super) fn returned_head(
         &mut self,
         number: u64,
         mut returning: Returning,
         answered: Result<Outward, Response>,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         let response = match answered {
             Ok(Outward::Pass(head)) => {
@@ -212,12 +212,12 @@ where
     }
 
     /// An actor layer passed the body of `returning` as `bytes`: it goes on out through the layers before it.
-    pub(super) fn returned_body<Own>(
+    pub(super) fn returned_body(
         &mut self,
         number: u64,
         mut returning: Returning,
         bytes: Bytes,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         returning.body = ResponseBody::Whole(bytes);
 
@@ -228,13 +228,13 @@ where
     /// with its `Content-Length` and, when the connection closes once it is sent, `Connection: close`, and a whole body
     /// after it as a part of its own, passed on without being read (ADR-0042). The connection then waits for its next
     /// request, or for the write to be sent, to close.
-    pub(super) fn write<Own>(
+    pub(super) fn write(
         &mut self,
         number: u64,
         head: &ResponseHead,
         body: Unstreamed,
         owed: Owed,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         let length = match &body {
             Unstreamed::Empty => 0,

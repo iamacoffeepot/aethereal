@@ -2,8 +2,8 @@
 //! its tools' worker (ADR-0037, ADR-0036).
 
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, Carries, ChildOf, Ending, Fault,
-    Handles, Path, ProtocolRef, Receives, ToSender, Top, Turn, Unanswered, path,
+    Actor, ActorName, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Ending, Fault,
+    Handles, ProtocolRef, Receives, Top, Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{FileRoots, Headless};
@@ -71,23 +71,21 @@ impl Actor for Once {
     type Config = OnceConfig;
     type Key = ();
     type Handles = (Call,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: OnceConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: OnceConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Call> for Once {
-    type Sends = (ToSender<Called>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&Called::Refused(String::from("once is enough")))?;
         turn.close();
 
@@ -132,8 +130,8 @@ impl Layer for Badge {
     }
 }
 
-stack!(LocalStack, "test.mcp.local_stack", "local_stack", (MarkOwner, McpRoutes), []);
-stack!(BadgeStack, "test.mcp.badge_stack", "badge_stack", (Badge, McpRoutes), []);
+stack!(LocalStack, "test.mcp.local_stack", "local_stack", (MarkOwner, McpRoutes), [], depends(Mcp));
+stack!(BadgeStack, "test.mcp.badge_stack", "badge_stack", (Badge, McpRoutes), [], depends(Mcp));
 
 /// A stack's settings as a test serves it: any port the host picks, on the loopback.
 fn on_loopback() -> StackSettings {
@@ -701,7 +699,7 @@ fn another_workers_withdraw_leaves_a_tool_held() -> Result<(), Unheard> {
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
-    let other = harness.root::<Once>().protocol::<Tooling, _>();
+    let other = harness.root::<Once>().protocol::<Tooling>();
     harness.tell(mcp, &Withdraw { tool: String::from("say"), worker: other })?;
 
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
@@ -715,7 +713,7 @@ fn a_worker_that_ends_takes_its_tools_with_it() -> Result<(), Unheard> {
     // Catches a worker not watched, whose tools stay listed and whose calls would go nowhere.
     let (mut harness, mcp, port) = served(McpSettings::default())?;
     harness.add_root::<Once>(&(), OnceConfig)?;
-    let worker = harness.root::<Once>().protocol::<Tooling, _>();
+    let worker = harness.root::<Once>().protocol::<Tooling>();
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
 
@@ -878,23 +876,21 @@ macro_rules! listed {
             type Config = ListedConfig;
             type Key = ();
             type Handles = (Call,);
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Call> for $actor {
-            type Sends = (ToSender<Called>,);
             type From = Anyone;
 
-            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+            fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 let say = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1024))?;
                 let length = u32::try_from(say.text.len()).unwrap_or(u32::MAX);
                 let said = Called::output(turn, to_bytes(&Said { length })?);
@@ -942,23 +938,21 @@ impl Actor for Absent {
     type Config = ListedConfig;
     type Key = ();
     type Handles = (AbsentAsk,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<AbsentAsk> for Absent {
-    type Sends = (ToSender<AbsentAsk>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: AbsentAsk, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: AbsentAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&AbsentAsk)?;
 
         Ok(())
@@ -978,23 +972,21 @@ impl Actor for Reaching {
     type Config = ListedConfig;
     type Key = ();
     type Handles = (Call, Answer<AbsentAsk, ListedConfig>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Absent,);
 
-    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ListedConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Call> for Reaching {
-    type Sends = (Asks<Path<Absent>, AbsentAsk, ListedConfig>, ToSender<Called>);
     type From = Anyone;
 
-    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(path::<Absent>(())).ask(&AbsentAsk, &ListedConfig)?;
         turn.reply(&Called::Refused(String::new()))?;
 
@@ -1003,9 +995,7 @@ impl Handles<Call> for Reaching {
 }
 
 impl Receives<Answer<AbsentAsk, ListedConfig>> for Reaching {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<AbsentAsk>, ListedConfig), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<AbsentAsk>, ListedConfig), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

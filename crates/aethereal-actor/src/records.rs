@@ -392,8 +392,10 @@ pub struct SendRecord {
 /// request itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requesting {
-    /// Nothing the guest says: its host tells whether it is a reply from what its handler declares.
+    /// Nothing the guest says: a tell.
     Not,
+    /// It replies to the item its turn handles, which answers it when it is a request (ADR-0017).
+    Replies,
     /// It asks a request, to be answered with a kind `answer` names, the context the guest keeps for it where `context`
     /// says, due as `due` says (ADR-0041).
     Asks { answer: KindId, context: Span, due: Due },
@@ -427,6 +429,7 @@ impl SendRecord {
                 out[52..60].copy_from_slice(&request.to_le_bytes());
                 2
             }
+            Requesting::Replies => 3,
         };
         out[48..52].copy_from_slice(&requesting.to_le_bytes());
 
@@ -445,6 +448,7 @@ impl SendRecord {
                 due: due_at(bytes, 68)?,
             },
             2 => Requesting::Answers { request: u64_at(bytes, 52)? },
+            3 => Requesting::Replies,
             _ => return None,
         };
 

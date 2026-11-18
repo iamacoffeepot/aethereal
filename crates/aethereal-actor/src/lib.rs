@@ -68,7 +68,7 @@ pub use actor::{Actor, Batch, Peeked, Preparing, Reads, Runs};
 pub use arena::{ARENA_BYTES, Arena, CARRIED, Payload};
 #[cfg(feature = "std")]
 pub use arena::{PinSource, Pinned};
-pub use ask::{Answer, Answered, AnswersByType, Askable, AskedByType, Asking, Asks, Unanswered};
+pub use ask::{Answer, Answered, AnswersByType, Askable, AskedByType, Asking, Unanswered};
 pub use blob::{BlobHash, BlobId, Maker, Puts};
 #[cfg(feature = "std")]
 pub use blob::{Bytes, Pinning, pins, within};
@@ -77,10 +77,9 @@ pub use buffer::{Buffer, BufferGroup, Pool};
 #[cfg(feature = "std")]
 pub use controller::{Controller, Requests};
 pub use declared::{
-    Allows, AnsweredBy, At, CarriedBy, Carries, Conforms, Covers, Declared, DeclaredBy, Handled, HandledBy,
-    HandledList, Handler, Handles, Kinds, Listed, Lists, Marker, Others, Protocol, Reached, Received, Receives,
-    RepliesTo, RepliesWith, RepliesWithin, ReplyWithin, Role, Sending, Sends, StateSchema, Target, Tells, ToAny,
-    ToSender, ToType, Untaken,
+    At, CarriedBy, Carries, Conforms, Covers, Declared, Depends, DependsOn, Handled, HandledBy, HandledList, Handler,
+    Handles, Kinds, Last, Listed, Lists, Others, Protocol, Reached, Received, Receives, Role, RootIs, RootsHold,
+    StateSchema, Untaken,
 };
 pub use due::Due;
 pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
@@ -102,7 +101,7 @@ pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Reco
 pub use mail::{Mail, MailId};
 pub use moves::{Behind, HeadMoves, Moves, Standing, Standings};
 pub use path::{
-    Beneath, Child, HandlersNeedIn, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, There,
+    Beneath, Child, HasRoot, Here, MadeAfter, NeedsIn, Ordered, Parent, Path, PathTo, Placed, RootAbove, Rooted, There,
     TypeSegment, child, parent, path,
 };
 pub use placement::{Admits, Anywhere, AtTop, ChildOf, ParentOf, Parented, Placement, Recursive, Root, Spawner, Top};

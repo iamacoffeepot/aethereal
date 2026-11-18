@@ -4,8 +4,7 @@
 //! list, beneath the overlay (ADR-0021, ADR-0023, ADR-0055).
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Start, Tells, Top,
-    Turn, path,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Start, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -107,16 +106,15 @@ impl Actor for Backdrop {
         Answer<Programmed, BackdropMeshed>,
         Answer<Placed, BackdropPlacing>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(backed: Backed, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(backed: Backed, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self { window: backed.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -127,9 +125,7 @@ fn corner() -> VertexLayout {
 }
 
 impl Receives<On<Start>> for Backdrop {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, BackdropAsked>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &BackdropAsked)?;
 
         Ok(())
@@ -137,12 +133,10 @@ impl Receives<On<Start>> for Backdrop {
 }
 
 impl Receives<Answer<Shaped, BackdropAsked>> for Backdrop {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, BackdropShaped>,);
-
     fn handle(
         &mut self,
         (answered, _): (Answered<Shaped>, BackdropAsked),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             turn.log(Level::Error, format_args!("the window's main pass has no shape: {answered:?}"));
@@ -163,12 +157,10 @@ impl Receives<Answer<Shaped, BackdropAsked>> for Backdrop {
 }
 
 impl Receives<Answer<Meshed, BackdropShaped>> for Backdrop {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, BackdropMeshed>,);
-
     fn handle(
         &mut self,
         (answered, shaped): (Answered<Meshed>, BackdropShaped),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             turn.log(Level::Error, format_args!("the backdrop's triangle was not made: {answered:?}"));
@@ -196,12 +188,10 @@ impl Receives<Answer<Meshed, BackdropShaped>> for Backdrop {
 }
 
 impl Receives<Answer<Programmed, BackdropMeshed>> for Backdrop {
-    type Sends = (Asks<Path<Renderer>, Place, BackdropPlacing>,);
-
     fn handle(
         &mut self,
         (answered, meshed): (Answered<Programmed>, BackdropMeshed),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(program)) = answered else {
             turn.log(Level::Error, format_args!("the backdrop's program was not made: {answered:?}"));
@@ -216,12 +206,10 @@ impl Receives<Answer<Programmed, BackdropMeshed>> for Backdrop {
 }
 
 impl Receives<Answer<Placed, BackdropPlacing>> for Backdrop {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
     fn handle(
         &mut self,
         (answered, _): (Answered<Placed>, BackdropPlacing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(placement)) = answered else {
             turn.log(Level::Error, format_args!("the backdrop was not placed: {answered:?}"));

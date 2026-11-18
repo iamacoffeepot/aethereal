@@ -3,8 +3,8 @@
 
 use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn};
 use aethereal_data::Bound;
-use aethereal_http::stack::{Binding, ListenSends, Listened, Serving, StackSettings};
-use aethereal_mcp::McpRoutes;
+use aethereal_http::stack::{Binding, Listened, Serving, StackSettings};
+use aethereal_mcp::{Mcp, McpRoutes};
 use aethereal_sessions::Sessions;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Interface, Listening};
@@ -22,7 +22,7 @@ pub struct ContainerStack {
     serving: Serving<Self, ContainerLayers>,
 }
 
-stack!(ContainerStack, ContainerLayers, [Caller]);
+stack!(ContainerStack, ContainerLayers, [Caller], depends(Sessions, Mcp));
 
 impl<H: Host> Bootstrap<H> for ContainerStack {
     const SECTION: &'static str = "container_stack";
@@ -38,15 +38,9 @@ impl<H: Host> Bootstrap<H> for ContainerStack {
 }
 
 impl Receives<Answer<Listening, Binding>> for ContainerStack {
-    type Sends = ListenSends;
-
     /// With no port for the sessions, the owner's port is served without it, and the sessions reach none of the hub's
     /// tools.
-    fn handle(
-        &mut self,
-        listening: (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
             turn.log(

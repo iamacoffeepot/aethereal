@@ -57,10 +57,9 @@ impl Actor for Asker {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for at in 0..3 {
             turn.run(&Where { at }, &Nothing)?;
         }
@@ -68,15 +67,13 @@ impl Actor for Asker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Ran, Nothing>> for Asker {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -169,10 +166,9 @@ impl Actor for Sleeper {
     type Config = Nothing;
     type Key = ();
     type Handles = (Answer<Ran, Nothing>, Answer<Slept, Woke>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
         for (order, millis) in [(2, 30), (1, 10)] {
             let until = turn.now() + Duration::from_millis(millis);
@@ -182,15 +178,13 @@ impl Actor for Sleeper {
         Ok(Self { did: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Ran, Nothing>> for Sleeper {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.did.push(Did::Finished);
 
         Ok(())
@@ -198,9 +192,7 @@ impl Receives<Answer<Ran, Nothing>> for Sleeper {
 }
 
 impl Receives<Answer<Slept, Woke>> for Sleeper {
-    type Sends = ();
-
-    fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let did = match done {
             Answered::Yes(Slept) => Did::Woke { order: woke.order, after_its_time: turn.now() >= woke.until },
             Answered::No(why) => Did::NeverWoke(why),

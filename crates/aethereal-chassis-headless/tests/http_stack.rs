@@ -2,17 +2,16 @@
 //! either way, and its limits, to clients on threads of their own over real loopback TCP.
 
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault,
-    Handles, Held, More, Number, Open, Part, Receives, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender,
-    Top, Turn, Unsent, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Enough, Fault, Handles,
+    Held, More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Top, Turn, Unsent, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, KindId, Plain};
 use aethereal_http::stack::{
-    BodyHandle, BodyPart, BodyRead, Credentials, FromStack, Gather, Gathered, Gathering, Head, Inbound, InboundBody,
-    InboundPart, Inward, Layer, LayerForm, Leaving, Outbound, OutboundBody, OutboundPart, Outward, PartStep, Refused,
-    Request, Response, ResponseBody, ResponseBytes, ResponseLength, SourceEnd, StackSettings, Step, StreamedBody,
+    BodyHandle, BodyPart, BodyRead, Credentials, FromStack, Gathered, Head, Inbound, InboundBody, InboundPart, Inward,
+    Layer, LayerForm, Leaving, Outbound, OutboundBody, OutboundPart, Outward, PartStep, Refused, Request, Response,
+    ResponseBody, ResponseBytes, ResponseLength, SourceEnd, StackSettings, Step, StreamedBody,
 };
 use aethereal_http::{
     BlobBytesTooLow, Captures, Header, Method, ReadLimitTooLow, Route, Router, Routes, Status, Unroutable,
@@ -117,14 +116,13 @@ impl Actor for Echo {
     type Config = EchoSettings;
     type Key = ();
     type Handles = (Request<Seen, ()>, Answer<Gathered, Echoing>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: EchoSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: EchoSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { most_bytes: settings.most_bytes, asked: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -134,14 +132,9 @@ impl Carries<Request<Seen, ()>> for Echo {
 }
 
 impl Handles<Request<Seen, ()>> for Echo {
-    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Echoing>);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        request: Request<Seen, ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<Seen, ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         self.asked += 1;
         let echoing = Echoing { held: turn.hold()?, request: request.attached.request };
         turn.to(request.body.gatherer).ask(&request.body.whole(self.most_bytes), &echoing)?;
@@ -151,12 +144,10 @@ impl Handles<Request<Seen, ()>> for Echo {
 }
 
 impl Receives<Answer<Gathered, Echoing>> for Echo {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (gathered, Echoing { held, request }): (Answered<Gathered>, Echoing),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let response = match gathered {
             Answered::Yes(Gathered::Whole(body)) => {
@@ -193,14 +184,13 @@ impl Actor for Silent {
     type Config = SilentSettings;
     type Key = ();
     type Handles = (Request<(), ()>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: SilentSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: SilentSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -210,10 +200,9 @@ impl Carries<Request<(), ()>> for Silent {
 }
 
 impl Handles<Request<(), ()>> for Silent {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         self.held.push(turn.hold()?);
 
         Ok(())
@@ -262,14 +251,13 @@ impl Actor for Fickle {
     type Config = FickleSettings;
     type Key = ();
     type Handles = (Request<(), ()>, FickleOrder);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: FickleSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: FickleSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { fails: settings.fails })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -279,10 +267,9 @@ impl Carries<Request<(), ()>> for Fickle {
 }
 
 impl Handles<Request<(), ()>> for Fickle {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(&mut self, _: Request<(), ()>, _: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Request<(), ()>, _: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         match self.fails {
             Fails::Faults => Err(Fault::of_parts(KindId::of::<Self>(), Vec::new())),
             Fails::Drops => Ok(()),
@@ -291,10 +278,9 @@ impl Handles<Request<(), ()>> for Fickle {
 }
 
 impl Handles<FickleOrder> for Fickle {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, FickleOrder::Close: FickleOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, FickleOrder::Close: FickleOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -350,14 +336,13 @@ impl Actor for Gate {
     type Config = GateSettings;
     type Key = ();
     type Handles = (Inbound<Seen>, Outbound, GateOrder);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: GateSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: GateSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -371,13 +356,12 @@ impl Carries<Outbound> for Gate {
 }
 
 impl Handles<Inbound<Seen>> for Gate {
-    type Sends = (ToSender<Inward<Caller>>,);
     type From = FromStack;
 
     fn handle(
         &mut self,
         Inbound { head, attached: seen }: Inbound<Seen>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+        turn: &mut Turn<'_, Self, Self::From>,
     ) -> Result<(), Fault> {
         let inward = match &head.credentials {
             Credentials::Bearer { token } if token == "open" => {
@@ -395,10 +379,9 @@ impl Handles<Inbound<Seen>> for Gate {
 }
 
 impl Handles<Outbound> for Gate {
-    type Sends = (ToSender<Outward>,);
     type From = FromStack;
 
-    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let mut response = outbound.response;
         response.headers.retain(|header| header.name != "x-gate");
         response.headers.push(Header::new("x-gate", "passed"));
@@ -408,10 +391,9 @@ impl Handles<Outbound> for Gate {
 }
 
 impl Handles<GateOrder> for Gate {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, order: GateOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: GateOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             GateOrder::Release => {
                 for Waiting { held, seen } in self.held.drain(..) {
@@ -470,14 +452,13 @@ impl Actor for Upper {
     type Config = UpperSettings;
     type Key = ();
     type Handles = (Inbound<Caller>, Outbound, InboundPart);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: UpperSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: UpperSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -491,32 +472,25 @@ impl Carries<Outbound> for Upper {
 }
 
 impl Handles<Inbound<Caller>> for Upper {
-    type Sends = (ToSender<Inward<Caller>>,);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        inbound: Inbound<Caller>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, inbound: Inbound<Caller>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         Ok(turn.reply(&Inward::Pass(inbound.attached))?)
     }
 }
 
 impl Handles<Outbound> for Upper {
-    type Sends = (ToSender<Outward>,);
     type From = FromStack;
 
-    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         Ok(turn.reply(&Outward::Pass(outbound.response))?)
     }
 }
 
 impl Handles<InboundPart> for Upper {
-    type Sends = (ToSender<PartStep>,);
     type From = FromStack;
 
-    fn handle(&mut self, part: InboundPart, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, part: InboundPart, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let upper = turn.read(&part.bytes).to_ascii_uppercase();
         let step = turn.put(upper).map_or(PartStep::Refuse(Refused::TooLarge), PartStep::Pass);
 
@@ -554,14 +528,13 @@ impl Actor for Mirror {
     type Config = MirrorSettings;
     type Key = ();
     type Handles = (Request<Caller, ()>, Answer<Gathered, Mirroring>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: MirrorSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: MirrorSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -571,14 +544,9 @@ impl Carries<Request<Caller, ()>> for Mirror {
 }
 
 impl Handles<Request<Caller, ()>> for Mirror {
-    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Mirroring>);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        request: Request<Caller, ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<Caller, ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         self.asked += 1;
         let mirroring = Mirroring { held: turn.hold()?, caller: request.attached };
         turn.to(request.body.gatherer).ask(&request.body.whole(64), &mirroring)?;
@@ -588,12 +556,10 @@ impl Handles<Request<Caller, ()>> for Mirror {
 }
 
 impl Receives<Answer<Gathered, Mirroring>> for Mirror {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (gathered, Mirroring { held, caller }): (Answered<Gathered>, Mirroring),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let response = match gathered {
             Answered::Yes(Gathered::Whole(body)) => {
@@ -632,14 +598,13 @@ impl Actor for Shelf {
     type Config = ShelfSettings;
     type Key = ();
     type Handles = (Request<Seen, ()>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: ShelfSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ShelfSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -649,14 +614,9 @@ impl Carries<Request<Seen, ()>> for Shelf {
 }
 
 impl Handles<Request<Seen, ()>> for Shelf {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        _: Request<Seen, ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, _: Request<Seen, ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         self.asked += 1;
         let mut response = Response::empty(Status::Ok);
         response.headers.push(Header::new("x-handler", "shelf"));
@@ -702,10 +662,9 @@ impl Actor for Items {
     type Config = ItemsSettings;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: ItemsSettings, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ItemsSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         // A child that is not stood up fails the begin, so the program does not start.
         for number in [1, 2] {
             let Ok(_) = turn.spawn::<Item>(&number, ItemSettings { number }) else {
@@ -716,7 +675,7 @@ impl Actor for Items {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -744,14 +703,13 @@ impl Actor for Item {
     type Config = ItemSettings;
     type Key = u64;
     type Handles = (Request<Seen, Numbered>,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: ItemSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: ItemSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { number: settings.number })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -761,14 +719,9 @@ impl Carries<Request<Seen, Numbered>> for Item {
 }
 
 impl Handles<Request<Seen, Numbered>> for Item {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        request: Request<Seen, Numbered>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<Seen, Numbered>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let mut response = Response::empty(Status::Ok);
         response.headers.push(Header::new("x-item", &self.number.to_string()));
         response.headers.push(Header::new("x-captured", &request.captures.number.to_string()));
@@ -817,12 +770,26 @@ impl Routes for OverlappingRoutes {
     }
 }
 
-stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), []);
-stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), []);
-stack!(FickleStack, "test.http_stack.fickle_stack", "fickle_stack", (Fickle,), []);
-stack!(GateStack, "test.http_stack.gate_stack", "gate_stack", (Count, Gate, Tag, Upper, Mirror), [Caller]);
-stack!(ShelfStack, "test.http_stack.shelf_stack", "shelf_stack", (Count, ShelfRoutes), []);
-stack!(OverlappingStack, "test.http_stack.overlapping_stack", "overlapping_stack", (Count, OverlappingRoutes), []);
+stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), [], depends(Echo));
+stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), [], depends(Silent));
+stack!(FickleStack, "test.http_stack.fickle_stack", "fickle_stack", (Fickle,), [], depends(Fickle));
+stack!(
+    GateStack,
+    "test.http_stack.gate_stack",
+    "gate_stack",
+    (Count, Gate, Tag, Upper, Mirror),
+    [Caller],
+    depends(Gate, Upper, Mirror)
+);
+stack!(ShelfStack, "test.http_stack.shelf_stack", "shelf_stack", (Count, ShelfRoutes), [], depends(Shelf, Item));
+stack!(
+    OverlappingStack,
+    "test.http_stack.overlapping_stack",
+    "overlapping_stack",
+    (Count, OverlappingRoutes),
+    [],
+    depends(Shelf, Item)
+);
 
 /// The engine's settings for a stack of `settings`: a head of its most bytes is read whole.
 fn engine(settings: &StackSettings) -> EngineSettings {
@@ -1542,10 +1509,9 @@ impl Actor for Drain {
     type Config = DrainSettings;
     type Key = ();
     type Handles = (Request<(), ()>, Part<InboundBody>, Answer<BodyRead, Number>, DrainOrder);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: DrainSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: DrainSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             drains: settings.drains,
             bodies: Streams::new(NonZeroU32::MIN),
@@ -1557,7 +1523,7 @@ impl Actor for Drain {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1568,7 +1534,7 @@ impl Carries<Request<(), ()>> for Drain {
 
 impl Drain {
     /// Answers the request it holds with what it has read of its body.
-    fn answer<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    fn answer(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Owing::Answer(held) = mem::replace(&mut self.owing, Owing::Nothing) else {
             return Ok(());
         };
@@ -1582,18 +1548,9 @@ impl Drain {
 }
 
 impl Handles<Request<(), ()>> for Drain {
-    type Sends = (
-        ToSender<Response>,
-        Asks<Streamed<InboundBody>, Open<InboundBody>, Number>,
-        ToAny<Streamed<InboundBody>, More>,
-    );
     type From = FromStack;
 
-    fn handle(
-        &mut self,
-        request: Request<(), ()>,
-        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, request: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         if self.drains == Drains::Never {
             return Ok(turn.reply(&Response::empty(Status::Ok))?);
         }
@@ -1609,10 +1566,9 @@ impl Handles<Request<(), ()>> for Drain {
 }
 
 impl Handles<Part<InboundBody>> for Drain {
-    type Sends = (ToAny<Streamed<InboundBody>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.drains {
             Drains::Slowly => self.bodies.part_held(turn, part),
             Drains::Whole | Drains::Hastily | Drains::Twice | Drains::Never => self.bodies.part(turn, part)?,
@@ -1637,13 +1593,7 @@ impl Handles<Part<InboundBody>> for Drain {
 }
 
 impl Receives<Answer<BodyRead, Number>> for Drain {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (read, number): (Answered<BodyRead>, Number),
-        turn: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (read, number): (Answered<BodyRead>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.bodies.answered(number);
         let Answered::Yes(read) = read else {
             return Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()));
@@ -1658,10 +1608,9 @@ impl Receives<Answer<BodyRead, Number>> for Drain {
 }
 
 impl Handles<DrainOrder> for Drain {
-    type Sends = (ToAny<Streamed<InboundBody>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, DrainOrder::Release: DrainOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, DrainOrder::Release: DrainOrder, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.drains = Drains::Whole;
         let Withheld::Parts { stream, parts } = mem::replace(&mut self.withheld, Withheld::Nothing) else {
             return Ok(());
@@ -1732,16 +1681,15 @@ impl Actor for Serve {
     type Config = ServeSettings;
     type Key = ();
     type Handles = (Request<(), ()>, Plan, Open<OutboundBody>, More, Enough, Ended);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: ServeSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ServeSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let plan = Plan { length: ResponseLength::Unknown, parts: Vec::new(), end: PlanEnd::Whole };
 
         Ok(Self { plan, serving: Serving::new(), making: Making::Idle, ended: Vec::new(), most_credit: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1752,10 +1700,7 @@ impl Carries<Request<(), ()>> for Serve {
 
 impl Serve {
     /// Sends what is left of its plan's parts while the stream has credit, then ends the body as its plan says.
-    fn send_planned<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<(Part<OutboundBody>,), Part<OutboundBody>>, I>,
-    {
+    fn send_planned(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Making::Parts { stream, mut next } = self.making else {
             return Ok(());
         };
@@ -1796,10 +1741,9 @@ impl Serve {
 }
 
 impl Handles<Request<(), ()>> for Serve {
-    type Sends = (ToSender<Response>,);
     type From = FromStack;
 
-    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let source = turn.me().protocol();
         let body = ResponseBody::Streamed(StreamedBody { source, body: 1, length: self.plan.length });
         let headers = vec![Header::new("content-type", "text/plain")];
@@ -1809,10 +1753,9 @@ impl Handles<Request<(), ()>> for Serve {
 }
 
 impl Handles<Plan> for Serve {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, plan: Plan, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, plan: Plan, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.plan = plan;
 
         Ok(())
@@ -1820,10 +1763,9 @@ impl Handles<Plan> for Serve {
 }
 
 impl Handles<Open<OutboundBody>> for Serve {
-    type Sends = (ToSender<SourceEnd>, ToAny<(Part<OutboundBody>,), Part<OutboundBody>>);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (stream, _) = self.serving.open(turn, open)?;
         self.making = Making::Parts { stream, next: 0 };
 
@@ -1832,10 +1774,9 @@ impl Handles<Open<OutboundBody>> for Serve {
 }
 
 impl Handles<More> for Serve {
-    type Sends = (ToAny<(Part<OutboundBody>,), Part<OutboundBody>>,);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if self.serving.more(turn, &more).is_none() {
             return Ok(());
         }
@@ -1845,10 +1786,9 @@ impl Handles<More> for Serve {
 }
 
 impl Handles<Enough> for Serve {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(stopped) = self.serving.stop(turn, &enough) else {
             return Ok(());
         };
@@ -1861,9 +1801,7 @@ impl Handles<Enough> for Serve {
 }
 
 impl Receives<Ended> for Serve {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         drop(self.serving.ended(&ended));
 
         Ok(())
@@ -1890,14 +1828,13 @@ impl Actor for Shout {
     type Config = ShoutSettings;
     type Key = ();
     type Handles = (Inbound<()>, Outbound, OutboundPart);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: ShoutSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: ShoutSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1911,28 +1848,25 @@ impl Carries<Outbound> for Shout {
 }
 
 impl Handles<Inbound<()>> for Shout {
-    type Sends = (ToSender<Inward<()>>,);
     type From = FromStack;
 
-    fn handle(&mut self, _: Inbound<()>, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Inbound<()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         Ok(turn.reply(&Inward::Pass(()))?)
     }
 }
 
 impl Handles<Outbound> for Shout {
-    type Sends = (ToSender<Outward>,);
     type From = FromStack;
 
-    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         Ok(turn.reply(&Outward::Pass(outbound.response))?)
     }
 }
 
 impl Handles<OutboundPart> for Shout {
-    type Sends = (ToSender<PartStep>,);
     type From = FromStack;
 
-    fn handle(&mut self, part: OutboundPart, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+    fn handle(&mut self, part: OutboundPart, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
         let upper = turn.read(&part.bytes).to_ascii_uppercase();
         let step = turn.put(upper).map_or(PartStep::Refuse(Refused::TooLarge), PartStep::Pass);
 
@@ -1940,9 +1874,9 @@ impl Handles<OutboundPart> for Shout {
     }
 }
 
-stack!(ReadStack, "test.http_stack.read_stack", "read_stack", (Upcase, Drain), []);
-stack!(SourceStack, "test.http_stack.source_stack", "source_stack", (Serve,), []);
-stack!(ShoutStack, "test.http_stack.shout_stack", "shout_stack", (Shout, Serve), [()]);
+stack!(ReadStack, "test.http_stack.read_stack", "read_stack", (Upcase, Drain), [], depends(Drain));
+stack!(SourceStack, "test.http_stack.source_stack", "source_stack", (Serve,), [], depends(Serve));
+stack!(ShoutStack, "test.http_stack.shout_stack", "shout_stack", (Shout, Serve), [()], depends(Shout, Serve));
 
 /// A host serving a [`ReadStack`] of `settings`, whose handler reads each body as `drains` says, and the port it
 /// listens on.

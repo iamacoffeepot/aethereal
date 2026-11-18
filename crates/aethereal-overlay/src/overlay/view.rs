@@ -27,7 +27,7 @@
 //!    • session)
 //! ```
 
-use super::{Calling, Overlay};
+use super::Overlay;
 use crate::chart::{ChartShown, FrameChart};
 use crate::chat::{Icon, Mine, Open, Parting, Row as TranscriptRow, Status, Title};
 use crate::colour::{Ink, Palette, Surface};
@@ -41,13 +41,9 @@ use crate::layout::{
 use crate::lines::{LineRows, LinesShown};
 use crate::meters::{self, Meter, MeterDrawn, MeterGraph};
 use crate::widgets::{Grip, Hint, Shape, StatusIcon, TabButton, Tint, runs_of};
-use aethereal_actor::{Asks, Fault, Level, Path, Tells, ToType, Turn};
-use aethereal_link::Link;
-use aethereal_render::Renderer;
-use aethereal_render::stats::{SubscribeFrameStats, SubscribeGpuTimes, UnsubscribeFrameStats, UnsubscribeGpuTimes};
+use aethereal_actor::{Fault, Level, Turn};
 use aethereal_render::text::{Colour, Font, Run};
-use aethereal_sessions::{Chat, engine_words};
-use aethereal_tools::{CallTool, Tools};
+use aethereal_sessions::engine_words;
 use aethereal_ui::markdown::{Images, Inks, MarkdownBlock, Prose};
 use aethereal_ui::prelude::*;
 use aethereal_ui::widgets::{DELAY, Flow, Rich};
@@ -480,17 +476,6 @@ aethereal_ui::view! { Overlay, ui,
     }
 }
 
-/// What the overlay's methods send: the renderer's frame statistics and the GPU's times, subscribed to as it is shown
-/// and let go as it hides, and the tools the console's line calls.
-pub type OverlaySends = aethereal_ui::sends![
-    Tells<Path<Renderer>, SubscribeFrameStats>,
-    Tells<Path<Renderer>, UnsubscribeFrameStats>,
-    Tells<Path<Renderer>, SubscribeGpuTimes>,
-    Tells<Path<Renderer>, UnsubscribeGpuTimes>,
-    Asks<Path<Tools>, CallTool, Calling>,
-    ToType<Link, Chat>,
-];
-
 /// A row of the scrollback as its scroll shows it: one printed, or a blank one above the first while the rows printed
 /// do not fill the view, so the newest stands just above the prompt.
 pub enum Shown<'console> {
@@ -889,7 +874,7 @@ impl Overlay {
 #[aethereal_ui::events]
 impl Overlay {
     /// Opens the tab at `place`, the console's own first.
-    pub(super) fn choose(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, place: u32) -> Result<(), Fault> {
+    pub(super) fn choose(&mut self, turn: &mut Turn<'_, Self>, place: u32) -> Result<(), Fault> {
         let chat = self.chats.choose(place);
 
         self.tell(turn, chat)
@@ -897,21 +882,21 @@ impl Overlay {
 
     /// Opens or closes the subagent's fold the open transcript's row keyed `key` is.
     #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
-    pub(super) fn fold(&mut self, _: &mut Turn<'_, Self, OverlaySends>, key: u64) -> Result<(), Fault> {
+    pub(super) fn fold(&mut self, _: &mut Turn<'_, Self>, key: u64) -> Result<(), Fault> {
         self.chats.fold(key);
 
         Ok(())
     }
 
     /// Lets the ask numbered `ask` go ahead.
-    pub(super) fn allow(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, ask: u64) -> Result<(), Fault> {
+    pub(super) fn allow(&mut self, turn: &mut Turn<'_, Self>, ask: u64) -> Result<(), Fault> {
         let answer = self.chats.answer(ask, true);
 
         self.tell(turn, vec![answer])
     }
 
     /// Refuses the ask numbered `ask`.
-    pub(super) fn deny(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, ask: u64) -> Result<(), Fault> {
+    pub(super) fn deny(&mut self, turn: &mut Turn<'_, Self>, ask: u64) -> Result<(), Fault> {
         let answer = self.chats.answer(ask, false);
 
         self.tell(turn, vec![answer])
@@ -921,7 +906,7 @@ impl Overlay {
     #[allow(clippy::unnecessary_wraps, reason = "an event's method answers a fault, as the library calls it")]
     #[allow(clippy::needless_pass_by_value, reason = "the text an event hands is taken as a `String`, its type")]
     #[allow(clippy::unused_self, reason = "an event's method is called on its screen")]
-    pub(super) fn follow(&mut self, turn: &mut Turn<'_, Self, OverlaySends>, target: String) -> Result<(), Fault> {
+    pub(super) fn follow(&mut self, turn: &mut Turn<'_, Self>, target: String) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("a link was pressed: {target}"));
 
         Ok(())

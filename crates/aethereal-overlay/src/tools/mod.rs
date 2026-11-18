@@ -27,9 +27,8 @@ pub use words::{ChatWord, NewSession, Worded, chat_sheets};
 
 use crate::overlay::Overlay;
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Against, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending,
-    EngineStats, Fault, Figures, Handles, Held, LARGEST, Path, Process, ProtocolRef, Receives, Tells, ToSender, Turn,
-    path,
+    Actor, ActorName, ActorRef, Against, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats,
+    Fault, Figures, Handles, Held, LARGEST, Process, ProtocolRef, Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -139,14 +138,6 @@ enum Order {
     Word(ChatWord),
 }
 
-/// What every turn of the worker may send: an answer to its caller, a mark told to the overlay, and an ask of it.
-type Sends = (
-    ToSender<Called>,
-    Tells<Path<Overlay>, Marked>,
-    Asks<Path<Overlay>, Choice, Answering>,
-    Asks<Path<Overlay>, ChatWord, Answering>,
-);
-
 impl ChildOf for OverlayTools {
     type Parent = Anywhere;
 }
@@ -155,14 +146,13 @@ impl Actor for OverlayTools {
     type Config = OverlayToolsConfig;
     type Key = ();
     type Handles = (Call, Answer<ThemesShown, Answering>, Answer<Worded, Answering>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Overlay,);
 
-    fn begin(_: OverlayToolsConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: OverlayToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -198,10 +188,9 @@ impl Tool for OverlayTools {
 /// held and asked of the overlay, answered once the overlay answers. A call whose input is not its tool's, or a chat's
 /// word a session calls, is refused.
 impl Handles<Call> for OverlayTools {
-    type Sends = Sends;
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let input = turn.read(&call.input);
         let order = match call.tool.as_str() {
             MARK => read(MARK, input).map(Order::Mark),
@@ -246,12 +235,10 @@ impl Handles<Call> for OverlayTools {
 
 /// The overlay chose the theme, and answered the themes and the one in use; or no overlay answered.
 impl Receives<Answer<ThemesShown, Answering>> for OverlayTools {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, answering): (Answered<ThemesShown>, Answering),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let called = match answered {
             Answered::Yes(shown) => Called::output(turn, to_bytes(&shown)?),
@@ -264,12 +251,10 @@ impl Receives<Answer<ThemesShown, Answering>> for OverlayTools {
 
 /// The overlay told the link the chat a word came to, or said why it told nothing; or no overlay answered.
 impl Receives<Answer<Worded, Answering>> for OverlayTools {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, answering): (Answered<Worded>, Answering),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let called = match answered {
             Answered::Yes(Worded::Told) => Called::output(turn, to_bytes(&Done {})?),
@@ -283,7 +268,7 @@ impl Receives<Answer<Worded, Answering>> for OverlayTools {
 
 impl OverlayTools {
     /// Holds the call `turn` handles, to answer once the overlay has, and answers what to keep for the ask.
-    fn hold(&mut self, turn: &mut Turn<'_, Self, Sends>) -> Result<Answering, Fault> {
+    fn hold(&mut self, turn: &mut Turn<'_, Self>) -> Result<Answering, Fault> {
         let answering = Answering { call: self.next };
         self.calls.insert(answering.call, turn.hold()?);
         self.next += 1;
@@ -292,11 +277,11 @@ impl OverlayTools {
     }
 
     /// Answers the call `answering` names with `called`: nothing when it is held no longer.
-    fn answer<S>(
+    fn answer(
         &mut self,
         Answering { call }: Answering,
         called: &Called,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&call) else {
             return Ok(());
@@ -307,7 +292,7 @@ impl OverlayTools {
     }
 
     /// Answers `memory`: the engine's figures as the step began, at most `most` guests and backlogs named.
-    fn memory<S>(memory: &Memory, turn: &mut Turn<'_, Self, S>) -> Result<Called, Fault> {
+    fn memory(memory: &Memory, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         let EngineStats::Read(figures) = turn.engine_stats() else {
             return Ok(Called::Refused(format!("`{MEMORY}` runs where no engine's figures are read")));
         };

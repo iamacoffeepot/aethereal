@@ -1,7 +1,5 @@
 //! Where a tuple lists a kind, for generic code to read a type out of an actor's handler list (ADR-0035).
 
-use super::At;
-
 /// The tuple lists `K` at `I`, its place, which the compiler infers.
 ///
 /// Generic code reads a type parameter out of an actor's handler list with it: the bound `A::Handles: Lists<Inbound<In>,
@@ -43,6 +41,9 @@ use super::At;
 /// A tuple holds up to 64, as [`HandledList`](super::HandledList)'s does, at a cost that grows with the square of its
 /// length.
 pub trait Lists<K, I> {}
+
+/// A place in a tuple, which the compiler infers where a bound finds one.
+pub struct At<const PLACE: usize>;
 
 macro_rules! tuples {
     ($( [$($name:ident $place:literal)*] )*) => {$(

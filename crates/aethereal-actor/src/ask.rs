@@ -2,74 +2,12 @@
 
 #[cfg(feature = "std")]
 use crate::Bytes;
-use crate::declared::{Carries, DeclaredBy, Handled, Handles, Kinds, Last, Listed, Marker, Protocol, RepliesTo};
-use crate::declared::{RepliesWith, ReplyWithin, Role, Sending, Target, Untaken};
-use crate::{ActorRef, Actors, ChildOf, Due, Item, Path, PathTo, ProtocolRef, Receives, ToType, Within, Written};
+use crate::declared::{Carries, DependsOn, Handled, Handles, Lists, Protocol, Role, Untaken};
+use crate::{ActorRef, Actors, ChildOf, Due, Item, Mail, Path, PathTo, ProtocolRef, Receives, Within, Written};
 use aethereal_data::{Decode, DecodeError, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-
-/// A handler may ask an actor that takes the named protocol `P` a request of kind `K`, keeping a context of kind `C`
-/// until it is answered (ADR-0017).
-///
-/// It builds only when `P` answers `K` with one kind, and the actor handles that answer with `C`:
-/// [`Answer<A, C>`](Answer). An asker that does not handle the answer does not build:
-///
-/// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Protocol, Turn};
-/// # use aethereal_data::Plain;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.which_tile")]
-/// # struct WhichTile;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.tile_is")]
-/// # struct TileIs;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.looking")]
-/// # struct Looking;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.glancing")]
-/// # struct Glancing;
-/// #
-/// # struct Tiles;
-/// #
-/// # impl Protocol for Tiles {
-/// #     type Kinds = (WhichTile,);
-/// # }
-/// #
-/// # impl Carries<WhichTile> for Tiles {
-/// #     type Answers = (TileIs,);
-/// # }
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.pointer")]
-/// # struct Pointer;
-/// #
-/// impl Actor for Pointer {
-///     type Config = Pointer;
-///     type Key = ();
-///     type Handles = ();
-///     type BeginSends = (Asks<Tiles, WhichTile, Looking>,);
-///     type EndSends = ();
-///
-///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-///         Ok(pointer)
-///     }
-///
-///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-///         Ok(())
-///     }
-/// }
-/// ```
-pub struct Asks<P, K, C>(PhantomData<Of<P, K, C>>);
-
-/// What an [`Asks`] is of: the protocol, the kind asked, and the context kept.
-type Of<P, K, C> = fn() -> (P, K, C);
 
 /// What an asker handles: what became of a request it asked whose answer is of kind `A`, with the context of kind `C`
 /// it kept (ADR-0017).
@@ -78,7 +16,7 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// handles an answer kind with two does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Asks, Beginning, Carries, Declared, Ending, Fault, Protocol, Receives, Turn};
+/// # use aethereal_actor::{Actor, Answer, Answered, Beginning, Carries, Declared, Ending, Fault, Protocol, Receives, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -111,34 +49,33 @@ type Of<P, K, C> = fn() -> (P, K, C);
 /// # #[kind(name = "aether.example.pointer")]
 /// # struct Pointer;
 /// #
+/// # impl aethereal_actor::ChildOf for Pointer {
+/// #     type Parent = aethereal_actor::Top;
+/// # }
+/// #
 /// impl Actor for Pointer {
 ///     type Config = Pointer;
 ///     type Key = ();
 ///     type Handles = (Answer<TileIs, Looking>, Answer<TileIs, Glancing>);
-///     type BeginSends = ();
-///     type EndSends = ();
+///     type Depends = ();
 ///
-///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         Ok(pointer)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
 ///
 /// impl Receives<Answer<TileIs, Looking>> for Pointer {
-///     type Sends = ();
-///
-///     fn handle(&mut self, _: (Answered<TileIs>, Looking), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: (Answered<TileIs>, Looking), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
 ///
 /// impl Receives<Answer<TileIs, Glancing>> for Pointer {
-///     type Sends = ();
-///
-///     fn handle(&mut self, _: (Answered<TileIs>, Glancing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: (Answered<TileIs>, Glancing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -207,8 +144,8 @@ pub struct Asking {
 /// A type asked at a typed path says what it answers each kind it can be asked with [`Carries`], beside its handler:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
-/// # use aethereal_actor::{ToSender, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
+/// # use aethereal_actor::{Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -242,14 +179,13 @@ pub struct Asking {
 /// #     type Config = Greeter;
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -258,24 +194,21 @@ pub struct Asking {
 /// #     type Config = Visitor;
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
-/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
-/// #     type EndSends = ();
+/// #     type Depends = (Greeter,);
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// #
 /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -285,10 +218,9 @@ pub struct Asking {
 /// }
 ///
 /// impl Handles<Hello> for Greeter {
-///     type Sends = (ToSender<Hi>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
 ///     }
 /// }
@@ -297,8 +229,8 @@ pub struct Asking {
 /// A type that does not say what it answers the kind is not asked it at a typed path:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
-/// # use aethereal_actor::{ToSender, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
+/// # use aethereal_actor::{Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -332,14 +264,13 @@ pub struct Asking {
 /// #     type Config = Greeter;
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -348,24 +279,21 @@ pub struct Asking {
 /// #     type Config = Visitor;
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
-/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
-/// #     type EndSends = ();
+/// #     type Depends = (Greeter,);
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
 /// #
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// #
 /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -373,111 +301,20 @@ pub struct Asking {
 /// // No `Carries<Hello>` for `Greeter`.
 ///
 /// impl Handles<Hello> for Greeter {
-///     type Sends = (ToSender<Hi>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
 ///     }
 /// }
 /// ```
 ///
-/// Nor is one whose handler replies with a kind it does not say it answers with:
-///
-/// ```compile_fail
-/// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
-/// # use aethereal_actor::{ToSender, Top, Turn, path};
-/// # use aethereal_data::Plain;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.hello")]
-/// # struct Hello;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.hi")]
-/// # struct Hi;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.bye")]
-/// # struct Bye;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.waiting")]
-/// # struct Waiting;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.greeter")]
-/// # struct Greeter;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.visitor")]
-/// # struct Visitor;
-/// #
-/// # impl ChildOf for Greeter {
-/// #     type Parent = Top;
-/// # }
-/// #
-/// # impl ChildOf for Visitor {
-/// #     type Parent = Top;
-/// # }
-/// #
-/// # impl Actor for Greeter {
-/// #     type Config = Greeter;
-/// #     type Key = ();
-/// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
-/// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-/// #         Ok(greeter)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Actor for Visitor {
-/// #     type Config = Visitor;
-/// #     type Key = ();
-/// #     type Handles = (Answer<Hi, Waiting>,);
-/// #     type BeginSends = (Asks<Path<Greeter>, Hello, Waiting>,);
-/// #     type EndSends = ();
-/// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-/// #         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
-/// #
-/// #         Ok(visitor)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// impl Carries<Hello> for Greeter {
-///     type Answers = (Hi,);
-/// }
-///
-/// impl Handles<Hello> for Greeter {
-///     type Sends = (ToSender<Bye>,);
-///     type From = Anyone;
-///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Bye)?)
-///     }
-/// }
-/// ```
-///
 /// An actor is asked through a reference to it by the same rule as at its typed path: its type says what it answers
-/// with [`Carries`], and the turn's sends list `Asks<ActorRef<L>, K, C>`:
+/// with [`Carries`], and the asker handles that answer with its context:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles};
-/// # use aethereal_actor::{Receives, ToSender, Top, Turn};
+/// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
+/// # use aethereal_actor::{Receives, Top, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -508,14 +345,13 @@ pub struct Asking {
 /// #     type Config = Greeter;
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -525,18 +361,15 @@ pub struct Asking {
 /// # }
 /// #
 /// # impl Handles<Hello> for Greeter {
-/// #     type Sends = (ToSender<Hi>,);
 /// #     type From = Anyone;
 /// #
-/// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(turn.reply(&Hi)?)
 /// #     }
 /// # }
 /// #
 /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -545,10 +378,9 @@ pub struct Asking {
 ///     type Config = Visitor;
 ///     type Key = ();
 ///     type Handles = (Answer<Hi, Waiting>,);
-///     type BeginSends = (Asks<ActorRef<Greeter>, Hello, Waiting>,);
-///     type EndSends = ();
+///     type Depends = (Greeter,);
 ///
-///     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+///     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         let Ok(greeter) = turn.spawn::<Greeter>(&(), Greeter) else {
 ///             return Ok(visitor);
 ///         };
@@ -557,7 +389,7 @@ pub struct Asking {
 ///         Ok(visitor)
 ///     }
 ///
-///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
 ///     }
 /// }
@@ -566,8 +398,8 @@ pub struct Asking {
 /// A reference to a type that does not say what it answers the kind is not asked it:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles};
-/// # use aethereal_actor::{Receives, ToSender, Top, Turn};
+/// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles};
+/// # use aethereal_actor::{Receives, Top, Turn};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -598,14 +430,13 @@ pub struct Asking {
 /// #     type Config = Greeter;
 /// #     type Key = ();
 /// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(greeter)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -614,10 +445,9 @@ pub struct Asking {
 /// #     type Config = Visitor;
 /// #     type Key = ();
 /// #     type Handles = (Answer<Hi, Waiting>,);
-/// #     type BeginSends = (Asks<ActorRef<Greeter>, Hello, Waiting>,);
-/// #     type EndSends = ();
+/// #     type Depends = (Greeter,);
 /// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let Ok(greeter) = turn.spawn::<Greeter>(&(), Greeter) else {
 /// #             return Ok(visitor);
 /// #         };
@@ -626,15 +456,13 @@ pub struct Asking {
 /// #         Ok(visitor)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
 /// #
 /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -642,112 +470,74 @@ pub struct Asking {
 /// // No `Carries<Hello>` for `Greeter`.
 ///
 /// impl Handles<Hello> for Greeter {
-///     type Sends = (ToSender<Hi>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(turn.reply(&Hi)?)
 ///     }
 /// }
 /// ```
 ///
-/// Nor is one whose handler replies with a kind it does not say it answers with:
+/// An asker that does not handle the answer, with the context it keeps, does not build, whether it asks through a
+/// reference to a protocol, at a typed path, or through a reference to a type:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles};
-/// # use aethereal_actor::{Receives, ToSender, Top, Turn};
-/// # use aethereal_data::Plain;
+/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Protocol, ProtocolRef, Top, Turn};
+/// # use aethereal_data::{EncodeError, Plain};
 /// #
 /// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.hello")]
-/// # struct Hello;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.hi")]
-/// # struct Hi;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.bye")]
-/// # struct Bye;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.waiting")]
-/// # struct Waiting;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.greeter")]
-/// # struct Greeter;
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.visitor")]
-/// # struct Visitor;
+/// # #[kind(name = "aether.example.which_tile")]
+/// # struct WhichTile;
 /// #
-/// # impl ChildOf for Greeter {
-/// #     type Parent = Visitor;
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
+/// # struct TileIs;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.looking")]
+/// # struct Looking;
+/// #
+/// # struct Tiles;
+/// #
+/// # impl Protocol for Tiles {
+/// #     type Kinds = (WhichTile,);
 /// # }
 /// #
-/// # impl ChildOf for Visitor {
+/// # impl Carries<WhichTile> for Tiles {
+/// #     type Answers = (TileIs,);
+/// # }
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.pointer")]
+/// # struct Pointer;
+/// #
+/// # impl ChildOf for Pointer {
 /// #     type Parent = Top;
 /// # }
 /// #
-/// # impl Actor for Greeter {
-/// #     type Config = Greeter;
-/// #     type Key = ();
-/// #     type Handles = (Hello,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
-/// #
-/// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-/// #         Ok(greeter)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Actor for Visitor {
-/// #     type Config = Visitor;
-/// #     type Key = ();
-/// #     type Handles = (Answer<Hi, Waiting>,);
-/// #     type BeginSends = (Asks<ActorRef<Greeter>, Hello, Waiting>,);
-/// #     type EndSends = ();
-/// #
-/// #     fn begin(visitor: Visitor, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-/// #         let Ok(greeter) = turn.spawn::<Greeter>(&(), Greeter) else {
-/// #             return Ok(visitor);
-/// #         };
-/// #         turn.to(greeter).ask(&Hello, &Waiting)?;
-/// #
-/// #         Ok(visitor)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-/// #     type Sends = ();
-/// #
-/// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// impl Carries<Hello> for Greeter {
-///     type Answers = (Hi,);
-/// }
+/// /// Handles no answer.
+/// impl Actor for Pointer {
+///     type Config = Pointer;
+///     type Key = ();
+///     type Handles = ();
+///     type Depends = ();
 ///
-/// impl Handles<Hello> for Greeter {
-///     type Sends = (ToSender<Bye>,);
-///     type From = Anyone;
+///     fn begin(pointer: Pointer, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         Ok(pointer)
+///     }
 ///
-///     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Bye)?)
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
 ///     }
 /// }
+///
+/// fn look(turn: &mut Turn<'_, Pointer>, tiles: ProtocolRef<Tiles>) -> Result<(), EncodeError> {
+///     turn.to(tiles).ask(&WhichTile, &Looking)?;
+///
+///     Ok(())
+/// }
 /// ```
-pub trait Askable<K, C> {
-    /// What a turn's sends list for it: [`Asks<P, K, C>`] for a [`ProtocolRef<P>`], `Asks<Path<L>, K, C>` for a
-    /// [`Path<L>`], and `Asks<ActorRef<L>, K, C>` for an [`ActorRef<L>`].
-    type Marker;
-
+pub trait Askable<Me, K, C, I> {
     /// The one kind the request is answered with.
     type Answer: Kind;
 }
@@ -782,62 +572,37 @@ where
     A: Kind + Decode<Actors> + 'static,
     C: Kind + Decode<Within> + 'static,
     T: Receives<Answer<A, C>>,
-    <L as Handles<K>>::Sends: RepliesWith<A>,
 {
 }
 
-impl<P: Protocol + Carries<K, Answers = (A,)>, K: Kind, A: Kind, C> Askable<K, C> for ProtocolRef<P> {
-    type Marker = Asks<P, K, C>;
-    type Answer = A;
-}
-
-impl<L: ChildOf + PathTo + AnswersByType<K>, K: Kind + Handled, C> Askable<K, C> for Path<L> {
-    type Marker = Asks<Self, K, C>;
-    type Answer = <L as AnswersByType<K>>::Answer;
-}
-
-/// A reference proves its actor's type, so it is asked as a path to that type is (ADR-0022).
-impl<L: AnswersByType<K>, K: Kind + Handled, C> Askable<K, C> for ActorRef<L> {
-    type Marker = Asks<Self, K, C>;
-    type Answer = <L as AnswersByType<K>>::Answer;
-}
-
-impl<P: Listed, K: Kind, C> Marker for Asks<P, K, C> {
-    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Handling(<P::Kinds as Kinds>::KINDS));
-}
-
-impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled, C> Marker for Asks<Path<L>, K, C> {
-    const SENDING: Sending = Sending::new(KindId::of::<K>(), Target::Path(Last::<L>::SEGMENT));
-}
-
-/// An ask through a reference goes where a send through it does, to the actor of its type, which the reference proved
-/// when it was made: no place to find, and none a spawn checks (ADR-0016, ADR-0022).
-impl<L: Handles<K>, K: Kind + Handled, C> Marker for Asks<ActorRef<L>, K, C> {
-    const SENDING: Sending = <ToType<L, K> as Marker>::SENDING;
-}
-
-/// An asker handles the one kind its request is answered with, with its context.
-impl<T, P, K, A, C> DeclaredBy<T> for Asks<P, K, C>
+/// A protocol answers a request of one of its kinds with one kind, which the asker handles with its context.
+impl<Me, P, K, A, C, I> Askable<Me, K, C, I> for ProtocolRef<P>
 where
     P: Protocol + Carries<K, Answers = (A,)>,
+    P::Kinds: Lists<K, I>,
     K: Kind,
     A: Kind + Decode<Actors> + 'static,
     C: Kind + Decode<Within> + 'static,
-    T: Receives<Answer<A, C>>,
+    Me: Receives<Answer<A, C>>,
 {
+    type Answer = A;
 }
 
-/// An asker at a typed path is checked as [`AskedByType`] says.
-impl<T, L: ChildOf + PathTo + AskedByType<T, K, C>, K: Kind + Handled, C> DeclaredBy<T> for Asks<Path<L>, K, C> {}
+/// A type at a typed path is asked as through a reference to it, at a path beneath a root of a type the asker depends
+/// on (ADR-0059).
+impl<Me, L, K, C, I> Askable<Me, K, C, I> for Path<L>
+where
+    Me: DependsOn<L, I>,
+    L: ChildOf + PathTo + AskedByType<Me, K, C>,
+    K: Kind + Handled,
+{
+    type Answer = <L as AnswersByType<K>>::Answer;
+}
 
-/// An asker through a reference is checked as one at a typed path is.
-impl<T, L: AskedByType<T, K, C>, K: Kind + Handled, C> DeclaredBy<T> for Asks<ActorRef<L>, K, C> {}
-
-impl<T, P, K, C> RepliesTo<T> for Asks<P, K, C> {}
-
-impl<Answers, P, K, C> ReplyWithin<Answers, ()> for Asks<P, K, C> {}
-
-impl<A, P, K, C> RepliesWith<A> for Asks<P, K, C> {}
+/// A reference to a type is proven to reach it, so it is asked as the type says it answers.
+impl<Me, L: AskedByType<Me, K, C>, K: Kind + Handled, C> Askable<Me, K, C, ()> for ActorRef<L> {
+    type Answer = <L as AnswersByType<K>>::Answer;
+}
 
 impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Handled for Answer<A, C> {
     const ROLE: Role = Role::Answer(KindId::of::<A>());
@@ -849,7 +614,7 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
     /// (ADR-0017).
     fn take(item: Item<'_>) -> Result<(Answered<A>, C), Untaken> {
         let (answered, mail, asking) = match item {
-            Item::Answer { mail, asking } => (answered(mail.contents()), mail, asking),
+            Item::Answer { mail, asking } => (answered(&mail), mail, asking),
             Item::Unanswered { mail, asking } => (unanswered(mail.contents()), mail, asking),
             Item::Mail(_) | Item::Ended(_) => unreachable!("only what became of a request is handed to its handler"),
         };
@@ -859,9 +624,17 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Han
     }
 }
 
-/// What became of a request whose answer read as `read`: the answer, or none when it did not read (ADR-0017).
-fn answered<A>(read: Result<A, DecodeError>) -> Answered<A> {
-    read.map_or(Answered::No(Unanswered::Unreadable), Answered::Yes)
+/// What became of a request answered with `mail`: the answer, or none when it is not of the kind asked or did not
+/// read (ADR-0017).
+fn answered<A: Kind + Decode<Actors> + 'static>(mail: &Mail<'_>) -> Answered<A> {
+    // A reply of another kind than the one asked is read as unreadable, as an answer that does not decode is: its
+    // handler replied what its type does not say it answers with, which no build checks until a request returns its
+    // answer (ADR-0059).
+    if mail.kind() != KindId::of::<A>() {
+        return Answered::No(Unanswered::Unreadable);
+    }
+
+    mail.contents().map_or(Answered::No(Unanswered::Unreadable), Answered::Yes)
 }
 
 /// What became of a request the engine says was not answered, as `read` says why: why, or that what it said did not

@@ -13,7 +13,7 @@ use crate::stats::{
     self, Alive, DescribeGpu, FrameBudget, FrameDrawing, FrameDrawn, FrameStats, GpuDescribed, GpuMemory, GpuTimes,
     SubscribeFrameStats, SubscribeGpuTimes, Tally, UnsubscribeFrameStats, UnsubscribeGpuTimes,
 };
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, ProtocolRef, Subscribers, ToAny, ToSender, Turn};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, ProtocolRef, Subscribers, Turn};
 use aethereal_data::Bound;
 use std::mem;
 
@@ -30,7 +30,7 @@ pub(super) enum Watch {
 impl Watch {
     /// Adds `subscriber`, watched through `turn`, once however often it asks. The first begins the count of bytes
     /// written from nothing.
-    fn subscribe<S>(&mut self, turn: &mut Turn<'_, Renderer, S>, subscriber: ProtocolRef<(FrameStats,)>) {
+    fn subscribe(&mut self, turn: &mut Turn<'_, Renderer>, subscriber: ProtocolRef<(FrameStats,)>) {
         let unwatched = matches!(self, Self::Unwatched);
         if unwatched {
             *self = Self::Watched { subscribers: Subscribers::new(), uploaded_bytes: 0 };
@@ -169,10 +169,9 @@ impl Last {
 /// Adds the sender, which must handle [`FrameStats`], to those sent each frame's statistics: from the next frame
 /// drawn, the renderer counts what it draws and writes for them.
 impl Handles<SubscribeFrameStats> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: SubscribeFrameStats, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: SubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(subscriber) = turn.cast::<(FrameStats,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle `FrameStats` asked to be sent them");
@@ -186,10 +185,9 @@ impl Handles<SubscribeFrameStats> for Renderer {
 
 /// Removes the sender from those sent each frame's statistics: once none is left, nothing is counted.
 impl Handles<UnsubscribeFrameStats> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: UnsubscribeFrameStats, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: UnsubscribeFrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         self.watch.remove(|subscribers| subscribers.unsubscribe(sender));
 
@@ -200,10 +198,9 @@ impl Handles<UnsubscribeFrameStats> for Renderer {
 /// Adds the sender, which must handle [`GpuTimes`], to those sent each frame's pass times, from the next frame drawn;
 /// on a device without timestamps it is told so, and not added.
 impl Handles<SubscribeGpuTimes> for Renderer {
-    type Sends = (ToAny<(GpuTimes,), GpuTimes>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: SubscribeGpuTimes, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: SubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(subscriber) = turn.cast::<(GpuTimes,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle `GpuTimes` asked to be sent them");
@@ -225,10 +222,9 @@ impl Handles<SubscribeGpuTimes> for Renderer {
 ///
 /// [`TimeFrame`]: crate::timing::TimeFrame
 impl Handles<UnsubscribeGpuTimes> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: UnsubscribeGpuTimes, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: UnsubscribeGpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         self.timed.unsubscribe(sender);
 
@@ -238,10 +234,9 @@ impl Handles<UnsubscribeGpuTimes> for Renderer {
 
 /// Answers the adapter the renderer draws on.
 impl Handles<DescribeGpu> for Renderer {
-    type Sends = (ToSender<GpuDescribed>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: DescribeGpu, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: DescribeGpu, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let described = GpuDescribed::of(&turn.open(&mut self.gpu)?.device().adapter_info());
         turn.reply(&described)?;
 

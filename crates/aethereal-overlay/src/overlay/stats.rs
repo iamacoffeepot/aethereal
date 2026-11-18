@@ -11,9 +11,8 @@ use crate::console::Logged;
 use crate::gpu::{GpuFigures, GpuTiming};
 use crate::layout::Scale;
 use crate::meters::{EngineMemory, MOST_METER_COLUMNS, Meter};
-use aethereal_actor::{Anyone, Fault, Handles, Level, On, Receives, Tick, ToType, Turn};
+use aethereal_actor::{Anyone, Fault, Handles, Level, On, Receives, Tick, Turn};
 use aethereal_data::Plain;
-use aethereal_link::{Link, Listen};
 use aethereal_render::stats::{FrameDrawing, FrameStats, GpuTimes};
 use aethereal_ui::{ItemKey, KeyPath, Screen, Viewport};
 use aethereal_window::Event;
@@ -51,10 +50,9 @@ impl Columns {
 /// A resize lays the overlay's screen out again at the window's new size; the overlay hears nothing else of its window
 /// raw.
 impl Handles<Event> for Overlay {
-    type Sends = aethereal_ui::Sends;
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -82,7 +80,7 @@ impl Overlay {
 
     /// Reads what the engine logged since it was last read: each entry but a debug line printed into the
     /// scrollback, and while the console is closed each warning and error counted for the band.
-    fn read_logs<S>(&mut self, turn: &Turn<'_, Self, S>) {
+    fn read_logs(&mut self, turn: &Turn<'_, Self>) {
         let recent = turn.recent(self.logs_since);
         let (next, left) = (recent.next, recent.left);
         let logged: Vec<Logged> = recent
@@ -116,9 +114,7 @@ impl Overlay {
 /// typing into it; but not while a selection stands in the scrollback or a transcript, or is being dragged out, so the
 /// copy chord reaches what has the focus. Heard only while the overlay is shown.
 impl Receives<On<Tick>> for Overlay {
-    type Sends = (ToType<Link, Listen>,);
-
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.listen(turn)?;
         self.now_nanos = tick.elapsed_nanos;
         self.frames.tick(&tick);
@@ -168,10 +164,9 @@ impl Receives<On<Tick>> for Overlay {
 /// in the chart or leaves it out; the values of a frame drawn for the lines' rows; and its GPU memory for the GPU
 /// meter. Heard only while the overlay is shown.
 impl Handles<FrameStats> for Overlay {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, stats: FrameStats, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.budget = stats.budget;
         self.frames.framed(&stats);
         if let FrameDrawing::Drawn(drawn) = stats.drawn {
@@ -186,10 +181,9 @@ impl Handles<FrameStats> for Overlay {
 /// The GPU's time over a frame's passes, kept for its graph; or that the device has none, which the graph's place
 /// says. Heard only while the overlay is shown.
 impl Handles<GpuTimes> for Overlay {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, told: GpuTimes, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, told: GpuTimes, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.gpu.heard(told);
 
         Ok(())

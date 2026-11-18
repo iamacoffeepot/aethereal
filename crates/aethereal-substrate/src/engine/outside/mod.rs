@@ -5,8 +5,8 @@ use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
     Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, JobId, Mail,
-    MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Role, Runs, Seated, StateSchema, Tie, Tied, Top,
-    Turning, Unanswered, Upgrade, Upgraded, Why, Written,
+    MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Runs, Seated, StateSchema, Tie, Tied, Top, Turning,
+    Unanswered, Upgrade, Upgraded, Why, Written,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -28,14 +28,13 @@ impl Actor for OutsideSeat {
     type Config = Self;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(seat: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(seat: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(seat)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -134,7 +133,7 @@ impl Runs for Taking {
                     self.take(mail, Reached::Told);
                     return Ok(());
                 };
-                let (mut hosted, _) = turning.hosted(self.declared(), Role::Kind(mail.kind()));
+                let (mut hosted, _) = turning.hosted(self.declared());
                 // What it is answered with is the asker's to say, and read as it is answered: the debt's own kind is
                 // read only for a turn that answers, and the outside answers between steps.
                 hosted.hold(KindId::of::<Unanswered>())?;

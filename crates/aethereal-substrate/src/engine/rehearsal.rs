@@ -1,7 +1,7 @@
 //! An engine for a host to time steps on, to measure what splitting one among workers costs (ADR-0011).
 
 use super::Engine;
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToType, Top, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
 use aethereal_data::Plain;
 use std::num::NonZeroUsize;
 
@@ -23,25 +23,23 @@ impl Actor for Echo {
     type Config = Again;
     type Key = u64;
     type Handles = (Again,);
-    type BeginSends = (ToType<Self, Again>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Again, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Again, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&Again)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Again> for Echo {
-    type Sends = (ToType<Self, Again>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Again, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.me()).send(&Again)?;
 
         Ok(())

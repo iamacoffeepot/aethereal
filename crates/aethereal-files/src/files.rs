@@ -5,8 +5,7 @@ use crate::save::Save;
 use crate::scan::Scan;
 use crate::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Receives, ToSender,
-    Top, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Receives, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -89,23 +88,21 @@ impl Actor for Files {
         ListFiles,
         Answer<FilesListed, Scanning>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: FilesConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: FilesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { waiting: BTreeMap::new(), writing: BTreeMap::new(), listing: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<ReadFile> for Files {
-    type Sends = (ToSender<FileRead>,);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadFile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadFile, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         let number = self.number();
         turn.run(&Load::new(read.namespace, read.path), &Reading { number })?;
@@ -116,10 +113,9 @@ impl Handles<ReadFile> for Files {
 }
 
 impl Handles<WriteFile> for Files {
-    type Sends = (ToSender<FileWritten>,);
     type From = Anyone;
 
-    fn handle(&mut self, write: WriteFile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, write: WriteFile, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if !write.namespace.is_written() {
             turn.reply(&FileWritten::ReadOnly)?;
             return Ok(());
@@ -134,12 +130,10 @@ impl Handles<WriteFile> for Files {
 }
 
 impl Receives<Answer<FileWritten, Saving>> for Files {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, saving): (Answered<FileWritten>, Saving),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.writing.remove(&saving.number) else {
             return Ok(());
@@ -155,10 +149,9 @@ impl Receives<Answer<FileWritten, Saving>> for Files {
 }
 
 impl Handles<ListFiles> for Files {
-    type Sends = (ToSender<FilesListed>,);
     type From = Anyone;
 
-    fn handle(&mut self, list: ListFiles, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, list: ListFiles, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if !list.namespace.is_listed() {
             turn.reply(&FilesListed::NotListed)?;
             return Ok(());
@@ -173,12 +166,10 @@ impl Handles<ListFiles> for Files {
 }
 
 impl Receives<Answer<FilesListed, Scanning>> for Files {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, scanning): (Answered<FilesListed>, Scanning),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.listing.remove(&scanning.number) else {
             return Ok(());
@@ -205,12 +196,10 @@ impl Files {
 }
 
 impl Receives<Answer<FileRead, Reading>> for Files {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, reading): (Answered<FileRead>, Reading),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.waiting.remove(&reading.number) else {
             return Ok(());

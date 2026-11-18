@@ -4,7 +4,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, Top, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -46,28 +46,26 @@ impl Actor for Pinger {
     type Config = Volley;
     type Key = u64;
     type Handles = (Pong,);
-    type BeginSends = (ToAny<(Ping,), Ping>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
             turn.to(echo).send(&Ping { n: volley.pings })?;
         }
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Pong> for Pinger {
-    type Sends = (ToSender<Ping>,);
     type From = Anyone;
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if pong.n > 0 {
             turn.reply(&Ping { n: pong.n - 1 })?;
         }

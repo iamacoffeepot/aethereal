@@ -1,36 +1,33 @@
-//! What an actor type declares: what it handles, and what each of its handlers may send (ADR-0013).
+//! What an actor type declares: what it handles, and what it reaches by typed path (ADR-0013, ADR-0059).
 //!
 //! An author writes the declaration as types: one [`Handles`] impl for each
-//! kind an actor handles, whose `Sends` lists what its handler may send, and
-//! the handled kinds as a tuple on the [`Actor`](crate::Actor). The typed turn
-//! a handler is given offers only those sends, so the declaration is the
-//! handler's own signature, and a watch only to an actor whose type handles
-//! endings. The engine reads the same declaration as the plain data here, made
-//! from those types when the program is built.
+//! kind an actor handles, the handled kinds as a tuple on the
+//! [`Actor`](crate::Actor), and the types it reaches by typed path as its
+//! `Depends`. Each send is checked at its call against what it is sent
+//! through, and a watch builds only for an actor whose type handles endings.
+//! The engine reads the same declaration as the plain data here, made from
+//! those types when the program is built.
 
+mod depends;
 mod handles;
 mod lists;
 mod protocols;
-mod replies;
-mod sends;
 mod state;
 #[cfg(test)]
 mod tests;
 
+pub use depends::{Depends, DependsOn, Last, RootIs, RootsHold};
 pub use handles::{Handled, HandledList, Handles, Others, Reached, Received, Receives, Untaken};
-pub use lists::Lists;
-pub use protocols::{AnsweredBy, CarriedBy, Carries, Conforms, Covers, Listed, Protocol};
-pub use replies::{DeclaredBy, HandledBy, RepliesTo, RepliesWith, RepliesWithin, ReplyWithin};
-pub use sends::Last;
-pub use sends::{Allows, At, Kinds, Marker, Sends, Tells, ToAny, ToSender, ToType};
+pub use lists::{At, Lists};
+pub use protocols::{CarriedBy, Carries, Conforms, Covers, HandledBy, Kinds, Listed, Protocol};
 pub use state::StateSchema;
 
 use crate::{ChildOf, Placement, Spawner, TypeSegment};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
-/// What an actor type declares, as the engine reads it: its name, its state's schema, what each of its turns may
-/// send, and what it handles (ADR-0013, ADR-0054).
+/// What an actor type declares, as the engine reads it: its name, its state's schema, what it reaches by typed path,
+/// and what it handles (ADR-0013, ADR-0054, ADR-0059).
 #[derive(Debug)]
 pub struct Declared {
     name: KindName,
@@ -43,12 +40,10 @@ pub struct Declared {
     keyed: Keyed,
     /// Who may spawn an actor of it, as its parent says (ADR-0022).
     spawner: Spawner,
-    /// What its `begin` may send.
-    begins: &'static [Sending],
-    /// Each thing it handles, and what its handler may send.
+    /// The last segment of the typed path to each type it depends on: what it reaches by typed path (ADR-0059).
+    depends: &'static [&'static TypeSegment],
+    /// Each thing it handles.
     handlers: &'static [Handler],
-    /// What its closing turn may send.
-    ends: &'static [Sending],
     /// Which kinds a reference to it may be cast to.
     takes: Takes,
 }
@@ -65,9 +60,8 @@ enum Takes {
 
 impl Declared {
     /// The declaration of the type named `name`, of id `id`, whose state is of the schema `state`, keyed as `keyed`,
-    /// that `spawner` may spawn, whose `begin` may send `begins`, which handles `handlers`, and whose closing turn may
-    /// send `ends`.
-    #[allow(clippy::too_many_arguments, reason = "what a type declares, each its own")]
+    /// that `spawner` may spawn, which depends on the types whose typed paths end in `depends`, and handles
+    /// `handlers`.
     #[must_use]
     pub const fn new(
         name: KindName,
@@ -75,20 +69,19 @@ impl Declared {
         state: StateSchema,
         keyed: Keyed,
         spawner: Spawner,
-        begins: &'static [Sending],
+        depends: &'static [&'static TypeSegment],
         handlers: &'static [Handler],
-        ends: &'static [Sending],
     ) -> Self {
-        Self { name, id, state, keyed, spawner, begins, handlers, ends, takes: Takes::Listed }
+        Self { name, id, state, keyed, spawner, depends, handlers, takes: Takes::Listed }
     }
 
     /// The declaration of the root type named `name`, of id `id`, whose state is of the schema `state`, that handles
-    /// and sends nothing, and that every kind may be cast to: for the engine's outside (ADR-0036).
+    /// nothing and depends on nothing, and that every kind may be cast to: for the engine's outside (ADR-0036).
     #[must_use]
     pub const fn taking_every_kind(name: KindName, id: KindId, state: StateSchema) -> Self {
         let (keyed, spawner, takes) = (Keyed::Singleton, Spawner::Nobody, Takes::Every);
 
-        Self { name, id, state, keyed, spawner, begins: &[], handlers: &[], ends: &[], takes }
+        Self { name, id, state, keyed, spawner, depends: &[], handlers: &[], takes }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -139,22 +132,25 @@ impl Declared {
         }
     }
 
-    /// What its `begin` may send.
+    /// The last segment of the typed path to each type it depends on: what it reaches by typed path (ADR-0059).
     #[must_use]
-    pub const fn begins(&self) -> &'static [Sending] {
-        self.begins
+    pub const fn depends(&self) -> &'static [&'static TypeSegment] {
+        self.depends
     }
 
-    /// Each thing it handles, and what its handler may send.
+    /// Whether the actor at `path`, whose root is the first of its segments, stands beneath a root of a type it
+    /// depends on: what a typed path it reaches must (ADR-0059).
+    #[must_use]
+    pub fn depends_beneath(&self, path: &ActorPath) -> bool {
+        let root = path.root();
+
+        self.depends.iter().any(|segment| segment.root().name == root.kind())
+    }
+
+    /// Each thing it handles.
     #[must_use]
     pub const fn handlers(&self) -> &'static [Handler] {
         self.handlers
-    }
-
-    /// What its closing turn may send.
-    #[must_use]
-    pub const fn ends(&self) -> &'static [Sending] {
-        self.ends
     }
 
     /// Whether the type lists `kind` among the kinds it handles, or takes every kind. A fallback does not count.
@@ -203,30 +199,17 @@ impl Declared {
         })
     }
 
-    /// The first typed path of singletons the type sends at, as it begins, in a handler, or as it ends, whose place
-    /// `live` does not hold, handed its path and the kind the actor there must be, when there is one: what an actor of
-    /// it is refused for where it is made (ADR-0022). A path with a key is a place actors fill and empty as the program
-    /// runs, and is not checked.
+    /// The first typed path of singletons the type depends on whose place `live` does not hold, handed its path and
+    /// the kind the actor there must be, when there is one: what an actor of it is refused for where it is made
+    /// (ADR-0022, ADR-0059). A path with a key is a place actors fill and empty as the program runs, and is not checked.
     pub fn missing(&self, live: impl Fn(&ActorPath, KindId) -> bool) -> Option<&'static TypeSegment> {
-        let handled = self.handlers.iter().flat_map(Handler::sends);
-
-        self.begins.iter().chain(handled).chain(self.ends).find_map(|sending| {
-            let Target::Path(segment) = sending.to else {
-                return None;
+        self.depends.iter().copied().find(|segment| {
+            let Some(path) = segment.singletons() else {
+                return false;
             };
-            let path = segment.singletons()?;
 
-            (!live(&path, segment.kind)).then_some(segment)
+            !live(&path, segment.kind)
         })
-    }
-
-    /// Whether its `begin` or one of its handlers may send `sending`: what a program checks of each root its root list
-    /// draws, that it sends the renderer a draw list (ADR-0055).
-    #[must_use]
-    pub fn may_send(&self, sending: &Sending) -> bool {
-        let handled = self.handlers.iter().flat_map(Handler::sends);
-
-        self.begins.iter().chain(handled).any(|declared| declared == sending)
     }
 
     /// Whether one of the type's handlers is for `role`.
@@ -239,15 +222,14 @@ impl PartialEq for Declared {
     /// Whether the two declare the same: all but the names in their states' schemas, which a spawn does not read, as
     /// each id holds its state's layout (ADR-0006).
     fn eq(&self, other: &Self) -> bool {
-        let Self { name, id, state: _, keyed, spawner, begins, handlers, ends, takes } = self;
+        let Self { name, id, state: _, keyed, spawner, depends, handlers, takes } = self;
 
         *name == other.name
             && *id == other.id
             && *keyed == other.keyed
             && *spawner == other.spawner
-            && *begins == other.begins
+            && *depends == other.depends
             && *handlers == other.handlers
-            && *ends == other.ends
             && *takes == other.takes
     }
 }
@@ -264,43 +246,57 @@ impl<A: ChildOf> Of<A> {
         StateSchema::of::<A>(),
         <A::Key as ActorKey>::KEYED,
         <A::Parent as Placement>::SPAWNER,
-        <A::BeginSends as Sends>::SENDINGS,
+        <A::Depends as Depends>::CHAINS,
         <A::Handles as HandledList<A>>::HANDLERS,
-        <A::EndSends as Sends>::SENDINGS,
     )
     .checked();
 }
 
 impl Declared {
-    /// It, when what it declares holds together: each send it declares to a protocol is of one of the protocol's
-    /// kinds, as nothing that takes the protocol need take another (ADR-0016), it handles each kind of answer with
-    /// one kind of context (ADR-0017), and each kind with one handler, as mail is handed to a handler by its kind's
-    /// id alone: two types of one name and layout are one kind (ADR-0006).
+    /// It, when what it declares holds together: it depends on no two types of one root, as a typed path beneath it
+    /// could be found at either (ADR-0059), it handles each kind of answer with one kind of context (ADR-0017), and
+    /// each kind with one handler, as mail is handed to a handler by its kind's id alone: two types of one name and
+    /// layout are one kind (ADR-0006).
     ///
     /// # Panics
     ///
     /// Panics, as the type's declaration is made when the program is built, stopping the build, when it does not.
     const fn checked(self) -> Self {
-        let mut sends_in_protocols = in_protocols(self.begins) && in_protocols(self.ends);
         let mut answers_once = true;
         let mut handles_once = true;
         let mut index = 0;
         while index < self.handlers.len() {
-            let handler = &self.handlers[index];
-            sends_in_protocols = sends_in_protocols && in_protocols(handler.sends);
             answers_once = answers_once && !answered_after(self.handlers, index);
             handles_once = handles_once && !handled_after(self.handlers, index);
             index += 1;
         }
+        let mut roots_once = true;
+        let mut index = 0;
+        while index < self.depends.len() {
+            roots_once = roots_once && !rooted_after(self.depends, index);
+            index += 1;
+        }
         assert!(handles_once, "false declaration: a type handles one kind with two handlers");
         assert!(answers_once, "false declaration: a type handles one kind of answer with two kinds of context");
-        assert!(
-            sends_in_protocols,
-            "false declaration: a type declares a send to a protocol of a kind the protocol does not hold"
-        );
+        assert!(roots_once, "false declaration: a type depends on two types of one root");
 
         self
     }
+}
+
+/// Whether the type whose path ends in the segment at `index` of `depends` is of the root of a later one's: two
+/// entries a typed path beneath that root could be found at.
+const fn rooted_after(depends: &[&TypeSegment], index: usize) -> bool {
+    let root = depends[index].root().kind;
+    let mut later = index + 1;
+    while later < depends.len() {
+        if depends[later].root().kind.same(root) {
+            return true;
+        }
+        later += 1;
+    }
+
+    false
 }
 
 /// Whether the handler at `index` of `handlers` is of an answer a later one handles too: the same answer with two
@@ -341,59 +337,23 @@ const fn handled_after(handlers: &[Handler], index: usize) -> bool {
     false
 }
 
-/// Whether each of `sendings` to a protocol is of one of its kinds.
-const fn in_protocols(sendings: &[Sending]) -> bool {
-    let mut index = 0;
-    while index < sendings.len() {
-        let sending = &sendings[index];
-        if let Target::Handling(kinds) = sending.to
-            && !holds_kind(kinds, sending.kind)
-        {
-            return false;
-        }
-        index += 1;
-    }
-
-    true
-}
-
-/// Whether `kinds` holds `kind`.
-const fn holds_kind(kinds: &[KindId], kind: KindId) -> bool {
-    let mut index = 0;
-    while index < kinds.len() {
-        if kinds[index].same(kind) {
-            return true;
-        }
-        index += 1;
-    }
-
-    false
-}
-
-/// One thing an actor type handles, and what its handler may send (ADR-0013).
+/// A handler an actor type has: what it handles (ADR-0013).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Handler {
     role: Role,
-    sends: &'static [Sending],
 }
 
 impl Handler {
-    /// The handler for `role`, which may send `sends`.
+    /// The handler for `role`.
     #[must_use]
-    pub const fn new(role: Role, sends: &'static [Sending]) -> Self {
-        Self { role, sends }
+    pub const fn new(role: Role) -> Self {
+        Self { role }
     }
 
     /// What it handles.
     #[must_use]
     pub const fn role(&self) -> Role {
         self.role
-    }
-
-    /// What it may send.
-    #[must_use]
-    pub const fn sends(&self) -> &'static [Sending] {
-        self.sends
     }
 }
 
@@ -410,45 +370,4 @@ pub enum Role {
     Answer(KindId),
     /// The stage of the program's lifecycle of this kind, which it may subscribe to (ADR-0020).
     Stage(KindId),
-}
-
-/// One send a handler may make: mail of a kind, to a target (ADR-0013).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sending {
-    kind: KindId,
-    to: Target,
-}
-
-impl Sending {
-    /// The send of mail of `kind` to `to`.
-    #[must_use]
-    pub const fn new(kind: KindId, to: Target) -> Self {
-        Self { kind, to }
-    }
-
-    /// The kind of mail sent.
-    #[must_use]
-    pub const fn kind(&self) -> KindId {
-        self.kind
-    }
-
-    /// Where it may go.
-    #[must_use]
-    pub const fn to(&self) -> Target {
-        self.to
-    }
-}
-
-/// Where a declared send may go (ADR-0013).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    /// An actor of the type of this name, and of this id: what a send is checked by, a name being slower to compare.
-    Type(&'static KindName, KindId),
-    /// The source of the item being handled.
-    Sender,
-    /// Any actor whose type lists every one of these kinds: what a reference that names a protocol, and not a type,
-    /// reaches.
-    Handling(&'static [KindId]),
-    /// The actor at the typed path whose last segment this is, found as each piece of mail is sent (ADR-0022).
-    Path(&'static TypeSegment),
 }

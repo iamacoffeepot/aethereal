@@ -5,9 +5,8 @@
 //! out (ADR-0049). Its turn and its triangles' sizes are tuned while it runs (ADR-0050).
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path,
-    ProtocolRef, ReadTuning, Receives, Start, Tells, Tick, ToSender, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn,
-    path, tuning,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, ProtocolRef,
+    ReadTuning, Receives, Start, Tick, Top, Tunable, Tune, Tunes, Turn, path, tuning,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -305,10 +304,9 @@ impl Actor for Scene {
         Answer<Uniformed, Looking>,
         Answer<Placed, MadeAll>,
     );
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Tells<Path<Renderer>, DrawList>);
-    type EndSends = ();
+    type Depends = (Window, Renderer);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
         turn.to(path::<Window>(shows.window)).send(&window::Subscribe)?;
@@ -332,7 +330,7 @@ impl Actor for Scene {
         Ok(scene)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -392,9 +390,7 @@ impl Scene {
 }
 
 impl Receives<On<Start>> for Scene {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(path::<Renderer>(())).ask(&ShapeOf::pass::<Main>(Frame::Main(self.window)), &Shaping::Window)?;
 
         Ok(())
@@ -403,10 +399,9 @@ impl Receives<On<Start>> for Scene {
 
 /// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
 impl Handles<Keyed> for Scene {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match keyed.event {
             KeyEvent::KeyDown { code, key, repeat } => {
                 println!("key_down code={code} key={key:?} repeat={repeat}");
@@ -430,10 +425,9 @@ impl Handles<Keyed> for Scene {
 }
 
 impl Handles<Event> for Scene {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match event {
             Event::PointerMoved { x, y } => {
                 // A surface is some thousands of pixels across, which an f32 holds exactly.
@@ -473,12 +467,10 @@ impl Handles<Event> for Scene {
 }
 
 impl Receives<Answer<Shaped, Shaping>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>, Asks<Path<Renderer>, CreateEffect, Nothing>);
-
     fn handle(
         &mut self,
         (answered, shaping): (Answered<Shaped>, Shaping),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             turn.log(Level::Error, format_args!("the pass the ring joins has no shape: {answered:?}"));
@@ -529,13 +521,7 @@ fn view(window: WindowId) -> CreateFrame {
 }
 
 impl Receives<Answer<Effected, Nothing>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Effected>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Effected>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Effected::Made(lay)) = answered else {
             turn.log(Level::Error, format_args!("the effect that lays the views out was not made: {answered:?}"));
             return Ok(());
@@ -547,12 +533,10 @@ impl Receives<Answer<Effected, Nothing>> for Scene {
 }
 
 impl Receives<Answer<Framed, Framing>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateFrame, Framing>, Asks<Path<Renderer>, ShapeOf, Shaping>);
-
     fn handle(
         &mut self,
         (answered, framing): (Answered<Framed>, Framing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match (answered, framing) {
             (Answered::Yes(Framed::Texture { frame, texture }), Framing::Left { lay }) => {
@@ -592,7 +576,7 @@ impl Receives<Answer<Framed, Framing>> for Scene {
 }
 
 /// The triangle each of the ring's instances draws, its bytes put: none, logged, when they were not.
-fn triangle<S>(turn: &mut Turn<'_, Scene, S>) -> Option<CreateMesh> {
+fn triangle(turn: &mut Turn<'_, Scene>) -> Option<CreateMesh> {
     let corners = [0.0_f32, 0.05, -0.04, -0.03, 0.04, -0.03].map(f32::to_bits);
     let (Ok(vertices), Ok(indices)) = (turn.put(bytes(corners)), turn.put(bytes([0, 1, 2]))) else {
         turn.log(Level::Error, "the triangle was not asked for: its bytes were not put");
@@ -612,12 +596,10 @@ fn record() -> VertexLayout {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             turn.log(Level::Error, format_args!("the triangle was not made: {answered:?}"));
@@ -646,12 +628,10 @@ impl Receives<Answer<Meshed, Learned>> for Scene {
 }
 
 impl Receives<Answer<Programmed, MadeMesh>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(program)) = answered else {
             turn.log(Level::Error, format_args!("the program was not made: {answered:?}"));
@@ -669,12 +649,10 @@ impl Receives<Answer<Programmed, MadeMesh>> for Scene {
 }
 
 impl Receives<Answer<Instanced, MadeProgram>> for Scene {
-    type Sends = (Asks<Path<Renderer>, CreateUniforms, Looking>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Instanced::Made(instances)) = answered else {
             turn.log(Level::Error, format_args!("the instances were not made: {answered:?}"));
@@ -692,12 +670,10 @@ impl Receives<Answer<Instanced, MadeProgram>> for Scene {
 }
 
 impl Receives<Answer<Uniformed, Looking>> for Scene {
-    type Sends = (Asks<Path<Renderer>, Place, MadeAll>, Asks<Path<Renderer>, CreateUniforms, Looking>);
-
     fn handle(
         &mut self,
         (answered, looking): (Answered<Uniformed>, Looking),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
             turn.log(Level::Error, format_args!("a look was not made: {answered:?}"));
@@ -756,12 +732,10 @@ impl Scene {
 }
 
 impl Receives<Answer<Placed, MadeAll>> for Scene {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Placed::Made(placement)) => {
@@ -779,9 +753,7 @@ impl Receives<Answer<Placed, MadeAll>> for Scene {
 }
 
 impl Receives<On<Tick>> for Scene {
-    type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
-
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.intervals.push(tick.delta_nanos);
         let ran = self.runs.over(tick.elapsed_nanos);
         if ran {
@@ -848,19 +820,17 @@ impl Tunable for Scene {
 }
 
 impl Handles<ReadTuning> for Scene {
-    type Sends = (ToSender<Tuning>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         tuning::read(self, turn)
     }
 }
 
 impl Handles<Tune> for Scene {
-    type Sends = (ToSender<Tuned>,);
     type From = Anyone;
 
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         tuning::tune(self, &tune, turn)
     }
 }

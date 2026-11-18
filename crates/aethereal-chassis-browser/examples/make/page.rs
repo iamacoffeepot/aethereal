@@ -2,8 +2,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, On, Path, Receives, Refused, Render, Start,
-    Tells, Tick, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, On, Receives, Refused, Render, Start, Tick, Top, Turn,
+    path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -70,16 +70,15 @@ impl Actor for Maker {
     type Config = Nothing;
     type Key = ();
     type Handles = (On<Start>, Answer<Meshed, Asked>, Answer<Textured, Asked>, Answer<Programmed, Asked>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -115,7 +114,7 @@ struct Requests {
 
 impl Requests {
     /// The asks, their bytes put through `turn`: refused when a put is.
-    fn put<S>(turn: &mut Turn<'_, Maker, S>) -> Result<Self, Refused> {
+    fn put(turn: &mut Turn<'_, Maker>) -> Result<Self, Refused> {
         let position = Attribute { location: 0, format: VertexFormat::Float32x2, offset: 0 };
         let layout = VertexLayout { stride: 8, attributes: vec![position] };
         let corners = [0.0_f32, 0.5, -0.5, -0.5, 0.5, -0.5].map(f32::to_bits);
@@ -155,13 +154,7 @@ impl Requests {
 }
 
 impl Receives<On<Start>> for Maker {
-    type Sends = (
-        Asks<Path<Renderer>, CreateMesh, Asked>,
-        Asks<Path<Renderer>, CreateTexture, Asked>,
-        Asks<Path<Renderer>, CreateProgram, Asked>,
-    );
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let requests = match Requests::put(turn) {
             Ok(requests) => requests,
             Err(why) => {
@@ -182,13 +175,7 @@ impl Receives<On<Start>> for Maker {
 }
 
 impl Receives<Answer<Meshed, Asked>> for Maker {
-    type Sends = (Tells<Path<Renderer>, Release>,);
-
-    fn handle(
-        &mut self,
-        (answered, asked): (Answered<Meshed>, Asked),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, asked): (Answered<Meshed>, Asked), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Meshed::Made(mesh)) => {
                 say(format!("{}: made {mesh:?}, then released", asked.what));
@@ -203,13 +190,7 @@ impl Receives<Answer<Meshed, Asked>> for Maker {
 }
 
 impl Receives<Answer<Textured, Asked>> for Maker {
-    type Sends = ();
-
-    fn handle(
-        &mut self,
-        (answered, asked): (Answered<Textured>, Asked),
-        _: &mut Turn<'_, Self, ()>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, asked): (Answered<Textured>, Asked), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Textured::Made(texture)) => say(format!("{}: made {texture:?}", asked.what)),
             Answered::Yes(Textured::Refused(why)) => say(format!("{}: refused, {why:?}", asked.what)),
@@ -221,12 +202,10 @@ impl Receives<Answer<Textured, Asked>> for Maker {
 }
 
 impl Receives<Answer<Programmed, Asked>> for Maker {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, asked): (Answered<Programmed>, Asked),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Programmed::Made(program)) => say(format!("{}: made {program:?}", asked.what)),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Actor, Beginning, Declared, Ending, Fault, Handles, Tells, Turn};
+use crate::{Actor, Beginning, Declared, Ending, Fault, Handles, Turn};
 use crate::{Anyone, section};
 use aethereal_data::Plain;
 use alloc::vec::Vec;
@@ -9,10 +9,9 @@ use alloc::vec::Vec;
 #[kind(name = "aether.test.order")]
 struct Order;
 
-/// An actor named `name`, keyed by `key`, standing beneath `parent`, that handles orders and
-/// may send `sends` as it begins.
+/// An actor named `name`, keyed by `key`, standing beneath `parent`, that handles orders and depends on `depends`.
 macro_rules! actor {
-    ($name:ident, $named:literal, $key:ty, $parent:ty, $sends:ty) => {
+    ($name:ident, $named:literal, $key:ty, $parent:ty, $depends:ty) => {
         #[derive(Plain)]
         #[kind(name = $named)]
         struct $name;
@@ -25,23 +24,21 @@ macro_rules! actor {
             type Config = $name;
             type Key = $key;
             type Handles = (Order,);
-            type BeginSends = $sends;
-            type EndSends = ();
+            type Depends = $depends;
 
-            fn begin(config: $name, _: &mut Beginning<'_, Self, $sends>) -> Result<Self, Fault> {
+            fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(config)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Order> for $name {
-            type Sends = ();
             type From = Anyone;
 
-            fn handle(&mut self, _: Order, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Order, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -52,7 +49,7 @@ actor!(World, "aether.test.world", (), Top, ());
 actor!(Army, "aether.test.army", u64, World, ());
 actor!(Hud, "aether.test.hud", (), Army, ());
 actor!(Squad, "aether.test.squad", u64, Hud, ());
-actor!(Teller, "aether.test.teller", (), Top, (Tells<Path<Squad>, Order>, Tells<Path<World>, Order>));
+actor!(Teller, "aether.test.teller", (), Top, (Squad,));
 
 #[test]
 fn a_path_names_its_segments_from_the_root_each_key_at_its_segment() {
@@ -66,9 +63,9 @@ fn a_path_names_its_segments_from_the_root_each_key_at_its_segment() {
 }
 
 #[test]
-fn a_send_at_a_typed_path_reads_back_from_a_guests_section() {
-    // Catches the writer of a guest's section and the types a host reads it as drifting apart for a send at a typed
-    // path: a segment dropped or read in another order, or a keyed one read as a singleton (ADR-0015, ADR-0022).
+fn a_dependency_at_a_typed_path_reads_back_from_a_guests_section() {
+    // Catches the writer of a guest's section and the types a host reads it as drifting apart for a type depended on at a
+    // typed path: a segment dropped or read in another order, or a keyed one read as a singleton (ADR-0015, ADR-0022).
     const TYPES: &[&Declared] = &[Declared::of::<Teller>()];
     const ROOM: usize = section::room(TYPES);
     const LEN: usize = section::len::<ROOM>(TYPES);

@@ -36,7 +36,7 @@ impl<P> Subscribers<P> {
     }
 
     /// Adds the actor `reference` refers to, and watches it: nothing, and answers false, when it is held already.
-    pub fn subscribe<A: Receives<Ended>, S>(&mut self, turn: &mut Turn<'_, A, S>, reference: ProtocolRef<P>) -> bool {
+    pub fn subscribe<A: Receives<Ended>>(&mut self, turn: &mut Turn<'_, A>, reference: ProtocolRef<P>) -> bool {
         let added = self.hold(reference);
         if added {
             turn.watch(reference);

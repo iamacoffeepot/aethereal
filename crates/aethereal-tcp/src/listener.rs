@@ -5,8 +5,8 @@
 use crate::ready::{Ready, Wait};
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
-    Handles, More, Open, Part, Receives, Serving, Stream, StreamKey, ToAny, ToSender, ToType, Turn, Unsent,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
+    Handles, More, Open, Receives, Serving, Stream, StreamKey, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -84,9 +84,6 @@ pub struct Listener {
     readable: Wait,
 }
 
-/// What a listener sends as it accepts: the parts of its acceptor's stream.
-type Parts = ToAny<(Part<Accepting>,), Part<Accepting>>;
-
 impl ChildOf for Listener {
     type Parent = Tcp;
 }
@@ -95,10 +92,9 @@ impl Actor for Listener {
     type Config = ListenerConfig;
     type Key = u64;
     type Handles = (Open<Accepting>, More, Enough, Ended, Shut, Answer<Readied, Interest>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ListenerConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: ListenerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let bound = turn.take(config.bound)?;
 
         Ok(Self {
@@ -114,16 +110,15 @@ impl Actor for Listener {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Open<Accepting>> for Listener {
-    type Sends = (ToSender<Unbound>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (key, Accept) = self.accepting.open(turn, open)?;
         if let Acceptor::Accepting(_) = self.acceptor {
             if let Some(second) = self.accepting.take(key) {
@@ -138,10 +133,9 @@ impl Handles<Open<Accepting>> for Listener {
 }
 
 impl Handles<More> for Listener {
-    type Sends = (Parts,);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.accepting.more(turn, &more);
 
         self.accept(turn)
@@ -149,10 +143,9 @@ impl Handles<More> for Listener {
 }
 
 impl Handles<Enough> for Listener {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(stopped) = self.accepting.stop(turn, &enough) {
             self.acceptor = Acceptor::Waiting;
             stopped.finish(turn, &Unbound::Shut)?;
@@ -163,10 +156,8 @@ impl Handles<Enough> for Listener {
 }
 
 impl Receives<Ended> for Listener {
-    type Sends = (Parts,);
-
     /// An acceptor that ended accepts no more; a connection that ended leaves room for another, which it accepts.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let acceptor_left = !self.accepting.ended(&ended).is_empty();
         if acceptor_left {
             self.acceptor = Acceptor::Waiting;
@@ -179,10 +170,9 @@ impl Receives<Ended> for Listener {
 }
 
 impl Handles<Shut> for Listener {
-    type Sends = (ToType<Accepted, Shut>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for connection in self.accepted.values() {
             turn.to(*connection).send(&Shut)?;
         }
@@ -192,15 +182,9 @@ impl Handles<Shut> for Listener {
 }
 
 impl Receives<Answer<Readied, Interest>> for Listener {
-    type Sends = (Parts,);
-
     /// Its socket has a connection to accept, or may have; or the host has no poller, and it can never wait for one,
     /// so it stops listening.
-    fn handle(
-        &mut self,
-        (readied, _): (Answered<Readied>, Interest),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (readied, _): (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.readable = Wait::Not;
         let is_ready = readied == Answered::Yes(Readied::Ready);
         if !is_ready {
@@ -215,10 +199,7 @@ impl Listener {
     /// Accepts while its acceptor has credit and it has room for another connection, each one spawned beneath it and
     /// sent to its acceptor. An accept that would wait waits for the socket to be readable; one stopped for want of
     /// credit or room waits for the acceptor's `More`, or for a connection to end.
-    fn accept<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<Parts, I>,
-    {
+    fn accept(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Acceptor::Accepting(key) = self.acceptor else {
             return Ok(());
         };
@@ -256,7 +237,7 @@ impl Listener {
             let incoming = Incoming { connection, peer: SocketAddress::from(peer) };
             if let Some(stream) = self.accepting.get_mut(key) {
                 // Credit was counted above, so a part is refused only when it cannot be written.
-                if let Err(Unsent::Unwritable(error)) = stream.send::<_, _, I>(turn, incoming) {
+                if let Err(Unsent::Unwritable(error)) = stream.send(turn, incoming) {
                     return Err(error.into());
                 }
             }
@@ -264,7 +245,7 @@ impl Listener {
     }
 
     /// Runs a [`Ready`] for its socket to have a connection to accept, unless one is in flight already.
-    fn wait<S>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault> {
+    fn wait(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Wait::On(_) = self.readable {
             return Ok(());
         }
@@ -277,7 +258,7 @@ impl Listener {
 
     /// Ends the acceptor's stream with `why`, stops its wait for the socket, and closes the listener, whose socket the
     /// engine drops after its closing turn (ADR-0010).
-    fn unbind<S>(&mut self, turn: &mut Turn<'_, Self, S>, why: Unbound) -> Result<(), Fault> {
+    fn unbind(&mut self, turn: &mut Turn<'_, Self>, why: Unbound) -> Result<(), Fault> {
         if let Acceptor::Accepting(key) = self.acceptor
             && let Some(stream) = self.accepting.take(key)
         {

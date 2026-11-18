@@ -7,8 +7,8 @@ mod unix;
 use super::*;
 use crate::waiting;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
-    Part, Receives, Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, Receives,
+    Streams, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Host;
@@ -147,10 +147,9 @@ impl Actor for Streamer {
     type Config = Asked;
     type Key = ();
     type Handles = (Follow, Part<Accepting>, Part<Reading>, Answer<Unbound, Number>, Answer<HungUp, Number>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Asked, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Asked)?);
         };
@@ -163,7 +162,7 @@ impl Actor for Streamer {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -180,15 +179,9 @@ impl Bootstrap<Headless> for Streamer {
 }
 
 impl Handles<Follow> for Streamer {
-    type Sends = (
-        Asks<Streamed<Accepting>, Open<Accepting>, Number>,
-        ToAny<Streamed<Accepting>, More>,
-        Asks<Streamed<Reading>, Open<Reading>, Number>,
-        ToAny<Streamed<Reading>, More>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, follow: Follow, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, follow: Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match follow {
             Follow::Accepting(listener) => self.accepting.open(turn, listener.protocol(), Accept, Asked)?,
             Follow::Reading(connection) => self.reading.open(turn, connection.protocol(), Read, Side::Client)?,
@@ -199,14 +192,9 @@ impl Handles<Follow> for Streamer {
 }
 
 impl Handles<Part<Accepting>> for Streamer {
-    type Sends = (
-        ToAny<Streamed<Accepting>, More>,
-        Asks<Streamed<Reading>, Open<Reading>, Number>,
-        ToAny<Streamed<Reading>, More>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.accepting.part(turn, part)? else {
             return Ok(());
         };
@@ -219,10 +207,9 @@ impl Handles<Part<Accepting>> for Streamer {
 }
 
 impl Handles<Part<Reading>> for Streamer {
-    type Sends = (ToAny<Streamed<Reading>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.reading.part(turn, part)? else {
             return Ok(());
         };
@@ -234,9 +221,7 @@ impl Handles<Part<Reading>> for Streamer {
 }
 
 impl Receives<Answer<Unbound, Number>> for Streamer {
-    type Sends = ();
-
-    fn handle(&mut self, (_, number): (Answered<Unbound>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, number): (Answered<Unbound>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.accepting.answered(number);
 
         Ok(())
@@ -244,9 +229,7 @@ impl Receives<Answer<Unbound, Number>> for Streamer {
 }
 
 impl Receives<Answer<HungUp, Number>> for Streamer {
-    type Sends = ();
-
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.answered(number);
 
         Ok(())
@@ -292,7 +275,7 @@ fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(),
 
     // Two parts, written as one frame of them both.
     let parts = vec![harness.put(b"pi".to_vec())?, harness.put(b"ng".to_vec())?];
-    let wrote = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    let wrote = harness.ask(connection.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
     assert_eq!(heard(&mut harness, streamer, 1)?, [frame(Side::Server, b"ping")]);
 
@@ -300,7 +283,7 @@ fn a_frame_dialed_to_a_listener_is_accepted_read_and_echoed_back() -> Result<(),
         panic!("the listener accepted the one dial");
     };
     let parts = vec![harness.put(b"ping".to_vec())?];
-    let echoed = harness.ask(accepted.protocol::<Writing, _>(), &Write { parts })?;
+    let echoed = harness.ask(accepted.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(echoed)?, Answered::Yes(Wrote::Sent));
     assert_eq!(heard(&mut harness, streamer, 2)?, [frame(Side::Server, b"ping"), frame(Side::Client, b"ping")]);
 
@@ -346,7 +329,7 @@ fn a_listener_at_its_most_connections_accepts_the_next_once_one_ends() -> Result
     let &[connection] = first.as_slice() else {
         panic!("the listener accepted the first peer");
     };
-    harness.tell(connection.protocol::<Writing, _>(), &Shut)?;
+    harness.tell(connection.protocol::<Writing>(), &Shut)?;
     let both = accepted(&mut harness, streamer, 2)?;
 
     assert_eq!(both.len(), 2, "the second peer is accepted once the first connection ends");

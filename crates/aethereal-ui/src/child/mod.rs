@@ -44,12 +44,10 @@ pub type Resizes = (Resize,);
 /// use aethereal_render::frame::Frame;
 /// use aethereal_render::pass::Interface;
 /// use aethereal_ui::prelude::*;
-/// # use aethereal_actor::{Asks, Ending, Path};
+/// # use aethereal_actor::{Ending, Path};
 /// # use aethereal_render::Renderer;
 /// # use aethereal_render::frame::ShapeOf;
 /// #
-/// # /// What each screen's `begin` sends: the ask for the shape of its pass.
-/// # type Begins = (Asks<Path<Renderer>, ShapeOf, Shaping>,);
 ///
 /// /// A minimap, a screen of its own: it lays out to the size the HUD mails it.
 /// #[derive(Bound)]
@@ -89,10 +87,9 @@ pub type Resizes = (Resize,);
 ///     type Config = Frame;
 ///     type Key = ();
 ///     type Handles = aethereal_ui::handles![];
-///     type BeginSends = Begins;
-///     type EndSends = ();
+///     type Depends = aethereal_ui::depends!();
 ///
-///     fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Begins>) -> Result<Self, Fault> {
+///     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 ///         let Ok(spawned) = turn.spawn::<Minimap>(&(), frame) else {
 ///             return Err(Fault::new(&NoMinimap)?);
 ///         };
@@ -102,7 +99,7 @@ pub type Resizes = (Resize,);
 ///         Ok(Self { minimap, ui })
 ///     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// }
@@ -111,15 +108,14 @@ pub type Resizes = (Resize,);
 /// #     type Config = Frame;
 /// #     type Key = ();
 /// #     type Handles = aethereal_ui::handles![];
-/// #     type BeginSends = Begins;
-/// #     type EndSends = ();
+/// #     type Depends = aethereal_ui::depends!();
 /// #
-/// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self, Begins>) -> Result<Self, Fault> {
+/// #     fn begin(frame: Frame, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         let ui = Screen::begin(Target::of::<Interface>(frame), Viewport::window(1, 1, 1.0), turn)?;
 /// #         Ok(Self { ui })
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -127,11 +123,9 @@ pub type Resizes = (Resize,);
 /// # aethereal_ui::view! { Minimap, ui, Stack {} }
 /// #
 /// # impl Controls for Hud {
-/// #     type Sends = aethereal_ui::sends![];
 /// # }
 /// #
 /// # impl Controls for Minimap {
-/// #     type Sends = aethereal_ui::sends![];
 /// # }
 /// #
 /// # impl ChildOf for Hud {
@@ -149,9 +143,9 @@ impl Called {
     /// names it with the key the screen spawned it under: it builds only for a child of the screen's own that takes
     /// [`Resize`].
     #[must_use]
-    pub fn new<C, Is>(child: Child<C>, reference: ActorRef<C>) -> Self
+    pub fn new<C>(child: Child<C>, reference: ActorRef<C>) -> Self
     where
-        C: ChildOf + Conforms<Resizes, Is>,
+        C: ChildOf + Conforms<Resizes>,
     {
         Self { callee: Callee::of(child), sized: reference.protocol() }
     }

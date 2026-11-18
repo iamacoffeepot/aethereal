@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, ToAny, ToSender, Top, Turn};
+use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, Top, Turn};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -54,28 +54,26 @@ impl Actor for Counter {
     type Config = Bursts;
     type Key = ();
     type Handles = (Pong,);
-    type BeginSends = (ToAny<(Ping,), Ping>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(bursts: Bursts, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
             turn.to(echo).send(&Ping { n: bursts.bursts })?;
         }
 
         Ok(Self { each: bursts.each })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Pong> for Counter {
-    type Sends = (ToSender<Increment>, ToSender<Ping>);
     type From = Anyone;
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if pong.n > 0 {
             for _ in 0..self.each {
                 turn.reply(&Increment)?;
@@ -106,23 +104,21 @@ impl Actor for Echo {
     type Config = EchoConfig;
     type Key = ();
     type Handles = (Ping, Increment);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { counted: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Ping> for Echo {
-    type Sends = (ToSender<Pong>,);
     type From = Anyone;
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&Pong { n: ping.n })?;
 
         Ok(())
@@ -130,10 +126,9 @@ impl Handles<Ping> for Echo {
 }
 
 impl Handles<Increment> for Echo {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.counted += 1;
 
         Ok(())

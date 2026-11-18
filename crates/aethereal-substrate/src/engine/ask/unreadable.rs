@@ -4,8 +4,8 @@
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
-    Receives, ToSender, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol, ProtocolRef,
+    Receives, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use std::num::NonZeroUsize;
@@ -65,14 +65,13 @@ impl Actor for Weigher {
     type Config = Blank;
     type Key = ();
     type Handles = (Parcel, Told);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Blank, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { asked: 0, told: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -82,10 +81,9 @@ impl Carries<Parcel> for Weigher {
 }
 
 impl Handles<Parcel> for Weigher {
-    type Sends = (ToSender<Receipt>,);
     type From = Anyone;
 
-    fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, parcel: Parcel, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.asked += 1;
 
         Ok(turn.reply(&Receipt { text: parcel.text })?)
@@ -100,10 +98,9 @@ struct Told {
 }
 
 impl Handles<Told> for Weigher {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Told, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Told, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.told += 1;
 
         Ok(())
@@ -173,23 +170,21 @@ impl Actor for Sender {
     type Config = Asking;
     type Key = ();
     type Handles = (Send, Answer<Receipt, Sent>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(asking: Asking, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(asking: Asking, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { of: asking.of, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Send> for Sender {
-    type Sends = (Asks<Weighing, Parcel, Sent>,);
     type From = Anyone;
 
-    fn handle(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Send { at }: Send, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(self.of).ask(&parcel(WITHIN), &Sent { at })?;
 
         Ok(())
@@ -197,12 +192,10 @@ impl Handles<Send> for Sender {
 }
 
 impl Receives<Answer<Receipt, Sent>> for Sender {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Sent { at }): (Answered<Receipt>, Sent),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let heard = match answered {
             Answered::Yes(receipt) => Heard::Receipt { len: u64::try_from(receipt.text.len()).unwrap_or(u64::MAX), at },

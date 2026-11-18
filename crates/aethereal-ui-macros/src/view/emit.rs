@@ -75,7 +75,7 @@ pub fn view(view: &View, variants: &[Variant]) -> TokenStream {
 
             fn on(
                 &mut self,
-                turn: &mut ::aethereal_ui::__private::Turn<'_, Self, <Self as ::aethereal_ui::Controls>::Sends>,
+                turn: &mut ::aethereal_ui::__private::Turn<'_, Self>,
                 raised: ::aethereal_ui::Raised<#events>,
             ) -> ::core::result::Result<(), ::aethereal_ui::__private::Fault> {
                 #quiet

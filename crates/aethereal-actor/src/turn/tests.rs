@@ -4,8 +4,8 @@ use super::*;
 use crate::records::Staging;
 use crate::{
     Anyone, Anywhere, Beginning, Carries, ChildOf, Claim, Claimed, Ended, Ending, Fault, Handles, Hosted, How, Item,
-    Keeping, Kept, Mail, MailId, NotHeld, On, Payload, Protocol, Receives, Resource, Role, Subscribers, Tick, ToAny,
-    ToType, Top, Unspawned, child, parent, path,
+    Keeping, Kept, Mail, MailId, NotHeld, On, Payload, Protocol, Receives, Resource, Subscribers, Tick, Top, Unspawned,
+    child, parent, path,
 };
 use aethereal_data::{Bound, Budget, Fnv, KeyName, Plain};
 use alloc::string::ToString;
@@ -134,10 +134,9 @@ impl Actor for Leaf {
     type Config = LeafConfig;
     type Key = u64;
     type Handles = (Poke, Poked, Shut, Meet, Ended, On<Tick>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: LeafConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: LeafConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if config.fails {
             turn.log(Level::Warn, "told to fail");
             return Err(Fault::new(&ToldToFail)?);
@@ -146,35 +145,32 @@ impl Actor for Leaf {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Poke> for Leaf {
-    type Sends = (ToSender<Poked>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.reply(&Poked)?)
     }
 }
 
 /// A leaf takes the answer to a poke, and does nothing with it.
 impl Handles<Poked> for Leaf {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Shut> for Leaf {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -182,11 +178,10 @@ impl Handles<Shut> for Leaf {
 }
 
 impl Handles<Meet> for Leaf {
-    type Sends = (ToAny<(Poke,), Poke>,);
     type From = Anyone;
 
-    fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        if let Some(other) = turn.cast(other) {
+    fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if let Some(other) = turn.cast::<(Poke,)>(other) {
             turn.to(other).send(&Poke)?;
         }
 
@@ -196,18 +191,14 @@ impl Handles<Meet> for Leaf {
 
 /// A leaf may subscribe to ticks.
 impl Receives<On<Tick>> for Leaf {
-    type Sends = ();
-
-    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// A leaf may watch, as the subscribers it holds do.
 impl Receives<Ended> for Leaf {
-    type Sends = ();
-
-    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -233,15 +224,14 @@ impl Actor for Branch {
     type Config = BranchConfig;
     type Key = ();
     type Handles = (Poked,);
-    type BeginSends = (ToType<Leaf, Poke>,);
-    type EndSends = ();
+    type Depends = ();
 
     /// Spawns its leaves, poking each that begins.
-    fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: BranchConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.leaves {
             let is_last = key + 1 == config.leaves;
             let fails = is_last && config.last_fails;
-            match turn.spawn(&key, LeafConfig { fails }) {
+            match turn.spawn::<Leaf>(&key, LeafConfig { fails }) {
                 Ok(leaf) => {
                     turn.to(leaf).send(&Poke)?;
                 }
@@ -253,17 +243,16 @@ impl Actor for Branch {
         Ok(Self)
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 /// A branch takes the answer to a poke, and does nothing with it.
 impl Handles<Poked> for Branch {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -282,18 +271,17 @@ impl Actor for Herald {
     type Config = Poke;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToAny<(Poked,), Poked>,);
-    type EndSends = (ToAny<(Shut,), Shut>,);
+    type Depends = ();
 
-    fn begin(_config: Poke, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-        turn.to(parent()).send(&Poked)?;
+    fn begin(_config: Poke, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        turn.to(parent::<(Poked,)>()).send(&Poked)?;
 
         Ok(Self)
     }
 
-    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         if turn.why() == Why::Closed {
-            turn.to(parent()).send(&Shut)?;
+            turn.to(parent::<(Shut,)>()).send(&Shut)?;
         }
 
         Ok(())
@@ -309,21 +297,21 @@ const ME: Seated = seated(1, 100);
 const CHAIN: Chain = Chain { root: MailId { sender: ME.id, count: 1 }, depth: 1 };
 
 /// The turn of the actor of type `Me` that `me` names, at `path`, reading `table` and adding to `asked`, handling a
-/// poke from `source`, through a handler that may send `S`.
-fn opened<'a, Me: ChildOf, S: Sends>(
+/// poke from `source`.
+fn opened<'a, Me: ChildOf>(
     me: Seated,
     path: &'a ActorPath,
     above: Above,
     table: &'a dyn Table,
     asked: &'a mut Asked,
     source: Seated,
-) -> Turn<'a, Me, S> {
+) -> Turn<'a, Me> {
     // A turn built for a test lends no instance its handler reads, so it is lent a part's empty instances for as long
     // as the turn lives.
     let instances = Box::leak(Box::default());
 
     Turning::new(me, path, above, table, &(), asked, instances, Keeps::Claimed, 0, source, CHAIN, Tie::TELL, Due::Never)
-        .declaring::<Me, S, Anyone>(Declared::of::<Me>(), ErasedActorRef::new(source))
+        .declaring::<Me, Anyone>(Declared::of::<Me>(), ErasedActorRef::new(source))
 }
 
 /// The actor `bits` names, in the seat numbered `seat`.
@@ -349,7 +337,7 @@ fn child_begins_inside_its_parents_turn() {
     // under the id, path, and seat its spawn gives it, and two children given one seat.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let Ok(branch) = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: false }) else {
         panic!("the branch and its leaves begin");
     };
@@ -381,7 +369,7 @@ fn a_child_this_turn_stood_up_is_found_beneath_its_actor_and_no_other() {
     // another actor, or one of another kind (ADR-0022).
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let Ok(leaf) = turn.spawn::<Leaf>(&0, LeafConfig { fails: false }) else {
         panic!("the leaf begins");
     };
@@ -402,7 +390,7 @@ fn used_key_is_refused_and_asks_for_nothing() {
     let held_id = table.child(ME.id, &held.last());
     let table = Listed(vec![(Seated { id: held_id, seat: SeatNumber::new(7) }, held)]);
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
 
     assert!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }).is_ok());
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::KeyTaken));
@@ -416,7 +404,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     // failed begin used up, mail it or a child of it sent kept, and a line it logged lost.
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let refused = turn.spawn::<Branch>(&(), BranchConfig { leaves: 2, last_fails: true });
     let Err(Refused::Began(fault)) = refused else {
         panic!("the branch's last leaf fails, and the branch with it");
@@ -428,7 +416,7 @@ fn failed_begin_leaves_its_fault_and_no_child() {
     let lines: Vec<&str> = asked.lines().iter().map(|line| asked.text(line)).collect();
     assert_eq!(lines, ["told to fail"]);
 
-    let mut turn = opened::<Herald, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     assert!(turn.spawn::<Branch>(&(), BranchConfig { leaves: 0, last_fails: false }).is_ok());
     let (buffers, stood, _, seats, _) = asked.into_parts();
     assert_eq!(buffers.effects, [Effect::new(ME, branch_spawn(0))]);
@@ -442,7 +430,7 @@ fn begin_and_end_send_as_their_own_actor() {
     // closing turn that does not learn why it runs.
     let table = Listed(vec![(ME, ROOT.clone())]);
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let Ok(herald) = turn.spawn::<Herald>(&(), Poke) else {
         panic!("the herald begins");
     };
@@ -479,7 +467,7 @@ fn child_past_the_deepest_path_is_refused() {
     };
     let table = Listed::default();
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, ()>(ME, &deepest, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Herald>(ME, &deepest, Above::Chassis, &table, &mut asked, ME);
 
     assert_eq!(turn.spawn::<Leaf>(&0, LeafConfig { fails: false }), Err(Refused::TooDeep));
     assert!(asked.effects().is_empty());
@@ -560,9 +548,7 @@ fn mail_to_a_parent_by_what_it_takes_reaches_it_only_when_its_type_lists_every_k
     };
     let sent = |over: Above| {
         let mut asked = Asked::new();
-        let mut turn = opened::<Leaf, (ToAny<(Poke,), Poke>, ToAny<(Poke, ToldToFail), Poke>)>(
-            ME, &path, over, &table, &mut asked, ME,
-        );
+        let mut turn = opened::<Leaf>(ME, &path, over, &table, &mut asked, ME);
         let takes = turn.to(parent::<(Poke,)>()).send(&Poke).is_ok();
         let lacks = turn.to(parent::<(Poke, ToldToFail)>()).send(&Poke).is_ok();
         let to: Vec<Seated> = asked.into_parts().0.mailed.iter().map(|mailed| mailed.to).collect();
@@ -586,14 +572,7 @@ fn mail_to_a_child_by_its_type_reaches_it_only_when_it_was_made_and_is_of_that_t
     // The table says every actor it holds is a leaf, so the one at the branch's place is of another type.
     let table = Listed(vec![(leaf, ROOT.clone()), (branch, ROOT.clone())]);
     let mut asked = Asked::new();
-    let mut turn = opened::<Herald, (ToType<Leaf, Poke>, ToType<Branch, Poked>)>(
-        ME,
-        &ROOT,
-        Above::Chassis,
-        &table,
-        &mut asked,
-        ME,
-    );
+    let mut turn = opened::<Herald>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
 
     assert!(turn.to(child::<Leaf>(0)).send(&Poke).is_ok());
     assert!(turn.to(child::<Branch>(())).send(&Poked).is_ok());
@@ -621,7 +600,7 @@ fn mail_to_a_place_beneath_a_child_reaches_the_actor_its_types_and_keys_name() {
     let leaf = seated(9, 6);
     let table = Listed(vec![(leaf, beneath)]);
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, (ToType<Leaf, Poke>,)>(ME, &sender, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &sender, Above::Chassis, &table, &mut asked, ME);
 
     assert!(turn.to(child::<(Herald, Leaf)>(5)).send(&Poke).is_ok());
     assert!(turn.to(child::<(Herald, Leaf)>(6)).send(&Poke).is_ok());
@@ -637,7 +616,7 @@ fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
     let leaf = seated(7, 3);
     let table = Listed(vec![(leaf, ROOT.clone())]);
     let mut asked = Asked::new();
-    let turn = opened::<Leaf, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let held = ErasedActorRef::new(leaf);
 
     let cast = turn.cast::<(Shut, Poke)>(held);
@@ -665,14 +644,13 @@ impl Actor for Crown {
     type Config = CrownConfig;
     type Key = u64;
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Self,);
 
-    fn begin(_: CrownConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: CrownConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -686,7 +664,7 @@ fn a_typed_path_is_found_only_where_an_actor_of_its_type_stands() {
     let leaf = seated(7, 3);
     let table = Listed(vec![(ME, crown.names().clone()), (leaf, other.names().clone())]);
     let mut asked = Asked::new();
-    let turn = opened::<Crown, ()>(ME, crown.names(), Above::Chassis, &table, &mut asked, ME);
+    let turn = opened::<Crown>(ME, crown.names(), Above::Chassis, &table, &mut asked, ME);
 
     assert_eq!(turn.found(&crown), Some(ActorRef::new(ME)));
     assert_eq!(turn.found(&other), None);
@@ -700,7 +678,7 @@ fn mail_sent_to_all_is_a_piece_for_each_receiver_with_its_bytes_written_once() {
     let receivers = [seated(9, 5), seated(8, 6), seated(7, 7)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, (ToType<Leaf, Meet>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let references = receivers.map(ActorRef::<Leaf>::new);
     let meeting = Meet { other: ErasedActorRef::new(receivers[0]) };
 
@@ -722,7 +700,7 @@ fn mail_sent_through_a_protocol_reference_reaches_the_actor_it_refers_to() {
     let receivers = [seated(9, 5), seated(8, 6), seated(7, 7)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, (ToAny<(Poke,), Poke>,)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let references: [ProtocolRef<(Poke,)>; 3] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
     assert!(turn.to(references[0]).send(&Poke).is_ok());
@@ -761,12 +739,12 @@ fn mail_sent_through_a_named_protocol_reaches_the_actor_it_refers_to() {
     let receivers = [seated(9, 5), seated(8, 6)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn =
-        opened::<Leaf, (ToAny<Poking, Poke>, ToAny<(Shut,), Shut>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let references: [ProtocolRef<Poking>; 2] = receivers.map(|receiver| ActorRef::<Leaf>::new(receiver).protocol());
 
     assert!(turn.to(references[0]).send(&Poke).is_ok());
-    assert!(turn.to(references[1].narrow()).send(&Shut).is_ok());
+    let shuts: ProtocolRef<(Shut,)> = references[1].narrow();
+    assert!(turn.to(shuts).send(&Shut).is_ok());
 
     let (buffers, _, _, _, _) = asked.into_parts();
     let seen: Vec<(Seated, KindId)> = buffers.mailed.iter().map(|mailed| (mailed.to, mailed.kind)).collect();
@@ -780,7 +758,7 @@ fn subscribers_are_held_once_watched_once_and_leave_by_ending_or_unsubscribing()
     let [first, second, third] = [seated(9, 5), seated(8, 6), seated(7, 7)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let listener = |at: Seated| -> ProtocolRef<(Poke,)> { ActorRef::<Leaf>::new(at).protocol() };
     let mut subscribers = Subscribers::new();
 
@@ -811,7 +789,7 @@ fn subscribers_kept_in_an_actors_state_are_read_back_in_order_each_found_where_i
     let [first, second, third] = [seated(9, 5), seated(8, 6), seated(7, 7)];
     let table = Listed(Vec::new());
     let mut asked = Asked::new();
-    let mut turn = opened::<Leaf, ()>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let listener = |at: Seated| -> ProtocolRef<(Poke,)> { ActorRef::<Leaf>::new(at).protocol() };
     let mut subscribers = Subscribers::new();
     for at in [first, second, third] {
@@ -835,8 +813,7 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     let table =
         Listed(vec![(other, ActorPath::new("aether.test.other")), (third, ActorPath::new("aether.test.third"))]);
     let mut asked = Asked::new();
-    let mut turn =
-        opened::<Leaf, (ToType<Leaf, Meet>, ToType<Leaf, Poke>)>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let meet = |to: Seated| Meet { other: ErasedActorRef::new(to) };
     let sends = [(other, true), (other, true), (other, true), (other, false), (third, true), (other, true)];
     for (to, meets) in sends {
@@ -885,8 +862,7 @@ fn replies_to_a_tell_join_a_run_and_an_answer_stands_alone() {
             Due::Never,
         );
         let sender = ErasedActorRef::new(source);
-        let mut turn =
-            turning.declaring::<Leaf, (ToType<Leaf, Poke>, ToSender<Poke>), Anyone>(Declared::of::<Leaf>(), sender);
+        let mut turn = turning.declaring::<Leaf, Anyone>(Declared::of::<Leaf>(), sender);
         let sent = turn.to(ActorRef::<Leaf>::new(source)).send(&Poke).is_ok();
         let first = turn.reply(&Poke).is_ok();
         let second = tie == Tie::TELL && turn.reply(&Poke).is_ok();
@@ -932,7 +908,7 @@ fn a_host_holds_a_guest_to_what_it_claims_of_resources() {
         Tie::TELL,
         Due::Never,
     );
-    let (mut hosted, _) = turning.hosted(Declared::of::<Leaf>(), Role::Others);
+    let (mut hosted, _) = turning.hosted(Declared::of::<Leaf>());
     let claim = |ticket, what| Claim { by: ME, ticket, what };
 
     assert_eq!(hosted.claim(claim(7, Claimed::Took)), Ok(()));

@@ -6,8 +6,8 @@ use crate::watch::Notice;
 use crate::{ByActor, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ActorRef, Allows, Answer, Answered, Anywhere, Asks, Carries, ChildOf, Ended, Ending, Fault, Handles, How,
-    Level, Path, Recursive, Table, Tells, ToAny, ToSender, ToType, Top, Turn, Unanswered, Why, child, path,
+    Actor, ActorRef, Answer, Answered, Anywhere, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
+    Recursive, Table, Top, Turn, Unanswered, Why, child, path,
 };
 use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -574,29 +574,26 @@ struct Node {
 
 impl Node {
     /// Keeps whether it finds the node `number` beneath itself, once it has spawned it in this turn.
-    fn look_after_birth<S>(&mut self, turn: &mut Turn<'_, Self, S>, number: u64) {
+    fn look_after_birth(&mut self, turn: &mut Turn<'_, Self>, number: u64) {
         let _ = turn.spawn::<Self>(&number, NodeConfig::quiet(number));
         let found = turn.child::<Self>(turn.me(), &number);
         self.found.push((number, found.is_some()));
     }
 
     /// Keeps whether it finds the node `number` beneath its parent.
-    fn look_beneath_parent<S>(&mut self, turn: &mut Turn<'_, Self, S>, number: u64) {
+    fn look_beneath_parent(&mut self, turn: &mut Turn<'_, Self>, number: u64) {
         let found = turn.parent().and_then(|parent| turn.child::<Self>(parent, &number));
         self.found.push((number, found.is_some()));
     }
 
     /// Spawns the node `number`, leaving as `leaving` says, watching it when `watches` says to, and sends it `rest`.
-    fn spawn_child<S, I>(
-        turn: &mut Turn<'_, Self, S>,
+    fn spawn_child(
+        turn: &mut Turn<'_, Self>,
         number: u64,
         leaving: Leaving,
         watches: Watches,
         rest: &Note,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<ToType<Self, Note>, I>,
-    {
+    ) -> Result<(), Fault> {
         if let Ok(child) = turn.spawn::<Self>(&number, NodeConfig::leaving(number, leaving)) {
             let is_watched = watches == Watches::Child;
             if is_watched {
@@ -624,10 +621,9 @@ impl Actor for Node {
     type Config = NodeConfig;
     type Key = u64;
     type Handles = (Note, Ended);
-    type BeginSends = (ToType<Self, Note>,);
-    type EndSends = (ToType<Self, Note>,);
+    type Depends = ();
 
-    fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: NodeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for number in config.spawns {
             let child = NodeConfig { to_self: vec![close()], ..NodeConfig::quiet(number) };
             let _ = turn.spawn::<Self>(&number, child);
@@ -639,7 +635,7 @@ impl Actor for Node {
         Ok(Self { number: config.number, leaving: config.leaving, found: Vec::new() })
     }
 
-    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         if let Some(parent) = turn.parent() {
             let number = self.number;
             let goodbye = match self.leaving {
@@ -658,10 +654,9 @@ impl Actor for Node {
 }
 
 impl Handles<Note> for Node {
-    type Sends = (ToType<Self, Note>, ToSender<Note>, ToAny<(Note,), Note>);
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
             return Ok(());
         };
@@ -714,7 +709,7 @@ impl Handles<Note> for Node {
                 turn.to(turn.me()).send(&rest)?;
             }
             Order::Keep => {
-                if let Some(sender) = turn.cast(turn.sender()) {
+                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
                     turn.to(sender).send(&said(Word::Late))?;
                 }
             }
@@ -747,9 +742,7 @@ impl Handles<Note> for Node {
 }
 
 impl Receives<Ended> for Node {
-    type Sends = ();
-
-    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1610,10 +1603,9 @@ impl Actor for Holder {
     type Config = HolderConfig;
     type Key = ();
     type Handles = (Note, Given);
-    type BeginSends = (ToType<Self, Note>, ToType<Self, Given>);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: HolderConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for note in config.to_self {
             turn.to(turn.me()).send(&note)?;
         }
@@ -1638,16 +1630,15 @@ impl Actor for Holder {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Holder {
-    type Sends = (ToType<Self, Note>, ToType<Self, Given>);
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
             return Ok(());
         };
@@ -1691,10 +1682,9 @@ impl Handles<Note> for Holder {
 }
 
 impl Handles<Given> for Holder {
-    type Sends = (ToType<Self, Given>,);
     type From = Anyone;
 
-    fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = length(turn.read(&given.blob));
         if self.gave {
             let Given { blob, left } = given;
@@ -2014,10 +2004,9 @@ impl Actor for Clocked {
     type Config = ClockedConfig;
     type Key = u64;
     type Handles = (Note, Finished);
-    type BeginSends = (ToType<Self, Note>,);
-    type EndSends = (ToType<Self, Finished>,);
+    type Depends = ();
 
-    fn begin(config: ClockedConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ClockedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let ClockedConfig { number, to_self } = config;
         let began = turn.now().nanos();
         let Ok(blob) = turn.put(vec![7; 3]) else {
@@ -2028,7 +2017,7 @@ impl Actor for Clocked {
         Ok(Self { number, blob, began, turns: Vec::new() })
     }
 
-    fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         let bytes = length(turn.read(&self.blob));
         let Self { number, began, turns, .. } = self;
         let finished = Finished { number, began, turns, ended: turn.now().nanos(), bytes };
@@ -2041,10 +2030,9 @@ impl Actor for Clocked {
 }
 
 impl Handles<Note> for Clocked {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.turns.push(turn.now().nanos());
         match note.first() {
             Some(Order::Twins) => {
@@ -2061,10 +2049,9 @@ impl Handles<Note> for Clocked {
 }
 
 impl Handles<Finished> for Clocked {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Finished, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Finished, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2243,23 +2230,21 @@ macro_rules! listening {
             type Config = Self;
             type Key = u64;
             type Handles = (Note,);
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(listener: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(listener: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(listener)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Note> for $name {
-            type Sends = ();
             type From = Anyone;
 
-            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -2285,16 +2270,15 @@ impl Actor for Caller {
     type Config = Self;
     type Key = ();
     type Handles = ();
-    type BeginSends = (Tells<Path<Listener>, Note>,);
-    type EndSends = ();
+    type Depends = (Listener,);
 
-    fn begin(caller: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(caller: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Listener>(0)).send(&caller.note)?;
 
         Ok(caller)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2383,14 +2367,13 @@ macro_rules! answering {
             type Config = Self;
             type Key = u64;
             type Handles = (Question,);
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(oracle: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(oracle: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(oracle)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -2400,10 +2383,9 @@ macro_rules! answering {
         }
 
         impl Handles<Question> for $name {
-            type Sends = (ToSender<Reply>,);
             type From = Anyone;
 
-            fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(turn.reply(&$answers)?)
             }
         }
@@ -2427,33 +2409,28 @@ impl Actor for Seer {
     type Config = Self;
     type Key = ();
     type Handles = (Answer<Reply, Wondering>, Ended);
-    type BeginSends = (Asks<Path<Oracle>, Question, Wondering>,);
-    type EndSends = ();
+    type Depends = (Oracle,);
 
-    fn begin(seer: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(seer: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Oracle>(0)).ask(&Question, &Wondering)?;
         turn.watch(path::<Oracle>(0));
 
         Ok(seer)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Reply, Wondering>> for Seer {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Ended> for Seer {
-    type Sends = ();
-
-    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2515,14 +2492,13 @@ impl Actor for Sibyl {
     type Config = Self;
     type Key = ();
     type Handles = (Question,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(sibyl: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(sibyl: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(sibyl)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2532,10 +2508,9 @@ impl Carries<Question> for Sibyl {
 }
 
 impl Handles<Question> for Sibyl {
-    type Sends = (ToSender<Reply>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(turn.reply(&Reply::Truth)?)
     }
 }
@@ -2554,10 +2529,9 @@ impl Actor for Pilgrim {
     type Config = Self;
     type Key = ();
     type Handles = (Answer<Reply, Wondering>,);
-    type BeginSends = (Asks<ActorRef<Sibyl>, Question, Wondering>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(pilgrim: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(pilgrim: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(sibyl) = turn.spawn::<Sibyl>(&(), Sibyl) else {
             return Err(Fault::new(&pilgrim)?);
         };
@@ -2566,15 +2540,13 @@ impl Actor for Pilgrim {
         Ok(pilgrim)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Reply, Wondering>> for Pilgrim {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Reply>, Wondering), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2627,23 +2599,21 @@ macro_rules! lighthouse {
             type Config = Self;
             type Key = ();
             type Handles = (Note,);
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(lighthouse: Self, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(lighthouse: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(lighthouse)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Note> for $name {
-            type Sends = ();
             type From = Anyone;
 
-            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -2653,10 +2623,9 @@ macro_rules! lighthouse {
 lighthouse!(Lighthouse);
 lighthouse!(FalseLighthouse);
 
-/// A root that declares a send at the lighthouse's typed path in its `begin`, in its handler, or as it ends, whichever
-/// of `$begins`, `$handler`, and `$ends` names it, and sends nothing: a declaration is what its spawn is checked by.
+/// A root that depends on the types `$depends` names, and sends nothing: a declaration is what its spawn is checked by.
 macro_rules! reaching {
-    ($name:ident, $named:literal, $begins:ty, $handler:ty, $ends:ty) => {
+    ($name:ident, $named:literal, $depends:ty) => {
         #[derive(Plain, Default)]
         #[kind(name = $named)]
         struct $name;
@@ -2669,35 +2638,28 @@ macro_rules! reaching {
             type Config = Self;
             type Key = ();
             type Handles = (Note,);
-            type BeginSends = $begins;
-            type EndSends = $ends;
+            type Depends = $depends;
 
-            fn begin(reaching: Self, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
+            fn begin(reaching: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(reaching)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, $ends>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Note> for $name {
-            type Sends = $handler;
             type From = Anyone;
 
-            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, $handler>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
     };
 }
 
-/// A send at the lighthouse's typed path.
-type ToLighthouse = (Tells<Path<Lighthouse>, Note>,);
-
-reaching!(Sailor, "aether.test.sailor", ToLighthouse, (), ());
-reaching!(Lookout, "aether.test.lookout", (), ToLighthouse, ());
-reaching!(Wrecker, "aether.test.wrecker", (), (), ToLighthouse);
+reaching!(Sailor, "aether.test.sailor", (Lighthouse,));
 
 /// Whether a root of type `R` is made beside whichever root `lighthouse` makes at the lighthouse's name.
 fn reaches<R: Root<Config = R, Key = ()> + Default>(lighthouse: impl FnOnce(&mut Engine)) -> Result<(), Refused> {
@@ -2709,9 +2671,9 @@ fn reaches<R: Root<Config = R, Key = ()> + Default>(lighthouse: impl FnOnce(&mut
 
 #[test]
 fn a_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_its_type_is_live_there() {
-    // Catches a check that reads only the `begin`'s sends and not a handler's or the closing turn's, one that counts
-    // an actor of another kind of the same name as live there, and one that refuses a root whose path is live, or
-    // names something other than the path's type (ADR-0022).
+    // Catches a check that does not read what a root depends on, one that counts an actor of another kind of the same
+    // name as live there, and one that refuses a root whose path is live, or names something other than the path's
+    // type (ADR-0022, ADR-0059).
     let missing = Err(Refused::Missing(Lighthouse::NAME));
     let made = |engine: &mut Engine| {
         let Ok(_) = engine.add_root::<Lighthouse>(&(), Lighthouse) else {
@@ -2724,13 +2686,9 @@ fn a_root_that_reaches_a_typed_path_of_singletons_is_refused_while_no_actor_of_i
         };
     };
 
-    assert_eq!(reaches::<Sailor>(|_| {}), missing, "a send its begin declares");
-    assert_eq!(reaches::<Lookout>(|_| {}), missing, "a send a handler declares");
-    assert_eq!(reaches::<Wrecker>(|_| {}), missing, "a send its closing turn declares");
+    assert_eq!(reaches::<Sailor>(|_| {}), missing, "a root it depends on");
     assert_eq!(reaches::<Sailor>(impostor), missing, "an actor of another kind at the place");
     assert_eq!(reaches::<Sailor>(made), Ok(()));
-    assert_eq!(reaches::<Lookout>(made), Ok(()));
-    assert_eq!(reaches::<Wrecker>(made), Ok(()));
 }
 
 /// A root that, as it begins, spawns a pilot, which reaches it back at its typed path, and a smuggler, which reaches
@@ -2752,10 +2710,9 @@ impl Actor for Harbor {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let pilot: Result<ActorRef<Pilot>, _> = turn.spawn(&(), Pilot);
         let smuggler: Result<ActorRef<Smuggler>, _> = turn.spawn(&(), Smuggler);
 
@@ -2765,16 +2722,15 @@ impl Actor for Harbor {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Harbor {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2787,7 +2743,7 @@ struct Pilot;
 #[derive(Plain)]
 struct Smuggler;
 
-/// What a child of the harbor is: one that declares a send at a typed path as it begins.
+/// What a child of the harbor is: one that depends on the type `$reaches`, at its typed path.
 macro_rules! harbored {
     ($name:ident, $named:literal, $reaches:ty) => {
         impl Kind for $name {
@@ -2802,14 +2758,13 @@ macro_rules! harbored {
             type Config = Self;
             type Key = ();
             type Handles = ();
-            type BeginSends = (Tells<Path<$reaches>, Note>,);
-            type EndSends = ();
+            type Depends = ($reaches,);
 
-            fn begin(child: Self, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+            fn begin(child: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(child)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -2861,10 +2816,9 @@ impl Actor for Barracks {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (ToType<Squad, Note>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(barracks: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(barracks: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let squad: Result<ActorRef<Squad>, _> = turn.spawn(&(), Squad);
         let scout: Result<ActorRef<Scout>, _> = turn.spawn(&(), Scout { is_root: false });
         let (Ok(squad), Ok(_)) = (squad, scout) else {
@@ -2875,16 +2829,15 @@ impl Actor for Barracks {
         Ok(barracks)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Barracks {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2902,25 +2855,23 @@ impl Actor for Squad {
     type Config = Self;
     type Key = ();
     type Handles = (Note,);
-    type BeginSends = (ToType<Barracks, Note>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(squad: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(squad: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.parent()).send(&said(Word::Squad))?;
 
         Ok(squad)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Note> for Squad {
-    type Sends = (ToType<Barracks, Note>,);
     type From = Anyone;
 
-    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.parent()).send(&said(Word::Squad).and(note))?;
 
         Ok(())
@@ -2944,10 +2895,9 @@ impl Actor for Scout {
     type Config = Self;
     type Key = ();
     type Handles = ();
-    type BeginSends = (ToAny<(Note,), Note>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let parent = turn.parent().and_then(|parent| turn.cast::<(Note,)>(parent));
         let is_root = parent.is_none();
         if let Some(parent) = parent {
@@ -2957,7 +2907,7 @@ impl Actor for Scout {
         Ok(Self { is_root })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2980,10 +2930,9 @@ impl Actor for Cell {
     type Config = Self;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(cell: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(cell: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let parent: Option<ActorRef<Self>> = turn.parent();
         if cell.depth == 0 {
             let child: Result<ActorRef<Self>, _> = turn.spawn(&(), Self { depth: 1, has_parent: false });
@@ -2995,7 +2944,7 @@ impl Actor for Cell {
         Ok(Self { has_parent: parent.is_some(), ..cell })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

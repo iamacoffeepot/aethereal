@@ -4,7 +4,7 @@
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
     Actor, ActorName, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Entry, Fault, Handles, Level,
-    ProtocolRef, Recent, ToSender, Turn,
+    ProtocolRef, Recent, Turn,
 };
 use aethereal_data::{
     ActorPath, Bare, Budget, Encode, EncodeError, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
@@ -368,7 +368,7 @@ fn recent_answered(recent: Recent<'_>, filter: &Filter<'_>) -> RecentLog {
 
 impl LogsTool {
     /// Answers `read_recent`: what every actor logged from the step its input names on (ADR-0053).
-    fn read_recent(call: &Call, turn: &mut Turn<'_, Self, (ToSender<Called>,)>) -> Result<(), Fault> {
+    fn read_recent(call: &Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let read = match from_bytes::<ReadRecent>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
             Ok(read) => read,
             Err(fault) => {
@@ -402,14 +402,13 @@ impl Actor for LogsTool {
     type Config = LogsToolConfig;
     type Key = ();
     type Handles = (Call,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: LogsToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: LogsToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -446,10 +445,9 @@ impl Tool for LogsTool {
 }
 
 impl Handles<Call> for LogsTool {
-    type Sends = (ToSender<Called>,);
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if call.tool == READ_RECENT {
             return Self::read_recent(&call, turn);
         }

@@ -1,11 +1,11 @@
 //! A connection dialed out (ADR-0033).
 
-use super::{Connection, ConnectionConfig, Finish, HungUp, Reading, Shut, Write, Wrote};
+use super::{Connection, ConnectionConfig, Finish, Reading, Shut, Write};
 use crate::Tcp;
 use crate::{Interest, Readied};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Part,
-    Receives, ToAny, ToSender, Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Receives,
+    Turn,
 };
 use aethereal_data::Bound;
 
@@ -25,88 +25,73 @@ impl Actor for Dialed {
     type Config = ConnectionConfig;
     type Key = u64;
     type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ConnectionConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: ConnectionConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { connection: Connection::begin(config, turn)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Open<Reading>> for Dialed {
-    type Sends = (ToSender<HungUp>,);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.open(turn, open)
     }
 }
 
 impl Handles<More> for Dialed {
-    type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
     }
 }
 
 impl Handles<Enough> for Dialed {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
     }
 }
 
 impl Receives<Ended> for Dialed {
-    type Sends = ();
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.ended(turn, &ended)
     }
 }
 
 impl Handles<Write> for Dialed {
-    type Sends = (ToSender<Wrote>,);
     type From = Anyone;
 
-    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.write(turn, write)
     }
 }
 
 impl Handles<Finish> for Dialed {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.finish(turn)
     }
 }
 
 impl Handles<Shut> for Dialed {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.shut(turn)
     }
 }
 
 impl Receives<Answer<Readied, Interest>> for Dialed {
-    type Sends = (ToAny<(Part<Reading>,), Part<Reading>>,);
-
-    fn handle(
-        &mut self,
-        readied: (Answered<Readied>, Interest),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, readied: (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.readied(turn, readied)
     }
 }

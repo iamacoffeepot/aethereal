@@ -9,7 +9,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use crate::{Beneath, Declared, Handler, Role, Sending, Spawner, StateSchema, Target, TypeSegment, Unfit};
+use crate::{Beneath, Declared, Handler, Role, Spawner, StateSchema, TypeSegment, Unfit};
 use aethereal_data::{Budget, Keyed, KindId, KindName, Plain, SchemaNodes, Shape, from_bytes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -24,9 +24,9 @@ pub struct Made {
     pub id: KindId,
     pub keyed: Key,
     pub spawner: Spawned,
-    pub begins: Vec<Send>,
-    pub handlers: Vec<Handles>,
-    pub ends: Vec<Send>,
+    /// The typed path to each type it depends on (ADR-0059).
+    pub depends: Vec<Depended>,
+    pub handlers: Vec<Handled>,
     /// The schema of an actor's state, its names included, which must be of the layout `id` is made from (ADR-0006,
     /// ADR-0054).
     pub state: SchemaNodes,
@@ -48,35 +48,20 @@ pub enum Spawned {
     Type { id: KindId },
 }
 
-/// One send a handler may make, as a section holds it.
+/// The typed path to a type a type depends on, as a section holds it: its last segment, then those above it to its
+/// root (ADR-0059).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-pub struct Send {
-    pub kind: KindId,
-    pub to: To,
+pub struct Depended {
+    pub last: Segment,
+    pub above: Vec<Segment>,
 }
 
-/// Where a declared send may go, as a section holds it.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-pub enum To {
-    Type { name: KindName, id: KindId },
-    Sender,
-    Handling { kinds: Vec<KindId> },
-    Path { last: Segment, above: Vec<Segment> },
-}
-
-/// One segment of a typed path a send may target, as a section holds it: its last, then those above it to its root.
+/// One segment of a typed path, as a section holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct Segment {
     pub name: KindName,
     pub kind: KindId,
     pub keyed: Key,
-}
-
-/// One thing a type handles and what its handler may send, as a section holds it.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-pub struct Handles {
-    pub role: Handled,
-    pub sends: Vec<Send>,
 }
 
 /// What a handler handles, as a section holds it.
@@ -200,10 +185,8 @@ const fn declared_type(out: &mut [u8], at: usize, declared: &Declared) -> usize 
             id(out, at, type_id)
         }
     };
-    at = sendings(out, at, declared.begins());
-    at = handlers(out, at, declared.handlers());
-
-    sendings(out, at, declared.ends())
+    at = depends(out, at, declared.depends());
+    handlers(out, at, declared.handlers())
 }
 
 /// The shape of the state of `declared`, as its code is built: what a section is written from.
@@ -255,44 +238,20 @@ const fn text(out: &mut [u8], at: usize, text: &str) -> usize {
     put(out, at, bytes)
 }
 
-const fn sendings(out: &mut [u8], at: usize, sendings: &[Sending]) -> usize {
-    let mut at = count(out, at, sendings.len());
+/// Writes the typed path to each type a type depends on: its last segment, then those above it to its root, as
+/// [`Depended`] reads them.
+const fn depends(out: &mut [u8], at: usize, depends: &[&TypeSegment]) -> usize {
+    let mut at = count(out, at, depends.len());
     let mut index = 0;
-    while index < sendings.len() {
-        let sending = sendings[index];
-        at = id(out, at, sending.kind());
-        at = match sending.to() {
-            Target::Type(type_name, type_id) => {
-                let at = count(out, at, 0);
-                let at = name(out, at, type_name);
-
-                id(out, at, type_id)
-            }
-            Target::Sender => count(out, at, 1),
-            Target::Handling(kinds) => {
-                let mut at = count(out, at, 2);
-                at = count(out, at, kinds.len());
-                let mut kind = 0;
-                while kind < kinds.len() {
-                    at = id(out, at, kinds[kind]);
-                    kind += 1;
-                }
-
-                at
-            }
-            Target::Path(last) => {
-                let mut at = count(out, at, 3);
-                at = segment(out, at, last);
-                at = count(out, at, depth(last) - 1);
-                let mut below = last;
-                while let Beneath::Type(above) = below.beneath {
-                    at = segment(out, at, above);
-                    below = above;
-                }
-
-                at
-            }
-        };
+    while index < depends.len() {
+        let last = depends[index];
+        at = segment(out, at, last);
+        at = count(out, at, depth(last) - 1);
+        let mut below = last;
+        while let Beneath::Type(above) = below.beneath {
+            at = segment(out, at, above);
+            below = above;
+        }
         index += 1;
     }
 
@@ -347,7 +306,6 @@ const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
                 id(out, at, kind)
             }
         };
-        at = sendings(out, at, handler.sends());
         index += 1;
     }
 
@@ -366,8 +324,8 @@ impl Made {
     #[must_use]
     pub fn leak(&self) -> &'static Declared {
         let name: &'static KindName = Box::leak(Box::new(self.name.clone()));
-        let handlers = self.handlers.iter().map(|handles| {
-            let role = match handles.role {
+        let handlers = self.handlers.iter().map(|handled| {
+            let role = match *handled {
                 Handled::Kind { kind } => Role::Kind(kind),
                 Handled::Ended => Role::Ended,
                 Handled::Others => Role::Others,
@@ -375,7 +333,7 @@ impl Made {
                 Handled::Stage { kind } => Role::Stage(kind),
             };
 
-            Handler::new(role, leak_sends(&handles.sends))
+            Handler::new(role)
         });
         let handlers: &'static [Handler] = Box::leak(handlers.collect::<Box<[Handler]>>());
         let keyed = match self.keyed {
@@ -388,29 +346,13 @@ impl Made {
             Spawned::Own => Spawner::Own,
             Spawned::Type { id } => Spawner::Type(id),
         };
-        let begins = leak_sends(&self.begins);
-        let ends = leak_sends(&self.ends);
+        let depends = self.depends.iter().map(|depended| leak_path(&depended.last, &depended.above));
+        let depends: &'static [&'static TypeSegment] = Box::leak(depends.collect::<Box<[&'static TypeSegment]>>());
         let state = StateSchema::Read(Box::leak(Box::new(self.state.clone())));
-        let declared = Declared::new(name.clone(), self.id, state, keyed, spawner, begins, handlers, ends);
+        let declared = Declared::new(name.clone(), self.id, state, keyed, spawner, depends, handlers);
 
         Box::leak(Box::new(declared))
     }
-}
-
-/// The sends `sends` holds, as the engine reads them, kept for as long as the process runs.
-fn leak_sends(sends: &[Send]) -> &'static [Sending] {
-    let sendings = sends.iter().map(|send| {
-        let to = match &send.to {
-            To::Type { name, id } => Target::Type(Box::leak(Box::new(name.clone())), *id),
-            To::Sender => Target::Sender,
-            To::Handling { kinds } => Target::Handling(Box::leak(kinds.clone().into_boxed_slice())),
-            To::Path { last, above } => Target::Path(leak_path(last, above)),
-        };
-
-        Sending::new(send.kind, to)
-    });
-
-    Box::leak(sendings.collect::<Box<[Sending]>>())
 }
 
 /// The typed path whose last segment is `last`, with `above` from the one over it to its root, kept for as long as the

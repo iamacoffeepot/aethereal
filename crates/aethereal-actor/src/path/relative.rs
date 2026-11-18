@@ -2,7 +2,7 @@
 //! (ADR-0016, ADR-0022).
 
 use crate::Vantage;
-use crate::{Actor, Admits, Anywhere, ChildOf, Handled, Handles, Listed, Reachable, Reaches, Seated, ToAny, ToType};
+use crate::{Actor, Admits, Anywhere, ChildOf, Handled, Handles, Listed, Lists, Reachable, Reaches, Seated};
 use aethereal_data::{Kind, KindId, PathSegment, Then};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -20,7 +20,7 @@ pub struct Parent<P> {
 /// dropped.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -42,14 +42,13 @@ pub struct Parent<P> {
 /// #     type Config = Squad;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -58,14 +57,13 @@ pub struct Parent<P> {
 /// #     type Config = Army;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -75,10 +73,9 @@ pub struct Parent<P> {
 /// actor!(Squad, "aether.doc.squad", Army);
 ///
 /// impl Handles<Poke> for Squad {
-///     type Sends = (ToAny<(Poke,), Poke>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(parent()).send(&Poke)?;
 ///
 ///         Ok(())
@@ -86,10 +83,9 @@ pub struct Parent<P> {
 /// }
 /// #
 /// # impl Handles<Poke> for Army {
-/// #     type Sends = ();
 /// #     type From = Anyone;
 /// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -108,10 +104,8 @@ impl<Me: ChildOf<Parent = Anywhere>, P: Listed> Reachable<Me> for Parent<P> {
     }
 }
 
-/// A parent is sent to as an actor reached through a protocol reference is: the sends list [`ToAny<P, K>`].
-impl<P: Listed, K: Kind> Reaches<K> for Parent<P> {
-    type Marker = ToAny<P, K>;
-}
+/// A parent is sent to as an actor reached through a protocol reference is: of a kind the protocol holds.
+impl<Me, P: Listed, K: Kind, I> Reaches<Me, K, I> for Parent<P> where P::Kinds: Lists<K, I> {}
 
 /// The place beneath the sender that the types `D` name, from a child of its own down: what [`child`] names.
 pub struct Child<D> {
@@ -204,7 +198,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// live or not; a place beneath one as a typed path is, live in the table as the step began.
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -226,14 +220,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Config = Squad;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -242,14 +235,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Config = Army;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -259,10 +251,9 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// actor!(Squad, "aether.doc.squad", Army);
 ///
 /// impl Handles<Poke> for Squad {
-///     type Sends = (ToType<Squad, Poke>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<Squad>(())).send(&Poke)?;
 ///
 ///         Ok(())
@@ -270,10 +261,9 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// }
 /// #
 /// # impl Handles<Poke> for Army {
-/// #     type Sends = ();
 /// #     type From = Anyone;
 /// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -282,7 +272,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// Nor does a place whose types do not stand each beneath the one before:
 ///
 /// ```compile_fail,E0277
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ToAny, ToType, Top, Turn, child, parent};
+/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, child, parent};
 /// # use aethereal_data::Plain;
 /// #
 /// # macro_rules! actor {
@@ -304,14 +294,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Config = Squad;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(squad: Squad, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(squad)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -320,14 +309,13 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #     type Config = Army;
 /// #     type Key = ();
 /// #     type Handles = (Poke,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(army: Army, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(army)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -337,10 +325,9 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 ///
 /// // A squad stands beneath an army, so no squad stands beneath the army's squad.
 /// impl Handles<Poke> for Army {
-///     type Sends = (ToType<Squad, Poke>,);
 ///     type From = Anyone;
 ///
-///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<(Squad, Squad)>(())).send(&Poke)?;
 ///
 ///         Ok(())
@@ -348,10 +335,9 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// }
 /// #
 /// # impl Handles<Poke> for Squad {
-/// #     type Sends = ();
 /// #     type From = Anyone;
 /// #
-/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -381,10 +367,5 @@ where
     }
 }
 
-/// A place is sent to as an actor of its last type is: the sends list [`ToType<D::Last, K>`].
-impl<D: Descent, K: Kind + Handled> Reaches<K> for Child<D>
-where
-    D::Last: Actor + Handles<K>,
-{
-    type Marker = ToType<D::Last, K>;
-}
+/// A place is sent to as an actor of its last type is: of a kind that type handles.
+impl<Me, D: Descent, K: Kind + Handled> Reaches<Me, K, ()> for Child<D> where D::Last: Actor + Handles<K> {}

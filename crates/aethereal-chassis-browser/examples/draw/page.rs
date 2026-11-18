@@ -3,8 +3,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, ChildOf, Ending, Fault, Level, On, Path, Receives, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Level, On, Receives, Render, Start, Tick, Top, Turn,
+    path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -164,17 +164,16 @@ impl Actor for Drawer {
         Answer<Uniformed, MadeInstances>,
         Answer<Placed, MadeAll>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -211,9 +210,7 @@ fn look(millis: u64) -> Vec<u8> {
 }
 
 impl Receives<On<Start>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -224,13 +221,7 @@ impl Receives<On<Start>> for Drawer {
 }
 
 impl Receives<Answer<Shaped, Nothing>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -260,12 +251,10 @@ fn record() -> VertexLayout {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, MadeMesh>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             say(format!("the triangle was not made: {answered:?}"));
@@ -297,12 +286,10 @@ impl Receives<Answer<Meshed, Learned>> for Drawer {
 }
 
 impl Receives<Answer<Programmed, MadeMesh>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, CreateInstances, MadeProgram>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Programmed>, MadeMesh),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(program)) = answered else {
             say(format!("the program was not made: {answered:?}"));
@@ -323,12 +310,10 @@ impl Receives<Answer<Programmed, MadeMesh>> for Drawer {
 }
 
 impl Receives<Answer<Instanced, MadeProgram>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, CreateUniforms, MadeInstances>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Instanced>, MadeProgram),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Instanced::Made(instances)) = answered else {
             say(format!("the instances were not made: {answered:?}"));
@@ -349,12 +334,10 @@ impl Receives<Answer<Instanced, MadeProgram>> for Drawer {
 }
 
 impl Receives<Answer<Uniformed, MadeInstances>> for Drawer {
-    type Sends = (Asks<Path<Renderer>, Place, MadeAll>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Uniformed>, MadeInstances),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Uniformed::Made(uniforms)) = answered else {
             say(format!("the uniforms were not made: {answered:?}"));
@@ -376,12 +359,10 @@ impl Receives<Answer<Uniformed, MadeInstances>> for Drawer {
 }
 
 impl Receives<Answer<Placed, MadeAll>> for Drawer {
-    type Sends = (Tells<Path<Renderer>, DrawList>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Placed>, MadeAll),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         match answered {
             Answered::Yes(Placed::Made(placement)) => {
@@ -399,9 +380,7 @@ impl Receives<Answer<Placed, MadeAll>> for Drawer {
 }
 
 impl Receives<On<Tick>> for Drawer {
-    type Sends = (Tells<Path<Renderer>, WriteInstances>, Tells<Path<Renderer>, WriteUniforms>);
-
-    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tick: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Drawing { instances, uniforms } = *self else {
             return Ok(());
         };

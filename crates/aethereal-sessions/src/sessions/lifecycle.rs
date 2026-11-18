@@ -9,7 +9,7 @@ use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
 use super::streams::user_line;
 use super::transcript::{Ended, Entry, Note, Turning};
-use super::{Act, Acting, Acts, Asking, Does, Feed, Sessions};
+use super::{Act, Acting, Asking, Feed, Sessions};
 use crate::{
     Acted, Attach, ContainerId, ContainerState, Create, Created, DockerError, Inspect, Inspected, Logs, Remove, Start,
     Stop, Until, Unwritable,
@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 impl Sessions {
     /// Starts a container of `session` for its run `run`, which its life is already `Starting` for at its first step:
     /// its volumes made first, and the credential read.
-    pub(super) fn start<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, run: u32) -> Result<(), Fault> {
+    pub(super) fn start(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32) -> Result<(), Fault> {
         self.house(turn, session, run, 0)?;
         self.dirty(session);
 
@@ -30,9 +30,9 @@ impl Sessions {
 
     /// Attaches to and follows `container`, of `session`'s run `run`, which runs: its logs from the start, skipping
     /// what the transcript holds.
-    pub(super) fn resume<S: Does>(
+    pub(super) fn resume(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         container: ContainerId,
         run: u32,
@@ -75,9 +75,9 @@ impl Sessions {
 
     /// Stops the container of `session`, which runs, noting why, and leaves the session as `then` says once it is
     /// removed.
-    pub(super) fn stop<S: Does>(
+    pub(super) fn stop(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         why: Ended,
         then: Then,
@@ -102,13 +102,7 @@ impl Sessions {
 
     /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session
     /// stopped, to be resumed. Nothing is done when the session's container is not that run's, or is being stopped.
-    pub(super) fn ended<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        run: u32,
-        why: Ended,
-    ) -> Result<(), Fault> {
+    pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
@@ -128,9 +122,9 @@ impl Sessions {
     }
 
     /// Asks Docker to remove `container`, of `session`'s run `run`.
-    pub(super) fn remove<S: Does>(
+    pub(super) fn remove(
         &self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         container: ContainerId,
         run: u32,
@@ -145,9 +139,9 @@ impl Sessions {
 
     /// The start of `session`'s run `run` failed, as `why` says: the session is stopped, and each who waits on it
     /// answered.
-    pub(super) fn unstarted<S: Does>(
+    pub(super) fn unstarted(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         run: u32,
         why: &Refusal,
@@ -177,14 +171,12 @@ impl Sessions {
 }
 
 impl Receives<Answer<Provisioned, Crediting>> for Sessions {
-    type Sends = Acts;
-
     /// The credential is read, a bearer drawn, and the drop box made: the bearer is held as the session's, and Docker
     /// asked to make the session's container, which is given both.
     fn handle(
         &mut self,
         (answered, Crediting { session, run }): (Answered<Provisioned>, Crediting),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let is_crediting = self.is_at(session, run, |step| matches!(step, Step::Crediting));
         if !is_crediting {
@@ -220,13 +212,11 @@ impl Receives<Answer<Provisioned, Crediting>> for Sessions {
 }
 
 impl Receives<Answer<Created, Asking>> for Sessions {
-    type Sends = Acts;
-
     /// Docker made the container: it is recorded, and started. One made for a start given up on is removed.
     fn handle(
         &mut self,
         (answered, Asking { session, run }): (Answered<Created>, Asking),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let is_creating = self.is_at(session, run, |step| matches!(step, Step::Creating));
         let container = match answered {
@@ -250,13 +240,11 @@ impl Receives<Answer<Created, Asking>> for Sessions {
 }
 
 impl Receives<Answer<Acted, Acting>> for Sessions {
-    type Sends = Acts;
-
     /// A start, a stop, or a removal Docker did, or why not.
     fn handle(
         &mut self,
         (answered, Acting { session, run, act }): (Answered<Acted>, Acting),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let acted = match answered {
             Answered::Yes(acted) => acted,
@@ -274,13 +262,7 @@ impl Receives<Answer<Acted, Acting>> for Sessions {
 
 impl Sessions {
     /// Docker started, or did not start, the container of `session`'s run `run`.
-    fn started<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        run: u32,
-        acted: Acted,
-    ) -> Result<(), Fault> {
+    fn started(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, acted: Acted) -> Result<(), Fault> {
         let Some(held) = self.held.get(&session) else {
             return Ok(());
         };
@@ -314,13 +296,7 @@ impl Sessions {
     }
 
     /// Docker stopped the container of `session`'s run `run`, or did not: it is removed either way.
-    fn stopped<S: Does>(
-        &self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        run: u32,
-        acted: &Acted,
-    ) -> Result<(), Fault> {
+    fn stopped(&self, turn: &mut Turn<'_, Self>, session: u32, run: u32, acted: &Acted) -> Result<(), Fault> {
         let Some(held) = self.held.get(&session) else {
             return Ok(());
         };
@@ -339,13 +315,7 @@ impl Sessions {
 
     /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said, and
     /// its bearer is let go of, so nothing calls the hub's tools as the session until its next container.
-    fn removed<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        run: u32,
-        acted: Acted,
-    ) -> Result<(), Fault> {
+    fn removed(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, acted: Acted) -> Result<(), Fault> {
         let gone = match acted {
             Acted::Done | Acted::Unchanged | Acted::Failed(DockerError::NotFound { .. }) => Ok(()),
             Acted::Failed(why) => Err(why),
@@ -392,12 +362,7 @@ impl Sessions {
     }
 
     /// Resumes `session`, which is stopped, in a new container, writing `lines` to it once it is attached.
-    pub(super) fn restart<S: Does>(
-        &mut self,
-        turn: &mut Turn<'_, Self, S>,
-        session: u32,
-        lines: Vec<String>,
-    ) -> Result<(), Fault> {
+    pub(super) fn restart(&mut self, turn: &mut Turn<'_, Self>, session: u32, lines: Vec<String>) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
@@ -410,14 +375,12 @@ impl Sessions {
 }
 
 impl Receives<Answer<Inspected, Asking>> for Sessions {
-    type Sends = Acts;
-
     /// The state of a container whose logs or attach ended: one still running is followed again, and one that is not
     /// has ended.
     fn handle(
         &mut self,
         (answered, Asking { session, run }): (Answered<Inspected>, Asking),
-        turn: &mut Turn<'_, Self, Acts>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let why = match answered {
             Answered::Yes(Inspected::State(ContainerState::Running)) => return self.reopen(turn, session, run),
@@ -440,7 +403,7 @@ impl Receives<Answer<Inspected, Asking>> for Sessions {
 
 impl Sessions {
     /// Opens again the streams of `session`'s run `run` that ended while its container still runs.
-    fn reopen<S: Does>(&mut self, turn: &mut Turn<'_, Self, S>, session: u32, run: u32) -> Result<(), Fault> {
+    fn reopen(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32) -> Result<(), Fault> {
         let Some(docker) = self.docker() else {
             return Ok(());
         };
@@ -468,9 +431,9 @@ impl Sessions {
     }
 
     /// Asks Docker for the state of `session`'s container of run `run`, whose logs or attach ended.
-    pub(super) fn inspect<S: Does>(
+    pub(super) fn inspect(
         &self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         session: u32,
         container: ContainerId,
         run: u32,
@@ -484,7 +447,7 @@ impl Sessions {
 
 impl Activity {
     /// Cancels the wait it holds on the timer, if it holds one.
-    pub(super) fn cancel<S: Does>(&self, turn: &mut Turn<'_, Sessions, S>) {
+    pub(super) fn cancel(&self, turn: &mut Turn<'_, Sessions>) {
         match self {
             Self::Idle { sleep: job, .. }
             | Self::Noticed { deadline: job, .. }

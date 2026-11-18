@@ -14,9 +14,8 @@ use aethereal_chassis_headless::native::NativeLayers;
 use aethereal_data::Bound;
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::stack::{
-    Answering, Binding, Deadline, Gather, GatherSends, InboundBody, Layers, ListenSends, Listened, OutboundBody,
-    Outward, ParkedPart, ParkedResponse, PartStep, ReadSends, Response, Sending, Serving, SourceEnd, Stack, StackSends,
-    StackSettings, layers,
+    Answering, Binding, Deadline, Gather, InboundBody, Layers, Listened, OutboundBody, Outward, ParkedPart,
+    ParkedResponse, PartStep, Response, Sending, Serving, SourceEnd, Stack, StackSettings, layers,
 };
 use aethereal_mcp::{MarkOwner, Mcp, McpRoutes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -75,16 +74,15 @@ impl Actor for McpStack {
         Part<OutboundBody>,
         Answer<SourceEnd, Number>,
     );
-    type BeginSends = ListenSends;
-    type EndSends = ();
+    type Depends = (Tcp, Mcp);
 
-    fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(settings: StackSettings, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let layers: Layers<McpLayers> = layers(turn)?;
 
         Ok(Self { serving: Serving::listen(turn, &settings, layers)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -92,15 +90,9 @@ impl Actor for McpStack {
 impl Stack for McpStack {}
 
 impl Receives<Answer<Listening, Binding>> for McpStack {
-    type Sends = ListenSends;
-
     /// With no port, the server has nothing to serve: it quits, and as its listen rides the boot, it does not start
     /// (ADR-0020).
-    fn handle(
-        &mut self,
-        listening: (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {
             turn.log(Level::Error, format_args!("no port to serve on, so the server stops: {listened:?}"));
@@ -112,177 +104,123 @@ impl Receives<Answer<Listening, Binding>> for McpStack {
 }
 
 impl Handles<Part<Accepting>> for McpStack {
-    type Sends = ListenSends;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.accept(part, turn)
     }
 }
 
 impl Receives<Answer<Unbound, Number>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        unbound: (Answered<Unbound>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, unbound: (Answered<Unbound>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.unbound(unbound, turn)
     }
 }
 
 impl Handles<Part<Reading>> for McpStack {
-    type Sends = StackSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.read(part, turn)
     }
 }
 
 impl Receives<Answer<HungUp, Number>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        hung_up: (Answered<HungUp>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, hung_up: (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.hung_up(hung_up, turn)
     }
 }
 
 impl Receives<Answer<Wrote, Sending>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        wrote: (Answered<Wrote>, Sending),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, wrote: (Answered<Wrote>, Sending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.wrote(wrote, turn)
     }
 }
 
 impl Receives<Answer<Response, Answering>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        answered: (Answered<Response>, Answering),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, answered: (Answered<Response>, Answering), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.answered(answered, turn)
     }
 }
 
 impl Receives<Answer<Slept, Deadline>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        slept: (Answered<Slept>, Deadline),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, slept: (Answered<Slept>, Deadline), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.slept(slept, turn)
     }
 }
 
 impl Handles<Gather> for McpStack {
-    type Sends = GatherSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, gather: Gather, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.gather(gather, turn)
     }
 }
 
 impl Handles<Shut> for McpStack {
-    type Sends = StackSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.shut(turn)
     }
 }
 
 impl Receives<Answer<Outward, ParkedResponse>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
     fn handle(
         &mut self,
         returned: (Answered<Outward>, ParkedResponse),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.serving.returned(returned, turn)
     }
 }
 
 impl Handles<Open<InboundBody>> for McpStack {
-    type Sends = ReadSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.open_body(open, turn)
     }
 }
 
 impl Handles<More> for McpStack {
-    type Sends = StackSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.grant_body(&more, turn)
     }
 }
 
 impl Handles<Enough> for McpStack {
-    type Sends = StackSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.stop_reading(&enough, turn)
     }
 }
 
 impl Receives<Ended> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.lose_reader(&ended, turn)
     }
 }
 
 impl Handles<Part<OutboundBody>> for McpStack {
-    type Sends = StackSends<McpLayers>;
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.take_part(part, turn)
     }
 }
 
 impl Receives<Answer<SourceEnd, Number>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        ended: (Answered<SourceEnd>, Number),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, ended: (Answered<SourceEnd>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.end_source(ended, turn)
     }
 }
 
 impl Receives<Answer<PartStep, ParkedPart>> for McpStack {
-    type Sends = StackSends<McpLayers>;
-
-    fn handle(
-        &mut self,
-        passed: (Answered<PartStep>, ParkedPart),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, passed: (Answered<PartStep>, ParkedPart), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.serving.passed(passed, turn)
     }
 }

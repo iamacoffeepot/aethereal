@@ -1,6 +1,6 @@
 //! Who may send a handler its kind: the handler's guard, which dispatch asks before the handler runs (ADR-0058).
 //!
-//! A mail handler states its guard as `type From` beside its `Sends`. The
+//! A mail handler states its guard as `type From`. The
 //! guard is handed the receiver, the mail read as its kind, and the sender,
 //! and answers the sender checked, as its [`Sent`] type, or nothing, when the
 //! mail goes to the handler's `refused`. The library's guards are here; a

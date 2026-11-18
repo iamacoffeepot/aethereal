@@ -4,18 +4,18 @@
 
 use super::body::Ending;
 use super::connection::{Phase, Stage};
-use super::{Deadline, Reaches, Serving, Stepping};
+use super::{Deadline, Reaches, Sending, Serving};
 use crate::Status;
 use crate::stack::actor::{Way, place};
 use crate::stack::{
-    AsksEach, Entered, Gathering, Inward, LayerList, Outward, Parked, ParkedPart, ParkedResponse, PartStep, Response,
-    Stack, StackSends,
+    AskedBy, Entered, Gathering, Inward, Outward, Parked, ParkedPart, ParkedResponse, PartStep, Response, Stack,
+    WalkedBy,
 };
 use crate::stack::{InboundBody, OutboundBody, SourceEnd};
 use aethereal_actor::{
     Answer, Answered, Conforms, Fault, Handles, Level, Number, Part, Receives, Slept, Streamed, Turn, Unanswered,
 };
-use aethereal_tcp::{Accepting, HungUp, Reading, Unbound};
+use aethereal_tcp::{Accepting, HungUp, Reading, Unbound, Wrote};
 use core::mem;
 
 impl<S, T> Serving<S, T>
@@ -27,8 +27,10 @@ where
         + Receives<Answer<HungUp, Number>>
         + Receives<Answer<Slept, Deadline>>
         + Handles<Part<OutboundBody>>
-        + Receives<Answer<SourceEnd, Number>>,
-    T: LayerList,
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// An actor layer answered a request's head on the way in, as `answered` says, or did not: the request goes on in
     /// from after that layer, with what it attached; turns back from it, with its answer; or, when it did not answer,
@@ -39,14 +41,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn entered<X: 'static, Is, Ks, Js>(
+    pub fn entered<X: 'static, Js>(
         &mut self,
         (answered, parked): (Answered<Inward<X>>, Parked),
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let standing = parked.standing();
         let number = standing.connection;
@@ -85,14 +87,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn returned<Is, Ks, Js>(
+    pub fn returned<Js>(
         &mut self,
         (answered, parked): (Answered<Outward>, ParkedResponse),
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let standing = parked.standing();
         let number = standing.connection;
@@ -128,14 +130,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn passed<Is, Ks, Js>(
+    pub fn passed<Js>(
         &mut self,
         (answered, parked): (Answered<PartStep>, ParkedPart),
-        turn: &mut Stepping<'_, S, T>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault>
     where
-        S: Conforms<Gathering, Is> + Conforms<Streamed<InboundBody>, Ks>,
-        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
+        S: Conforms<Gathering> + Conforms<Streamed<InboundBody>>,
+        Reaches<T>: AskedBy<S, T::Attached, Js>,
     {
         let (standing, way) = parked.standing();
         let number = standing.connection;
@@ -188,7 +190,7 @@ where
 /// The status a response takes in place of one an actor layer did not answer, as `why` says, logged on `turn`: `504`
 /// when its answer was late, `503` when it had ended, and `500` when its turn failed, it let the ask go, or its answer
 /// did not read.
-fn unanswered<Me, S>(why: Unanswered, turn: &mut Turn<'_, Me, S>) -> Status {
+fn unanswered<Me>(why: Unanswered, turn: &mut Turn<'_, Me>) -> Status {
     turn.log(Level::Warn, format!("an actor layer did not answer: {why:?}"));
 
     match why {

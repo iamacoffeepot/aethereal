@@ -27,14 +27,13 @@ use aethereal_data::KindId;
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -208,15 +207,14 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -260,15 +258,14 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -312,15 +309,14 @@ impl<Me> Parented<Me> for Anywhere {
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 $(let _ = _turn.spawn::<$child>(&(), $child);)?
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -382,14 +378,13 @@ impl AtTop for Anywhere {}
 /// #             type Config = $name;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(config: $name, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(config: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(config)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }

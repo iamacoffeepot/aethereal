@@ -2,7 +2,7 @@
 //! their parts, and their answers (ADR-0017).
 
 use super::{Enough, More, Open, Part, Stream, StreamKey, Unreachable};
-use crate::{Allows, Ended, Fault, Held, ProtocolRef, Receives, ToAny, ToSender, Turn};
+use crate::{Ended, Fault, Held, ProtocolRef, Receives, Turn};
 use aethereal_data::{Bound, EncodeError};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -50,25 +50,20 @@ impl<S: Stream> Serving<S> {
     /// Opens the stream `open` asks for, holding its request, and answers its key and what it was asked to open
     /// with. The stream may send nothing until the asker's credit comes, which follows the request.
     ///
-    /// It builds only when the actor handles endings and the turn's sends list the stream's answer to its sender.
+    /// It builds only when the actor handles endings.
     ///
     /// # Errors
     ///
     /// The turn fails with [`Unreachable`] when the asker does not take the stream's parts, and with what holding the
     /// request said when it could not be held.
-    pub fn open<A, Sends, I>(
-        &mut self,
-        turn: &mut Turn<'_, A, Sends>,
-        open: Open<S>,
-    ) -> Result<(StreamKey, S::Open), Fault>
+    pub fn open<A>(&mut self, turn: &mut Turn<'_, A>, open: Open<S>) -> Result<(StreamKey, S::Open), Fault>
     where
         A: Receives<Ended>,
-        Sends: Allows<ToSender<S::Done>, I>,
     {
         let Some(asker) = turn.cast::<(Part<S>,)>(turn.sender()) else {
             return Err(Fault::new(&Unreachable)?);
         };
-        let held = turn.hold::<S::Done, I>()?;
+        let held = turn.hold::<S::Done>()?;
         let (number, value) = open.into_parts();
         let key = StreamKey::new(asker.id().bits(), number);
 
@@ -83,7 +78,7 @@ impl<S: Stream> Serving<S> {
 
     /// Adds the credit `more` grants to the stream it names, and answers that stream's key: none when it names no
     /// stream of `S` served here, such as one already finished.
-    pub fn more<A, Sends>(&mut self, turn: &Turn<'_, A, Sends>, more: &More) -> Option<StreamKey> {
+    pub fn more<A>(&mut self, turn: &Turn<'_, A>, more: &More) -> Option<StreamKey> {
         let number = more.number::<S>()?;
         let streaming = self.streams.get_mut(&turn.sender().id().bits())?.get_mut(&number)?;
         streaming.credit = streaming.credit.saturating_add(more.credit());
@@ -92,7 +87,7 @@ impl<S: Stream> Serving<S> {
     }
 
     /// The stream `stop` stops, taken out to be finished: none when it names no stream of `S` served here.
-    pub fn stop<A, Sends>(&mut self, turn: &Turn<'_, A, Sends>, stop: &Enough) -> Option<Streaming<S>> {
+    pub fn stop<A>(&mut self, turn: &Turn<'_, A>, stop: &Enough) -> Option<Streaming<S>> {
         let number = stop.number::<S>()?;
 
         self.take(StreamKey::new(turn.sender().id().bits(), number))
@@ -164,21 +159,18 @@ impl<S: Stream> Streaming<S> {
 
     /// Sends the asker a part carrying `value`, spending one credit.
     ///
-    /// It builds only when the turn's sends list the stream's parts.
+    /// Its send is checked at its call, as any is: the asker's reference takes the stream's parts.
     ///
     /// # Errors
     ///
     /// [`Unsent::NoCredit`], with `value` handed back, when the asker lets it send no more; [`Unsent::Unwritable`]
     /// when the part could not be written.
-    pub fn send<A, Sends, I>(&mut self, turn: &mut Turn<'_, A, Sends>, value: S::Part) -> Result<(), Unsent<S::Part>>
-    where
-        Sends: Allows<ToAny<(Part<S>,), Part<S>>, I>,
-    {
+    pub fn send<A>(&mut self, turn: &mut Turn<'_, A>, value: S::Part) -> Result<(), Unsent<S::Part>> {
         if self.credit == 0 {
             return Err(Unsent::NoCredit(value));
         }
 
-        turn.to(self.asker).send::<_, I>(&Part::new(self.number, value)).map_err(Unsent::Unwritable)?;
+        turn.to(self.asker).send(&Part::new(self.number, value)).map_err(Unsent::Unwritable)?;
         self.credit -= 1;
 
         Ok(())
@@ -189,7 +181,7 @@ impl<S: Stream> Streaming<S> {
     /// # Errors
     ///
     /// Why `done` could not be written. The request is then let go of, and the engine answers it as one let go of.
-    pub fn finish<A, Sends>(self, turn: &mut Turn<'_, A, Sends>, done: &S::Done) -> Result<(), EncodeError> {
+    pub fn finish<A>(self, turn: &mut Turn<'_, A>, done: &S::Done) -> Result<(), EncodeError> {
         turn.answer(self.held, done)
     }
 }

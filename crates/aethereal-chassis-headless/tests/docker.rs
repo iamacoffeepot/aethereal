@@ -3,8 +3,8 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
-    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, ProtocolRef,
+    Receives, Streams, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -103,10 +103,9 @@ impl Actor for Session {
         Answer<LogsDone, Number>,
         Answer<EventsDone, Number>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Unset, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Unset)?);
         };
@@ -124,7 +123,7 @@ impl Actor for Session {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -141,17 +140,9 @@ impl Bootstrap<Headless> for Session {
 }
 
 impl Handles<Order> for Session {
-    type Sends = (
-        Asks<Streamed<Attaching>, Open<Attaching>, Number>,
-        ToAny<Streamed<Attaching>, More>,
-        Asks<Streamed<Logging>, Open<Logging>, Number>,
-        ToAny<Streamed<Logging>, More>,
-        Asks<Streamed<Watching>, Open<Watching>, Number>,
-        ToAny<Streamed<Watching>, More>,
-    );
     type From = Anyone;
 
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Attach { docker, attach } => {
                 self.attaching.open(turn, docker.protocol(), attach, ())?;
@@ -176,10 +167,9 @@ impl Handles<Order> for Session {
 }
 
 impl Handles<Part<Attaching>> for Session {
-    type Sends = (ToAny<Streamed<Attaching>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.attaching.part(turn, part)? else {
             return Ok(());
         };
@@ -194,10 +184,9 @@ impl Handles<Part<Attaching>> for Session {
 }
 
 impl Handles<Part<Logging>> for Session {
-    type Sends = (ToAny<Streamed<Logging>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.logging.part_held(turn, part),
             Pace::Taking => self.logging.part(turn, part)?,
@@ -216,10 +205,9 @@ impl Handles<Part<Logging>> for Session {
 }
 
 impl Handles<Part<Watching>> for Session {
-    type Sends = (ToAny<Streamed<Watching>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.watching.part(turn, part)? else {
             return Ok(());
         };
@@ -230,12 +218,10 @@ impl Handles<Part<Watching>> for Session {
 }
 
 impl Receives<Answer<Detached, Number>> for Session {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, number): (Answered<Detached>, Number),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.attaching.answered(number);
         if let Answered::Yes(detached) = answered {
@@ -247,12 +233,10 @@ impl Receives<Answer<Detached, Number>> for Session {
 }
 
 impl Receives<Answer<LogsDone, Number>> for Session {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, number): (Answered<LogsDone>, Number),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.logging.answered(number);
         if let Answered::Yes(done) = answered {
@@ -264,12 +248,10 @@ impl Receives<Answer<LogsDone, Number>> for Session {
 }
 
 impl Receives<Answer<EventsDone, Number>> for Session {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, number): (Answered<EventsDone>, Number),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.watching.answered(number);
         if let Answered::Yes(done) = answered {

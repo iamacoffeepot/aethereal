@@ -6,8 +6,6 @@ use crate::gpu::{self, Opened};
 use crate::refresh::Refresh;
 use crate::serving::Drawing;
 use crate::{Browser, Performance};
-use aethereal_actor::{Path, Tells};
-use aethereal_render::draw_list::DrawList;
 use aethereal_render::{Renderer, RendererConfig};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Unbuilt};
 use aethereal_window::InitialWindows;
@@ -38,7 +36,7 @@ impl Bootstrap<Browser<Performance>> for Renderer {
         let (mapping, requests) = cx.controller();
         let (mapped, feed) = cx.source();
         let (surfaced, _) = cx.source();
-        let roots = cx.root_list::<Tells<Path<Self>, DrawList>>()?;
+        let roots = cx.root_list();
         cx.begin(&(), RendererConfig { gpu, front, presenting, windows, mapping, mapped, surfaced, roots })?;
         cx.serve(Drawing { surfaces, presents, requests, feed, fronting, refresh: Refresh::new() });
 

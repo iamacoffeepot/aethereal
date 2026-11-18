@@ -3,8 +3,7 @@
 
 use aethereal_actor::Held as Debt;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives,
-    ToSender, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Receives, Top, Turn, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_data::{Bound, Budget, DecodeError, Plain, Schema, SchemaNodes, from_bytes, from_json};
@@ -352,23 +351,21 @@ impl Actor for Holder {
     type Config = HolderConfig;
     type Key = ();
     type Handles = (HoldFor, LaunchFor, Leave, Answer<Held, Holding>, Answer<Launched, Launching>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Store,);
 
-    fn begin(_: HolderConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: HolderConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { waiting: Vec::new(), launching: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<HoldFor> for Holder {
-    type Sends = (Asks<Path<Store>, Hold, Holding>, ToSender<Held>);
     type From = Anyone;
 
-    fn handle(&mut self, HoldFor { hash }: HoldFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, HoldFor { hash }: HoldFor, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let debt = turn.hold()?;
         turn.to(path::<Store>(())).ask(&Hold { hash }, &Holding)?;
         self.waiting.push(debt);
@@ -378,10 +375,9 @@ impl Handles<HoldFor> for Holder {
 }
 
 impl Handles<LaunchFor> for Holder {
-    type Sends = (Asks<Path<Store>, Launch, Launching>, ToSender<Launched>);
     type From = Anyone;
 
-    fn handle(&mut self, LaunchFor { binary }: LaunchFor, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, LaunchFor { binary }: LaunchFor, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let debt = turn.hold()?;
         turn.to(path::<Store>(())).ask(&Launch { binary }, &Launching)?;
         self.launching.push(debt);
@@ -391,12 +387,10 @@ impl Handles<LaunchFor> for Holder {
 }
 
 impl Receives<Answer<Launched, Launching>> for Holder {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Launching): (Answered<Launched>, Launching),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(launched) = answered else {
             panic!("the store answers a launch");
@@ -409,10 +403,9 @@ impl Receives<Answer<Launched, Launching>> for Holder {
 }
 
 impl Handles<Leave> for Holder {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -420,12 +413,10 @@ impl Handles<Leave> for Holder {
 }
 
 impl Receives<Answer<Held, Holding>> for Holder {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Holding): (Answered<Held>, Holding),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(held) = answered else {
             panic!("the store answers a hold");

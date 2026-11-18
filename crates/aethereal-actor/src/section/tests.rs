@@ -70,9 +70,8 @@ fn section_of_a_point(state: SchemaNodes) -> Vec<u8> {
         id: KindId::of::<Point>(),
         keyed: Key::Singleton,
         spawner: Spawned::Anyone,
-        begins: vec![],
+        depends: vec![],
         handlers: vec![],
-        ends: vec![],
         state,
     };
     let Ok(section) = to_bytes(&vec![point]) else {

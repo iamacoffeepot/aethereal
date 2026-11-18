@@ -22,12 +22,12 @@ use crate::job::{WrittenJob, lending_given};
 use crate::resource;
 use crate::resource::Reach;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Admits, Allows, Arena, Asking, ChildOf, Children, Claim, Claimed, Code,
-    Declared, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
+    Actor, ActorRef, Actors, ActorsWriter, Admits, Arena, Asking, ChildOf, Children, Claim, Claimed, Code, Declared,
+    DependsOn, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
     Keeping, Keeps, Kinds, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
     Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
-    Seated, Seats, Seen, Sends, Stage, Table, Tie, Tied, Time, ToSender, Unanswered, Unreadable, Untaken, Watchable,
-    What, Within, Written,
+    Seated, Seats, Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within,
+    Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -1508,13 +1508,9 @@ impl<'a> Turning<'a> {
         Sender::new(self.source, self.me, declared, self.above, self.table, self.made)
     }
 
-    /// The turn of the handler of `A`, whose type declares `declared`, which may send `S`, and whose guard `F` checked
-    /// the sender as `from`.
-    pub(crate) fn declaring<A: Actor, S: Sends, F: Guard<A>>(
-        self,
-        declared: &'static Declared,
-        from: F::Sent,
-    ) -> Turn<'a, A, S, F> {
+    /// The turn of the handler of `A`, whose type declares `declared`, and whose guard `F` checked the sender as
+    /// `from`.
+    pub(crate) fn declaring<A: Actor, F: Guard<A>>(self, declared: &'static Declared, from: F::Sent) -> Turn<'a, A, F> {
         let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
         let (keeps, pool) = keeps.split(asked.most_kept_bytes);
         let seat = Seat {
@@ -1536,8 +1532,8 @@ impl<'a> Turning<'a> {
     }
 }
 
-/// What an actor of type `Me` asks of the engine while it handles one item, through a handler that may send `S`, and
-/// whose guard `F` checked the sender (ADR-0009, ADR-0013, ADR-0058).
+/// What an actor of type `Me` asks of the engine while it handles one item, through a handler whose guard `F` checked
+/// the sender (ADR-0009, ADR-0013, ADR-0058). Each send it makes is checked at its call (ADR-0059).
 ///
 /// Each ask adds an effect to the turn's buffer of its class, and nothing asked for happens
 /// until the turn has returned `Ok`. Each read answers from the table of
@@ -1547,12 +1543,12 @@ impl<'a> Turning<'a> {
 /// [`Doing`], which it reads and is called as, and the buffers its actor keeps, a [`Pool`], which hands out buffers to
 /// fill and put (ADR-0042). A buffer borrows the pool and not the turn, so the turn sends, reads, and puts while one is
 /// held.
-pub struct Turn<'a, Me, S, F: Guard<Me> = Anyone> {
-    doing: Doing<'a, Me, S, F>,
+pub struct Turn<'a, Me, F: Guard<Me> = Anyone> {
+    doing: Doing<'a, Me, F>,
     pool: Pool<'a>,
 }
 
-impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
+impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// What the turn does, and the buffers its actor keeps, borrowed apart: a buffer the pool hands out borrows the
     /// pool alone, so what the turn does stays free to use, and put it, while the buffer is held (ADR-0042).
     ///
@@ -1574,17 +1570,15 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     /// #     type Config = Greet;
     /// #     type Key = ();
     /// #     type Handles = (Greet,);
-    /// #     type BeginSends = ();
-    /// #     type EndSends = ();
-    /// #     fn begin(_: Greet, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
-    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> { Ok(()) }
+    /// #     type Depends = ();
+    /// #     fn begin(_: Greet, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
+    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> { Ok(()) }
     /// # }
     ///
     /// impl Handles<Greet> for Greeter {
-    ///     type Sends = ();
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, _: Greet, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, _: Greet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let (turn, pool) = turn.split();
     ///         let mut buffer = pool.buffer(5);
     ///         buffer.extend_from_slice(b"hello");
@@ -1596,7 +1590,7 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     ///     }
     /// }
     /// ```
-    pub const fn split(&mut self) -> (&mut Doing<'a, Me, S, F>, &mut Pool<'a>) {
+    pub const fn split(&mut self) -> (&mut Doing<'a, Me, F>, &mut Pool<'a>) {
         (&mut self.doing, &mut self.pool)
     }
 
@@ -1610,7 +1604,7 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
 
     /// The actor `target` refers to, as [`Doing::to`] answers, called on the turn whole so a target the turn reads
     /// itself is read in the call, as in `turn.to(turn.me())`.
-    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         self.doing.to(target)
     }
 
@@ -1620,10 +1614,7 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     /// # Errors
     ///
     /// As [`Doing::reply`].
-    pub fn reply<K: Kind + Encode<Actors>, I>(&mut self, mail: &K) -> Result<(), EncodeError>
-    where
-        S: Allows<ToSender<K>, I>,
-    {
+    pub fn reply<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
         self.doing.reply(mail)
     }
 
@@ -1641,8 +1632,7 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     /// became of it with the context, as [`Answer<J::Done, C>`](crate::Answer), in a later step, as for a request it
     /// asked (ADR-0018). The job's id is its mail's: it takes the next count of what this actor sends.
     ///
-    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer). Running a job sends no mail to an
-    /// actor, so the turn's sends do not list it:
+    /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer):
     ///
     /// ```compile_fail,E0277
     /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Sleep, Turn};
@@ -1661,23 +1651,21 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     ///     type Config = Napper;
     ///     type Key = ();
     ///     type Handles = (Nap,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(napper)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
     /// impl Handles<Nap> for Napper {
-    ///     type Sends = ();
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let until = turn.now();
     ///         turn.run(&Sleep { until }, &nap)?;
     ///
@@ -1700,23 +1688,23 @@ impl<'a, Me, S, F: Guard<Me>> Turn<'a, Me, S, F> {
     }
 }
 
-impl<'a, Me, S, F: Guard<Me>> Deref for Turn<'a, Me, S, F> {
-    type Target = Doing<'a, Me, S, F>;
+impl<'a, Me, F: Guard<Me>> Deref for Turn<'a, Me, F> {
+    type Target = Doing<'a, Me, F>;
 
-    fn deref(&self) -> &Doing<'a, Me, S, F> {
+    fn deref(&self) -> &Doing<'a, Me, F> {
         &self.doing
     }
 }
 
-impl<'a, Me, S, F: Guard<Me>> DerefMut for Turn<'a, Me, S, F> {
-    fn deref_mut(&mut self) -> &mut Doing<'a, Me, S, F> {
+impl<'a, Me, F: Guard<Me>> DerefMut for Turn<'a, Me, F> {
+    fn deref_mut(&mut self) -> &mut Doing<'a, Me, F> {
         &mut self.doing
     }
 }
 
 /// What a turn does: every ask and read of a [`Turn`] but those of its buffers, which its [`Pool`] answers. A turn
 /// is called as this, and is split into it and its pool with [`Turn::split`] (ADR-0042).
-pub struct Doing<'a, Me, S, F: Guard<Me> = Anyone> {
+pub struct Doing<'a, Me, F: Guard<Me> = Anyone> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
@@ -1725,18 +1713,18 @@ pub struct Doing<'a, Me, S, F: Guard<Me> = Anyone> {
     /// The source as the handler's guard checked it (ADR-0058).
     from: F::Sent,
     chain: Chain,
-    of: PhantomData<fn() -> (Me, S)>,
+    of: PhantomData<fn() -> Me>,
 }
 
 /// The target of a turn's sends and asks, chosen once.
-impl<'a, Me, S, F: Guard<Me>> Doing<'a, Me, S, F> {
+impl<'a, Me, F: Guard<Me>> Doing<'a, Me, F> {
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
     /// the sends and asks that chain on what this answers (ADR-0016, ADR-0022). A path is found here, once, as a
     /// resolve sees it: each send and ask through it goes to the actor found then, and to none when the path held no
     /// live actor of its type.
     ///
     /// ```
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, ToType, Turn};
+    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Turn};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1751,37 +1739,35 @@ impl<'a, Me, S, F: Guard<Me>> Doing<'a, Me, S, F> {
     ///     type Config = Door;
     ///     type Key = ();
     ///     type Handles = (Knock,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(door: Door, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(door)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
     /// impl Handles<Knock> for Door {
-    ///     type Sends = (ToType<Door, Knock>,);
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.to(turn.me()).send(&Knock)?.send(&Knock)?;
     ///
     ///         Ok(())
     ///     }
     /// }
     /// ```
-    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
 }
 
-impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
+impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
     /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent
@@ -1814,14 +1800,13 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Lens;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(lens)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -1830,19 +1815,18 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Army;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(army: Army, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(army)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
-    /// fn lens<S>(turn: &Turn<'_, Army, S>, army: ActorRef<Army>) -> Option<ActorRef<Lens>> {
+    /// fn lens(turn: &Turn<'_, Army>, army: ActorRef<Army>) -> Option<ActorRef<Lens>> {
     ///     turn.child::<Lens>(army, &())
     /// }
     /// ```
@@ -1892,23 +1876,21 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Watcher;
     ///     type Key = ();
     ///     type Handles = (Look,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(watcher: Watcher, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(watcher: Watcher, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(watcher)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
     /// impl Handles<Look> for Watcher {
-    ///     type Sends = ();
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
@@ -1946,23 +1928,21 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Clock;
     ///     type Key = ();
     ///     type Handles = (Wind,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(clock)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
     /// impl Handles<Wind> for Clock {
-    ///     type Sends = ();
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.subscribe::<Tick>();
     ///
     ///         Ok(())
@@ -1986,12 +1966,7 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     }
 
     /// Sends `mail` to the source of the item being handled. It is delivered after the turn, in a later step.
-    ///
-    /// It builds only when the turn's sends list [`ToSender<K>`].
-    pub fn reply<K: Kind + Encode<Actors>, I>(&mut self, mail: &K) -> Result<(), EncodeError>
-    where
-        S: Allows<ToSender<K>, I>,
-    {
+    pub fn reply<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
         self.seat.reply(self.source, mail)
     }
 
@@ -2006,22 +1981,17 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     /// Holds the request this turn handles, to answer with an `A` in a later turn, through
     /// [`answer`](Self::answer) (ADR-0017). The turn then owes the request nothing, and a reply to it is refused.
     ///
-    /// It builds only when the turn's sends list [`ToSender<A>`], as a reply in this turn would.
-    ///
     /// # Errors
     ///
     /// [`NotOwed`] when the mail this turn handles is no request, or this turn has answered or held it already.
-    pub fn hold<A: Kind, I>(&mut self) -> Result<Held<A>, Fault>
-    where
-        S: Allows<ToSender<A>, I>,
-    {
+    pub fn hold<A: Kind>(&mut self) -> Result<Held<A>, Fault> {
         let owed = self.seat.hold(self.source, KindId::of::<A>())?;
 
         Ok(Held::new(owed, self.seat.due))
     }
 
     /// Answers the request `held` holds with `mail`, on this turn's chain (ADR-0017). Its asker held it to be answered
-    /// with an `A`, so nothing is checked against this turn's sends.
+    /// with an `A`.
     ///
     /// The turn fails, with [`NotOwed`], when this actor holds no such debt: a held request read back from bytes that
     /// name another's, or one already answered.
@@ -2071,14 +2041,13 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Lens;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(lens)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -2087,23 +2056,21 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     ///     type Config = Host;
     ///     type Key = ();
     ///     type Handles = (Lens,);
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(host: Host, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(host: Host, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(host)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
     ///
     /// impl Handles<Lens> for Host {
-    ///     type Sends = ();
     ///     type From = Anyone;
     ///
-    ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn handle(&mut self, lens: Lens, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let _ = turn.spawn::<Lens>(&(), lens);
     ///
     ///         Ok(())
@@ -2351,7 +2318,10 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     /// when nothing live stands there, or an actor of another type does. A tool reaches a root it lists by its type
     /// so (ADR-0050).
     #[must_use]
-    pub fn found<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>> {
+    pub fn found<L: ChildOf + PathTo, I>(&self, path: &Path<L>) -> Option<ActorRef<L>>
+    where
+        Me: DependsOn<L, I>,
+    {
         self.seat.found(path.names(), KindId::of::<L>()).map(ActorRef::new)
     }
 
@@ -2396,21 +2366,21 @@ impl<Me, S, F: Guard<Me>> Doing<'_, Me, S, F> {
     }
 }
 
-/// What an actor asks of the engine in its `begin`, which may send `S`: a first turn, which offers less than a turn
+/// What an actor asks of the engine in its `begin`: a first turn, which offers less than a turn
 /// (ADR-0009, ADR-0013).
 ///
 /// It offers no close: an actor does not end in the turn that makes it. It is handling no mail, so it has no
 /// sender to send to.
-pub struct Beginning<'a, Me, S> {
+pub struct Beginning<'a, Me> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
     /// The buffers the actor keeps, which a job it runs that fills buffers is lent from (ADR-0042).
     pool: Pool<'a>,
-    of: PhantomData<fn() -> (Me, S)>,
+    of: PhantomData<fn() -> Me>,
 }
 
-impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
+impl<'a, Me: ChildOf> Beginning<'a, Me> {
     /// The `begin` of the root of type `Me` that `me` names, at `path`, reading `table`, adding to `asked`, lent its
     /// part's `instances`, and keeping what it keeps in `keeps`.
     ///
@@ -2469,32 +2439,32 @@ impl<'a, Me: ChildOf> Beginning<'a, Me, Me::BeginSends> {
 /// What sends and asks as a turn does: a turn, or a `begin`, whose mail goes with the mail of the turn it runs in
 /// (ADR-0017: "a `begin` asks as a turn does"). What a library sends for an actor, such as the request and credit that
 /// open a stream, it sends through this, so the actor may send it from either.
-pub trait Mailing<'a, Me, S> {
+pub trait Mailing<'a, Me> {
     /// The actor `target` refers to, as the target of the sends and asks that chain on what this answers, as
     /// [`Turn::to`] and [`Beginning::to`] are.
-    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives>;
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives>;
 }
 
-impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Doing<'a, Me, S, F> {
-    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+impl<'a, Me, F: Guard<Me>> Mailing<'a, Me> for Doing<'a, Me, F> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         self.to(target)
     }
 }
 
-impl<'a, Me, S, F: Guard<Me>> Mailing<'a, Me, S> for Turn<'a, Me, S, F> {
-    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+impl<'a, Me, F: Guard<Me>> Mailing<'a, Me> for Turn<'a, Me, F> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         self.doing.to(target)
     }
 }
 
-impl<'a, Me, S> Mailing<'a, Me, S> for Beginning<'a, Me, S> {
-    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+impl<'a, Me> Mailing<'a, Me> for Beginning<'a, Me> {
+    fn toward<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         self.to(target)
     }
 }
 
 /// The target of a `begin`'s sends and asks, chosen once.
-impl<'a, Me, S> Beginning<'a, Me, S> {
+impl<'a, Me> Beginning<'a, Me> {
     /// A buffer with room for at least `room` bytes from the buffers the actor keeps, as [`Pool::buffer`] hands one
     /// out (ADR-0042). It borrows the whole `begin`: a buffer to put is taken out of it with `Vec::from` first.
     #[must_use]
@@ -2506,21 +2476,24 @@ impl<'a, Me, S> Beginning<'a, Me, S> {
     /// the sends and asks that chain on what this answers, as a turn's [`to`](Turn::to) is. Its mail goes with the mail
     /// of the turn this `begin` runs in, and what it asks is answered in a turn after this `begin`; a `begin` that
     /// fails sends and asks nothing.
-    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Lives> {
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Lives> {
         let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
 }
 
-impl<Me, S> Beginning<'_, Me, S> {
+impl<Me> Beginning<'_, Me> {
     /// A reference to the live actor the typed path `path` names, as this `begin` sees the engine, proven of its type:
     /// none when nothing live stands there, or an actor of another type does, as a turn's [`found`](Doing::found)
     /// answers. A stack's `begin` keeps each root it reaches so (ADR-0035). A host makes its roots one at a time, in
     /// its setup's order, each begun and live before the next is made, so a root finds a root its setup makes before
     /// it and none for one made after it (ADR-0022).
     #[must_use]
-    pub fn found<L: ChildOf + PathTo>(&self, path: &Path<L>) -> Option<ActorRef<L>> {
+    pub fn found<L: ChildOf + PathTo, I>(&self, path: &Path<L>) -> Option<ActorRef<L>>
+    where
+        Me: DependsOn<L, I>,
+    {
         self.seat.found(path.names(), KindId::of::<L>()).map(ActorRef::new)
     }
 
@@ -2557,16 +2530,15 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///     type Config = Fort;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(fort: Fort, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(fort: Fort, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let parent = turn.parent();
     ///
     ///         Ok(fort)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -2703,17 +2675,16 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///     type Config = Nothing;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
     ///         Ok(Self)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -2748,16 +2719,15 @@ impl<Me, S> Beginning<'_, Me, S> {
     ///     type Config = Clock;
     ///     type Key = ();
     ///     type Handles = ();
-    ///     type BeginSends = ();
-    ///     type EndSends = ();
+    ///     type Depends = ();
     ///
-    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         turn.subscribe::<Tick>();
     ///
     ///         Ok(clock)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         Ok(())
     ///     }
     /// }
@@ -2887,7 +2857,7 @@ impl<'a> Closing<'a> {
     }
 
     /// The closing turn of an actor of type `A`.
-    pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A, A::EndSends> {
+    pub(crate) fn declaring<A: ChildOf>(self) -> Ending<'a, A> {
         let Self { me, path, above, table, asked, keeps, sent, why, .. } = self;
         // A closing turn runs no job and takes no buffer, so it reaches its actor's resources alone.
         let keeps = keeps.reach();
@@ -2911,25 +2881,25 @@ impl<'a> Closing<'a> {
     }
 }
 
-/// What an actor asks of the engine in its closing turn, which may send `S` (ADR-0009, ADR-0013).
+/// What an actor asks of the engine in its closing turn (ADR-0009, ADR-0013).
 ///
 /// It offers no spawn and no close. It is handling no mail, so it has no sender to send to. It answers what the actor
 /// held, and asks nothing: the actor is gone by the time an answer could come.
-pub struct Ending<'a, Me, S> {
+pub struct Ending<'a, Me> {
     seat: Seat<'a>,
     why: Why,
-    of: PhantomData<fn() -> (Me, S)>,
+    of: PhantomData<fn() -> Me>,
 }
 
 /// The target of a closing turn's sends, chosen once.
-impl<'a, Me, S> Ending<'a, Me, S> {
+impl<'a, Me> Ending<'a, Me> {
     /// The actor `target` refers to, at the typed path it is, or the several references it holds, as the target of
     /// the sends that chain on what this answers, as the actor's last mail, as a turn's [`to`](Turn::to) is. It asks
     /// nothing: the actor is gone by the time an answer could come.
     ///
     /// ```compile_fail,E0599
-    /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
-    /// # use aethereal_actor::{ToSender, Top, Turn, path};
+    /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
+    /// # use aethereal_actor::{Top, Turn, path};
     /// # use aethereal_data::Plain;
     /// #
     /// # #[derive(Plain)]
@@ -2960,14 +2930,13 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     /// #     type Config = Greeter;
     /// #     type Key = ();
     /// #     type Handles = (Hello,);
-    /// #     type BeginSends = ();
-    /// #     type EndSends = ();
+    /// #     type Depends = ();
     /// #
-    /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #         Ok(greeter)
     /// #     }
     /// #
-    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     /// #         Ok(())
     /// #     }
     /// # }
@@ -2977,18 +2946,15 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     /// # }
     /// #
     /// # impl Handles<Hello> for Greeter {
-    /// #     type Sends = (ToSender<Hi>,);
     /// #     type From = Anyone;
     /// #
-    /// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    /// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     /// #         Ok(turn.reply(&Hi)?)
     /// #     }
     /// # }
     /// #
     /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-    /// #     type Sends = ();
-    /// #
-    /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
     /// #         Ok(())
     /// #     }
     /// # }
@@ -2997,29 +2963,28 @@ impl<'a, Me, S> Ending<'a, Me, S> {
     ///     type Config = Visitor;
     ///     type Key = ();
     ///     type Handles = (Answer<Hi, Waiting>,);
-    ///     type BeginSends = ();
-    ///     type EndSends = (Asks<Path<Greeter>, Hello, Waiting>,);
+    ///     type Depends = (Greeter,);
     ///
-    ///     fn begin(visitor: Visitor, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    ///     fn begin(visitor: Visitor, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(visitor)
     ///     }
     ///
     ///     // An ending turn's target has no `ask`.
-    ///     fn end(self, turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    ///     fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;
     ///
     ///         Ok(())
     ///     }
     /// }
     /// ```
-    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, S, R::Through, R::At, Leaves> {
+    pub fn to<R: Reachable<Me>>(&mut self, target: R) -> Toward<'_, 'a, Me, R::Through, R::At, Leaves> {
         let at = target.at(&Vantage::new(&self.seat));
 
         Toward::new(&mut self.seat, at)
     }
 }
 
-impl<Me, S> Ending<'_, Me, S> {
+impl<Me> Ending<'_, Me> {
     /// The child of type `C` under `key` beneath the actor `parent` refers to, when one is live there, as a resolve
     /// sees it, or this actor stood it up in this turn (ADR-0022). It builds only when `C` may stand beneath the
     /// parent's type, as its parent says ([`ParentOf`]). A child is found while it is live, whether or not its parent

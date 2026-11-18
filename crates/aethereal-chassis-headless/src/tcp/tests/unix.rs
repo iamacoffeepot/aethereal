@@ -115,7 +115,7 @@ fn a_frame_written_to_a_unix_socket_is_read_back_and_the_connection_hangs_up() -
     let mut peer = peer(&listener);
     harness.tell(streamer, &Follow::Reading(connection))?;
     let parts = vec![harness.put(b"pi".to_vec())?, harness.put(b"ng".to_vec())?];
-    let wrote = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    let wrote = harness.ask(connection.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(wrote)?, Answered::Yes(Wrote::Sent));
     let mut sent = [0; 8];
     assert!(peer.read_exact(&mut sent).is_ok(), "the peer reads the frame");
@@ -124,7 +124,7 @@ fn a_frame_written_to_a_unix_socket_is_read_back_and_the_connection_hangs_up() -
     assert!(peer.write_all(b"\0\0\0\x04pong").is_ok(), "the peer replies");
     assert_eq!(heard(&mut harness, streamer, 1)?, [frame(Side::Client, b"pong")]);
 
-    harness.tell(connection.protocol::<Writing, _>(), &Shut)?;
+    harness.tell(connection.protocol::<Writing>(), &Shut)?;
     assert!(peer.set_nonblocking(true).is_ok(), "the peer's reads return at once");
     let mut byte = [0];
     let mut read = Err(ErrorKind::WouldBlock);
@@ -179,10 +179,9 @@ impl Actor for Holder {
     type Config = Asked;
     type Key = ();
     type Handles = (Hold, Part<Reading>, Answer<HungUp, Number>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Asked, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Asked)?);
         };
@@ -190,7 +189,7 @@ impl Actor for Holder {
         Ok(Self { reading: Streams::new(window), pace: Pace::Holding, held: Vec::new(), bytes: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -207,10 +206,9 @@ impl Bootstrap<Headless> for Holder {
 }
 
 impl Handles<Hold> for Holder {
-    type Sends = (Asks<Streamed<Reading>, Open<Reading>, Number>, ToAny<Streamed<Reading>, More>);
     type From = Anyone;
 
-    fn handle(&mut self, hold: Hold, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, hold: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match hold {
             Hold::Read(connection) => {
                 self.reading.open(turn, connection.protocol(), Read, ())?;
@@ -228,10 +226,9 @@ impl Handles<Hold> for Holder {
 }
 
 impl Handles<Part<Reading>> for Holder {
-    type Sends = (ToAny<Streamed<Reading>, More>,);
     type From = Anyone;
 
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.reading.part_held(turn, part),
             Pace::Taking => self.reading.part(turn, part)?,
@@ -249,9 +246,7 @@ impl Handles<Part<Reading>> for Holder {
 }
 
 impl Receives<Answer<HungUp, Number>> for Holder {
-    type Sends = ();
-
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.answered(number);
 
         Ok(())
@@ -341,10 +336,10 @@ fn a_unix_connection_whose_write_fails_still_reads_what_its_peer_sent() -> Resul
     drop(peer);
 
     let parts = vec![harness.put(b"gone".to_vec())?];
-    let failed = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    let failed = harness.ask(connection.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(failed)?, Answered::Yes(Wrote::HungUp), "the peer is gone, so the write fails");
     let parts = vec![harness.put(b"later".to_vec())?];
-    let later = harness.ask(connection.protocol::<Writing, _>(), &Write { parts })?;
+    let later = harness.ask(connection.protocol::<Writing>(), &Write { parts })?;
     assert_eq!(harness.answer(later)?, Answered::Yes(Wrote::HungUp), "a write half that failed takes no more");
 
     harness.tell(streamer, &Follow::Reading(connection))?;

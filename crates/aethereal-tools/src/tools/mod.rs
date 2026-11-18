@@ -8,10 +8,10 @@ mod tests;
 pub use kinds::{CallTool, ListTools, Sheets, Subscribe};
 pub use settings::ToolsSettings;
 
-use crate::{Call, Called, Caller, Holder, Offer, Offered, Table, Tooling, Withdraw};
+use crate::{Call, Called, Caller, Holder, Offer, Offered, Table, Withdraw};
 use aethereal_actor::{
-    Actor, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held,
-    Level, Receives, Subscribers, ToAny, ToSender, Top, Turn, Unanswered,
+    Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ended, Ending, Fault, Handles, Held, Level, Receives,
+    Subscribers, Top, Turn, Unanswered,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Bootstrap;
@@ -75,10 +75,9 @@ impl Actor for Tools {
     type Config = ToolsSettings;
     type Key = ();
     type Handles = (Offer, Withdraw, Ended, ListTools, Subscribe, CallTool, Answer<Called, Forwarding>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: ToolsSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: ToolsSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self {
             settings,
             table: Table::new(),
@@ -89,17 +88,16 @@ impl Actor for Tools {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Offer> for Tools {
-    type Sends = (ToSender<Offered>, ToAny<(Sheets,), Sheets>);
     type From = Anyone;
 
     /// Holds the offer, when its tools fit in the table, and sends the set with them to each subscriber.
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let room = usize::try_from(self.settings.most_tools).unwrap_or(usize::MAX);
         let worker = offer.worker;
         let offered = self.table.take(offer.tools, worker, room);
@@ -114,11 +112,10 @@ impl Handles<Offer> for Tools {
 }
 
 impl Handles<Withdraw> for Tools {
-    type Sends = (ToAny<(Sheets,), Sheets>,);
     type From = Anyone;
 
     /// Stops holding the tool, and sends the set without it to each subscriber.
-    fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, withdraw: Withdraw, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = self.table.len();
         self.table.withdraw(&withdraw.tool, withdraw.worker);
         let is_changed = self.table.len() < held;
@@ -131,10 +128,8 @@ impl Handles<Withdraw> for Tools {
 }
 
 impl Receives<Ended> for Tools {
-    type Sends = (ToAny<(Sheets,), Sheets>,);
-
     /// A subscriber has ended, and is dropped; or a worker has, and its tools are dropped and the set sent.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.subscribers.ended(&ended);
         let held = self.table.len();
         self.table.ended(ended.actor());
@@ -148,10 +143,9 @@ impl Receives<Ended> for Tools {
 }
 
 impl Handles<ListTools> for Tools {
-    type Sends = (ToSender<Sheets>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: ListTools, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ListTools, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.reply(&self.sheets())?;
 
         Ok(())
@@ -160,10 +154,9 @@ impl Handles<ListTools> for Tools {
 
 /// Adds the sender, and sends it the set as it stands: nothing, when it is subscribed already.
 impl Handles<Subscribe> for Tools {
-    type Sends = (ToAny<(Sheets,), Sheets>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Subscribe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let sender = turn.sender();
         let Some(subscriber) = turn.cast::<(Sheets,)>(sender) else {
             turn.log(Level::Warn, "an actor that does not handle `Sheets` asked to be sent them");
@@ -180,14 +173,13 @@ impl Handles<Subscribe> for Tools {
 }
 
 impl Handles<CallTool> for Tools {
-    type Sends = (ToSender<Called>, Asks<Tooling, Call, Forwarding>);
     type From = Anyone;
 
     /// Asks the call of the worker that offered the tool, holding it until the worker answers: the ask is made in this
     /// turn, so it is due when the call is (ADR-0041). A call of a revision it has changed since is refused at once, in
     /// the turn that looks the tool up, so no tool offered since is called with bytes written for another schema; and a
     /// tool it does not hold is refused at once.
-    fn handle(&mut self, call: CallTool, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: CallTool, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let CallTool { tool, revision, input } = call;
         if revision != self.revision {
             let changed = format!("the engine's tools have changed since revision {revision}: read them again");
@@ -211,13 +203,11 @@ impl Handles<CallTool> for Tools {
 }
 
 impl Receives<Answer<Called, Forwarding>> for Tools {
-    type Sends = ();
-
     /// The worker's answer, answered to whoever called: a worker that did not answer is refused, saying why.
     fn handle(
         &mut self,
         (answered, Forwarding { number }): (Answered<Called>, Forwarding),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());
@@ -240,12 +230,9 @@ impl Tools {
     }
 
     /// What it holds has changed: the revision is raised, and the set sent to each subscriber.
-    fn changed<S, I>(&mut self, turn: &mut Turn<'_, Self, S>) -> Result<(), Fault>
-    where
-        S: Allows<ToAny<(Sheets,), Sheets>, I>,
-    {
+    fn changed(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.revision += 1;
-        turn.to(&self.subscribers).send::<_, I>(&self.sheets())?;
+        turn.to(&self.subscribers).send(&self.sheets())?;
 
         Ok(())
     }

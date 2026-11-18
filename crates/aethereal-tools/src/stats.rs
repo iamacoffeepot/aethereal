@@ -5,7 +5,7 @@ use crate::logs::spoken_name;
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
     Actor, ActorRef, Against, Anyone, Anywhere, Beginning, ChildOf, Ending, EngineStats, Fault, Figures, Handles,
-    LARGEST, Process, ProtocolRef, ToSender, Turn,
+    LARGEST, Process, ProtocolRef, Turn,
 };
 use aethereal_data::{Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 
@@ -146,14 +146,13 @@ impl Actor for EngineStatsTool {
     type Config = EngineStatsToolConfig;
     type Key = ();
     type Handles = (Call,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: EngineStatsToolConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: EngineStatsToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -182,10 +181,9 @@ impl Tool for EngineStatsTool {
 }
 
 impl Handles<Call> for EngineStatsTool {
-    type Sends = (ToSender<Called>,);
     type From = Anyone;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let read = match from_bytes::<ReadEngineStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
             Ok(read) => read,
             Err(fault) => {

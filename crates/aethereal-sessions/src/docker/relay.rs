@@ -9,12 +9,12 @@ use super::events::Lines;
 use super::request::Call;
 use super::whole::outgoing;
 use super::{
-    Attached, Attaching, Connecting, Detached, Dial, Docker, DockerError, Event, EventsDone, Logging, LogsDone, Output,
-    Relaying, Stopping, Unwritable, Watching, reply,
+    Attached, Attaching, Detached, Docker, DockerError, Event, EventsDone, Logging, LogsDone, Output, Unwritable,
+    Watching, reply,
 };
 use aethereal_actor::{
-    ActorRef, Allows, Answer, Answered, Anyone, Enough, Fault, Handles, More, Number, Open, Part, ProtocolRef,
-    Receives, Serving, Stream, StreamKey, Taken, ToAny, ToSender, Turn, Unsent,
+    ActorRef, Answer, Answered, Anyone, Enough, Fault, Handles, More, Number, Open, Part, ProtocolRef, Receives,
+    Serving, Stream, StreamKey, Taken, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Client, Failure, Finished, Follow, Received, Receiving, Switch};
@@ -95,10 +95,9 @@ enum Passed {
 }
 
 impl Handles<Open<Attaching>> for Docker {
-    type Sends = (ToSender<Detached>, Dial);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (key, attach) = self.attaching.open(turn, open)?;
         let downstream = Downstream::Attach { key, demux: Demux::new(), queue: VecDeque::new() };
 
@@ -107,10 +106,9 @@ impl Handles<Open<Attaching>> for Docker {
 }
 
 impl Handles<Open<Logging>> for Docker {
-    type Sends = (ToSender<LogsDone>, Dial);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (key, logs) = self.logging.open(turn, open)?;
         let downstream = Downstream::Logs { key, demux: Demux::new(), queue: VecDeque::new() };
 
@@ -119,10 +117,9 @@ impl Handles<Open<Logging>> for Docker {
 }
 
 impl Handles<Open<Watching>> for Docker {
-    type Sends = (ToSender<EventsDone>, Dial);
     type From = Anyone;
 
-    fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (key, events) = self.watching.open(turn, open)?;
         let downstream = Downstream::Events { key, lines: Lines::new(), queue: VecDeque::new() };
 
@@ -131,11 +128,10 @@ impl Handles<Open<Watching>> for Docker {
 }
 
 impl Handles<More> for Docker {
-    type Sends = Relaying;
     type From = Anyone;
 
     /// An asker grants a stream more credit: what waits for it is passed on.
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self, Relaying>) -> Result<(), Fault> {
+    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let attach = self.attaching.more(turn, &more).map(Served::Attach);
         let logs = self.logging.more(turn, &more).map(Served::Logs);
         let events = self.watching.more(turn, &more).map(Served::Events);
@@ -151,11 +147,10 @@ impl Handles<More> for Docker {
 }
 
 impl Handles<Enough> for Docker {
-    type Sends = (Stopping,);
     type From = Anyone;
 
     /// An asker stops a stream: it is answered at once, and the response's connection hung up.
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let served = if let Some(stream) = self.attaching.stop(turn, &enough) {
             let served = Served::Attach(stream.key());
             stream.finish(turn, &Detached::HungUp(HungUp::Shut))?;
@@ -177,12 +172,11 @@ impl Handles<Enough> for Docker {
 }
 
 impl Handles<Part<Receiving>> for Docker {
-    type Sends = Relaying;
     type From = Anyone;
 
     /// A part of a response `Http`'s client streams: taken apart into the parts of the stream it is relayed to, its
     /// credit held back until they are passed on.
-    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self, Relaying>) -> Result<(), Fault> {
+    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, kept, .. }) = self.receiving.part_held(turn, part) else {
             return Ok(());
         };
@@ -200,14 +194,12 @@ impl Handles<Part<Receiving>> for Docker {
 }
 
 impl Receives<Answer<Finished, Number>> for Docker {
-    type Sends = Relaying;
-
     /// A response `Http`'s client streamed has ended: its client is hung up, and the stream it was relayed to is
     /// answered once every part waiting is passed on.
     fn handle(
         &mut self,
         (answered, upstream): (Answered<Finished>, Number),
-        turn: &mut Turn<'_, Self, Relaying>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(number) = self.receiving.answered(upstream) else {
             return Ok(());
@@ -241,18 +233,15 @@ impl Receives<Answer<Finished, Number>> for Docker {
 impl Docker {
     /// Asks `Http` to dial the socket for the stream `downstream` serves, whose request is `call`, or answers the
     /// stream why it could not be written.
-    fn relay<S, IS>(
+    fn relay(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         downstream: Downstream,
         call: Result<Call, Unwritable>,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<Dial, IS>,
-    {
+    ) -> Result<(), Fault> {
         match call {
             Ok(call) => {
-                let number = self.dial::<_, IS>(turn)?;
+                let number = self.dial(turn)?;
                 self.relays.insert(number, Relay { downstream, flow: Flow::Dialing(call), withheld: 0 });
             }
             Err(why) => self.conclude(turn, downstream.served(), End::Failed(DockerError::Unwritable(why)))?,
@@ -265,7 +254,7 @@ impl Docker {
     /// `Http` could not dial.
     pub(super) fn follow(
         &mut self,
-        turn: &mut Turn<'_, Self, Connecting>,
+        turn: &mut Turn<'_, Self>,
         number: u64,
         mut relay: Relay,
         reached: Result<ActorRef<Client>, DockerError>,
@@ -301,10 +290,7 @@ impl Docker {
 
     /// Drops the relay that serves `served`, whose asker has stopped it or ended, hanging up its response's
     /// connection.
-    pub(super) fn drop_relay<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, served: Served) -> Result<(), Fault>
-    where
-        S: Allows<Stopping, I>,
-    {
+    pub(super) fn drop_relay(&mut self, turn: &mut Turn<'_, Self>, served: Served) -> Result<(), Fault> {
         let Some(number) = self.relay_of(served) else {
             return Ok(());
         };
@@ -312,7 +298,7 @@ impl Docker {
             return Ok(());
         };
         if let Flow::Following { upstream, .. } | Flow::Refused { upstream, .. } = relay.flow {
-            self.receiving.stop::<_, _, I>(turn, upstream)?;
+            self.receiving.stop(turn, upstream)?;
         }
 
         Ok(())
@@ -320,7 +306,7 @@ impl Docker {
 
     /// Ends the relay `number` early with `error`: its response's connection is hung up, and its asker answered once
     /// the parts before it are passed on.
-    fn break_off(&mut self, turn: &mut Turn<'_, Self, Relaying>, number: u64, error: DockerError) -> Result<(), Fault> {
+    fn break_off(&mut self, turn: &mut Turn<'_, Self>, number: u64, error: DockerError) -> Result<(), Fault> {
         let Some(relay) = self.relays.get_mut(&number) else {
             return Ok(());
         };
@@ -334,7 +320,7 @@ impl Docker {
 
     /// Passes on what waits in the relay `number` while its asker has credit. Once nothing waits, the credit held back
     /// is granted to `Http`'s client, or, when the response has ended, the asker is answered.
-    fn flush(&mut self, turn: &mut Turn<'_, Self, Relaying>, number: u64) -> Result<(), Fault> {
+    fn flush(&mut self, turn: &mut Turn<'_, Self>, number: u64) -> Result<(), Fault> {
         let Some(relay) = self.relays.get_mut(&number) else {
             return Ok(());
         };
@@ -360,7 +346,7 @@ impl Docker {
     }
 
     /// Nothing waits in the relay `number` any more: the credit held back is granted, or its asker answered.
-    fn drained(&mut self, turn: &mut Turn<'_, Self, Relaying>, number: u64) -> Result<(), Fault> {
+    fn drained(&mut self, turn: &mut Turn<'_, Self>, number: u64) -> Result<(), Fault> {
         let Some(relay) = self.relays.get_mut(&number) else {
             return Ok(());
         };
@@ -384,7 +370,7 @@ impl Docker {
     }
 
     /// Answers the stream `served` with how its response ended, as that stream's kind says it.
-    fn conclude<S>(&mut self, turn: &mut Turn<'_, Self, S>, served: Served, end: End) -> Result<(), Fault> {
+    fn conclude(&mut self, turn: &mut Turn<'_, Self>, served: Served, end: End) -> Result<(), Fault> {
         match served {
             Served::Attach(key) => {
                 if let Some(stream) = self.attaching.take(key) {
@@ -414,7 +400,7 @@ impl Relay {
     /// # Errors
     ///
     /// Why the response can be read no further.
-    fn take<S>(&mut self, turn: &Turn<'_, Docker, S>, received: Received) -> Result<(), DockerError> {
+    fn take(&mut self, turn: &Turn<'_, Docker>, received: Received) -> Result<(), DockerError> {
         match received {
             Received::Head(head) => self.headed(head.status),
             Received::Switched { writing, .. } => self.switched(writing),
@@ -550,11 +536,11 @@ trait Pass<S: Stream> {
     /// # Errors
     ///
     /// The engine had no room for its bytes.
-    fn part<T>(self, turn: &mut Turn<'_, Docker, T>) -> Result<S::Part, DockerError>;
+    fn part(self, turn: &mut Turn<'_, Docker>) -> Result<S::Part, DockerError>;
 }
 
 impl Pass<Attaching> for Passing {
-    fn part<T>(self, turn: &mut Turn<'_, Docker, T>) -> Result<Attached, DockerError> {
+    fn part(self, turn: &mut Turn<'_, Docker>) -> Result<Attached, DockerError> {
         match self {
             Self::Stdin(writing) => Ok(Attached::Stdin(writing)),
             Self::Piece(piece) => Ok(Attached::Output(<Piece as Pass<Logging>>::part(piece, turn)?)),
@@ -563,7 +549,7 @@ impl Pass<Attaching> for Passing {
 }
 
 impl Pass<Logging> for Piece {
-    fn part<T>(self, turn: &mut Turn<'_, Docker, T>) -> Result<Output, DockerError> {
+    fn part(self, turn: &mut Turn<'_, Docker>) -> Result<Output, DockerError> {
         let Self { stream, bytes } = self;
         let bytes = turn.put(bytes).map_err(|_| DockerError::Broken(Failure::NoRoom))?;
 
@@ -572,22 +558,21 @@ impl Pass<Logging> for Piece {
 }
 
 impl Pass<Watching> for Event {
-    fn part<T>(self, _: &mut Turn<'_, Docker, T>) -> Result<Self, DockerError> {
+    fn part(self, _: &mut Turn<'_, Docker>) -> Result<Self, DockerError> {
         Ok(self)
     }
 }
 
 /// Passes what waits in `queue` on to the stream `key` of those `serving` holds, while it has credit.
-fn pass<S, Q, I>(
+fn pass<S, Q>(
     serving: &mut Serving<S>,
-    turn: &mut Turn<'_, Docker, Relaying>,
+    turn: &mut Turn<'_, Docker>,
     key: StreamKey,
     queue: &mut VecDeque<Q>,
 ) -> Result<Passed, Fault>
 where
     S: Stream,
     Q: Pass<S>,
-    Relaying: Allows<ToAny<(Part<S>,), Part<S>>, I>,
 {
     loop {
         let Some(stream) = serving.get_mut(key) else {
@@ -610,7 +595,7 @@ where
             Ok(part) => part,
             Err(error) => return Ok(Passed::Broke(error)),
         };
-        match stream.send::<_, _, I>(turn, part) {
+        match stream.send(turn, part) {
             Ok(()) => {}
             Err(Unsent::Unwritable(error)) => return Err(error.into()),
             Err(Unsent::NoCredit(_)) => return Ok(Passed::Waiting),

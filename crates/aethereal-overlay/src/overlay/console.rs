@@ -5,12 +5,8 @@
 use super::Overlay;
 use super::chat::Reports;
 use crate::console::Command;
-use aethereal_actor::{
-    Allows, Answer, Answered, Anyone, Asks, Fault, Handles, Level, Path, Receives, ToType, Turn, path,
-};
+use aethereal_actor::{Answer, Answered, Anyone, Fault, Handles, Level, Receives, Turn, path};
 use aethereal_data::Plain;
-use aethereal_link::Link;
-use aethereal_sessions::Chat;
 use aethereal_tools::{CallTool, Called, Offered, Output, Sheets, Tools};
 
 /// A tool was called from the console's line: its name, so the call stops showing as running once it is answered,
@@ -32,31 +28,23 @@ impl Overlay {
     /// Asks the engine's tools root for `command` when it names a tool, shown as running until it is answered, and
     /// what it prints reported as `reports` says once it is; any other command was printed as the console took it, and
     /// is reported at once.
-    pub(super) fn call<S, I, J>(
-        &mut self,
-        command: Command,
-        reports: Reports,
-        turn: &mut Turn<'_, Self, S>,
-    ) -> Result<(), Fault>
-    where
-        S: Allows<Asks<Path<Tools>, CallTool, Calling>, I> + Allows<ToType<Link, Chat>, J>,
-    {
+    pub(super) fn call(&mut self, command: Command, reports: Reports, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (tool, revision, input, output) = match command {
             Command::Call { tool, revision, input, output } => (tool, revision, input, output),
             Command::Blank => return Ok(()),
-            Command::Shown(text) | Command::Refused(text) => return self.report::<_, J>(turn, reports, &text),
-            Command::Clear => return self.report::<_, J>(turn, reports, ""),
+            Command::Shown(text) | Command::Refused(text) => return self.report(turn, reports, &text),
+            Command::Clear => return self.report(turn, reports, ""),
         };
         match turn.put(input) {
             Ok(input) => {
                 self.console.called(&tool);
                 let calling = Calling { tool: tool.clone(), output, reports };
-                turn.to(path::<Tools>(())).ask::<_, _, I>(&CallTool { tool, revision, input }, &calling)?;
+                turn.to(path::<Tools>(())).ask(&CallTool { tool, revision, input }, &calling)?;
             }
             Err(refused) => {
                 let why = format!("the input was not put: {refused:?}");
                 self.console.refused(&why);
-                self.report::<_, J>(turn, reports, &why)?;
+                self.report(turn, reports, &why)?;
             }
         }
 
@@ -67,10 +55,9 @@ impl Overlay {
 /// What the tools root holds, kept for the console's next line: sent as the overlay subscribes, and again after each
 /// change.
 impl Handles<Sheets> for Overlay {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.console.hear(sheets);
 
         Ok(())
@@ -81,12 +68,10 @@ impl Handles<Sheets> for Overlay {
 /// refusal in the error's ink, and reported to the session whose tab was open as it was typed. The call stops showing as running,
 /// whichever came.
 impl Receives<Answer<Called, Calling>> for Overlay {
-    type Sends = (ToType<Link, Chat>,);
-
     fn handle(
         &mut self,
         (answered, Calling { tool, output, reports }): (Answered<Called>, Calling),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.console.settled(&tool);
         let printed = match answered {
@@ -110,12 +95,10 @@ impl Receives<Answer<Called, Calling>> for Overlay {
 /// An offer of the overlay's own tools, or the chat's words, that the tools root refused is logged: the console works
 /// on without them.
 impl Receives<Answer<Offered, Offering>> for Overlay {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Offering): (Answered<Offered>, Offering),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let held = answered == Answered::Yes(Offered::Yes);
         if !held {

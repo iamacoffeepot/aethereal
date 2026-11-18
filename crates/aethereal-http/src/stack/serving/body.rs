@@ -4,7 +4,7 @@
 //! read to its end stops being read, gathered or streamed.
 
 use super::connection::{Inflow, Out, Passing, Phase, Returning};
-use super::{Carries, Deadline, Owed, Sending, Serving, Stepping};
+use super::{Carries, Deadline, Owed, Sending, Serving};
 use crate::Status;
 use crate::http1::body::{Body, Decoded, Progress};
 use crate::stack::actor::{ParkedPart, Standing, Way, held};
@@ -13,13 +13,14 @@ use crate::stack::request_head::Refusal;
 use crate::stack::response_head;
 use crate::stack::{
     BodyPart, Gather, Gathered, InboundPart, InboundParts, LayerList, PartStep, Passed, Refused, Response, Taker,
+    WalkedBy,
 };
 use crate::stack::{BodyRead, OutboundBody, SourceEnd};
 use aethereal_actor::{
-    ActorRef, Allows, Answer, Asks, Bytes, Doing, Fault, Guard, Handles, Level, Listed, Number, Part, Pool,
-    ProtocolRef, Receives, Slept, StreamKey, ToSender, Turn,
+    ActorRef, Answer, Bytes, Doing, Fault, Guard, Handles, Level, Listed, Number, Part, Pool, ProtocolRef, Receives,
+    Slept, StreamKey, Turn,
 };
-use aethereal_tcp::{Accepted, HungUp, Write, Writing};
+use aethereal_tcp::{Accepted, HungUp, Write, Writing, Wrote};
 use core::mem;
 
 /// What a body's bytes came to once every layer passed them.
@@ -152,12 +153,12 @@ pub(super) struct Layered<'v, V, O> {
 /// in buffers the pool lends, and the first actor layer whose type takes the parts `P`, found by a cast, to be asked
 /// it, its bytes put. A part of no bytes that is not the end passes an actor layer untouched, as it says nothing the
 /// layer could answer.
-pub(super) fn walk<T, P, O, Me, S, F>(
+pub(super) fn walk<T, P, O, Me, F>(
     layered: Layered<'_, T::Values, O>,
     came: &[u8],
     mut carried: Carried,
     end: bool,
-    (doing, pool): (&mut Doing<'_, Me, S, F>, &mut Pool<'_>),
+    (doing, pool): (&mut Doing<'_, Me, F>, &mut Pool<'_>),
 ) -> Walk<P>
 where
     T: LayerList,
@@ -311,13 +312,13 @@ enum Sink {
 /// # Errors
 ///
 /// The fault of a write that does not encode.
-pub(super) fn write_continue<Me, Sends, I>(
+pub(super) fn write_continue<Me>(
     accepted: ActorRef<Accepted>,
     number: u64,
-    turn: &mut Turn<'_, Me, Sends>,
+    turn: &mut Turn<'_, Me>,
 ) -> Result<bool, Fault>
 where
-    Sends: Allows<Asks<Writing, Write, Sending>, I>,
+    Me: Receives<Answer<Wrote, Sending>>,
 {
     let Ok(go_on) = put(turn, response_head::CONTINUE) else {
         return Ok(false);
@@ -329,9 +330,14 @@ where
     Ok(true)
 }
 
-impl<S, T: LayerList> Serving<S, T>
+impl<S, T> Serving<S, T>
 where
-    S: Receives<Answer<Slept, Deadline>> + Handles<Part<OutboundBody>> + Receives<Answer<SourceEnd, Number>>,
+    S: Receives<Answer<Slept, Deadline>>
+        + Handles<Part<OutboundBody>>
+        + Receives<Answer<SourceEnd, Number>>
+        + Receives<Answer<Wrote, Sending>>
+        + Receives<Answer<PartStep, ParkedPart>>,
+    T: WalkedBy<S>,
 {
     /// A handler asks for its request's body whole: the body of the request out on its connection, when nothing reads
     /// it yet, or none, answered `Busy` at once. A body whose length says it runs past `most_bytes` is refused before a
@@ -341,7 +347,7 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn gather(&mut self, gather: Gather, turn: &mut Stepping<'_, S, T, ToSender<Gathered>>) -> Result<(), Fault> {
+    pub fn gather(&mut self, gather: Gather, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let request = gather.request();
         let found = self.connections.iter_mut().find(|(_, connection)| connection.is_out(request));
         let Some((&number, connection)) = found else {
@@ -397,7 +403,7 @@ where
     /// through its layers in order, then, where the body ends, the end, and the gather is answered once. While only
     /// more bytes would take it further, the connection is granted the credit it withheld. While a part waits on an
     /// actor layer, nothing more is read.
-    pub(super) fn gathered<Own>(&mut self, number: u64, turn: &mut Stepping<'_, S, T, Own>) -> Result<(), Fault> {
+    pub(super) fn gathered(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let most_line = self.settings.most_head_bytes;
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
@@ -430,14 +436,14 @@ where
     /// in order, its bytes where `carried` says and the body's end after them when `end`, its place in the gathered
     /// body `start`: each pure layer's way in reads what the one before passed, and an actor layer whose type lists
     /// [`InboundPart`] is asked, and the part parked until it answers. What the last layer passes is gathered.
-    fn pass_in<Own>(
+    fn pass_in(
         &mut self,
         number: u64,
         from: usize,
         start: usize,
         carried: Carried,
         end: bool,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<Read, Fault> {
         let due = self.due(turn);
         let Some(connection) = self.connections.get_mut(&number) else {
@@ -451,7 +457,7 @@ where
         let (doing, pool) = turn.split();
         let layered = Layered { values: &mut connection.layers, order: from..T::LAYERS, run: T::inbound_body };
         let walked: Walk<InboundParts> =
-            walk::<T, _, _, _, _, _>(layered, &gathered[start..], carried, end, (doing, pool));
+            walk::<T, _, _, _, _>(layered, &gathered[start..], carried, end, (doing, pool));
 
         let carried = match walked {
             Walk::Through(carried) => carried,
@@ -485,7 +491,7 @@ where
 
     /// Goes on with the body the connection numbered `number` gathers as `read` says: grants the credit it withheld
     /// while more bytes are all it needs, or answers the gather.
-    fn settle_gather<Own>(&mut self, number: u64, read: Read, turn: &mut Stepping<'_, S, T, Own>) -> Result<(), Fault> {
+    fn settle_gather(&mut self, number: u64, read: Read, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         match read {
             Read::More => self.release(number, turn),
             Read::Whole => self.answer_gather(number, turn),
@@ -499,11 +505,11 @@ where
     /// `standing` names, answered as `answered` says: the bytes it passed go on through the layers after it, into the
     /// gather or on the stream, and the body is read on; its refusal stops the body; and when it did not answer, the
     /// body ends `Unpassed`, and the stack answers the request itself with `status`.
-    pub(super) fn passed_in<Own>(
+    pub(super) fn passed_in(
         &mut self,
         standing: Standing,
         answered: Result<PartStep, Status>,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         let number = standing.connection;
         let now = turn.now();
@@ -553,7 +559,7 @@ where
 
     /// Answers the gather of the connection numbered `number` with its body, whole and put, and awaits its handler's
     /// answer.
-    fn answer_gather<Own>(&mut self, number: u64, turn: &mut Stepping<'_, S, T, Own>) -> Result<(), Fault> {
+    fn answer_gather(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
@@ -576,12 +582,7 @@ where
     /// The body of the request out on the connection numbered `number` stops being read, as `ending` says, which its
     /// gather is answered or its stream ended with: the rest is not read, and the connection closes once its handler's
     /// answer is written.
-    pub(super) fn stop_body<Own>(
-        &mut self,
-        number: u64,
-        ending: Ending,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    pub(super) fn stop_body(&mut self, number: u64, ending: Ending, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         turn.log(Level::Info, format!("a request's body was not read to its end: {ending:?}"));
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
@@ -598,12 +599,7 @@ where
 
     /// The body of the request out on the connection numbered `number` broke its framing, as `refusal` says: the stack
     /// answers the request itself, as [`end_body`](Self::end_body) says.
-    pub(super) fn break_body<Own>(
-        &mut self,
-        number: u64,
-        refusal: Refusal,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    pub(super) fn break_body(&mut self, number: u64, refusal: Refusal, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         turn.log(Level::Info, format!("a request's body was refused: {refusal:?}"));
         let (status, _) = refusal.said();
 
@@ -613,13 +609,7 @@ where
     /// The body of the request out on the connection numbered `number` will not be read: its gather is answered, or
     /// its stream ended, as `ending` says, and the stack answers the request itself with `status`, through its layers,
     /// and closes once the answer is sent. Its handler's answer, when it comes, is passed over.
-    fn end_body<Own>(
-        &mut self,
-        number: u64,
-        status: Status,
-        ending: Ending,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    fn end_body(&mut self, number: u64, status: Status, ending: Ending, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
@@ -634,12 +624,7 @@ where
 
     /// Answers the gather of a body being gathered, or ends the stream of one being streamed, as `ending` says, as the
     /// body stops being read: a body that is not being read has no one to tell.
-    pub(super) fn end_inflow<Own>(
-        &mut self,
-        body: Inflow,
-        ending: Ending,
-        turn: &mut Stepping<'_, S, T, Own>,
-    ) -> Result<(), Fault> {
+    pub(super) fn end_inflow(&mut self, body: Inflow, ending: Ending, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         match body {
             Inflow::Gathering { held, .. } => Ok(turn.answer(held, &ending.gathered())?),
             Inflow::Streaming { reader, .. } => self.finish_reader(reader, ending.read(), turn),
@@ -648,11 +633,11 @@ where
     }
 
     /// Ends the stream `reader` with `done`, when it is still served.
-    pub(super) fn finish_reader<Own>(
+    pub(super) fn finish_reader(
         &mut self,
         reader: StreamKey,
         done: BodyRead,
-        turn: &mut Stepping<'_, S, T, Own>,
+        turn: &mut Turn<'_, S>,
     ) -> Result<(), Fault> {
         if let Some(stream) = self.readers.take(reader) {
             stream.finish(turn, &done)?;

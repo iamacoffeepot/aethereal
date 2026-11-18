@@ -4,7 +4,7 @@ use crate::jobs::{Launch, Launched, Launching, Raise, Raised, Raising};
 use crate::{Environment, Exits, Invocation, Pipe, PipeConfig, Process, ProcessConfig, Signal, Stdio};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    ProtocolRef, Receives, ToSender, ToType, Top, Turn,
+    ProtocolRef, Receives, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::Shut;
@@ -86,23 +86,21 @@ impl Actor for Processes {
     type Config = ProcessesConfig;
     type Key = ();
     type Handles = (Start, Answer<Launched, Launching>, Answer<Raised, Raising>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: ProcessesConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: ProcessesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { config, waiting: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Start> for Processes {
-    type Sends = (ToSender<Started>,);
     type From = Anyone;
 
-    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = turn.hold()?;
         let process = self.next;
         self.next += 1;
@@ -121,14 +119,12 @@ impl Handles<Start> for Processes {
 }
 
 impl Receives<Answer<Launched, Launching>> for Processes {
-    type Sends = (ToType<Pipe, Shut>,);
-
     /// Stands the pipe up over the launcher's end of a program's pipe, then the process over the program, and answers
     /// its start.
     fn handle(
         &mut self,
         (answered, Launching { process }): (Answered<Launched>, Launching),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(Waiting { held, starter }) = self.waiting.remove(&process) else {
             return Ok(());
@@ -155,10 +151,8 @@ impl Receives<Answer<Launched, Launching>> for Processes {
 }
 
 impl Receives<Answer<Raised, Raising>> for Processes {
-    type Sends = ();
-
     /// The program of a process not stood up was sent its kill: its exit is the launcher's to keep.
-    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -168,7 +162,7 @@ impl Processes {
     /// the program killed and its pipe hung up, when the process cannot be.
     fn stand_up(
         &self,
-        turn: &mut Turn<'_, Self, (ToType<Pipe, Shut>,)>,
+        turn: &mut Turn<'_, Self>,
         process: u64,
         starter: ProtocolRef<Exits>,
         pipe: Piped,
@@ -189,7 +183,7 @@ impl Processes {
 
 /// Kills the program numbered `process`, whose `actor` was not stood up, as `refused` says: no actor owns the program,
 /// so it is ended here, and its exit is the launcher's to keep.
-fn abandon<S>(turn: &mut Turn<'_, Processes, S>, process: u64, actor: &str, refused: &impl Debug) -> Result<(), Fault> {
+fn abandon(turn: &mut Turn<'_, Processes>, process: u64, actor: &str, refused: &impl Debug) -> Result<(), Fault> {
     turn.log(Level::Error, format_args!("program {process}'s {actor} was not stood up: {refused:?}"));
     turn.run(&Raise { process, signal: Signal::Kill }, &Raising)?;
 

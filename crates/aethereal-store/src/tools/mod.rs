@@ -8,8 +8,8 @@ use crate::{
     CheckIn, CheckInDropped, CheckedIn, DROP_BOX, DropName, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -87,14 +87,13 @@ impl Actor for StoreTools {
     type Config = StoreToolsConfig;
     type Key = ();
     type Handles = (Call, Answer<CheckedIn, Asking>, Answer<Stored, Asking>, Answer<Pinned, Asking>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Store,);
 
-    fn begin(_: StoreToolsConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: StoreToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -138,19 +137,11 @@ impl Tool for StoreTools {
 }
 
 impl Handles<Call> for StoreTools {
-    type Sends = (
-        Asks<Path<Store>, CheckIn, Asking>,
-        Asks<Path<Store>, CheckInDropped, Asking>,
-        Asks<Path<Store>, ListStored, Asking>,
-        Asks<Path<Store>, Pin, Asking>,
-        Asks<Path<Store>, Unpin, Asking>,
-        ToSender<Called>,
-    );
     type From = Anyone;
 
     /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
     /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let order = match order(&call.tool, turn.read(&call.input)).and_then(|order| order.by(call.caller)) {
             Ok(order) => order,
             Err(refusal) => {
@@ -176,13 +167,11 @@ impl Handles<Call> for StoreTools {
 }
 
 impl Receives<Answer<CheckedIn, Asking>> for StoreTools {
-    type Sends = ();
-
     /// The check-in's hash, size, and freshness, or its refusal.
     fn handle(
         &mut self,
         (answered, Asking { number }): (Answered<CheckedIn>, Asking),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());
@@ -203,13 +192,11 @@ impl Receives<Answer<CheckedIn, Asking>> for StoreTools {
 }
 
 impl Receives<Answer<Stored, Asking>> for StoreTools {
-    type Sends = ();
-
     /// Every entry the store lists.
     fn handle(
         &mut self,
         (answered, Asking { number }): (Answered<Stored>, Asking),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());
@@ -225,13 +212,11 @@ impl Receives<Answer<Stored, Asking>> for StoreTools {
 }
 
 impl Receives<Answer<Pinned, Asking>> for StoreTools {
-    type Sends = ();
-
     /// That the pin was set or cleared, or the refusal of a hash the store does not hold.
     fn handle(
         &mut self,
         (answered, Asking { number }): (Answered<Pinned>, Asking),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Some(held) = self.calls.remove(&number) else {
             return Ok(());

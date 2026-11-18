@@ -2,7 +2,7 @@
 
 use super::*;
 use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, ToType, Turn,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, Recursive, Seated, Time, Turn,
 };
 use aethereal_data::{ActorId, Kind, PathSegment, Plain};
 use aethereal_substrate::child_id;
@@ -42,10 +42,9 @@ impl Actor for Fan {
     type Config = FanConfig;
     type Key = u64;
     type Handles = (Count,);
-    type BeginSends = (ToType<Self, Count>,);
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: FanConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: FanConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let is_root = turn.parent().is_none();
         if is_root {
             for number in 1..=config.children {
@@ -59,16 +58,15 @@ impl Actor for Fan {
         Ok(Self { number: config.number })
     }
 
-    fn end(self, _turn: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Count> for Fan {
-    type Sends = (ToType<Self, Count>,);
     type From = Anyone;
 
-    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_root = turn.parent().is_none();
         if is_root {
             turn.log(Level::Info, format!("heard {left}"));

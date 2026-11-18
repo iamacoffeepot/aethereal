@@ -1,7 +1,7 @@
 //! The asker's side of its streams: opening them, taking their parts, stopping them, and their answers (ADR-0017).
 
 use super::{Enough, More, Number, Open, Part, Stream, Streamed};
-use crate::{Allows, Answer, Asks, Handles, Mailing, ProtocolRef, Receives, ToAny, Turn};
+use crate::{Answer, Handles, Mailing, ProtocolRef, Receives, Turn};
 use aethereal_data::{ActorId, Bound, EncodeError, Plain};
 use alloc::collections::BTreeMap;
 use core::num::NonZeroU32;
@@ -71,7 +71,7 @@ impl<S: Stream, C> Streams<S, C> {
     /// # Errors
     ///
     /// Why the request or the credit could not be written. Nothing is opened.
-    pub fn open<'a, T, A, Sends, IA, IM>(
+    pub fn open<'a, T, A>(
         &mut self,
         turn: &mut T,
         receiver: ProtocolRef<Streamed<S>>,
@@ -79,14 +79,13 @@ impl<S: Stream, C> Streams<S, C> {
         kept: C,
     ) -> Result<Number, EncodeError>
     where
-        T: Mailing<'a, A, Sends>,
+        T: Mailing<'a, A>,
         A: Handles<Part<S>> + Receives<Answer<S::Done, Number>>,
-        Sends: Allows<Asks<Streamed<S>, Open<S>, Number>, IA> + Allows<ToAny<Streamed<S>, More>, IM>,
     {
         let number = Number::new(self.next);
         let credit = More::new::<S>(number.get(), self.window);
 
-        turn.toward(receiver).ask::<_, _, IA>(&Open::new(number.get(), request), &number)?.send::<_, IM>(&credit)?;
+        turn.toward(receiver).ask(&Open::new(number.get(), request), &number)?.send(&credit)?;
 
         self.next += 1;
         self.open.insert(number.get(), Opened { receiver, flow: Flow::Flowing, kept });
@@ -100,14 +99,7 @@ impl<S: Stream, C> Streams<S, C> {
     /// # Errors
     ///
     /// Why the credit could not be written.
-    pub fn part<A, Sends, IM>(
-        &mut self,
-        turn: &mut Turn<'_, A, Sends>,
-        part: Part<S>,
-    ) -> Result<Option<Taken<'_, S, C>>, EncodeError>
-    where
-        Sends: Allows<ToAny<Streamed<S>, More>, IM>,
-    {
+    pub fn part<A>(&mut self, turn: &mut Turn<'_, A>, part: Part<S>) -> Result<Option<Taken<'_, S, C>>, EncodeError> {
         let sender = turn.sender().id();
         let (number, value) = part.into_parts();
         let Some(opened) = self.open.get_mut(&number) else {
@@ -117,7 +109,7 @@ impl<S: Stream, C> Streams<S, C> {
             return Ok(None);
         }
 
-        turn.to(opened.receiver).send::<_, IM>(&More::new::<S>(number, 1))?;
+        turn.to(opened.receiver).send(&More::new::<S>(number, 1))?;
 
         Ok(Some(Taken { number: Number::new(number), value, kept: &mut opened.kept }))
     }
@@ -125,7 +117,7 @@ impl<S: Stream, C> Streams<S, C> {
     /// What `part` carries, taken for its stream as [`part`](Self::part) takes it, but granting the receiver nothing
     /// for it: the actor grants it later, with [`grant`](Self::grant), once it can take more. Its receiver is kept
     /// that many parts nearer the window's end, and stops at it.
-    pub fn part_held<A, Sends>(&mut self, turn: &Turn<'_, A, Sends>, part: Part<S>) -> Option<Taken<'_, S, C>> {
+    pub fn part_held<A>(&mut self, turn: &Turn<'_, A>, part: Part<S>) -> Option<Taken<'_, S, C>> {
         let sender = turn.sender().id();
         let (number, value) = part.into_parts();
         let opened = self.open.get_mut(&number)?;
@@ -143,15 +135,7 @@ impl<S: Stream, C> Streams<S, C> {
     /// # Errors
     ///
     /// Why the credit could not be written.
-    pub fn grant<A, Sends, IM>(
-        &mut self,
-        turn: &mut Turn<'_, A, Sends>,
-        number: Number,
-        parts: NonZeroU32,
-    ) -> Result<bool, EncodeError>
-    where
-        Sends: Allows<ToAny<Streamed<S>, More>, IM>,
-    {
+    pub fn grant<A>(&mut self, turn: &mut Turn<'_, A>, number: Number, parts: NonZeroU32) -> Result<bool, EncodeError> {
         let Some(opened) = self.open.get(&number.get()) else {
             return Ok(false);
         };
@@ -159,7 +143,7 @@ impl<S: Stream, C> Streams<S, C> {
             return Ok(false);
         }
 
-        turn.to(opened.receiver).send::<_, IM>(&More::new::<S>(number.get(), parts.get()))?;
+        turn.to(opened.receiver).send(&More::new::<S>(number.get(), parts.get()))?;
 
         Ok(true)
     }
@@ -171,10 +155,7 @@ impl<S: Stream, C> Streams<S, C> {
     /// # Errors
     ///
     /// Why the stop could not be written. The stream is then not stopped.
-    pub fn stop<A, Sends, IS>(&mut self, turn: &mut Turn<'_, A, Sends>, number: Number) -> Result<bool, EncodeError>
-    where
-        Sends: Allows<ToAny<Streamed<S>, Enough>, IS>,
-    {
+    pub fn stop<A>(&mut self, turn: &mut Turn<'_, A>, number: Number) -> Result<bool, EncodeError> {
         let Some(opened) = self.open.get_mut(&number.get()) else {
             return Ok(false);
         };
@@ -182,7 +163,7 @@ impl<S: Stream, C> Streams<S, C> {
             return Ok(false);
         }
 
-        turn.to(opened.receiver).send::<_, IS>(&Enough::new::<S>(number.get()))?;
+        turn.to(opened.receiver).send(&Enough::new::<S>(number.get()))?;
         opened.flow = Flow::Stopped;
 
         Ok(true)

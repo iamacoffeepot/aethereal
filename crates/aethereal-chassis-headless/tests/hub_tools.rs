@@ -3,7 +3,7 @@
 //! on a thread of its own where it waits on the hub, or by a real `Link` started with what `mint_token` answers.
 
 use aethereal_actor::{
-    Actor, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, ToSender, Top, Turn,
+    Actor, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
@@ -74,23 +74,21 @@ impl Actor for Stand {
     type Config = StandConfig;
     type Key = ();
     type Handles = (Offer, Withdraw);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: StandConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: StandConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { table: Table::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Offer> for Stand {
-    type Sends = (ToSender<Offered>,);
     type From = Anyone;
 
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let offered = self.table.take(offer.tools, offer.worker, 16);
         turn.reply(&offered)?;
 
@@ -99,10 +97,9 @@ impl Handles<Offer> for Stand {
 }
 
 impl Handles<Withdraw> for Stand {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);
 
         Ok(())

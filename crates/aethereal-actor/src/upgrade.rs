@@ -27,12 +27,11 @@ use alloc::vec::Vec;
 /// #     type Config = HudConfig;
 /// #     type Key = ();
 /// #     type Handles = ();
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
-/// #     fn begin(_: HudConfig, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+/// #     type Depends = ();
+/// #     fn begin(_: HudConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(Self { health: 100.0, saving: false, show_cooldowns: false })
 /// #     }
-/// #     fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> { Ok(()) }
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> { Ok(()) }
 /// # }
 ///
 /// impl Upgrades for Hud {

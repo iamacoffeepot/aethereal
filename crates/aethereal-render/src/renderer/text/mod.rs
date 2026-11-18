@@ -26,7 +26,7 @@ use crate::text::{
     self, Align, CreateFont, CreateText, FontId, FontMade, FontMetrics, FontNotMade, FontSource, MetricsRefused,
     MoveText, Outline, PlaceText, ReadMetrics, TextId, TextMade, TextPlaced, Wrap, WriteText,
 };
-use aethereal_actor::{Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Receives, ToSender, Turn};
+use aethereal_actor::{Answer, Answered, Anyone, Bytes, Fault, Handles, Level, Receives, Turn};
 use aethereal_data::ActorId;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
@@ -604,9 +604,9 @@ impl Kept {
 impl Renderer {
     /// Runs the job that generates `wanted`, its images' PNGs put as a blob it reads. A blob not put lets the batch go,
     /// to be asked for again at the next `Render`.
-    pub(super) fn generate<S>(
+    pub(super) fn generate(
         &mut self,
-        turn: &mut Turn<'_, Self, S>,
+        turn: &mut Turn<'_, Self>,
         wanted: Option<(Wanted, Generating)>,
     ) -> Result<(), Fault> {
         let Some((Wanted { glyphs, images }, generating)) = wanted else {
@@ -642,10 +642,9 @@ impl aethereal_actor::Carries<ReadMetrics> for Renderer {
 /// Makes the font: one of the renderer's own shared, or its bytes read in this turn and its metrics put once as a blob,
 /// with its fallbacks' faces as they are now. Answers it, or why it was refused.
 impl Handles<CreateFont> for Renderer {
-    type Sends = (ToSender<FontMade>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateFont, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let CreateFont { source, fallbacks } = create;
         let own = match source {
             FontSource::Sans => Own::Sans,
@@ -674,7 +673,7 @@ impl Handles<CreateFont> for Renderer {
 }
 
 /// The font `bytes` hold, read in this turn, with its metrics put as a blob, to keep for its life.
-fn read<S>(turn: &mut Turn<'_, Renderer, S>, bytes: &Bytes) -> Result<Own, FontNotMade> {
+fn read(turn: &mut Turn<'_, Renderer>, bytes: &Bytes) -> Result<Own, FontNotMade> {
     let font = font::Font::read(turn.read(bytes)).map_err(FontNotMade::Read)?;
     let metrics = turn.put(font.metrics().encode()).map_err(|_| FontNotMade::Unstored)?;
 
@@ -683,10 +682,9 @@ fn read<S>(turn: &mut Turn<'_, Renderer, S>, bytes: &Bytes) -> Result<Own, FontN
 
 /// Answers the font's metrics and its fallbacks', as the blobs kept since each face was read.
 impl Handles<ReadMetrics> for Renderer {
-    type Sends = (ToSender<FontMetrics>,);
     type From = Anyone;
 
-    fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, read: ReadMetrics, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let metrics = turn.open(&mut self.kept)?.text.metrics(read.font);
         turn.reply(&metrics)?;
 
@@ -699,10 +697,9 @@ impl Handles<ReadMetrics> for Renderer {
 /// last it waits on is written in, so an asker that lists its text beside what else it draws shows them together
 /// rather than the text a frame or more after the rest (ADR-0052).
 impl Handles<CreateText> for Renderer {
-    type Sends = (ToSender<TextMade>,);
     type From = Anyone;
 
-    fn handle(&mut self, create: CreateText, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, create: CreateText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let made = turn.open(&mut self.kept)?.text.text(create);
         let (made, unlogged) = match made {
             Ok(made) => made,
@@ -731,10 +728,9 @@ impl Handles<CreateText> for Renderer {
 /// Lays the sender's text out again, in its font and that font's fallbacks; its placements draw what it was until every glyph of
 /// what it is now is in the atlas. A write refused is logged, and the text keeps what it had.
 impl Handles<WriteText> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, write: WriteText, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, write: WriteText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let kept = turn.open(&mut self.kept)?;
         let written = kept.text.write(&write, by);
@@ -754,10 +750,9 @@ impl Handles<WriteText> for Renderer {
 /// Checks the placement, makes the glyph program's pipelines for each pass's shape it joins that none has joined
 /// before, and keeps it.
 impl Handles<PlaceText> for Renderer {
-    type Sends = (ToSender<TextPlaced>,);
     type From = Anyone;
 
-    fn handle(&mut self, place: PlaceText, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, place: PlaceText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let device = turn.open(&mut self.gpu)?.device().clone();
         let placed = turn.open(&mut self.kept)?.place_text(&device, &place);
         let made = match placed {
@@ -776,10 +771,9 @@ impl Handles<PlaceText> for Renderer {
 
 /// Moves the sender's placed text, laying nothing out. A move refused is logged, and the placement stays where it was.
 impl Handles<MoveText> for Renderer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, moved: MoveText, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, moved: MoveText, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id();
         let MoveText { placement, at, layer, opacity, clip } = moved;
         let placing = Placing { at, layer, opacity, clip };
@@ -802,12 +796,10 @@ impl Handles<MoveText> for Renderer {
 /// Writes the glyphs the job generated into the atlas, logging each that fitted nowhere, and answers each new text
 /// that now waits on nothing; a job that failed lets its glyphs go, to be asked for again.
 impl Receives<Answer<GlyphsGenerated, Generating>> for Renderer {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, Generating { batch }): (Answered<GlyphsGenerated>, Generating),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let generated = match answered {
             Answered::Yes(generated) => generated,
@@ -839,7 +831,7 @@ impl Receives<Answer<GlyphsGenerated, Generating>> for Renderer {
 }
 
 /// Logs each character of `unlogged`, which no font has, and which is drawn as its font's missing glyph.
-fn log_missing<S>(turn: &mut Turn<'_, Renderer, S>, unlogged: &[char]) {
+fn log_missing(turn: &mut Turn<'_, Renderer>, unlogged: &[char]) {
     for character in unlogged {
         turn.log(Level::Warn, format_args!("{character:?} is drawn as the missing glyph: no font has it"));
     }

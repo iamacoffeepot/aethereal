@@ -6,7 +6,7 @@
 use super::*;
 use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, Opening, WindowFeed};
-use aethereal_actor::{ActorRef, Actors, Answered, Anyone, Path, Table, Tells, Time, path};
+use aethereal_actor::{ActorRef, Actors, Answered, Anyone, Table, Time, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
 use aethereal_substrate::{Clock, Engine, Setup};
@@ -56,10 +56,9 @@ impl Actor for Listener {
     type Config = Listens;
     type Key = ();
     type Handles = (Event,);
-    type BeginSends = (Tells<Path<Window>, Subscribe>, Tells<Path<Window>, Event>, Tells<Path<Windows>, Heard>);
-    type EndSends = ();
+    type Depends = (Windows,);
 
-    fn begin(listens: Listens, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(listens: Listens, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = listens.window;
         turn.to(path::<Window>(window)).send(&Subscribe)?.send(&Subscribe)?.send(&FORGED)?;
         turn.to(path::<Windows>(())).send(&Heard::Event { window, event: FORGED })?;
@@ -67,16 +66,15 @@ impl Actor for Listener {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Listener {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -18,19 +18,12 @@ use crate::drag::{Dropped, Drops};
 use crate::input::{Event, First, Key, Raised};
 use crate::screen::{Clipping, Copying, Heard, ImeAsked, Pasting};
 use crate::tree::Tree;
-use aethereal_actor::{
-    Actor, Allows, Answer, Asks, DeclaredBy, Fault, Level, Path, Receives, Sends, ToAny, Turn, path,
-};
-use aethereal_window::{AllowIme, Copied, Pasted, ReadClipboard, Windows, WriteClipboard};
+use aethereal_actor::{Actor, Answer, DependsOn, Fault, Level, Receives, Turn, path};
+use aethereal_window::{Copied, ImeAllowed, Pasted, ReadClipboard, Windows, WriteClipboard};
 
 /// What a screen writes by hand beside the methods its events call: what those methods and its `key` may send, the
 /// keys it hears of its own, and what it does with each.
 pub trait Controls: Actor {
-    /// What the screen's event methods and its `key` may send: [`sends!`](crate::sends!) of its own sends, which adds
-    /// the library's ask of the window's input method, its drop mailed to another actor, and its refusal of a drop it
-    /// takes nothing of. A method an event calls takes `&mut Turn<'_, Self, Self::Sends>`.
-    type Sends: Sends + DeclaredBy<Self>;
-
     /// The keys `key` handles, by their places on the keyboard (`"KeyI"`, `"Escape"`): the screen's list declares them,
     /// blocking, while no widget that types has its focus. Written beside `key`, whose `match` reads them.
     const HOTKEYS: &'static [&'static str] = &[];
@@ -57,7 +50,7 @@ pub trait Controls: Actor {
     /// # Errors
     ///
     /// A fault when a send was not written.
-    fn key(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, key: Key) -> Result<(), Fault> {
+    fn key(&mut self, turn: &mut Turn<'_, Self>, key: Key) -> Result<(), Fault> {
         let _ = (turn, key);
 
         Ok(())
@@ -79,7 +72,7 @@ pub trait Controls: Actor {
 ///
 ///     fn view(&self) -> Tree { /* the tree, each event built from the arguments copied now */ }
 ///
-///     fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
+///     fn on(&mut self, turn: &mut Turn<'_, Self>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
 ///         match raised.event() {
 ///             InventoryEvent::Select(item) => Method::call(Self::select, self, turn, (item,), raised),
 ///             InventoryEvent::Rename(item) => Method::call(Self::rename, self, turn, (item,), raised),
@@ -99,7 +92,7 @@ pub trait View: Controls {
     /// # Errors
     ///
     /// A fault when a send of the method's was not written.
-    fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<Self::Event>) -> Result<(), Fault>;
+    fn on(&mut self, turn: &mut Turn<'_, Self>, raised: Raised<Self::Event>) -> Result<(), Fault>;
 }
 
 /// Logs an event that came with a value no widget hands with it, which only a tree built by hand can raise: what a
@@ -108,7 +101,7 @@ pub trait View: Controls {
 /// # Errors
 ///
 /// None: it is a result as the arms beside it are.
-pub fn unmatched<A, S, E: Event>(turn: &mut Turn<'_, A, S>, raised: &Raised<E>) -> Result<(), Fault> {
+pub fn unmatched<A, E: Event>(turn: &mut Turn<'_, A>, raised: &Raised<E>) -> Result<(), Fault> {
     turn.log(Level::Error, format!("an event came with a value its method does not take: {raised:?}"));
 
     Ok(())
@@ -133,14 +126,13 @@ pub enum Took {
 /// # Errors
 ///
 /// A fault when a send was not written.
-pub fn take_in<A, I, J>(
-    screen: &mut A,
-    heard: Heard,
-    turn: &mut Turn<'_, A, <A as Controls>::Sends>,
-) -> Result<Took, Fault>
+pub fn take_in<A, W>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A>) -> Result<Took, Fault>
 where
-    A: View + Receives<Answer<Pasted, Pasting>> + Receives<Answer<Copied, Copying>>,
-    <A as Controls>::Sends: Allows<Asks<Path<Windows>, AllowIme, ImeAsked>, I> + Allows<ToAny<Drops, Dropped>, J>,
+    A: View
+        + DependsOn<Windows, W>
+        + Receives<Answer<Pasted, Pasting>>
+        + Receives<Answer<Copied, Copying>>
+        + Receives<Answer<ImeAllowed, ImeAsked>>,
 {
     // A copy of the selection is taken in before, where the view is built again to copy it (`screen!`).
     let Heard { mut raised, keys, imes, away, clips, lines, copies: _ } = heard;

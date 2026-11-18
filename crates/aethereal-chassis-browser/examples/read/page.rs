@@ -3,8 +3,8 @@
 
 use crate::said::{Program, say};
 use aethereal_actor::{
-    Actor, Answer, Answered, Asks, Beginning, Bytes, ChildOf, Ending, Fault, On, Path, Receives, Render, Start, Tells,
-    Tick, Top, Turn, path,
+    Actor, Answer, Answered, Beginning, Bytes, ChildOf, Ending, Fault, On, Receives, Render, Start, Tick, Top, Turn,
+    path,
 };
 use aethereal_chassis_browser::Browser;
 use aethereal_data::{Bound, Plain};
@@ -210,17 +210,16 @@ impl Actor for Reader {
         Answer<StorageContents, Nothing>,
         Answer<Timed, Nothing>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Renderer,);
 
-    fn begin(shows: Shows, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(shows: Shows, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Tick>();
 
         Ok(Self::Making { window: shows.window })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -265,9 +264,7 @@ fn program(
 }
 
 impl Receives<On<Start>> for Reader {
-    type Sends = (Asks<Path<Renderer>, ShapeOf, Nothing>,);
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Making { window } = *self else {
             return Ok(());
         };
@@ -278,13 +275,7 @@ impl Receives<On<Start>> for Reader {
 }
 
 impl Receives<Answer<Shaped, Nothing>> for Reader {
-    type Sends = (Asks<Path<Renderer>, CreateMesh, Learned>,);
-
-    fn handle(
-        &mut self,
-        (answered, _): (Answered<Shaped>, Nothing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Shaped>, Nothing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Shaped::Shape(shape)) = answered else {
             say(format!("the window's main pass has no shape: {answered:?}"));
             return Ok(());
@@ -304,12 +295,10 @@ impl Receives<Answer<Shaped, Nothing>> for Reader {
 }
 
 impl Receives<Answer<Meshed, Learned>> for Reader {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, Making>,);
-
     fn handle(
         &mut self,
         (answered, learned): (Answered<Meshed>, Learned),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Meshed::Made(mesh)) = answered else {
             say(format!("the quad was not made: {answered:?}"));
@@ -332,12 +321,10 @@ impl Receives<Answer<Meshed, Learned>> for Reader {
 }
 
 impl Receives<Answer<Programmed, Making>> for Reader {
-    type Sends = (Asks<Path<Renderer>, CreateProgram, Making>, Asks<Path<Renderer>, CreateStorage, MadePrograms>);
-
     fn handle(
         &mut self,
         (answered, making): (Answered<Programmed>, Making),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Programmed::Made(made)) = answered else {
             say(format!("a program was not made: {answered:?}"));
@@ -372,12 +359,10 @@ impl Receives<Answer<Programmed, Making>> for Reader {
 }
 
 impl Receives<Answer<Stored, MadePrograms>> for Reader {
-    type Sends = (Asks<Path<Renderer>, Place, Placing>,);
-
     fn handle(
         &mut self,
         (answered, made): (Answered<Stored>, MadePrograms),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Stored::Made(storage)) = answered else {
             say(format!("the storage was not made: {answered:?}"));
@@ -400,16 +385,10 @@ impl Receives<Answer<Stored, MadePrograms>> for Reader {
 }
 
 impl Receives<Answer<Placed, Placing>> for Reader {
-    type Sends = (
-        Asks<Path<Renderer>, Place, Placing>,
-        Tells<Path<Renderer>, DrawList>,
-        Asks<Path<Renderer>, CreateTexture, Splatted>,
-    );
-
     fn handle(
         &mut self,
         (answered, placing): (Answered<Placed>, Placing),
-        turn: &mut Turn<'_, Self, Self::Sends>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Placed::Made(placement)) = answered else {
             say(format!("a placement was not made: {answered:?}"));
@@ -447,12 +426,10 @@ impl Receives<Answer<Placed, Placing>> for Reader {
 }
 
 impl Receives<Answer<Textured, Splatted>> for Reader {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, splatted): (Answered<Textured>, Splatted),
-        _: &mut Turn<'_, Self, ()>,
+        _: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(Textured::Made(texture)) = answered else {
             say(format!("the texture was not made: {answered:?}"));
@@ -469,13 +446,7 @@ impl Receives<Answer<Textured, Splatted>> for Reader {
 }
 
 impl Receives<On<Tick>> for Reader {
-    type Sends = (
-        Asks<Path<Renderer>, ReadBack, Of>,
-        Asks<Path<Renderer>, ReadStorage, Nothing>,
-        Asks<Path<Renderer>, TimeFrame, Nothing>,
-    );
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Self::Drawing { window, texture, storage, drawn } = *self else {
             return Ok(());
         };
@@ -503,9 +474,7 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> String {
 }
 
 impl Receives<Answer<Pixels, Of>> for Reader {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, of): (Answered<Pixels>, Of), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Answered::Yes(Pixels::Read { width, height, format, pixels }) = answered else {
             say(format!("nothing was read: {answered:?}"));
             return Ok(());
@@ -534,12 +503,10 @@ impl Receives<Answer<Pixels, Of>> for Reader {
 }
 
 impl Receives<Answer<StorageContents, Nothing>> for Reader {
-    type Sends = ();
-
     fn handle(
         &mut self,
         (answered, _): (Answered<StorageContents>, Nothing),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let Answered::Yes(StorageContents::Read { bytes }) = answered else {
             say(format!("the storage was not read: {answered:?}"));
@@ -555,9 +522,7 @@ impl Receives<Answer<StorageContents, Nothing>> for Reader {
 }
 
 impl Receives<Answer<Timed, Nothing>> for Reader {
-    type Sends = ();
-
-    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, (answered, _): (Answered<Timed>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = match answered {
             Answered::Yes(Timed::Took { passes }) => format!("timed passes_nanos={passes:?}"),
             Answered::Yes(Timed::Refused(why)) => format!("refused timing={why:?}"),

@@ -25,8 +25,8 @@ use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
     Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused,
-    Request, Role, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade, Upgraded,
-    Was, Why, Written, holders, take_loose_ticket,
+    Request, Runs, SeatNumber, Seated, Seats, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade, Upgraded, Was, Why,
+    Written, holders, take_loose_ticket,
 };
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
@@ -160,6 +160,8 @@ struct Answering<'a> {
     puts: &'a mut Puts,
     instances: &'a mut Instances,
     codes: &'a Weak<Codes>,
+    /// Each type the call's code makes, whose depends a typed path its guest reaches is checked against (ADR-0059).
+    types: &'a [&'static BlobType],
     given: &'a mut Given,
     /// The pins the call's instance holds, as the call began.
     holdings: &'a Holdings,
@@ -382,14 +384,22 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
             let path = guest_bytes(&mut caller, Span { at, len });
             let path = path.and_then(|path| from_bytes::<ActorPath>(&path, &mut Budget::new(1 << 16)).ok());
             let kind = from_bytes::<KindId>(&kind.to_le_bytes(), &mut Budget::new(8)).ok();
-            // A path or kind the guest wrote that does not read back reaches no actor.
+            // A path or kind the guest wrote that does not read back reaches no actor. One that reads back stands
+            // beneath a root of a type the guest's code depends on, as a native build checks: the call traps, and the
+            // turn fails, where it does not (ADR-0059).
             let reached = answer(&mut caller, |answering| {
                 let nowhere = Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
                 let (Some(path), Some(kind)) = (path, kind) else {
-                    return nowhere;
+                    return Ok(nowhere);
                 };
-                answering.table.reach(&path, kind)
-            })?;
+                if !answering.depends_beneath(&path) {
+                    return Err(wasmtime::Error::msg(
+                        "a guest reached a typed path beneath a root it does not depend on",
+                    ));
+                }
+
+                Ok(answering.table.reach(&path, kind))
+            })??;
 
             write_seated(&mut caller, reached, seated)
         },
@@ -644,12 +654,20 @@ impl<'a> Answering<'a> {
     fn of(
         Reads { table, made, seats, puts, holds, most_kept_bytes }: Reads<'a>,
         instances: &'a mut Instances,
-        codes: &'a Weak<Codes>,
+        code: &'a Code,
         given: &'a mut Given,
         holdings: &'a Holdings,
         me: Seated,
     ) -> Self {
-        Self { table, made, seats, puts, instances, codes, given, holdings, holds, me, most_kept_bytes }
+        let (codes, types) = (&code.codes, &*code.types);
+
+        Self { table, made, seats, puts, instances, codes, types, given, holdings, holds, me, most_kept_bytes }
+    }
+
+    /// Whether the actor at `path` stands beneath a root of a type one of the call's code's types depends on: what a
+    /// typed path its guest reaches must, as a native build checks (ADR-0059).
+    fn depends_beneath(&self, path: &ActorPath) -> bool {
+        self.types.iter().any(|made| made.declared.depends_beneath(path))
     }
 
     /// A pin on the blob `blob`, when the call's instance holds one or one was offered to the call: what lets its guest
@@ -1156,7 +1174,7 @@ impl Guests for Runtime {
         let offered = refers.iter().map(|(_, pin)| pin.clone()).collect();
         let mut given = Given { offered, ..Given::default() };
         let mut holdings = mem::take(&mut held.holdings);
-        let mut answering = Answering::of(reads, instances, &code.codes, &mut given, &holdings, me);
+        let mut answering = Answering::of(reads, instances, code, &mut given, &holdings, me);
         let began = held.begin(of, me, &handed, &mut answering);
         let began = began.and_then(|began| held.take_pins(&began.1, &mut holdings, &given).map(|()| began));
         let began = began.and_then(|began| held.take_holders(&began.1, &[me]).map(|()| began));
@@ -1458,8 +1476,8 @@ impl Runs for Guest {
         let mut holdings = mem::take(&mut held.holdings);
         let Reads { table, made, seats, puts, holds, most_kept_bytes } = reads;
         let lent = Reads { table, made, seats: &mut *seats, puts, holds, most_kept_bytes };
-        let codes = &self.running.code.codes;
-        let mut answering = Answering::of(lent, &mut *instances, codes, &mut self.given, &holdings, self.me);
+        let code = &self.running.code;
+        let mut answering = Answering::of(lent, &mut *instances, code, &mut self.given, &holdings, self.me);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
@@ -1481,20 +1499,12 @@ impl Runs for Guest {
         };
     }
 
-    /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked against what the guest
-    /// declares, and each child it stood up. When the call that ran it broke, the turn fails for why it broke, every
+    /// Hands back the next turn [`Self::prepare`] ran: what it asked for, each send checked as a native send is at its
+    /// call, and each child it stood up. When the call that ran it broke, the turn fails for why it broke, every
     /// other actor in the instance ends with it, and the part drops the instance (ADR-0015). A turn
     /// that fails gives back the seats the batch took for children it never handed to the engine.
-    fn turn(&mut self, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let role = match &item {
-            Item::Mail(mail) if self.declared.lists(mail.kind()) => Role::Kind(mail.kind()),
-            Item::Mail(mail) if self.declared.stages(mail.kind()) => Role::Stage(mail.kind()),
-            Item::Mail(_) => Role::Others,
-            Item::Ended(_) => Role::Ended,
-            Item::Answer { mail, .. } => Role::Answer(mail.kind()),
-            Item::Unanswered { asking, .. } => Role::Answer(asking.answer),
-        };
-        let (mut hosted, instances) = turning.hosted(self.declared, role);
+    fn turn(&mut self, _item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+        let (mut hosted, instances) = turning.hosted(self.declared);
         let replayed = match self.ran {
             Ran::At { head, next, before } => {
                 let Instance { number, store, memory, actors, holdings, .. } = self.running.code.instance(instances);
@@ -1537,7 +1547,7 @@ impl Runs for Guest {
         replayed
     }
 
-    /// Runs the actor's closing turn in its part's instance, each send checked against what its type's `end` declares,
+    /// Runs the actor's closing turn in its part's instance, each send checked as a native send is at its call,
     /// and drops the instance when it was the last actor in it. An actor taken out of another part's instance is
     /// taken into this part's first. An instance a trap dropped is not loaded again, so an actor of one runs no
     /// closing turn: the trap left its state half changed (ADR-0015).
@@ -1572,7 +1582,7 @@ impl Runs for Guest {
         let (mut keeping, mut gifts) = (Keeping::default(), Vec::new());
         let holds = Holds { keeping: &mut keeping, gifts: &mut gifts };
         let reads = Reads { table, made: &(), seats, puts, holds, most_kept_bytes };
-        let mut answering = Answering::of(reads, instances, &self.running.code.codes, &mut given, &holdings, self.me);
+        let mut answering = Answering::of(reads, instances, &self.running.code, &mut given, &holdings, self.me);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
@@ -2016,7 +2026,7 @@ impl Instance {
 /// Hands the `next` turn of those `head` says the guest ran into `hosted`, read from the guest's memory `data` where
 /// it wrote them, the turns before it ending where `before` says: the children it spawned, their seats taken from
 /// those `given` holds, which the host gave the call; the children of other code the host began for it, from
-/// `given`; its sends, each checked against what its sender declares; its lines; the children that began, each kept
+/// `given`; its sends, each checked as a native send is at its call; its lines; the children that began, each kept
 /// in the instance, the one `living` numbers, added to the actors `living` holds unless the turn failed; and how it
 /// ended. Answers with that, and where it ends.
 ///
@@ -2099,6 +2109,7 @@ fn replay_records(
         let bytes = lying(data, send.bytes).ok_or(Broke::Garbled)?;
         let request = match send.request {
             Requesting::Not => Request::Not,
+            Requesting::Replies => Request::Replies,
             Requesting::Asks { answer, context, due } => asks(data, (answer, due), context, holdings, given)?,
             Requesting::Answers { request } => Request::Answers { request },
         }; // Most mail refers to no blob, and a call whose mail refers to none wrote no reference.
@@ -2713,7 +2724,7 @@ mod tests {
     use crate::Monotonic;
     use aethereal_actor::{
         Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Given, Handle, Handles, Links,
-        Origin, Protocol, Publisher, Seated, Services, ToAny, ToSender, ToType, Trapped, Turn, Unanswered,
+        Origin, Protocol, Publisher, Seated, Services, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anyone, Anywhere, ChildOf, Level, Receives, Tick, Time, Top};
     use aethereal_actor::{JobId, JobType};
@@ -2786,28 +2797,26 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self { pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Pinger {
-        type Sends = (ToSender<Ping>,);
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs += 1;
             if pong.n > 0 {
                 turn.reply(&Ping { n: pong.n - 1 })?;
@@ -2874,30 +2883,28 @@ mod tests {
         type Config = Self;
         type Key = ();
         type Handles = (Volley, Answer<echo::Pong, Which>);
-        type BeginSends = (ToType<Self, Volley>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(questioner: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(questioner: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(questioner)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Volley> for Questioner {
-        type Sends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
         type From = Anyone;
 
-        fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(echo) = turn.spawn_from::<echo::Echo>(Origin::Blob(&self.code), &(), &echo::EchoConfig) else {
                 return Ok(());
             };
             for at in 0..volley.pings {
-                turn.to(echo.protocol()).ask(&echo::Ping { n: at * 10 }, &Which { at })?;
+                turn.to(echo.protocol::<Pings>()).ask(&echo::Ping { n: at * 10 }, &Which { at })?;
             }
 
             Ok(())
@@ -2905,12 +2912,10 @@ mod tests {
     }
 
     impl Receives<Answer<echo::Pong, Which>> for Questioner {
-        type Sends = ();
-
         fn handle(
             &mut self,
             (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self, ()>,
+            _: &mut Turn<'_, Self>,
         ) -> Result<(), Fault> {
             let Answered::Yes(pong) = pong else {
                 return Ok(());
@@ -2968,37 +2973,31 @@ mod tests {
         type Config = Petitioning;
         type Key = u64;
         type Handles = (Volley, Answer<echo::Pong, Which>, Answer<echo::Weight, Which>);
-        type BeginSends = (ToType<Self, Volley>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(Self { petitioning, petitioned: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Volley> for Petitioner {
-        type Sends = (
-            aethereal_actor::Asks<echo::Pings, echo::Ping, Which>,
-            aethereal_actor::Asks<echo::Weighs, echo::Weigh, Which>,
-            ToType<echo::Steward, echo::Release>,
-        );
         type From = Anyone;
 
-        fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Petitioning { code, how } = &self.petitioning;
             let Ok(steward) = turn.spawn_from::<echo::Steward>(Origin::Blob(code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
             // Held in one call into the guest, each answered with its own kind.
-            turn.to(steward.protocol()).ask(&echo::Ping { n: 0 }, &Which { at: 0 })?;
-            turn.to(steward.protocol()).ask(&echo::Weigh { n: 5 }, &Which { at: 1 })?;
-            turn.to(steward.protocol()).ask(&echo::Ping { n: 20 }, &Which { at: 2 })?;
+            turn.to(steward.protocol::<echo::Pings>()).ask(&echo::Ping { n: 0 }, &Which { at: 0 })?;
+            turn.to(steward.protocol::<echo::Weighs>()).ask(&echo::Weigh { n: 5 }, &Which { at: 1 })?;
+            turn.to(steward.protocol::<echo::Pings>()).ask(&echo::Ping { n: 20 }, &Which { at: 2 })?;
             turn.to(steward).send(&echo::Release { how: *how })?;
 
             Ok(())
@@ -3006,12 +3005,10 @@ mod tests {
     }
 
     impl Receives<Answer<echo::Pong, Which>> for Petitioner {
-        type Sends = ();
-
         fn handle(
             &mut self,
             (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self, ()>,
+            _: &mut Turn<'_, Self>,
         ) -> Result<(), Fault> {
             let answered = match pong {
                 Answered::Yes(pong) => Ok(pong.n),
@@ -3024,12 +3021,10 @@ mod tests {
     }
 
     impl Receives<Answer<echo::Weight, Which>> for Petitioner {
-        type Sends = ();
-
         fn handle(
             &mut self,
             (weight, which): (Answered<echo::Weight>, Which),
-            _: &mut Turn<'_, Self, ()>,
+            _: &mut Turn<'_, Self>,
         ) -> Result<(), Fault> {
             let answered = match weight {
                 Answered::Yes(weight) => Ok(weight.n),
@@ -3117,10 +3112,9 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Pong, echo::Book);
-        type BeginSends = (ToType<echo::Shelver, echo::Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(shelver) = turn.spawn_from::<echo::Shelver>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
             else {
                 return Err(Fault::new(&Doom)?);
@@ -3130,16 +3124,15 @@ mod tests {
             Ok(Self { shelved: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Pong> for Shelving {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.shelved.push(pong.n);
 
             Ok(())
@@ -3147,10 +3140,9 @@ mod tests {
     }
 
     impl Handles<echo::Book> for Shelving {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let len = 100 + turn.read(&book.blob).len() as u64;
             self.shelved.push(len);
 
@@ -3201,10 +3193,9 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = (ToType<echo::Querent, echo::Query>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(querent) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
@@ -3213,16 +3204,15 @@ mod tests {
             Ok(Self { querent, heard: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Heard> for Inquirer {
-        type Sends = (ToType<echo::Querent, echo::Query>,);
         type From = Anyone;
 
-        fn handle(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             // A second query, asked in a later call into the guest than the first.
             let is_first_done = matches!(heard, echo::Heard::No { at: 2, .. });
             if is_first_done {
@@ -3282,10 +3272,9 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let opening = echo::Opening { n: 3, below: 1 };
             let Ok(_) = turn.spawn_from::<echo::Opener>(Origin::Blob(&inquiring.code), &3, &opening) else {
                 return Err(Fault::new(&Doom)?);
@@ -3294,16 +3283,15 @@ mod tests {
             Ok(Self { opened: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Heard> for Opening {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let heard = match heard {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
@@ -3356,10 +3344,9 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (echo::Heard,);
-        type BeginSends = (ToType<echo::Stasher, echo::Stash>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(stasher) = turn.spawn_from::<echo::Stasher>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
             else {
                 return Err(Fault::new(&Doom)?);
@@ -3369,16 +3356,15 @@ mod tests {
             Ok(Self { stashed: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Heard> for Stashing {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let heard = match heard {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
@@ -3433,10 +3419,9 @@ mod tests {
         type Config = Inquiring;
         type Key = ();
         type Handles = (Lend, Pong);
-        type BeginSends = (ToType<Self, Lend>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(nester) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
             };
@@ -3445,16 +3430,15 @@ mod tests {
             Ok(Self { nester, lent: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Lend> for Lender {
-        type Sends = (ToType<echo::Nester, echo::Book>,);
         type From = Anyone;
 
-        fn handle(&mut self, _: Lend, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Lend, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(blob) = turn.put(vec![7; 3]) else {
                 return Err(Fault::new(&Doom)?);
             };
@@ -3465,10 +3449,9 @@ mod tests {
     }
 
     impl Handles<Pong> for Lender {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.lent.push(pong.n);
 
             Ok(())
@@ -3520,28 +3503,26 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping, Shut), Ping>, ToAny<(Ping, Shut), Shut>);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping, Shut)>(found)) {
                 turn.to(echo).send(&Ping { n: 0 })?.send(&Shut)?.send(&Ping { n: 0 })?;
             }
 
             Ok(Self { pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Closer {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs += 1;
 
             Ok(())
@@ -3615,28 +3596,26 @@ mod tests {
         type Config = Volley;
         type Key = u64;
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self { key: volley.pings, answered: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Caller {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.answered.push(pong.n);
 
             Ok(())
@@ -3691,32 +3670,30 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping, Shut), Ping>, ToAny<(Ping, Shut), Shut>);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(volley: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast(found)) {
+            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast::<(Shut,)>(found)) {
                 turn.to(mirror).send(&Shut)?;
             }
-            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast(found)) {
+            if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(echo).send(&Ping { n: volley.pings })?;
             }
 
             Ok(Self { pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Volleyer {
-        type Sends = (ToSender<Ping>,);
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs += 1;
             if pong.n > 0 {
                 turn.reply(&Ping { n: pong.n - 1 })?;
@@ -3741,28 +3718,26 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let keeper = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.timekeeper"), &()));
-            if let Some(keeper) = turn.resolve(&keeper).and_then(|found| turn.cast(found)) {
+            if let Some(keeper) = turn.resolve(&keeper).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(keeper).send(&Ping { n: 0 })?;
             }
 
             Ok(Self { told: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for TimeAsker {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told = pong.n;
 
             Ok(())
@@ -3836,10 +3811,9 @@ mod tests {
         type Config = Self;
         type Key = ();
         type Handles = ();
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(breeder: Self, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(breeder: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Ticker>(Origin::Blob(&breeder.code), &(), &echo::EchoConfig);
             let said = match spawned {
                 Ok(_) => "ticker made",
@@ -3851,7 +3825,7 @@ mod tests {
             Ok(breeder)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -3916,11 +3890,9 @@ mod tests {
         type Config = Order;
         type Key = u64;
         type Handles = (Pong,);
-        type BeginSends =
-            (ToAny<(echo::Go,), echo::Go>, ToAny<(echo::CallOff,), echo::CallOff>, ToAny<(echo::Shut,), echo::Shut>);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(order: Order, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(order: Order, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let foreman = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.foreman"), &()));
             let Some(found) = turn.resolve(&foreman) else {
                 return Err(Fault::new(&Doom)?);
@@ -3946,16 +3918,15 @@ mod tests {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Boss {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4213,28 +4184,26 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Crash,), Crash>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
-            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast(found)) {
+            if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast::<(Crash,)>(found)) {
                 turn.to(mirror).send(&Crash)?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Crasher {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4419,12 +4388,11 @@ mod tests {
         type Config = Asks;
         type Key = u64;
         type Handles = (Pong,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(asks: Asks, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(asks: Asks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             for path in &asks.paths {
-                if let Some(asked) = turn.resolve(path).and_then(|found| turn.cast(found)) {
+                if let Some(asked) = turn.resolve(path).and_then(|found| turn.cast::<(Ping,)>(found)) {
                     turn.to(asked).send(&Ping { n: 0 })?;
                 }
             }
@@ -4432,16 +4400,15 @@ mod tests {
             Ok(Self { answers: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Asker {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.answers.push(pong.n);
 
             Ok(())
@@ -4461,18 +4428,17 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(Grow,), Grow>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(brood) = turn.resolve(&brood_path()).and_then(|found| turn.cast(found)) {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+            if let Some(brood) = turn.resolve(&brood_path()).and_then(|found| turn.cast::<(Grow,)>(found)) {
                 turn.to(brood).send(&Grow)?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4592,23 +4558,21 @@ mod tests {
         type Config = Keeps;
         type Key = u64;
         type Handles = (Ping,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(keeps: Keeps, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(keeps: Keeps, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { key: keeps.key, pings: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Ping> for Keeper {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pings.push(100 * self.key + ping.n);
 
             Ok(())
@@ -4711,10 +4675,9 @@ mod tests {
         type Config = Vestment;
         type Key = u64;
         type Handles = ();
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let sexton: Result<ActorRef<echo::Sexton>, _> =
                 turn.spawn_from(Origin::Blob(&vestment.code), &(), &echo::EchoConfig);
             let answer = match sexton {
@@ -4726,7 +4689,7 @@ mod tests {
             Ok(Self { spawned: vec![answer] })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4750,9 +4713,9 @@ mod tests {
     }
 
     #[test]
-    fn a_guest_s_handler_of_a_stage_sends_what_it_declares() {
-        // Catches a guest's stage, sent as mail of its kind, taken by its host for mail the guest does not list, so
-        // what its handler of the stage declares is not found and its send is refused (ADR-0020).
+    fn a_guest_s_handler_of_a_stage_runs_and_sends() {
+        // Catches a guest's stage, sent as mail of its kind, taken for mail the guest does not list, so its handler of
+        // the stage never runs and sends nothing (ADR-0020).
         let (mut engine, code) = with_echo(Engine::new(NonZeroUsize::MIN, 1024, 0, 1 << 20, 0));
         let Ok(keeper_id) = engine.add_root::<Keeper>(&0, Keeps { key: 0 }) else {
             panic!("the keeper begins");
@@ -4838,23 +4801,21 @@ mod tests {
         type Config = Shining;
         type Key = ();
         type Handles = (echo::Hand,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Shining, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Shining, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { lights: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Hand> for Shiner {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             for lamp in hand.lamps {
                 let mut lamp = turn.take(lamp)?;
                 let light = turn.open(&mut lamp)?.light;
@@ -4887,10 +4848,9 @@ mod tests {
         type Config = Lighting;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(echo::Hand,), echo::Hand>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(lighting: Lighting, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(lighting: Lighting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Lighting { to, lights } = lighting;
             let to = turn.resolve(&to).and_then(|found| turn.cast::<(echo::Hand,)>(found));
             let Some(to) = to else {
@@ -4905,7 +4865,7 @@ mod tests {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4982,23 +4942,21 @@ mod tests {
         type Config = Volley;
         type Key = u64;
         type Handles = (Ping,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(volley: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(volley: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { key: volley.pings })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Ping> for Mortal {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             if self.key > 0 {
                 return Err(Fault::new(&Doom)?);
             }
@@ -5076,10 +5034,9 @@ mod tests {
         type Config = Nesting;
         type Key = ();
         type Handles = (Poke, Pong);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mut reporters = Vec::new();
             for key in 0..nesting.reporters {
                 let config = echo::AddBy { by: 10 * key, deeper: 0 };
@@ -5101,16 +5058,15 @@ mod tests {
             Ok(Self { reporters, told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Poke> for Nest {
-        type Sends = (ToType<echo::Reporter, echo::Ping>,);
         type From = Anyone;
 
-        fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             turn.to(&self.reporters).send(&echo::Ping { n: 1 })?;
 
             Ok(())
@@ -5118,10 +5074,9 @@ mod tests {
     }
 
     impl Handles<Pong> for Nest {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(pong.n);
 
             Ok(())
@@ -5142,23 +5097,21 @@ mod tests {
         type Config = echo::AddBy;
         type Key = u64;
         type Handles = (Poke,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: echo::AddBy, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: echo::AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Poke> for Impostor {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5176,19 +5129,18 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(Poke,), Poke>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let nest = ActorPath::from_root(&PathSegment::new(Nest::NAME, &()));
-            if let Some(nest) = turn.resolve(&nest).and_then(|found| turn.cast(found)) {
+            if let Some(nest) = turn.resolve(&nest).and_then(|found| turn.cast::<(Poke,)>(found)) {
                 turn.to(nest).send(&Poke)?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5252,10 +5204,9 @@ mod tests {
         type Config = Henning;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(henning: Henning, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(henning: Henning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hatch = echo::Hatch { other: henning.other, home: henning.home.clone() };
             let Ok(_) = turn.spawn_from::<echo::Hatcher>(Origin::Blob(&henning.home), &(), &hatch) else {
                 return Err(Fault::new(&Doom)?);
@@ -5264,16 +5215,15 @@ mod tests {
             Ok(Self { told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Hen {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(pong.n);
 
             Ok(())
@@ -5293,22 +5243,21 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(Grow,), Grow>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hen = ActorPath::from_root(&PathSegment::new(Hen::NAME, &()));
             let Ok(hatcher) = hen.child(&PathSegment::new(echo::Hatcher::NAME, &())) else {
                 return Err(Fault::new(&Doom)?);
             };
-            if let Some(hatcher) = turn.resolve(&hatcher).and_then(|found| turn.cast(found)) {
+            if let Some(hatcher) = turn.resolve(&hatcher).and_then(|found| turn.cast::<(Grow,)>(found)) {
                 turn.to(hatcher).send(&Grow)?.send(&Grow)?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5392,10 +5341,9 @@ mod tests {
         type Config = Publishes;
         type Key = ();
         type Handles = ();
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(config: Publishes, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Publishes { publisher, kinds, blobs } = config;
             let held = turn.take(publisher)?;
             let mut published = Vec::new();
@@ -5406,7 +5354,7 @@ mod tests {
             Ok(Self { publisher: held, published })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5431,16 +5379,15 @@ mod tests {
         type Config = Inherit;
         type Key = u64;
         type Handles = ();
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Inherit, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Inherit, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Echo>(Origin::Head, &(), &echo::EchoConfig);
 
             Ok(Self { inherited: Granted::from(spawned) })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5544,23 +5491,21 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Ledger {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs.push(pong.n);
 
             Ok(())
@@ -5595,27 +5540,25 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (echo::Book, Pong);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(librarian).send(&Ping { n: 5 })?;
             }
 
             Ok(Self { read: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Book> for Borrower {
-        type Sends = (ToSender<echo::Book>,);
         type From = Anyone;
 
-        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let bytes = turn.read(&book.blob);
             let read = [bytes.len() as u64, bytes.first().copied().map_or(0, u64::from)];
             self.read.extend(read);
@@ -5626,10 +5569,9 @@ mod tests {
     }
 
     impl Handles<Pong> for Borrower {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.read.push(pong.n);
 
             Ok(())
@@ -5649,18 +5591,17 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(echo::Shut,), echo::Shut>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(echo::Shut,)>(found)) {
                 turn.to(librarian).send(&echo::Shut)?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5742,27 +5683,25 @@ mod tests {
         type Config = Borrowing;
         type Key = u64;
         type Handles = (echo::Book,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(borrowing: Borrowing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
-            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast(found)) {
+        fn begin(borrowing: Borrowing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+            if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(librarian).send(&Ping { n: borrowing.len })?;
             }
 
             Ok(Self { keeps: borrowing.keeps, books: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Book> for Patron {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, book: echo::Book, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, book: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             if self.keeps {
                 self.books.push(book.blob);
             }
@@ -5854,28 +5793,26 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (echo::Book,);
-        type BeginSends = (ToAny<(Ping,), Ping>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spendthrift = ActorPath::from_root(&PathSegment::new(echo::Spendthrift::NAME, &()));
-            if let Some(spendthrift) = turn.resolve(&spendthrift).and_then(|found| turn.cast(found)) {
+            if let Some(spendthrift) = turn.resolve(&spendthrift).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(spendthrift).send(&Ping { n: 3 })?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<echo::Book> for Dun {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, _: echo::Book, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, _: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5958,23 +5895,21 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = (Pong,);
-        type BeginSends = ();
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, _: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Handles<Pong> for Mourner {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.pongs.push(pong.n);
 
             Ok(())
@@ -5995,30 +5930,29 @@ mod tests {
         type Config = Volley;
         type Key = ();
         type Handles = ();
-        type BeginSends = (ToAny<(Ping, echo::Shut), Ping>, ToAny<(Ping, echo::Shut), echo::Shut>);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(_: Volley, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let parting = |key: u64| ActorPath::from_root(&PathSegment::new(echo::Parting::NAME, &key));
-            if let Some(first) = turn.resolve(&parting(1)).and_then(|found| turn.cast(found)) {
+            if let Some(first) = turn.resolve(&parting(1)).and_then(|found| turn.cast::<(Ping, echo::Shut)>(found)) {
                 turn.to(first).send(&Ping { n: 1 })?.send(&Ping { n: 1 })?.send(&echo::Shut)?;
             }
-            if let Some(second) = turn.resolve(&parting(2)).and_then(|found| turn.cast(found)) {
+            if let Some(second) = turn.resolve(&parting(2)).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(second).send(&Ping { n: 1 })?.send(&Ping { n: 0 })?;
             }
 
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     #[test]
-    fn a_guests_closing_turn_runs_on_its_state_and_sends_what_its_end_declares() {
+    fn a_guests_closing_turn_runs_on_its_state_and_sends() {
         // Catches a guest actor that ends with no closing turn, one whose closing turn runs on another's state or is
-        // not told why it runs, and a closing turn's send checked against what another of its handlers declares.
+        // not told why it runs, and a closing turn's send refused.
         let Some(parts) = NonZeroUsize::new(1) else {
             panic!("one is not zero");
         };
@@ -6250,30 +6184,27 @@ mod tests {
         type Config = ProberConfig;
         type Key = ();
         type Handles = (Answer<echo::Pong, Which>, echo::Heard);
-        type BeginSends = (aethereal_actor::Asks<Pings, echo::Ping, Which>,);
-        type EndSends = ();
+        type Depends = ();
 
-        fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+        fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(envoy) = turn.spawn_from::<echo::Envoy>(Origin::Blob(&config.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&echo::Shut)?);
             };
-            turn.to(envoy.protocol()).within(PROBE_DUE).ask(&echo::Ping { n: 7 }, &Which { at: 7 })?;
+            turn.to(envoy.protocol::<Pings>()).within(PROBE_DUE).ask(&echo::Ping { n: 7 }, &Which { at: 7 })?;
 
             Ok(Self { answered: Vec::new(), told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
             Ok(())
         }
     }
 
     impl Receives<Answer<echo::Pong, Which>> for Prober {
-        type Sends = ();
-
         fn handle(
             &mut self,
             (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self, ()>,
+            _: &mut Turn<'_, Self>,
         ) -> Result<(), Fault> {
             let probed = match pong {
                 Answered::Yes(pong) => Probed::Pong { at: which.at, n: pong.n },
@@ -6286,10 +6217,9 @@ mod tests {
     }
 
     impl Handles<echo::Heard> for Prober {
-        type Sends = ();
         type From = Anyone;
 
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
             self.told.push(Probed::of(&heard));
 
             Ok(())

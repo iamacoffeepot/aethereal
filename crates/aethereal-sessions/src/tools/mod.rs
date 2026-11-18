@@ -9,8 +9,8 @@ use crate::{
     ReadTranscript, Refusal, Said, Say, Sessions, SessionsListed as Listed, Transcribed,
 };
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Asks, Beginning, ChildOf, Ending, Fault, Handles, Held, Path,
-    ProtocolRef, Receives, ToSender, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
+    Receives, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -95,14 +95,13 @@ impl Actor for SessionsTools {
         Answer<Interrupted, Asking>,
         Answer<Archived, Asking>,
     );
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = (Sessions,);
 
-    fn begin(_: SessionsToolsConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: SessionsToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -157,21 +156,12 @@ impl Tool for SessionsTools {
 }
 
 impl Handles<Call> for SessionsTools {
-    type Sends = (
-        Asks<Path<Sessions>, NewSession, Asking>,
-        Asks<Path<Sessions>, Say, Asking>,
-        Asks<Path<Sessions>, ReadTranscript, Asking>,
-        Asks<Path<Sessions>, ListSessions, Asking>,
-        Asks<Path<Sessions>, Interrupt, Asking>,
-        Asks<Path<Sessions>, Archive, Asking>,
-        ToSender<Called>,
-    );
     type From = Anyone;
 
     /// Reads the call's input, or refuses it; holds the call, and asks the capability. A session's call is refused:
     /// the sessions are the owner's to open, speak to, and end, and a session that drove another would be a pipeline
     /// of sessions, which the hub is not built for (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Caller::Session { .. } = call.caller {
             turn.reply(&Called::Refused(String::from("the session tools are the owner's, not a session's")))?;
             return Ok(());
@@ -261,12 +251,10 @@ impl Answers for Archived {
 macro_rules! answers {
     ($($answer:ty),*) => {$(
         impl Receives<Answer<$answer, Asking>> for SessionsTools {
-            type Sends = ();
-
             fn handle(
                 &mut self,
                 (answered, Asking { number }): (Answered<$answer>, Asking),
-                turn: &mut Turn<'_, Self, ()>,
+                turn: &mut Turn<'_, Self>,
             ) -> Result<(), Fault> {
                 let Some(held) = self.calls.remove(&number) else {
                     return Ok(());

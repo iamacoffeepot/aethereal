@@ -58,7 +58,7 @@ pub use clipboard::{Clipping, Copying, Pasting};
 pub use drags::Landing;
 pub use input::{Heard, ImeAsked};
 pub use layers::{DrawKey, Instancing, Placing, TextPlacing, Texting};
-pub use orders::{Orders, Sends};
+pub use orders::{Ordering, Orders};
 pub use pictures::{Picturing, Texturing};
 pub use popups::Tipping;
 pub use program::{Meshing, MetricsAsked, Programming, Shaping, Uniforming, Whitening};
@@ -75,12 +75,13 @@ use crate::tree::{
 };
 use crate::unkept::Unkept;
 use crate::widget::{Arrange, Draws, Focused, Laid, Lit, Piece, Quad, Sample, Selected, anchor};
-use aethereal_actor::{Allows, Asks, Beginning, Fault, Level, On, Path, Prepare, Receives, path};
+use aethereal_actor::{Answer, Beginning, DependsOn, Fault, Level, On, Prepare, Receives, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_math::{Rect2, Vec2};
 use aethereal_render::Renderer;
 use aethereal_render::draw_list::{Area, Callee, Clip, Entry, Pointer};
 use aethereal_render::font::Metrics;
+use aethereal_render::frame::Shaped;
 use aethereal_render::frame::{Frame, ShapeOf};
 use aethereal_render::pass::{Pass, PassName};
 use aethereal_render::text::Font;
@@ -377,10 +378,9 @@ impl Screen {
     /// # Errors
     ///
     /// A fault when the ask was not written.
-    pub fn begin<A, S, I>(target: Target, viewport: Viewport, turn: &mut Beginning<'_, A, S>) -> Result<Self, Fault>
+    pub fn begin<A, R>(target: Target, viewport: Viewport, turn: &mut Beginning<'_, A>) -> Result<Self, Fault>
     where
-        A: Receives<On<Prepare>>,
-        S: Allows<Asks<Path<Renderer>, ShapeOf, Shaping>, I>,
+        A: Receives<On<Prepare>> + Receives<Answer<Shaped, Shaping>> + DependsOn<Renderer, R>,
     {
         turn.subscribe::<Prepare>();
         let shape = ShapeOf { frame: target.frame, pass: target.pass };

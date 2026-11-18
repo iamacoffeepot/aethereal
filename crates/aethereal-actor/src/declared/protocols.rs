@@ -1,9 +1,8 @@
 //! What a reference typed by a protocol is proven to reach: the protocols, a type that conforms to one, and a protocol
 //! that covers another (ADR-0016).
 
-use super::{Allows, Handled, Handles, Kinds, RepliesWithin};
-use crate::Actor;
-use aethereal_data::Kind;
+use super::{Handled, Handles, Lists};
+use aethereal_data::{Kind, KindId};
 
 /// A named protocol: a list of the kinds it takes, and what each is answered with, one [`Carries`] for each, as an
 /// actor lists what it handles and writes one handler for each (ADR-0016).
@@ -78,20 +77,26 @@ impl Listed for () {
 
 impl<P> CarriedBy<P> for () {}
 
-/// An actor of this type takes every kind of the protocol `P`, each found at its place in `Is`, which the compiler
-/// infers: an [`ActorRef`](crate::ActorRef) to one is made a [`ProtocolRef<P>`](crate::ProtocolRef) by its
-/// `protocol` (ADR-0016).
+/// A tuple of up to 64 kinds, as a protocol lists them, `()` for none: what a [`Listed`] protocol names its kinds by,
+/// and the engine checks a cast against.
+pub trait Kinds {
+    /// The ids of the kinds, in order.
+    const KINDS: &'static [KindId];
+}
+
+impl Kinds for () {
+    const KINDS: &'static [KindId] = &[];
+}
+
+/// An actor of this type takes every kind of the protocol `P`: an [`ActorRef`](crate::ActorRef) to one is made a
+/// [`ProtocolRef<P>`](crate::ProtocolRef) by its `protocol` (ADR-0016).
 ///
-/// It conforms when it handles each kind of `P`. For a named protocol, each
-/// reply its handler of a kind declares must also be of a kind the protocol
-/// answers that kind with, so a sender through the protocol, which handles
-/// those, handles whatever comes back. A handler need not send every answer.
-/// The compiler checks it, and nothing is read when the program runs.
+/// It conforms when it handles each kind of `P`. The compiler checks it, and nothing is read when the program runs.
 ///
-/// A board whose handler replies with a kind the protocol does not answer with does not conform:
+/// A board that does not handle a kind of the protocol does not conform:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Carries, Ending, Fault, Handles, Protocol, ProtocolRef, ToSender, Turn};
+/// # use aethereal_actor::{Actor, ActorRef, Beginning, Carries, Ending, Fault, Protocol, ProtocolRef};
 /// # use aethereal_data::Plain;
 /// #
 /// # #[derive(Plain)]
@@ -101,10 +106,6 @@ impl<P> CarriedBy<P> for () {}
 /// # #[derive(Plain)]
 /// # #[kind(name = "aether.example.tile_is")]
 /// # struct TileIs;
-/// #
-/// # #[derive(Plain)]
-/// # #[kind(name = "aether.example.lost")]
-/// # struct Lost;
 /// #
 /// # struct Tiles;
 /// #
@@ -120,29 +121,19 @@ impl<P> CarriedBy<P> for () {}
 /// # #[kind(name = "aether.example.board")]
 /// # struct Board;
 /// #
-/// # impl Actor for Board {
-/// #     type Config = Board;
-/// #     type Key = ();
-/// #     type Handles = (WhichTile,);
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
-/// #
-/// #     fn begin(board: Board, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-/// #         Ok(board)
-/// #     }
-/// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-/// #         Ok(())
-/// #     }
-/// # }
-/// #
-/// /// Answers which tile, or that it is lost: a reply the protocol does not answer with.
-/// impl Handles<WhichTile> for Board {
-///     type Sends = (ToSender<TileIs>, ToSender<Lost>);
-///     type From = Anyone;
+/// /// Handles nothing, so takes no `WhichTile`.
+/// impl Actor for Board {
+///     type Config = Board;
+///     type Key = ();
+///     type Handles = ();
+///     type Depends = ();
 ///
-///     fn handle(&mut self, _: WhichTile, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-///         Ok(turn.reply(&Lost)?)
+///     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         Ok(board)
+///     }
+///
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
 ///     }
 /// }
 ///
@@ -150,13 +141,12 @@ impl<P> CarriedBy<P> for () {}
 ///     board.protocol()
 /// }
 /// ```
-pub trait Conforms<P, Is> {}
+pub trait Conforms<P> {}
 
-/// The actor of type `T` handles each of these kinds of the named protocol `P`, and replies to each only with what
-/// `P` answers it with, each reply found at its place in `Is`.
-pub trait AnsweredBy<T, P, Is> {}
+/// The actor of type `T` handles each of these kinds.
+pub trait HandledBy<T> {}
 
-impl<T: Actor, P: Protocol, Is> Conforms<P, Is> for T where P::Kinds: AnsweredBy<T, P, Is> {}
+impl<T, P: Listed> Conforms<P> for T where P::Kinds: HandledBy<T> {}
 
 /// The protocol takes every kind of the tuple of kinds `Q`, each found at its place in `Is`, which the compiler infers:
 /// a [`ProtocolRef`](crate::ProtocolRef) to it narrows to one to `Q` (ADR-0016).
@@ -165,23 +155,19 @@ impl<T: Actor, P: Protocol, Is> Conforms<P, Is> for T where P::Kinds: AnsweredBy
 /// build.
 pub trait Covers<Q, Is> {}
 
-impl<T> Conforms<(), ()> for T {}
-
-impl<T, P> AnsweredBy<T, P, ()> for () {}
+impl<T> HandledBy<T> for () {}
 
 impl<P> Covers<(), ()> for P {}
 
 macro_rules! protocols {
     ($( [$($kind:ident $is:ident)*] )*) => {$(
-        impl<T: Actor, $($kind: Kind + Handled),*> Conforms<($($kind,)*), ()> for T where $(T: Handles<$kind>),* {}
+        impl<T: $(Handles<$kind> +)*, $($kind: Kind + Handled),*> HandledBy<T> for ($($kind,)*) {}
 
-        impl<T: Actor, P, $($kind: Kind + Handled, $is),*> AnsweredBy<T, P, ($($is,)*)> for ($($kind,)*)
-        where
-            $(T: Handles<$kind>, P: Carries<$kind>, <T as Handles<$kind>>::Sends: RepliesWithin<<P as Carries<$kind>>::Answers, $is>,)*
-        {
+        impl<P, $($kind, $is),*> Covers<($($kind,)*), ($($is,)*)> for P where $(P: Lists<$kind, $is>),* {}
+
+        impl<$($kind: Kind),*> Kinds for ($($kind,)*) {
+            const KINDS: &'static [KindId] = &[$(KindId::of::<$kind>()),*];
         }
-
-        impl<P, $($kind, $is),*> Covers<($($kind,)*), ($($is,)*)> for P where $(P: Allows<$kind, $is>),* {}
 
         impl<$($kind: Kind),*> Listed for ($($kind,)*) {
             type Kinds = Self;

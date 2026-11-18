@@ -9,15 +9,15 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Path, Prepare,
-    Receives, Render, Tells, Tick, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Prepare, Receives, Render,
+    Tick, Top, Turn, path,
 };
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
-use aethereal_render::frame::{Frame, ShapeOf};
+use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::readback::{Pixels as Read, ReadBack, Readable};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
@@ -144,12 +144,7 @@ aethereal_ui::view! { Reply, ui,
     }
 }
 
-/// What the example's methods send: none of their own.
-type ReplySends = aethereal_ui::sends![];
-
-impl Controls for Reply {
-    type Sends = ReplySends;
-}
+impl Controls for Reply {}
 
 #[aethereal_ui::events]
 impl Reply {
@@ -162,7 +157,7 @@ impl Reply {
     /// Counts the link pressed and logs its target: an example opens nothing. The target is handed as the link's
     /// event hands it.
     #[allow(clippy::needless_pass_by_value)]
-    fn open(&mut self, turn: &mut Turn<'_, Self, ReplySends>, target: String) -> Result<(), Fault> {
+    fn open(&mut self, turn: &mut Turn<'_, Self>, target: String) -> Result<(), Fault> {
         self.pressed += 1;
         turn.log(Level::Info, format_args!("link {} pressed: {target}", self.pressed));
         Ok(())
@@ -177,10 +172,9 @@ impl Actor for Reply {
     type Config = ReplyConfig;
     type Key = ();
     type Handles = aethereal_ui::handles![Event, On<Tick>, Answer<Read, Shooting>];
-    type BeginSends = (Tells<Path<Window>, window::Subscribe>, Asks<Path<Renderer>, ShapeOf, Shaping>);
-    type EndSends = ();
+    type Depends = aethereal_ui::depends!();
 
-    fn begin(config: ReplyConfig, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(config: ReplyConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Window>(config.window)).send(&window::Subscribe)?;
         turn.subscribe::<Tick>();
         let target = Target::of::<Interface>(Frame::Main(config.window));
@@ -205,16 +199,15 @@ impl Actor for Reply {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Event> for Reply {
-    type Sends = aethereal_ui::Sends;
     type From = Anyone;
 
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -226,11 +219,9 @@ impl Handles<Event> for Reply {
 }
 
 impl Receives<On<Tick>> for Reply {
-    type Sends = (Asks<Path<Renderer>, ReadBack, Shooting>,);
-
     /// Streams the next characters of the reply in; once it has come and settled, reads the frame back when a file is
     /// named to write it to.
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let streamed = usize::try_from(self.streamed).unwrap_or(usize::MAX);
         if streamed < REPLY.len() {
             let next = (streamed + CHARACTERS_PER_FRAME..=REPLY.len())
@@ -250,13 +241,11 @@ impl Receives<On<Tick>> for Reply {
 }
 
 impl Receives<Answer<Read, Shooting>> for Reply {
-    type Sends = ();
-
     /// Writes the frame read back as a PPM to the file named: its red, green, and blue, row by row from the top.
     fn handle(
         &mut self,
         (answered, Shooting): (Answered<Read>, Shooting),
-        turn: &mut Turn<'_, Self, ()>,
+        turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         let (Answered::Yes(Read::Read { width, height, pixels, .. }), Some(file)) = (answered, shot()) else {
             turn.log(Level::Error, "the frame was not read back");

@@ -102,14 +102,13 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #     type Config = Show;
 /// #     type Key = ();
 /// #     type Handles = ();
-/// #     type BeginSends = ();
-/// #     type EndSends = ();
+/// #     type Depends = ();
 /// #
-/// #     fn begin(_: Show, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #         Ok(Self)
 /// #     }
 /// #
-/// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
 /// #     }
 /// # }
@@ -169,14 +168,13 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #             type Config = Nothing;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(Self)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -265,14 +263,13 @@ type FlagChange = Box<dyn for<'parts> Fn(Flags<'parts>) -> Flags<'parts>>;
 /// #             type Config = Nothing;
 /// #             type Key = ();
 /// #             type Handles = ();
-/// #             type BeginSends = ();
-/// #             type EndSends = ();
+/// #             type Depends = ();
 /// #
-/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+/// #             fn begin(_: Nothing, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
 /// #                 Ok(Self)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -440,14 +437,13 @@ impl<H: Host, R, D> Program<H, R, D> {
     /// #     type Config = Show;
     /// #     type Key = ();
     /// #     type Handles = ();
-    /// #     type BeginSends = ();
-    /// #     type EndSends = ();
+    /// #     type Depends = ();
     /// #
-    /// #     fn begin(_: Show, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    /// #     fn begin(_: Show, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     /// #         Ok(Self)
     /// #     }
     /// #
-    /// #     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
     /// #         Ok(())
     /// #     }
     /// # }

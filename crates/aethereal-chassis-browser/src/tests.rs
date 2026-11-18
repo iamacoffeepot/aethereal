@@ -75,25 +75,22 @@ impl Actor for Painter {
     type Config = Nothing;
     type Key = ();
     type Handles = (On<Tick>, On<Render>, Answer<Slept, Nothing>);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Nothing, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
         turn.subscribe::<Render>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<On<Tick>> for Painter {
-    type Sends = ();
-
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.run(&Sleep { until: turn.now() }, &Nothing)?;
 
         Ok(())
@@ -101,17 +98,13 @@ impl Receives<On<Tick>> for Painter {
 }
 
 impl Receives<On<Render>> for Painter {
-    type Sends = ();
-
-    fn handle(&mut self, _: Render, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Render, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Receives<Answer<Slept, Nothing>> for Painter {
-    type Sends = ();
-
-    fn handle(&mut self, _: (Answered<Slept>, Nothing), _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: (Answered<Slept>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -170,25 +163,23 @@ impl Actor for Pointer {
     type Config = PointerConfig;
     type Key = ();
     type Handles = (Moved,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(config: PointerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let source = turn.take(config.source)?;
 
         Ok(Self { source })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Moved> for Pointer {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Moved, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Moved, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }

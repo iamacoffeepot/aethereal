@@ -4,8 +4,8 @@
 
 use super::super::*;
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, ChildOf, Ending, Fills, Handles, Job, Path, Receives, Runner, Running, Services,
-    Tells, ToType, Top, Turn, path,
+    Actor, Answer, Answered, Anyone, ChildOf, Ending, Fills, Handles, Job, Receives, Runner, Running, Services, Top,
+    Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeSet;
@@ -163,25 +163,23 @@ impl Actor for Builder {
     type Config = Plan;
     type Key = u64;
     type Handles = (Plan, Lent, Answer<Filled, Plan>, Answer<Drew, Plan>);
-    type BeginSends = (ToType<Self, Plan>,);
-    type EndSends = ();
+    type Depends = (Self,);
 
-    fn begin(plan: Plan, turn: &mut Beginning<'_, Self, Self::BeginSends>) -> Result<Self, Fault> {
+    fn begin(plan: Plan, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.me()).send(&plan)?;
 
         Ok(Self { held: Vec::new(), took: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, Self::EndSends>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Plan> for Builder {
-    type Sends = (ToType<Self, Plan>, Tells<Path<Self>, Lent>);
     type From = Anyone;
 
-    fn handle(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if plan.turns.is_empty() {
             return Ok(());
         }
@@ -235,10 +233,9 @@ impl Handles<Plan> for Builder {
 }
 
 impl Handles<Lent> for Builder {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, lent: Lent, _: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, lent: Lent, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.held.push(lent.blob);
 
         Ok(())
@@ -246,13 +243,7 @@ impl Handles<Lent> for Builder {
 }
 
 impl Receives<Answer<Filled, Plan>> for Builder {
-    type Sends = (ToType<Self, Plan>,);
-
-    fn handle(
-        &mut self,
-        (filled, plan): (Answered<Filled>, Plan),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (filled, plan): (Answered<Filled>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Answered::Yes(Filled { blob }) = filled {
             self.held.push(blob);
         }
@@ -263,13 +254,7 @@ impl Receives<Answer<Filled, Plan>> for Builder {
 }
 
 impl Receives<Answer<Drew, Plan>> for Builder {
-    type Sends = (ToType<Self, Plan>,);
-
-    fn handle(
-        &mut self,
-        (drew, plan): (Answered<Drew>, Plan),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
+    fn handle(&mut self, (drew, plan): (Answered<Drew>, Plan), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Answered::Yes(Drew { capacity }) = drew {
             self.took.push(empty(capacity));
         }
@@ -280,7 +265,7 @@ impl Receives<Answer<Drew, Plan>> for Builder {
 }
 
 /// Takes a buffer with room for `room` bytes, writes three bytes into it, and puts it.
-fn put<S>(turn: &mut Turn<'_, Builder, S>, room: u64) -> Result<Bytes, Fault> {
+fn put(turn: &mut Turn<'_, Builder>, room: u64) -> Result<Bytes, Fault> {
     let (turn, pool) = turn.split();
     let mut buffer = pool.buffer(size(room));
     buffer.extend_from_slice(&[7; 3]);

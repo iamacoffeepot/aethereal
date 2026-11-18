@@ -1,8 +1,8 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
 use crate::{
-    Actor, ChildOf, Conforms, Covers, Handled, Handles, Listed, Path, PathTo, Refers, SeatNumber, Seated, Table, Tells,
-    ToAny, ToType, Vantage,
+    ChildOf, Conforms, Covers, DependsOn, Handled, Handles, Listed, Lists, Path, PathTo, Refers, SeatNumber, Seated,
+    Table, Vantage,
 };
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape,
@@ -161,13 +161,12 @@ impl<T> ActorRef<T> {
         ErasedActorRef::new(self.seated)
     }
 
-    /// The same reference, to the protocol `P`, which its type [`Conforms`] to, each of what that asks found at its
-    /// place in `Is`, which the compiler infers: `reference.protocol()` where the protocol is named by the type it is
-    /// given to (ADR-0016). The compiler checks it, and nothing is read when it runs.
+    /// The same reference, to the protocol `P`, which its type [`Conforms`] to: `reference.protocol()` where the
+    /// protocol is named by the type it is given to (ADR-0016). The compiler checks it, and nothing is read when it runs.
     #[must_use]
-    pub const fn protocol<P, Is>(self) -> ProtocolRef<P>
+    pub const fn protocol<P>(self) -> ProtocolRef<P>
     where
-        T: Conforms<P, Is>,
+        T: Conforms<P>,
     {
         ProtocolRef::new(self.seated)
     }
@@ -298,8 +297,14 @@ impl<P> ProtocolRef<P> {
     ///
     /// ```compile_fail
     /// use aethereal_actor::ProtocolRef;
+    /// use aethereal_data::Plain;
     ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.example.poke")]
     /// struct Poke;
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.example.shut")]
     /// struct Shut;
     ///
     /// fn widen(reference: ProtocolRef<(Poke,)>) -> ProtocolRef<(Poke, Shut)> {
@@ -375,10 +380,69 @@ where
 
 impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 
-/// A proven reference to an actor that takes mail of kind `K`, and the send a turn declares to reach it: what the
-/// send verbs take, so one verb sends through either reference (ADR-0016).
+/// What mail of kind `K` from an actor of type `Me` may be sent through, at `I`, which the compiler infers: a
+/// reference to a type that handles `K`, a reference to a protocol `K` is one of the kinds of, or a typed path to a
+/// type that handles `K`, beneath a root of a type `Me` depends on (ADR-0016, ADR-0022, ADR-0059). Each send is
+/// checked at its call, and nothing is read when it runs.
 ///
-/// A send through a protocol reference builds only when the turn's sends list it:
+/// A send of a kind the receiver's type does not handle does not build:
+///
+/// ```compile_fail
+/// use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Ending, Fault, Handles, Turn};
+/// use aethereal_data::Plain;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.poke")]
+/// struct Poke;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.knock")]
+/// struct Knock;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.shut")]
+/// struct Shut;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.door")]
+/// struct Door;
+///
+/// impl Actor for Door {
+///     type Config = Door;
+///     type Key = ();
+///     type Handles = (Poke, Knock);
+///     type Depends = ();
+///
+///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+///         Ok(door)
+///     }
+///
+///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl Handles<Poke> for Door {
+///     type From = Anyone;
+///
+///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///         // A door handles no `Shut`.
+///         turn.to(turn.me()).send(&Shut)?;
+///
+///         Ok(())
+///     }
+/// }
+///
+/// impl Handles<Knock> for Door {
+///     type From = Anyone;
+///
+///     fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///         Ok(())
+///     }
+/// }
+/// ```
+///
+/// Nor does a send through a protocol reference of a kind the protocol does not hold:
 ///
 /// ```compile_fail
 /// use aethereal_actor::{ProtocolRef, Turn};
@@ -388,23 +452,29 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 /// #[kind(name = "aether.example.poke")]
 /// struct Poke;
 ///
-/// fn poke<A>(turn: &mut Turn<'_, A, ()>, listener: ProtocolRef<(Poke,)>) {
-///     let sent = turn.to(listener).send(&Poke);
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.knock")]
+/// struct Knock;
+///
+/// #[derive(Plain)]
+/// #[kind(name = "aether.example.shut")]
+/// struct Shut;
+///
+/// fn shut<A>(turn: &mut Turn<'_, A>, listener: ProtocolRef<(Poke, Knock)>) {
+///     let sent = turn.to(listener).send(&Shut);
 /// }
 /// ```
-pub trait Reaches<K> {
-    /// What a turn's sends list for it: [`ToType<T, K>`] for an `ActorRef<T>`, [`ToAny<P, K>`] for a
-    /// `ProtocolRef<P>`, and [`Tells<Path<L>, K>`] for a [`Path<L>`].
-    type Marker;
-}
+#[diagnostic::on_unimplemented(
+    message = "`{K}` may not be sent through `{Self}`",
+    label = "sent here",
+    note = "a send builds through a reference or a typed path to a type that handles `{K}`, or a reference to a \
+            protocol that holds it"
+)]
+pub trait Reaches<Me, K, I> {}
 
-impl<T: Actor + Handles<K>, K: Kind + Handled> Reaches<K> for ActorRef<T> {
-    type Marker = ToType<T, K>;
-}
+impl<Me, T: Handles<K>, K: Kind + Handled> Reaches<Me, K, ()> for ActorRef<T> {}
 
-impl<P: Listed, K: Kind> Reaches<K> for ProtocolRef<P> {
-    type Marker = ToAny<P, K>;
-}
+impl<Me, P: Listed, K: Kind, I> Reaches<Me, K, I> for ProtocolRef<P> where P::Kinds: Lists<K, I> {}
 
 /// A reference, which reaches its actor with no lookup: what a send to many at once takes, written once for all.
 pub trait Proven: Copy {
@@ -426,17 +496,16 @@ impl<P> Proven for ProtocolRef<P> {
 
 /// A path is checked at each send, as it proves nothing: the actor found there must be of `L`'s type, and a place
 /// that holds another is as one that holds none, as two types of one name share an id (ADR-0022). Mail to a place
-/// that holds none is mailed to no seat, where the engine drops it as it drops mail to an actor that has gone.
-impl<L: ChildOf + PathTo + Handles<K>, K: Kind + Handled> Reaches<K> for Path<L> {
-    type Marker = Tells<Self, K>;
-}
+/// that holds none is mailed to no seat, where the engine drops it as it drops mail to an actor that has gone. Its root
+/// is the root of a type the sender depends on (ADR-0059).
+impl<Me: DependsOn<L, I>, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled, I> Reaches<Me, K, I> for Path<L> {}
 
 /// What a turn's `to` takes, from an actor of type `Me`: one actor, through a reference, at a typed path, or at a
 /// place relative to the sender ([`parent`](crate::parent), [`child`](crate::child)), or several references at once,
 /// each found once, as the target is made (ADR-0016, ADR-0022).
 pub trait Reachable<Me> {
-    /// What the mail goes through, whose markers a turn's sends list: the reference or path itself, or the type of
-    /// each of several references.
+    /// What the mail goes through, which each send is checked against at its call: the reference or path itself, or
+    /// the type of each of several references.
     type Through;
     /// Where the target was found: one actor and its seat, or the references themselves.
     type At;

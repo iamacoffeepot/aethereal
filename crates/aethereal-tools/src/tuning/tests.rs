@@ -43,14 +43,13 @@ impl Actor for Dial {
     type Config = DialConfig;
     type Key = ();
     type Handles = (ReadTuning, Tune);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: DialConfig, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: DialConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { level: 3, name: String::from("gain"), marks: vec![0, 5, 10] })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -77,19 +76,17 @@ impl Tunable for Dial {
 }
 
 impl Handles<ReadTuning> for Dial {
-    type Sends = (ToSender<Tuning>,);
     type From = Anyone;
 
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         tuning::read(self, turn)
     }
 }
 
 impl Handles<Tune> for Dial {
-    type Sends = (ToSender<Tuned>,);
     type From = Anyone;
 
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         tuning::tune(self, &tune, turn)
     }
 }

@@ -3,8 +3,7 @@
 use super::*;
 use crate::{Bootstrap, root_id};
 use aethereal_actor::{
-    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Path, Publisher, Root, Seated, Tells,
-    Top, Turn,
+    Actor, Anyone, Beginning, ChildOf, Ending, Fault, Given, Handle, Handles, Publisher, Root, Seated, Top, Turn,
 };
 use aethereal_data::config::{ConfigError, ConfigFault};
 use aethereal_data::{ActorId, ActorPath, Bound, JsonFault, Kind, KindName, PathSegment, Plain};
@@ -161,10 +160,9 @@ macro_rules! root {
             type Config = Line;
             type Key = ();
             type Handles = ();
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(line: Line, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(line: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 if line.faults {
                     return Err(Fault::new(&line)?);
                 }
@@ -172,7 +170,7 @@ macro_rules! root {
                 Ok(Self { values: line.values })
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -200,14 +198,13 @@ impl Actor for Scene {
     type Config = SceneSettings;
     type Key = ();
     type Handles = ();
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(settings: SceneSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(settings: SceneSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { seconds: settings.seconds })
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -325,14 +322,13 @@ macro_rules! publishing {
             type Config = Publishes;
             type Key = ();
             type Handles = ();
-            type BeginSends = ();
-            type EndSends = ();
+            type Depends = ();
 
-            fn begin(config: Publishes, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+            fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self { publisher: turn.take(config.publisher)? })
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -377,14 +373,14 @@ struct Canvas;
 #[kind(name = "test.program.painter")]
 struct Painter;
 
-/// A root that sends the canvas a stroke as it begins.
+/// A root that strokes the canvas.
 #[derive(Plain)]
 #[kind(name = "test.program.sketcher")]
 struct Sketcher;
 
-/// A root that strokes the canvas as `$begins` and its handler of a stroke `$sends` say.
+/// A root that strokes the canvas, which it depends on.
 macro_rules! drawing {
-    ($name:ident, $begins:ty, $sends:ty) => {
+    ($name:ident) => {
         impl ChildOf for $name {
             type Parent = Top;
         }
@@ -393,23 +389,21 @@ macro_rules! drawing {
             type Config = Line;
             type Key = ();
             type Handles = (Stroke,);
-            type BeginSends = $begins;
-            type EndSends = ();
+            type Depends = (Canvas,);
 
-            fn begin(_: Line, _: &mut Beginning<'_, Self, $begins>) -> Result<Self, Fault> {
+            fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
                 Ok(Self)
             }
 
-            fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+            fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
 
         impl Handles<Stroke> for $name {
-            type Sends = $sends;
             type From = Anyone;
 
-            fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, $sends>) -> Result<(), Fault> {
+            fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
             }
         }
@@ -427,8 +421,8 @@ macro_rules! drawing {
     };
 }
 
-drawing!(Painter, (), (Tells<Path<Canvas>, Stroke>,));
-drawing!(Sketcher, (Tells<Path<Canvas>, Stroke>,), ());
+drawing!(Painter);
+drawing!(Sketcher);
 
 impl ChildOf for Canvas {
     type Parent = Top;
@@ -438,23 +432,21 @@ impl Actor for Canvas {
     type Config = Line;
     type Key = ();
     type Handles = (Stroke,);
-    type BeginSends = ();
-    type EndSends = ();
+    type Depends = ();
 
-    fn begin(_: Line, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+    fn begin(_: Line, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
 
 impl Handles<Stroke> for Canvas {
-    type Sends = ();
     type From = Anyone;
 
-    fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self, ()>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Stroke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -467,7 +459,7 @@ impl<H: Host + Serves<Began> + Serves<Drawing>> Bootstrap<H> for Canvas {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        let roots = cx.root_list::<Tells<Path<Self>, Stroke>>()?;
+        let roots = cx.root_list();
         cx.serve(Drawing(roots));
 
         begin(cx, Line { values: Vec::new(), faults: false })
@@ -648,21 +640,13 @@ fn a_second_root_that_asks_for_the_publisher_fails_the_bootstrap() -> Outcome {
 }
 
 #[test]
-fn the_renderer_is_handed_the_root_list_in_draw_order_and_a_root_that_never_draws_is_refused() -> Outcome {
+fn the_renderer_is_handed_the_root_list_in_draw_order() -> Outcome {
     // Catches the root list read in the order the roots are listed, the order they are made in, rather than the order
-    // it names them; a root that sends a draw list only as it begins, or only from a handler, taken for one that never
-    // draws; and a root that never sends one let into the root list.
+    // it names them (ADR-0055).
     let roots = || Bench::program().root::<Canvas>().root::<Painter>().root::<Sketcher>().root::<Lamp>();
     let id = |name| root_id(&PathSegment::new(name, &()));
 
     let bench = roots().draws::<(Sketcher, Painter)>().build()?;
     assert_eq!(bench.served.drawing, [Drawing(vec![id(Sketcher::NAME), id(Painter::NAME)])]);
-
-    let mut hosted = Served::default();
-    let refused = pollster::block_on(roots().draws::<(Painter, Lamp)>().settle()?.bootstrap(&mut hosted));
-    let Err(ProgramError::Root { root, why: Unbuilt::Undrawn { root: undrawn } }) = refused else {
-        return Err("the lamp, which never strokes the canvas, is refused a place in the root list".into());
-    };
-    assert_eq!((root, undrawn), (Canvas::NAME, Lamp::NAME));
     Ok(())
 }
