@@ -68,7 +68,7 @@ impl Members {
 
 impl<'graph> Selections<'graph> {
     pub fn new(members: &'graph Members) -> Self {
-        let Ok(determinator) = select::determinator(members.graph()) else {
+        let Ok(determinator) = select::determinator(members.graph(), members.graph()) else {
             panic!("the path rules apply");
         };
         Self { determinator, known: BTreeMap::new() }
@@ -95,7 +95,7 @@ impl<'graph> Selections<'graph> {
         };
 
         self.known.entry(attribution).or_insert_with(|| {
-            let Ok(selection) = members.workspace.select(&changed) else {
+            let Ok(selection) = members.workspace.select_paths(&changed) else {
                 panic!("a selection is computed for {}", changed[0]);
             };
             selection
