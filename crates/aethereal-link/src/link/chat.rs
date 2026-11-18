@@ -13,7 +13,7 @@
 use super::Link;
 use crate::Up;
 use crate::frames::{self, Written};
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, Receives, Speaks, Turn};
+use aethereal_actor::{Ended, Fault, Level, Speaks, Turn};
 use aethereal_data::Plain;
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs, Tab};
 
@@ -86,15 +86,14 @@ impl Link {
 
         Ok(())
     }
-}
 
-/// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or the
-/// hub has shown nothing.
-impl Handles<Listen> for Link {
-    type From = Speaks<Listening>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self, Speaks<Listening>>) -> Result<(), Fault> {
+    /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or
+    /// the hub has shown nothing.
+    pub(super) fn handle_listen(
+        &mut self,
+        _: Listen,
+        turn: &mut Turn<'_, Self, Speaks<Listening>>,
+    ) -> Result<(), Fault> {
         let listener = *turn.from();
         let added = self.listeners.subscribe(turn, listener);
         let Shown::Sessions { tabs, asks } = &self.shown else {
@@ -110,15 +109,10 @@ impl Handles<Listen> for Link {
 
         Ok(())
     }
-}
 
-/// What the engine's owner did, written up as its frame when the link is open: the hub takes it only from a trusted
-/// engine. A frame too large for the link is not written, and logged.
-impl Handles<Chat> for Link {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// What the engine's owner did, written up as its frame when the link is open: the hub takes it only from a trusted
+    /// engine. A frame too large for the link is not written, and logged.
+    pub(super) fn handle_chat(&mut self, chat: Chat, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let written = frames::written(&Up::from(chat), self.config.most_bytes)?;
         let Written::Fits(bytes) = written else {
             turn.log(Level::Warn, "a chat frame is too large for the link, and was not written");
@@ -127,11 +121,14 @@ impl Handles<Chat> for Link {
 
         self.write(turn, bytes)
     }
-}
 
-/// A listener has ended, and is let go.
-impl Receives<Ended> for Link {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// A listener has ended, and is let go.
+    #[allow(
+        clippy::needless_pass_by_value,
+        clippy::unnecessary_wraps,
+        reason = "a handler's body, it takes and answers what its handler does"
+    )]
+    pub(super) fn handle_ended(&mut self, ended: Ended) -> Result<(), Fault> {
         self.listeners.ended(&ended);
 
         Ok(())

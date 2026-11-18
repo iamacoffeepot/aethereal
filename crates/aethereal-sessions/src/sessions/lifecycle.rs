@@ -14,7 +14,7 @@ use crate::{
     Acted, Attach, ContainerId, ContainerState, Create, Created, DockerError, Inspect, Inspected, Logs, Remove, Start,
     Stop, Until, Unwritable,
 };
-use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
+use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use core::mem;
 use std::collections::BTreeSet;
 
@@ -168,12 +168,10 @@ impl Sessions {
 
         matches!(&held.life, Life::Starting { run: starting, step, .. } if *starting == run && at(step))
     }
-}
 
-impl Receives<Answer<Provisioned, Crediting>> for Sessions {
     /// The credential is read, a bearer drawn, and the drop box made: the bearer is held as the session's, and Docker
     /// asked to make the session's container, which is given both.
-    fn handle(
+    pub(super) fn handle_provisioned(
         &mut self,
         (answered, Crediting { session, run }): (Answered<Provisioned>, Crediting),
         turn: &mut Turn<'_, Self>,
@@ -209,11 +207,9 @@ impl Receives<Answer<Provisioned, Crediting>> for Sessions {
 
         self.flush(turn)
     }
-}
 
-impl Receives<Answer<Created, Asking>> for Sessions {
     /// Docker made the container: it is recorded, and started. One made for a start given up on is removed.
-    fn handle(
+    pub(super) fn handle_created(
         &mut self,
         (answered, Asking { session, run }): (Answered<Created>, Asking),
         turn: &mut Turn<'_, Self>,
@@ -237,11 +233,9 @@ impl Receives<Answer<Created, Asking>> for Sessions {
 
         self.flush(turn)
     }
-}
 
-impl Receives<Answer<Acted, Acting>> for Sessions {
     /// A start, a stop, or a removal Docker did, or why not.
-    fn handle(
+    pub(super) fn handle_acted(
         &mut self,
         (answered, Acting { session, run, act }): (Answered<Acted>, Acting),
         turn: &mut Turn<'_, Self>,
@@ -372,12 +366,10 @@ impl Sessions {
 
         self.start(turn, session, run)
     }
-}
 
-impl Receives<Answer<Inspected, Asking>> for Sessions {
     /// The state of a container whose logs or attach ended: one still running is followed again, and one that is not
     /// has ended.
-    fn handle(
+    pub(super) fn handle_inspected(
         &mut self,
         (answered, Asking { session, run }): (Answered<Inspected>, Asking),
         turn: &mut Turn<'_, Self>,

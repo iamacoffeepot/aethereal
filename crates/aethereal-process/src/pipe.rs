@@ -2,8 +2,7 @@
 
 use crate::{Exits, Processes};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handles, Later, More,
-    Open, ProtocolRef, Receives, Reply, Turn,
+    Answered, Beginning, Ended, Enough, Fault, Given, Later, More, Open, ProtocolRef, Reply, Turn, actor,
 };
 use aethereal_data::Bound;
 use aethereal_tcp::{
@@ -42,17 +41,8 @@ pub struct Pipe {
     starter: ProtocolRef<Exits>,
 }
 
-impl ChildOf for Pipe {
-    type Parent = Processes;
-}
-
-impl Actor for Pipe {
-    type Config = PipeConfig;
-    type Key = u64;
-    type Handles = (Open<Reading>, More, Enough, Ended, Write, Finish, Shut, Answer<Readied, Interest>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Processes)]
+impl Pipe {
     fn begin(config: PipeConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.watch(config.starter);
         let connection =
@@ -61,80 +51,50 @@ impl Actor for Pipe {
         Ok(Self { connection: Connection::begin(connection, turn)?, starter: config.starter })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Open<Reading>> for Pipe {
-    type From = Anyone;
-    type Returns = Later<HungUp>;
-
-    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
+    #[request]
+    fn open(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
         self.connection.open(turn, open)
     }
-}
 
-impl Handles<More> for Pipe {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
     }
-}
 
-impl Handles<Enough> for Pipe {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
     }
-}
 
-impl Receives<Ended> for Pipe {
     /// The program's starter has ended, so no one wants its pipe, and it hangs up; or its reader has, which the
     /// connection meets.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if ended.actor().id() == self.starter.id() {
             return self.connection.shut(turn);
         }
 
         self.connection.ended(turn, &ended)
     }
-}
 
-impl Handles<Write> for Pipe {
-    type From = Anyone;
-    type Returns = Reply<Wrote>;
-
-    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<Reply<Wrote>, Fault> {
+    #[request]
+    fn write(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<Reply<Wrote>, Fault> {
         self.connection.write(turn, write)
     }
-}
-
-impl Handles<Finish> for Pipe {
-    type From = Anyone;
-    type Returns = ();
 
     /// Ends the program's stdin, once what was written is: the program reads to its end.
-    fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn finish(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.finish(turn)
     }
-}
 
-impl Handles<Shut> for Pipe {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.shut(turn)
     }
-}
 
-impl Receives<Answer<Readied, Interest>> for Pipe {
-    fn handle(&mut self, readied: (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn readied(&mut self, readied: (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.readied(turn, readied)
     }
 }

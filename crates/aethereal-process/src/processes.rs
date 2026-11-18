@@ -2,10 +2,7 @@
 
 use crate::jobs::{Launch, Launched, Launching, Raise, Raised, Raising};
 use crate::{Environment, Exits, Invocation, Pipe, PipeConfig, Process, ProcessConfig, Signal, Stdio};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Level,
-    ProtocolRef, Receives, Spawn, Top, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Fault, Held, Later, Level, ProtocolRef, Spawn, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::Shut;
 use std::collections::BTreeMap;
@@ -73,31 +70,14 @@ pub struct Processes {
     next: u64,
 }
 
-impl ChildOf for Processes {
-    type Parent = Top;
-}
-
-impl Actor for Processes {
-    type Config = ProcessesConfig;
-    type Key = ();
-    type Handles = (Start, Answer<Launched, Launching>, Answer<Raised, Raising>);
-    type Depends = ();
-    type Spawns = (Pipe, Process);
-
-    fn begin(config: ProcessesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(spawns(Pipe, Process))]
+impl Processes {
+    fn begin(config: ProcessesConfig) -> Result<Self, Fault> {
         Ok(Self { config, waiting: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Start> for Processes {
-    type From = Anyone;
-    type Returns = Later<Started>;
-
-    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Later<Started>, Fault> {
+    #[request]
+    fn start(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Later<Started>, Fault> {
         let (held, later) = turn.hold();
         let process = self.next;
         self.next += 1;
@@ -113,12 +93,11 @@ impl Handles<Start> for Processes {
 
         Ok(later)
     }
-}
 
-impl Receives<Answer<Launched, Launching>> for Processes {
     /// Stands the pipe up over the launcher's end of a program's pipe, then the process over the program, and answers
     /// its start.
-    fn handle(
+    #[answer]
+    fn launched(
         &mut self,
         (answered, Launching { process }): (Answered<Launched>, Launching),
         turn: &mut Turn<'_, Self>,
@@ -145,11 +124,10 @@ impl Receives<Answer<Launched, Launching>> for Processes {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Raised, Raising>> for Processes {
     /// The program of a process not stood up was sent its kill: its exit is the launcher's to keep.
-    fn handle(&mut self, _: (Answered<Raised>, Raising), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn raised(&mut self, _: (Answered<Raised>, Raising)) -> Result<(), Fault> {
         Ok(())
     }
 }

@@ -20,8 +20,8 @@ pub use settings::{ClientLimits, HttpSettings};
 use crate::Method;
 use crate::http1::body::{Body, Decoded, Progress};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Held, Later,
-    Level, More, Number, Open, Part, Receives, Serving, StreamKey, Streams, Taken, Turn, Unsent,
+    ActorRef, Answered, Beginning, Ended, Enough, Fault, Held, Later, Level, More, Number, Open, Part, Serving,
+    StreamKey, Streams, Taken, Turn, Unsent, actor,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{Dialed, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
@@ -138,27 +138,8 @@ pub struct Client {
     phase: Phase,
 }
 
-impl ChildOf for Client {
-    type Parent = Http;
-}
-
-impl Actor for Client {
-    type Config = ClientConfig;
-    type Key = u64;
-    type Handles = (
-        Fetch,
-        Open<Receiving>,
-        More,
-        Enough,
-        Ended,
-        Shut,
-        Part<Reading>,
-        Answer<HungUp, Number>,
-        Answer<Wrote, Requesting>,
-    );
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Http)]
+impl Client {
     /// Opens its connection's stream: it reads from the first, so a connection that hangs up while idle is noticed.
     fn begin(config: ClientConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let window = NonZeroU32::new(config.limits.window).unwrap_or(NonZeroU32::MIN);
@@ -179,16 +160,8 @@ impl Actor for Client {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Fetch> for Client {
-    type From = Anyone;
-    type Returns = aethereal_actor::Reply<Fetched>;
-
-    fn handle(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<aethereal_actor::Reply<Fetched>, Fault> {
+    #[request]
+    fn fetch(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<aethereal_actor::Reply<Fetched>, Fault> {
         let head_only = fetch.request.method == Method::Head;
         let written = self.write(turn, fetch.request, &Switch::Stay)?;
         let reply = match written {
@@ -202,13 +175,9 @@ impl Handles<Fetch> for Client {
 
         Ok(reply)
     }
-}
 
-impl Handles<Open<Receiving>> for Client {
-    type From = Anyone;
-    type Returns = Later<Finished>;
-
-    fn handle(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<Later<Finished>, Fault> {
+    #[request]
+    fn open(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<Later<Finished>, Fault> {
         let (key, Follow { request, switch }, later) = self.serving.open(turn, open)?;
         let head_only = request.method == Method::Head;
         let switches = matches!(switch, Switch::To { .. });
@@ -220,27 +189,19 @@ impl Handles<Open<Receiving>> for Client {
 
         Ok(later)
     }
-}
 
-impl Handles<More> for Client {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(_) = self.serving.more(turn, &more) else {
             return Ok(());
         };
 
         self.advance(turn)
     }
-}
-
-impl Handles<Enough> for Client {
-    type From = Anyone;
-    type Returns = ();
 
     /// Its asker stops the stream: the connection is left mid-response, or switched, so it closes.
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(stopped) = self.serving.stop(turn, &enough) else {
             return Ok(());
         };
@@ -249,12 +210,11 @@ impl Handles<Enough> for Client {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Client {
     /// The asker of a stream it serves has ended: when the stream was still open, the connection is left
     /// mid-response, or switched, so it closes.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let left = self.serving.ended(&ended);
         if left.is_empty() {
             return Ok(());
@@ -263,22 +223,14 @@ impl Receives<Ended> for Client {
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Client {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.fail(turn, Failure::HungUp(HungUp::Shut))
     }
-}
 
-impl Handles<Part<Reading>> for Client {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn part(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part_held(turn, part) else {
             return Ok(());
         };
@@ -287,12 +239,11 @@ impl Handles<Part<Reading>> for Client {
 
         self.advance(turn)
     }
-}
 
-impl Receives<Answer<HungUp, Number>> for Client {
     /// The connection's stream has ended: what the buffer holds is read on as far as it goes, and then the client
     /// closes.
-    fn handle(
+    #[answer]
+    fn hung_up(
         &mut self,
         (answered, number): (Answered<HungUp>, Number),
         turn: &mut Turn<'_, Self>,
@@ -306,12 +257,11 @@ impl Receives<Answer<HungUp, Number>> for Client {
 
         self.advance(turn)
     }
-}
 
-impl Receives<Answer<Wrote, Requesting>> for Client {
     /// A request the connection would not take is answered so, and the client takes the next: nothing of it was
     /// written. A request sent waits on its response, and one the connection hung up on on the read stream's end.
-    fn handle(
+    #[answer]
+    fn wrote(
         &mut self,
         (answered, Requesting): (Answered<Wrote>, Requesting),
         turn: &mut Turn<'_, Self>,

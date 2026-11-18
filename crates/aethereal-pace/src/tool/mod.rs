@@ -5,10 +5,7 @@
 mod tests;
 
 use crate::pacer::{Advance, Advanced, PaceSet, Pacer, SetPace};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
@@ -39,23 +36,58 @@ pub struct PaceTool {
     next: u64,
 }
 
-impl ChildOf for PaceTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for PaceTool {
-    type Config = PaceToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<PaceSet, Calling>, Answer<Advanced, Calling>);
-    type Depends = (Pacer,);
-    type Spawns = ();
-
-    fn begin(_: PaceToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Pacer))]
+impl PaceTool {
+    fn begin(_: PaceToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    /// Holds the call, and asks the pacer what it was called with: answered once the pacer has answered.
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let calling = Calling { call: self.next };
+        let input = turn.read(&call.input);
+        let mut budget = Budget::new(INPUT_BYTES);
+        match call.tool.as_str() {
+            "set_pace" => {
+                let Ok(set) = from_bytes::<SetPace>(input, &mut budget) else {
+                    return Ok(Reply::Now(refused("that is no pace to set")));
+                };
+                turn.to(path::<Pacer>(())).ask(&set, &calling)?;
+            }
+            "advance" => {
+                let Ok(advance) = from_bytes::<Advance>(input, &mut budget) else {
+                    return Ok(Reply::Now(refused("that is no advance")));
+                };
+                turn.to(path::<Pacer>(())).ask(&advance, &calling)?;
+            }
+            _ => return Ok(Reply::Now(refused("this worker serves set_pace and advance alone"))),
+        }
+        self.next += 1;
+        let (held, later) = turn.hold();
+        self.calls.insert(calling.call, held);
+
+        Ok(Reply::Later(later))
+    }
+
+    /// The pacer set the pace, or no pacer answered.
+    #[answer]
+    fn pace_set(
+        &mut self,
+        (answered, calling): (Answered<PaceSet>, Calling),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answer(calling, answered, turn)
+    }
+
+    /// The pacer ran the cycles, or refused them, or no pacer answered.
+    #[answer]
+    fn advanced(
+        &mut self,
+        (answered, calling): (Answered<Advanced>, Calling),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answer(calling, answered, turn)
     }
 }
 
@@ -82,60 +114,6 @@ impl Tool for PaceTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-/// Holds the call, and asks the pacer what it was called with: answered once the pacer has answered.
-impl Handles<Call> for PaceTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let calling = Calling { call: self.next };
-        let input = turn.read(&call.input);
-        let mut budget = Budget::new(INPUT_BYTES);
-        match call.tool.as_str() {
-            "set_pace" => {
-                let Ok(set) = from_bytes::<SetPace>(input, &mut budget) else {
-                    return Ok(Reply::Now(refused("that is no pace to set")));
-                };
-                turn.to(path::<Pacer>(())).ask(&set, &calling)?;
-            }
-            "advance" => {
-                let Ok(advance) = from_bytes::<Advance>(input, &mut budget) else {
-                    return Ok(Reply::Now(refused("that is no advance")));
-                };
-                turn.to(path::<Pacer>(())).ask(&advance, &calling)?;
-            }
-            _ => return Ok(Reply::Now(refused("this worker serves set_pace and advance alone"))),
-        }
-        self.next += 1;
-        let (held, later) = turn.hold();
-        self.calls.insert(calling.call, held);
-
-        Ok(Reply::Later(later))
-    }
-}
-
-/// The pacer set the pace, or no pacer answered.
-impl Receives<Answer<PaceSet, Calling>> for PaceTool {
-    fn handle(
-        &mut self,
-        (answered, calling): (Answered<PaceSet>, Calling),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        self.answer(calling, answered, turn)
-    }
-}
-
-/// The pacer ran the cycles, or refused them, or no pacer answered.
-impl Receives<Answer<Advanced, Calling>> for PaceTool {
-    fn handle(
-        &mut self,
-        (answered, calling): (Answered<Advanced>, Calling),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        self.answer(calling, answered, turn)
     }
 }
 

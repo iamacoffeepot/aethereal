@@ -8,10 +8,7 @@ use crate::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, ListedSession, NewSession, Numbered, Opened,
     ReadTranscript, Refusal, Said, Say, Sessions, SessionsListed as Listed, Transcribed,
 };
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
@@ -79,30 +76,110 @@ pub struct SessionsTools {
     next: u64,
 }
 
-impl ChildOf for SessionsTools {
-    type Parent = Anywhere;
-}
-
-impl Actor for SessionsTools {
-    type Config = SessionsToolsConfig;
-    type Key = ();
-    type Handles = (
-        Call,
-        Answer<Opened, Asking>,
-        Answer<Said, Asking>,
-        Answer<Transcribed, Asking>,
-        Answer<Listed, Asking>,
-        Answer<Interrupted, Asking>,
-        Answer<Archived, Asking>,
-    );
-    type Depends = (Sessions,);
-    type Spawns = ();
-
-    fn begin(_: SessionsToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Sessions))]
+impl SessionsTools {
+    fn begin(_: SessionsToolsConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Reads the call's input, or refuses it; holds the call, and asks the capability. A session's call is refused:
+    /// the sessions are the owner's to open, speak to, and end, and a session that drove another would be a pipeline
+    /// of sessions, which the hub is not built for (ADR-0057).
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        if let Caller::Session { .. } = call.caller {
+            return Ok(Reply::Now(Called::Refused(String::from("the session tools are the owner's, not a session's"))));
+        }
+        let order = match order(&call.tool, turn.read(&call.input)) {
+            Ok(order) => order,
+            Err(refusal) => return Ok(Reply::Now(refusal)),
+        };
+        let (held, later) = turn.hold();
+        let asking = Asking { number: self.next };
+        self.next += 1;
+        let sessions = path::<Sessions>(());
+        match order {
+            Order::New(new) => turn.to(sessions).ask(&new, &asking)?,
+            Order::Say(say) => turn.to(sessions).ask(&say, &asking)?,
+            Order::Read(read) => turn.to(sessions).ask(&read, &asking)?,
+            Order::List => turn.to(sessions).ask(&ListSessions, &asking)?,
+            Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &asking)?,
+            Order::Archive(archive) => turn.to(sessions).ask(&archive, &asking)?,
+        };
+        self.calls.insert(asking.number, held);
+
+        Ok(Reply::Later(later))
+    }
+
+    #[answer]
+    fn opened(
+        &mut self,
+        (answered, asking): (Answered<Opened>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
+    fn said(&mut self, (answered, asking): (Answered<Said>, Asking), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
+    fn transcribed(
+        &mut self,
+        (answered, asking): (Answered<Transcribed>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
+    fn listed(
+        &mut self,
+        (answered, asking): (Answered<Listed>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
+    fn interrupted(
+        &mut self,
+        (answered, asking): (Answered<Interrupted>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
+    fn archived(
+        &mut self,
+        (answered, asking): (Answered<Archived>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    /// The sessions' answer to a call, answered to whoever called, as its tool's output or why it was refused.
+    fn answered<A: Answers>(
+        &mut self,
+        answered: Answered<A>,
+        Asking { number }: Asking,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(answer) => match answer.output() {
+                Ok(bytes) => Called::output(turn, bytes),
+                Err(why) => Called::Refused(why),
+            },
+            Answered::No(why) => Called::Refused(format!("the sessions did not answer: {why:?}")),
+        };
+        turn.answer(held, &called)?;
+
         Ok(())
     }
 }
@@ -153,39 +230,6 @@ impl Tool for SessionsTools {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for SessionsTools {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    /// Reads the call's input, or refuses it; holds the call, and asks the capability. A session's call is refused:
-    /// the sessions are the owner's to open, speak to, and end, and a session that drove another would be a pipeline
-    /// of sessions, which the hub is not built for (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        if let Caller::Session { .. } = call.caller {
-            return Ok(Reply::Now(Called::Refused(String::from("the session tools are the owner's, not a session's"))));
-        }
-        let order = match order(&call.tool, turn.read(&call.input)) {
-            Ok(order) => order,
-            Err(refusal) => return Ok(Reply::Now(refusal)),
-        };
-        let (held, later) = turn.hold();
-        let asking = Asking { number: self.next };
-        self.next += 1;
-        let sessions = path::<Sessions>(());
-        match order {
-            Order::New(new) => turn.to(sessions).ask(&new, &asking)?,
-            Order::Say(say) => turn.to(sessions).ask(&say, &asking)?,
-            Order::Read(read) => turn.to(sessions).ask(&read, &asking)?,
-            Order::List => turn.to(sessions).ask(&ListSessions, &asking)?,
-            Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &asking)?,
-            Order::Archive(archive) => turn.to(sessions).ask(&archive, &asking)?,
-        };
-        self.calls.insert(asking.number, held);
-
-        Ok(Reply::Later(later))
     }
 }
 
@@ -245,34 +289,6 @@ impl Answers for Archived {
         }
     }
 }
-
-macro_rules! answers {
-    ($($answer:ty),*) => {$(
-        impl Receives<Answer<$answer, Asking>> for SessionsTools {
-            fn handle(
-                &mut self,
-                (answered, Asking { number }): (Answered<$answer>, Asking),
-                turn: &mut Turn<'_, Self>,
-            ) -> Result<(), Fault> {
-                let Some(held) = self.calls.remove(&number) else {
-                    return Ok(());
-                };
-                let called = match answered {
-                    Answered::Yes(answer) => match answer.output() {
-                        Ok(bytes) => Called::output(turn, bytes),
-                        Err(why) => Called::Refused(why),
-                    },
-                    Answered::No(why) => Called::Refused(format!("the sessions did not answer: {why:?}")),
-                };
-                turn.answer(held, &called)?;
-
-                Ok(())
-            }
-        }
-    )*};
-}
-
-answers!(Opened, Said, Transcribed, Listed, Interrupted, Archived);
 
 /// The bytes of `value`, an output, or what says it could not be written.
 fn bytes<T: Plain>(value: &T) -> Result<Vec<u8>, String> {

@@ -7,10 +7,7 @@ mod tests;
 use crate::{
     CheckIn, CheckInDropped, CheckedIn, DROP_BOX, DropName, ListStored, Pin, Pinned, Store, Stored, StoredBinary, Unpin,
 };
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
@@ -79,22 +76,96 @@ pub struct StoreTools {
     next: u64,
 }
 
-impl ChildOf for StoreTools {
-    type Parent = Anywhere;
-}
-
-impl Actor for StoreTools {
-    type Config = StoreToolsConfig;
-    type Key = ();
-    type Handles = (Call, Answer<CheckedIn, Asking>, Answer<Stored, Asking>, Answer<Pinned, Asking>);
-    type Depends = (Store,);
-    type Spawns = ();
-
-    fn begin(_: StoreToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Store))]
+impl StoreTools {
+    fn begin(_: StoreToolsConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
+    /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let order = match order(&call.tool, turn.read(&call.input)).and_then(|order| order.by(call.caller)) {
+            Ok(order) => order,
+            Err(refusal) => return Ok(Reply::Now(refusal)),
+        };
+        let (held, later) = turn.hold();
+        let asking = Asking { number: self.next };
+        self.next += 1;
+        let store = path::<Store>(());
+        match order {
+            Order::CheckIn(check_in) => turn.to(store).ask(&check_in, &asking)?,
+            Order::CheckInDropped(check_in) => turn.to(store).ask(&check_in, &asking)?,
+            Order::List => turn.to(store).ask(&ListStored, &asking)?,
+            Order::Pin(pin) => turn.to(store).ask(&pin, &asking)?,
+            Order::Unpin(unpin) => turn.to(store).ask(&unpin, &asking)?,
+        };
+        self.calls.insert(asking.number, held);
+
+        Ok(Reply::Later(later))
+    }
+
+    /// The check-in's hash, size, and freshness, or its refusal.
+    #[answer]
+    fn checked_in(
+        &mut self,
+        (answered, Asking { number }): (Answered<CheckedIn>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(CheckedIn::Stored(stored)) => Called::output(turn, to_bytes(&stored)?),
+            Answered::Yes(CheckedIn::Missing) => refused("nothing is at that path"),
+            Answered::Yes(CheckedIn::NotAFile) => refused("that is not a regular file"),
+            Answered::Yes(CheckedIn::TooLarge) => refused("the file is larger than the store takes"),
+            Answered::Yes(CheckedIn::Full) => refused("the store has no room for it, even after pruning all it may"),
+            Answered::Yes(CheckedIn::Failed) => refused("the hub could not read the file or write the store"),
+            Answered::No(_) => unanswered(),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// Every entry the store lists.
+    #[answer]
+    fn stored(
+        &mut self,
+        (answered, Asking { number }): (Answered<Stored>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(stored) => Called::output(turn, to_bytes(&stored)?),
+            Answered::No(_) => unanswered(),
+        };
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// That the pin was set or cleared, or the refusal of a hash the store does not hold.
+    #[answer]
+    fn pinned(
+        &mut self,
+        (answered, Asking { number }): (Answered<Pinned>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let called = match answered {
+            Answered::Yes(Pinned::Done) => Called::output(turn, to_bytes(&Done {})?),
+            Answered::Yes(Pinned::NotStored) => refused("no binary of that hash is stored"),
+            Answered::No(_) => unanswered(),
+        };
+        turn.answer(held, &called)?;
+
         Ok(())
     }
 }
@@ -134,100 +205,6 @@ impl Tool for StoreTools {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for StoreTools {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
-    /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let order = match order(&call.tool, turn.read(&call.input)).and_then(|order| order.by(call.caller)) {
-            Ok(order) => order,
-            Err(refusal) => return Ok(Reply::Now(refusal)),
-        };
-        let (held, later) = turn.hold();
-        let asking = Asking { number: self.next };
-        self.next += 1;
-        let store = path::<Store>(());
-        match order {
-            Order::CheckIn(check_in) => turn.to(store).ask(&check_in, &asking)?,
-            Order::CheckInDropped(check_in) => turn.to(store).ask(&check_in, &asking)?,
-            Order::List => turn.to(store).ask(&ListStored, &asking)?,
-            Order::Pin(pin) => turn.to(store).ask(&pin, &asking)?,
-            Order::Unpin(unpin) => turn.to(store).ask(&unpin, &asking)?,
-        };
-        self.calls.insert(asking.number, held);
-
-        Ok(Reply::Later(later))
-    }
-}
-
-impl Receives<Answer<CheckedIn, Asking>> for StoreTools {
-    /// The check-in's hash, size, and freshness, or its refusal.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<CheckedIn>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(held) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let called = match answered {
-            Answered::Yes(CheckedIn::Stored(stored)) => Called::output(turn, to_bytes(&stored)?),
-            Answered::Yes(CheckedIn::Missing) => refused("nothing is at that path"),
-            Answered::Yes(CheckedIn::NotAFile) => refused("that is not a regular file"),
-            Answered::Yes(CheckedIn::TooLarge) => refused("the file is larger than the store takes"),
-            Answered::Yes(CheckedIn::Full) => refused("the store has no room for it, even after pruning all it may"),
-            Answered::Yes(CheckedIn::Failed) => refused("the hub could not read the file or write the store"),
-            Answered::No(_) => unanswered(),
-        };
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Stored, Asking>> for StoreTools {
-    /// Every entry the store lists.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Stored>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(held) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let called = match answered {
-            Answered::Yes(stored) => Called::output(turn, to_bytes(&stored)?),
-            Answered::No(_) => unanswered(),
-        };
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pinned, Asking>> for StoreTools {
-    /// That the pin was set or cleared, or the refusal of a hash the store does not hold.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Pinned>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(held) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let called = match answered {
-            Answered::Yes(Pinned::Done) => Called::output(turn, to_bytes(&Done {})?),
-            Answered::Yes(Pinned::NotStored) => refused("no binary of that hash is stored"),
-            Answered::No(_) => unanswered(),
-        };
-        turn.answer(held, &called)?;
-
-        Ok(())
     }
 }
 

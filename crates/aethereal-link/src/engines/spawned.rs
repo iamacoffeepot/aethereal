@@ -2,10 +2,7 @@
 //! (ADR-0040).
 
 use super::{Engines, Spawn};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, JobId, Level, Receives,
-    Sleep, Slept, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Beginning, Fault, JobId, Level, Sleep, Slept, Turn, actor, path};
 use aethereal_data::{Bound, Plain};
 use aethereal_process::{Environment, Exited, Process, Processes, Start, Started, Stdio, Stop};
 use aethereal_store::{Binary, Launch, Launched, Store, StoreHash};
@@ -88,18 +85,8 @@ pub struct Spawned {
     stage: Stage,
 }
 
-impl ChildOf for Spawned {
-    type Parent = Engines;
-}
-
-impl Actor for Spawned {
-    type Config = SpawnedConfig;
-    type Key = u64;
-    type Handles =
-        (Answer<Launched, Fetching>, Answer<Started, Booting>, Answer<Slept, Patience>, Exited, LinkedAs, Stop);
-    type Depends = (Store, Processes);
-    type Spawns = ();
-
+#[actor(key = u64, parent = Engines, depends(Store, Processes))]
+impl Spawned {
     /// Asks the store for a launch copy of its binary.
     fn begin(config: SpawnedConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let SpawnedConfig { binary, args, link_within_millis } = config;
@@ -108,15 +95,10 @@ impl Actor for Spawned {
         Ok(Self { stage: Stage::Fetching { args, link_within_millis } })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Launched, Fetching>> for Spawned {
     /// A launch copy made: `Engines` is told the build it runs, and `Processes` asked to start it. Nothing stored, or
     /// no copy made, answers the spawn, and it ends.
-    fn handle(
+    #[answer]
+    fn launched(
         &mut self,
         (answered, Fetching): (Answered<Launched>, Fetching),
         turn: &mut Turn<'_, Self>,
@@ -147,12 +129,11 @@ impl Receives<Answer<Launched, Fetching>> for Spawned {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Started, Booting>> for Spawned {
     /// Its program running, it waits for it to link, for `link_within_millis` at most; refused, it answers the spawn,
     /// and ends.
-    fn handle(
+    #[answer]
+    fn started(
         &mut self,
         (answered, Booting): (Answered<Started>, Booting),
         turn: &mut Turn<'_, Self>,
@@ -170,12 +151,11 @@ impl Receives<Answer<Started, Booting>> for Spawned {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Patience>> for Spawned {
     /// Its program has not linked in its time, or this would have been cancelled: the spawn is answered `Unlinked`,
     /// and the process asked to stop.
-    fn handle(&mut self, _: (Answered<Slept>, Patience), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, _: (Answered<Slept>, Patience), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Stage::Linking { process, .. } = self.stage else {
             return Ok(());
         };
@@ -185,15 +165,11 @@ impl Receives<Answer<Slept, Patience>> for Spawned {
 
         Ok(())
     }
-}
-
-impl Handles<Exited> for Spawned {
-    type From = Anyone;
-    type Returns = ();
 
     /// Its program has exited, as its own process tells it: a spawn not yet answered is answered `Exited`, `Engines`
     /// is told how it exited, and it ends. From any other actor, it is passed over.
-    fn handle(&mut self, exited: Exited, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn exited(&mut self, exited: Exited, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let (process, unanswered) = match self.stage {
             Stage::Linking { process, patience } => (process, Unanswered::Waiting(patience)),
             Stage::Linked { process } | Stage::Stopping { process } => (process, Unanswered::No),
@@ -213,15 +189,11 @@ impl Handles<Exited> for Spawned {
 
         Ok(())
     }
-}
-
-impl Handles<LinkedAs> for Spawned {
-    type From = Anyone;
-    type Returns = ();
 
     /// Its engine linked, as `Engines` tells it: the spawn is answered `Linked`, unless it was answered already. From
     /// any other actor, it is passed over.
-    fn handle(&mut self, linked: LinkedAs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn linked_as(&mut self, linked: LinkedAs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_parent = turn.sender().id() == turn.parent().id();
         let Stage::Linking { process, patience } = self.stage else {
             return Ok(());
@@ -235,15 +207,11 @@ impl Handles<LinkedAs> for Spawned {
 
         Ok(())
     }
-}
-
-impl Handles<Stop> for Spawned {
-    type From = Anyone;
-    type Returns = ();
 
     /// `Engines` asks it to stop its engine: its process is asked to. A spawn not yet answered stays so, and is
     /// answered `Exited` once the program has. From any other actor, it is passed over.
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_parent = turn.sender().id() == turn.parent().id();
         if !is_from_parent {
             return Ok(());

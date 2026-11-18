@@ -5,8 +5,8 @@
 use crate::ready::{Ready, Wait};
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Given, Handle,
-    Handles, Later, More, Open, Receives, Serving, Spawn, Stream, StreamKey, Turn, Unsent,
+    ActorRef, Answered, Beginning, Ended, Enough, Fault, Given, Handle, Later, More, Open, Serving, Spawn, Stream,
+    StreamKey, Turn, Unsent, actor,
 };
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
@@ -84,17 +84,8 @@ pub struct Listener {
     readable: Wait,
 }
 
-impl ChildOf for Listener {
-    type Parent = Tcp;
-}
-
-impl Actor for Listener {
-    type Config = ListenerConfig;
-    type Key = u64;
-    type Handles = (Open<Accepting>, More, Enough, Ended, Shut, Answer<Readied, Interest>);
-    type Depends = ();
-    type Spawns = (Accepted,);
-
+#[actor(key = u64, parent = Tcp, spawns(Accepted))]
+impl Listener {
     fn begin(config: ListenerConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let bound = turn.take(config.bound)?;
 
@@ -111,16 +102,8 @@ impl Actor for Listener {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Open<Accepting>> for Listener {
-    type From = Anyone;
-    type Returns = Later<Unbound>;
-
-    fn handle(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<Later<Unbound>, Fault> {
+    #[request]
+    fn open(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<Later<Unbound>, Fault> {
         let (key, Accept, later) = self.accepting.open(turn, open)?;
         if let Acceptor::Accepting(_) = self.acceptor {
             if let Some(second) = self.accepting.take(key) {
@@ -132,24 +115,16 @@ impl Handles<Open<Accepting>> for Listener {
 
         Ok(later)
     }
-}
 
-impl Handles<More> for Listener {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn more(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.accepting.more(turn, &more);
 
         self.accept(turn)
     }
-}
 
-impl Handles<Enough> for Listener {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn enough(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(stopped) = self.accepting.stop(turn, &enough) {
             self.acceptor = Acceptor::Waiting;
             stopped.finish(turn, &Unbound::Shut)?;
@@ -157,11 +132,10 @@ impl Handles<Enough> for Listener {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Listener {
     /// An acceptor that ended accepts no more; a connection that ended leaves room for another, which it accepts.
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let acceptor_left = !self.accepting.ended(&ended).is_empty();
         if acceptor_left {
             self.acceptor = Acceptor::Waiting;
@@ -171,25 +145,20 @@ impl Receives<Ended> for Listener {
 
         self.accept(turn)
     }
-}
 
-impl Handles<Shut> for Listener {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for connection in self.accepted.values() {
             turn.to(*connection).send(&Shut)?;
         }
 
         self.unbind(turn, Unbound::Shut)
     }
-}
 
-impl Receives<Answer<Readied, Interest>> for Listener {
     /// Its socket has a connection to accept, or may have; or the host has no poller, and it can never wait for one,
     /// so it stops listening.
-    fn handle(&mut self, (readied, _): (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn readied(&mut self, (readied, _): (Answered<Readied>, Interest), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.readable = Wait::Not;
         let is_ready = readied == Answered::Yes(Readied::Ready);
         if !is_ready {

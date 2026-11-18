@@ -2,10 +2,7 @@
 //! what every actor logged, naming none (ADR-0053).
 
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
-use aethereal_actor::{
-    Actor, ActorName, ActorRef, Anyone, Anywhere, Beginning, ChildOf, Ending, Entry, Fault, Handles, Level,
-    ProtocolRef, Recent, Turn,
-};
+use aethereal_actor::{ActorName, ActorRef, Anywhere, Entry, Fault, Level, ProtocolRef, Recent, Turn, actor};
 use aethereal_data::{
     ActorPath, Bare, Budget, Encode, EncodeError, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
 };
@@ -389,23 +386,36 @@ pub struct LogsToolConfig;
 #[kind(name = "aether.tools.logs_tool")]
 pub struct LogsTool;
 
-impl ChildOf for LogsTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for LogsTool {
-    type Config = LogsToolConfig;
-    type Key = ();
-    type Handles = (Call,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: LogsToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl LogsTool {
+    fn begin(_: LogsToolConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
+        if call.tool == READ_RECENT {
+            return Self::read_recent(&call, turn);
+        }
+        let read = match from_bytes::<ReadLog>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
+            Ok(read) => read,
+            Err(fault) => {
+                return Ok(Called::Refused(format!("the input of `actor_logs`: {fault}")));
+            }
+        };
+        let since = read.since.unwrap_or(0);
+        let filter = read.filter();
+        let planned = plan(turn.logged(&read.actor).since(since), &filter);
+        let buffer = Vec::from(turn.buffer(planned.room));
+        let logged = turn.logged(&read.actor);
+        let skipped = logged.first().saturating_sub(since);
+        let next = match planned.ended {
+            Ended::Last => logged.next().max(since),
+            Ended::Short(n) => n,
+        };
+        let written = written(logged.since(since), &filter, &planned, &Tail { next, skipped }, buffer)?;
+
+        Ok(Called::output(turn, written))
     }
 }
 
@@ -437,36 +447,6 @@ impl Tool for LogsTool {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for LogsTool {
-    type From = Anyone;
-    type Returns = Called;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
-        if call.tool == READ_RECENT {
-            return Self::read_recent(&call, turn);
-        }
-        let read = match from_bytes::<ReadLog>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
-            Ok(read) => read,
-            Err(fault) => {
-                return Ok(Called::Refused(format!("the input of `actor_logs`: {fault}")));
-            }
-        };
-        let since = read.since.unwrap_or(0);
-        let filter = read.filter();
-        let planned = plan(turn.logged(&read.actor).since(since), &filter);
-        let buffer = Vec::from(turn.buffer(planned.room));
-        let logged = turn.logged(&read.actor);
-        let skipped = logged.first().saturating_sub(since);
-        let next = match planned.ended {
-            Ended::Last => logged.next().max(since),
-            Ended::Short(n) => n,
-        };
-        let written = written(logged.since(since), &filter, &planned, &Tail { next, skipped }, buffer)?;
-
-        Ok(Called::output(turn, written))
     }
 }
 

@@ -1,20 +1,13 @@
 //! What crosses between a holder and a tool's worker (ADR-0037), and the command line a tool's sheet carries
 //! (ADR-0053).
 
-use aethereal_actor::{Bytes, Carries, Protocol, ProtocolRef, Turn};
+use aethereal_actor::{Bytes, ProtocolRef, Turn, protocol};
 use aethereal_data::config::{Declared, Flagged, Suggested};
 use aethereal_data::{Bound, Plain, Schema, SchemaNodes};
 
 /// What a tool's worker speaks: each [`Call`], asked of it and answered with [`Called`].
+#[protocol(Call(answers = Called))]
 pub struct Tooling;
-
-impl Protocol for Tooling {
-    type Kinds = (Call,);
-}
-
-impl Carries<Call> for Tooling {
-    type Answers = (Called,);
-}
 
 /// A call of `tool`, named as one worker may serve many, with `input` a value of the tool's input schema, as its
 /// bytes in a blob (ADR-0042), and who called, as its holder knows it (ADR-0057).

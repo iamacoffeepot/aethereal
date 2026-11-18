@@ -13,7 +13,7 @@
 //! for itself. An engine trusted before it hears is told it all the same, as `Engines` tells it each trusted already.
 
 use crate::engines::{ChatTo, Engines, HearTrusted, TrustedEngine};
-use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Handles, Level, Top, Turn, path};
+use aethereal_actor::{ActorRef, Beginning, Fault, Level, Turn, actor, path};
 use aethereal_data::Plain;
 use aethereal_sessions::Sessions;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -22,10 +22,6 @@ use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.link.chat_to_sessions")]
 pub struct ChatToSessions;
-
-impl ChildOf for ChatToSessions {
-    type Parent = Top;
-}
 
 /// It stands up on every host that lists `Engines` and `Sessions`.
 impl<H: Host> Bootstrap<H> for ChatToSessions {
@@ -41,13 +37,8 @@ impl<H: Host> Bootstrap<H> for ChatToSessions {
     }
 }
 
-impl Actor for ChatToSessions {
-    type Config = Self;
-    type Key = ();
-    type Handles = (TrustedEngine,);
-    type Depends = (Engines, Sessions);
-    type Spawns = ();
-
+#[actor(depends(Engines, Sessions))]
+impl ChatToSessions {
     /// Asks `Engines` to tell it each engine the hub trusts.
     fn begin(root: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Engines>(())).send(&HearTrusted)?;
@@ -55,17 +46,13 @@ impl Actor for ChatToSessions {
         Ok(root)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<TrustedEngine> for ChatToSessions {
-    type From = ActorRef<Engines>;
-    type Returns = ();
-
     /// An engine the hub trusts, as `Engines` tells it: told its chat goes to `Sessions`.
-    fn handle(&mut self, trusted: TrustedEngine, turn: &mut Turn<'_, Self, ActorRef<Engines>>) -> Result<(), Fault> {
+    #[tell]
+    fn trusted_engine(
+        &mut self,
+        trusted: TrustedEngine,
+        turn: &mut Turn<'_, Self, ActorRef<Engines>>,
+    ) -> Result<(), Fault> {
         let Some(sessions) = turn.found(&path::<Sessions>(())) else {
             turn.log(Level::Warn, "a trusted engine's chat goes nowhere: the sessions are gone");
             return Ok(());

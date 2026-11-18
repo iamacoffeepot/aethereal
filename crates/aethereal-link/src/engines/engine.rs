@@ -4,8 +4,8 @@ use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, To
 use crate::frames::{self, Written};
 use crate::{Down, REVISION, Refusal, Token, Trust, Up, Within};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Held, JobId,
-    Later, Level, Number, Part, ProtocolRef, Receives, Sleep, Slept, Streams, Subscribers, Taken, Time, Turn, path,
+    ActorRef, Answered, Beginning, Due, Ended, Fault, Held, JobId, Later, Level, Number, Part, ProtocolRef, Sleep,
+    Slept, Streams, Subscribers, Taken, Time, Turn, actor, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_sessions::{Chat, Chatted, Joined, Numbered, ShowAsk, ShowEvents, ShowTabs};
@@ -150,31 +150,8 @@ impl Engine {
     }
 }
 
-impl ChildOf for Engine {
-    type Parent = Engines;
-}
-
-impl Actor for Engine {
-    type Config = EngineConfig;
-    type Key = u64;
-    type Handles = (
-        Part<Reading>,
-        Answer<HungUp, Number>,
-        Answer<Wrote, Sent>,
-        Answer<TokenFor, Vouching>,
-        Answer<Slept, Lapsing>,
-        DescribeEngine,
-        CallEngine,
-        Shut,
-        ShowTabs,
-        ShowEvents,
-        ShowAsk,
-        ChatTo,
-        Ended,
-    );
-    type Depends = (Engines,);
-    type Spawns = ();
-
+#[actor(key = u64, parent = Engines, depends(Engines))]
+impl Engine {
     /// Opens its connection's stream.
     fn begin(config: EngineConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut reading = Streams::new(READING_WINDOW);
@@ -193,18 +170,10 @@ impl Actor for Engine {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Part<Reading>> for Engine {
-    type From = Anyone;
-    type Returns = ();
-
     /// A frame from the engine, in the order the link has them: `Hello` first, then sets, answers, and chat. A set that
     /// comes while its token is being taken is kept, and told once it is.
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn part(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value, .. }) = self.reading.part(turn, part)? else {
             return Ok(());
         };
@@ -251,21 +220,19 @@ impl Handles<Part<Reading>> for Engine {
             }
         }
     }
-}
 
-impl Receives<Answer<HungUp, Number>> for Engine {
     /// The connection hung up: the engine has gone.
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn hung_up(&mut self, (_, number): (Answered<HungUp>, Number), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.reading.answered(number);
         turn.close();
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Wrote, Sent>> for Engine {
     /// A write that was not sent ends the connection, as one sent that closes it does.
-    fn handle(&mut self, (answered, sent): (Answered<Wrote>, Sent), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn wrote(&mut self, (answered, sent): (Answered<Wrote>, Sent), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_sent = answered == Answered::Yes(Wrote::Sent);
         let stays = is_sent && !sent.closes;
         if stays {
@@ -274,13 +241,12 @@ impl Receives<Answer<Wrote, Sent>> for Engine {
 
         self.shut(turn)
     }
-}
 
-impl Receives<Answer<TokenFor, Vouching>> for Engine {
     /// Its token taken, the engine is linked, trusted as `Engines` says, and `Engines` told what it shows; a trusted
     /// engine joins wherever its chat goes, to be shown the sessions. A token `Engines` does not hold is refused, and
     /// the connection shut once the refusal is sent.
-    fn handle(
+    #[answer]
+    fn token_for(
         &mut self,
         (answered, Vouching): (Answered<TokenFor>, Vouching),
         turn: &mut Turn<'_, Self>,
@@ -303,42 +269,82 @@ impl Receives<Answer<TokenFor, Vouching>> for Engine {
 
         Ok(())
     }
-}
 
-impl Handles<ChatTo> for Engine {
-    type From = Anyone;
-    type Returns = ();
+    /// A call's deadline has come before the engine answered it, or this would have been cancelled: its slot is freed.
+    /// A sleep that came to nothing frees it too, as nothing else would.
+    ///
+    /// Its asker has been answered `Expired` already, or is as its deadline's step runs, and the engine drops an answer
+    /// that comes after that (ADR-0041). The call is answered all the same, not let go of: should this come before the
+    /// engine expires the request, the asker reads why it was not called, where a request let go of would read only
+    /// that it went unanswered.
+    #[answer]
+    fn slept(
+        &mut self,
+        (_, Lapsing { call }): (Answered<Slept>, Lapsing),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(Out { held, .. }) = self.calls.remove(&call) else {
+            return Ok(());
+        };
+        turn.answer(held, &Called::Refused(String::from("the engine did not answer in time")))?;
 
-    /// Keeps where its chat goes, and joins there at once when the hub trusts the engine already; a place it keeps
-    /// already is not joined again. An engine not trusted, or not yet, keeps the place and tells it nothing: it joins
-    /// as it is trusted, and an untrusted engine never does.
-    fn handle(&mut self, chat_to: ChatTo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let ChatTo { to } = chat_to;
-        let added = self.chat_to.subscribe(turn, to);
-        let trusted = self.is_trusted();
-        if added && trusted {
-            turn.to(to).send(&Joined { engine: self.id })?;
+        Ok(())
+    }
+
+    #[request]
+    fn describe_engine(&mut self, _: DescribeEngine) -> Result<Described, Fault> {
+        let described = match &self.said {
+            Said::Linked { tools, .. } => tools.clone(),
+            Said::Nothing | Said::Vouching { .. } | Said::Refused => Described::NotYet,
+        };
+
+        Ok(described)
+    }
+
+    /// Holds the call and writes it with the time it has left, running a sleep to its deadline when it has one, or
+    /// refuses it at once: before the engine has sent its tools, past the most calls out, or when it would not fit in
+    /// a frame.
+    #[request]
+    fn call_engine(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self>) -> Result<Later<Called>, Fault> {
+        let (held, later) = turn.hold();
+        let input = turn.read(&asked.input).to_vec();
+        let fate = self.fate(asked, input, held.due(), turn.now())?;
+        let call = match fate {
+            Fate::Writes(call) => call,
+            Fate::Refused(why) => {
+                turn.answer(held, &Called::Refused(String::from(why)))?;
+                return Ok(later);
+            }
+        };
+        let deadline = match held.due() {
+            Due::Never => Deadline::Unbounded,
+            Due::Before(until) => {
+                Deadline::Sleeping { sleep: turn.run(&Sleep { until }, &Lapsing { call: self.next })? }
+            }
+        };
+        self.calls.insert(self.next, Out { held, deadline });
+        self.next += 1;
+        self.write(turn, call, false)?;
+
+        Ok(later)
+    }
+
+    /// `Engines` asks it to end its link, as the agent terminates an engine started outside the hub: its connection is
+    /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any
+    /// other actor, it is passed over.
+    #[tell]
+    fn on_shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let is_from_parent = turn.sender().id() == turn.parent().id();
+        if !is_from_parent {
+            return Ok(());
         }
 
-        Ok(())
+        self.shut(turn)
     }
-}
-
-impl Receives<Ended> for Engine {
-    /// A place its chat went to has ended, and is let go.
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.chat_to.ended(&ended);
-
-        Ok(())
-    }
-}
-
-impl Handles<ShowTabs> for Engine {
-    type From = Anyone;
-    type Returns = ();
 
     /// Every session, written down as `Sessions`, to a trusted engine alone.
-    fn handle(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn show_tabs(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if !self.is_trusted() {
             turn.log(Level::Warn, format_args!("the sessions were not shown to engine {}, not trusted", self.id));
             return Ok(());
@@ -346,31 +352,11 @@ impl Handles<ShowTabs> for Engine {
 
         self.write_down(turn, &Down::Sessions { list: tabs.tabs })
     }
-}
-
-impl Handles<ShowAsk> for Engine {
-    type From = Anyone;
-    type Returns = ();
-
-    /// An ask that waits for the owner, written down as `Ask`, to a trusted engine alone.
-    fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if !self.is_trusted() {
-            turn.log(Level::Warn, format_args!("an ask was not shown to engine {}, not trusted", self.id));
-            return Ok(());
-        }
-        let ShowAsk { ask, session, what } = ask;
-
-        self.write_down(turn, &Down::Ask { ask, session, what })
-    }
-}
-
-impl Handles<ShowEvents> for Engine {
-    type From = Anyone;
-    type Returns = ();
 
     /// Events of a session's transcript, written down as `Show`, to a trusted engine alone: as many to a frame as fit
     /// in one, and an event that fits in none, which a long tool's output can be, left out and logged.
-    fn handle(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn show_events(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if !self.is_trusted() {
             turn.log(Level::Warn, format_args!("a transcript was not shown to engine {}, not trusted", self.id));
             return Ok(());
@@ -394,90 +380,40 @@ impl Handles<ShowEvents> for Engine {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Lapsing>> for Engine {
-    /// A call's deadline has come before the engine answered it, or this would have been cancelled: its slot is freed.
-    /// A sleep that came to nothing frees it too, as nothing else would.
-    ///
-    /// Its asker has been answered `Expired` already, or is as its deadline's step runs, and the engine drops an answer
-    /// that comes after that (ADR-0041). The call is answered all the same, not let go of: should this come before the
-    /// engine expires the request, the asker reads why it was not called, where a request let go of would read only
-    /// that it went unanswered.
-    fn handle(
-        &mut self,
-        (_, Lapsing { call }): (Answered<Slept>, Lapsing),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(Out { held, .. }) = self.calls.remove(&call) else {
+    /// An ask that waits for the owner, written down as `Ask`, to a trusted engine alone.
+    #[tell]
+    fn show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if !self.is_trusted() {
+            turn.log(Level::Warn, format_args!("an ask was not shown to engine {}, not trusted", self.id));
             return Ok(());
-        };
-        turn.answer(held, &Called::Refused(String::from("the engine did not answer in time")))?;
+        }
+        let ShowAsk { ask, session, what } = ask;
+
+        self.write_down(turn, &Down::Ask { ask, session, what })
+    }
+
+    /// Keeps where its chat goes, and joins there at once when the hub trusts the engine already; a place it keeps
+    /// already is not joined again. An engine not trusted, or not yet, keeps the place and tells it nothing: it joins
+    /// as it is trusted, and an untrusted engine never does.
+    #[tell]
+    fn chat_to(&mut self, chat_to: ChatTo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let ChatTo { to } = chat_to;
+        let added = self.chat_to.subscribe(turn, to);
+        let trusted = self.is_trusted();
+        if added && trusted {
+            turn.to(to).send(&Joined { engine: self.id })?;
+        }
 
         Ok(())
     }
-}
 
-impl Handles<DescribeEngine> for Engine {
-    type From = Anyone;
-    type Returns = Described;
+    /// A place its chat went to has ended, and is let go.
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
+        self.chat_to.ended(&ended);
 
-    fn handle(&mut self, _: DescribeEngine, _: &mut Turn<'_, Self>) -> Result<Described, Fault> {
-        let described = match &self.said {
-            Said::Linked { tools, .. } => tools.clone(),
-            Said::Nothing | Said::Vouching { .. } | Said::Refused => Described::NotYet,
-        };
-
-        Ok(described)
-    }
-}
-
-impl Handles<CallEngine> for Engine {
-    type From = Anyone;
-    type Returns = Later<Called>;
-
-    /// Holds the call and writes it with the time it has left, running a sleep to its deadline when it has one, or
-    /// refuses it at once: before the engine has sent its tools, past the most calls out, or when it would not fit in
-    /// a frame.
-    fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self>) -> Result<Later<Called>, Fault> {
-        let (held, later) = turn.hold();
-        let input = turn.read(&asked.input).to_vec();
-        let fate = self.fate(asked, input, held.due(), turn.now())?;
-        let call = match fate {
-            Fate::Writes(call) => call,
-            Fate::Refused(why) => {
-                turn.answer(held, &Called::Refused(String::from(why)))?;
-                return Ok(later);
-            }
-        };
-        let deadline = match held.due() {
-            Due::Never => Deadline::Unbounded,
-            Due::Before(until) => {
-                Deadline::Sleeping { sleep: turn.run(&Sleep { until }, &Lapsing { call: self.next })? }
-            }
-        };
-        self.calls.insert(self.next, Out { held, deadline });
-        self.next += 1;
-        self.write(turn, call, false)?;
-
-        Ok(later)
-    }
-}
-
-impl Handles<Shut> for Engine {
-    type From = Anyone;
-    type Returns = ();
-
-    /// `Engines` asks it to end its link, as the agent terminates an engine started outside the hub: its connection is
-    /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any
-    /// other actor, it is passed over.
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let is_from_parent = turn.sender().id() == turn.parent().id();
-        if !is_from_parent {
-            return Ok(());
-        }
-
-        self.shut(turn)
+        Ok(())
     }
 }
 

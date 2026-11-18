@@ -14,10 +14,7 @@ use crate::{
     CallEngine, DescribeEngine, Described, Engine, EngineList, EngineTrust, Engines, ListEngines, MintFor, MintToken,
     Minted, Outcome, Spawn, SpawnEngine, SpawnFor, TerminateEngine, Terminated, TrustOf,
 };
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{
     Bound, Budget, Json, JsonError, Plain, Schema, SchemaNodes, from_bytes, from_json, json_schema, to_bytes, to_json,
 };
@@ -158,31 +155,273 @@ pub struct EngineTools {
     next: u64,
 }
 
-impl ChildOf for EngineTools {
-    type Parent = Anywhere;
-}
-
-impl Actor for EngineTools {
-    type Config = EngineToolsConfig;
-    type Key = ();
-    type Handles = (
-        Call,
-        Answer<EngineList, Asking>,
-        Answer<EngineTrust, Asking>,
-        Answer<Described, Asking>,
-        Answer<Called, Asking>,
-        Answer<Minted, Asking>,
-        Answer<Spawn, Asking>,
-        Answer<Terminated, Asking>,
-    );
-    type Depends = (Engines,);
-    type Spawns = ();
-
-    fn begin(_: EngineToolsConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Engines))]
+impl EngineTools {
+    fn begin(_: EngineToolsConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
+    /// spawn is asked for the call's caller, which decides whether the engine is trusted, and a session's call of one
+    /// engine first asks `Engines` that engine's trust (ADR-0057).
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+        let order = match order(&call.tool, turn.read(&call.input)) {
+            Ok(order) => order,
+            Err(refusal) => {
+                let refusal = refusal.into_called(turn);
+                return Ok(Reply::Now(refusal));
+            }
+        };
+        let (held, later) = turn.hold();
+        let asking = Asking { number: self.next };
+        self.next += 1;
+        let pending = match (order, call.caller) {
+            (Order::List, caller) => {
+                turn.to(path::<Engines>(())).ask(&ListEngines, &asking)?;
+                Pending::Listing { held, caller }
+            }
+            (Order::Reach(reaching), Caller::Owner) => reach(turn, held, asking, reaching)?,
+            (Order::Reach(reaching), caller @ Caller::Session { .. }) => {
+                turn.to(path::<Engines>(())).ask(&TrustOf { engine: reaching.engine() }, &asking)?;
+                Pending::Checking { held, caller, reaching }
+            }
+            (Order::Mint, _) => {
+                turn.to(path::<Engines>(())).ask(&MintFor { by: call.caller }, &asking)?;
+                Pending::Minting { held }
+            }
+            (Order::Spawn(spawn), _) => {
+                turn.to(path::<Engines>(())).ask(&SpawnFor { spawn, by: call.caller }, &asking)?;
+                Pending::Spawning { held }
+            }
+        };
+        self.calls.insert(asking.number, pending);
+
+        Ok(Reply::Later(later))
+    }
+
+    #[answer]
+    fn engine_list(
+        &mut self,
+        (answered, Asking { number }): (Answered<EngineList>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Listing { held, caller }, Answered::Yes(list)) => (held, listed(&list.reachable_by(caller))?),
+            (Pending::Listing { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (
+                other @ (Pending::Checking { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// The trust of the engine a session's call names: the engine is reached when the session started it, and the
+    /// call is refused otherwise, the same whether the engine is another's or not linked at all.
+    #[answer]
+    fn engine_trust(
+        &mut self,
+        (answered, asking): (Answered<EngineTrust>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&asking.number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Checking { held, caller, reaching }, Answered::Yes(EngineTrust::Linked { trust }))
+                if trust.reachable_by(caller) =>
+            {
+                let pending = reach(turn, held, asking, reaching)?;
+                self.calls.insert(asking.number, pending);
+                return Ok(());
+            }
+            (Pending::Checking { held, reaching, .. }, Answered::Yes(_)) => (held, unreached(reaching.engine())),
+            (Pending::Checking { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// For `describe_engine`, answers the engine's tools; for `call_tool`, converts the input by the tool's sheet and
+    /// asks the engine to call it, or refuses.
+    #[answer]
+    fn described(
+        &mut self,
+        (answered, asking): (Answered<Described>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&asking.number) else {
+            return Ok(());
+        };
+        let (held, called) = match pending {
+            Pending::Describing { held, engine, show } => (held, described(answered, engine, &show)?),
+            Pending::Finding { held, engine, tool, input } => match converted(answered, engine, &tool, &input) {
+                Ok(Converted { revision, input, output }) => {
+                    let Ok(input) = turn.put(input) else {
+                        let unheld = Called::Refused(String::from("the hub had no room to hold the input"));
+                        turn.answer(held, &unheld)?;
+                        return Ok(());
+                    };
+                    let call = CallEngine { revision, tool: tool.clone(), input };
+                    // This turn handles the engine's tools, not the call held, so it states the call's deadline.
+                    turn.to(path::<Engine>(u64::from(engine))).within(held.due()).ask(&call, &asking)?;
+                    self.calls.insert(asking.number, Pending::Calling { held, tool, output });
+                    return Ok(());
+                }
+                Err(refusal) => (held, refusal),
+            },
+            other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
+            | Pending::Calling { .. }
+            | Pending::Minting { .. }
+            | Pending::Spawning { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// The engine's answer: its output converted to JSON by the tool's output schema, or its refusal as it gave it.
+    #[answer]
+    fn called(
+        &mut self,
+        (answered, Asking { number }): (Answered<Called>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match pending {
+            Pending::Calling { held, tool, output } => (held, output_of(turn, answered, &tool, &output)?),
+            other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
+            | Pending::Describing { .. }
+            | Pending::Finding { .. }
+            | Pending::Minting { .. }
+            | Pending::Spawning { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// `Engines`' token, answered as it gave it.
+    #[answer]
+    fn minted(
+        &mut self,
+        (answered, Asking { number }): (Answered<Minted>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Minting { held }, Answered::Yes(minted)) => (held, Outcome::Output(to_bytes(&minted)?)),
+            (Pending::Minting { held }, Answered::No(_)) => (held, refused("`Engines` minted no token")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Checking { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Spawning { .. }
+                | Pending::Terminating { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// The spawned engine's id once it has linked, or the refusal saying how the spawn failed.
+    #[answer]
+    fn spawn(
+        &mut self,
+        (answered, Asking { number }): (Answered<Spawn>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match pending {
+            Pending::Spawning { held } => (held, spawned(answered)?),
+            other @ (Pending::Listing { .. }
+            | Pending::Checking { .. }
+            | Pending::Describing { .. }
+            | Pending::Finding { .. }
+            | Pending::Calling { .. }
+            | Pending::Minting { .. }
+            | Pending::Terminating { .. }) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
+        Ok(())
+    }
+
+    /// That the engine is being stopped, or the refusal of an id no engine is linked under.
+    #[answer]
+    fn terminated(
+        &mut self,
+        (answered, Asking { number }): (Answered<Terminated>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(pending) = self.calls.remove(&number) else {
+            return Ok(());
+        };
+        let (held, called) = match (pending, answered) {
+            (Pending::Terminating { held, .. }, Answered::Yes(Terminated::Stopping)) => {
+                (held, Outcome::Output(to_bytes(&Done {})?))
+            }
+            (Pending::Terminating { held, engine }, Answered::Yes(Terminated::NotLinked)) => {
+                (held, refused(format!("no engine {engine} is linked")))
+            }
+            (Pending::Terminating { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
+            (
+                other @ (Pending::Listing { .. }
+                | Pending::Checking { .. }
+                | Pending::Describing { .. }
+                | Pending::Finding { .. }
+                | Pending::Calling { .. }
+                | Pending::Minting { .. }
+                | Pending::Spawning { .. }),
+                _,
+            ) => (other.into_held(), lost()),
+        };
+        let called = called.into_called(turn);
+        turn.answer(held, &called)?;
+
         Ok(())
     }
 }
@@ -244,281 +483,6 @@ impl Tool for EngineTools {
 
     fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
         me.protocol()
-    }
-}
-
-impl Handles<Call> for EngineTools {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    /// Reads the call's input, or refuses it; holds the call, and asks `Engines` or the engine named. A token or a
-    /// spawn is asked for the call's caller, which decides whether the engine is trusted, and a session's call of one
-    /// engine first asks `Engines` that engine's trust (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
-        let order = match order(&call.tool, turn.read(&call.input)) {
-            Ok(order) => order,
-            Err(refusal) => {
-                let refusal = refusal.into_called(turn);
-                return Ok(Reply::Now(refusal));
-            }
-        };
-        let (held, later) = turn.hold();
-        let asking = Asking { number: self.next };
-        self.next += 1;
-        let pending = match (order, call.caller) {
-            (Order::List, caller) => {
-                turn.to(path::<Engines>(())).ask(&ListEngines, &asking)?;
-                Pending::Listing { held, caller }
-            }
-            (Order::Reach(reaching), Caller::Owner) => reach(turn, held, asking, reaching)?,
-            (Order::Reach(reaching), caller @ Caller::Session { .. }) => {
-                turn.to(path::<Engines>(())).ask(&TrustOf { engine: reaching.engine() }, &asking)?;
-                Pending::Checking { held, caller, reaching }
-            }
-            (Order::Mint, _) => {
-                turn.to(path::<Engines>(())).ask(&MintFor { by: call.caller }, &asking)?;
-                Pending::Minting { held }
-            }
-            (Order::Spawn(spawn), _) => {
-                turn.to(path::<Engines>(())).ask(&SpawnFor { spawn, by: call.caller }, &asking)?;
-                Pending::Spawning { held }
-            }
-        };
-        self.calls.insert(asking.number, pending);
-
-        Ok(Reply::Later(later))
-    }
-}
-
-impl Receives<Answer<EngineList, Asking>> for EngineTools {
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<EngineList>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let (held, called) = match (pending, answered) {
-            (Pending::Listing { held, caller }, Answered::Yes(list)) => (held, listed(&list.reachable_by(caller))?),
-            (Pending::Listing { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
-            (
-                other @ (Pending::Checking { .. }
-                | Pending::Describing { .. }
-                | Pending::Finding { .. }
-                | Pending::Calling { .. }
-                | Pending::Minting { .. }
-                | Pending::Spawning { .. }
-                | Pending::Terminating { .. }),
-                _,
-            ) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<EngineTrust, Asking>> for EngineTools {
-    /// The trust of the engine a session's call names: the engine is reached when the session started it, and the
-    /// call is refused otherwise, the same whether the engine is another's or not linked at all.
-    fn handle(
-        &mut self,
-        (answered, asking): (Answered<EngineTrust>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&asking.number) else {
-            return Ok(());
-        };
-        let (held, called) = match (pending, answered) {
-            (Pending::Checking { held, caller, reaching }, Answered::Yes(EngineTrust::Linked { trust }))
-                if trust.reachable_by(caller) =>
-            {
-                let pending = reach(turn, held, asking, reaching)?;
-                self.calls.insert(asking.number, pending);
-                return Ok(());
-            }
-            (Pending::Checking { held, reaching, .. }, Answered::Yes(_)) => (held, unreached(reaching.engine())),
-            (Pending::Checking { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
-            (
-                other @ (Pending::Listing { .. }
-                | Pending::Describing { .. }
-                | Pending::Finding { .. }
-                | Pending::Calling { .. }
-                | Pending::Minting { .. }
-                | Pending::Spawning { .. }
-                | Pending::Terminating { .. }),
-                _,
-            ) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Described, Asking>> for EngineTools {
-    /// For `describe_engine`, answers the engine's tools; for `call_tool`, converts the input by the tool's sheet and
-    /// asks the engine to call it, or refuses.
-    fn handle(
-        &mut self,
-        (answered, asking): (Answered<Described>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&asking.number) else {
-            return Ok(());
-        };
-        let (held, called) = match pending {
-            Pending::Describing { held, engine, show } => (held, described(answered, engine, &show)?),
-            Pending::Finding { held, engine, tool, input } => match converted(answered, engine, &tool, &input) {
-                Ok(Converted { revision, input, output }) => {
-                    let Ok(input) = turn.put(input) else {
-                        let unheld = Called::Refused(String::from("the hub had no room to hold the input"));
-                        turn.answer(held, &unheld)?;
-                        return Ok(());
-                    };
-                    let call = CallEngine { revision, tool: tool.clone(), input };
-                    // This turn handles the engine's tools, not the call held, so it states the call's deadline.
-                    turn.to(path::<Engine>(u64::from(engine))).within(held.due()).ask(&call, &asking)?;
-                    self.calls.insert(asking.number, Pending::Calling { held, tool, output });
-                    return Ok(());
-                }
-                Err(refusal) => (held, refusal),
-            },
-            other @ (Pending::Listing { .. }
-            | Pending::Checking { .. }
-            | Pending::Calling { .. }
-            | Pending::Minting { .. }
-            | Pending::Spawning { .. }
-            | Pending::Terminating { .. }) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Called, Asking>> for EngineTools {
-    /// The engine's answer: its output converted to JSON by the tool's output schema, or its refusal as it gave it.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Called>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let (held, called) = match pending {
-            Pending::Calling { held, tool, output } => (held, output_of(turn, answered, &tool, &output)?),
-            other @ (Pending::Listing { .. }
-            | Pending::Checking { .. }
-            | Pending::Describing { .. }
-            | Pending::Finding { .. }
-            | Pending::Minting { .. }
-            | Pending::Spawning { .. }
-            | Pending::Terminating { .. }) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Minted, Asking>> for EngineTools {
-    /// `Engines`' token, answered as it gave it.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Minted>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let (held, called) = match (pending, answered) {
-            (Pending::Minting { held }, Answered::Yes(minted)) => (held, Outcome::Output(to_bytes(&minted)?)),
-            (Pending::Minting { held }, Answered::No(_)) => (held, refused("`Engines` minted no token")),
-            (
-                other @ (Pending::Listing { .. }
-                | Pending::Checking { .. }
-                | Pending::Describing { .. }
-                | Pending::Finding { .. }
-                | Pending::Calling { .. }
-                | Pending::Spawning { .. }
-                | Pending::Terminating { .. }),
-                _,
-            ) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Spawn, Asking>> for EngineTools {
-    /// The spawned engine's id once it has linked, or the refusal saying how the spawn failed.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Spawn>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let (held, called) = match pending {
-            Pending::Spawning { held } => (held, spawned(answered)?),
-            other @ (Pending::Listing { .. }
-            | Pending::Checking { .. }
-            | Pending::Describing { .. }
-            | Pending::Finding { .. }
-            | Pending::Calling { .. }
-            | Pending::Minting { .. }
-            | Pending::Terminating { .. }) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Terminated, Asking>> for EngineTools {
-    /// That the engine is being stopped, or the refusal of an id no engine is linked under.
-    fn handle(
-        &mut self,
-        (answered, Asking { number }): (Answered<Terminated>, Asking),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(pending) = self.calls.remove(&number) else {
-            return Ok(());
-        };
-        let (held, called) = match (pending, answered) {
-            (Pending::Terminating { held, .. }, Answered::Yes(Terminated::Stopping)) => {
-                (held, Outcome::Output(to_bytes(&Done {})?))
-            }
-            (Pending::Terminating { held, engine }, Answered::Yes(Terminated::NotLinked)) => {
-                (held, refused(format!("no engine {engine} is linked")))
-            }
-            (Pending::Terminating { held, .. }, Answered::No(_)) => (held, refused("`Engines` did not answer")),
-            (
-                other @ (Pending::Listing { .. }
-                | Pending::Checking { .. }
-                | Pending::Describing { .. }
-                | Pending::Finding { .. }
-                | Pending::Calling { .. }
-                | Pending::Minting { .. }
-                | Pending::Spawning { .. }),
-                _,
-            ) => (other.into_held(), lost()),
-        };
-        let called = called.into_called(turn);
-        turn.answer(held, &called)?;
-
-        Ok(())
     }
 }
 

@@ -2,9 +2,7 @@
 
 use crate::McpSettings;
 use crate::front::{self, Reply, Routed};
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Fault, Handles, Held, Receives, Top, Turn,
-};
+use aethereal_actor::{Answered, Ended, Fault, Held, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::Status;
 use aethereal_http::stack::{FromStack, Gathered, Request, Response};
@@ -57,39 +55,22 @@ pub struct Mcp {
     next: u64,
 }
 
-impl ChildOf for Mcp {
-    type Parent = Top;
-}
-
 /// It holds the tools a hub's own program offers.
 impl Holder for Mcp {}
 
-impl Actor for Mcp {
-    type Config = McpSettings;
-    type Key = ();
-    type Handles = (Request<Caller, ()>, Answer<Gathered, Reading>, Offer, Withdraw, Answer<Called, Calling>, Ended);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(settings: McpSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Mcp {
+    fn begin(settings: McpSettings) -> Result<Self, Fault> {
         Ok(Self { settings, table: Table::new(), waiting: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Request<Caller, ()>> for Mcp {
-    type From = FromStack;
-    type Returns = aethereal_actor::Reply<Response>;
-
     /// A request from an origin it does not take is answered `403` unread; any other is held, and its body gathered
     /// whole.
-    fn handle(
+    #[request]
+    fn request(
         &mut self,
         request: Request<Caller, ()>,
-        turn: &mut Turn<'_, Self, Self::From>,
+        turn: &mut Turn<'_, Self, FromStack>,
     ) -> Result<aethereal_actor::Reply<Response>, Fault> {
         if !front::is_from_allowed(&request, &self.settings.origins) {
             return Ok(aethereal_actor::Reply::Now(Response::empty(Status::Forbidden)));
@@ -102,13 +83,12 @@ impl Handles<Request<Caller, ()>> for Mcp {
 
         Ok(aethereal_actor::Reply::Later(later))
     }
-}
 
-impl Receives<Answer<Gathered, Reading>> for Mcp {
     /// The body is read: the request is answered now, or its call is forwarded to its tool's worker and the request
     /// held until the worker answers. A body past `most_body_bytes` is answered `413`; one the stack could not read is
     /// answered `400`, which the stack passes over when it has closed the connection or answers in its place.
-    fn handle(
+    #[answer]
+    fn gathered(
         &mut self,
         (gathered, Reading { held, request }): (Answered<Gathered>, Reading),
         turn: &mut Turn<'_, Self>,
@@ -150,13 +130,9 @@ impl Receives<Answer<Gathered, Reading>> for Mcp {
 
         Ok(())
     }
-}
 
-impl Handles<Offer> for Mcp {
-    type From = Anyone;
-    type Returns = Offered;
-
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<Offered, Fault> {
+    #[request]
+    fn offer(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<Offered, Fault> {
         let room = usize::try_from(self.settings.most_tools).unwrap_or(usize::MAX);
         let offered = self.table.take(offer.tools, offer.worker, room);
         if offered == Offered::Yes {
@@ -165,21 +141,16 @@ impl Handles<Offer> for Mcp {
 
         Ok(offered)
     }
-}
 
-impl Handles<Withdraw> for Mcp {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn withdraw(&mut self, withdraw: Withdraw) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Called, Calling>> for Mcp {
-    fn handle(
+    #[answer]
+    fn called(
         &mut self,
         (answered, Calling { number }): (Answered<Called>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -216,10 +187,9 @@ impl Receives<Answer<Called, Calling>> for Mcp {
 
         Ok(())
     }
-}
 
-impl Receives<Ended> for Mcp {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
         self.table.ended(ended.actor());
 
         Ok(())

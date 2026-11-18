@@ -10,7 +10,7 @@ use super::session::{Life, Session};
 use super::transcript::{Ended, Entry, Note, Transcript};
 use super::{Phase, Reconciling, Recorded, Sessions, Unfound};
 use crate::{ContainerId, Docker, Events, List, Listed, Listing, Phase as DockerPhase};
-use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn, path};
+use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use aethereal_data::{Budget, Plain, from_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
 use core::mem;
@@ -31,10 +31,10 @@ pub(super) struct Reading {
     out: u32,
 }
 
-impl Receives<Answer<FileRead, Loading>> for Sessions {
+impl Sessions {
     /// A file of the sessions read: the index asks for each session's record and transcript, and once every one is
     /// answered, the sessions are held as stopped until the containers carrying the hub's label are listed.
-    fn handle(
+    pub(super) fn handle_file_read(
         &mut self,
         (answered, loading): (Answered<FileRead>, Loading),
         turn: &mut Turn<'_, Self>,
@@ -158,12 +158,10 @@ impl Sessions {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Listed, Reconciling>> for Sessions {
     /// The containers carrying the hub's label: each a record says may run is re-attached when it runs, and noted
     /// lost when it does not; each with no record is reported.
-    fn handle(
+    pub(super) fn handle_listed(
         &mut self,
         (answered, Reconciling): (Answered<Listed>, Reconciling),
         turn: &mut Turn<'_, Self>,

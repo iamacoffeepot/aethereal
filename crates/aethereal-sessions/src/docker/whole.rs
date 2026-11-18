@@ -6,9 +6,7 @@ use super::{
     Acted, Calling, Create, CreateVolume, Created, Docker, DockerError, Fetches, Inspect, Inspected, Kill, List,
     Listed, Remove, Start, Stop, Unwritable, VolumeCreated, reply,
 };
-use aethereal_actor::{
-    ActorRef, Answer, Answered, Anyone, Bytes, Due, Fault, Handles, Held, Receives, Refused, Reply, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Bytes, Due, Fault, Held, Refused, Reply, Turn};
 use aethereal_data::Bound;
 use aethereal_http::Reply as HttpReply;
 use aethereal_http::{Client, Failure, Fetch, Fetched, Header, Outgoing};
@@ -40,11 +38,9 @@ enum Step {
     Fetching(ActorRef<Client>),
 }
 
-impl Handles<Create> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Created>;
-
-    fn handle(&mut self, create: Create, turn: &mut Turn<'_, Self>) -> Result<Reply<Created>, Fault> {
+impl Docker {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_create(&mut self, create: Create, turn: &mut Turn<'_, Self>) -> Result<Reply<Created>, Fault> {
         match create.call() {
             Ok(call) => {
                 let (held, later) = turn.hold();
@@ -55,49 +51,33 @@ impl Handles<Create> for Docker {
             Err(why) => Ok(Reply::Now(Created::Failed(DockerError::Unwritable(why)))),
         }
     }
-}
 
-impl Handles<Start> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Acted>;
-
-    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_start(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, start.call())
     }
-}
 
-impl Handles<Stop> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Acted>;
-
-    fn handle(&mut self, stop: Stop, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_stop(&mut self, stop: Stop, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, stop.call())
     }
-}
 
-impl Handles<Kill> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Acted>;
-
-    fn handle(&mut self, kill: Kill, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_kill(&mut self, kill: Kill, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, kill.call())
     }
-}
 
-impl Handles<Remove> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Acted>;
-
-    fn handle(&mut self, remove: Remove, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_remove(&mut self, remove: Remove, turn: &mut Turn<'_, Self>) -> Result<Reply<Acted>, Fault> {
         self.act(turn, remove.call())
     }
-}
 
-impl Handles<Inspect> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Inspected>;
-
-    fn handle(&mut self, inspect: Inspect, turn: &mut Turn<'_, Self>) -> Result<Reply<Inspected>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_inspect(
+        &mut self,
+        inspect: Inspect,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<Inspected>, Fault> {
         match inspect.call() {
             Ok(call) => {
                 let (held, later) = turn.hold();
@@ -108,13 +88,9 @@ impl Handles<Inspect> for Docker {
             Err(why) => Ok(Reply::Now(Inspected::Failed(DockerError::Unwritable(why)))),
         }
     }
-}
 
-impl Handles<List> for Docker {
-    type From = Anyone;
-    type Returns = Reply<Listed>;
-
-    fn handle(&mut self, list: List, turn: &mut Turn<'_, Self>) -> Result<Reply<Listed>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_list(&mut self, list: List, turn: &mut Turn<'_, Self>) -> Result<Reply<Listed>, Fault> {
         match list.call() {
             Ok(call) => {
                 let (held, later) = turn.hold();
@@ -125,13 +101,13 @@ impl Handles<List> for Docker {
             Err(why) => Ok(Reply::Now(Listed::Failed(DockerError::Unwritable(why)))),
         }
     }
-}
 
-impl Handles<CreateVolume> for Docker {
-    type From = Anyone;
-    type Returns = Reply<VolumeCreated>;
-
-    fn handle(&mut self, create: CreateVolume, turn: &mut Turn<'_, Self>) -> Result<Reply<VolumeCreated>, Fault> {
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_create_volume(
+        &mut self,
+        create: CreateVolume,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<VolumeCreated>, Fault> {
         match create.call() {
             Ok(call) => {
                 let (held, later) = turn.hold();
@@ -142,11 +118,9 @@ impl Handles<CreateVolume> for Docker {
             Err(why) => Ok(Reply::Now(VolumeCreated::Failed(DockerError::Unwritable(why)))),
         }
     }
-}
 
-impl Receives<Answer<Fetched, Calling>> for Docker {
     /// `Http`'s client answered a request: its asker is answered with what the reply says, and the client hung up.
-    fn handle(
+    pub(super) fn handle_fetched(
         &mut self,
         (answered, Calling { number }): (Answered<Fetched>, Calling),
         turn: &mut Turn<'_, Self>,

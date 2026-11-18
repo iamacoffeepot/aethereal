@@ -2,17 +2,19 @@
 
 use super::{Deferred, Library, Reading, Stage};
 use crate::{Defaulted, Defaults};
-use aethereal_actor::{Anyone, Bytes, Fault, Handles, Level, Reply, Turn};
+use aethereal_actor::{Bytes, Fault, Level, Reply, Turn};
 use aethereal_data::KindName;
 use std::collections::BTreeMap;
 
-/// Taken at once while the library is open; held until `Code` is published while it starts, so `Code` comes first;
-/// and answered that it stopped once it has.
-impl Handles<Defaults> for Library {
-    type From = Anyone;
-    type Returns = Reply<Defaulted>;
-
-    fn handle(&mut self, Defaults { modules }: Defaults, turn: &mut Turn<'_, Self>) -> Result<Reply<Defaulted>, Fault> {
+impl Library {
+    /// Taken at once while the library is open; held until `Code` is published while it starts, so `Code` comes first;
+    /// and answered that it stopped once it has.
+    #[allow(clippy::unnecessary_wraps, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_defaults(
+        &mut self,
+        Defaults { modules }: Defaults,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<Defaulted>, Fault> {
         let deferred = match &mut self.stage {
             Stage::Listing(deferred) | Stage::Reading(Reading { deferred, .. }) => deferred,
             Stage::Open => return Ok(Reply::Now(self.take_defaults(&modules, turn))),

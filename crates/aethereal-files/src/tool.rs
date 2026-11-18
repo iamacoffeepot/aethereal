@@ -1,10 +1,7 @@
 //! The file capability's tools (ADR-0037, ADR-0039).
 
 use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile, Writes};
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held,
-    ProtocolRef, Receives, Reply, Turn, path,
-};
+use aethereal_actor::{ActorRef, Answered, Anywhere, Bytes, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{
     Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
 };
@@ -68,45 +65,14 @@ pub struct ReadTool {
     next: u64,
 }
 
-impl ChildOf for ReadTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for ReadTool {
-    type Config = ReadToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<FileRead, Calling>);
-    type Depends = (Files,);
-    type Spawns = ();
-
-    fn begin(_: ReadToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Files))]
+impl ReadTool {
+    fn begin(_: ReadToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for ReadTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet::of::<ReadFile>(
-            "read_file",
-            &format!("Reads a text file of the program's own, up to {MOST_BYTES} bytes."),
-            Output::Value(SchemaNodes::of(&FileContents::SHAPE)),
-        )]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-impl Handles<Call> for ReadTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(read) = from_bytes::<ReadFile>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             // The schema says a string of any spelling, and a path is narrower.
             return Ok(Reply::Now(Called::Refused(String::from("that is no path"))));
@@ -119,10 +85,9 @@ impl Handles<Call> for ReadTool {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<FileRead, Calling>> for ReadTool {
-    fn handle(
+    #[answer]
+    fn file_read(
         &mut self,
         (answered, Calling { number }): (Answered<FileRead>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -140,6 +105,20 @@ impl Receives<Answer<FileRead, Calling>> for ReadTool {
         turn.answer(held, &called)?;
 
         Ok(())
+    }
+}
+
+impl Tool for ReadTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![ToolSheet::of::<ReadFile>(
+            "read_file",
+            &format!("Reads a text file of the program's own, up to {MOST_BYTES} bytes."),
+            Output::Value(SchemaNodes::of(&FileContents::SHAPE)),
+        )]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 
@@ -189,48 +168,14 @@ pub struct WriteTool {
     next: u64,
 }
 
-impl ChildOf for WriteTool {
-    type Parent = Anywhere;
-}
-
-impl Actor for WriteTool {
-    type Config = WriteToolConfig;
-    type Key = ();
-    type Handles = (Call, Answer<FileWritten, Calling>);
-    type Depends = (Files,);
-    type Spawns = ();
-
-    fn begin(_: WriteToolConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Files))]
+impl WriteTool {
+    fn begin(_: WriteToolConfig) -> Result<Self, Fault> {
         Ok(Self { calls: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Tool for WriteTool {
-    fn sheets() -> Vec<ToolSheet> {
-        vec![ToolSheet::of::<TextFile>(
-            "write_file",
-            &format!(
-                "Writes a text file of the program's own, whole. It holds up to {MOST_WRITE_BYTES} bytes, in a \
-                 namespace that is written: `Save`."
-            ),
-            Output::Value(SchemaNodes::of(&Done::SHAPE)),
-        )]
-    }
-
-    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
-        me.protocol()
-    }
-}
-
-impl Handles<Call> for WriteTool {
-    type From = Anyone;
-    type Returns = Reply<Called>;
-
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
+    #[request]
+    fn call(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         if input.len() > WRITE_INPUT_BYTES {
             return Ok(Reply::Now(refused("the text is too large")));
@@ -252,10 +197,9 @@ impl Handles<Call> for WriteTool {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<FileWritten, Calling>> for WriteTool {
-    fn handle(
+    #[answer]
+    fn file_written(
         &mut self,
         (answered, Calling { number }): (Answered<FileWritten>, Calling),
         turn: &mut Turn<'_, Self>,
@@ -273,6 +217,23 @@ impl Receives<Answer<FileWritten, Calling>> for WriteTool {
         turn.answer(held, &called)?;
 
         Ok(())
+    }
+}
+
+impl Tool for WriteTool {
+    fn sheets() -> Vec<ToolSheet> {
+        vec![ToolSheet::of::<TextFile>(
+            "write_file",
+            &format!(
+                "Writes a text file of the program's own, whole. It holds up to {MOST_WRITE_BYTES} bytes, in a \
+                 namespace that is written: `Save`."
+            ),
+            Output::Value(SchemaNodes::of(&Done::SHAPE)),
+        )]
+    }
+
+    fn worker(me: ActorRef<Self>) -> ProtocolRef<Tooling> {
+        me.protocol()
     }
 }
 
