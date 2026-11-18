@@ -10,8 +10,9 @@
 //! - **on another actor's entry:** the screen casts the actor to [`Drops`](crate::Drops) and mails it
 //!   [`Dropped`](crate::Dropped), its payload put as a blob, as [`take_in`](crate::take_in) does with what the turn of
 //!   input leaves; that actor's library finds its target the same way, from the entry ([`Screen::dropped`]), and
-//!   replies [`DropAccepted`](crate::DropAccepted) when one takes it, on which the source raises its `drop_accepted`
-//!   ([`Screen::accepted`]), and [`DropRefused`](crate::DropRefused) when none does ([`Landing::Refused`]);
+//!   replies one [`DropAnswered`](crate::DropAnswered), whose outcome is [`DropOutcome::Accepted`] when one takes it
+//!   and [`DropOutcome::Refused`] when none does ([`Landing::Refused`]); on it the source raises its `drop_accepted`
+//!   or its `drop_outside` ([`Screen::answered`]);
 //! - **on nothing, on what nothing takes, on an actor that takes no drops, or refused:** the source raises its
 //!   `drop_outside` with the payload.
 //!
@@ -27,7 +28,7 @@ mod tests;
 
 use super::input::place;
 use super::{Fresh, Heard, Last, Listed, Screen};
-use crate::drag::{DRAG_THRESHOLD, Payload};
+use crate::drag::{DRAG_THRESHOLD, DropOutcome, Payload};
 use crate::input::{Erased, Raised};
 use crate::tree::{KeyPath, Node};
 use aethereal_actor::ProtocolRef;
@@ -176,20 +177,16 @@ impl Screen {
         Landing::Taken(Heard { raised: vec![raised], ..Heard::default() })
     }
 
-    /// Takes in `payload`, which the screen dropped from the widget at `source` on another actor, taken: that widget
-    /// raises its `drop_accepted` with the payload, as the view now builds it.
-    pub fn accepted(&mut self, source: &KeyPath, payload: Payload) -> Heard {
+    /// Takes in `payload`, which the screen dropped from the widget at `source` on another actor, answered with
+    /// `outcome`: that widget raises its `drop_accepted` with the payload when it was taken, and its `drop_outside` when
+    /// it was refused, as the view now builds it.
+    pub fn answered(&mut self, source: &KeyPath, payload: Payload, outcome: DropOutcome) -> Heard {
+        let raised = match outcome {
+            DropOutcome::Accepted => self.accepted_at(source, payload),
+            DropOutcome::Refused => self.outside(source, payload),
+        };
         let mut heard = Heard::default();
-        heard.raised.extend(self.accepted_at(source, payload));
-
-        heard
-    }
-
-    /// Takes in `payload`, which the screen dropped from the widget at `source` on another actor, refused: that widget
-    /// raises its `drop_outside` with the payload, as the view now builds it.
-    pub fn refused(&mut self, source: &KeyPath, payload: Payload) -> Heard {
-        let mut heard = Heard::default();
-        heard.raised.extend(self.outside(source, payload));
+        heard.raised.extend(raised);
 
         heard
     }

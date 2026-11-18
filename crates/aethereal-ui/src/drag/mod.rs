@@ -8,8 +8,9 @@
 //! release ──> over the screen's own hit ──> the innermost target around it that takes the kind?
 //!         │       └─> the source's drop_accepted, then the target's drop
 //!         ├─> over another actor's entry ──> cast to Drops? ──> Dropped, mailed ──> its library finds its target
-//!         │       ├─> one takes it ──> its drop; DropAccepted, replied ──> the source's drop_accepted
-//!         │       └─> none takes it ──> DropRefused, replied ──> the source's drop_outside
+//!         │       └─> DropAnswered, replied once ──> its outcome?
+//!         │               ├─> Accepted: one took it, its drop raised ──> the source's drop_accepted
+//!         │               └─> Refused: none took it ──> the source's drop_outside
 //!         └─> over nothing, or nothing takes it ──> the source's drop_outside
 //! ```
 //!
@@ -18,7 +19,7 @@
 //! kind's id: one kind of mail, [`Dropped`], serves every payload of every program, a target compares the id with the
 //! kind its widget takes, and the method its drop calls reads the payload back as that kind ([`dropped`]). Between
 //! actors its bytes are a blob (ADR-0042), put by the source as it mails the drop and read by the target as it takes it
-//! in, and either reply hands the same blob back.
+//! in, and the answer hands the same blob back.
 
 #[cfg(test)]
 pub mod tests;
@@ -398,10 +399,10 @@ drop_methods! {
 
 /// What a drag dropped on another actor's entry mails it: the payload; the entry of its list the release was over, and
 /// the release's place in that entry's coordinates, as the window reported them; and the widget it was dragged from, in
-/// its sender's tree, which either reply hands back. A screen's library finds the target at the entry, raises its drop,
-/// and replies that it took it, or that it did not; an actor that is not a screen handles it as it will, and replies
-/// either way too: [`Dropped::accepted`] to have the source raise its `drop_accepted`, and [`Dropped::refused`] its
-/// `drop_outside`.
+/// its sender's tree, which the answer hands back. A screen's library finds the target at the entry, raises its drop,
+/// and answers whether it took it; an actor that is not a screen handles it as it will, and answers too, once:
+/// [`Dropped::answer`] with [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with
+/// [`DropOutcome::Refused`] its `drop_outside`.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.ui.dropped")]
 pub struct Dropped {
@@ -412,35 +413,31 @@ pub struct Dropped {
 }
 
 impl Dropped {
-    /// The reply that takes it: its payload and its source, handed back, so the source raises its `drop_accepted`.
+    /// The answer to it: its payload and its source, handed back, with `outcome`, on which the source raises its
+    /// `drop_accepted` or its `drop_outside`.
     #[must_use]
-    pub fn accepted(self) -> DropAccepted {
-        DropAccepted { payload: self.payload, source: self.source }
-    }
-
-    /// The reply that refuses it: its payload and its source, handed back, so the source raises its `drop_outside`.
-    #[must_use]
-    pub fn refused(self) -> DropRefused {
-        DropRefused { payload: self.payload, source: self.source }
+    pub fn answer(self, outcome: DropOutcome) -> DropAnswered {
+        DropAnswered { payload: self.payload, source: self.source, outcome }
     }
 }
 
-/// What an actor a drag was dropped on replies when it takes the payload: the payload and the widget it was dragged
-/// from, handed back, so the source raises its `drop_accepted` and lets go of what moved.
+/// What an actor a drag was dropped on answers, once for each [`Dropped`]: the payload and the widget it was dragged
+/// from, handed back, and whether it took the payload, so the source lets go of what moved or keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
-#[kind(name = "aether.ui.drop_accepted")]
-pub struct DropAccepted {
+#[kind(name = "aether.ui.drop_answered")]
+pub struct DropAnswered {
     pub payload: Carried,
     pub source: KeyPath,
+    pub outcome: DropOutcome,
 }
 
-/// What an actor a drag was dropped on replies when nothing there takes the payload: the payload and the widget it was
-/// dragged from, handed back, so the source raises its `drop_outside`.
-#[derive(Debug, Clone, PartialEq, Eq, Bound)]
-#[kind(name = "aether.ui.drop_refused")]
-pub struct DropRefused {
-    pub payload: Carried,
-    pub source: KeyPath,
+/// How a drop on another actor ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum DropOutcome {
+    /// A target there took the payload: the source raises its `drop_accepted`.
+    Accepted,
+    /// Nothing there took it: the source raises its `drop_outside`.
+    Refused,
 }
 
 /// What an actor a drag can be dropped on takes: every screen, as [`handles!`](crate::handles!) lists it, and any other

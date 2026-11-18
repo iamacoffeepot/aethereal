@@ -8,8 +8,8 @@
 //!
 //! ```text
 //! press on an item ──> move past DRAG_THRESHOLD ──> release over the other shelf ──> Dropped, mailed to it
-//!     ├─> it takes the kind ──> its take_* runs ──> DropAccepted, replied ──> the source's let_go_* lets it go
-//!     ├─> it takes no stones ──> DropRefused, replied ──> the source's keep_stone puts it back
+//!     ├─> it takes the kind ──> its take_* runs ──> DropAnswered Accepted, replied ──> the source's let_go_* lets it go
+//!     ├─> it takes no stones ──> DropAnswered Refused, replied ──> the source's keep_stone puts it back
 //!     └─> release over the gap ──> the source's keep_* puts it back
 //! ```
 //!

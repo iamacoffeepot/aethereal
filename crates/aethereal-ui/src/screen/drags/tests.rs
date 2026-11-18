@@ -8,7 +8,7 @@ use super::super::tests::{last_list, screen};
 use super::super::{Heard, Outcome, Screen};
 use super::{Grip, Landing};
 use crate::drag::tests::{Item, Spell};
-use crate::drag::{DragSource, DropTarget, Payload};
+use crate::drag::{DragSource, DropOutcome, DropTarget, Payload};
 use crate::input::Raised;
 use crate::style::Style;
 use crate::tree::{KeyPath, Node, Segment, Tree};
@@ -242,8 +242,8 @@ fn an_answered_drop_raises_its_source_s_drop_accepted_or_drop_outside() {
     // refused is lost; and the two answers crossed, so a taken item is put back and a refused one let go of.
     let (mut screen, _) = shelved();
 
-    let accepted = raised(screen.accepted(&child(0), item(7)));
-    let refused = raised(screen.refused(&child(0), item(7)));
+    let accepted = raised(screen.answered(&child(0), item(7), DropOutcome::Accepted));
+    let refused = raised(screen.answered(&child(0), item(7), DropOutcome::Refused));
 
     assert_eq!(accepted, vec![Raised::Dropped(Ev::LetGo, item(7))]);
     assert_eq!(refused, vec![Raised::Dropped(Ev::Discarded, item(7))]);
