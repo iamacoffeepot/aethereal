@@ -5,15 +5,16 @@
 
 use super::connection::{Inflow, Out, Passing, Phase, Returning};
 use super::{Carries, Deadline, Owed, Sending, Serving, Stepping};
-use crate::body::{Body, Decoded, Progress};
-use crate::pooled::put;
-use crate::request_head::Refusal;
-use crate::response_head;
+use crate::Status;
+use crate::http1::body::{Body, Decoded, Progress};
 use crate::stack::actor::{ParkedPart, Standing, Way, held};
+use crate::stack::pooled::put;
+use crate::stack::request_head::Refusal;
+use crate::stack::response_head;
 use crate::stack::{
     BodyPart, Gather, Gathered, InboundPart, InboundParts, LayerList, PartStep, Passed, Refused, Response, Taker,
 };
-use crate::{BodyRead, OutboundBody, SourceEnd, Status};
+use crate::stack::{BodyRead, OutboundBody, SourceEnd};
 use aethereal_actor::{
     ActorRef, Allows, Answer, Asks, Bytes, Doing, Fault, Guard, Handles, Level, Listed, Number, Part, Pool,
     ProtocolRef, Receives, Slept, StreamKey, ToSender, Turn,

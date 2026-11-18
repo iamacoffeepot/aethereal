@@ -3,7 +3,7 @@
 use aethereal_data::Plain;
 
 /// The status a response is written with: each a final status HTTP names (RFC 9110 §15), so a response cannot be
-/// written with a number HTTP gives no meaning, or with an informational status, which the exchange writes itself.
+/// written with a number HTTP gives no meaning, or with an informational status, which the stack writes itself.
 /// A status a handler needs that is not here is a case added here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.status")]

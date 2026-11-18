@@ -1,26 +1,31 @@
-//! The HTTP capability's client on the native host (ADR-0035): asking the capability's own server over loopback TCP,
-//! and peers on Unix sockets that write canned bytes, as Docker's Engine API is reached (ADR-0057).
+//! The HTTP capability's client on the native host (ADR-0035): asking a stack over loopback TCP, and peers on Unix
+//! sockets that write canned bytes, as Docker's Engine API is reached (ADR-0057).
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ending, Fault, Handles, More, Number, Open,
-    Part, ProtocolRef, Receives, Streamed, Streams, ToAny, Top, Turn, Unanswered,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, More,
+    Number, Open, Part, ProtocolRef, Receives, Streamed, Streams, ToAny, ToSender, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
+use aethereal_http::stack::{FromStack, Gather, Gathered, Gathering, Request, Response, StackSettings};
 use aethereal_http::{
-    Client, Connect, Connected, Failure, Fetch, Fetched, Finished, Follow, Handling, Header, Http, HttpSettings, Limit,
-    Method, Outgoing, Peer, Received, Receiving, Reply, Request, Response, Serve, Served, Status, Switch,
+    BlobBytesTooLow, Client, Connect, Connected, Failure, Fetch, Fetched, Finished, Follow, Header, Http, HttpSettings,
+    Limit, Method, Outgoing, Peer, ReadLimitTooLow, Received, Receiving, Reply, Status, Switch,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
-use aethereal_tcp::{HungUp, Interface, SocketPath, Tcp, Write, Writing, Wrote};
+use aethereal_tcp::{HungUp, SocketAddress, SocketPath, Tcp, Write, Writing, Wrote};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::num::NonZeroU32;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::{env, fs, process};
+
+mod stacks;
+
+use stacks::{bound, stack};
 
 /// How many parts a follower's stream is kept ahead of it: the head and one part of the body.
 const WINDOW: u32 = 2;
@@ -201,6 +206,99 @@ impl Follower {
     }
 }
 
+/// [`Echo`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "aether.test.http_client.echo_settings")]
+#[settings]
+struct EchoSettings {}
+
+/// A handler that gathers each request's body and answers it `200` with the body and `x-echo: yes`: it keeps what it
+/// saw of each request.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "aether.test.http_client.echo")]
+struct Echo {
+    asked: Vec<Asked>,
+}
+
+/// What [`Echo`] saw of a request: the `Host` it named, empty for none, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+struct Asked {
+    host: String,
+    peer: SocketAddress,
+}
+
+/// What [`Echo`] keeps while its request's body is gathered: the request, held.
+#[derive(Bound)]
+#[kind(name = "aether.test.http_client.echoing")]
+struct Echoing {
+    held: Held<Response>,
+}
+
+impl ChildOf for Echo {
+    type Parent = Top;
+}
+
+impl Actor for Echo {
+    type Config = EchoSettings;
+    type Key = ();
+    type Handles = (Request<(), ()>, Answer<Gathered, Echoing>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: EchoSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { asked: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<(), ()>> for Echo {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<(), ()>> for Echo {
+    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Echoing>);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        request: Request<(), ()>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        let host = String::from(request.header("host").unwrap_or_default());
+        self.asked.push(Asked { host, peer: request.peer });
+        let echoing = Echoing { held: turn.hold()? };
+        turn.to(request.body.gatherer).ask(&request.body.whole(1024), &echoing)?;
+
+        Ok(())
+    }
+}
+
+impl Receives<Answer<Gathered, Echoing>> for Echo {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (gathered, Echoing { held }): (Answered<Gathered>, Echoing),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let response = match gathered {
+            Answered::Yes(Gathered::Whole(body)) => {
+                let mut echoed = Response::new(Status::Ok, "text/plain", body);
+                echoed.headers.push(Header::new("x-echo", "yes"));
+                echoed
+            }
+            Answered::Yes(_) | Answered::No(_) => Response::empty(Status::BadRequest),
+        };
+
+        Ok(turn.answer(held, &response)?)
+    }
+}
+
+stack!(EchoStack, "aether.test.http_client.echo_stack", "echo_stack", (Echo,), []);
+
 /// A host running `settings`, with `Tcp`, `Http`, and a follower.
 fn host(settings: HttpSettings) -> Result<Harness<Headless>, Unheard> {
     let engine = EngineSettings {
@@ -322,37 +420,72 @@ fn a_response_is_read_whole_by_its_length_and_the_connection_is_kept_for_the_nex
     // Catches a request written without `Host` or its body's length, so the server waits for a body or refuses it; a
     // response's body cut short of its `Content-Length` or run into the next; and a connection closed or opened again
     // between requests: both come from one peer address, so they came on one connection.
-    let mut harness = host(HttpSettings::default())?;
-    let http = harness.root::<Http>();
-    let handler = harness.protocol::<Handling>();
-    let serving = harness.ask(http, &Serve { port: 0, interface: Interface::Settings, handler, mounts: Vec::new() })?;
-    let Answered::Yes(Served::Bound { port, .. }) = harness.answer(serving)? else {
-        panic!("the port is bound");
-    };
+    let http = HttpSettings::default();
+    let stack = StackSettings::default();
+    let read_limit = http.most_read_bytes().max(stack.most_read_bytes());
+    let engine = EngineSettings { read_limit: read_limit.try_into().unwrap_or(u32::MAX), ..EngineSettings::default() };
+    let program = Headless::program()
+        .with_engine(engine)
+        .root::<Tcp>()
+        .root_with::<Http>(http)
+        .root::<Echo>()
+        .root_with::<EchoStack>(stack);
+    let mut harness = Harness::of(program)?;
+    let port = bound(&mut harness, |stack: &EchoStack| stack.serving.port());
     let client = connect(&mut harness, Peer::Tcp { host: String::from("127.0.0.1"), port })?;
-    let mut peers = Vec::new();
 
     for body in [b"hello".as_slice(), b"again, longer"] {
         let request = outgoing(&mut harness, Method::Post, "/echo", body)?;
-        let fetching = harness.ask(client, &Fetch { request })?;
-        let asked = harness.asked::<Request>()?;
-        assert_eq!(asked.request.header("host"), Some(format!("127.0.0.1:{port}").as_str()));
-        assert_eq!(harness.read(&asked.request.body), Some(body));
-        peers.push(asked.request.peer);
-        let mut response = Response::new(Status::Ok, "text/plain", asked.request.body.clone());
-        response.headers.push(Header::new("x-echo", "yes"));
-        harness.reply(asked, &response)?;
-
-        let Answered::Yes(Fetched::Whole(Reply { status, headers, body: echoed })) = harness.answer(fetching)? else {
+        let Answered::Yes(Fetched::Whole(Reply { status, headers, body: echoed })) =
+            fetched(&mut harness, client, request)?
+        else {
             panic!("the response is read whole");
         };
+
         assert_eq!(status, 200);
         assert!(headers.contains(&Header::new("x-echo", "yes")), "{headers:?}");
         assert_eq!(harness.read(&echoed), Some(body));
     }
-    assert_eq!(peers[0], peers[1], "both requests came on one connection");
+
+    let echo = harness.root::<Echo>();
+    let asked = &harness.state(echo)?.asked;
+    let host = format!("127.0.0.1:{port}");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked.iter().all(|asked| asked.host == host), "each request named the host dialed: {asked:?}");
+    assert_eq!(asked[0].peer, asked[1].peer, "both requests came on one connection");
 
     Ok(())
+}
+
+#[test]
+fn http_does_not_start_where_a_responses_head_could_not_be_read() {
+    // Catches the check dropped, which lets one server end a client's asker with a response's head it cannot read.
+    let settings = HttpSettings::default();
+    let needed = settings.most_read_bytes();
+    let engine = EngineSettings::default();
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&ReadLimitTooLow { read_limit: 1024, needed }.to_string()), "{why}");
+}
+
+#[test]
+fn http_does_not_start_where_a_responses_body_could_not_be_held() {
+    // Catches the check dropped, which lets every response whose body a client gathers whole fail for want of room.
+    let settings = HttpSettings::default();
+    let read_limit = settings.most_read_bytes().try_into().unwrap_or(u32::MAX);
+    let needed = settings.most_blob_bytes();
+    let engine = EngineSettings { read_limit, mail_bytes: 1 << 24, blob_bytes: 1 << 20, ..EngineSettings::default() };
+    let program = Headless::program().with_engine(engine).root::<Tcp>().root_with::<Http>(settings);
+
+    let Err(Unheard::Program(why)) = Harness::of(program) else {
+        panic!("the program does not start");
+    };
+
+    assert!(why.contains(&BlobBytesTooLow { blob_bytes: 1 << 20, needed }.to_string()), "{why}");
 }
 
 #[test]

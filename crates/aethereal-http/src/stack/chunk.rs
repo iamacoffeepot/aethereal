@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn a_chunks_size_takes_as_many_hex_digits_as_it_needs() {
         // Catches a size written with a digit too few or too many, or its digits out of order, where a size gains a
-        // digit and at the largest size, and a line past the room the exchange gives it. `format!`'s hex is the oracle.
+        // digit and at the largest size, and a line past the room the stack gives it. `format!`'s hex is the oracle.
         for length in [1, 0xf, 0x10, 0xff, 0x100, 0x00ab_cdef, usize::MAX] {
             let mut written = Vec::new();
             line(length, true, &mut written);

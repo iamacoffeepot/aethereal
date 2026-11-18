@@ -1,8 +1,8 @@
 use super::*;
 
-/// What the front of `bytes` parses as, a head of at most 128 bytes, and a body of at most 16.
+/// What the front of `bytes` parses as, a head of at most 128 bytes.
 fn front(bytes: &[u8]) -> Parsed {
-    parse(bytes, 128, |_| 16)
+    parse(bytes, 128)
 }
 
 #[test]
@@ -64,11 +64,11 @@ fn a_head_not_yet_whole_waits_and_one_past_the_limit_is_refused() {
 }
 
 #[test]
-fn each_head_a_server_must_not_take_is_refused_with_its_reason() {
+fn each_head_a_stack_must_not_take_is_refused_with_its_reason() {
     // Catches each rule of the limits table let through: request smuggling by a `Transfer-Encoding` beside a
-    // `Content-Length`, one in HTTP/1.0, or a doubled `Content-Length`; a coding a server does not decode, alone or
-    // before `chunked`, read as if the body were not coded; a body past its limit read before it is refused; a header line that a folding or bare line feed
-    // would splice, a target in absolute form, and a method or version answered as if malformed.
+    // `Content-Length`, one in HTTP/1.0, or a doubled `Content-Length`; a coding a stack does not decode, alone or
+    // before `chunked`, read as if the body were not coded; a header line that a folding or bare line feed would
+    // splice, a target in absolute form, and a method or version answered as if malformed.
     let refused = [
         (b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n".as_slice(), Refusal::Malformed),
         (b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n", Refusal::Malformed),
@@ -76,8 +76,6 @@ fn each_head_a_server_must_not_take_is_refused_with_its_reason() {
         (b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", Refusal::Unimplemented),
         (b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n", Refusal::Malformed),
         (b"POST / HTTP/1.1\r\nContent-Length: +1\r\n\r\n", Refusal::Malformed),
-        (b"POST / HTTP/1.1\r\nContent-Length: 17\r\n\r\n", Refusal::BodyTooLarge),
-        (b"POST / HTTP/1.1\r\nContent-Length: 99999999999999999999999\r\n\r\n", Refusal::BodyTooLarge),
         (b"GET / HTTP/1.1\r\nX: a\r\n b\r\n\r\n", Refusal::Malformed),
         (b"GET / HTTP/1.1\nX: a\r\n\r\n", Refusal::Malformed),
         (b"GET / HTTP/1.1\r\nX : a\r\n\r\n", Refusal::Malformed),

@@ -1,7 +1,6 @@
 //! A stack's settings (ADR-0028, ADR-0035): where it listens, and what each of its connections holds to.
 
-use crate::settings::{head_read_bytes, size};
-use crate::{BlobBytesTooLow, ReadLimitTooLow};
+use crate::http1::fit::{BlobBytesTooLow, ReadLimitTooLow, head_read_bytes, size};
 use aethereal_actor::Root;
 use aethereal_data::Plain;
 use aethereal_substrate::{Bootstrapping, Host, Unbuilt};

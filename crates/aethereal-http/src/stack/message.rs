@@ -3,8 +3,9 @@
 
 use super::Gather;
 use super::gather::Gathering;
-use crate::head::is_token;
-use crate::{BodyLength, Header, InboundBody, Method, ReadBody, ResponseLength, Status, StreamedBody};
+use crate::http1::head::is_token;
+use crate::stack::{BodyLength, InboundBody, ReadBody, ResponseLength, StreamedBody};
+use crate::{Header, Method, Status};
 use aethereal_actor::{Bytes, ProtocolRef, Streamed};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::SocketAddress;

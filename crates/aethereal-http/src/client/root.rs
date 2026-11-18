@@ -1,55 +1,16 @@
-//! The HTTP capability's root (ADR-0035).
+//! The HTTP capability's root (ADR-0035): the client side. It dials a server for each actor that asks, and stands a
+//! [`Client`] up beneath it on the connection.
 
-use crate::{
-    BlobBytesTooLow, Client, ClientConfig, Handling, HttpSettings, Mount, ReadLimitTooLow, Server, ServerConfig,
-};
+use crate::http1::fit::{BlobBytesTooLow, ReadLimitTooLow};
+use crate::{Client, ClientConfig, HttpSettings};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ended, Ending, Fault,
-    Handles, Held, Path, ProtocolRef, Receives, ToSender, ToType, Top, Turn, path,
+    Handles, Held, Path, Receives, ToSender, ToType, Top, Turn, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
-use aethereal_tcp::{
-    self as tcp, ConnectUnix, ConnectedUnix, Dialed, Framing, Interface, Listen, Listener, Listening, Shut, SocketPath,
-    Tcp, Unaddressable,
-};
+use aethereal_tcp::{self as tcp, ConnectUnix, ConnectedUnix, Dialed, Framing, Shut, SocketPath, Tcp, Unaddressable};
 use std::collections::BTreeMap;
-
-/// What an actor asks the root to serve on: a port, 0 for any the host picks, the interface `Tcp` binds it on, the
-/// handler each request is asked of, usually the asker itself (`turn.me().protocol()`), and the mounts whose requests
-/// are streamed to handlers of their own instead, empty for none. Each request names the port it came in on, so one
-/// handler of two serves tells them apart.
-#[derive(Debug, Bound)]
-#[kind(name = "aether.http.serve")]
-pub struct Serve {
-    pub port: u16,
-    pub interface: Interface,
-    pub handler: ProtocolRef<Handling>,
-    pub mounts: Vec<Mount>,
-}
-
-/// What a serve came to.
-#[derive(Debug, Bound)]
-#[kind(name = "aether.http.served")]
-pub enum Served {
-    /// Bound: the server beneath the root, and the port bound, which is its key.
-    Bound { server: ActorRef<Server>, port: u16 },
-    /// Something holds the port.
-    Taken,
-    /// The root holds its most servers.
-    Full,
-    /// The host refused the bind.
-    Refused,
-    /// The program has no `Tcp`.
-    Unavailable,
-}
-
-/// What the root keeps for a listen it asked of `Tcp`: which serve it was asked for.
-#[derive(Debug, PartialEq, Eq, Plain)]
-#[kind(name = "aether.http.binding")]
-pub struct Binding {
-    number: u64,
-}
 
 /// What an actor asks the root to connect to: a server over TCP or on a Unix socket, which a [`Client`] beneath the
 /// root then writes requests to.
@@ -115,28 +76,10 @@ pub struct ReachingUnix {
     number: u64,
 }
 
-/// A serve the root holds until `Tcp` answers its listen, the handler and mounts it names, and the actor that asked it.
+/// A client the root stood up, and the actor that asked for it.
 #[derive(Bound)]
-struct Waiting {
-    held: Held<Served>,
-    handler: ProtocolRef<Handling>,
-    mounts: Vec<Mount>,
-    asker: u64,
-}
-
-/// A listener `Tcp` bound, its port, and the serve's handler, mounts, and asker: what a server is stood up from.
-struct Opening {
-    listener: ActorRef<Listener>,
-    port: u16,
-    handler: ProtocolRef<Handling>,
-    mounts: Vec<Mount>,
-    asker: u64,
-}
-
-/// A server or a client the root stood up, and the actor that asked for it.
-#[derive(Bound)]
-struct Opened<C> {
-    child: ActorRef<C>,
+struct Opened {
+    client: ActorRef<Client>,
     asker: u64,
 }
 
@@ -148,29 +91,27 @@ struct Connecting {
     asker: u64,
 }
 
-/// The HTTP capability: serves HTTP/1.1 on `Tcp` for every other actor, and asks it of other servers (ADR-0035). An
-/// actor asks it to [`Serve`] at its typed path, `path::<Http>(())`, naming the handler each request is asked of, or
-/// to [`Connect`] to a server, and is answered with the client that asks it.
+/// The HTTP capability: asks HTTP/1.1 of other servers, over `Tcp`, for every other actor (ADR-0035). An actor asks it
+/// to [`Connect`] to a server at its typed path, `path::<Http>(())`, and is answered with the client that asks it. A
+/// program serves a port with a [stack](crate::stack) of its own, which needs no root.
 ///
-/// It watches each actor that asks, and when one ends, shuts every server and client it stood up for it.
+/// It watches each actor that asks, and when one ends, shuts every client it stood up for it.
 #[derive(Bound)]
 #[kind(name = "aether.http")]
 pub struct Http {
     settings: HttpSettings,
-    servers: BTreeMap<u16, Opened<Server>>,
-    waiting: BTreeMap<u64, Waiting>,
     /// Each client standing, by its key.
-    clients: BTreeMap<u64, Opened<Client>>,
+    clients: BTreeMap<u64, Opened>,
     connecting: BTreeMap<u64, Connecting>,
     /// The actors watched for having asked.
     askers: Vec<u64>,
     next: u64,
 }
 
-/// It stands up on every host, and refuses to where a request it would take could not be read: the handler it was sent
-/// to would never be handed it, and the engine would answer it `Unreadable` (ADR-0017), so a request within the
-/// server's limits would go unserved; and where the engine's blobs could not hold a request's body, which is a blob,
-/// so that request would be answered `503` (ADR-0042).
+/// It stands up on every host, and refuses to where a response's head it would read could not be: the asker it was sent
+/// to would never be handed it, and the engine would answer it `Unreadable` (ADR-0017), so a response within the
+/// client's limits would never reach its asker; and where the engine's blobs could not hold a response's body read
+/// whole, which is a blob, beside a chunk its connection reads (ADR-0042).
 impl<H: Host> Bootstrap<H> for Http {
     const SECTION: &'static str = "http";
     type Settings = HttpSettings;
@@ -197,11 +138,6 @@ impl ChildOf for Http {
     type Parent = Top;
 }
 
-/// Asked at its typed path, it answers a serve once `Tcp` has answered its listen.
-impl Carries<Serve> for Http {
-    type Answers = (Served,);
-}
-
 /// Asked at its typed path, it answers a connect once `Tcp` has answered its own.
 impl Carries<Connect> for Http {
     type Answers = (Connected,);
@@ -210,79 +146,15 @@ impl Carries<Connect> for Http {
 impl Actor for Http {
     type Config = HttpSettings;
     type Key = ();
-    type Handles = (
-        Serve,
-        Answer<Listening, Binding>,
-        Connect,
-        Answer<tcp::Connected, Reaching>,
-        Answer<ConnectedUnix, ReachingUnix>,
-        Ended,
-    );
+    type Handles = (Connect, Answer<tcp::Connected, Reaching>, Answer<ConnectedUnix, ReachingUnix>, Ended);
     type BeginSends = ();
     type EndSends = ();
 
     fn begin(settings: HttpSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
-        Ok(Self {
-            settings,
-            servers: BTreeMap::new(),
-            waiting: BTreeMap::new(),
-            clients: BTreeMap::new(),
-            connecting: BTreeMap::new(),
-            askers: Vec::new(),
-            next: 0,
-        })
+        Ok(Self { settings, clients: BTreeMap::new(), connecting: BTreeMap::new(), askers: Vec::new(), next: 0 })
     }
 
     fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Serve> for Http {
-    type Sends = (Asks<Path<Tcp>, Listen, Binding>, ToSender<Served>);
-    type From = Anyone;
-
-    fn handle(&mut self, serve: Serve, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        let open = self.servers.len() + self.waiting.len();
-        let is_full = open >= usize::try_from(self.settings.most_servers).unwrap_or(usize::MAX);
-        if is_full {
-            turn.reply(&Served::Full)?;
-            return Ok(());
-        }
-        let held = turn.hold()?;
-        let asker = self.watch_asker(turn);
-        let number = self.next;
-        self.next += 1;
-        let framing = Framing::Chunks { most_bytes: self.settings.chunk_bytes };
-        let listen = Listen { port: serve.port, interface: serve.interface, framing };
-        turn.to(path::<Tcp>(())).ask(&listen, &Binding { number })?;
-        self.waiting.insert(number, Waiting { held, handler: serve.handler, mounts: serve.mounts, asker });
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Listening, Binding>> for Http {
-    type Sends = (ToType<Listener, Shut>,);
-
-    fn handle(
-        &mut self,
-        (answered, binding): (Answered<Listening>, Binding),
-        turn: &mut Turn<'_, Self, Self::Sends>,
-    ) -> Result<(), Fault> {
-        let Some(Waiting { held, handler, mounts, asker }) = self.waiting.remove(&binding.number) else {
-            return Ok(());
-        };
-        let served = match answered {
-            Answered::Yes(Listening::Bound { listener, port }) => {
-                self.stand_up(turn, Opening { listener, port, handler, mounts, asker })?
-            }
-            Answered::Yes(Listening::Taken) => Served::Taken,
-            Answered::Yes(Listening::Full | Listening::Refused) => Served::Refused,
-            Answered::No(_) => Served::Unavailable,
-        };
-        turn.answer(held, &served)?;
-
         Ok(())
     }
 }
@@ -383,22 +255,18 @@ impl Receives<Answer<ConnectedUnix, ReachingUnix>> for Http {
 }
 
 impl Receives<Ended> for Http {
-    type Sends = (ToType<Server, Shut>, ToType<Client, Shut>);
+    type Sends = (ToType<Client, Shut>,);
 
     fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
         let gone = ended.actor().id().bits();
-        self.servers.retain(|_, opened| opened.child.id().bits() != gone);
-        self.clients.retain(|_, opened| opened.child.id().bits() != gone);
+        self.clients.retain(|_, opened| opened.client.id().bits() != gone);
         let was_asker = self.askers.contains(&gone);
         if !was_asker {
             return Ok(());
         }
         self.askers.retain(|&asker| asker != gone);
-        for opened in self.servers.values().filter(|opened| opened.asker == gone) {
-            turn.to(opened.child).send(&Shut)?;
-        }
         for opened in self.clients.values().filter(|opened| opened.asker == gone) {
-            turn.to(opened.child).send(&Shut)?;
+            turn.to(opened.client).send(&Shut)?;
         }
 
         Ok(())
@@ -406,36 +274,6 @@ impl Receives<Ended> for Http {
 }
 
 impl Http {
-    /// Stands a server up on the listener `Tcp` bound, or shuts the listener and says why not.
-    fn stand_up<S, I>(&mut self, turn: &mut Turn<'_, Self, S>, opening: Opening) -> Result<Served, Fault>
-    where
-        S: Allows<ToType<Listener, Shut>, I>,
-    {
-        let Opening { listener, port, handler, mounts, asker } = opening;
-        let is_asked = self.askers.contains(&asker);
-        if !is_asked {
-            // Its asker has ended: no one is left to handle what the server would take.
-            turn.to(listener).send::<_, I>(&Shut)?;
-            return Ok(Served::Refused);
-        }
-        let config = ServerConfig {
-            listener,
-            port,
-            handler,
-            mounts,
-            most_exchanges: self.settings.most_exchanges,
-            limits: self.settings.limits(),
-        };
-        let Ok(server) = turn.spawn::<Server>(&u64::from(port), config) else {
-            turn.to(listener).send::<_, I>(&Shut)?;
-            return Ok(Served::Refused);
-        };
-        turn.watch(server);
-        self.servers.insert(port, Opened { child: server, asker });
-
-        Ok(Served::Bound { server, port })
-    }
-
     /// Stands a client up, keyed `number`, on the connection `Tcp` dialed for `asker`, writing `host` as each request's
     /// `Host`; or shuts the connection and says why not.
     fn stand_client<S, I>(
@@ -461,7 +299,7 @@ impl Http {
             return Ok(Connected::Full);
         };
         turn.watch(client);
-        self.clients.insert(number, Opened { child: client, asker });
+        self.clients.insert(number, Opened { client, asker });
 
         Ok(Connected::Open { client })
     }

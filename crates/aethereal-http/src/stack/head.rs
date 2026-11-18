@@ -2,7 +2,7 @@
 //! `Authorization` header.
 
 use crate::base64;
-use crate::head::{Malformed, is_token};
+use crate::http1::head::{Malformed, is_token};
 use crate::{Header, Method};
 use aethereal_data::Plain;
 use aethereal_tcp::SocketAddress;
@@ -102,7 +102,7 @@ fn basic(encoded: &str) -> Result<Credentials, Malformed> {
 mod tests {
     use super::Credentials;
     use crate::Header;
-    use crate::head::Malformed;
+    use crate::http1::head::Malformed;
 
     /// What `values`, each sent as an `Authorization` header beside a `Host`, read as, and the headers left.
     fn taken(values: &[&str]) -> (Result<Credentials, Malformed>, Vec<Header>) {

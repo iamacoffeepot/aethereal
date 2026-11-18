@@ -1,19 +1,24 @@
 //! A client: one connection `Tcp` dialed for it, over TCP or to a Unix socket, on which it writes one request at a
 //! time and reads each response as it arrives, checking every limit before a response goes further (ADR-0035). A
 //! response is answered whole, or streamed to its asker as it arrives, paced by the asker's credit; and a connection
-//! that switches protocols is handed to its asker as raw bytes.
+//! that switches protocols is handed to its asker as raw bytes. The root, [`Http`], dials the connection for whoever
+//! asks, and stands the client up beneath it.
 
 mod message;
 mod parse;
+mod root;
+mod settings;
 mod write;
 
 pub use message::{
     Failure, Fetch, Fetched, Finished, Follow, Limit, Outgoing, Received, Receiving, Reply, ReplyHead, Switch,
     Unwritable,
 };
+pub use root::{Connect, Connected, Http, Peer, Reaching, ReachingUnix, Unreached};
+pub use settings::{ClientLimits, HttpSettings};
 
-use crate::body::{Body, Decoded, Progress};
-use crate::{ClientLimits, Http, Method};
+use crate::Method;
+use crate::http1::body::{Body, Decoded, Progress};
 use aethereal_actor::{
     Actor, ActorRef, Allows, Answer, Answered, Anyone, Asks, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
     Held, Level, More, Number, Open, Part, Receives, Serving, StreamKey, Streamed, Streams, Taken, ToAny, ToSender,

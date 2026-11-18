@@ -7,12 +7,12 @@ use super::body::{Carried, Ending, Layered, Walk, walk};
 use super::connection::{Passing, Phase};
 use super::respond::put_head;
 use super::{Carries, Deadline, Owed, Reaches, Reads, Sending, Serving, StackSends, Stepping};
-use crate::chunk;
-use crate::pooled::put;
-use crate::response_head::Frame;
 use crate::stack::actor::{ParkedPart, Standing, Way, held, place};
+use crate::stack::chunk;
+use crate::stack::pooled::put;
+use crate::stack::response_head::Frame;
 use crate::stack::{AsksEach, Gathering, LayerList, OutboundPart, OutboundParts, PartStep, ResponseHead, Stack};
-use crate::{InboundBody, OutboundBody, ResponseLength, SendBody, SourceEnd, StreamedBody};
+use crate::stack::{InboundBody, OutboundBody, ResponseLength, SendBody, SourceEnd, StreamedBody};
 use aethereal_actor::{
     Allows, Answer, Answered, Asks, Bytes, Conforms, Doing, Enough, Fault, Guard, Handles, Level, More, Number, Open,
     Part, Pool, ProtocolRef, Receives, Refused, Slept, Streamed, Streams, Taken, Time, ToAny, Turn,
@@ -182,7 +182,7 @@ where
         // A body that ends only with the close closes the connection; a head written alone ends where it does.
         let delimits = sends_body && frame == Frame::Close;
         let closes = owed.closes || delimits;
-        let Ok(written) = put_head(turn, &head, frame, closes, owed.head_only) else {
+        let Ok(written) = put_head(turn, &head, frame, closes) else {
             abandon(&mut self.sources, number, streamed, turn)?;
             return self.unstored(number, turn);
         };

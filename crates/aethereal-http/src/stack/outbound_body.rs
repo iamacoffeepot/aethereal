@@ -1,9 +1,19 @@
-//! A streamed response's source (ADR-0035): an actor the handler names in its response, which the stack or the
-//! exchange that writes the connection opens an [`OutboundBody`] stream on and writes to the connection as it comes,
-//! paced by what the connection has sent.
+//! A response's body streamed from a source (ADR-0035): an actor the handler names in its response, which the stack
+//! opens an [`OutboundBody`] stream on and writes to the connection as it comes, paced by what the connection has sent.
 
-use aethereal_actor::{Bytes, Stream};
+use aethereal_actor::{Bytes, ProtocolRef, Stream, Streamed};
 use aethereal_data::{Bound, Plain};
+
+/// A response's body streamed from `source` through an [`OutboundBody`] stream the stack opens with `body`, the
+/// handler's number for it, and written as it comes: with its `Content-Length` when its `length` is known, in chunks
+/// when it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+#[kind(name = "aether.http.streamed_body")]
+pub struct StreamedBody {
+    pub source: ProtocolRef<Streamed<OutboundBody>>,
+    pub body: u64,
+    pub length: ResponseLength,
+}
 
 /// A stream of one response's body from its source (ADR-0017): opened with [`SendBody`], each part bytes of the body in
 /// order, and ended with how the source ended it. The connection's writer grants a part back only once the connection
@@ -16,8 +26,8 @@ impl Stream for OutboundBody {
     type Done = SourceEnd;
 }
 
-/// What an [`OutboundBody`] stream opens with: the number the handler gave the body in its [`StreamedBody`](crate::StreamedBody),
-/// so one source can send several bodies.
+/// What an [`OutboundBody`] stream opens with: the number the handler gave the body in its [`StreamedBody`], so one
+/// source can send several bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.http.send_body")]
 pub struct SendBody {
