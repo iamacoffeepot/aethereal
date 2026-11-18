@@ -114,7 +114,9 @@ impl Bootstrap<Headless> for Follower {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)
+        cx.begin(&(), Unset)?;
+
+        Ok(())
     }
 }
 

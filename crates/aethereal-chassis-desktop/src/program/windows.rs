@@ -54,7 +54,8 @@ impl Default for WindowsSettings {
 /// Opens each window the settings list on the screen, in order, each shown in its mode, as the window capability's
 /// windows `0`, `1`, …, begins the window root with them, its close buttons closing them, and gives the desktop its
 /// end, which opens and closes the windows the root asks for while the program runs, and sets their modes (ADR-0027);
-/// and serves its jobs the system clipboard (ADR-0024: The clipboard). Provides the windows opened.
+/// and serves its jobs the system clipboard (ADR-0024: The clipboard). Provides the windows opened, each with the
+/// actor the root made of it.
 impl Bootstrap<Desktop> for Windows {
     const SECTION: &'static str = "windows";
     type Settings = WindowsSettings;
@@ -71,8 +72,7 @@ impl Bootstrap<Desktop> for Windows {
         for window in &settings.0 {
             opened.push(cx.host().open_window(&mut opening, &window.title, window.size.into(), window.mode)?);
         }
-        let mut opened = opened.into_iter();
-        let Some(first) = opened.next() else {
+        let Some((&first, others)) = opened.split_first() else {
             return Err(Unbuilt::Failed("the window root's settings list no window to open".into()));
         };
 
@@ -81,6 +81,6 @@ impl Bootstrap<Desktop> for Windows {
         cx.serve(hosting);
         cx.serve(Service::<dyn Clipboard>::of(Arc::new(SystemClipboard::new())));
 
-        Ok((InitialWindows::new(first, opened.collect()),))
+        Ok((InitialWindows::found(cx, first, others)?,))
     }
 }

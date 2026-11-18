@@ -17,6 +17,8 @@ impl Bootstrap<Desktop> for Files {
 
     async fn bootstrap(roots: FileRoots, (): (), cx: &mut Bootstrapping<'_, Desktop, Self>) -> Result<(), Unbuilt> {
         cx.serve(Service::<dyn Storage>::of(Arc::new(Directories::new(&roots))));
-        cx.begin(&(), FilesConfig)
+        cx.begin(&(), FilesConfig)?;
+
+        Ok(())
     }
 }

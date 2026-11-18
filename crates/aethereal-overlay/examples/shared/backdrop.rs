@@ -50,7 +50,9 @@ impl<H: Host> Bootstrap<H> for Backdrop {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Backed { window: windows.first() })
+        cx.begin(&(), Backed { window: windows.first().id() })?;
+
+        Ok(())
     }
 }
 

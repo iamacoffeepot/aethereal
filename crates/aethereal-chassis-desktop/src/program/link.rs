@@ -25,6 +25,8 @@ impl Bootstrap<Desktop> for Engines {
         let randomness = SystemRandomness::open().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
         cx.serve(Service::<dyn Randomness>::of(Arc::new(randomness)));
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }

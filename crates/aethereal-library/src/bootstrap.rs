@@ -14,6 +14,8 @@ impl<H: Host> Bootstrap<H> for Library {
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         let publisher = cx.publisher()?;
 
-        cx.begin(&(), LibraryConfig { publisher })
+        cx.begin(&(), LibraryConfig { publisher })?;
+
+        Ok(())
     }
 }

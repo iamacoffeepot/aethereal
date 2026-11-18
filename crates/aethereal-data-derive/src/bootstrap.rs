@@ -34,7 +34,9 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 (): (),
                 cx: &mut ::aethereal_substrate::Bootstrapping<'_, __H, Self>,
             ) -> ::core::result::Result<(), ::aethereal_substrate::Unbuilt> {
-                cx.begin(&(), settings)
+                cx.begin(&(), settings)?;
+
+                ::core::result::Result::Ok(())
             }
         }
     })

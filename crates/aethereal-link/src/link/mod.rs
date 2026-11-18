@@ -129,7 +129,9 @@ impl<H: Host> Bootstrap<H> for Link {
         limits::check("link", cx.read_limit(), cx.blob_bytes(), settings.most_bytes)?;
         let config = settings.config().map_err(|why| Unbuilt::Failed(Box::new(why)))?;
 
-        cx.begin(&(), config)
+        cx.begin(&(), config)?;
+
+        Ok(())
     }
 }
 

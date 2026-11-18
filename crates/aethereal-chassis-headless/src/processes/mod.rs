@@ -44,6 +44,8 @@ impl Bootstrap<Headless> for Processes {
             let readiness = cx.host().readiness();
             cx.serve(readiness);
         }
-        cx.begin(&(), settings.config())
+        cx.begin(&(), settings.config())?;
+
+        Ok(())
     }
 }

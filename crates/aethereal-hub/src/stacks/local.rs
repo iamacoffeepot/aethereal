@@ -33,7 +33,9 @@ impl<H: Host> Bootstrap<H> for LocalStack {
         let settings = StackSettings { interface: Interface::Loopback, ..settings };
         settings.fit(cx)?;
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }
 

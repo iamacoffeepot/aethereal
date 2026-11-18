@@ -39,7 +39,9 @@ impl<H: Host> Bootstrap<H> for Maker {
     type Provides = ();
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Nothing)
+        cx.begin(&(), Nothing)?;
+
+        Ok(())
     }
 }
 

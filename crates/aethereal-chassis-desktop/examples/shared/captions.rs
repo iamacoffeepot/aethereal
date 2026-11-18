@@ -36,7 +36,9 @@ impl<H: Host> Bootstrap<H> for Captions {
         (windows,): (InitialWindows,),
         cx: &mut Bootstrapping<'_, H, Self>,
     ) -> Result<(), Unbuilt> {
-        cx.begin(&(), Captioned { window: windows.first() })
+        cx.begin(&(), Captioned { window: windows.first().id() })?;
+
+        Ok(())
     }
 }
 

@@ -33,7 +33,9 @@ impl<H: Host> Bootstrap<H> for ContainerStack {
     async fn bootstrap(settings: StackSettings, (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         settings.fit(cx)?;
 
-        cx.begin(&(), settings)
+        cx.begin(&(), settings)?;
+
+        Ok(())
     }
 }
 

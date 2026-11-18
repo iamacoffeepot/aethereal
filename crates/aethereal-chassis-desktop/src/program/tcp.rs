@@ -26,6 +26,8 @@ impl Bootstrap<Desktop> for Tcp {
             let readiness = cx.host().readiness();
             cx.serve(readiness);
         }
-        cx.begin(&(), settings.config())
+        cx.begin(&(), settings.config())?;
+
+        Ok(())
     }
 }

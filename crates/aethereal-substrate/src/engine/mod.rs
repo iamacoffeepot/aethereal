@@ -48,11 +48,11 @@ use crate::{
 };
 use aethereal_actor::pins::{self, Change};
 use aethereal_actor::{
-    Above, ActorName, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain, Closing,
-    Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances, JobId,
-    JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process, Publisher,
-    Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood, Submitted, Tie,
-    Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Above, ActorName, ActorRef, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain,
+    Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
+    JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
+    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
+    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -746,16 +746,29 @@ impl Engine {
     ///
     /// Panics when an actor is made under an id the table already holds for another path (ADR-0008).
     pub fn add_root<A: Root>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorId, Refused> {
+        Ok(self.begin_root::<A>(key, config)?.id())
+    }
+
+    /// Makes a root of type `A` under `key`, as [`Self::add_root`] does, and answers with its reference: what a
+    /// bootstrap hands over (ADR-0029).
+    pub(crate) fn begin_root<A: Root>(&mut self, key: &A::Key, config: A::Config) -> Result<ActorRef<A>, Refused> {
         let segment = PathSegment::new(A::NAME, key);
         let gifts = self.handed_in(&config)?;
 
         let declared = Declared::of::<A>();
-        self.add_root_made(&segment, Code::Linked(declared), gifts, |me, path, table, asked, instances, keeping| {
-            let mut beginning = Beginning::new(me, path, table, asked, instances, keeping.keeps());
-            let root = A::begin(config, &mut beginning).map_err(Refused::Began)?;
+        let made = self.add_root_made(
+            &segment,
+            Code::Linked(declared),
+            gifts,
+            |me, path, table, asked, instances, keeping| {
+                let mut beginning = Beginning::new(me, path, table, asked, instances, keeping.keeps());
+                let root = A::begin(config, &mut beginning).map_err(Refused::Began)?;
 
-            Ok(Box::new(root))
-        })
+                Ok(Box::new(root))
+            },
+        )?;
+
+        Ok(ActorRef::found(made))
     }
 
     /// Keeps `value`, a resource the chassis made, and answers with what names it, to put in the config of the root
@@ -852,23 +865,37 @@ impl Engine {
         key: &C::Key,
         config: &C::Config,
     ) -> Result<ActorId, Refused> {
+        Ok(self.begin_root_from::<C>(code, key, config)?.id())
+    }
+
+    /// Makes a root of type `C` under `key` whose code is the blob `code` pins, as [`Self::add_root_from`] does, and
+    /// answers with its reference: what a bootstrap hands over (ADR-0029).
+    pub(crate) fn begin_root_from<C: Root>(
+        &mut self,
+        code: &Bytes,
+        key: &C::Key,
+        config: &C::Config,
+    ) -> Result<ActorRef<C>, Refused> {
         let segment = PathSegment::new(C::NAME, key);
         let made = self.guests.made(code.id(), Declared::of::<C>()).ok_or(Refused::NotMade)?;
         let config = config_bytes(config).map_err(|_| Refused::NotMade)?;
         let gifts = self.take_handed(&config.carried);
         let guests = Arc::clone(&self.guests);
 
-        self.add_root_made(&segment, Code::Blob(made), gifts, |me, path, table, asked, instances, keeping| {
-            let (above, refers, carried) = (Above::Chassis, &config.held, &config.carried);
-            let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
+        let made =
+            self.add_root_made(&segment, Code::Blob(made), gifts, |me, path, table, asked, instances, keeping| {
+                let (above, refers, carried) = (Above::Chassis, &config.held, &config.carried);
+                let birth = Birth { me, path, above, table, asked, instances, refers, keeping, carried };
 
-            guests.begin(code, made, &config.bytes, birth)
-        })
+                guests.begin(code, made, &config.bytes, birth)
+            })?;
+
+        Ok(ActorRef::found(made))
     }
 
     /// Makes a root at `segment`, from `from`, which `begin` makes as it is seated as `me`, at its path, reading the
     /// table, adding to what is asked, lent its part's instances, and keeping what it keeps. Its config holds `gifts`,
-    /// the resources the chassis handed in for it, which are dropped when it is refused.
+    /// the resources the chassis handed in for it, which are dropped when it is refused. Answers where it is seated.
     fn add_root_made(
         &mut self,
         segment: &PathSegment,
@@ -882,7 +909,7 @@ impl Engine {
             &mut Instances,
             &mut Keeping,
         ) -> Result<Box<dyn Runs>, Refused>,
-    ) -> Result<ActorId, Refused> {
+    ) -> Result<Seated, Refused> {
         let id = root_id(segment);
         let path = ActorPath::from_root(segment);
         // The lifecycle's name is the engine's: its stages' chains begin at its id (ADR-0020).
@@ -963,7 +990,7 @@ impl Engine {
         self.deadlines.keep(&mut expiring);
         self.arm();
 
-        Ok(id)
+        Ok(me)
     }
 
     /// Folds what the `begin` of the root `root` asked for, in `context`, between steps: its lines, its effects with

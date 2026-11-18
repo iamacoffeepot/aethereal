@@ -2,10 +2,13 @@
 //! (ADR-0029).
 
 use super::{Host, Serves, Stage, Unbuilt};
-use crate::Feed;
-use aethereal_actor::{Actors, Bytes, Controller, Given, Publisher, Requests, Resource, Root, Source};
+use crate::{Feed, table};
+use aethereal_actor::{
+    ActorRef, Actors, Bytes, ChildOf, Controller, Given, Path, PathTo, Publisher, Requests, Resource, Root, Rooted,
+    SeatNumber, Source,
+};
 use aethereal_data::config::RootSettings;
-use aethereal_data::{ActorId, Encode, Kind};
+use aethereal_data::{ActorId, Encode, Kind, KindId};
 use core::marker::PhantomData;
 use core::time::Duration;
 
@@ -80,27 +83,126 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
         self.stage.engine.delta_limit()
     }
 
-    /// Begins the root under `key`, from `config`, after the roots begun before it.
+    /// Begins the root under `key`, from `config`, after the roots begun before it, and answers with its reference,
+    /// for the bootstrap to hand over in what it provides (ADR-0029).
     ///
     /// # Errors
     ///
     /// [`Unbuilt::Refused`] when it was refused as it began, as [`Engine::add_root`](crate::Engine::add_root) says.
-    pub fn begin(&mut self, key: &A::Key, config: A::Config) -> Result<(), Unbuilt> {
-        self.stage.engine.add_root::<A>(key, config)?;
-
-        Ok(())
+    pub fn begin(&mut self, key: &A::Key, config: A::Config) -> Result<ActorRef<A>, Unbuilt> {
+        Ok(self.stage.engine.begin_root::<A>(key, config)?)
     }
 
-    /// Begins the root under `key`, from `config`, in the guest code `code` holds (ADR-0015).
+    /// Begins the root under `key`, from `config`, in the guest code `code` holds (ADR-0015), and answers with its
+    /// reference, as [`Self::begin`] does.
     ///
     /// # Errors
     ///
     /// [`Unbuilt::Refused`] when it was refused as it began, as [`Engine::add_root_from`](crate::Engine::add_root_from)
     /// says.
-    pub fn begin_from(&mut self, code: &Bytes, key: &A::Key, config: &A::Config) -> Result<(), Unbuilt> {
-        self.stage.engine.add_root_from::<A>(code, key, config)?;
+    pub fn begin_from(&mut self, code: &Bytes, key: &A::Key, config: &A::Config) -> Result<ActorRef<A>, Unbuilt> {
+        Ok(self.stage.engine.begin_root_from::<A>(code, key, config)?)
+    }
 
-        Ok(())
+    /// A reference to the live actor the typed path `path` names, proven of its type, as a turn's `found` answers: none
+    /// when nothing live stands there, or an actor of another type does (ADR-0029). It is for what the root spawned in
+    /// its `begin`, which stands in the engine's table once [`Self::begin`] has answered, as a `begin`'s effects are
+    /// applied before the root is made: the window root's bootstrap finds each window's actor so.
+    ///
+    /// It builds only for a path beneath the root `A` this bootstrap makes:
+    ///
+    /// ```
+    /// # use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, path};
+    /// # use aethereal_data::Plain;
+    /// # use aethereal_substrate::{Bootstrapping, Host};
+    /// #
+    /// # macro_rules! actor {
+    /// #     ($name:ident, $named:literal, $parent:ty, $key:ty) => {
+    /// #         #[derive(Plain)]
+    /// #         #[kind(name = $named)]
+    /// #         struct $name;
+    /// #
+    /// #         impl ChildOf for $name {
+    /// #             type Parent = $parent;
+    /// #         }
+    /// #
+    /// #         impl Actor for $name {
+    /// #             type Config = $name;
+    /// #             type Key = $key;
+    /// #             type Handles = ();
+    /// #             type Depends = ();
+    /// #
+    /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #                 Ok(actor)
+    /// #             }
+    /// #
+    /// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// #                 Ok(())
+    /// #             }
+    /// #         }
+    /// #     };
+    /// # }
+    /// #
+    /// # actor!(Windows, "example.windows", Top, ());
+    /// # actor!(Window, "example.window", Windows, u64);
+    /// # actor!(Renderer, "example.renderer", Top, ());
+    /// // The window root's bootstrap finds the first window its root made.
+    /// fn first<H: Host>(cx: &Bootstrapping<'_, H, Windows>) -> Option<ActorRef<Window>> {
+    ///     cx.found(&path::<Window>(0))
+    /// }
+    /// ```
+    ///
+    /// A path beneath another root does not build, as that root's bootstrap hands over what it made:
+    ///
+    /// ```compile_fail
+    /// # use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, path};
+    /// # use aethereal_data::Plain;
+    /// # use aethereal_substrate::{Bootstrapping, Host};
+    /// #
+    /// # macro_rules! actor {
+    /// #     ($name:ident, $named:literal, $parent:ty, $key:ty) => {
+    /// #         #[derive(Plain)]
+    /// #         #[kind(name = $named)]
+    /// #         struct $name;
+    /// #
+    /// #         impl ChildOf for $name {
+    /// #             type Parent = $parent;
+    /// #         }
+    /// #
+    /// #         impl Actor for $name {
+    /// #             type Config = $name;
+    /// #             type Key = $key;
+    /// #             type Handles = ();
+    /// #             type Depends = ();
+    /// #
+    /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #                 Ok(actor)
+    /// #             }
+    /// #
+    /// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    /// #                 Ok(())
+    /// #             }
+    /// #         }
+    /// #     };
+    /// # }
+    /// #
+    /// # actor!(Windows, "example.windows", Top, ());
+    /// # actor!(Window, "example.window", Windows, u64);
+    /// # actor!(Renderer, "example.renderer", Top, ());
+    /// // The renderer's bootstrap looks for a window the window root made.
+    /// fn first<H: Host>(cx: &Bootstrapping<'_, H, Renderer>) -> Option<ActorRef<Window>> {
+    ///     cx.found(&path::<Window>(0))
+    /// }
+    /// ```
+    #[must_use]
+    pub fn found<L>(&self, path: &Path<L>) -> Option<ActorRef<L>>
+    where
+        L: ChildOf + PathTo + Rooted,
+        L::Root: FoundBy<L, A>,
+    {
+        let reached = table::reach(self.stage.engine.table(), path.names(), KindId::of::<L>());
+
+        (reached.seat != SeatNumber::NOWHERE).then_some(ActorRef::found(reached))
     }
 
     /// Hands `value` in, for the root's config to carry, as [`Engine::hand`](crate::Engine::hand) does.
@@ -171,3 +273,15 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
         &mut self.stage.hosting
     }
 }
+
+/// This root, of the typed path to `L`, is `A`, the root a bootstrap of `A` makes: what the path a bootstrap finds is
+/// checked by, as it finds only what its own root made (ADR-0029).
+#[diagnostic::on_unimplemented(
+    message = "a bootstrap of `{A}` finds `{L}` beneath `{Self}`, a root it does not make",
+    label = "`{L}` is found here at its typed path",
+    note = "a bootstrap finds what its own root spawned in its `begin`; what another root made, its bootstrap hands \
+            over in what it provides"
+)]
+pub trait FoundBy<L, A> {}
+
+impl<L, A> FoundBy<L, A> for A {}
