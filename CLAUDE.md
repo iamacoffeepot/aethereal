@@ -30,7 +30,8 @@ Every commit is public. No personal names, no absolute home paths, no host, moun
 
 ## Commands
 
-- Everything CI runs, in one list: `cargo xtask check` (one job: `cargo xtask check fmt | clippy | browser | test`)
+- Everything CI runs, in one list: `cargo xtask check` (one job: `cargo xtask check fmt | clippy | browser | test`; `check test -p <package>...` tests those packages alone)
+- The tests a change can fail: `cargo xtask affected` (diffed against `--base <ref>`, the merge base with `origin/main` by default); `--run` runs them as a pull request's CI does. A pull request tests only the packages its change selects; a push to `main` tests everything
 - Browser example: `cargo xtask example <example>` builds its page into its `pkg/`; `--serve` also serves it on localhost (`--port <port>`, 0 for any)
 - Build: `cargo build`
 - Test: `cargo nextest run --workspace --all-features` (single test: `cargo nextest run <name>`), then `cargo test --workspace --all-features --doc` for the doctests, which nextest does not run

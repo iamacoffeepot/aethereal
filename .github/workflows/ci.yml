@@ -79,6 +79,15 @@ jobs:
           key: nasm
       - run: cargo xtask check clippy
 
+  # A pull request runs the tests of the packages its change can fail, which `cargo xtask affected` selects
+  # (`xtask/src/affected/`): the packages its changed paths sit in, and every package building on one of them. The
+  # selection is conservative: a path that shapes every build or test (the manifests, the lockfile, the toolchain,
+  # `.cargo/`, `.config/`, `clippy.toml`, this file, and xtask's files that select or run the suite) runs everything,
+  # as does a path no package and no rule claims. Only the tests narrow: Clippy and Browser host compile every package
+  # on every pull request.
+  #
+  # A push to `main` runs every test, whatever changed. `main` squash-merges, so it tests the exact tree that landed,
+  # and a package a selection missed fails there: a miss delays a red signal to the merge, never loses it.
   test:
     name: Test
     needs: plan
@@ -86,7 +95,11 @@ jobs:
     steps:
       - uses: runs-on/action@13fbb6a39310a0dac9ab4716da2c4e74a3326dfc # v2
         if: needs.plan.outputs.runner != 'ubuntu-latest'
+      # A pull request's checkout is its merge commit; its first parent, the tip of the branch it merges into, is what
+      # the selection diffs against, so the checkout holds one commit more.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - run: rustup toolchain install
       # As in Clippy: OpenH264 with its assembly, in a cache of its own.
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm
@@ -96,8 +109,20 @@ jobs:
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-nextest@0.9.146
-      # nextest, then the doctests, which it does not run; nextest reads its profile from `NEXTEST_PROFILE`.
-      - run: cargo xtask check test
+      # Its log names the selection, and why: `selected tests=none` is a change that reaches no package, whose tests
+      # the next step then skips.
+      - name: Select affected packages (pull request only)
+        id: affected
+        if: github.event_name == 'pull_request'
+        run: cargo xtask affected --base HEAD^1 --github-output
+      # nextest, then the doctests, which it does not run; nextest reads its profile from `NEXTEST_PROFILE`. A narrowed
+      # selection always holds xtask, whose suite holds the invariants that keep the selection sound: they scan every
+      # package for what the graph cannot see, so a change to any package can break one. `package_args` holds only
+      # `-p` and package names from the workspace's own list, so its expansion is shell-safe; it is empty when every
+      # test runs, and on a push, where the selection step does not run.
+      - name: Test
+        if: github.event_name != 'pull_request' || steps.affected.outputs.run_all == 'true' || steps.affected.outputs.package_args != ''
+        run: cargo xtask check test ${{ steps.affected.outputs.package_args }}
         env:
           NEXTEST_PROFILE: ci
 
