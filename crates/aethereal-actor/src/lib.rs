@@ -73,7 +73,7 @@ pub use blob::{BlobHash, BlobId, Maker, Puts};
 #[cfg(feature = "std")]
 pub use blob::{Bytes, Pinning, pins, within};
 pub use boundary::{Actors, ActorsReader, ActorsWriter, Children, Refers, Table, Within, WithinReader, WithinWriter};
-pub use buffer::{Buffer, Pool};
+pub use buffer::{Buffer, BufferGroup, Pool};
 #[cfg(feature = "std")]
 pub use controller::{Controller, Requests};
 pub use declared::{
