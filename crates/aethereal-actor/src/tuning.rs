@@ -12,23 +12,18 @@ pub const MOST_TUNING_BYTES: usize = 64 * 1024;
 /// An actor tuned while the program runs: its tuning, one settings kind, read whole and set whole. Each field's doc
 /// comment is what an agent reads of it, and a range a number keeps to is said there and held by [`Tunable::tune`].
 ///
-/// Its two handlers are a line each, as no impl of `Handles` may be written for every `Tunable`:
+/// Its two handlers, in its `#[actor]` block, are a line each, as no impl of `Handles` may be written for every
+/// `Tunable`:
 ///
 /// ```text
-/// impl Handles<ReadTuning> for Painter {
-///     type From = Anyone;
-///     type Returns = Tuning;
-///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
-///         tuning::read(self, turn)
-///     }
+/// #[request]
+/// fn read_tuning(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
+///     tuning::read(self, turn)
 /// }
 ///
-/// impl Handles<Tune> for Painter {
-///     type From = Anyone;
-///     type Returns = Tuned;
-///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
-///         tuning::tune(self, &tune, turn)
-///     }
+/// #[request]
+/// fn tune(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
+///     tuning::tune(self, &tune, turn)
 /// }
 /// ```
 pub trait Tunable: Actor + Handles<ReadTuning> + Handles<Tune> {

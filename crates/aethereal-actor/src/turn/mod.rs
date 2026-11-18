@@ -1632,7 +1632,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// pool alone, so what the turn does stays free to use, and put it, while the buffer is held (ADR-0042).
     ///
     /// ```
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Bytes, Ending, Fault, Handles, Turn};
+    /// use aethereal_actor::{Bytes, Fault, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1644,22 +1644,13 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// struct Greeter {
     ///     greeting: Vec<Bytes>,
     /// }
-    /// # impl aethereal_actor::ChildOf for Greeter { type Parent = aethereal_actor::Top; }
-    /// # impl Actor for Greeter {
-    /// #     type Config = Greet;
-    /// #     type Key = ();
-    /// #     type Handles = (Greet,);
-    /// #     type Depends = ();
-    /// #     type Spawns = ();
-    /// #     fn begin(_: Greet, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
-    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> { Ok(()) }
-    /// # }
     ///
-    /// impl Handles<Greet> for Greeter {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, _: Greet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// #[actor]
+    /// impl Greeter {
+    /// #     fn begin(_: Greet) -> Result<Self, Fault> { Ok(Self { greeting: Vec::new() }) }
+    /// #
+    ///     #[tell]
+    ///     fn greet(&mut self, _: Greet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let (turn, pool) = turn.split();
     ///         let mut buffer = pool.buffer(5);
     ///         buffer.extend_from_slice(b"hello");
@@ -1750,7 +1741,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// It builds only when the actor handles [`Answer<J::Done, C>`](crate::Answer):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Sleep, Turn};
+    /// use aethereal_actor::{Fault, Sleep, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1762,27 +1753,14 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// struct Napper;
     ///
     /// // Handles no `Answer<Slept, Nap>`.
-    /// impl Actor for Napper {
-    ///     type Config = Napper;
-    ///     type Key = ();
-    ///     type Handles = (Nap,);
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(napper: Napper, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor]
+    /// impl Napper {
+    ///     fn begin(napper: Napper) -> Result<Self, Fault> {
     ///         Ok(napper)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Nap> for Napper {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    ///     #[tell]
+    ///     fn nap(&mut self, nap: Nap, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let until = turn.now();
     ///         turn.run(&Sleep { until }, &nap)?;
     ///
@@ -1841,7 +1819,7 @@ impl<'a, Me, F: Guard<Me>> Doing<'a, Me, F> {
     /// live actor of its type.
     ///
     /// ```
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Turn};
+    /// use aethereal_actor::{Fault, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1852,27 +1830,14 @@ impl<'a, Me, F: Guard<Me>> Doing<'a, Me, F> {
     /// #[kind(name = "aether.doc.door")]
     /// struct Door;
     ///
-    /// impl Actor for Door {
-    ///     type Config = Door;
-    ///     type Key = ();
-    ///     type Handles = (Knock,);
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(door: Door, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor]
+    /// impl Door {
+    ///     fn begin(door: Door) -> Result<Self, Fault> {
     ///         Ok(door)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Knock> for Door {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    ///     #[tell]
+    ///     fn knock(&mut self, _: Knock, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.to(turn.me()).send(&Knock)?.send(&Knock)?;
     ///
     ///         Ok(())
@@ -1895,15 +1860,18 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// Looking for a child beneath a type it does not stand beneath does not build:
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, Turn};
+    /// use aethereal_actor::{ActorRef, Fault, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
     /// #[kind(name = "aether.doc.army")]
     /// struct Army;
     ///
-    /// impl ChildOf for Army {
-    ///     type Parent = Top;
+    /// #[actor]
+    /// impl Army {
+    ///     fn begin(army: Army) -> Result<Self, Fault> {
+    ///         Ok(army)
+    ///     }
     /// }
     ///
     /// // Stands beneath itself, not an `Army`.
@@ -1911,39 +1879,10 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// #[kind(name = "aether.doc.lens")]
     /// struct Lens;
     ///
-    /// impl ChildOf for Lens {
-    ///     type Parent = Lens;
-    /// }
-    ///
-    /// impl Actor for Lens {
-    ///     type Config = Lens;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(lens: Lens, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor(parent = Lens)]
+    /// impl Lens {
+    ///     fn begin(lens: Lens) -> Result<Self, Fault> {
     ///         Ok(lens)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Actor for Army {
-    ///     type Config = Army;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(army: Army, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-    ///         Ok(army)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
     ///     }
     /// }
     ///
@@ -1982,7 +1921,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// (ADR-0013):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Turn};
+    /// use aethereal_actor::{Fault, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -1993,27 +1932,14 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// #[kind(name = "aether.doc.watcher")]
     /// struct Watcher;
     ///
-    /// impl Actor for Watcher {
-    ///     type Config = Watcher;
-    ///     type Key = ();
-    ///     type Handles = (Look,);
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(watcher: Watcher, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor]
+    /// impl Watcher {
+    ///     fn begin(watcher: Watcher) -> Result<Self, Fault> {
     ///         Ok(watcher)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Look> for Watcher {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    ///     #[tell]
+    ///     fn look(&mut self, _: Look, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
@@ -2035,7 +1961,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// It builds only when the actor's type handles [`On<K>`](crate::On):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Anyone, Beginning, Ending, Fault, Handles, Tick, Turn};
+    /// use aethereal_actor::{Beginning, Fault, Tick, Turn, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -2047,27 +1973,14 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// struct Clock;
     ///
     /// // Handles no `On<Tick>`.
-    /// impl Actor for Clock {
-    ///     type Config = Clock;
-    ///     type Key = ();
-    ///     type Handles = (Wind,);
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
+    /// #[actor]
+    /// impl Clock {
     ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         Ok(clock)
     ///     }
     ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// impl Handles<Wind> for Clock {
-    ///     type From = Anyone;
-    ///     type Returns = ();
-    ///
-    ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    ///     #[tell]
+    ///     fn wind(&mut self, _: Wind, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.subscribe::<Tick>();
     ///
     ///         Ok(())
@@ -2559,32 +2472,19 @@ impl<Me> Beginning<'_, Me> {
     /// or not: mail to one that has ended is dropped. A root's turn has no `parent()`:
     ///
     /// ```compile_fail,E0599
-    /// use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Top};
+    /// use aethereal_actor::{Beginning, Fault, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
     /// #[kind(name = "aether.doc.fort")]
     /// struct Fort;
     ///
-    /// impl ChildOf for Fort {
-    ///     type Parent = Top;
-    /// }
-    ///
-    /// impl Actor for Fort {
-    ///     type Config = Fort;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
+    /// #[actor]
+    /// impl Fort {
     ///     fn begin(fort: Fort, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let parent = turn.parent();
     ///
     ///         Ok(fort)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
     ///     }
     /// }
     /// ```
@@ -2678,7 +2578,7 @@ impl<Me> Beginning<'_, Me> {
     /// [`Ended`](crate::Ended):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault};
+    /// use aethereal_actor::{Beginning, Fault, actor};
     /// use aethereal_data::{Bound, Plain};
     ///
     /// #[derive(Plain)]
@@ -2689,22 +2589,13 @@ impl<Me> Beginning<'_, Me> {
     /// #[kind(name = "aether.doc.watcher")]
     /// struct Watcher;
     ///
-    /// impl Actor for Watcher {
-    ///     type Config = Nothing;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
+    /// #[actor]
+    /// impl Watcher {
     ///     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         let me = turn.me();
     ///         turn.watch(me);
     ///
     ///         Ok(Self)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
     ///     }
     /// }
     /// ```
@@ -2722,7 +2613,7 @@ impl<Me> Beginning<'_, Me> {
     /// It builds only when the actor's type handles [`On<K>`](crate::On):
     ///
     /// ```compile_fail,E0277
-    /// use aethereal_actor::{Actor, Beginning, Ending, Fault, Tick, Turn};
+    /// use aethereal_actor::{Beginning, Fault, Tick, actor};
     /// use aethereal_data::Plain;
     ///
     /// #[derive(Plain)]
@@ -2734,21 +2625,12 @@ impl<Me> Beginning<'_, Me> {
     /// struct Clock;
     ///
     /// // Handles no `On<Tick>`.
-    /// impl Actor for Clock {
-    ///     type Config = Clock;
-    ///     type Key = ();
-    ///     type Handles = ();
-    ///     type Depends = ();
-    ///     type Spawns = ();
-    ///
+    /// #[actor]
+    /// impl Clock {
     ///     fn begin(clock: Clock, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
     ///         turn.subscribe::<Tick>();
     ///
     ///         Ok(clock)
-    ///     }
-    ///
-    ///     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    ///         Ok(())
     ///     }
     /// }
     /// ```
@@ -2918,8 +2800,8 @@ impl<'a, Me> Ending<'a, Me> {
     /// nothing: the actor is gone by the time an answer could come.
     ///
     /// ```compile_fail,E0599
-    /// # use aethereal_actor::{Actor, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Path, Receives};
-    /// # use aethereal_actor::{Top, Turn, path};
+    /// # use aethereal_actor::{Answered, Ending, Fault};
+    /// # use aethereal_actor::{actor, path};
     /// # use aethereal_data::Plain;
     /// #
     /// # #[derive(Plain)]
@@ -2938,56 +2820,29 @@ impl<'a, Me> Ending<'a, Me> {
     /// # #[kind(name = "aether.doc.visitor")]
     /// # struct Visitor;
     /// #
-    /// # impl ChildOf for Greeter {
-    /// #     type Parent = Top;
-    /// # }
-    /// #
-    /// # impl ChildOf for Visitor {
-    /// #     type Parent = Top;
-    /// # }
-    /// #
-    /// # impl Actor for Greeter {
-    /// #     type Config = Greeter;
-    /// #     type Key = ();
-    /// #     type Handles = (Hello,);
-    /// #     type Depends = ();
-    /// #     type Spawns = ();
-    /// #
-    /// #     fn begin(greeter: Greeter, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// # #[actor]
+    /// # impl Greeter {
+    /// #     fn begin(greeter: Greeter) -> Result<Self, Fault> {
     /// #         Ok(greeter)
     /// #     }
     /// #
-    /// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    /// #         Ok(())
-    /// #     }
-    /// # }
-    /// #
-    /// # impl Handles<Hello> for Greeter {
-    /// #     type From = Anyone;
-    /// #     type Returns = Hi;
-    /// #
-    /// #     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<Hi, Fault> {
+    /// #     #[request]
+    /// #     fn hello(&mut self, _: Hello) -> Result<Hi, Fault> {
     /// #         Ok(Hi)
     /// #     }
     /// # }
     /// #
-    /// # impl Receives<Answer<Hi, Waiting>> for Visitor {
-    /// #     fn handle(&mut self, _: (Answered<Hi>, Waiting), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-    /// #         Ok(())
-    /// #     }
-    /// # }
-    /// #
-    /// impl Actor for Visitor {
-    ///     type Config = Visitor;
-    ///     type Key = ();
-    ///     type Handles = (Answer<Hi, Waiting>,);
-    ///     type Depends = (Greeter,);
-    ///     type Spawns = ();
-    ///
-    ///     fn begin(visitor: Visitor, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #[actor(depends(Greeter))]
+    /// impl Visitor {
+    ///     fn begin(visitor: Visitor) -> Result<Self, Fault> {
     ///         Ok(visitor)
     ///     }
-    ///
+    /// #
+    /// #     #[answer]
+    /// #     fn hi(&mut self, _: (Answered<Hi>, Waiting)) -> Result<(), Fault> {
+    /// #         Ok(())
+    /// #     }
+    /// #
     ///     // An ending turn's target has no `ask`.
     ///     fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
     ///         turn.to(path::<Greeter>(())).ask(&Hello, &Waiting)?;

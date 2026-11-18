@@ -3,9 +3,8 @@
 
 use super::{Itself, Parent};
 use crate::{
-    Above, Actor, ActorRef, Asked, Beginning, Chain, ChildOf, Declared, Due, Effect, Ending, Fault, Guard, Handles,
-    Instances, Item, Keeps, Level, Mail, MailId, Runs, SeatNumber, Seated, Table, Tie, Top, Turn, Turning, Unreadable,
-    What, actor,
+    Above, ActorRef, Asked, Chain, ChildOf, Declared, Due, Effect, Fault, Guard, Instances, Item, Keeps, Level, Mail,
+    MailId, Runs, SeatNumber, Seated, Table, Tie, Turn, Turning, Unreadable, What, actor,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -91,23 +90,10 @@ struct Shut;
 #[kind(name = "aether.test.hall")]
 struct Hall;
 
-impl ChildOf for Hall {
-    type Parent = Top;
-}
-
-impl Actor for Hall {
-    type Config = Self;
-    type Key = u64;
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(hall: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64)]
+impl Hall {
+    fn begin(hall: Self) -> Result<Self, Fault> {
         Ok(hall)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -116,42 +102,21 @@ impl Actor for Hall {
 #[kind(name = "aether.test.door")]
 struct Door;
 
-impl ChildOf for Door {
-    type Parent = Hall;
-}
-
-impl Actor for Door {
-    type Config = Self;
-    type Key = u64;
-    type Handles = (Knock, Shut);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(door: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Hall)]
+impl Door {
+    fn begin(door: Self) -> Result<Self, Fault> {
         Ok(door)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Knock> for Door {
-    type From = Itself;
-    type Returns = ();
-
-    fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
+    #[tell]
+    fn knock(&mut self, _: Knock, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
         turn.log(Level::Info, "knocked");
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Door {
-    type From = Parent;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
         turn.log(Level::Info, "shut");
 
         Ok(())

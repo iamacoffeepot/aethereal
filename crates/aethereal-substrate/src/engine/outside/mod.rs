@@ -4,9 +4,9 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, Asking, Beginning, ChildOf, Closing, Code, Declared, Due, Ended, Ending, Fault, Item, JobId, Mail,
-    MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Runs, Seated, StateSchema, Tie, Tied, Top, Turning,
-    Unanswered, Upgrade, Upgraded, Why, Written,
+    Actors, Asking, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed, Owed, PinSource,
+    Pinning, Preparing, Refused, Runs, Seated, StateSchema, Tie, Tied, Turning, Unanswered, Upgrade, Upgraded, Why,
+    Written, actor,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -25,23 +25,10 @@ use std::sync::Arc;
 #[kind(name = "aether.outside")]
 pub struct Outside;
 
-impl ChildOf for Outside {
-    type Parent = Top;
-}
-
-impl Actor for Outside {
-    type Config = Self;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(seat: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Outside {
+    fn begin(seat: Self) -> Result<Self, Fault> {
         Ok(seat)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

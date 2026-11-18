@@ -3,8 +3,8 @@
 use crate::Engine;
 use crate::harness::{Bench, Harness, Unheard};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Carries, ChildOf, Due, Ending, Fault, Handles,
-    Held, Later, Protocol, ProtocolRef, Receives, Sleep, Slept, Spawn, Time, Top, Turn, Unanswered,
+    ActorRef, Answered, Anywhere, Beginning, Due, Fault, Held, Later, ProtocolRef, Sleep, Slept, Time, Turn,
+    Unanswered, actor, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -34,15 +34,8 @@ enum Onward {
 }
 
 /// The protocol relays and mutes are asked through: a query, answered with a reply.
+#[protocol(Query(answers = Reply))]
 struct Queries;
-
-impl Protocol for Queries {
-    type Kinds = (Query,);
-}
-
-impl Carries<Query> for Queries {
-    type Answers = (Reply,);
-}
 
 /// What became of a request, as its asker keeps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -93,44 +86,23 @@ struct Mute {
     dues: Vec<Due>,
 }
 
-impl ChildOf for Mute {
-    type Parent = Anywhere;
-}
-
-impl Actor for Mute {
-    type Config = Blank;
-    type Key = u64;
-    type Handles = (Query, Release);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Blank, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere)]
+impl Mute {
+    fn begin(_: Blank) -> Result<Self, Fault> {
         Ok(Self { held: Vec::new(), dues: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Query> for Mute {
-    type From = Anyone;
-    type Returns = Later<Reply>;
-
-    fn handle(&mut self, _: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
+    #[request]
+    fn query(&mut self, _: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
         let (held, later) = turn.hold();
         self.dues.push(held.due());
         self.held.push(held);
 
         Ok(later)
     }
-}
 
-impl Handles<Release> for Mute {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn release(&mut self, _: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in self.held.drain(..) {
             turn.answer(held, &Reply)?;
         }
@@ -154,17 +126,8 @@ struct Relay {
     slept: u64,
 }
 
-impl ChildOf for Relay {
-    type Parent = Anywhere;
-}
-
-impl Actor for Relay {
-    type Config = Blank;
-    type Key = ();
-    type Handles = (Query, Forward, Answer<Reply, Pending>, Answer<Slept, Pending>);
-    type Depends = ();
-    type Spawns = (Mute,);
-
+#[actor(parent = Anywhere, spawns(Mute))]
+impl Relay {
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(mute) = turn.spawn(&1, Blank) else {
             return Err(Fault::new(&Blank)?);
@@ -173,16 +136,8 @@ impl Actor for Relay {
         Ok(Self { mute, held: Vec::new(), dues: Vec::new(), heard: Vec::new(), slept: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Query> for Relay {
-    type From = Anyone;
-    type Returns = Later<Reply>;
-
-    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
+    #[request]
+    fn query(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
         let (held, later) = turn.hold();
         self.dues.push(held.due());
         self.held.push(held);
@@ -198,13 +153,9 @@ impl Handles<Query> for Relay {
 
         Ok(later)
     }
-}
 
-impl Handles<Forward> for Relay {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Forward, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn forward(&mut self, _: Forward, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for held in &self.held {
             turn.to(self.mute.protocol::<Queries>())
                 .within(held.due())
@@ -213,10 +164,9 @@ impl Handles<Forward> for Relay {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Reply, Pending>> for Relay {
-    fn handle(
+    #[answer]
+    fn reply(
         &mut self,
         (answered, Pending): (Answered<Reply>, Pending),
         turn: &mut Turn<'_, Self>,
@@ -229,10 +179,9 @@ impl Receives<Answer<Reply, Pending>> for Relay {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Pending>> for Relay {
-    fn handle(&mut self, _: (Answered<Slept>, Pending), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, _: (Answered<Slept>, Pending)) -> Result<(), Fault> {
         self.slept += 1;
 
         Ok(())
@@ -275,17 +224,8 @@ struct Asker {
     heard: Vec<Heard>,
 }
 
-impl ChildOf for Asker {
-    type Parent = Top;
-}
-
-impl Actor for Asker {
-    type Config = Blank;
-    type Key = ();
-    type Handles = (Order, Answer<Reply, Pending>);
-    type Depends = ();
-    type Spawns = (Relay, Mute);
-
+#[actor(spawns(Relay, Mute))]
+impl Asker {
     fn begin(_: Blank, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let (Ok(relay), Ok(mute)) = (turn.spawn(&(), Blank), turn.spawn(&0, Blank)) else {
             return Err(Fault::new(&Blank)?);
@@ -294,16 +234,8 @@ impl Actor for Asker {
         Ok(Self { relay, mute, heard: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Order> for Asker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let to: ProtocolRef<Queries> = match order.whom {
             Whom::Relay => self.relay.protocol(),
             Whom::Mute => self.mute.protocol(),
@@ -320,10 +252,9 @@ impl Handles<Order> for Asker {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Reply, Pending>> for Asker {
-    fn handle(&mut self, (answered, Pending): (Answered<Reply>, Pending), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn reply(&mut self, (answered, Pending): (Answered<Reply>, Pending)) -> Result<(), Fault> {
         self.heard.push(Heard::of(&answered));
 
         Ok(())

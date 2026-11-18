@@ -5,10 +5,9 @@ use super::super::*;
 use super::*;
 use crate::harness::Jobbed;
 use aethereal_actor::{
-    Actor, Answer, Answered, Bytes, ChildOf, Ending, Given, Handles, Job, JobType, NotHeld, Resource, Runner, Running,
-    Services, Spawn, Time, Top, Turn, Unanswered, path,
+    Answered, Bytes, Given, Job, JobType, NotHeld, Resource, Runner, Running, Services, Time, Turn, Unanswered, path,
 };
-use aethereal_actor::{Anyone, Entry, Receives};
+use aethereal_actor::{Entry, actor};
 use aethereal_data::{Bound, Plain};
 use std::any;
 use std::future;
@@ -391,24 +390,8 @@ struct Worker {
     refused: Vec<bool>,
 }
 
-impl ChildOf for Worker {
-    type Parent = Top;
-}
-
-impl Actor for Worker {
-    type Config = Which;
-    type Key = ();
-    type Handles = (
-        Go,
-        Answer<Doubled, Which>,
-        Answer<Rang, GiveUp>,
-        Answer<Shrunk, Which>,
-        Answer<Lit, Which>,
-        Answer<Bumped, Which>,
-    );
-    type Depends = ();
-    type Spawns = (Failing, Newborn);
-
+#[actor(spawns(Failing, Newborn))]
+impl Worker {
     fn begin(_: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
 
@@ -421,16 +404,8 @@ impl Actor for Worker {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Go> for Worker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn go(&mut self, go: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let which = Which { at: go.at };
         let id = match go.what {
             What::Double => turn.run(&Double { n: 10 * go.at }, &which)?,
@@ -526,10 +501,9 @@ impl Handles<Go> for Worker {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Doubled, Which>> for Worker {
-    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn doubled(&mut self, (done, which): (Answered<Doubled>, Which)) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(doubled) => Done::Doubled(doubled.n),
             Answered::No(why) => Done::No(why),
@@ -538,19 +512,17 @@ impl Receives<Answer<Doubled, Which>> for Worker {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Rang, GiveUp>> for Worker {
-    fn handle(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn rang(&mut self, (_, give_up): (Answered<Rang>, GiveUp), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.gave_up.push(give_up.on.mail().count);
         turn.cancel(give_up.on);
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Shrunk, Which>> for Worker {
-    fn handle(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn shrunk(&mut self, (done, which): (Answered<Shrunk>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Shrunk { first, kept, second }) => {
                 let (first, kept, second) = (turn.read(&first), turn.read(&kept), turn.read(&second));
@@ -563,10 +535,9 @@ impl Receives<Answer<Shrunk, Which>> for Worker {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Lit, Which>> for Worker {
-    fn handle(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn lit(&mut self, (done, which): (Answered<Lit>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Lit { first, second }) => {
                 let (mut first, mut second) = (turn.take(first)?, turn.take(second)?);
@@ -579,10 +550,9 @@ impl Receives<Answer<Lit, Which>> for Worker {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Bumped, Which>> for Worker {
-    fn handle(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn bumped(&mut self, (done, which): (Answered<Bumped>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(Bumped { counters }) => {
                 let mut counts = Vec::new();
@@ -605,30 +575,16 @@ impl Receives<Answer<Bumped, Which>> for Worker {
 #[kind(name = "aether.test.failing_child")]
 struct Failing;
 
-impl ChildOf for Failing {
-    type Parent = Worker;
-}
-
-impl Actor for Failing {
-    type Config = Which;
-    type Key = ();
-    type Handles = (Answer<Doubled, Which>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Worker)]
+impl Failing {
     fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Unlinked, &which)?;
 
         Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()))
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Doubled, Which>> for Failing {
-    fn handle(&mut self, _: (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn doubled(&mut self, _: (Answered<Doubled>, Which)) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -640,30 +596,16 @@ struct Newborn {
     done: Vec<(u64, Done)>,
 }
 
-impl ChildOf for Newborn {
-    type Parent = Worker;
-}
-
-impl Actor for Newborn {
-    type Config = Which;
-    type Key = ();
-    type Handles = (Answer<Doubled, Which>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Worker)]
+impl Newborn {
     fn begin(which: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Double { n: 10 * which.at }, &which)?;
 
         Ok(Self { done: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Doubled, Which>> for Newborn {
-    fn handle(&mut self, (done, which): (Answered<Doubled>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn doubled(&mut self, (done, which): (Answered<Doubled>, Which)) -> Result<(), Fault> {
         let done = match done {
             Answered::Yes(doubled) => Done::Doubled(doubled.n),
             Answered::No(why) => Done::No(why),
@@ -679,25 +621,12 @@ impl Receives<Answer<Doubled, Which>> for Newborn {
 #[kind(name = "aether.test.poker")]
 struct Poker;
 
-impl ChildOf for Poker {
-    type Parent = Top;
-}
-
-impl Actor for Poker {
-    type Config = Go;
-    type Key = u64;
-    type Handles = ();
-    type Depends = (Worker,);
-    type Spawns = ();
-
+#[actor(key = u64, depends(Worker))]
+impl Poker {
     fn begin(go: Go, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Worker>(())).send(&go)?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

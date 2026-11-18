@@ -22,7 +22,7 @@ use std::task::Waker;
 /// checked as it is made, as every root is, which is what a root made once the engine runs is checked by.
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -37,31 +37,14 @@ use std::task::Waker;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Note,);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(depends($depends))]
+/// #         impl $name {
+/// #             fn begin(root: $name) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         impl Handles<Note> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn note(&mut self, _: Note) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }
@@ -83,7 +66,7 @@ use std::task::Waker;
 /// A setup whose root reaches one made after it does not build:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Path, Top, Turn};
+/// # use aethereal_actor::{Fault, actor};
 /// # use aethereal_data::Plain;
 /// # use aethereal_substrate::Engine;
 /// # use std::num::NonZeroUsize;
@@ -98,31 +81,14 @@ use std::task::Waker;
 /// #         #[kind(name = $named)]
 /// #         struct $name;
 /// #
-/// #         impl ChildOf for $name {
-/// #             type Parent = Top;
-/// #         }
-/// #
-/// #         impl Actor for $name {
-/// #             type Config = $name;
-/// #             type Key = ();
-/// #             type Handles = (Note,);
-/// #             type Depends = $depends;
-/// #             type Spawns = ();
-/// #
-/// #             fn begin(root: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         #[actor(depends($depends))]
+/// #         impl $name {
+/// #             fn begin(root: $name) -> Result<Self, Fault> {
 /// #                 Ok(root)
 /// #             }
 /// #
-/// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-/// #                 Ok(())
-/// #             }
-/// #         }
-/// #
-/// #         impl Handles<Note> for $name {
-/// #             type From = Anyone;
-/// #             type Returns = ();
-/// #
-/// #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+/// #             #[tell]
+/// #             fn note(&mut self, _: Note) -> Result<(), Fault> {
 /// #                 Ok(())
 /// #             }
 /// #         }

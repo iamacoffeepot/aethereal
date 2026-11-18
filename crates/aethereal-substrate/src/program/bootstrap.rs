@@ -112,7 +112,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// It builds only for a path beneath the root `A` this bootstrap makes:
     ///
     /// ```
-    /// # use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, path};
+    /// # use aethereal_actor::{ActorRef, Fault, Top, actor, path};
     /// # use aethereal_data::Plain;
     /// # use aethereal_substrate::{Bootstrapping, Host};
     /// #
@@ -122,23 +122,10 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// #         #[kind(name = $named)]
     /// #         struct $name;
     /// #
-    /// #         impl ChildOf for $name {
-    /// #             type Parent = $parent;
-    /// #         }
-    /// #
-    /// #         impl Actor for $name {
-    /// #             type Config = $name;
-    /// #             type Key = $key;
-    /// #             type Handles = ();
-    /// #             type Depends = ();
-    /// #             type Spawns = ();
-    /// #
-    /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #         #[actor(key = $key, parent = $parent)]
+    /// #         impl $name {
+    /// #             fn begin(actor: $name) -> Result<Self, Fault> {
     /// #                 Ok(actor)
-    /// #             }
-    /// #
-    /// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    /// #                 Ok(())
     /// #             }
     /// #         }
     /// #     };
@@ -156,7 +143,7 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// A path beneath another root does not build, as that root's bootstrap hands over what it made:
     ///
     /// ```compile_fail
-    /// # use aethereal_actor::{Actor, ActorRef, Beginning, ChildOf, Ending, Fault, Top, path};
+    /// # use aethereal_actor::{ActorRef, Fault, Top, actor, path};
     /// # use aethereal_data::Plain;
     /// # use aethereal_substrate::{Bootstrapping, Host};
     /// #
@@ -166,23 +153,10 @@ impl<'host, H: Host, A: Root> Bootstrapping<'host, H, A> {
     /// #         #[kind(name = $named)]
     /// #         struct $name;
     /// #
-    /// #         impl ChildOf for $name {
-    /// #             type Parent = $parent;
-    /// #         }
-    /// #
-    /// #         impl Actor for $name {
-    /// #             type Config = $name;
-    /// #             type Key = $key;
-    /// #             type Handles = ();
-    /// #             type Depends = ();
-    /// #             type Spawns = ();
-    /// #
-    /// #             fn begin(actor: $name, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    /// #         #[actor(key = $key, parent = $parent)]
+    /// #         impl $name {
+    /// #             fn begin(actor: $name) -> Result<Self, Fault> {
     /// #                 Ok(actor)
-    /// #             }
-    /// #
-    /// #             fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-    /// #                 Ok(())
     /// #             }
     /// #         }
     /// #     };
