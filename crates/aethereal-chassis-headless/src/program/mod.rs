@@ -99,7 +99,7 @@ impl Host for Headless {
 
         match Self::build(settled)?.run(every, stop_within) {
             Exit::Unbooted(why) => Err(ProgramError::Unbooted(why)),
-            exit @ (Exit::Stopped | Exit::OutOfTime) => Ok(exit),
+            exit @ (Exit::Stopped(_) | Exit::OutOfTime(_)) => Ok(exit),
         }
     }
 }

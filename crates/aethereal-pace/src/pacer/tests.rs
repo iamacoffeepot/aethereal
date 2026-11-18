@@ -6,7 +6,7 @@ use super::*;
 use aethereal_actor::{ActorRef, Actors, Tick, Time};
 use aethereal_data::{DecodeError, Encode, Kind, KindId};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
-use aethereal_substrate::{Engine, Lifecycle};
+use aethereal_substrate::{Engine, Halted, Lifecycle};
 use core::time::Duration;
 use std::num::NonZeroUsize;
 
@@ -170,7 +170,7 @@ fn a_clock_set_running_or_a_program_stopping_refuses_the_advances_held() -> Resu
     harness.host().engine().quit();
     let noted = clocked(&mut harness, &mut clockwork, 4)?;
     assert_eq!(noted, [Noted::Advanced(Advanced::Refused(Unadvanced::Stopping))]);
-    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped);
+    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped(Halted::Quit));
 
     Ok(())
 }

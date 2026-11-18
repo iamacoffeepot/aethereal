@@ -304,7 +304,7 @@ impl Running {
                 self.drawing.ask_next();
                 return;
             }
-            Lifecycle::Waiting | Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Unbooted(_) => return,
+            Lifecycle::Waiting | Lifecycle::Stopping(_) | Lifecycle::Stopped(_) | Lifecycle::Unbooted(_) => return,
         }
         // Taken before the clock is read: a program that starts held asked to be as its pacer began, before the first
         // frame, and a cycle run on the chassis's clock first would put a delta no advance chose into its clock.
@@ -386,16 +386,16 @@ impl Running {
         self.step_until_idle(event_loop);
         let within = u64::try_from(stop_within.as_nanos()).unwrap_or(u64::MAX);
         match (self.headless.engine().lifecycle(), self.stopping) {
-            (Lifecycle::Stopped, _) => Next::End(Ok(Exit::Stopped)),
+            (Lifecycle::Stopped(halted), _) => Next::End(Ok(Exit::Stopped(halted))),
             // A program that did not boot is reported as one that did not start (ADR-0029).
             (Lifecycle::Unbooted(why), _) => Next::End(Err(Failed::Unstarted(ProgramError::Unbooted(why)))),
-            (Lifecycle::Stopping, Stopping::Not) => {
+            (Lifecycle::Stopping(_), Stopping::Not) => {
                 let by = now.saturating_add(within);
                 self.stopping = Stopping::By(by);
                 Next::LookAt(by)
             }
-            (Lifecycle::Stopping, Stopping::By(by)) if now >= by => Next::End(Ok(Exit::OutOfTime)),
-            (Lifecycle::Stopping, Stopping::By(by)) => Next::LookAt(by),
+            (Lifecycle::Stopping(halted), Stopping::By(by)) if now >= by => Next::End(Ok(Exit::OutOfTime(halted))),
+            (Lifecycle::Stopping(_), Stopping::By(by)) => Next::LookAt(by),
             (Lifecycle::Running, _) if !self.clockwork.runs() => self.owed(event_loop, now),
             (Lifecycle::Running, _) => self.paced(event_loop, now),
             (Lifecycle::Waiting | Lifecycle::Booting, _) => Next::Wait,

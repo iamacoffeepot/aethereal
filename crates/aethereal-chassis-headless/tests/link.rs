@@ -14,7 +14,7 @@ use aethereal_link::{
 use aethereal_process::Processes;
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host, Lifecycle};
+use aethereal_substrate::{EngineSettings, Halted, Host, Lifecycle};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{Call, Called, Caller, Offer, Offered, Output, ToolSheet, Tooling, Tools, Withdraw};
 use std::io::{Read as _, Write as _};
@@ -787,10 +787,10 @@ fn start(name: &str, revision: u64, tools: Vec<ToolSheet>) -> Vec<Up> {
 fn stops(harness: &mut Harness<Headless>) -> bool {
     waiting::until(BUDGET, || {
         harness.step();
-        harness.host().engine().lifecycle() == Lifecycle::Stopped
+        harness.host().engine().lifecycle() == Lifecycle::Stopped(Halted::Quit)
     });
 
-    harness.host().engine().lifecycle() == Lifecycle::Stopped
+    harness.host().engine().lifecycle() == Lifecycle::Stopped(Halted::Quit)
 }
 
 #[test]

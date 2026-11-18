@@ -12,14 +12,16 @@
 //! link_engine -- <those arguments> --name scene --assets DIR`.
 
 use aethereal_chassis_headless::Headless;
-use aethereal_chassis_headless::native::NativeLayers;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::{Files, ReadTool};
 use aethereal_link::{Link, LinkSettings};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox, Tools};
+use std::process::ExitCode;
 
-fn main() {
+#[allow(clippy::print_stderr)] // How the engine ended is written for whoever started it.
+fn main() -> ExitCode {
     let link = LinkSettings::default();
     let engine = EngineSettings { read_limit: link.most_bytes, mail_bytes: 1 << 24, ..EngineSettings::default() };
     let launched = Headless::program()
@@ -30,5 +32,12 @@ fn main() {
         .root::<Files>()
         .root::<Toolbox<(ReadTool, LogsTool), Tools>>()
         .launch("aethereal_engine");
-    assert!(launched.is_ok(), "the engine runs: {launched:?}");
+    match launched {
+        Ok(Launched::Ran(exit)) => {
+            eprintln!("exit={exit:?}");
+            exit.status()
+        }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
+        Err(failed) => panic!("the engine runs: {failed:?}"),
+    }
 }

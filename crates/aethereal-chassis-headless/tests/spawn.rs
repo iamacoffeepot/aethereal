@@ -18,7 +18,7 @@ use aethereal_link::{
 use aethereal_process::{ExitStatus, Processes, ProcessesSettings};
 use aethereal_store::{Binary, CheckIn, CheckedIn, Store, StoreHash, StoreName, StoreSettings, StoredBinary};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{EngineSettings, Host, Lifecycle, Program};
+use aethereal_substrate::{EngineSettings, Halted, Host, Lifecycle, Program};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{Call, Called, Caller, Done, Tooling, Tools};
 use std::io::{self, Read as _, Write as _};
@@ -370,10 +370,10 @@ fn stops(harness: &mut Harness<Headless>, hub: &mut Harness<Headless>) -> bool {
     waiting::until(BUDGET, || {
         harness.step();
         hub.step();
-        harness.host().engine().lifecycle() == Lifecycle::Stopped
+        harness.host().engine().lifecycle() == Lifecycle::Stopped(Halted::Quit)
     });
 
-    harness.host().engine().lifecycle() == Lifecycle::Stopped
+    harness.host().engine().lifecycle() == Lifecycle::Stopped(Halted::Quit)
 }
 
 #[test]
