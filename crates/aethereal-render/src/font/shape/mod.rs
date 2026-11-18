@@ -1,6 +1,7 @@
 //! Shaping, simply (ADR-0052): each character mapped to a glyph by the font's character map, set after the glyph
 //! before it by that glyph's advance, and kerned against it. `\n` breaks a line, and other control characters are not
-//! drawn. A character the font lacks is drawn as its missing glyph, and listed, so that it can be looked for in another
+//! drawn, nor are variation selectors, which choose a form, as text or as emoji, that simple shaping does not. A
+//! character the font lacks is drawn as its missing glyph, and listed, so that it can be looked for in another
 //! font. Scripts that join or reorder are set in their characters' plain forms.
 
 #[cfg(test)]
@@ -82,7 +83,10 @@ impl Metrics {
                 after = After::LineStart;
                 continue;
             }
-            if character.is_control() {
+            let control = character.is_control();
+            let selector = selects_variation(character);
+            let unseen = control || selector;
+            if unseen {
                 continue;
             }
 
@@ -101,6 +105,12 @@ impl Metrics {
 
         Shaped { glyphs, lines, missing, line_height: self.line_metrics().line_height() }
     }
+}
+
+/// Whether `character` is a variation selector: one that asks for the character before it in another form, as
+/// U+FE0F asks for a heart as an emoji. It has no glyph of its own in most fonts, so drawing it would draw a box.
+const fn selects_variation(character: char) -> bool {
+    matches!(character, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
 }
 
 impl ShapedGlyph {

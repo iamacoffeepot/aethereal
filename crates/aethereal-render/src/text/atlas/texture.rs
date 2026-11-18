@@ -1,5 +1,5 @@
-//! The atlas's texture: one `Rgba8` texture, not sRGB, as a distance is read as it was written, owned by the render
-//! root, with the group the glyph program binds it in. Made again larger, or packed again, as the atlas's bookkeeping
+//! The atlas's texture: one `Rgba8` texture, not sRGB, as a distance is read as it was written, and a colour glyph's
+//! sRGB is decoded by the glyph program after its texels are averaged, owned by the render root, with the group the glyph program binds it in. Made again larger, or packed again, as the atlas's bookkeeping
 //! says, and written a glyph at a time as each glyph's job finishes (ADR-0052).
 
 use super::{Arranged, Slot};
@@ -64,12 +64,11 @@ impl AtlasTexture {
         self.texture = texture;
     }
 
-    /// Writes a glyph's field, `rgb`, three bytes a texel row by row, where `slot` lies, its alpha opaque.
-    pub fn write(&self, queue: &wgpu::Queue, slot: Slot, rgb: &[u8]) {
+    /// Writes a glyph's texels, `rgba`, four bytes a texel row by row, where `slot` lies.
+    pub fn write(&self, queue: &wgpu::Queue, slot: Slot, rgba: &[u8]) {
         if slot.field.is_empty() {
             return;
         }
-        let rgba: Vec<u8> = rgb.chunks_exact(3).flat_map(|texel| [texel[0], texel[1], texel[2], u8::MAX]).collect();
         let (width, height) = (slot.field.width, slot.field.height);
         let at = wgpu::TexelCopyTextureInfo {
             texture: &self.texture,
@@ -79,7 +78,7 @@ impl AtlasTexture {
         };
         let layout =
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) };
-        queue.write_texture(at, &rgba, layout, wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
+        queue.write_texture(at, rgba, layout, wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
     }
 }
 

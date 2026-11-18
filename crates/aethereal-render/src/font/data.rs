@@ -21,6 +21,11 @@ impl<'a> Data<'a> {
         self.bytes.len()
     }
 
+    /// The bytes themselves.
+    pub(super) const fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// Whether there are no bytes.
     pub(super) const fn is_empty(self) -> bool {
         self.bytes.is_empty()

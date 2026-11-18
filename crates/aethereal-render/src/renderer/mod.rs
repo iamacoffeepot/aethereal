@@ -910,9 +910,7 @@ impl Receives<On<Render>> for Renderer {
         for mapping in mappings {
             control.push(mapping);
         }
-        if let Some((job, generating)) = wanted {
-            turn.run(&job, &generating)?;
-        }
+        self.generate(turn, wanted)?;
         if let (Some(stats), Watch::Watched { subscribers, .. }) = (stats, &self.watch) {
             turn.to(subscribers).send(&stats)?;
         }

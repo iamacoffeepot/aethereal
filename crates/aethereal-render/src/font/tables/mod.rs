@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+pub mod cblc;
 pub mod cmap;
 pub mod glyf;
 pub mod gpos;
