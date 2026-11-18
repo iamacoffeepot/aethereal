@@ -565,6 +565,7 @@ impl Actor for Claimer {
 
 impl Handles<Claim> for Claimer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, claim: Claim, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let by = turn.sender().id().bits();

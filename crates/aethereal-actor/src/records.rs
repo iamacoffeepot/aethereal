@@ -394,7 +394,8 @@ pub struct SendRecord {
 pub enum Requesting {
     /// Nothing the guest says: a tell.
     Not,
-    /// It replies to the item its turn handles, which answers it when it is a request (ADR-0017).
+    /// It is the answer the handler returned to the request its turn handles, sent as the handler returned
+    /// (ADR-0017, ADR-0059).
     Replies,
     /// It asks a request, to be answered with a kind `answer` names, the context the guest keeps for it where `context`
     /// says, due as `due` says (ADR-0041).

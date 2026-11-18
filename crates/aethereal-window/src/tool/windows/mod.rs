@@ -7,7 +7,7 @@ mod tests;
 use crate::windows::{ListWindows, ModeSet, MoveWindow, Moved, ResizeWindow, Resized, SetMode, WindowList, Windows};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -102,46 +102,47 @@ impl Tool for WindowTool {
 /// Holds the call, and asks the window root what it was called with: answered once the root has answered.
 impl Handles<Call> for WindowTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let placing = Placing { call: self.next };
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
         match call.tool.as_str() {
             "list_windows" => {
                 let Ok(list) = from_bytes::<ListWindows>(input, &mut budget) else {
-                    return untaken(turn);
+                    return Ok(untaken());
                 };
                 turn.to(path::<Windows>(())).ask(&list, &placing)?;
             }
             "resize_window" => {
                 let Ok(resize) = from_bytes::<ResizeWindow>(input, &mut budget) else {
-                    return untaken(turn);
+                    return Ok(untaken());
                 };
                 turn.to(path::<Windows>(())).ask(&resize, &placing)?;
             }
             "move_window" => {
                 let Ok(moving) = from_bytes::<MoveWindow>(input, &mut budget) else {
-                    return untaken(turn);
+                    return Ok(untaken());
                 };
                 turn.to(path::<Windows>(())).ask(&moving, &placing)?;
             }
             "set_window_mode" => {
                 let Ok(set) = from_bytes::<SetMode>(input, &mut budget) else {
-                    return untaken(turn);
+                    return Ok(untaken());
                 };
                 turn.to(path::<Windows>(())).ask(&set, &placing)?;
             }
             _ => {
                 let why = "this worker serves list_windows, resize_window, move_window, and set_window_mode";
-                turn.reply(&Called::Refused(String::from(why)))?;
-                return Ok(());
+                return Ok(Reply::Now(Called::Refused(String::from(why))));
             }
         }
         self.next += 1;
-        self.calls.insert(placing.call, turn.hold()?);
+        let (held, later) = turn.hold();
+        self.calls.insert(placing.call, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 
@@ -206,9 +207,7 @@ impl WindowTool {
     }
 }
 
-/// Refuses a call whose input is not what its tool takes.
-fn untaken(turn: &mut Turn<'_, WindowTool>) -> Result<(), Fault> {
-    turn.reply(&Called::Refused(String::from("that is not what the tool takes")))?;
-
-    Ok(())
+/// A call whose input is not what its tool takes, refused at once.
+fn untaken() -> Reply<Called> {
+    Reply::Now(Called::Refused(String::from("that is not what the tool takes")))
 }

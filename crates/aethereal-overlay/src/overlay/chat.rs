@@ -100,6 +100,7 @@ fn cut(printed: &str) -> &str {
 /// any that told it before.
 impl Handles<Relays> for Overlay {
     type From = Speaks<(Chat,)>;
+    type Returns = ();
 
     fn handle(&mut self, _: Relays, turn: &mut Turn<'_, Self, Speaks<(Chat,)>>) -> Result<(), Fault> {
         self.linking = Linking::Linked(*turn.from());
@@ -112,6 +113,7 @@ impl Handles<Relays> for Overlay {
 /// chat's words, as only an engine the hub trusts is shown the sessions.
 impl Handles<ShowTabs> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let first = !self.chats.is_listed();
@@ -128,6 +130,7 @@ impl Handles<ShowTabs> for Overlay {
 /// Events of a tab open, taken into its transcript.
 impl Handles<ShowEvents> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, shown: ShowEvents, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.chats.shown(shown.session, &shown.events);
@@ -139,6 +142,7 @@ impl Handles<ShowEvents> for Overlay {
 /// An ask that waits on the owner, kept until answered.
 impl Handles<ShowAsk> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("session {} asks: {}", ask.session, ask.what));

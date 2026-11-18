@@ -3,7 +3,7 @@
 use crate::jobs::{Launch, Launched, Launching, Raise, Raised, Raising};
 use crate::{Environment, Exits, Invocation, Pipe, PipeConfig, Process, ProcessConfig, Signal, Stdio};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Level,
     ProtocolRef, Receives, Spawn, Top, Turn,
 };
 use aethereal_data::{Bound, Plain};
@@ -77,11 +77,6 @@ impl ChildOf for Processes {
     type Parent = Top;
 }
 
-/// Asked at its typed path, it answers a start once its program is running, or refused.
-impl Carries<Start> for Processes {
-    type Answers = (Started,);
-}
-
 impl Actor for Processes {
     type Config = ProcessesConfig;
     type Key = ();
@@ -100,9 +95,10 @@ impl Actor for Processes {
 
 impl Handles<Start> for Processes {
     type From = Anyone;
+    type Returns = Later<Started>;
 
-    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, start: Start, turn: &mut Turn<'_, Self>) -> Result<Later<Started>, Fault> {
+        let (held, later) = turn.hold();
         let process = self.next;
         self.next += 1;
         let invocation = Invocation {
@@ -115,7 +111,7 @@ impl Handles<Start> for Processes {
         turn.run(&Launch { process, invocation }, &Launching { process })?;
         self.waiting.insert(process, Waiting { held, starter: start.starter });
 
-        Ok(())
+        Ok(later)
     }
 }
 

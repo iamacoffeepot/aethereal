@@ -3,8 +3,8 @@
 //! plays to.
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Receives,
-    Top, Turn, Unanswered, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Receives, Top,
+    Turn, Unanswered, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -560,10 +560,6 @@ impl ChildOf for Asker {
     type Parent = Top;
 }
 
-impl Carries<CallWithin> for Asker {
-    type Answers = (Heard,);
-}
-
 impl Actor for Asker {
     type Config = AskerConfig;
     type Key = ();
@@ -582,13 +578,14 @@ impl Actor for Asker {
 
 impl Handles<CallWithin> for Asker {
     type From = Anyone;
+    type Returns = Later<Heard>;
 
-    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self>) -> Result<Later<Heard>, Fault> {
+        let (held, later) = turn.hold();
         let due = turn.now() + Duration::from_millis(asked.within_millis);
         turn.to(path::<Engine>(0)).within(due).ask(&asked.call, &Relaying { held })?;
 
-        Ok(())
+        Ok(later)
     }
 }
 

@@ -5,8 +5,7 @@
 
 use crate::Shut;
 use aethereal_actor::{
-    Actor, Anyone, Beginning, Bytes, Carries, ChildOf, Ending, Fault, Handles, Portability, Top, Turn, Upgrade,
-    Upgrades,
+    Actor, Anyone, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Portability, Top, Turn, Upgrade, Upgrades,
 };
 #[cfg(echo_v2)]
 use aethereal_actor::{Portable, TakeOverError};
@@ -146,25 +145,21 @@ impl Upgrades for Mover {
     }
 }
 
-impl Carries<Probe> for Mover {
-    type Answers = (Report,);
-}
-
 impl Handles<Probe> for Mover {
     type From = Anyone;
+    type Returns = Report;
 
-    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<Report, Fault> {
         self.count += 1;
         let kept = self.kept.iter().map(|blob| u64::try_from(turn.read(blob).len()).unwrap_or(u64::MAX)).sum();
-        let report = Report { version: VERSION, count: self.count, first_move: self.first_move(), kept };
-        turn.reply(&report)?;
 
-        Ok(())
+        Ok(Report { version: VERSION, count: self.count, first_move: self.first_move(), kept })
     }
 }
 
 impl Handles<Keep> for Mover {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keep: Keep, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.kept.push(keep.blob);
@@ -175,6 +170,7 @@ impl Handles<Keep> for Mover {
 
 impl Handles<LetGo> for Mover {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.holds = false;
@@ -185,6 +181,7 @@ impl Handles<LetGo> for Mover {
 
 impl Handles<Shut> for Mover {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -227,18 +224,14 @@ impl Upgrades for Keeper {
     }
 }
 
-impl Carries<Probe> for Keeper {
-    type Answers = (Report,);
-}
-
 impl Handles<Probe> for Keeper {
     type From = Anyone;
+    type Returns = Report;
 
-    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
         self.count += 1;
-        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
 
-        Ok(())
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
     }
 }
 
@@ -330,23 +323,20 @@ impl Upgrades for Stubborn {
     }
 }
 
-impl Carries<Probe> for Stubborn {
-    type Answers = (Report,);
-}
-
 impl Handles<Probe> for Stubborn {
     type From = Anyone;
+    type Returns = Report;
 
-    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
         self.answer();
-        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
 
-        Ok(())
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
     }
 }
 
 impl Handles<LetGo> for Stubborn {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.holds = false;
@@ -412,23 +402,20 @@ impl Upgrades for Breaker {
     }
 }
 
-impl Carries<Probe> for Breaker {
-    type Answers = (Report,);
-}
-
 impl Handles<Probe> for Breaker {
     type From = Anyone;
+    type Returns = Report;
 
-    fn handle(&mut self, _: Probe, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: Probe, _: &mut Turn<'_, Self>) -> Result<Report, Fault> {
         self.count += 1;
-        turn.reply(&Report { version: VERSION, count: self.count, first_move: false, kept: 0 })?;
 
-        Ok(())
+        Ok(Report { version: VERSION, count: self.count, first_move: false, kept: 0 })
     }
 }
 
 impl Handles<LetGo> for Breaker {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: LetGo, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.holds = false;

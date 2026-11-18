@@ -137,6 +137,7 @@ impl Actor for Door {
 
 impl Handles<Knock> for Door {
     type From = Itself;
+    type Returns = ();
 
     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
         turn.log(Level::Info, "knocked");
@@ -147,6 +148,7 @@ impl Handles<Knock> for Door {
 
 impl Handles<Shut> for Door {
     type From = Parent;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self, Parent>) -> Result<(), Fault> {
         turn.log(Level::Info, "shut");

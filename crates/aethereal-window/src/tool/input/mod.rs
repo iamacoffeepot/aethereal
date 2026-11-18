@@ -7,7 +7,7 @@ use crate::perform::{Input, MOST_INPUTS, Perform, Performed, Unperformed, unperf
 use crate::window::{Window, WindowId};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, Unanswered, path,
+    Receives, Reply, Turn, Unanswered, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -112,11 +112,11 @@ impl Tool for InputTool {
 /// is. A call of no inputs is answered at once, as there is nothing to perform.
 impl Handles<Call> for InputTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(asked) = from_bytes::<SendInput>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            turn.reply(&Called::Refused(String::from("that is no input to send")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(String::from("that is no input to send"))));
         };
         let SendInput { window, inputs } = asked;
         let checked = unperformable(&inputs).map_or(Performed::Performed, Performed::Refused);
@@ -124,8 +124,7 @@ impl Handles<Call> for InputTool {
         let is_refused = checked != Performed::Performed;
         if is_empty || is_refused {
             let called = Called::output(turn, to_bytes(&checked)?);
-            turn.reply(&called)?;
-            return Ok(());
+            return Ok(Reply::Now(called));
         }
         let call = self.next;
         self.next += 1;
@@ -134,9 +133,10 @@ impl Handles<Call> for InputTool {
             turn.to(path::<Window>(window)).ask(&Perform { inputs: vec![input] }, &Sending { call, at })?;
             last = at;
         }
-        self.calls.insert(call, Sent { held: turn.hold()?, last });
+        let (held, later) = turn.hold();
+        self.calls.insert(call, Sent { held, last });
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

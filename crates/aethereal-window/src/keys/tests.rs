@@ -202,6 +202,7 @@ impl Actor for Typist {
 
 impl Handles<Event> for Typist {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -210,6 +211,7 @@ impl Handles<Event> for Typist {
 
 impl Handles<Keyed> for Typist {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Keyed, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())

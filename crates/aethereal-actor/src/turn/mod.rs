@@ -26,9 +26,10 @@ use crate::resource::Reach;
 use crate::{
     Actor, ActorRef, Actors, ActorsWriter, Arena, Asking, ChildOf, Children, Claim, Claimed, Code, Declared, DependsOn,
     Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances, Keeping,
-    Keeps, Kinds, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf, Parented,
-    Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber, Seated, Seats,
-    Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within, Written,
+    Keeps, Kinds, Later, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
+    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
+    Seated, Seats, Seen, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What, Within,
+    Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -599,44 +600,56 @@ struct Seat<'a> {
 
 /// What a turn owes the source of the item it handles (ADR-0017).
 ///
-/// It is read only when the turn replies, so a turn that does not reply reads nothing of it.
+/// It is read only when the turn answers or holds, so a turn that does neither reads nothing of it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owing {
     /// What the item is to a request, as its mail says: an answer when it asks one.
     Item(Tie),
-    /// Nothing more: it has answered the request.
+    /// Nothing more: it has answered the request, or held it.
     Answered,
+    /// It held what it did not owe: its item no request, or one it had answered or held. The turn fails with
+    /// [`NotOwed`] once its handler returns.
+    Misheld,
 }
 
 impl Owing {
     /// What a turn that owes nothing owes.
     pub const NOTHING: Self = Self::Item(Tie::TELL);
 
-    /// The count of the request the turn holds, and what it owes after it: nothing, for a later turn answers it.
-    /// Refused when the item is no request, or it is answered.
-    fn hold(self) -> Result<(u64, Self), Fault> {
+    /// The count of the request the turn holds: refused when the item is no request, or it is answered or held.
+    fn held(self) -> Result<u64, NotOwed> {
         let Self::Item(tie) = self else {
-            return Err(Fault::bare::<NotOwed>());
+            return Err(NotOwed);
         };
         let Tied::Asks(request) = tie.read() else {
-            return Err(Fault::bare::<NotOwed>());
+            return Err(NotOwed);
         };
 
-        Ok((request, Self::Answered))
+        Ok(request)
     }
 
-    /// What a reply to the source carries, and what the turn owes after it: refused once the request is answered.
-    fn reply(self) -> Result<(Tie, Self), EncodeError> {
+    /// The count of the request an answer answers: refused once the request is answered or held, and none when the
+    /// item asked for no answer, as a request's kind told does.
+    fn answers(self) -> Result<Replying, EncodeError> {
         let Self::Item(tie) = self else {
             return Err(EncodeError::Answered);
         };
-        let replied = match tie.read() {
-            Tied::Asks(count) => (Tie::answers(count), Self::Answered),
-            Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => (Tie::TELL, self),
+        let answers = match tie.read() {
+            Tied::Asks(count) => Replying::Request(count),
+            Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => Replying::Nothing,
         };
 
-        Ok(replied)
+        Ok(answers)
     }
+}
+
+/// What an answer a turn's handler returns answers.
+#[derive(Clone, Copy)]
+enum Replying {
+    /// The request of this count, which the item asked.
+    Request(u64),
+    /// Nothing asked for it: it is dropped.
+    Nothing,
 }
 
 impl Seat<'_> {
@@ -780,16 +793,16 @@ impl Seat<'_> {
         self.write_after(to, mail, is_like_last, Tie::TELL, Due::Never)
     }
 
-    /// Replies `mail` to `to`, the source of the item handled: the answer to it, when it is a request this turn has
-    /// not answered yet, and refused when it has (ADR-0017).
+    /// Answers `mail` to `to`, the source of the item handled, as its handler returned it: the answer to it, when it
+    /// is a request this turn has not answered or held, and refused when it has. An answer to mail that asked for
+    /// none is dropped, as nothing waits for it (ADR-0017, ADR-0059).
     fn reply<K: Kind + Encode<Actors>>(&mut self, to: Seated, mail: &K) -> Result<(), EncodeError> {
-        let (tie, owing) = self.owing.reply()?;
-        // A reply that answers nothing is a tell, and joins a run as one does; an answer is a piece of its own.
-        let is_tell = tie == Tie::TELL;
-        let is_like_last =
-            is_tell && self.last_send().is_some_and(|(last, kind)| last == to && kind == KindId::of::<K>());
-        self.write_after(to, mail, is_like_last, tie, Due::Never)?;
-        self.owing = owing;
+        let Replying::Request(count) = self.owing.answers()? else {
+            return Ok(());
+        };
+        // An answer is a piece of its own, never part of a run.
+        self.write_after(to, mail, false, Tie::answers(count), Due::Never)?;
+        self.owing = Owing::Answered;
 
         Ok(())
     }
@@ -862,14 +875,25 @@ impl Seat<'_> {
     }
 
     /// Holds the request the turn handles, from `source`, to be answered with a kind `answer` names in a later turn
-    /// (ADR-0017).
-    fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, Fault> {
-        let (request, owing) = self.owing.hold()?;
-        self.owing = owing;
+    /// (ADR-0017): refused when the turn owes it no answer.
+    fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, NotOwed> {
+        let request = self.owing.held()?;
+        self.owing = Owing::Answered;
         let owed = Owed { holder: self.me, asker: source, request };
         self.asked.owes.push(Owes::Holds { owed, answer });
 
         Ok(owed)
+    }
+
+    /// Notes that the turn held what it did not owe, so it fails once its handler returns, and answers the debt the
+    /// held request it is handed names: the request of the count nought, which no actor sends, so letting it go lets
+    /// go of no debt (ADR-0017).
+    #[cold]
+    #[inline(never)]
+    fn misheld(&mut self, source: Seated) -> Owed {
+        self.owing = Owing::Misheld;
+
+        Owed { holder: self.me, asker: source, request: 0 }
     }
 
     /// Answers the debt `owed` with `mail`: on the chain of this turn, checked by the engine once the turn has run to
@@ -1579,6 +1603,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     ///
     /// impl Handles<Greet> for Greeter {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, _: Greet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let (turn, pool) = turn.split();
@@ -1610,18 +1635,27 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
         self.doing.to(target)
     }
 
-    /// Replies `mail` to the source of the item this turn handles, as [`Doing::reply`] does, called on the turn whole
-    /// so the mail may be built from what the turn reads.
-    ///
-    /// # Errors
-    ///
-    /// As [`Doing::reply`].
-    pub fn reply<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
-        self.doing.reply(mail)
-    }
-
     /// Answers the request `held` with `mail`, as [`Doing::answer`] does, called on the turn whole so the mail may be
     /// built from what the turn reads.
+    ///
+    /// An answer of another kind than the one the request was held to be answered with does not build:
+    ///
+    /// ```compile_fail,E0308
+    /// use aethereal_actor::{Held, Turn};
+    /// use aethereal_data::{EncodeError, Plain};
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.tile_is")]
+    /// struct TileIs;
+    ///
+    /// #[derive(Plain)]
+    /// #[kind(name = "aether.doc.no_tile")]
+    /// struct NoTile;
+    ///
+    /// fn answer<Me>(turn: &mut Turn<'_, Me>, held: Held<TileIs>) -> Result<(), EncodeError> {
+    ///     turn.answer(held, &NoTile)
+    /// }
+    /// ```
     ///
     /// # Errors
     ///
@@ -1667,6 +1701,7 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     ///
     /// impl Handles<Nap> for Napper {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, nap: Nap, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let until = turn.now();
@@ -1711,7 +1746,7 @@ pub struct Doing<'a, Me, F: Guard<Me> = Anyone> {
     seat: Seat<'a>,
     /// The instances of the actor's part, which a child spawned from a blob begins in (ADR-0015).
     instances: &'a mut Instances,
-    /// The actor the item being handled comes from: whom a reply reaches.
+    /// The actor the item being handled comes from: whom the answer to a request reaches.
     source: Seated,
     /// The source as the handler's guard checked it (ADR-0058).
     from: F::Sent,
@@ -1756,6 +1791,7 @@ impl<'a, Me, F: Guard<Me>> Doing<'a, Me, F> {
     ///
     /// impl Handles<Knock> for Door {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, _: Knock, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.to(turn.me()).send(&Knock)?.send(&Knock)?;
@@ -1896,6 +1932,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///
     /// impl Handles<Look> for Watcher {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, _: Look, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         let me = turn.me();
@@ -1949,6 +1986,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     ///
     /// impl Handles<Wind> for Clock {
     ///     type From = Anyone;
+    ///     type Returns = ();
     ///
     ///     fn handle(&mut self, _: Wind, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
     ///         turn.subscribe::<Tick>();
@@ -1973,9 +2011,22 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
         self.seat.ask(What::Unsubscribe(KindId::of::<K>()));
     }
 
-    /// Sends `mail` to the source of the item being handled. It is delivered after the turn, in a later step.
-    pub fn reply<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
+    /// Answers `mail`, the answer its handler returned, to the source of the item being handled: what the engine does
+    /// as the handler returns (ADR-0059).
+    pub(crate) fn answer_now<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
         self.seat.reply(self.source, mail)
+    }
+
+    /// How the turn ends, once its handler has returned and its answer is sent: it fails with [`NotOwed`] when it held
+    /// what it did not owe (ADR-0017).
+    #[allow(clippy::inline_always, reason = "once for every turn, after the call to the handler")]
+    #[inline(always)]
+    pub(crate) fn settled(&self) -> Result<(), Fault> {
+        if self.seat.owing == Owing::Misheld {
+            return Err(Fault::bare::<NotOwed>());
+        }
+
+        Ok(())
     }
 
     /// Cancels the job `job` this actor ran: once the turn has run, the context it kept is let go of, so no turn is
@@ -1986,16 +2037,20 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
         self.seat.cancel(job);
     }
 
-    /// Holds the request this turn handles, to answer with an `A` in a later turn, through
-    /// [`answer`](Self::answer) (ADR-0017). The turn then owes the request nothing, and a reply to it is refused.
+    /// Holds the request this turn handles, to answer with an `A` in a later turn through [`answer`](Self::answer)
+    /// and the [`Held<A>`] it answers, beside the [`Later<A>`] the request's handler returns (ADR-0017, ADR-0059). The
+    /// turn then owes the request nothing now, and an answer returned now is refused.
     ///
-    /// # Errors
-    ///
-    /// [`NotOwed`] when the mail this turn handles is no request, or this turn has answered or held it already.
-    pub fn hold<A: Kind>(&mut self) -> Result<Held<A>, Fault> {
-        let owed = self.seat.hold(self.source, KindId::of::<A>())?;
+    /// It cannot fail. A turn that holds what it does not owe, its item no request, or one it has held or answered,
+    /// fails with [`NotOwed`] once its handler returns, and the `Held` it is handed names no debt.
+    pub fn hold<A: Kind>(&mut self) -> (Held<A>, Later<A>) {
+        let source = self.source;
+        let owed = match self.seat.hold(source, KindId::of::<A>()) {
+            Ok(owed) => owed,
+            Err(NotOwed) => self.seat.misheld(source),
+        };
 
-        Ok(Held::new(owed, self.seat.due))
+        (Held::new(owed, self.seat.due), Later::new())
     }
 
     /// Answers the request `held` holds with `mail`, on this turn's chain (ADR-0017). Its asker held it to be answered
@@ -2191,7 +2246,7 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// [`refused`](crate::Handles::refused) does.
     #[cold]
     #[inline(never)]
-    pub fn refuse<K: Kind>(&mut self, _: &K) -> Result<(), Fault> {
+    pub(crate) fn refuse<K: Kind>(&mut self) {
         let sender = self.source;
         let kind = &K::NAME;
         let of = self.seat.declared_at(sender.id).map_or("an unknown type", |declared| declared.name().as_str());
@@ -2202,8 +2257,6 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
             None => self.log(Level::Warn, format_args!("refused {kind} from {sender:?}, of {of}")),
         }
         self.seat.ask(What::Unread(Unreadable::Refused));
-
-        Ok(())
     }
 
     /// The id of the child `segment` names beneath the actor `parent` refers to, whether one stands there or not: what
@@ -2830,15 +2883,12 @@ impl<'a, Me> Ending<'a, Me> {
     /// #     }
     /// # }
     /// #
-    /// # impl Carries<Hello> for Greeter {
-    /// #     type Answers = (Hi,);
-    /// # }
-    /// #
     /// # impl Handles<Hello> for Greeter {
     /// #     type From = Anyone;
+    /// #     type Returns = Hi;
     /// #
-    /// #     fn handle(&mut self, _: Hello, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-    /// #         Ok(turn.reply(&Hi)?)
+    /// #     fn handle(&mut self, _: Hello, _: &mut Turn<'_, Self>) -> Result<Hi, Fault> {
+    /// #         Ok(Hi)
     /// #     }
     /// # }
     /// #

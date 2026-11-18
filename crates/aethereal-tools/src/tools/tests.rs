@@ -66,17 +66,16 @@ impl Tool for Length {
 
 impl Handles<Call> for Length {
     type From = Anyone;
+    type Returns = Called;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         let said = from_bytes::<Say>(turn.read(&call.input), &mut Budget::new(1 << 16))
             .map(|say| Said { length: u32::try_from(say.text.len()).unwrap_or(u32::MAX) });
         let called = match said {
             Ok(said) => Called::output(turn, to_bytes(&said)?),
             Err(why) => Called::Refused(format!("the input did not read: {why:?}")),
         };
-        turn.reply(&called)?;
-
-        Ok(())
+        Ok(called)
     }
 }
 

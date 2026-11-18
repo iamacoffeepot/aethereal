@@ -347,46 +347,50 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn gather(&mut self, gather: Gather, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
+    pub fn gather(
+        &mut self,
+        gather: Gather,
+        turn: &mut Turn<'_, S>,
+    ) -> Result<aethereal_actor::Reply<Gathered>, Fault> {
         let request = gather.request();
         let found = self.connections.iter_mut().find(|(_, connection)| connection.is_out(request));
         let Some((&number, connection)) = found else {
-            return Ok(turn.reply(&Gathered::Busy)?);
+            return Ok(aethereal_actor::Reply::Now(Gathered::Busy));
         };
         let Phase::Out(out) = &mut connection.phase else {
-            return Ok(turn.reply(&Gathered::Busy)?);
+            return Ok(aethereal_actor::Reply::Now(Gathered::Busy));
         };
         let left = match out.body {
             Inflow::Unread { left, .. } => left,
             Inflow::Gathering { .. } | Inflow::Streaming { .. } | Inflow::Read { .. } => {
-                return Ok(turn.reply(&Gathered::Busy)?);
+                return Ok(aethereal_actor::Reply::Now(Gathered::Busy));
             }
             Inflow::Bodiless { since } => {
                 let Ok(bytes) = turn.put(Vec::new()) else {
-                    turn.reply(&Gathered::HungUp(HungUp::Shut))?;
-                    return self.unstored(number, turn);
+                    self.unstored(number, turn)?;
+                    return Ok(aethereal_actor::Reply::Now(Gathered::HungUp(HungUp::Shut)));
                 };
                 out.body = Inflow::Read { since };
-                return Ok(turn.reply(&Gathered::Whole(bytes))?);
+                return Ok(aethereal_actor::Reply::Now(Gathered::Whole(bytes)));
             }
         };
         let most = u64::from(gather.most_bytes);
 
         let is_too_large = matches!(left, Body::Length { left } if left > most);
         if is_too_large {
-            turn.reply(&Gathered::TooLarge)?;
             out.owed.closes = true;
             out.body = Inflow::Read { since: turn.now() };
-            return connection.time(number, &self.settings, turn);
+            connection.time(number, &self.settings, turn)?;
+            return Ok(aethereal_actor::Reply::Now(Gathered::TooLarge));
         }
 
         let continues = out.owed.continues;
         let is_unstored = continues && !write_continue(connection.accepted, number, turn)?;
         if is_unstored {
-            turn.reply(&Gathered::HungUp(HungUp::Shut))?;
-            return self.unstored(number, turn);
+            self.unstored(number, turn)?;
+            return Ok(aethereal_actor::Reply::Now(Gathered::HungUp(HungUp::Shut)));
         }
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let room = match left {
             Body::Length { left } => left,
             Body::Chunked { .. } | Body::Close => u64::from(self.settings.chunk_bytes),
@@ -395,8 +399,9 @@ where
         let passing = Passing::Through;
         out.body = Inflow::Gathering { left, gathered, most, held, moved: turn.now(), passing };
         connection.time(number, &self.settings, turn)?;
+        self.gathered(number, turn)?;
 
-        self.gathered(number, turn)
+        Ok(aethereal_actor::Reply::Later(later))
     }
 
     /// Reads on the body the connection numbered `number` gathers, from what it has buffered: what is decoded passes

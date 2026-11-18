@@ -183,6 +183,7 @@ impl Sessions {
 
 impl Handles<Joined> for Sessions {
     type From = Anyone;
+    type Returns = ();
 
     /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
     /// sender that takes nothing an engine is shown, one that names an engine another actor joined as, and one joined
@@ -231,6 +232,7 @@ impl Receives<Ended> for Sessions {
 
 impl Handles<Chatted> for Sessions {
     type From = Anyone;
+    type Returns = ();
 
     /// What a trusted engine's owner did: taken only from the actor that joined as that engine, and done once the
     /// capability has found its sessions.

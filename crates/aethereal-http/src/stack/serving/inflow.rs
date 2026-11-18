@@ -12,8 +12,8 @@ use crate::stack::request_head::Refusal;
 use crate::stack::{BodyBytes, BodyRead, InboundBody, OutboundBody, SourceEnd};
 use crate::stack::{InboundPart, InboundParts, PartStep, WalkedBy};
 use aethereal_actor::{
-    Answer, Bytes, Ended, Enough, Fault, Handles, Level, More, Number, Open, Part, Receives, Slept, StreamKey, Turn,
-    Unsent,
+    Answer, Bytes, Ended, Enough, Fault, Handles, Later, Level, More, Number, Open, Part, Receives, Slept, StreamKey,
+    Turn, Unsent,
 };
 use aethereal_tcp::HungUp;
 use aethereal_tcp::Wrote;
@@ -35,12 +35,19 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn open_body(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, S>) -> Result<(), Fault>
+    pub fn open_body(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, S>) -> Result<Later<BodyRead>, Fault>
     where
         S: Receives<Ended>,
     {
-        let (reader, asked) = self.readers.open(turn, open)?;
-        let request = asked.request();
+        let (reader, asked, later) = self.readers.open(turn, open)?;
+        self.start_reading(reader, asked.request(), turn)?;
+
+        Ok(later)
+    }
+
+    /// Starts the stream `reader` opened on the body of the request numbered `request`, or finishes it at once, as
+    /// [`open_body`](Self::open_body) says.
+    fn start_reading(&mut self, reader: StreamKey, request: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
         let found = self.connections.iter().find(|(_, connection)| connection.is_out(request));
         let Some(number) = found.map(|(&number, _)| number) else {
             return self.finish_reader(reader, BodyRead::Busy, turn);

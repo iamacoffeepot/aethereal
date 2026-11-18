@@ -120,6 +120,7 @@ use core::marker::PhantomData;
 ///
 /// impl Handles<Part<Files>> for Reader {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Part<Files>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())
@@ -128,6 +129,7 @@ use core::marker::PhantomData;
 ///
 /// impl Handles<Part<Logs>> for Reader {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Part<Logs>, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())

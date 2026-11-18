@@ -6,8 +6,8 @@ use crate::watch::Notice;
 use crate::{ByActor, child_id, path_id};
 use aethereal_actor::Time;
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anywhere, Carries, ChildOf, Ended, Ending, Fault, Handles, How, Level,
-    Recursive, Spawn, Table, Top, Turn, Unanswered, Why, child, path,
+    Actor, ActorRef, Answer, Answered, Anywhere, ChildOf, Ended, Ending, Fault, Handles, How, Level, Recursive, Spawn,
+    Table, Top, Turn, Unanswered, Why, child, path,
 };
 use aethereal_actor::{Anyone, Entry, Receives};
 use aethereal_data::{Bound, Kind, KindName, Plain};
@@ -210,11 +210,11 @@ enum Order {
     Fail,
     /// Logs this line, sends its parent `Word::Never`, and fails its turn.
     FailLogging(String),
-    /// Answers the sender `Word::Answer`.
+    /// Sends the sender `Word::Answer`.
     Reply,
-    /// Answers the sender `Bounce(2)`, then `Last`.
+    /// Sends the sender `Bounce(2)`, then `Last`.
     Pair,
-    /// Answers the sender one fewer until this is zero.
+    /// Sends the sender one fewer until this is zero.
     Bounce(u64),
     /// Ends what `Pair` began; acting on it does nothing.
     Last,
@@ -654,8 +654,11 @@ impl Actor for Node {
     }
 }
 
+/// A node takes notes from anyone, a child in its closing turn among them, which no guard that reads the table admits
+/// once the child is gone: so what it sends back goes through a cast of the sender to what it sends.
 impl Handles<Note> for Node {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
@@ -672,14 +675,21 @@ impl Handles<Note> for Node {
 
                 return Err(Fault::new(&note)?);
             }
-            Order::Reply => turn.reply(&answer())?,
-            Order::Pair => {
-                turn.reply(&bounce(2))?;
-                turn.reply(&last())?;
+            Order::Reply => {
+                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                    turn.to(sender).send(&answer())?;
+                }
             }
+            Order::Pair => {
+                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                    turn.to(sender).send(&bounce(2))?;
+                    turn.to(sender).send(&last())?;
+                }
+            }
+            Order::Bounce(0) => {}
             Order::Bounce(left) => {
-                if *left > 0 {
-                    turn.reply(&bounce(left - 1))?;
+                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                    turn.to(sender).send(&bounce(left - 1))?;
                 }
             }
             Order::Up => {
@@ -1639,6 +1649,7 @@ impl Actor for Holder {
 
 impl Handles<Note> for Holder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some((order, rest)) = note.parted() else {
@@ -1685,6 +1696,7 @@ impl Handles<Note> for Holder {
 
 impl Handles<Given> for Holder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, given: Given, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = length(turn.read(&given.blob));
@@ -2034,6 +2046,7 @@ impl Actor for Clocked {
 
 impl Handles<Note> for Clocked {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.turns.push(turn.now().nanos());
@@ -2053,6 +2066,7 @@ impl Handles<Note> for Clocked {
 
 impl Handles<Finished> for Clocked {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Finished, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -2247,6 +2261,7 @@ macro_rules! listening {
 
         impl Handles<Note> for $name {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
@@ -2384,15 +2399,12 @@ macro_rules! answering {
             }
         }
 
-        impl Carries<Question> for $name {
-            type Answers = (Reply,);
-        }
-
         impl Handles<Question> for $name {
             type From = Anyone;
+            type Returns = Reply;
 
-            fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-                Ok(turn.reply(&$answers)?)
+            fn handle(&mut self, _: Question, _: &mut Turn<'_, Self>) -> Result<Reply, Fault> {
+                Ok($answers)
             }
         }
     };
@@ -2511,15 +2523,12 @@ impl Actor for Sibyl {
     }
 }
 
-impl Carries<Question> for Sibyl {
-    type Answers = (Reply,);
-}
-
 impl Handles<Question> for Sibyl {
     type From = Anyone;
+    type Returns = Reply;
 
-    fn handle(&mut self, _: Question, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(turn.reply(&Reply::Truth)?)
+    fn handle(&mut self, _: Question, _: &mut Turn<'_, Self>) -> Result<Reply, Fault> {
+        Ok(Reply::Truth)
     }
 }
 
@@ -2622,6 +2631,7 @@ macro_rules! lighthouse {
 
         impl Handles<Note> for $name {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
@@ -2662,6 +2672,7 @@ macro_rules! reaching {
 
         impl Handles<Note> for $name {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())
@@ -2741,6 +2752,7 @@ impl Actor for Harbor {
 
 impl Handles<Note> for Harbor {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -2850,6 +2862,7 @@ impl Actor for Barracks {
 
 impl Handles<Note> for Barracks {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -2885,6 +2898,7 @@ impl Actor for Squad {
 
 impl Handles<Note> for Squad {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(turn.parent()).send(&said(Word::Squad).and(note))?;

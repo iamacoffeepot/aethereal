@@ -4,8 +4,8 @@
 use Name::{A, B, L};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles,
-    More, Number, Open, Part, Receives, Seated, Serving, Spawn, Stream, StreamKey, Streams, Taken, Time, Top, Turn,
-    Unanswered, Unsent,
+    Later, More, Number, Open, Part, Receives, Seated, Serving, Spawn, Stream, StreamKey, Streams, Taken, Time, Top,
+    Turn, Unanswered, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -268,18 +268,18 @@ impl Actor for Library {
     }
 }
 
-/// Opens the stream `open` asks for, to send once credit comes.
+/// Opens the stream `open` asks for, to send once credit comes, and answers it once the stream ends.
 fn serve<S: Ends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
     turn: &mut Turn<'_, Library>,
     open: Open<S>,
-) -> Result<(), Fault> {
-    let (key, asked) = serving.open(turn, open)?;
+) -> Result<Later<S::Done>, Fault> {
+    let (key, asked, later) = serving.open(turn, open)?;
     let (chunks, close_after) = S::asked(asked);
     left.push(Left { key, next: 0, chunks, close_after });
 
-    Ok(())
+    Ok(later)
 }
 
 /// Sends the stream `key` as many chunks as its credit allows, finishing it once the last is sent, or closing the
@@ -348,22 +348,25 @@ fn stop<S: Ends>(
 
 impl Handles<Open<Files>> for Library {
     type From = Anyone;
+    type Returns = Later<ReadDone>;
 
-    fn handle(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self>) -> Result<Later<ReadDone>, Fault> {
         serve(&mut self.files, &mut self.files_left, turn, open)
     }
 }
 
 impl Handles<Open<Logs>> for Library {
     type From = Anyone;
+    type Returns = Later<LogDone>;
 
-    fn handle(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self>) -> Result<Later<LogDone>, Fault> {
         serve(&mut self.logs, &mut self.logs_left, turn, open)
     }
 }
 
 impl Handles<More> for Library {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(key) = self.files.more(turn, &more) {
@@ -379,6 +382,7 @@ impl Handles<More> for Library {
 
 impl Handles<Enough> for Library {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let stopped = stop(&mut self.files, &mut self.files_left, &mut self.served, turn, &enough)?;
@@ -532,6 +536,7 @@ fn opening<S: Ends>(order: Order) -> (S::Open, Tag) {
 
 impl Handles<Order> for Reader {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order.which {
@@ -575,6 +580,7 @@ fn take<S: Ends>(
 
 impl Handles<Part<Files>> for Reader {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Files>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         take(&mut self.files, &mut self.took, turn, part)
@@ -583,6 +589,7 @@ impl Handles<Part<Files>> for Reader {
 
 impl Handles<Part<Logs>> for Reader {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Logs>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         take(&mut self.logs, &mut self.took, turn, part)

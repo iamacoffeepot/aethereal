@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 /// A routes type that lists both its handlers:
 ///
 /// ```
-/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// # use aethereal_http::stack::{FromStack, LayerForm, Request, Response};
 /// # use aethereal_http::{Method, Route, Router, Routes, Status, Unroutable};
@@ -47,19 +47,16 @@ use core::marker::PhantomData;
 /// #             }
 /// #         }
 /// #
-/// #         impl Carries<Request<(), ()>> for $handler {
-/// #             type Answers = (Response,);
-/// #         }
-/// #
 /// #         impl Handles<Request<(), ()>> for $handler {
 /// #             type From = FromStack;
+/// #             type Returns = Response;
 /// #
 /// #             fn handle(
 /// #                 &mut self,
 /// #                 _: Request<(), ()>,
-/// #                 turn: &mut Turn<'_, Self, Self::From>,
-/// #             ) -> Result<(), Fault> {
-/// #                 Ok(turn.reply(&Response::empty(Status::Ok))?)
+/// #                 _: &mut Turn<'_, Self, Self::From>,
+/// #             ) -> Result<Response, Fault> {
+/// #                 Ok(Response::empty(Status::Ok))
 /// #             }
 /// #         }
 /// #     };
@@ -89,7 +86,7 @@ use core::marker::PhantomData;
 /// A route to a handler its routes type does not list does not build, as its router holds no place for it:
 ///
 /// ```compile_fail
-/// # use aethereal_actor::{Actor, Beginning, Carries, ChildOf, Ending, Fault, Handles, Top, Turn, path};
+/// # use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn, path};
 /// # use aethereal_data::Plain;
 /// # use aethereal_http::stack::{FromStack, LayerForm, Request, Response};
 /// # use aethereal_http::{Method, Route, Router, Routes, Status, Unroutable};
@@ -120,19 +117,16 @@ use core::marker::PhantomData;
 /// #             }
 /// #         }
 /// #
-/// #         impl Carries<Request<(), ()>> for $handler {
-/// #             type Answers = (Response,);
-/// #         }
-/// #
 /// #         impl Handles<Request<(), ()>> for $handler {
 /// #             type From = FromStack;
+/// #             type Returns = Response;
 /// #
 /// #             fn handle(
 /// #                 &mut self,
 /// #                 _: Request<(), ()>,
-/// #                 turn: &mut Turn<'_, Self, Self::From>,
-/// #             ) -> Result<(), Fault> {
-/// #                 Ok(turn.reply(&Response::empty(Status::Ok))?)
+/// #                 _: &mut Turn<'_, Self, Self::From>,
+/// #             ) -> Result<Response, Fault> {
+/// #                 Ok(Response::empty(Status::Ok))
 /// #             }
 /// #         }
 /// #     };

@@ -153,15 +153,17 @@ impl Actor for Leaf {
 
 impl Handles<Poke> for Leaf {
     type From = Anyone;
+    type Returns = Poked;
 
-    fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(turn.reply(&Poked)?)
+    fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<Poked, Fault> {
+        Ok(Poked)
     }
 }
 
 /// A leaf takes the answer to a poke, and does nothing with it.
 impl Handles<Poked> for Leaf {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -170,6 +172,7 @@ impl Handles<Poked> for Leaf {
 
 impl Handles<Shut> for Leaf {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
@@ -180,6 +183,7 @@ impl Handles<Shut> for Leaf {
 
 impl Handles<Meet> for Leaf {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Meet { other }: Meet, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(other) = turn.cast::<(Poke,)>(other) {
@@ -253,6 +257,7 @@ impl Actor for Branch {
 /// A branch takes the answer to a poke, and does nothing with it.
 impl Handles<Poked> for Branch {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Poked, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
@@ -478,12 +483,12 @@ fn child_past_the_deepest_path_is_refused() {
 
 #[test]
 fn handler_asks_by_the_kind_of_its_mail() {
-    // Catches mail read as a kind it is not, a send that loses its kind or its target, a reply left naming the
+    // Catches mail read as a kind it is not, a send that loses its kind or its target, an answer left naming the
     // sender instead of the actor the mail came from, and a reference in mail read as another actor.
     let other = seated(9, 5);
     let table = Listed(vec![(other, ActorPath::new("aether.test.other"))]);
     let mut leaf: Box<dyn Runs> = Box::new(Leaf);
-    let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8]| {
+    let handle = |leaf: &mut Box<dyn Runs>, table: &Listed, kind, bytes: &[u8], tie| {
         let mut asked = Asked::new();
         let mut instances = Instances::default();
         let turning = Turning::new(
@@ -498,7 +503,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
             0,
             other,
             CHAIN,
-            Tie::TELL,
+            tie,
             Due::Never,
         );
         let mail =
@@ -516,13 +521,13 @@ fn handler_asks_by_the_kind_of_its_mail() {
         count: 1,
         kind: KindId::of::<Poked>(),
         bytes: NOTHING,
-        tie: Tie::TELL,
+        tie: Tie::answers(1),
         due: Due::Never,
     };
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[]), (Ok(()), vec![poked], Vec::new()));
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[], Tie::asks(1)), (Ok(()), vec![poked], Vec::new()));
     let closed = vec![Effect::new(ME, What::Close)];
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[]), (Ok(()), Vec::new(), closed));
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[]), (Ok(()), Vec::new(), Vec::new()));
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Shut>(), &[], Tie::TELL), (Ok(()), Vec::new(), closed));
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Poked>(), &[], Tie::TELL), (Ok(()), Vec::new(), Vec::new()));
 
     let meet = Written::of(&ErasedActorRef::new(other)).map(|written| written.bytes().to_vec());
     let Ok(meet) = meet else {
@@ -537,7 +542,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
         tie: Tie::TELL,
         due: Due::Never,
     };
-    assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet), (Ok(()), vec![poke], Vec::new()));
+    assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet, Tie::TELL), (Ok(()), vec![poke], Vec::new()));
 }
 
 #[test]
@@ -841,43 +846,70 @@ fn back_to_back_mail_of_one_kind_to_one_receiver_is_one_run() {
     assert_eq!(arena.read(run.piece(2, run.each())), arena.read(alone), "each piece holds a meeting with the third");
 }
 
+/// The turn of `Leaf` handling an item tied as `tie` from `source`, with what it asks put in `asked`.
+fn leaf_turn<'a>(asked: &'a mut Asked, table: &'a Listed, source: Seated, tie: Tie) -> Turn<'a, Leaf> {
+    let instances = Box::leak(Box::default());
+    let turning = Turning::new(
+        ME,
+        &ROOT,
+        Above::Chassis,
+        table,
+        &(),
+        asked,
+        instances,
+        Keeps::Claimed,
+        0,
+        source,
+        CHAIN,
+        tie,
+        Due::Never,
+    );
+
+    turning.declaring::<Leaf, Anyone>(Declared::of::<Leaf>(), ErasedActorRef::new(source))
+}
+
 #[test]
-fn replies_to_a_tell_join_a_run_and_an_answer_stands_alone() {
-    // Catches a reply that answers a request joined to the run of a tell before it, its tie lost in the run, and
-    // replies to a tell each written as a piece of mail of their own.
+fn an_answer_stands_alone_and_answers_only_the_request_handled() {
+    // Catches an answer joined to the run of a send before it, its tie lost in the run; an answer to mail that asked
+    // for none sent back to its source; and a second answer to one request.
     let source = seated(9, 5);
     let table = Listed(vec![(source, ActorPath::new("aether.test.source"))]);
-    let replied = |tie: Tie| {
+    let answered = |tie: Tie| {
         let mut asked = Asked::new();
-        let instances = Box::leak(Box::default());
-        let turning = Turning::new(
-            ME,
-            &ROOT,
-            Above::Chassis,
-            &table,
-            &(),
-            &mut asked,
-            instances,
-            Keeps::Claimed,
-            0,
-            source,
-            CHAIN,
-            tie,
-            Due::Never,
-        );
-        let sender = ErasedActorRef::new(source);
-        let mut turn = turning.declaring::<Leaf, Anyone>(Declared::of::<Leaf>(), sender);
+        let mut turn = leaf_turn(&mut asked, &table, source, tie);
         let sent = turn.to(ActorRef::<Leaf>::new(source)).send(&Poke).is_ok();
-        let first = turn.reply(&Poke).is_ok();
-        let second = tie == Tie::TELL && turn.reply(&Poke).is_ok();
+        let first = turn.answer_now(&Poke).is_ok();
+        let second = turn.answer_now(&Poke).is_ok();
         let seen: Vec<(u32, Tie)> =
             asked.into_parts().0.mailed.iter().map(|mailed| (mailed.bytes.pieces(), mailed.tie)).collect();
 
         (sent && first, second, seen)
     };
 
-    assert_eq!(replied(Tie::TELL), (true, true, vec![(3, Tie::TELL)]));
-    assert_eq!(replied(Tie::asks(7)), (true, false, vec![(1, Tie::TELL), (1, Tie::answers(7))]));
+    assert_eq!(answered(Tie::TELL), (true, true, vec![(1, Tie::TELL)]));
+    assert_eq!(answered(Tie::asks(7)), (true, false, vec![(1, Tie::TELL), (1, Tie::answers(7))]));
+}
+
+#[test]
+fn a_hold_of_what_the_turn_does_not_owe_fails_the_turn() {
+    // Catches a hold that cannot fail letting a turn go on as if it held: a hold of mail that asked for no answer, a
+    // second hold of one request, and an answer returned now after a hold.
+    let source = seated(9, 5);
+    let table = Listed(vec![(source, ActorPath::new("aether.test.source"))]);
+    let settled = |tie: Tie, holds: usize| {
+        let mut asked = Asked::new();
+        let mut turn = leaf_turn(&mut asked, &table, source, tie);
+        let held: Vec<_> = (0..holds).map(|_| turn.hold::<Poked>()).collect();
+        let answered = turn.answer_now(&Poked).is_ok();
+        drop(held);
+
+        (turn.settled().is_ok(), answered)
+    };
+
+    assert_eq!(settled(Tie::asks(7), 0), (true, true));
+    assert_eq!(settled(Tie::asks(7), 1), (true, false));
+    assert_eq!(settled(Tie::asks(7), 2), (false, false));
+    assert_eq!(settled(Tie::TELL, 1), (false, false));
 }
 
 /// A resource, which a guest's host holds a guest to the claims of.

@@ -6,7 +6,7 @@ use crate::engines::randomness::Draw;
 use crate::engines::tokens::Purpose;
 use crate::{Token, Trust};
 use aethereal_actor::Spawn as _;
-use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Held, Level, Turn};
+use aethereal_actor::{ActorRef, Anyone, Fault, Handles, Held, Later, Level, Turn};
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_process::{ExitStatus, Exited, Stop};
 use aethereal_store::Binary;
@@ -107,18 +107,20 @@ enum Terminating {
 
 impl Handles<SpawnFor> for Engines {
     type From = Anyone;
+    type Returns = Later<Spawn>;
 
     /// Holds the request, and draws its engine's token from the host's randomness.
-    fn handle(&mut self, asked: SpawnFor, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, asked: SpawnFor, turn: &mut Turn<'_, Self>) -> Result<Later<Spawn>, Fault> {
+        let (held, later) = turn.hold();
         turn.run(&Draw, &Minting::Spawn { held, spawn: asked.spawn, by: asked.by })?;
 
-        Ok(())
+        Ok(later)
     }
 }
 
 impl Handles<Runs> for Engines {
     type From = Anyone;
+    type Returns = ();
 
     /// One of its spawns runs a build: the token its engine links with is taken from now on. From any other actor, it
     /// is passed over.
@@ -140,6 +142,7 @@ impl Handles<Runs> for Engines {
 
 impl Handles<Spawn> for Engines {
     type From = Anyone;
+    type Returns = ();
 
     /// What one of its spawns came to: the request for it is answered, the first time. From any other actor, it is
     /// passed over.
@@ -159,6 +162,7 @@ impl Handles<Spawn> for Engines {
 
 impl Handles<Exited> for Engines {
     type From = Anyone;
+    type Returns = ();
 
     /// How one of its spawns' programs exited, as the spawn ends: kept, with its binary, among the last `most_exited`,
     /// and the spawn let go of at once, its token with it. From any other actor, it is passed over.
@@ -178,10 +182,11 @@ impl Handles<Exited> for Engines {
 
 impl Handles<TerminateEngine> for Engines {
     type From = Anyone;
+    type Returns = Terminated;
 
     /// A spawned engine's spawn is asked to stop its process; an engine started outside the hub is asked to shut its
     /// link, and ends as its link does. An engine whose token has not been taken is not linked.
-    fn handle(&mut self, terminate: TerminateEngine, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, terminate: TerminateEngine, turn: &mut Turn<'_, Self>) -> Result<Terminated, Fault> {
         let linked = self.linked.get(&terminate.engine).map(Linked::terminating);
         let terminated = match linked {
             Some(Terminating::Spawned(spawned)) => {
@@ -194,9 +199,8 @@ impl Handles<TerminateEngine> for Engines {
             }
             Some(Terminating::Unproven) | None => Terminated::NotLinked,
         };
-        turn.reply(&terminated)?;
 
-        Ok(())
+        Ok(terminated)
     }
 }
 

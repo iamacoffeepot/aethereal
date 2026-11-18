@@ -8,7 +8,7 @@ mod tests;
 use crate::{Call, Called, Output, Tool, ToolSheet, Tooling};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Depends, Each, Ending, Fault, Handles,
-    Held, PathTo, ProtocolRef, ReadTuning, Receives, Rooted, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
+    Held, PathTo, ProtocolRef, ReadTuning, Receives, Reply, Rooted, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path,
 };
 use aethereal_data::config::{Declared, Settings};
 use aethereal_data::{
@@ -116,7 +116,7 @@ macro_rules! tunables {
                     // The tool depends on the roots it lists, as its `Depends` is this list: each is found at its
                     // typed path, and is tuned through what every tunable root takes (ADR-0059).
                     if place == at {
-                        return turn.found(&path::<$name>(())).map(ActorRef::protocol);
+                        return turn.found(&path::<$name>(())).map($name::tunes);
                     }
                     place += 1;
                 )*
@@ -278,15 +278,16 @@ impl<L: TunableList> Tool for TuningTool<L> {
 /// Reads each root's tuning for `list_tuning`, or the one root's for `tune`, and holds the call.
 impl<L: TunableList> Handles<Call> for TuningTool<L> {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let number = self.calls.next;
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
-        let pending = match call.tool.as_str() {
+        let (pending, later) = match call.tool.as_str() {
             "list_tuning" => {
                 let Ok(ListTuning) = from_bytes::<ListTuning>(input, &mut budget) else {
-                    return refuse(turn, String::from("that is not what `list_tuning` takes"));
+                    return Ok(refused(String::from("that is not what `list_tuning` takes")));
                 };
                 let mut left = 0;
                 for (at, place) in (0..L::listed().len()).zip(0..) {
@@ -298,36 +299,34 @@ impl<L: TunableList> Handles<Call> for TuningTool<L> {
                 }
                 if left == 0 {
                     let called = Called::output(turn, to_bytes(&TuningList { actors: Vec::new() })?);
-                    turn.reply(&called)?;
-                    return Ok(());
+                    return Ok(Reply::Now(called));
                 }
-                Pending::Listing { held: turn.hold()?, read: BTreeMap::new(), left }
+                let (held, later) = turn.hold();
+                (Pending::Listing { held, read: BTreeMap::new(), left }, later)
             }
             "tune" => {
                 let Ok(TuneFields { actor, values }) = from_bytes::<TuneFields>(input, &mut budget) else {
-                    return refuse(turn, String::from("that is not what `tune` takes"));
+                    return Ok(refused(String::from("that is not what `tune` takes")));
                 };
                 let listed = L::listed();
                 let Some(at) = listed.iter().position(|listed| listed.actor == actor) else {
                     let named: Vec<String> = listed.iter().map(|listed| listed.actor.to_string()).collect();
-                    return refuse(
-                        turn,
-                        format!("no root at `{actor}` is tuned here; these are: {}", named.join(", ")),
-                    );
+                    return Ok(refused(format!("no root at `{actor}` is tuned here; these are: {}", named.join(", "))));
                 };
                 let Some(tuned) = L::found(turn, at) else {
-                    return refuse(turn, format!("`{actor}` is not live"));
+                    return Ok(refused(format!("`{actor}` is not live")));
                 };
                 let place = u32::try_from(at).unwrap_or(u32::MAX);
                 turn.to(tuned).ask(&ReadTuning, &Reading::Tuning { call: number, at: place, values })?;
-                Pending::Tuning { held: turn.hold()? }
+                let (held, later) = turn.hold();
+                (Pending::Tuning { held }, later)
             }
-            _ => return refuse(turn, String::from("this worker serves list_tuning and tune")),
+            _ => return Ok(refused(String::from("this worker serves list_tuning and tune"))),
         };
         self.calls.pending.insert(number, pending);
         self.calls.next += 1;
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 
@@ -502,9 +501,7 @@ fn about<L: TunableList>(at: u32, bytes: &[u8]) -> Result<ActorTuning, String> {
     Ok(ActorTuning { actor: listed.actor.clone(), values, schema, fields })
 }
 
-/// Refuses the call being handled, saying `why`.
-fn refuse<L: TunableList>(turn: &mut Turn<'_, TuningTool<L>>, why: String) -> Result<(), Fault> {
-    turn.reply(&Called::Refused(why))?;
-
-    Ok(())
+/// The call being handled, refused at once, saying `why`.
+fn refused(why: String) -> Reply<Called> {
+    Reply::Now(Called::Refused(why))
 }

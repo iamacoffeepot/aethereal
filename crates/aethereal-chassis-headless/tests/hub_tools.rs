@@ -2,9 +2,7 @@
 //! asking it each call as a holder would, and an engine played by a real socket speaking the link's own typed frames,
 //! on a thread of its own where it waits on the hub, or by a real `Link` started with what `mint_token` answers.
 
-use aethereal_actor::{
-    Actor, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn,
-};
+use aethereal_actor::{Actor, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -68,10 +66,6 @@ impl ChildOf for Stand {
     type Parent = Top;
 }
 
-impl Carries<Offer> for Stand {
-    type Answers = (Offered,);
-}
-
 impl Holder for Stand {}
 
 impl Actor for Stand {
@@ -92,17 +86,16 @@ impl Actor for Stand {
 
 impl Handles<Offer> for Stand {
     type From = Anyone;
+    type Returns = Offered;
 
-    fn handle(&mut self, offer: Offer, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let offered = self.table.take(offer.tools, offer.worker, 16);
-        turn.reply(&offered)?;
-
-        Ok(())
+    fn handle(&mut self, offer: Offer, _: &mut Turn<'_, Self>) -> Result<Offered, Fault> {
+        Ok(self.table.take(offer.tools, offer.worker, 16))
     }
 }
 
 impl Handles<Withdraw> for Stand {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);

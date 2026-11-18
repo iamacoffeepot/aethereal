@@ -2,6 +2,7 @@
 //! that covers another (ADR-0016).
 
 use super::{Handled, Handles, Lists};
+use crate::answering::{Answering, Answers};
 use aethereal_data::{Kind, KindId};
 
 /// A named protocol: a list of the kinds it takes, and what each is answered with, one [`Carries`] for each, as an
@@ -51,10 +52,19 @@ pub trait Protocol: Sized {
     type Kinds: Kinds + CarriedBy<Self>;
 }
 
-/// What the named protocol answers mail of kind `K` with: `Answers`, a tuple of kinds, `()` for a tell (ADR-0016).
+/// What a named protocol, or an actor's type, answers mail of kind `K` with: `Answers`, `(A,)` for a request answered
+/// with `A`, `()` for a tell (ADR-0016, ADR-0017).
+///
+/// An actor's type carries each kind it handles as its handler returns, [`Handles::Returns`], and nothing writes it
+/// by hand (ADR-0059). A named protocol, which has no handler, writes one for each kind it lists.
 pub trait Carries<K: Kind> {
-    /// The kinds the receiver sends back to the sender.
-    type Answers: Kinds;
+    /// The one kind the receiver answers with, or none.
+    type Answers: Answers;
+}
+
+/// An actor's type answers each kind it handles as its handler returns.
+impl<T: Handles<K>, K: Kind> Carries<K> for T {
+    type Answers = <T::Returns as Answering>::Answers;
 }
 
 /// The protocol `P` has a [`Carries`] for each kind of this tuple: what makes a named protocol's list its own.
@@ -91,7 +101,8 @@ impl Kinds for () {
 /// An actor of this type takes every kind of the protocol `P`: an [`ActorRef`](crate::ActorRef) to one is made a
 /// [`ProtocolRef<P>`](crate::ProtocolRef) by its `protocol` (ADR-0016).
 ///
-/// It conforms when it handles each kind of `P`. The compiler checks it, and nothing is read when the program runs.
+/// It conforms when it handles each kind of `P`, and answers each kind a named protocol carries as the protocol says
+/// (ADR-0059). The compiler checks it, and nothing is read when the program runs.
 ///
 /// A board that does not handle a kind of the protocol does not conform:
 ///
@@ -142,12 +153,95 @@ impl Kinds for () {
 ///     board.protocol()
 /// }
 /// ```
+///
+/// A board whose handler of a kind of a named protocol answers it with another kind than the protocol carries does not
+/// conform:
+///
+/// ```compile_fail,E0271
+/// # use aethereal_actor::{Actor, ActorRef, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Protocol};
+/// # use aethereal_actor::{ProtocolRef, Top, Turn};
+/// # use aethereal_data::Plain;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.which_tile")]
+/// # struct WhichTile;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.tile_is")]
+/// # struct TileIs;
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.no_tile")]
+/// # struct NoTile;
+/// #
+/// # struct Tiles;
+/// #
+/// # impl Protocol for Tiles {
+/// #     type Kinds = (WhichTile,);
+/// # }
+/// #
+/// # impl Carries<WhichTile> for Tiles {
+/// #     type Answers = (TileIs,);
+/// # }
+/// #
+/// # #[derive(Plain)]
+/// # #[kind(name = "aether.example.board")]
+/// # struct Board;
+/// #
+/// # impl ChildOf for Board {
+/// #     type Parent = Top;
+/// # }
+/// #
+/// # impl Actor for Board {
+/// #     type Config = Board;
+/// #     type Key = ();
+/// #     type Handles = (WhichTile,);
+/// #     type Depends = ();
+/// #     type Spawns = ();
+/// #
+/// #     fn begin(board: Board, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+/// #         Ok(board)
+/// #     }
+/// #
+/// #     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+/// #         Ok(())
+/// #     }
+/// # }
+/// #
+/// /// Answers `WhichTile` with a `NoTile`, where `Tiles` carries it as answered with a `TileIs`.
+/// impl Handles<WhichTile> for Board {
+///     type From = Anyone;
+///     type Returns = NoTile;
+///
+///     fn handle(&mut self, _: WhichTile, _: &mut Turn<'_, Self>) -> Result<NoTile, Fault> {
+///         Ok(NoTile)
+///     }
+/// }
+///
+/// fn tiles(board: ActorRef<Board>) -> ProtocolRef<Tiles> {
+///     board.protocol()
+/// }
+/// ```
 pub trait Conforms<P> {}
 
-/// The actor of type `T` handles each of these kinds.
-pub trait HandledBy<T> {}
+/// The actor of type `T` handles each of these kinds, the kinds of the protocol `P`, and answers each as `P` does.
+pub trait HandledBy<T, P> {}
 
-impl<T, P: Listed> Conforms<P> for T where P::Kinds: HandledBy<T> {}
+impl<T, P: Listed> Conforms<P> for T where P::Kinds: HandledBy<T, P> {}
+
+/// The protocol answers mail of kind `K` as an actor of type `T` does: a named protocol with the kind `T`'s handler
+/// answers, and a tuple of kinds, whose kinds are told, whatever `T` answers.
+pub trait AnsweredAlike<T, K> {}
+
+impl<T, P, K> AnsweredAlike<T, K> for P
+where
+    P: Protocol + Carries<K>,
+    T: Carries<K, Answers = <P as Carries<K>>::Answers>,
+    K: Kind,
+{
+}
+
+impl<T, K> AnsweredAlike<T, K> for () {}
 
 /// The protocol takes every kind of the tuple of kinds `Q`, each found at its place in `Is`, which the compiler infers:
 /// a [`ProtocolRef`](crate::ProtocolRef) to it narrows to one to `Q` (ADR-0016).
@@ -156,13 +250,18 @@ impl<T, P: Listed> Conforms<P> for T where P::Kinds: HandledBy<T> {}
 /// build.
 pub trait Covers<Q, Is> {}
 
-impl<T> HandledBy<T> for () {}
+impl<T, P> HandledBy<T, P> for () {}
 
 impl<P> Covers<(), ()> for P {}
 
 macro_rules! protocols {
     ($( [$($kind:ident $is:ident)*] )*) => {$(
-        impl<T: $(Handles<$kind> +)*, $($kind: Kind + Handled),*> HandledBy<T> for ($($kind,)*) {}
+        impl<T: $(Handles<$kind> +)*, P: $(AnsweredAlike<T, $kind> +)*, $($kind: Kind + Handled),*> HandledBy<T, P>
+            for ($($kind,)*)
+        {
+        }
+
+        impl<T, Told, $($kind),*> AnsweredAlike<T, Told> for ($($kind,)*) {}
 
         impl<P, $($kind, $is),*> Covers<($($kind,)*), ($($is,)*)> for P where $(P: Lists<$kind, $is>),* {}
 

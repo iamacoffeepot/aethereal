@@ -74,6 +74,7 @@ impl Actor for ChatRelay {
 /// The sessions the hub lists, told to the overlay.
 impl Handles<ShowTabs> for ChatRelay {
     type From = ActorRef<Link>;
+    type Returns = ();
 
     fn handle(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&shown)?;
@@ -85,6 +86,7 @@ impl Handles<ShowTabs> for ChatRelay {
 /// Events of a tab open, told to the overlay.
 impl Handles<ShowEvents> for ChatRelay {
     type From = ActorRef<Link>;
+    type Returns = ();
 
     fn handle(&mut self, shown: ShowEvents, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&shown)?;
@@ -96,6 +98,7 @@ impl Handles<ShowEvents> for ChatRelay {
 /// An ask that waits on the owner, told to the overlay.
 impl Handles<ShowAsk> for ChatRelay {
     type From = ActorRef<Link>;
+    type Returns = ();
 
     fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&ask)?;
@@ -107,6 +110,7 @@ impl Handles<ShowAsk> for ChatRelay {
 /// What the owner did at the console, told to the link.
 impl Handles<Chat> for ChatRelay {
     type From = ActorRef<Overlay>;
+    type Returns = ();
 
     fn handle(&mut self, chat: Chat, turn: &mut Turn<'_, Self, ActorRef<Overlay>>) -> Result<(), Fault> {
         turn.to(path::<Link>(())).send(&chat)?;

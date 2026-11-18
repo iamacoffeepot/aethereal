@@ -76,6 +76,7 @@ pub struct Parent<P> {
 ///
 /// impl Handles<Poke> for Squad {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(parent()).send(&Poke)?;
@@ -86,6 +87,7 @@ pub struct Parent<P> {
 /// #
 /// # impl Handles<Poke> for Army {
 /// #     type From = Anyone;
+/// #     type Returns = ();
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
@@ -256,6 +258,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 ///
 /// impl Handles<Poke> for Squad {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<Squad>(())).send(&Poke)?;
@@ -266,6 +269,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #
 /// # impl Handles<Poke> for Army {
 /// #     type From = Anyone;
+/// #     type Returns = ();
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())
@@ -332,6 +336,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// // A squad stands beneath an army, so no squad stands beneath the army's squad.
 /// impl Handles<Poke> for Army {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         turn.to(child::<(Squad, Squad)>(())).send(&Poke)?;
@@ -342,6 +347,7 @@ descent!((A, B, C, D, E, F, G); A, B, C, D, E, F, G, H; G, H);
 /// #
 /// # impl Handles<Poke> for Squad {
 /// #     type From = Anyone;
+/// #     type Returns = ();
 /// #
 /// #     fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 /// #         Ok(())

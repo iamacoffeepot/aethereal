@@ -17,14 +17,16 @@ pub const MOST_TUNING_BYTES: usize = 64 * 1024;
 /// ```text
 /// impl Handles<ReadTuning> for Painter {
 ///     type From = Anyone;
-///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     type Returns = Tuning;
+///     fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
 ///         tuning::read(self, turn)
 ///     }
 /// }
 ///
 /// impl Handles<Tune> for Painter {
 ///     type From = Anyone;
-///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+///     type Returns = Tuned;
+///     fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
 ///         tuning::tune(self, &tune, turn)
 ///     }
 /// }
@@ -94,16 +96,13 @@ pub enum Tuned {
     Unread,
 }
 
-/// Answers a [`ReadTuning`] with `actor`'s tuning as it stands.
+/// The answer to a [`ReadTuning`]: `actor`'s tuning as it stands.
 ///
 /// # Errors
 ///
 /// A fault when its bytes cannot be written or put.
-pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
-    let tuning = tuning_of(actor, turn)?;
-    turn.reply(&tuning)?;
-
-    Ok(())
+pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A>) -> Result<Tuning, Fault> {
+    tuning_of(actor, turn)
 }
 
 /// Hands `actor` the tuning `tune` carries, and answers what it now stands at, or why it was not taken.
@@ -111,7 +110,7 @@ pub fn read<A: Tunable>(actor: &A, turn: &mut Turn<'_, A>) -> Result<(), Fault> 
 /// # Errors
 ///
 /// A fault when its bytes cannot be written or put.
-pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A>) -> Result<(), Fault> {
+pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A>) -> Result<Tuned, Fault> {
     let read = from_bytes::<A::Tuning>(turn.read(&tune.bytes), &mut Budget::new(MOST_TUNING_BYTES));
     let tuned = match read {
         Ok(tuning) => match actor.tune(tuning) {
@@ -120,9 +119,8 @@ pub fn tune<A: Tunable>(actor: &mut A, tune: &Tune, turn: &mut Turn<'_, A>) -> R
         },
         Err(_) => Tuned::Unread,
     };
-    turn.reply(&tuned)?;
 
-    Ok(())
+    Ok(tuned)
 }
 
 /// Why a tuning was not answered: the engine had no room to hold its bytes. The turn fails, and its ask is answered

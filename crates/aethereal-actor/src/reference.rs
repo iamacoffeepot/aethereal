@@ -425,6 +425,7 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 ///
 /// impl Handles<Poke> for Door {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         // A door handles no `Shut`.
@@ -436,6 +437,7 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 ///
 /// impl Handles<Knock> for Door {
 ///     type From = Anyone;
+///     type Returns = ();
 ///
 ///     fn handle(&mut self, _: Knock, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 ///         Ok(())

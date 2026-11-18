@@ -4,8 +4,8 @@ use super::{CallEngine, DescribeEngine, Described, Engines, Shown, TakeToken, To
 use crate::frames::{self, Written};
 use crate::{Down, REVISION, Refusal, Token, Trust, Up, Within};
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Due, Ended, Ending, Fault, Handles, Held,
-    JobId, Level, Number, Part, ProtocolRef, Receives, Sleep, Slept, Streams, Subscribers, Taken, Time, Turn, path,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Due, Ended, Ending, Fault, Handles, Held, JobId,
+    Later, Level, Number, Part, ProtocolRef, Receives, Sleep, Slept, Streams, Subscribers, Taken, Time, Turn, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
 use aethereal_sessions::{Chat, Chatted, Joined, Numbered, ShowAsk, ShowEvents, ShowTabs};
@@ -154,16 +154,6 @@ impl ChildOf for Engine {
     type Parent = Engines;
 }
 
-/// Asked at its typed path, it answers with its tools at once.
-impl Carries<DescribeEngine> for Engine {
-    type Answers = (Described,);
-}
-
-/// Asked at its typed path, it answers once the engine has.
-impl Carries<CallEngine> for Engine {
-    type Answers = (Called,);
-}
-
 impl Actor for Engine {
     type Config = EngineConfig;
     type Key = u64;
@@ -210,6 +200,7 @@ impl Actor for Engine {
 
 impl Handles<Part<Reading>> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// A frame from the engine, in the order the link has them: `Hello` first, then sets, answers, and chat. A set that
     /// comes while its token is being taken is kept, and told once it is.
@@ -316,6 +307,7 @@ impl Receives<Answer<TokenFor, Vouching>> for Engine {
 
 impl Handles<ChatTo> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// Keeps where its chat goes, and joins there at once when the hub trusts the engine already; a place it keeps
     /// already is not joined again. An engine not trusted, or not yet, keeps the place and tells it nothing: it joins
@@ -343,6 +335,7 @@ impl Receives<Ended> for Engine {
 
 impl Handles<ShowTabs> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// Every session, written down as `Sessions`, to a trusted engine alone.
     fn handle(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -357,6 +350,7 @@ impl Handles<ShowTabs> for Engine {
 
 impl Handles<ShowAsk> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// An ask that waits for the owner, written down as `Ask`, to a trusted engine alone.
     fn handle(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -372,6 +366,7 @@ impl Handles<ShowAsk> for Engine {
 
 impl Handles<ShowEvents> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// Events of a session's transcript, written down as `Show`, to a trusted engine alone: as many to a frame as fit
     /// in one, and an event that fits in none, which a long tool's output can be, left out and logged.
@@ -425,33 +420,34 @@ impl Receives<Answer<Slept, Lapsing>> for Engine {
 
 impl Handles<DescribeEngine> for Engine {
     type From = Anyone;
+    type Returns = Described;
 
-    fn handle(&mut self, _: DescribeEngine, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: DescribeEngine, _: &mut Turn<'_, Self>) -> Result<Described, Fault> {
         let described = match &self.said {
             Said::Linked { tools, .. } => tools.clone(),
             Said::Nothing | Said::Vouching { .. } | Said::Refused => Described::NotYet,
         };
-        turn.reply(&described)?;
 
-        Ok(())
+        Ok(described)
     }
 }
 
 impl Handles<CallEngine> for Engine {
     type From = Anyone;
+    type Returns = Later<Called>;
 
     /// Holds the call and writes it with the time it has left, running a sleep to its deadline when it has one, or
     /// refuses it at once: before the engine has sent its tools, past the most calls out, or when it would not fit in
     /// a frame.
-    fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let held = turn.hold()?;
+    fn handle(&mut self, asked: CallEngine, turn: &mut Turn<'_, Self>) -> Result<Later<Called>, Fault> {
+        let (held, later) = turn.hold();
         let input = turn.read(&asked.input).to_vec();
         let fate = self.fate(asked, input, held.due(), turn.now())?;
         let call = match fate {
             Fate::Writes(call) => call,
             Fate::Refused(why) => {
                 turn.answer(held, &Called::Refused(String::from(why)))?;
-                return Ok(());
+                return Ok(later);
             }
         };
         let deadline = match held.due() {
@@ -462,13 +458,15 @@ impl Handles<CallEngine> for Engine {
         };
         self.calls.insert(self.next, Out { held, deadline });
         self.next += 1;
+        self.write(turn, call, false)?;
 
-        self.write(turn, call, false)
+        Ok(later)
     }
 }
 
 impl Handles<Shut> for Engine {
     type From = Anyone;
+    type Returns = ();
 
     /// `Engines` asks it to end its link, as the agent terminates an engine started outside the hub: its connection is
     /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any

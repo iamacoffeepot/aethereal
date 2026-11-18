@@ -270,6 +270,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::__private::Pointed> for $screen {
             type From = $crate::__private::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -283,6 +284,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::__private::Keyed> for $screen {
             type From = $crate::__private::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -347,6 +349,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::Resize> for $screen {
             type From = $crate::__private::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -359,6 +362,7 @@ macro_rules! screen {
 
         impl $crate::__private::Handles<$crate::Dropped> for $screen {
             type From = $crate::__private::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,
@@ -368,16 +372,17 @@ macro_rules! screen {
                 let payload = dropped.payload.payload(|blob| turn.read(blob));
                 match self.$field.dropped(dropped.entry, &payload) {
                     $crate::Landing::Taken(heard) => {
-                        turn.reply(&dropped.answer($crate::DropOutcome::Accepted))?;
+                        dropped.answer_source(turn, $crate::DropOutcome::Accepted)?;
                         $crate::screen!(@take $field, self, heard, turn)
                     }
-                    $crate::Landing::Refused => Ok(turn.reply(&dropped.answer($crate::DropOutcome::Refused))?),
+                    $crate::Landing::Refused => dropped.answer_source(turn, $crate::DropOutcome::Refused),
                 }
             }
         }
 
         impl $crate::__private::Handles<$crate::DropAnswered> for $screen {
             type From = $crate::__private::Anyone;
+            type Returns = ();
 
             fn handle(
                 &mut self,

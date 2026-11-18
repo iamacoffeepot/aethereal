@@ -42,6 +42,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type From = Anyone;
+//! #             type Returns = ();
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 //! #                 Ok(())
@@ -102,6 +103,7 @@
 //! #
 //! #         impl Handles<Note> for $name {
 //! #             type From = Anyone;
+//! #             type Returns = ();
 //! #
 //! #             fn handle(&mut self, _: Note, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
 //! #                 Ok(())

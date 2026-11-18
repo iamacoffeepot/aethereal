@@ -339,6 +339,7 @@ impl Scene {
 /// which a page answers `NoHost`.
 impl Handles<Keyed> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match keyed.event {
@@ -365,6 +366,7 @@ impl Handles<Keyed> for Scene {
 /// resized is seen to be its window alone.
 impl Handles<Event> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match event {

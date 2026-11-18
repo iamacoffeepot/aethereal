@@ -1,10 +1,9 @@
 //! What a client is asked, and what it answers with (ADR-0035): a request whole, or a response streamed as it
 //! arrives, and a connection switched to another protocol.
 
-use super::Client;
 use crate::http1::body::Broken;
 use crate::{Header, Method};
-use aethereal_actor::{Bytes, Carries, ProtocolRef, Stream};
+use aethereal_actor::{Bytes, ProtocolRef, Stream};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{HungUp, Writing};
 
@@ -29,11 +28,6 @@ pub struct Outgoing {
 #[kind(name = "aether.http.fetch")]
 pub struct Fetch {
     pub request: Outgoing,
-}
-
-/// Answered whole, it is answered once its response is read.
-impl Carries<Fetch> for Client {
-    type Answers = (Fetched,);
 }
 
 /// What a fetch came to.

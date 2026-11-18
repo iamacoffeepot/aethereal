@@ -137,6 +137,7 @@ impl Actor for Counter {
 
 impl Handles<Count> for Counter {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let worked = (0..self.units(left) * 10).fold(self.number, |sum, step| sum.wrapping_mul(31).wrapping_add(step));

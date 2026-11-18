@@ -189,7 +189,7 @@ pub struct Peeked<'a> {
     pub item: Item<'a>,
     pub source: Seated,
     pub chain: Chain,
-    /// What the item is to a request: one its turn may reply to, or hold (ADR-0017).
+    /// What the item is to a request: one its turn answers, now or by holding it (ADR-0017).
     pub tie: Tie,
     /// When the request the item is stops being waited for: `Never` for an item that is no request (ADR-0041).
     pub due: Due,

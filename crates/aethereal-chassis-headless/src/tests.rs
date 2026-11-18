@@ -66,6 +66,7 @@ impl Actor for Fan {
 
 impl Handles<Count> for Fan {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Count { left }: Count, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_root = turn.parent().is_none();

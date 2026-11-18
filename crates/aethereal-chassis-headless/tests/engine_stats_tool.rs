@@ -58,6 +58,7 @@ impl Actor for Sender {
 
 impl Handles<Hold> for Sender {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Hold { bytes }: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.holds_unsent(bytes, MOST_UNSENT);
@@ -68,6 +69,7 @@ impl Handles<Hold> for Sender {
 
 impl Handles<Stop> for Sender {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, Stop: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();

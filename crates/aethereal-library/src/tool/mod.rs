@@ -10,7 +10,7 @@ pub use record::{BehindGuest, GuestStanding, HeadRecord, PublishRecord, Upgradin
 use crate::{Library, ModulePublished, Numbered, PublishModule, Unloaded};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, Moves,
-    ProtocolRef, Receives, Turn, path,
+    ProtocolRef, Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -115,36 +115,34 @@ impl Tool for LibraryTool {
 /// `publish` is held and asked of the library; `upgrades` is answered at once.
 impl Handles<Call> for LibraryTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         let mut budget = Budget::new(INPUT_BYTES);
         match call.tool.as_str() {
             PUBLISH => {
                 let publish = match from_bytes::<Publish>(input, &mut budget) {
                     Ok(publish) => publish,
-                    Err(fault) => {
-                        turn.reply(&refused(&format!("the input of `{PUBLISH}`: {fault}")))?;
-                        return Ok(());
-                    }
+                    Err(fault) => return Ok(Reply::Now(refused(&format!("the input of `{PUBLISH}`: {fault}")))),
                 };
                 let call = self.next;
                 self.next += 1;
                 turn.to(path::<Library>(())).ask(&PublishModule { path: publish.path }, &Calling { call })?;
-                self.calls.insert(call, turn.hold()?);
+                let (held, later) = turn.hold();
+                self.calls.insert(call, held);
+
+                Ok(Reply::Later(later))
             }
             UPGRADES => {
                 let Moves::Read(standings) = turn.moves() else {
-                    turn.reply(&refused(&format!("`{UPGRADES}` runs where no engine's heads are read")))?;
-                    return Ok(());
+                    return Ok(Reply::Now(refused(&format!("`{UPGRADES}` runs where no engine's heads are read"))));
                 };
-                let called = Called::output(turn, to_bytes(&Upgrading::of(&standings))?);
-                turn.reply(&called)?;
-            }
-            _ => turn.reply(&refused("this worker serves publish and upgrades alone"))?,
-        }
 
-        Ok(())
+                Ok(Reply::Now(Called::output(turn, to_bytes(&Upgrading::of(&standings))?)))
+            }
+            _ => Ok(Reply::Now(refused("this worker serves publish and upgrades alone"))),
+        }
     }
 }
 

@@ -10,7 +10,7 @@
 //! - **on another actor's entry:** the screen casts the actor to [`Drops`](crate::Drops) and mails it
 //!   [`Dropped`](crate::Dropped), its payload put as a blob, as [`take_in`](crate::take_in) does with what the turn of
 //!   input leaves; that actor's library finds its target the same way, from the entry ([`Screen::dropped`]), and
-//!   replies one [`DropAnswered`](crate::DropAnswered), whose outcome is [`DropOutcome::Accepted`] when one takes it
+//!   mails back one [`DropAnswered`](crate::DropAnswered), whose outcome is [`DropOutcome::Accepted`] when one takes it
 //!   and [`DropOutcome::Refused`] when none does ([`Landing::Refused`]); on it the source raises its `drop_accepted`
 //!   or its `drop_outside` ([`Screen::answered`]);
 //! - **on nothing, on what nothing takes, on an actor that takes no drops, or refused:** the source raises its

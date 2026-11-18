@@ -1,10 +1,8 @@
 //! What the sessions capability is asked, and what it answers (ADR-0057). Each is plain, so the hub's tools take an
 //! ask as their input and answer what it answers.
 
-use super::Sessions;
 use super::transcript::Numbered;
 use crate::DockerError;
-use aethereal_actor::Carries;
 use aethereal_data::Plain;
 
 /// Asked: open a new session, named `name`. Answered once its container runs, or why it does not.
@@ -189,28 +187,4 @@ pub enum Refusal {
     NoDropBox,
     /// Docker refused, or could not be reached.
     Docker(DockerError),
-}
-
-impl Carries<NewSession> for Sessions {
-    type Answers = (Opened,);
-}
-
-impl Carries<Say> for Sessions {
-    type Answers = (Said,);
-}
-
-impl Carries<ReadTranscript> for Sessions {
-    type Answers = (Transcribed,);
-}
-
-impl Carries<ListSessions> for Sessions {
-    type Answers = (Listed,);
-}
-
-impl Carries<Interrupt> for Sessions {
-    type Answers = (Interrupted,);
-}
-
-impl Carries<Archive> for Sessions {
-    type Answers = (Archived,);
 }

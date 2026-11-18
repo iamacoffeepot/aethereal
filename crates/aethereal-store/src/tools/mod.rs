@@ -9,7 +9,7 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -139,18 +139,16 @@ impl Tool for StoreTools {
 
 impl Handles<Call> for StoreTools {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
     /// Reads the call's input, or refuses it; holds the call, and asks the store. A session's check-in reads only its
     /// drop box, whatever path it names, as a path on the hub's machine is the owner's to name (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let order = match order(&call.tool, turn.read(&call.input)).and_then(|order| order.by(call.caller)) {
             Ok(order) => order,
-            Err(refusal) => {
-                turn.reply(&refusal)?;
-                return Ok(());
-            }
+            Err(refusal) => return Ok(Reply::Now(refusal)),
         };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let asking = Asking { number: self.next };
         self.next += 1;
         let store = path::<Store>(());
@@ -163,7 +161,7 @@ impl Handles<Call> for StoreTools {
         };
         self.calls.insert(asking.number, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

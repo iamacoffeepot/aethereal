@@ -11,7 +11,7 @@ use crate::readback::{Pixels, ReadBack, ReadRefused, Readable};
 use crate::texture::TextureFormat;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, from_bytes};
 use aethereal_pace::{Pace, PaceRead, Pacer, ReadPace};
@@ -179,25 +179,24 @@ impl Tool for CaptureTool {
 /// Holds the call, and asks the pacer how the clock moves: a held clock's capture reads the last frame drawn.
 impl Handles<Call> for CaptureTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(capture) = from_bytes::<Capture>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            turn.reply(&refused("that is no capture"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("that is no capture")));
         };
         let longest = longest_or_frame(capture.longest);
         if longest == 0 {
-            turn.reply(&refused("`longest` is at least 1"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("`longest` is at least 1")));
         }
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         turn.to(path::<Pacer>(())).ask(&ReadPace, &PaceReading { number })?;
         let crop = crop_or_whole(capture.crop);
         self.reading.insert(number, Asked { held, window: capture.window, crop, longest });
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

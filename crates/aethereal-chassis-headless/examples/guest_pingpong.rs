@@ -4,11 +4,14 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Time, Top, Turn};
+use aethereal_actor::{
+    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, ProtocolRef, Receives, Time, Top, Turn,
+};
 use aethereal_chassis_headless::Monotonic;
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
 use aethereal_guest_echo as guest;
+use aethereal_guest_echo::{Ping, Pings, Pong};
 use aethereal_substrate::{Clock, Engine};
 use std::env;
 use std::num::NonZeroUsize;
@@ -17,26 +20,22 @@ use std::sync::Arc;
 const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
 
 #[derive(Plain)]
-#[kind(name = "aether.guest.ping")]
-struct Ping {
-    n: u64,
-}
-
-#[derive(Plain)]
-#[kind(name = "aether.guest.pong")]
-struct Pong {
-    n: u64,
-}
-
-#[derive(Plain)]
 #[kind(name = "aether.bench.volley")]
 struct Volley {
     pings: u64,
 }
 
+/// What a pinger keeps for each ping until it is answered: nothing, as the pong says what is left of its volley.
+#[derive(Plain)]
+#[kind(name = "aether.bench.served")]
+struct Served;
+
+/// A native actor that asks the echo guest a ping, and asks it again on each pong while its volley lasts.
 #[derive(Bound)]
 #[kind(name = "aether.bench.pinger")]
-struct Pinger;
+struct Pinger {
+    echo: ProtocolRef<Pings>,
+}
 
 impl ChildOf for Pinger {
     type Parent = Top;
@@ -45,17 +44,18 @@ impl ChildOf for Pinger {
 impl Actor for Pinger {
     type Config = Volley;
     type Key = u64;
-    type Handles = (Pong,);
+    type Handles = (Answer<Pong, Served>,);
     type Depends = ();
     type Spawns = ();
 
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
-        if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<(Ping,)>(found)) {
-            turn.to(echo).send(&Ping { n: volley.pings })?;
-        }
+        let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) else {
+            panic!("the echo begins before its pingers");
+        };
+        turn.to(echo).ask(&Ping { n: volley.pings }, &Served)?;
 
-        Ok(Self)
+        Ok(Self { echo })
     }
 
     fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
@@ -63,12 +63,13 @@ impl Actor for Pinger {
     }
 }
 
-impl Handles<Pong> for Pinger {
-    type From = Anyone;
-
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+impl Receives<Answer<Pong, Served>> for Pinger {
+    fn handle(&mut self, (pong, Served): (Answered<Pong>, Served), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(pong) = pong else {
+            return Ok(());
+        };
         if pong.n > 0 {
-            turn.reply(&Ping { n: pong.n - 1 })?;
+            turn.to(self.echo).ask(&Ping { n: pong.n - 1 }, &Served)?;
         }
 
         Ok(())

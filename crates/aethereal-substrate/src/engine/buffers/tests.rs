@@ -179,6 +179,7 @@ impl Actor for Builder {
 
 impl Handles<Plan> for Builder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, mut plan: Plan, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if plan.turns.is_empty() {
@@ -235,6 +236,7 @@ impl Handles<Plan> for Builder {
 
 impl Handles<Lent> for Builder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, lent: Lent, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.held.push(lent.blob);

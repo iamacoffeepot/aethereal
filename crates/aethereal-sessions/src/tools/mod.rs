@@ -10,7 +10,7 @@ use crate::{
 };
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
@@ -158,23 +158,20 @@ impl Tool for SessionsTools {
 
 impl Handles<Call> for SessionsTools {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
     /// Reads the call's input, or refuses it; holds the call, and asks the capability. A session's call is refused:
     /// the sessions are the owner's to open, speak to, and end, and a session that drove another would be a pipeline
     /// of sessions, which the hub is not built for (ADR-0057).
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         if let Caller::Session { .. } = call.caller {
-            turn.reply(&Called::Refused(String::from("the session tools are the owner's, not a session's")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(String::from("the session tools are the owner's, not a session's"))));
         }
         let order = match order(&call.tool, turn.read(&call.input)) {
             Ok(order) => order,
-            Err(refusal) => {
-                turn.reply(&refusal)?;
-                return Ok(());
-            }
+            Err(refusal) => return Ok(Reply::Now(refusal)),
         };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let asking = Asking { number: self.next };
         self.next += 1;
         let sessions = path::<Sessions>(());
@@ -188,7 +185,7 @@ impl Handles<Call> for SessionsTools {
         };
         self.calls.insert(asking.number, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

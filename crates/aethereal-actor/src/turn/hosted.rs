@@ -1,6 +1,6 @@
 //! A turn a host runs for an actor whose code runs where the engine cannot see it: a guest (ADR-0015).
 
-use super::{Closing, Owing, Seat, Stood, Turning, Why};
+use super::{Closing, Owing, Replying, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::resource::{Reach, Resources};
 use crate::{
@@ -17,7 +17,7 @@ use core::convert::Infallible;
 /// native send is at its call, against its receiver's type (ADR-0015, ADR-0059).
 pub struct Hosted<'a> {
     seat: Seat<'a>,
-    /// Who a reply reaches.
+    /// Whom the answer to a request reaches.
     source: Source,
     chain: Chain,
     /// The children the turn spawned, in the order it spawned them, whose `begin`s send and log as themselves.
@@ -63,7 +63,8 @@ enum Source {
 pub enum Request {
     /// Nothing the code says: a tell.
     Not,
-    /// It replies to the item the turn handles, which answers it when it is a request (ADR-0017).
+    /// It answers the request the turn handles, as the handler of the guest's code returned the answer: refused when
+    /// the item is no request, or one the turn has answered or held (ADR-0017, ADR-0059).
     Replies,
     /// It asks a request, to be answered with a kind `answer` names, keeping `context`, with the pins its host made for
     /// it (ADR-0014), and due as `due` says: what the guest's code stated, or the deadline its library inherited for it
@@ -359,9 +360,10 @@ impl<'a> Hosted<'a> {
         Ok(())
     }
 
-    /// What a reply by `by` to `to` is to a request: the answer to the item handled, when that is a request this turn
-    /// has not answered (ADR-0017). A reply by another than the actor, or to another than the item's source, and a
-    /// second answer, are false sends.
+    /// What the answer by `by` to `to` that the handler of the guest's code returned is to a request: the answer to the
+    /// item handled, when that is a request this turn has not answered or held (ADR-0017, ADR-0059). An answer by
+    /// another than the actor, to another than the item's source, to an item that asked for none, and a second
+    /// answer, are false sends: a native turn drops an answer to an item that asked for none and sends nothing.
     fn reply(&mut self, by: Seated, to: Seated) -> Result<Tie, FalseSend> {
         let is_mine = by == self.seat.me;
         let is_to_source = matches!(self.source, Source::Item(source) if source == to);
@@ -369,10 +371,12 @@ impl<'a> Hosted<'a> {
         if !is_reply {
             return Err(FalseSend);
         }
-        let (tie, owing) = self.seat.owing.reply().map_err(|_| FalseSend)?;
-        self.seat.owing = owing;
+        let Ok(Replying::Request(count)) = self.seat.owing.answers() else {
+            return Err(FalseSend);
+        };
+        self.seat.owing = Owing::Answered;
 
-        Ok(tie)
+        Ok(Tie::answers(count))
     }
 
     /// What the `count`th piece of mail `by` sends carries as the request it asks, to be answered with a kind `answer`
@@ -497,7 +501,7 @@ impl<'a> Hosted<'a> {
     }
 
     /// Holds the request the turn handles, as its guest's code held it, to be answered with a kind `answer` names in a
-    /// later turn: before its sends are handed in, so a reply to it among them is refused (ADR-0017).
+    /// later turn: before its sends are handed in, so an answer to it among them is refused (ADR-0017).
     ///
     /// # Errors
     ///
@@ -506,7 +510,7 @@ impl<'a> Hosted<'a> {
         let Source::Item(source) = self.source else {
             return Err(NotOwed);
         };
-        self.seat.hold(source, answer).map_err(|_| NotOwed)?;
+        self.seat.hold(source, answer)?;
 
         Ok(())
     }

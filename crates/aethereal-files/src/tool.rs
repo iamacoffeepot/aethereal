@@ -3,7 +3,7 @@
 use crate::{FileRead, FileWritten, Files, Namespace, ReadFile, WriteFile, Writes};
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, Bytes, ChildOf, Ending, Fault, Handles, Held,
-    ProtocolRef, Receives, Turn, path,
+    ProtocolRef, Receives, Reply, Turn, path,
 };
 use aethereal_data::{
     Bare, Bound, Budget, Encode, EncodeError, FilePath, Plain, Schema, SchemaNodes, Writer, from_bytes, to_bytes,
@@ -104,20 +104,20 @@ impl Tool for ReadTool {
 
 impl Handles<Call> for ReadTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(read) = from_bytes::<ReadFile>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
             // The schema says a string of any spelling, and a path is narrower.
-            turn.reply(&Called::Refused(String::from("that is no path")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(String::from("that is no path"))));
         };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         turn.to(path::<Files>(())).ask(&read, &Calling { number })?;
         self.calls.insert(number, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 
@@ -228,33 +228,29 @@ impl Tool for WriteTool {
 
 impl Handles<Call> for WriteTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let input = turn.read(&call.input);
         if input.len() > WRITE_INPUT_BYTES {
-            turn.reply(&refused("the text is too large"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("the text is too large")));
         }
         let text = match from_bytes::<TextFile>(input, &mut Budget::new(WRITE_INPUT_BYTES)) {
             Ok(text) => text,
             // The schema says a string of any spelling, and a path is narrower: the fault says which rule it broke.
-            Err(fault) => {
-                turn.reply(&refused(&format!("the input of `write_file`: {fault}")))?;
-                return Ok(());
-            }
+            Err(fault) => return Ok(Reply::Now(refused(&format!("the input of `write_file`: {fault}")))),
         };
         let Ok(bytes) = turn.put(text.text.into_bytes()) else {
-            turn.reply(&refused("the engine had no room to hold the text"))?;
-            return Ok(());
+            return Ok(Reply::Now(refused("the engine had no room to hold the text")));
         };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let number = self.next;
         self.next += 1;
         let write = WriteFile { namespace: text.namespace, path: text.path, bytes, how: Writes::Whole };
         turn.to(path::<Files>(())).ask(&write, &Calling { number })?;
         self.calls.insert(number, held);
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 

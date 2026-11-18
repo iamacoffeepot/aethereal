@@ -183,25 +183,22 @@ impl Tool for EngineStatsTool {
 
 impl Handles<Call> for EngineStatsTool {
     type From = Anyone;
+    type Returns = Called;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Called, Fault> {
         let read = match from_bytes::<ReadEngineStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) {
             Ok(read) => read,
             Err(fault) => {
-                turn.reply(&Called::Refused(format!("the input of `{ENGINE_STATS}`: {fault}")))?;
-                return Ok(());
+                return Ok(Called::Refused(format!("the input of `{ENGINE_STATS}`: {fault}")));
             }
         };
         let EngineStats::Read(figures) = turn.engine_stats() else {
-            turn.reply(&Called::Refused(format!("`{ENGINE_STATS}` runs where no engine's figures are read")))?;
-            return Ok(());
+            return Ok(Called::Refused(format!("`{ENGINE_STATS}` runs where no engine's figures are read")));
         };
         let most = read.most.map_or(LARGEST, |most| usize::try_from(most).unwrap_or(usize::MAX));
         let answer = EngineFigures::of(figures, most);
-        let called = Called::output(turn, to_bytes(&answer)?);
-        turn.reply(&called)?;
 
-        Ok(())
+        Ok(Called::output(turn, to_bytes(&answer)?))
     }
 }
 

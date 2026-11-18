@@ -38,6 +38,7 @@ macro_rules! actor {
 
         impl Handles<Order> for $name {
             type From = Anyone;
+            type Returns = ();
 
             fn handle(&mut self, _: Order, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
                 Ok(())

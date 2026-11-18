@@ -13,7 +13,7 @@ use super::{
     Watching, reply,
 };
 use aethereal_actor::{
-    ActorRef, Answer, Answered, Anyone, Enough, Fault, Handles, More, Number, Open, Part, ProtocolRef, Receives,
+    ActorRef, Answer, Answered, Anyone, Enough, Fault, Handles, Later, More, Number, Open, Part, ProtocolRef, Receives,
     Serving, Stream, StreamKey, Taken, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
@@ -96,39 +96,49 @@ enum Passed {
 
 impl Handles<Open<Attaching>> for Docker {
     type From = Anyone;
+    type Returns = Later<Detached>;
 
-    fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let (key, attach) = self.attaching.open(turn, open)?;
+    fn handle(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<Later<Detached>, Fault> {
+        let (key, attach, later) = self.attaching.open(turn, open)?;
         let downstream = Downstream::Attach { key, demux: Demux::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, attach.call())
+        self.relay(turn, downstream, attach.call())?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Open<Logging>> for Docker {
     type From = Anyone;
+    type Returns = Later<LogsDone>;
 
-    fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let (key, logs) = self.logging.open(turn, open)?;
+    fn handle(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<Later<LogsDone>, Fault> {
+        let (key, logs, later) = self.logging.open(turn, open)?;
         let downstream = Downstream::Logs { key, demux: Demux::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, logs.call())
+        self.relay(turn, downstream, logs.call())?;
+
+        Ok(later)
     }
 }
 
 impl Handles<Open<Watching>> for Docker {
     type From = Anyone;
+    type Returns = Later<EventsDone>;
 
-    fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let (key, events) = self.watching.open(turn, open)?;
+    fn handle(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<Later<EventsDone>, Fault> {
+        let (key, events, later) = self.watching.open(turn, open)?;
         let downstream = Downstream::Events { key, lines: Lines::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, events.call())
+        self.relay(turn, downstream, events.call())?;
+
+        Ok(later)
     }
 }
 
 impl Handles<More> for Docker {
     type From = Anyone;
+    type Returns = ();
 
     /// An asker grants a stream more credit: what waits for it is passed on.
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -148,6 +158,7 @@ impl Handles<More> for Docker {
 
 impl Handles<Enough> for Docker {
     type From = Anyone;
+    type Returns = ();
 
     /// An asker stops a stream: it is answered at once, and the response's connection hung up.
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
@@ -173,6 +184,7 @@ impl Handles<Enough> for Docker {
 
 impl Handles<Part<Receiving>> for Docker {
     type From = Anyone;
+    type Returns = ();
 
     /// A part of a response `Http`'s client streams: taken apart into the parts of the stream it is relayed to, its
     /// credit held back until they are passed on.

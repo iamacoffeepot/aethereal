@@ -14,7 +14,7 @@ use super::{
 use crate::Renderer;
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Handles, Held, ProtocolRef,
-    Receives, Turn, path,
+    Receives, Reply, Turn, path,
 };
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_tools::{Call, Called, Output, Tool, ToolSheet, Tooling};
@@ -170,13 +170,14 @@ impl Tool for StatsTool {
 /// Holds the call, and subscribes to the renderer when it is the first to wait.
 impl Handles<Call> for StatsTool {
     type From = Anyone;
+    type Returns = Reply<Called>;
 
-    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, call: Call, turn: &mut Turn<'_, Self>) -> Result<Reply<Called>, Fault> {
         let Ok(asked) = from_bytes::<ReadRenderStats>(turn.read(&call.input), &mut Budget::new(INPUT_BYTES)) else {
-            turn.reply(&Called::Refused(String::from("that is no ask of the render stats")))?;
-            return Ok(());
+            return Ok(Reply::Now(Called::Refused(String::from("that is no ask of the render stats"))));
         };
-        let waiting = Waiting { held: turn.hold()?, times: asked.gpu_times.unwrap_or(true) };
+        let (held, later) = turn.hold();
+        let waiting = Waiting { held, times: asked.gpu_times.unwrap_or(true) };
         match &mut self.reading {
             Reading::Waiting { calls, .. } => calls.push(waiting),
             Reading::Idle => {
@@ -187,13 +188,14 @@ impl Handles<Call> for StatsTool {
             }
         }
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 
 /// Keeps the first frame's statistics heard while calls wait, and answers what it can.
 impl Handles<FrameStats> for StatsTool {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, stats: FrameStats, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Reading::Waiting { frame: frame @ FrameHeard::Awaited, .. } = &mut self.reading {
@@ -207,6 +209,7 @@ impl Handles<FrameStats> for StatsTool {
 /// Keeps the first pass times heard while calls wait, and answers what it can.
 impl Handles<GpuTimes> for StatsTool {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, heard: GpuTimes, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Reading::Waiting { times: times @ TimesHeard::Awaited, .. } = &mut self.reading {

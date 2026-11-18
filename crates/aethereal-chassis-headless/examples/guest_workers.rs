@@ -9,7 +9,7 @@
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
 use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
-use aethereal_actor::{Anyone, Bytes};
+use aethereal_actor::{Anyone, Bytes, Speaks};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -49,7 +49,8 @@ struct Volley {
     pings: u64,
 }
 
-/// The native side of a pair: it pings its responder until its volley is spent, then tells it to close, and closes.
+/// The native side of a pair: it pings its responder, and pings it again on each pong it is told until its volley is
+/// spent, then tells it to close, and closes.
 #[derive(Bound)]
 #[kind(name = "aether.bench.pinger")]
 struct Pinger;
@@ -80,13 +81,14 @@ impl Actor for Pinger {
 }
 
 impl Handles<Pong> for Pinger {
-    type From = Anyone;
+    type From = Speaks<(Ping, Shut)>;
+    type Returns = ();
 
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Speaks<(Ping, Shut)>>) -> Result<(), Fault> {
         if pong.n > 0 {
-            turn.reply(&Ping { n: pong.n - 1 })?;
+            turn.to(*turn.from()).send(&Ping { n: pong.n - 1 })?;
         } else {
-            turn.reply(&Shut)?;
+            turn.to(*turn.from()).send(&Shut)?;
             turn.close();
         }
 
@@ -123,11 +125,12 @@ impl Actor for NativeResponder {
 }
 
 impl Handles<Ping> for NativeResponder {
-    type From = Anyone;
+    type From = Speaks<(Pong,)>;
+    type Returns = ();
 
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         self.answered += 1;
-        turn.reply(&Pong { n: ping.n })?;
+        turn.to(*turn.from()).send(&Pong { n: ping.n })?;
 
         Ok(())
     }
@@ -135,6 +138,7 @@ impl Handles<Ping> for NativeResponder {
 
 impl Handles<Shut> for NativeResponder {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();

@@ -189,6 +189,7 @@ impl Receives<Answer<Slept, Patience>> for Spawned {
 
 impl Handles<Exited> for Spawned {
     type From = Anyone;
+    type Returns = ();
 
     /// Its program has exited, as its own process tells it: a spawn not yet answered is answered `Exited`, `Engines`
     /// is told how it exited, and it ends. From any other actor, it is passed over.
@@ -216,6 +217,7 @@ impl Handles<Exited> for Spawned {
 
 impl Handles<LinkedAs> for Spawned {
     type From = Anyone;
+    type Returns = ();
 
     /// Its engine linked, as `Engines` tells it: the spawn is answered `Linked`, unless it was answered already. From
     /// any other actor, it is passed over.
@@ -237,6 +239,7 @@ impl Handles<LinkedAs> for Spawned {
 
 impl Handles<Stop> for Spawned {
     type From = Anyone;
+    type Returns = ();
 
     /// `Engines` asks it to stop its engine: its process is asked to. A spawn not yet answered stays so, and is
     /// answered `Exited` once the program has. From any other actor, it is passed over.

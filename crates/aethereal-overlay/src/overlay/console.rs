@@ -56,6 +56,7 @@ impl Overlay {
 /// change.
 impl Handles<Sheets> for Overlay {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, sheets: Sheets, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.console.hear(sheets);

@@ -11,8 +11,8 @@ pub use asked::{Advance, Advanced, Pace, PaceRead, PaceSet, ReadPace, SetPace, U
 
 use crate::host::Clockwork;
 use aethereal_actor::{
-    Actor, Beginning, Carries, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, On, Source,
-    Stop, Top, Turn,
+    Actor, Beginning, ChildOf, Controller, Ending, Fault, Given, Handle, Handles, Held, Level, On, Reply, Source, Stop,
+    Top, Turn,
 };
 use aethereal_actor::{Anyone, Receives, Requests};
 use aethereal_data::{Bound, Plain};
@@ -105,19 +105,6 @@ impl ChildOf for Pacer {
     type Parent = Top;
 }
 
-/// What asking the pacer at its typed path, `path::<Pacer>(())`, gets.
-impl Carries<SetPace> for Pacer {
-    type Answers = (PaceSet,);
-}
-
-impl Carries<Advance> for Pacer {
-    type Answers = (Advanced,);
-}
-
-impl Carries<ReadPace> for Pacer {
-    type Answers = (PaceRead,);
-}
-
 impl Actor for Pacer {
     type Config = PacerConfig;
     type Key = ();
@@ -151,8 +138,9 @@ impl Actor for Pacer {
 /// them, as they would run against the host's own cycles. Setting the pace it has asks the host nothing.
 impl Handles<SetPace> for Pacer {
     type From = Anyone;
+    type Returns = PaceSet;
 
-    fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, set: SetPace, turn: &mut Turn<'_, Self>) -> Result<PaceSet, Fault> {
         let was = self.pace();
         match (&mut self.clock, set.pace) {
             (Clock::Real, Pace::Held) => {
@@ -168,9 +156,8 @@ impl Handles<SetPace> for Pacer {
             }
             (Clock::Real, Pace::Real) | (Clock::Held(_), Pace::Held) | (Clock::Stopping, _) => {}
         }
-        turn.reply(&PaceSet { was })?;
 
-        Ok(())
+        Ok(PaceSet { was })
     }
 }
 
@@ -178,28 +165,23 @@ impl Handles<SetPace> for Pacer {
 /// cycle has finished. One the clock cannot run is refused at once.
 impl Handles<Advance> for Pacer {
     type From = Anyone;
+    type Returns = Reply<Advanced>;
 
-    fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, advance: Advance, turn: &mut Turn<'_, Self>) -> Result<Reply<Advanced>, Fault> {
         let Advance { cycles, delta_nanos } = advance;
         let delta_nanos = delta_nanos.unwrap_or(SIXTIETH_NANOS);
-        let refused = match &self.clock {
-            Clock::Real => Some(Unadvanced::Running),
-            Clock::Stopping => Some(Unadvanced::Stopping),
-            Clock::Held(_) if cycles == 0 => Some(Unadvanced::NoCycles),
-            Clock::Held(_) if delta_nanos == 0 => Some(Unadvanced::NoTime),
-            Clock::Held(_) if delta_nanos > self.limit_nanos => {
-                Some(Unadvanced::PastLimit { limit_nanos: self.limit_nanos })
+        let limit_nanos = self.limit_nanos;
+        let advancing = match &mut self.clock {
+            Clock::Real => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Running))),
+            Clock::Stopping => return Ok(Reply::Now(Advanced::Refused(Unadvanced::Stopping))),
+            Clock::Held(_) if cycles == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoCycles))),
+            Clock::Held(_) if delta_nanos == 0 => return Ok(Reply::Now(Advanced::Refused(Unadvanced::NoTime))),
+            Clock::Held(_) if delta_nanos > limit_nanos => {
+                return Ok(Reply::Now(Advanced::Refused(Unadvanced::PastLimit { limit_nanos })));
             }
-            Clock::Held(_) => None,
+            Clock::Held(advancing) => advancing,
         };
-        if let Some(why) = refused {
-            turn.reply(&Advanced::Refused(why))?;
-            return Ok(());
-        }
-        let Clock::Held(advancing) = &mut self.clock else {
-            return Ok(());
-        };
-        let held = turn.hold()?;
+        let (held, later) = turn.hold();
         let is_first = advancing.is_empty();
         advancing.push_back(Advancing { held, left: cycles, delta_nanos });
         if is_first {
@@ -207,18 +189,17 @@ impl Handles<Advance> for Pacer {
             turn.open(&mut self.control)?.push(Pacing::Cycle { delta_nanos });
         }
 
-        Ok(())
+        Ok(Reply::Later(later))
     }
 }
 
 /// Answers how the clock moves.
 impl Handles<ReadPace> for Pacer {
     type From = Anyone;
+    type Returns = PaceRead;
 
-    fn handle(&mut self, _: ReadPace, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        turn.reply(&PaceRead { pace: self.pace() })?;
-
-        Ok(())
+    fn handle(&mut self, _: ReadPace, _: &mut Turn<'_, Self>) -> Result<PaceRead, Fault> {
+        Ok(PaceRead { pace: self.pace() })
     }
 }
 
@@ -227,6 +208,7 @@ impl Handles<ReadPace> for Pacer {
 /// cycle, of that advance or the one after. What another actor sends is not the host's, and is not acted on.
 impl Handles<Paced> for Pacer {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, paced: Paced, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let me = turn.me();

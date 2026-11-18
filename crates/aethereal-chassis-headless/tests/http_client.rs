@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Number, Part,
+    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Number, Part,
     ProtocolRef, Receives, Streams, Top, Turn, Unanswered,
 };
 use aethereal_chassis_headless::Headless;
@@ -123,6 +123,7 @@ impl Bootstrap<Headless> for Follower {
 
 impl Handles<Order> for Follower {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
@@ -144,6 +145,7 @@ impl Handles<Order> for Follower {
 
 impl Handles<Part<Receiving>> for Follower {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
@@ -252,20 +254,21 @@ impl Actor for Echo {
     }
 }
 
-impl Carries<Request<(), ()>> for Echo {
-    type Answers = (Response,);
-}
-
 impl Handles<Request<(), ()>> for Echo {
     type From = FromStack;
+    type Returns = Later<Response>;
 
-    fn handle(&mut self, request: Request<(), ()>, turn: &mut Turn<'_, Self, Self::From>) -> Result<(), Fault> {
+    fn handle(
+        &mut self,
+        request: Request<(), ()>,
+        turn: &mut Turn<'_, Self, Self::From>,
+    ) -> Result<Later<Response>, Fault> {
         let host = String::from(request.header("host").unwrap_or_default());
         self.asked.push(Asked { host, peer: request.peer });
-        let echoing = Echoing { held: turn.hold()? };
-        turn.to(request.body.gatherer).ask(&request.body.whole(1024), &echoing)?;
+        let (held, later) = turn.hold();
+        turn.to(request.body.gatherer).ask(&request.body.whole(1024), &Echoing { held })?;
 
-        Ok(())
+        Ok(later)
     }
 }
 

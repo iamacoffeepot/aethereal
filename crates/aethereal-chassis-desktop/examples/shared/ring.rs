@@ -6,7 +6,7 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, ProtocolRef,
-    ReadTuning, Receives, Start, Tick, Top, Tunable, Tune, Tunes, Turn, path, tuning,
+    ReadTuning, Receives, Start, Tick, Top, Tunable, Tune, Tuned, Tunes, Tuning, Turn, path, tuning,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_render::Renderer;
@@ -403,6 +403,7 @@ impl Receives<On<Start>> for Scene {
 /// Each key and text its list hears is printed; a key held turns the ring the other way, and Escape quits.
 impl Handles<Keyed> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, keyed: Keyed, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match keyed.event {
@@ -429,6 +430,7 @@ impl Handles<Keyed> for Scene {
 
 impl Handles<Event> for Scene {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, event: Event, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match event {
@@ -824,16 +826,18 @@ impl Tunable for Scene {
 
 impl Handles<ReadTuning> for Scene {
     type From = Anyone;
+    type Returns = Tuning;
 
-    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, _: ReadTuning, turn: &mut Turn<'_, Self>) -> Result<Tuning, Fault> {
         tuning::read(self, turn)
     }
 }
 
 impl Handles<Tune> for Scene {
     type From = Anyone;
+    type Returns = Tuned;
 
-    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, tune: Tune, turn: &mut Turn<'_, Self>) -> Result<Tuned, Fault> {
         tuning::tune(self, &tune, turn)
     }
 }

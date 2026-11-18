@@ -1,11 +1,11 @@
 //! A connection dialed out (ADR-0033).
 
-use super::{Connection, ConnectionConfig, Finish, Reading, Shut, Write};
+use super::{Connection, ConnectionConfig, Finish, HungUp, Reading, Shut, Write, Wrote};
 use crate::Tcp;
 use crate::{Interest, Readied};
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, More, Open, Receives,
-    Turn,
+    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ended, Ending, Enough, Fault, Handles, Later, More, Open,
+    Receives, Reply, Turn,
 };
 use aethereal_data::Bound;
 
@@ -39,14 +39,16 @@ impl Actor for Dialed {
 
 impl Handles<Open<Reading>> for Dialed {
     type From = Anyone;
+    type Returns = Later<HungUp>;
 
-    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
         self.connection.open(turn, open)
     }
 }
 
 impl Handles<More> for Dialed {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, more: More, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.more(turn, &more)
@@ -55,6 +57,7 @@ impl Handles<More> for Dialed {
 
 impl Handles<Enough> for Dialed {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, enough: Enough, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.enough(turn, &enough)
@@ -69,14 +72,16 @@ impl Receives<Ended> for Dialed {
 
 impl Handles<Write> for Dialed {
     type From = Anyone;
+    type Returns = Reply<Wrote>;
 
-    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn handle(&mut self, write: Write, turn: &mut Turn<'_, Self>) -> Result<Reply<Wrote>, Fault> {
         self.connection.write(turn, write)
     }
 }
 
 impl Handles<Finish> for Dialed {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Finish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.finish(turn)
@@ -85,6 +90,7 @@ impl Handles<Finish> for Dialed {
 
 impl Handles<Shut> for Dialed {
     type From = Anyone;
+    type Returns = ();
 
     fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.connection.shut(turn)
