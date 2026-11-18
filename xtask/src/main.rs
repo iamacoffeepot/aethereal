@@ -2,7 +2,11 @@
 //!
 //! ```text
 //! cargo xtask example <example> [--serve [--port <port>]]   one browser example's page, built and served
-//! cargo xtask check [fmt | clippy | browser | test]...      what CI runs; every check when none is named
+//! cargo xtask check [fmt | clippy | browser | test]... [-p <package>]...
+//!                                                           what CI runs; every check when none is named, and the
+//!                                                           tests of the packages named, or of every package
+//! cargo xtask affected [--base <ref>] [--github-output] [--run]
+//!                                                           the packages whose tests a change can fail
 //! cargo xtask create-session-image --claude <version | latest | stable> [--uid <uid>] [--gid <gid>]
 //!     [--rust <version>] [--tag <tag>]                       the image Claude sessions run in, built on Docker
 //! ```
@@ -12,6 +16,8 @@
 //! it.
 #![allow(clippy::print_stdout, clippy::print_stderr)] // A command prints what it did, for a person or a script to read.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod affected;
 #[cfg(not(target_arch = "wasm32"))]
 mod args;
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +40,8 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let ran = args::parse(env::args().skip(1)).and_then(|command| match command {
         args::Command::Example { name, serving } => example::run(&name, serving),
-        args::Command::Check(jobs) => check::run(&jobs),
+        args::Command::Check { jobs, tests } => check::run(&jobs, &tests),
+        args::Command::Affected(request) => affected::run(&request),
         args::Command::CreateSessionImage(request) => session_image::run(&request),
     });
     match ran {
