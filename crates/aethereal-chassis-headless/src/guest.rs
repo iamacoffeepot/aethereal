@@ -2723,11 +2723,11 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        Actor, ActorRef, Answer, Answered, Beginning, Bytes, Carries, Ending, Forged, Given, Handle, Handles, Links,
-        Origin, Protocol, ProtocolRef, Publisher, Seated, Services, Trapped, Turn, Unanswered,
+        ActorRef, Answered, Beginning, Bytes, Forged, Given, Handle, Links, Origin, ProtocolRef, Publisher, Seated,
+        Services, Trapped, Turn, Unanswered,
     };
-    use aethereal_actor::{Anyone, Anywhere, ChildOf, Level, Receives, Spawn, Tick, Time, Top};
-    use aethereal_actor::{JobId, JobType};
+    use aethereal_actor::{Anywhere, Level, Tick, Time};
+    use aethereal_actor::{JobId, JobType, actor, protocol};
     use aethereal_data::{ActorPath, Kind, KindName, PathSegment, Plain, Schema, SchemaNodes};
     use aethereal_guest_echo as echo;
     use aethereal_substrate::harness::{Harness, Jobbed, Unheard};
@@ -2790,17 +2790,8 @@ mod tests {
         pongs: u64,
     }
 
-    impl ChildOf for Pinger {
-        type Parent = Top;
-    }
-
-    impl Actor for Pinger {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Answer<echo::Pong, Which>,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Pinger {
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
             let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) else {
@@ -2811,13 +2802,8 @@ mod tests {
             Ok(Self { echo, pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Receives<Answer<echo::Pong, Which>> for Pinger {
-        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Answered::Yes(pong) = pong else {
                 return Ok(());
             };
@@ -2854,15 +2840,8 @@ mod tests {
     }
 
     /// The protocol the echo guest is asked through: a ping, answered with a pong.
+    #[protocol(echo::Ping(answers = echo::Pong))]
     struct Pings;
-
-    impl Protocol for Pings {
-        type Kinds = (echo::Ping,);
-    }
-
-    impl Carries<echo::Ping> for Pings {
-        type Answers = (echo::Pong,);
-    }
 
     /// What a questioner keeps until its ping is answered: which ping it was.
     #[derive(Plain)]
@@ -2880,33 +2859,16 @@ mod tests {
         questioned: Vec<(u64, u64)>,
     }
 
-    impl ChildOf for Questioner {
-        type Parent = Top;
-    }
-
-    impl Actor for Questioner {
-        type Config = Self;
-        type Key = ();
-        type Handles = (Volley, Answer<echo::Pong, Which>);
-        type Depends = ();
-        type Spawns = (echo::Echo,);
-
+    #[actor(spawns(echo::Echo))]
+    impl Questioner {
         fn begin(questioner: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(questioner)
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Volley> for Questioner {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, volley: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn volley(&mut self, volley: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(echo) = turn.spawn_from::<echo::Echo>(Origin::Blob(&self.code), &(), &echo::EchoConfig) else {
                 return Ok(());
             };
@@ -2916,14 +2878,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Receives<Answer<echo::Pong, Which>> for Questioner {
-        fn handle(
-            &mut self,
-            (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self>,
-        ) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, which): (Answered<echo::Pong>, Which)) -> Result<(), Fault> {
             let Answered::Yes(pong) = pong else {
                 return Ok(());
             };
@@ -2972,33 +2929,16 @@ mod tests {
         petitioned: Vec<Petitioned>,
     }
 
-    impl ChildOf for Petitioner {
-        type Parent = Top;
-    }
-
-    impl Actor for Petitioner {
-        type Config = Petitioning;
-        type Key = u64;
-        type Handles = (Volley, Answer<echo::Pong, Which>, Answer<echo::Weight, Which>);
-        type Depends = ();
-        type Spawns = (echo::Steward,);
-
+    #[actor(key = u64, spawns(echo::Steward))]
+    impl Petitioner {
         fn begin(petitioning: Petitioning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             turn.to(turn.me()).send(&Volley { pings: 2 })?;
 
             Ok(Self { petitioning, petitioned: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Volley> for Petitioner {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn volley(&mut self, _: Volley, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Petitioning { code, how } = &self.petitioning;
             let Ok(steward) = turn.spawn_from::<echo::Steward>(Origin::Blob(code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
@@ -3011,14 +2951,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Receives<Answer<echo::Pong, Which>> for Petitioner {
-        fn handle(
-            &mut self,
-            (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self>,
-        ) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, which): (Answered<echo::Pong>, Which)) -> Result<(), Fault> {
             let answered = match pong {
                 Answered::Yes(pong) => Ok(pong.n),
                 Answered::No(why) => Err(why),
@@ -3027,14 +2962,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Receives<Answer<echo::Weight, Which>> for Petitioner {
-        fn handle(
-            &mut self,
-            (weight, which): (Answered<echo::Weight>, Which),
-            _: &mut Turn<'_, Self>,
-        ) -> Result<(), Fault> {
+        #[answer]
+        fn weight(&mut self, (weight, which): (Answered<echo::Weight>, Which)) -> Result<(), Fault> {
             let answered = match weight {
                 Answered::Yes(weight) => Ok(weight.n),
                 Answered::No(why) => Err(why),
@@ -3113,17 +3043,8 @@ mod tests {
         shelved: Vec<u64>,
     }
 
-    impl ChildOf for Shelving {
-        type Parent = Top;
-    }
-
-    impl Actor for Shelving {
-        type Config = Inquiring;
-        type Key = ();
-        type Handles = (echo::Pong, echo::Book);
-        type Depends = ();
-        type Spawns = (echo::Shelver,);
-
+    #[actor(spawns(echo::Shelver))]
+    impl Shelving {
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(shelver) = turn.spawn_from::<echo::Shelver>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
             else {
@@ -3134,27 +3055,15 @@ mod tests {
             Ok(Self { shelved: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Pong> for Shelving {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: echo::Pong) -> Result<(), Fault> {
             self.shelved.push(pong.n);
 
             Ok(())
         }
-    }
 
-    impl Handles<echo::Book> for Shelving {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn book(&mut self, book: echo::Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let len = 100 + turn.read(&book.blob).len() as u64;
             self.shelved.push(len);
 
@@ -3197,17 +3106,8 @@ mod tests {
         code: Bytes,
     }
 
-    impl ChildOf for Inquirer {
-        type Parent = Top;
-    }
-
-    impl Actor for Inquirer {
-        type Config = Inquiring;
-        type Key = ();
-        type Handles = (echo::Heard,);
-        type Depends = ();
-        type Spawns = (echo::Querent,);
-
+    #[actor(spawns(echo::Querent))]
+    impl Inquirer {
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(querent) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
@@ -3217,16 +3117,8 @@ mod tests {
             Ok(Self { querent, heard: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Heard> for Inquirer {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn heard(&mut self, heard: echo::Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             // A second query, asked in a later call into the guest than the first.
             let is_first_done = matches!(heard, echo::Heard::No { at: 2, .. });
             if is_first_done {
@@ -3278,17 +3170,8 @@ mod tests {
         opened: Vec<Heard>,
     }
 
-    impl ChildOf for Opening {
-        type Parent = Top;
-    }
-
-    impl Actor for Opening {
-        type Config = Inquiring;
-        type Key = ();
-        type Handles = (echo::Heard,);
-        type Depends = ();
-        type Spawns = (echo::Opener,);
-
+    #[actor(spawns(echo::Opener))]
+    impl Opening {
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let opening = echo::Opening { n: 3, below: 1 };
             let Ok(_) = turn.spawn_from::<echo::Opener>(Origin::Blob(&inquiring.code), &3, &opening) else {
@@ -3298,16 +3181,8 @@ mod tests {
             Ok(Self { opened: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Heard> for Opening {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn heard(&mut self, heard: echo::Heard) -> Result<(), Fault> {
             let heard = match heard {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
@@ -3352,17 +3227,8 @@ mod tests {
         stashed: Vec<Heard>,
     }
 
-    impl ChildOf for Stashing {
-        type Parent = Top;
-    }
-
-    impl Actor for Stashing {
-        type Config = Inquiring;
-        type Key = ();
-        type Handles = (echo::Heard,);
-        type Depends = ();
-        type Spawns = (echo::Stasher,);
-
+    #[actor(spawns(echo::Stasher))]
+    impl Stashing {
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(stasher) = turn.spawn_from::<echo::Stasher>(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig)
             else {
@@ -3373,16 +3239,8 @@ mod tests {
             Ok(Self { stashed: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Heard> for Stashing {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn heard(&mut self, heard: echo::Heard) -> Result<(), Fault> {
             let heard = match heard {
                 echo::Heard::Pong { at, n } => (at, Ok(n)),
                 echo::Heard::No { at, why } => (at, Err(why)),
@@ -3429,17 +3287,8 @@ mod tests {
         lent: Vec<u64>,
     }
 
-    impl ChildOf for Lender {
-        type Parent = Top;
-    }
-
-    impl Actor for Lender {
-        type Config = Inquiring;
-        type Key = ();
-        type Handles = (Lend, Pong);
-        type Depends = ();
-        type Spawns = (echo::Nester,);
-
+    #[actor(spawns(echo::Nester))]
+    impl Lender {
         fn begin(inquiring: Inquiring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(nester) = turn.spawn_from(Origin::Blob(&inquiring.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&Doom)?);
@@ -3449,16 +3298,8 @@ mod tests {
             Ok(Self { nester, lent: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Lend> for Lender {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Lend, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn lend(&mut self, _: Lend, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Ok(blob) = turn.put(vec![7; 3]) else {
                 return Err(Fault::new(&Doom)?);
             };
@@ -3466,13 +3307,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Handles<Pong> for Lender {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.lent.push(pong.n);
 
             Ok(())
@@ -3516,17 +3353,8 @@ mod tests {
         pongs: u64,
     }
 
-    impl ChildOf for Closer {
-        type Parent = Top;
-    }
-
-    impl Actor for Closer {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Answer<echo::Pong, Which>,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Closer {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
             let Some(found) = turn.resolve(&echo) else {
@@ -3542,13 +3370,8 @@ mod tests {
             Ok(Self { pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Receives<Answer<echo::Pong, Which>> for Closer {
-        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, _): (Answered<echo::Pong>, Which)) -> Result<(), Fault> {
             if let Answered::Yes(_) = pong {
                 self.pongs += 1;
             }
@@ -3616,17 +3439,8 @@ mod tests {
         answered: Vec<u64>,
     }
 
-    impl ChildOf for Caller {
-        type Parent = Top;
-    }
-
-    impl Actor for Caller {
-        type Config = Volley;
-        type Key = u64;
-        type Handles = (Answer<echo::Pong, Which>,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor(key = u64)]
+    impl Caller {
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
             if let Some(echo) = turn.resolve(&echo).and_then(|found| turn.cast::<Pings>(found)) {
@@ -3636,13 +3450,8 @@ mod tests {
             Ok(Self { key: volley.pings, answered: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Receives<Answer<echo::Pong, Which>> for Caller {
-        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, _): (Answered<echo::Pong>, Which)) -> Result<(), Fault> {
             if let Answered::Yes(pong) = pong {
                 self.answered.push(pong.n);
             }
@@ -3692,17 +3501,8 @@ mod tests {
         pongs: u64,
     }
 
-    impl ChildOf for Volleyer {
-        type Parent = Top;
-    }
-
-    impl Actor for Volleyer {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Answer<echo::Pong, Which>,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Volleyer {
         fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
             let echo = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.echo"), &()));
@@ -3717,13 +3517,8 @@ mod tests {
             Ok(Self { echo, pongs: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Receives<Answer<echo::Pong, Which>> for Volleyer {
-        fn handle(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, _): (Answered<echo::Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             let Answered::Yes(pong) = pong else {
                 return Ok(());
             };
@@ -3744,17 +3539,8 @@ mod tests {
         told: u64,
     }
 
-    impl ChildOf for TimeAsker {
-        type Parent = Top;
-    }
-
-    impl Actor for TimeAsker {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl TimeAsker {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let keeper = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.timekeeper"), &()));
             if let Some(keeper) = turn.resolve(&keeper).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -3764,16 +3550,8 @@ mod tests {
             Ok(Self { told: 0 })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for TimeAsker {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.told = pong.n;
 
             Ok(())
@@ -3839,17 +3617,8 @@ mod tests {
         code: Bytes,
     }
 
-    impl ChildOf for Breeder {
-        type Parent = Top;
-    }
-
-    impl Actor for Breeder {
-        type Config = Self;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = (echo::Ticker,);
-
+    #[actor(spawns(echo::Ticker))]
+    impl Breeder {
         fn begin(breeder: Self, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Ticker>(Origin::Blob(&breeder.code), &(), &echo::EchoConfig);
             let said = match spawned {
@@ -3860,10 +3629,6 @@ mod tests {
             turn.log(Level::Info, said);
 
             Ok(breeder)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -3919,17 +3684,8 @@ mod tests {
     #[kind(name = "aether.test.boss")]
     struct Boss;
 
-    impl ChildOf for Boss {
-        type Parent = Top;
-    }
-
-    impl Actor for Boss {
-        type Config = Order;
-        type Key = u64;
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor(key = u64)]
+    impl Boss {
         fn begin(order: Order, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let foreman = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.foreman"), &()));
             let Some(found) = turn.resolve(&foreman) else {
@@ -3956,16 +3712,8 @@ mod tests {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Boss {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, _: Pong) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4215,17 +3963,8 @@ mod tests {
     #[kind(name = "aether.test.crasher")]
     struct Crasher;
 
-    impl ChildOf for Crasher {
-        type Parent = Top;
-    }
-
-    impl Actor for Crasher {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Crasher {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mirror = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.mirror"), &()));
             if let Some(mirror) = turn.resolve(&mirror).and_then(|found| turn.cast::<(Crash,)>(found)) {
@@ -4235,16 +3974,8 @@ mod tests {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Crasher {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, _: Pong) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -4421,17 +4152,8 @@ mod tests {
         }
     }
 
-    impl ChildOf for Asker {
-        type Parent = Top;
-    }
-
-    impl Actor for Asker {
-        type Config = Asks;
-        type Key = u64;
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor(key = u64)]
+    impl Asker {
         fn begin(asks: Asks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             for path in &asks.paths {
                 if let Some(asked) = turn.resolve(path).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -4442,16 +4164,8 @@ mod tests {
             Ok(Self { answers: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Asker {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.answers.push(pong.n);
 
             Ok(())
@@ -4463,27 +4177,14 @@ mod tests {
     #[kind(name = "aether.test.grower")]
     struct Grower;
 
-    impl ChildOf for Grower {
-        type Parent = Top;
-    }
-
-    impl Actor for Grower {
-        type Config = Volley;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Grower {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(brood) = turn.resolve(&brood_path()).and_then(|found| turn.cast::<(Grow,)>(found)) {
                 turn.to(brood).send(&Grow)?;
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -4594,31 +4295,14 @@ mod tests {
         }
     }
 
-    impl ChildOf for Keeper {
-        type Parent = Anywhere;
-    }
-
-    impl Actor for Keeper {
-        type Config = Keeps;
-        type Key = u64;
-        type Handles = (Ping,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(keeps: Keeps, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor(key = u64, parent = Anywhere)]
+    impl Keeper {
+        fn begin(keeps: Keeps) -> Result<Self, Fault> {
             Ok(Self { key: keeps.key, pings: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Ping> for Keeper {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn ping(&mut self, ping: Ping) -> Result<(), Fault> {
             self.pings.push(100 * self.key + ping.n);
 
             Ok(())
@@ -4713,17 +4397,8 @@ mod tests {
         }
     }
 
-    impl ChildOf for Vestry {
-        type Parent = Top;
-    }
-
-    impl Actor for Vestry {
-        type Config = Vestment;
-        type Key = u64;
-        type Handles = ();
-        type Depends = ();
-        type Spawns = (echo::Sexton,);
-
+    #[actor(key = u64, spawns(echo::Sexton))]
+    impl Vestry {
         fn begin(vestment: Vestment, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let sexton: Result<ActorRef<echo::Sexton>, _> =
                 turn.spawn_from(Origin::Blob(&vestment.code), &(), &echo::EchoConfig);
@@ -4734,10 +4409,6 @@ mod tests {
             };
 
             Ok(Self { spawned: vec![answer] })
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -4840,31 +4511,14 @@ mod tests {
         }
     }
 
-    impl ChildOf for Shiner {
-        type Parent = Top;
-    }
-
-    impl Actor for Shiner {
-        type Config = Shining;
-        type Key = ();
-        type Handles = (echo::Hand,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(_: Shining, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor]
+    impl Shiner {
+        fn begin(_: Shining) -> Result<Self, Fault> {
             Ok(Self { lights: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Hand> for Shiner {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn hand(&mut self, hand: echo::Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             for lamp in hand.lamps {
                 let mut lamp = turn.take(lamp)?;
                 let light = turn.open(&mut lamp)?.light;
@@ -4889,17 +4543,8 @@ mod tests {
     #[kind(name = "aether.test.lighter")]
     struct Lighter;
 
-    impl ChildOf for Lighter {
-        type Parent = Top;
-    }
-
-    impl Actor for Lighter {
-        type Config = Lighting;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Lighter {
         fn begin(lighting: Lighting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Lighting { to, lights } = lighting;
             let to = turn.resolve(&to).and_then(|found| turn.cast::<(echo::Hand,)>(found));
@@ -4913,10 +4558,6 @@ mod tests {
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -4984,31 +4625,14 @@ mod tests {
         key: u64,
     }
 
-    impl ChildOf for Mortal {
-        type Parent = Top;
-    }
-
-    impl Actor for Mortal {
-        type Config = Volley;
-        type Key = u64;
-        type Handles = (Ping,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(volley: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor(key = u64)]
+    impl Mortal {
+        fn begin(volley: Volley) -> Result<Self, Fault> {
             Ok(Self { key: volley.pings })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Ping> for Mortal {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn ping(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             if self.key > 0 {
                 return Err(Fault::new(&Doom)?);
             }
@@ -5078,17 +4702,8 @@ mod tests {
         }
     }
 
-    impl ChildOf for Nest {
-        type Parent = Top;
-    }
-
-    impl Actor for Nest {
-        type Config = Nesting;
-        type Key = ();
-        type Handles = (Poke, Pong);
-        type Depends = ();
-        type Spawns = (echo::Reporter, Keeper, Impostor);
-
+    #[actor(spawns(echo::Reporter, Keeper, Impostor))]
+    impl Nest {
         fn begin(nesting: Nesting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let mut reporters = Vec::new();
             for key in 0..nesting.reporters {
@@ -5111,27 +4726,15 @@ mod tests {
             Ok(Self { reporters, told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Poke> for Nest {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn poke(&mut self, _: Poke, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
             turn.to(&self.reporters).send(&echo::Ping { n: 1 })?;
 
             Ok(())
         }
-    }
 
-    impl Handles<Pong> for Nest {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.told.push(pong.n);
 
             Ok(())
@@ -5144,31 +4747,14 @@ mod tests {
     #[kind(name = "aether.guest.reporter")]
     struct Impostor;
 
-    impl ChildOf for Impostor {
-        type Parent = Nest;
-    }
-
-    impl Actor for Impostor {
-        type Config = echo::AddBy;
-        type Key = u64;
-        type Handles = (Poke,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(_: echo::AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor(key = u64, parent = Nest)]
+    impl Impostor {
+        fn begin(_: echo::AddBy) -> Result<Self, Fault> {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Poke> for Impostor {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: Poke, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn poke(&mut self, _: Poke) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5178,17 +4764,8 @@ mod tests {
     #[kind(name = "aether.test.poker")]
     struct Poker;
 
-    impl ChildOf for Poker {
-        type Parent = Top;
-    }
-
-    impl Actor for Poker {
-        type Config = Volley;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Poker {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let nest = ActorPath::from_root(&PathSegment::new(Nest::NAME, &()));
             if let Some(nest) = turn.resolve(&nest).and_then(|found| turn.cast::<(Poke,)>(found)) {
@@ -5196,10 +4773,6 @@ mod tests {
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -5254,17 +4827,8 @@ mod tests {
         }
     }
 
-    impl ChildOf for Hen {
-        type Parent = Top;
-    }
-
-    impl Actor for Hen {
-        type Config = Henning;
-        type Key = ();
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = (echo::Hatcher,);
-
+    #[actor(spawns(echo::Hatcher))]
+    impl Hen {
         fn begin(henning: Henning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hatch = echo::Hatch { other: henning.other, home: henning.home.clone() };
             let Ok(_) = turn.spawn_from::<echo::Hatcher>(Origin::Blob(&henning.home), &(), &hatch) else {
@@ -5274,16 +4838,8 @@ mod tests {
             Ok(Self { told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Hen {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.told.push(pong.n);
 
             Ok(())
@@ -5295,17 +4851,8 @@ mod tests {
     #[kind(name = "aether.test.rouser")]
     struct Rouser;
 
-    impl ChildOf for Rouser {
-        type Parent = Top;
-    }
-
-    impl Actor for Rouser {
-        type Config = Volley;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Rouser {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let hen = ActorPath::from_root(&PathSegment::new(Hen::NAME, &()));
             let Ok(hatcher) = hen.child(&PathSegment::new(echo::Hatcher::NAME, &())) else {
@@ -5316,10 +4863,6 @@ mod tests {
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -5394,17 +4937,8 @@ mod tests {
         published: Vec<(KindName, Granted)>,
     }
 
-    impl ChildOf for Publishing {
-        type Parent = Top;
-    }
-
-    impl Actor for Publishing {
-        type Config = Publishes;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Publishing {
         fn begin(config: Publishes, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Publishes { publisher, kinds, blobs } = config;
             let held = turn.take(publisher)?;
@@ -5414,10 +4948,6 @@ mod tests {
             }
 
             Ok(Self { publisher: held, published })
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -5433,25 +4963,12 @@ mod tests {
         inherited: Granted,
     }
 
-    impl ChildOf for Inheritor {
-        type Parent = Top;
-    }
-
-    impl Actor for Inheritor {
-        type Config = Inherit;
-        type Key = u64;
-        type Handles = ();
-        type Depends = ();
-        type Spawns = (echo::Echo,);
-
+    #[actor(key = u64, spawns(echo::Echo))]
+    impl Inheritor {
         fn begin(_: Inherit, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spawned = turn.spawn_from::<echo::Echo>(Origin::Head, &(), &echo::EchoConfig);
 
             Ok(Self { inherited: Granted::from(spawned) })
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -5546,31 +5063,14 @@ mod tests {
         }
     }
 
-    impl ChildOf for Ledger {
-        type Parent = Top;
-    }
-
-    impl Actor for Ledger {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor]
+    impl Ledger {
+        fn begin(_: Volley) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Ledger {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.pongs.push(pong.n);
 
             Ok(())
@@ -5597,17 +5097,8 @@ mod tests {
         }
     }
 
-    impl ChildOf for Borrower {
-        type Parent = Top;
-    }
-
-    impl Actor for Borrower {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (echo::Book, echo::Pong);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Borrower {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(librarian).send(&Ping { n: 5 })?;
@@ -5616,16 +5107,8 @@ mod tests {
             Ok(Self { read: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Book> for Borrower {
-        type From = ActorRef<echo::Librarian>;
-        type Returns = ();
-
-        fn handle(
+        #[tell]
+        fn book(
             &mut self,
             book: echo::Book,
             turn: &mut Turn<'_, Self, ActorRef<echo::Librarian>>,
@@ -5637,13 +5120,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Handles<echo::Pong> for Borrower {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: echo::Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: echo::Pong) -> Result<(), Fault> {
             self.read.push(pong.n);
 
             Ok(())
@@ -5655,27 +5134,14 @@ mod tests {
     #[kind(name = "aether.test.shutter")]
     struct Shutter;
 
-    impl ChildOf for Shutter {
-        type Parent = Top;
-    }
-
-    impl Actor for Shutter {
-        type Config = Volley;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Shutter {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(echo::Shut,)>(found)) {
                 turn.to(librarian).send(&echo::Shut)?;
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -5748,17 +5214,8 @@ mod tests {
         books: Vec<Bytes>,
     }
 
-    impl ChildOf for Patron {
-        type Parent = Top;
-    }
-
-    impl Actor for Patron {
-        type Config = Borrowing;
-        type Key = u64;
-        type Handles = (echo::Book,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor(key = u64)]
+    impl Patron {
         fn begin(borrowing: Borrowing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             if let Some(librarian) = turn.resolve(&librarian()).and_then(|found| turn.cast::<(Ping,)>(found)) {
                 turn.to(librarian).send(&Ping { n: borrowing.len })?;
@@ -5767,16 +5224,8 @@ mod tests {
             Ok(Self { keeps: borrowing.keeps, books: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Book> for Patron {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, book: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn book(&mut self, book: echo::Book) -> Result<(), Fault> {
             if self.keeps {
                 self.books.push(book.blob);
             }
@@ -5860,17 +5309,8 @@ mod tests {
     #[kind(name = "aether.test.dun")]
     struct Dun;
 
-    impl ChildOf for Dun {
-        type Parent = Top;
-    }
-
-    impl Actor for Dun {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (echo::Book,);
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Dun {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let spendthrift = ActorPath::from_root(&PathSegment::new(echo::Spendthrift::NAME, &()));
             if let Some(spendthrift) = turn.resolve(&spendthrift).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -5880,16 +5320,8 @@ mod tests {
             Ok(Self)
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<echo::Book> for Dun {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, _: echo::Book, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn book(&mut self, _: echo::Book) -> Result<(), Fault> {
             Ok(())
         }
     }
@@ -5964,31 +5396,14 @@ mod tests {
         }
     }
 
-    impl ChildOf for Mourner {
-        type Parent = Top;
-    }
-
-    impl Actor for Mourner {
-        type Config = Volley;
-        type Key = ();
-        type Handles = (Pong,);
-        type Depends = ();
-        type Spawns = ();
-
-        fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    #[actor]
+    impl Mourner {
+        fn begin(_: Volley) -> Result<Self, Fault> {
             Ok(Self { pongs: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Handles<Pong> for Mourner {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, pong: Pong, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn pong(&mut self, pong: Pong) -> Result<(), Fault> {
             self.pongs.push(pong.n);
 
             Ok(())
@@ -6001,17 +5416,8 @@ mod tests {
     #[kind(name = "aether.test.dismisser")]
     struct Dismisser;
 
-    impl ChildOf for Dismisser {
-        type Parent = Top;
-    }
-
-    impl Actor for Dismisser {
-        type Config = Volley;
-        type Key = ();
-        type Handles = ();
-        type Depends = ();
-        type Spawns = ();
-
+    #[actor]
+    impl Dismisser {
         fn begin(_: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let parting = |key: u64| ActorPath::from_root(&PathSegment::new(echo::Parting::NAME, &key));
             if let Some(first) = turn.resolve(&parting(1)).and_then(|found| turn.cast::<(Ping, echo::Shut)>(found)) {
@@ -6022,10 +5428,6 @@ mod tests {
             }
 
             Ok(Self)
-        }
-
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
         }
     }
 
@@ -6256,17 +5658,8 @@ mod tests {
         told: Vec<Probed>,
     }
 
-    impl ChildOf for Prober {
-        type Parent = Top;
-    }
-
-    impl Actor for Prober {
-        type Config = ProberConfig;
-        type Key = ();
-        type Handles = (Answer<echo::Pong, Which>, echo::Heard);
-        type Depends = ();
-        type Spawns = (echo::Envoy,);
-
+    #[actor(spawns(echo::Envoy))]
+    impl Prober {
         fn begin(config: ProberConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
             let Ok(envoy) = turn.spawn_from::<echo::Envoy>(Origin::Blob(&config.code), &(), &echo::EchoConfig) else {
                 return Err(Fault::new(&echo::Shut)?);
@@ -6276,17 +5669,8 @@ mod tests {
             Ok(Self { answered: Vec::new(), told: Vec::new() })
         }
 
-        fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-            Ok(())
-        }
-    }
-
-    impl Receives<Answer<echo::Pong, Which>> for Prober {
-        fn handle(
-            &mut self,
-            (pong, which): (Answered<echo::Pong>, Which),
-            _: &mut Turn<'_, Self>,
-        ) -> Result<(), Fault> {
+        #[answer]
+        fn pong(&mut self, (pong, which): (Answered<echo::Pong>, Which)) -> Result<(), Fault> {
             let probed = match pong {
                 Answered::Yes(pong) => Probed::Pong { at: which.at, n: pong.n },
                 Answered::No(why) => Probed::No { at: which.at, why },
@@ -6295,13 +5679,9 @@ mod tests {
 
             Ok(())
         }
-    }
 
-    impl Handles<echo::Heard> for Prober {
-        type From = Anyone;
-        type Returns = ();
-
-        fn handle(&mut self, heard: echo::Heard, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        #[tell]
+        fn heard(&mut self, heard: echo::Heard) -> Result<(), Fault> {
             self.told.push(Probed::of(&heard));
 
             Ok(())

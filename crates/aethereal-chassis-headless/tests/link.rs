@@ -2,10 +2,7 @@
 //! played by a real socket speaking the link's own typed frames, on a thread of its own where it waits on the end it
 //! plays to.
 
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Receives, Top,
-    Turn, Unanswered, path,
-};
+use aethereal_actor::{ActorRef, Answered, Fault, Held, Later, Turn, Unanswered, actor, path};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
@@ -556,41 +553,23 @@ struct AskerConfig;
 #[kind(name = "aether.test.asker")]
 struct Asker;
 
-impl ChildOf for Asker {
-    type Parent = Top;
-}
-
-impl Actor for Asker {
-    type Config = AskerConfig;
-    type Key = ();
-    type Handles = (CallWithin, Answer<Called, Relaying>);
-    type Depends = (Engine,);
-    type Spawns = ();
-
-    fn begin(_: AskerConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(depends(Engine))]
+impl Asker {
+    fn begin(_: AskerConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<CallWithin> for Asker {
-    type From = Anyone;
-    type Returns = Later<Heard>;
-
-    fn handle(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self>) -> Result<Later<Heard>, Fault> {
+    #[request]
+    fn call_within(&mut self, asked: CallWithin, turn: &mut Turn<'_, Self>) -> Result<Later<Heard>, Fault> {
         let (held, later) = turn.hold();
         let due = turn.now() + Duration::from_millis(asked.within_millis);
         turn.to(path::<Engine>(0)).within(due).ask(&asked.call, &Relaying { held })?;
 
         Ok(later)
     }
-}
 
-impl Receives<Answer<Called, Relaying>> for Asker {
-    fn handle(
+    #[answer]
+    fn called(
         &mut self,
         (answered, Relaying { held }): (Answered<Called>, Relaying),
         turn: &mut Turn<'_, Self>,

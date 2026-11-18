@@ -4,8 +4,7 @@ use super::*;
 use crate::Monotonic;
 use crate::waiting::{self, BUDGET};
 use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Job, Receives, Runner, Running, Seated, Services,
-    Sleep, Slept, Time, Top, Turn, Unanswered,
+    Answered, Beginning, Fault, Job, Runner, Running, Seated, Services, Sleep, Slept, Time, Turn, Unanswered, actor,
 };
 use aethereal_data::{ActorId, Bound, Plain};
 use aethereal_substrate::harness::{Turned, Unheard};
@@ -49,17 +48,8 @@ struct Nothing;
 #[kind(name = "aether.test.asker")]
 struct Asker;
 
-impl ChildOf for Asker {
-    type Parent = Top;
-}
-
-impl Actor for Asker {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Answer<Ran, Nothing>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Asker {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for at in 0..3 {
             turn.run(&Where { at }, &Nothing)?;
@@ -68,13 +58,8 @@ impl Actor for Asker {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Ran, Nothing>> for Asker {
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn ran(&mut self, _: (Answered<Ran>, Nothing)) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -159,17 +144,8 @@ struct Sleeper {
     did: Vec<Did>,
 }
 
-impl ChildOf for Sleeper {
-    type Parent = Top;
-}
-
-impl Actor for Sleeper {
-    type Config = Nothing;
-    type Key = ();
-    type Handles = (Answer<Ran, Nothing>, Answer<Slept, Woke>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Sleeper {
     fn begin(_: Nothing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let on = turn.run(&Forever, &Nothing)?;
         for (order, millis) in [(2, 30), (1, 10)] {
@@ -180,21 +156,15 @@ impl Actor for Sleeper {
         Ok(Self { did: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Ran, Nothing>> for Sleeper {
-    fn handle(&mut self, _: (Answered<Ran>, Nothing), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn ran(&mut self, _: (Answered<Ran>, Nothing)) -> Result<(), Fault> {
         self.did.push(Did::Finished);
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Slept, Woke>> for Sleeper {
-    fn handle(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn slept(&mut self, (done, woke): (Answered<Slept>, Woke), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let did = match done {
             Answered::Yes(Slept) => Did::Woke { order: woke.order, after_its_time: turn.now() >= woke.until },
             Answered::No(why) => Did::NeverWoke(why),

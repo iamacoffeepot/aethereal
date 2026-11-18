@@ -2,9 +2,7 @@
 
 use crate::Headless;
 use crate::waiting::{self, BUDGET};
-use aethereal_actor::{
-    Actor, Answer, Answered, Beginning, ChildOf, Ending, Fault, Job, Receives, Runner, Running, Tick, Top, Turn,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Job, Runner, Running, Tick, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::harness::{Harness, Turned, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
@@ -43,24 +41,16 @@ struct NothingKept;
 #[kind(name = "aether.test.counter")]
 struct Counter;
 
-impl ChildOf for Counter {
-    type Parent = Top;
-}
-
-impl Actor for Counter {
-    type Config = NothingKept;
-    type Key = ();
-    type Handles = (Answer<Counted, NothingKept>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Counter {
     fn begin(_: NothingKept, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.run(&Count { n: 1 }, &NothingKept)?;
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn counted(&mut self, _: (Answered<Counted>, NothingKept)) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -74,12 +64,6 @@ impl<H: Host> Bootstrap<H> for Counter {
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, H, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), NothingKept)?;
 
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Counted, NothingKept>> for Counter {
-    fn handle(&mut self, _: (Answered<Counted>, NothingKept), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
         Ok(())
     }
 }
