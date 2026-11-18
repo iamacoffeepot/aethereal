@@ -333,7 +333,7 @@ impl Engine {
     /// shut, and the engine at its other end ends by the rule that no engine outlives its link (ADR-0040). From any
     /// other actor, it is passed over.
     #[tell]
-    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn on_shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let is_from_parent = turn.sender().id() == turn.parent().id();
         if !is_from_parent {
             return Ok(());

@@ -93,7 +93,7 @@ impl Process {
     }
 
     #[tell]
-    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn on_stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.stop(turn)
     }
 

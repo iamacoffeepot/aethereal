@@ -186,7 +186,7 @@ impl Tcp {
     }
 
     #[request]
-    fn listen(&mut self, listen: Listen, turn: &mut Turn<'_, Self>) -> Result<Listening, Fault> {
+    fn on_listen(&mut self, listen: Listen, turn: &mut Turn<'_, Self>) -> Result<Listening, Fault> {
         self.listen(turn, &listen)
     }
 
