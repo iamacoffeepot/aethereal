@@ -21,6 +21,7 @@ use aethereal_substrate::{Bootstrap, EngineSettings, Host};
 use aethereal_tcp::Tcp;
 use core::mem;
 use std::io::{Read as _, Write as _};
+use std::net::TcpStream;
 use std::num::NonZeroU32;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -877,6 +878,53 @@ fn a_deadline_of_a_request_already_answered_does_not_end_the_next() -> Result<()
     assert!(answered[0].head.starts_with("HTTP/1.1 200"), "{answered:?}");
     assert!(answered[1].head.starts_with("HTTP/1.1 200"), "{answered:?}");
     assert!(closed, "the second request asked to close");
+
+    Ok(())
+}
+
+/// A client on a thread of its own that sends `sent` to `port`, reads the response and then whether the server ended
+/// the connection, and hands the connection back still open: it never closes it while the test holds it.
+fn lingering(port: u16, sent: &'static [u8]) -> JoinHandle<(Read, bool, TcpStream)> {
+    #[allow(clippy::disallowed_methods)] // The client is a native thread of its own, outside the engine.
+    thread::spawn(move || {
+        let mut stream = connect(port);
+        assert!(stream.write_all(sent).is_ok(), "the client writes");
+        let mut buffer = Vec::new();
+        let read = response(&mut stream, &mut buffer);
+        let ended = closes(&mut stream);
+
+        (read, ended, stream)
+    })
+}
+
+#[test]
+fn a_connection_drained_after_its_last_response_closes_at_its_bound_when_its_client_never_does() -> Result<(), Unheard>
+{
+    // Catches a drain with no end: a client that reads its last response and then neither closes nor sends would hold
+    // its connection, and one of the stack's `most_connections`, for good. Each bound is tried alone, at its least, the
+    // other set past the wait, so a bound never applied leaves the connection open.
+    const UNREAD: &[u8] = b"POST /echo HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody";
+    let quiet =
+        StackSettings { drain_stall_within_millis: 1, drain_within_millis: u32::MAX, ..StackSettings::default() };
+    let spent =
+        StackSettings { drain_stall_within_millis: u32::MAX, drain_within_millis: 1, ..StackSettings::default() };
+
+    for (bound, settings) in [("drain_stall_within_millis", quiet), ("drain_within_millis", spent)] {
+        let (mut harness, port) = echoing(settings, 64)?;
+        let stack = harness.root::<EchoStack>();
+        let (refused, ended, _held) = joined(&mut harness, lingering(port, UNREAD));
+        let mut open = usize::MAX;
+        waiting::until(BUDGET, || {
+            harness.step();
+            open = harness.state(stack).map_or(usize::MAX, |stack| stack.serving.connections());
+
+            open == 0
+        });
+
+        assert!(refused.head.starts_with("HTTP/1.1 401"), "{refused:?}");
+        assert!(ended, "the client reads the end once its last response is written");
+        assert_eq!(open, 0, "the drain closes the connection at `{bound}` though its client never does");
+    }
 
     Ok(())
 }

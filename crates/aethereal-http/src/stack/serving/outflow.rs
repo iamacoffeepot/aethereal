@@ -607,7 +607,7 @@ where
         };
 
         match ends {
-            Ends::Close => self.close(number, Ending::HungUp(HungUp::Shut), turn),
+            Ends::Close => self.drain(number, turn),
             Ends::Next => {
                 connection.enter(Phase::Idle { since: turn.now() }, number, &self.settings, turn)?;
                 self.settle(number, turn)

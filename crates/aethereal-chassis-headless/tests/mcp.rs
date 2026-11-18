@@ -345,11 +345,18 @@ fn client(port: u16, request: &Post) -> JoinHandle<Read> {
         assert!(stream.set_read_timeout(Some(Duration::from_secs(10))).is_ok(), "the read timeout sets");
         assert!(stream.set_nodelay(true).is_ok(), "each write goes as it is made");
         for piece in sent.chunks(write_bytes) {
-            assert!(stream.write_all(piece).is_ok(), "the client writes");
+            let wrote = stream.write_all(piece);
+            assert!(wrote.is_ok(), "the client writes: {wrote:?}");
             thread::sleep(Duration::from_millis(u64::from(write_bytes < sent.len()) * 5));
         }
         let mut whole = Vec::new();
-        assert!(stream.read_to_end(&mut whole).is_ok(), "a response comes within ten seconds");
+        let ended = stream.read_to_end(&mut whole);
+        assert!(
+            ended.is_ok(),
+            "a response comes within ten seconds: {ended:?} after {} bytes: {:?}",
+            whole.len(),
+            String::from_utf8_lossy(&whole)
+        );
         let text = String::from_utf8_lossy(&whole).into_owned();
         let Some((head, body)) = text.split_once("\r\n\r\n") else {
             panic!("a whole response: {text}");
@@ -776,6 +783,41 @@ fn the_largest_request_a_stack_takes_is_read_within_the_limit_it_asks_for() -> R
     assert_eq!(read.status, 405, "{read:?}");
     let read = answered(&mut harness, port, &Post::of(Rpc::List));
     assert_eq!(read.status, 200, "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_body_answered_unread_is_drained_so_its_client_reads_the_answer_and_then_the_end() -> Result<(), Unheard> {
+    // Catches a connection closed whole once its last response is sent: a body the stack answered before reading, past
+    // what `Tcp` reads ahead, is left in the socket, so its close resets the connection, and the client reads the
+    // reset where the end should be. The stack shuts the write half and drains the rest (RFC 9112 §9.6).
+    let (mut harness, _, port) = served_over(modest(), McpSettings::default())?;
+    let body: &'static str = "x".repeat(64 * 1024).leak();
+    let large = Post { verb: "GET", body: Some(body), ..Post::of(Rpc::List) };
+
+    let read = answered(&mut harness, port, &large);
+
+    assert_eq!(read.status, 405, "{read:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_client_still_sending_a_body_past_most_body_bytes_reads_its_413() -> Result<(), Unheard> {
+    // Catches a connection closed whole once its last response is sent while its client still sends: the body, far
+    // past what the kernel holds, is still being written as `413` is, and the close resets the connection, so the
+    // client never reads its answer. The stack drains what the client sends until it has sent it all and closes.
+    let (mut harness, mcp, port) = served(McpSettings { most_body_bytes: 1024, ..McpSettings::default() })?;
+    let worker = harness.protocol::<Tooling>();
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet("say")], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+    let body: &'static str = "x".repeat(32 * 1024 * 1024).leak();
+    let large = Post { body: Some(body), ..Post::of(Rpc::CallSay) };
+
+    let read = answered(&mut harness, port, &large);
+
+    assert_eq!(read.status, 413, "{read:?}");
 
     Ok(())
 }
