@@ -19,7 +19,7 @@ use aethereal_data::KindId;
 pub struct Sender<'t> {
     source: Seated,
     /// The type the sender sent the mail as, stamped at the send.
-    sender_type: SenderType,
+    sent_as: SenderType,
     /// The receiver, and what its type declares.
     me: Seated,
     declared: &'static Declared,
@@ -62,17 +62,17 @@ impl SenderType {
 }
 
 impl<'t> Sender<'t> {
-    /// The sender `source` names, which sent the mail as `sender_type`, of mail handed to the actor `me` names, whose
+    /// The sender `source` names, which sent the mail as `sent_as`, of mail handed to the actor `me` names, whose
     /// type declares `declared`, which stands beneath `above`, and has made the children `made` holds.
     pub(crate) const fn new(
         source: Seated,
-        sender_type: SenderType,
+        sent_as: SenderType,
         me: Seated,
         declared: &'static Declared,
         above: Above,
         made: &'t dyn Children,
     ) -> Self {
-        Self { source, sender_type, me, declared, above, made }
+        Self { source, sent_as, me, declared, above, made }
     }
 
     /// Who it is.
@@ -84,7 +84,7 @@ impl<'t> Sender<'t> {
     /// It, when it sent the mail as an actor of type `T`.
     #[must_use]
     pub fn actor<T: Actor>(&self) -> Option<ActorRef<T>> {
-        self.sender_type.is(KindId::of::<T>()).then(|| ActorRef::new(self.source))
+        self.sent_as.is(KindId::of::<T>()).then(|| ActorRef::new(self.source))
     }
 
     /// It, when the type it sent the mail as lists every kind of `P`, as a cast reads it (ADR-0016).
@@ -92,7 +92,7 @@ impl<'t> Sender<'t> {
     pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>> {
         let kinds = <P::Kinds as Kinds>::KINDS;
 
-        self.sender_type.lists_all(kinds).then(|| ProtocolRef::new(self.source))
+        self.sent_as.lists_all(kinds).then(|| ProtocolRef::new(self.source))
     }
 
     /// It, when it is the receiver's own seat, and the receiver is of type `A`.
@@ -109,7 +109,7 @@ impl<'t> Sender<'t> {
     #[must_use]
     pub fn parent<P: Actor>(&self) -> Option<ActorRef<P>> {
         let is_parent = self.parent_seat() == Some(self.source);
-        let is_type = self.sender_type.is(KindId::of::<P>());
+        let is_type = self.sent_as.is(KindId::of::<P>());
         let is_admitted = is_parent && is_type;
 
         is_admitted.then(|| ActorRef::new(self.source))
@@ -120,7 +120,7 @@ impl<'t> Sender<'t> {
     #[must_use]
     pub fn child<T: ChildOf>(&self) -> Option<ActorRef<T>> {
         let is_child = self.made.has_made(self.source.id);
-        let is_type = self.sender_type.is(KindId::of::<T>());
+        let is_type = self.sent_as.is(KindId::of::<T>());
         let is_admitted = is_child && is_type;
 
         is_admitted.then(|| ActorRef::new(self.source))

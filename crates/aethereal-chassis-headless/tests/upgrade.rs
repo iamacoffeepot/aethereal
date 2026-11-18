@@ -350,7 +350,7 @@ fn mail_a_guest_sent_before_it_moved_is_checked_as_the_type_that_sent_it() -> Re
     harness.tell(library, &Publish { kind: echo::Mover::NAME, blob })?;
 
     let ponged = harness.step_turns();
-    let moved = asks(&mut harness, mover);
+    let asked_as_it_ponged = asks(&mut harness, mover);
     let handed = harness.step_turns();
     let asked = harness.ask(pinger, &Taken)?;
     let taken = match harness.answer(asked)? {
@@ -361,7 +361,7 @@ fn mail_a_guest_sent_before_it_moved_is_checked_as_the_type_that_sent_it() -> Re
 
     assert_eq!(turns_of(&ponged, mover), 1, "the mover pongs on its first version, in the step its head moves");
     assert_eq!(
-        moved,
+        asked_as_it_ponged,
         [(Upgrade::Now, 1)],
         "it moved as that step ended, with no mail, before its pong was handed over"
     );
