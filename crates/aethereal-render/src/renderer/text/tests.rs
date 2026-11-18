@@ -57,14 +57,11 @@ fn outlined(kept: &mut Kept, maker: ActorId, (text, size): (&str, f32), outline:
 /// Generates the glyphs the texts in `kept` wait on at once, as their job would, and writes them into the atlas on
 /// `gpu`.
 fn generated(kept: &mut Kept, gpu: Opened<'_>) {
-    let Some((job, Generating { batch })) = kept.text.wanted() else {
+    let Some((wanted, Generating { batch })) = kept.text.wanted() else {
         return;
     };
-    let (fields, pixels) = generate(&job.glyphs);
-    let fields: Vec<Field> = fields
-        .iter()
-        .map(|field| Field { width: field.width, height: field.height, left: field.left, top: field.top })
-        .collect();
+    let (fields, pixels) = generate(&wanted.glyphs, &wanted.images);
+    let fields: Vec<Field> = fields.into_iter().map(Field::from).collect();
     assert_eq!(kept.text.generated(gpu, batch, &fields, &pixels), Vec::new(), "every glyph fits");
 }
 
@@ -434,4 +431,35 @@ fn on_a_gpu_the_widest_outline_is_a_rim_around_the_glyph_and_its_quad_past_the_f
         );
         assert!(rimmed, "at {size} px, a dark rim is drawn around the o, on {adapter}");
     }
+}
+
+// A machine with no adapter, as CI's, skips it and says so.
+#[test]
+fn on_a_gpu_an_emoji_is_drawn_in_its_own_colours_not_its_text_s() {
+    // Catches a colour glyph drawn as a distance field, which draws a box or nothing; drawn in its text's colour, which
+    // turns a yellow face white; or drawn with its sRGB taken as linear light, or its alpha left multiplied in.
+    let (device, queue, adapter) = match adapter_device() {
+        Ok(opened) => opened,
+        Err(why) => {
+            eprintln!("skipped: no GPU adapter to draw the emoji on: {why}");
+            return;
+        }
+    };
+    eprintln!("ran adapter={adapter:?}");
+    let gpu = (&device, &queue);
+    let mut kept = kept(&device);
+    let at = Vec2::new(8.0, 8.0);
+    let text = made(&mut kept, MAKER, "\u{1f600}", 40.0);
+    let placed = placed_text(&mut kept, &device, (MAKER, text), at);
+    assert_eq!(kept.listed(main_list(&[placed]), MAKER), Ok(()));
+    generated(&mut kept, gpu);
+
+    let side = 64;
+    let pixels = drawn_pixels(&mut kept, gpu, side);
+    let yellow = pixels.chunks_exact(4).filter(|pixel| pixel[0] > 200 && pixel[1] > 150 && pixel[2] < 100).count();
+    let white = pixels.chunks_exact(4).filter(|pixel| pixel[..3].iter().all(|channel| *channel > 240)).count();
+
+    // The face is some 35 pixels across at 40 to the em: most of its disc is yellow.
+    assert!(yellow >= 400, "a grinning face is drawn yellow over some 400 pixels or more, not {yellow}, on {adapter}");
+    assert!(white < yellow / 4, "the face is not drawn in its text's white: {white} white pixels, on {adapter}");
 }

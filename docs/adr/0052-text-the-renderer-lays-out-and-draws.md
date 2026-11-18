@@ -9,7 +9,7 @@ No program can draw text. ichor's console uses an 8×8 bitmap font and a pass wr
 
 Drawing text takes five steps:
 
-1. **A font:** each glyph's outline, as curves. A browser has no fonts the engine can read, so the engine carries its own.
+1. **A font:** each glyph's outline, as curves, or, in a colour emoji font, its picture. A browser has no fonts the engine can read, so the engine carries its own.
 2. **Shaping:** a string turned into glyphs and positions, using the font's character map, advances, and kerning; Arabic and Indic scripts also need reordering and joining.
 3. **Rasterising:** a glyph's outline turned into pixels.
 4. **Caching:** each glyph rasterised once into an atlas on the GPU, and reused.
@@ -27,7 +27,7 @@ A program that lays out around its text, as a widget library lays out a screen i
 
 ## Decision
 
-**The render root makes text, as it makes a mesh: an actor asks for a text, laid out from runs in a font, and places it in the passes of a frame at a point in that frame's pixels. The text is drawn with the renderer's own glyph program, from an atlas of multi-channel signed distance fields (MSDFs) that the renderer fills from TrueType fonts as glyphs are needed. The renderer carries a default proportional font and a default monospace font.**
+**The render root makes text, as it makes a mesh: an actor asks for a text, laid out from runs in a font, and places it in the passes of a frame at a point in that frame's pixels. The text is drawn with the renderer's own glyph program, from an atlas of multi-channel signed distance fields (MSDFs) that the renderer fills from TrueType fonts as glyphs are needed, beside the colour pictures of emoji. The renderer carries a default proportional font and a default monospace font, each falling back to a colour emoji font it carries too.**
 
 ```
 program ── CreateFont { source, fallbacks } ──────────────────────> render root ── Made<FontId>
@@ -58,10 +58,10 @@ WriteText { text: TextId, runs: Vec<Run> }     // no answer, as a write is not (
 
 - **A text is what is laid out, not where it is drawn.** It keeps its glyphs, their positions, and its lines, as a mesh keeps its vertices. Where it is drawn is its placement's. One text may be placed more than once.
 - **A run is a part of the text with one colour,** so a console line has a dim timestamp, a coloured level, and the message in one text. One font and one size for each text keep the layout simple; mixing them in one text is later work.
-- **`\n` breaks a line.** Other control characters are not drawn.
+- **`\n` breaks a line.** Other control characters are not drawn, nor are variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF), which ask for a form, as text or as emoji, that simple shaping does not choose: most emoji typed are followed by U+FE0F, and no font maps it to a glyph.
 - **A write lays the text out again.** Its placements draw the new text from the first `Render` at which all of the new text's glyphs are in the atlas. Until then they draw the text as it was, so a rewritten line never flickers or shows half its glyphs. A new text's placements draw nothing until all its glyphs are in the atlas, so a new text is answered once it can be drawn: at once when its glyphs are all in the atlas, and otherwise once the last it waits on is written in. An asker that lists a text beside what else it draws then shows them together. A glyph that fits nowhere in the atlas, or has no outline, is not waited on.
 - **Refused as it is made:** a size outside 1 to 1024 pixels, an outline wider than the size allows, a font not made or released, and runs over 64 KB. A refused write is logged, and the text keeps what it had.
-- **A character no font has never refuses a text.** It draws the font's missing glyph, a box, and the renderer logs each such character once. People type anything, and one emoji must not refuse a chat line.
+- **A character no font has never refuses a text.** It draws the font's missing glyph, a box, and the renderer logs each such character once. People type anything, and one character no font has must not refuse a chat line.
 - **Released as anything made is, by its maker,** with its placements.
 
 ### Placing a text
@@ -96,13 +96,14 @@ CreateFont {
 enum FontNotMade { Read(FontRefused), Fallback { fallback: u32 }, Unstored }
 ```
 
-- **A font is made from a source: one of the renderer's own, or the bytes of a TrueType file** (`.ttf`, outlines of quadratic curves), which the program reads with the file capability. The render root reads the font's tables as it is made, in its turn, and refuses a font it cannot read, saying which table (`FontNotMade::Read`). CFF outlines (most `.otf` files), WOFF2, and variable fonts are refused for now.
+- **A font is made from a source: one of the renderer's own, or the bytes of a TrueType file** (`.ttf`, outlines of quadratic curves, or colour pictures in `CBDT`), which the program reads with the file capability. The render root reads the font's tables as it is made, in its turn, and refuses a font it cannot read, saying which table (`FontNotMade::Read`). CFF outlines (most `.otf` files), WOFF2, and variable fonts are refused for now, as are colour fonts of vector layers (`COLR` and `CPAL`) and `CBDT` in any form but the one Noto Color Emoji is written in (see *Colour glyphs*).
 - **A font made from `Sans` or `Mono` shares the renderer's own:** its parsed font, its metrics' blob, and its glyphs in the atlas, which are keyed by the face they were read from, not by the font's id. Nothing is read, encoded, or generated a second time, so a program makes `Sans` with fallbacks of its own for the cost of the fallbacks.
 - **The renderer carries two fonts, `Font::Sans` and `Font::Mono`,** open-licensed (SIL OFL), compiled in, so every program, browser or desktop, draws text with nothing to load. They are IBM Plex Sans and IBM Plex Mono, one family for both, which the owner chose from sheets of five candidates each, drawn by the engine.
-- **A font's fallbacks are fixed as it is made, and are one level deep.** A character a text's font lacks is looked for in each of its fallbacks in turn, then drawn as the font's missing glyph. Each fallback's own face is what the font keeps: a fallback's own fallbacks are never tried, so what a font draws depends only on the fonts its maker named, and no chain of fallbacks can loop. The renderer's own two have no fallbacks. Japanese, Chinese, and Korean fonts are many megabytes, so none is carried: a program that needs one makes it and names it as a fallback.
+- **Both fall back to a third font the renderer carries, Noto Color Emoji** (SIL OFL), compiled in, so an emoji in any text in the renderer's own fonts draws in colour, in a chat line as anywhere, with nothing to load or make. It is not a `Font` of its own: no text is laid out in it, only looked up in it. A font made from `Sans` or `Mono` falls back to it as well, after the fallbacks its maker names. It is some 10 MB, as large as every other part of a desktop engine's binary together; a smaller emoji font, or one loaded where it is needed, is weighed in *Alternatives*.
+- **A font's fallbacks are fixed as it is made, and are one level deep.** A character a text's font lacks is looked for in each of its fallbacks in turn, then drawn as the font's missing glyph. Each fallback's own face is what the font keeps: a fallback's own fallbacks are never tried, so what a font draws depends only on the fonts its maker named, and no chain of fallbacks can loop. The renderer's own two have one fallback, its emoji font. Japanese, Chinese, and Korean fonts are many megabytes, and a program shows them by choice, so none is carried: a program that needs one makes it and names it as a fallback. Emoji are carried, though as large, because anyone writes them anywhere, Claude in a chat line among them.
 - **A fallback that is not made, or is released, refuses the font,** naming its place in the list (`FontNotMade::Fallback { fallback }`). A fallback released later changes nothing about a font that named it, or about the texts laid out in that font: the font keeps what it needs of each fallback, its parsed face and its metrics' blob, as a text keeps its font after the font is released.
 - **A font whose metrics would take the render root past its share of the budget for blobs is refused** (`FontNotMade::Unstored`, ADR-0042).
-- **Shaping is simple:** each character is mapped to a glyph by the font's character map, advanced by its advance, with the pairs the font kerns kerned (`kern`, and pair adjustment in `GPOS`). That serves Latin, Greek, Cyrillic, and Han, kana, and Hangul text, which needs no joining. Scripts that join or reorder, such as Arabic and the Indic scripts, are drawn in their characters' plain forms until shaping is extended.
+- **Shaping is simple:** each character is mapped to a glyph by the font's character map, advanced by its advance, with the pairs the font kerns kerned (`kern`, and pair adjustment in `GPOS`). That serves Latin, Greek, Cyrillic, and Han, kana, and Hangul text, which needs no joining. Scripts that join or reorder, such as Arabic and the Indic scripts, are drawn in their characters' plain forms until shaping is extended. So are emoji made of several characters, which a font joins by substitution (`GSUB`): a family joined by U+200D draws as its people side by side, a skin tone as a swatch after its hand, and a flag as its two letters.
 - **Weights and italics are fonts of their own,** each its own file.
 
 ### Metrics and measuring
@@ -127,21 +128,29 @@ struct Stop { at: usize, x: f32 }
 - **Where a caret stands is a pure function too,** `text::carets`, which lays the text out with the same pens and line breaks as `lay_out` and answers each line as it is drawn: the bytes of the text it holds, whether it ends at a `\n` or where it wraps, and how far along it each character's boundary stands. A line that wraps holds the space it broke after, so a caret at its end stands at the next line's start, and its last place for a caret is before that space. So a text field finds its caret, its selection, a press, and a move up or down among the lines exactly as they are drawn, and a selected text its highlight, in its own turn.
 - **An actor measures in its own turn, with no mail:** it asks a font's metrics once, decodes them, and measures every text it lays out from them.
 
+### Colour glyphs
+
+- **A colour glyph is a picture, drawn in its own colours.** Its text's colour gives it only its alpha, as its placement's opacity does, and an outline draws no rim around it.
+- **The renderer reads colour glyphs from `CBLC` and `CBDT`: a PNG for each glyph at one size,** which is how Noto Color Emoji ships them. The font's largest size is read, and of that table's forms only the one Noto is written in, 32-bit offsets (index format 1) to images that each hold small metrics and a PNG (image format 17); any other form refuses the font as unsupported (`FontRefused::Unsupported(Table::Cblc)`), never guessed at. A font that has both outlines and pictures is read as its pictures. The PNGs are kept, encoded, as the font is read, and each is decoded only when a text first needs its glyph.
+- **A colour glyph is generated in the same job as a field,** at the same base size: its PNG decoded, each pixel's colour multiplied by its alpha, and shrunk from the font's size, 109 pixels to the em for Noto, to 48, each pixel the mean of those it covers, weighed by how much. Multiplied by its alpha, a clear pixel's colour, often black, never bleeds into the edge of what is drawn.
+- **The glyph program draws a colour glyph by its own path,** told by the glyph's ink in its instance: the mean of 4 by 4 samples over the texels the pixel covers, each kept to the glyph's own texels, so a glyph shrunk to a chat line's size does not alias; that mean's colour divided by its alpha, decoded from sRGB to linear light, and drawn. A distance field is drawn as it always was.
+
 ### The atlas
 
-- **The render root keeps one atlas,** an `Rgba8` texture of MSDF glyphs shared by every text, and grows it as glyphs are added, up to the GPU's longest side. A glyph is keyed by its font and its glyph number, and is generated once at one size, 48 pixels to the em, from which every size is drawn.
-- **A glyph is generated in a job** (ADR-0043: a compute job), from its outline, off the render root's turn, and written into the atlas once its job finishes. So no `Render` waits on a glyph.
+- **The render root keeps one atlas,** an `Rgba8` texture shared by every text, of MSDF glyphs, each opaque in its alpha, and colour glyphs, each sRGB times alpha, side by side; a glyph's ink, kept beside where it lies, says which it is. It grows as glyphs are added, up to the GPU's longest side. A glyph is keyed by its font and its glyph number, and is generated once at one size, 48 pixels to the em, from which every size is drawn.
+- **A glyph is generated in a job** (ADR-0043: a compute job), from its outline or its picture, off the render root's turn, and written into the atlas once its job finishes. So no `Render` waits on a glyph. A batch's pictures' PNGs go to the job as one blob, as bytes between actors are (ADR-0042).
 - **Every size, and every outline, comes from one glyph.** The glyph program reads the distance to the glyph's edge and draws the edge at the text's size, and the outline at a second distance.
 - **When the atlas is full, glyphs no text has drawn the longest are dropped,** and generated again when a text needs them.
 
 ### Where it lives
 
-- **In `aethereal-render`, in two modules:** `font`, which reads TrueType into metrics and outlines, maps and kerns characters, encodes and decodes metrics, and generates a glyph's MSDF, as pure functions; and `text`, which lays out and measures texts as pure functions, and keeps texts, placements, fonts, and the atlas. Nothing here is behind a feature: every program with a renderer draws text. An actor that measures depends on `aethereal-render` for `Metrics` and `measure`, as it does for the kinds it mails the renderer.
+- **In `aethereal-render`, in two modules:** `font`, which reads TrueType into metrics and outlines or pictures, maps and kerns characters, encodes and decodes metrics, generates a glyph's MSDF, and shrinks a picture, as pure functions; and `text`, which lays out and measures texts as pure functions, and keeps texts, placements, fonts, and the atlas. Nothing here is behind a feature: every program with a renderer draws text. An actor that measures depends on `aethereal-render` for `Metrics` and `measure`, as it does for the kinds it mails the renderer.
 
 ## Consequences
 
 - **Any program draws text in one ask and one placement,** ordered with its own drawing, on desktop and in the browser alike. ichor drops its bitmap console pass, and the dev overlay draws with this.
 - **Text stays sharp at every size and under scaling,** and an outline costs nothing, so a damage number over the painted world is readable.
+- **Emoji draw in colour in every text in the renderer's own fonts.** Every engine's binary carries the emoji font, some 10 MB, in the browser too, and the render root holds its PNGs, as much again, from its start. A colour glyph is soft at sizes far past 48 pixels to the em, as its picture is shrunk to that size once.
 - **The renderer grows a font reader and an MSDF generator.** They are pure functions, tested on their own, and the render root only keeps their results.
 - **MSDF is slightly softer than a glyph rasterised at its exact size at the smallest sizes,** around 12 to 14 pixels. Whether a console line reads well enough is judged on samples before this lands.
 - **A text whose glyphs are new is answered a frame or so after it is asked for.** Text already on the screen never waits.
@@ -151,7 +160,7 @@ struct Stop { at: usize, x: f32 }
 - **Follow-on work this leaves open:**
   - placing a text at a point in the world, through a matrix the program hands the renderer (a change to ADR-0048's rule);
   - fonts and sizes mixed in one text;
-  - shaping for scripts that join and reorder;
+  - shaping for scripts that join and reorder, and for emoji joined by substitution;
   - CFF outlines, WOFF2, and variable fonts.
 
 ## Alternatives considered
@@ -170,3 +179,7 @@ struct Stop { at: usize, x: f32 }
 - **A text that holds its own position.** Moving it would lay it out again, and one text could not be drawn in two places.
 - **Text at a point in the world, projected by the renderer through the camera's uniforms.** One write of the camera's matrix would move every label, but the renderer would read a camera's layout, which ADR-0048 rules out. It is left for later, as screen pixels are simpler to reason about.
 - **Text drawn immediately, said again each frame.** Most text changes rarely, and a counter that changes each frame is one write a frame either way.
+- **Colour glyphs of vector layers (`COLR` and `CPAL`).** Version 0 draws each emoji as outlines stacked in flat colours, which the field generator already reads; version 1, which Noto ships, adds gradients, transforms, and blending, a renderer of its own. Either draws sharp at every size, but each emoji is many fields or a rasteriser beside the field generator, where a PNG is decoded and shrunk in a few lines. Pictures are the simplest that works; layers are worth it if large emoji are drawn often.
+- **Emoji loaded where they are needed, from a file the program names.** No binary would carry 10 MB it might not draw, but every program that shows text from people would make the font and name it in every style it draws text in, a browser could not show emoji without fetching a file, and one forgotten would show boxes. Carried, every text draws them.
+- **A smaller emoji font, made from Noto at a size near 48 pixels to the em.** A few megabytes, where the renderer shrinks every picture to 48 anyway, but it is a font changed by a build of its own, where the renderer's fonts are copied unchanged from their releases.
+- **A second atlas for colour glyphs.** The one `Rgba8` atlas already holds four channels, of which a field uses three; a glyph's ink in its instance tells the program which it reads, so one texture, one bind, and one packer serve both.

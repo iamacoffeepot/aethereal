@@ -1,5 +1,6 @@
-//! The fonts the render root keeps (ADR-0052): its own two, compiled in, and each an actor made, each a face of its own
-//! and the faces of its fallbacks, fixed as it was made. A face is read once and shared, by every font made from it and
+//! The fonts the render root keeps (ADR-0052): its own two, compiled in, each falling back to its own colour emoji
+//! font, compiled in too, and each an actor made, each a face of its own and the faces of its fallbacks, fixed as it
+//! was made. A face is read once and shared, by every font made from it and
 //! every text laid out in it, so a text keeps drawing, and is written, after its font is released, and a font keeps its
 //! fallbacks after they are released. Each face's metrics are encoded once, as a blob kept for the face's life, and
 //! every ask for a font's metrics is answered with those blobs.
@@ -21,6 +22,10 @@ pub const SANS: &[u8] = include_bytes!("../../../fonts/IBMPlexSans-Regular.ttf")
 /// The renderer's own monospace font: IBM Plex Mono Regular (SIL OFL), as the owner chose (ADR-0052).
 pub const MONO: &[u8] = include_bytes!("../../../fonts/IBMPlexMono-Regular.ttf");
 
+/// The renderer's own colour emoji font, the fallback of its own two: Noto Color Emoji (SIL OFL), its glyphs PNG
+/// images in `CBDT` (ADR-0052).
+pub const EMOJI: &[u8] = include_bytes!("../../../fonts/NotoColorEmoji.ttf");
+
 /// Which font a glyph is of, as the atlas keys it: one of the renderer's own, or one read from bytes, numbered as it
 /// was read, a number no other is given again. A font made from one of the renderer's own is keyed as that one, so its
 /// glyphs are the ones already in the atlas.
@@ -28,6 +33,7 @@ pub const MONO: &[u8] = include_bytes!("../../../fonts/IBMPlexMono-Regular.ttf")
 pub enum FontKey {
     Sans,
     Mono,
+    Emoji,
     Read(u64),
 }
 
@@ -54,11 +60,12 @@ pub enum Own {
     Read { font: Arc<font::Font>, metrics: Bytes },
 }
 
-/// The fonts kept: the renderer's own two, each with no fallbacks, those actors made, by id, and how many fonts have
-/// been read from bytes, which numbers the next.
+/// The fonts kept: the renderer's own two, each falling back to its own emoji font, that font's face, those actors
+/// made, by id, and how many fonts have been read from bytes, which numbers the next.
 pub struct Faces {
     sans: Typeface,
     mono: Typeface,
+    emoji: Face,
     pub made: Made<Typeface>,
     read: u64,
 }
@@ -124,19 +131,22 @@ impl Typeface {
 }
 
 impl Faces {
-    /// The renderer's own two fonts, read, their metrics put as blobs by `put`, and no other.
+    /// The renderer's own three fonts, read, their metrics put as blobs by `put`, and no other: its own two, each
+    /// falling back to its emoji font.
     ///
     /// # Errors
     ///
     /// Why one of its own was not read, which a font compiled in never is, or its metrics not put.
     pub fn new(mut put: impl FnMut(Vec<u8>) -> Result<Bytes, Refused>) -> Result<Self, FontNotMade> {
-        let mut own = |key, bytes| {
+        let mut face = |key, bytes| {
             let font = font::Font::read(bytes).map_err(FontNotMade::Read)?;
-            let own = Face::new(key, Arc::new(font), &mut put)?;
-            Ok::<_, FontNotMade>(Typeface { own, fallbacks: Vec::new() })
+            Face::new(key, Arc::new(font), &mut put)
         };
+        let emoji = face(FontKey::Emoji, EMOJI)?;
+        let sans = Typeface { own: face(FontKey::Sans, SANS)?, fallbacks: vec![emoji.clone()] };
+        let mono = Typeface { own: face(FontKey::Mono, MONO)?, fallbacks: vec![emoji.clone()] };
 
-        Ok(Self { sans: own(FontKey::Sans, SANS)?, mono: own(FontKey::Mono, MONO)?, made: Made::default(), read: 0 })
+        Ok(Self { sans, mono, emoji, made: Made::default(), read: 0 })
     }
 
     /// The font `font` names: none when it names one not made, or released.
@@ -150,13 +160,14 @@ impl Faces {
 
     /// The font made of `own` with the fallbacks `fallbacks` name, to keep: the face of one of the renderer's own
     /// shared, its glyphs the ones in the atlas, and each fallback's own face, so it does not change when they are
-    /// released, and their fallbacks are not tried.
+    /// released, and their fallbacks are not tried. A font made of one of the renderer's own falls back last to the
+    /// renderer's emoji font, as that one does.
     ///
     /// # Errors
     ///
     /// [`FontNotMade::Fallback`], naming the first fallback that is not kept: never made, or released.
     pub fn make(&mut self, own: Own, fallbacks: &[FontId]) -> Result<Typeface, FontNotMade> {
-        let fallbacks = self.fallbacks(fallbacks)?;
+        let mut fallbacks = self.fallbacks(fallbacks)?;
         let own = match own {
             Own::Sans => self.sans.own.clone(),
             Own::Mono => self.mono.own.clone(),
@@ -165,6 +176,9 @@ impl Faces {
                 Face { key: FontKey::Read(self.read), font, metrics }
             }
         };
+        if matches!(own.key, FontKey::Sans | FontKey::Mono) {
+            fallbacks.push(self.emoji.clone());
+        }
 
         Ok(Typeface { own, fallbacks })
     }

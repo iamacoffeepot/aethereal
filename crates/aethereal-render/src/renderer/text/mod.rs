@@ -9,7 +9,7 @@ mod tests;
 
 use super::{Kept, Renderer};
 use crate::draw_list::Lists;
-use crate::font;
+use crate::font::{self, Drawing};
 use crate::frame::{DepthUse, Frame, Size};
 use crate::made::{Made, Owned};
 use crate::pass::PassName;
@@ -19,7 +19,7 @@ use crate::stats::{self, AtlasFill, Tally};
 use crate::text::atlas::texture::AtlasTexture;
 use crate::text::atlas::{Atlas, Field, GlyphKey};
 use crate::text::faces::{Faces, Own, Typeface};
-use crate::text::generate::{GenerateGlyphs, Generating, GlyphOutline, GlyphsGenerated};
+use crate::text::generate::{GenerateGlyphs, Generating, GlyphBitmap, GlyphOutline, GlyphSource, GlyphsGenerated};
 use crate::text::glyph_program::{self, INSTANCE_BYTES, Layouts, PICKING, PLACED_BYTES, Pipelines, Placing};
 use crate::text::layout::Laid;
 use crate::text::{
@@ -55,6 +55,13 @@ pub(super) struct Texts {
 
 /// The GPU as a turn opens it: its device and its queue, held apart, as a turn opens one resource at a time.
 pub(super) type Opened<'a> = (&'a wgpu::Device, &'a wgpu::Queue);
+
+/// The glyphs a job is to generate, in order, and the PNGs of their images, one after another, to put as a blob the job
+/// reads them from.
+pub(super) struct Wanted {
+    glyphs: Vec<GlyphSource>,
+    images: Vec<u8>,
+}
 
 /// The glyphs one job generates, in the order it was asked to.
 struct Batch {
@@ -168,7 +175,7 @@ impl Texts {
         })
     }
 
-    /// Whether the text `id` waits on a glyph still to come: one of its layout's not in the atlas, that has an outline to
+    /// Whether the text `id` waits on a glyph still to come: one of its layout's not in the atlas, that its font has to
     /// generate and has not been found to fit nowhere. A text that has gone waits on nothing.
     fn waits(&self, id: u64) -> bool {
         let Some(text) = self.made.get(id) else {
@@ -186,7 +193,7 @@ impl Texts {
             let key = GlyphKey { font: face.key, glyph: glyph.glyph };
             let held = self.atlas.slot(key).is_some();
             let unfit = self.unfit.contains(&key);
-            let drawn = face.font.outline(glyph.glyph).is_some();
+            let drawn = face.font.drawing(glyph.glyph).is_some();
             let settled = held || unfit || !drawn;
             !settled
         })
@@ -211,12 +218,14 @@ impl Texts {
         self.faces.typeface(font).map_or(FontMetrics::Refused(MetricsRefused::Font), Typeface::metrics)
     }
 
-    /// The glyphs texts wait on that are not in the atlas, not being generated, and fitted somewhere, as the job that
-    /// generates them, kept as a batch, and what the render root keeps for it: none when there are none.
-    fn wanted(&mut self) -> Option<(GenerateGlyphs, Generating)> {
+    /// The glyphs texts wait on that are not in the atlas, not being generated, and fitted somewhere, as what the job
+    /// that generates them is made of, kept as a batch, and what the render root keeps for it: none when there are
+    /// none.
+    fn wanted(&mut self) -> Option<(Wanted, Generating)> {
         let generating: HashSet<GlyphKey> = self.batches.iter().flat_map(|batch| batch.keys.iter().copied()).collect();
         let mut keys = Vec::new();
         let mut glyphs = Vec::new();
+        let mut images = Vec::new();
         for text in self.made.values() {
             let next = match &text.shown {
                 Shown::Waiting { next } | Shown::Rewriting { next, .. } => next,
@@ -235,11 +244,19 @@ impl Texts {
                 if known {
                     continue;
                 }
-                let Some(outline) = face.font.outline(glyph.glyph) else {
-                    continue;
+                let source = match face.font.drawing(glyph.glyph) {
+                    Some(Drawing::Outline(outline)) => {
+                        GlyphSource::Outline(GlyphOutline::of(outline, face.font.metrics().units_per_em()))
+                    }
+                    Some(Drawing::Bitmap(bitmap)) => match GlyphBitmap::of(bitmap, &mut images) {
+                        Some(carried) => GlyphSource::Bitmap(carried),
+                        None => continue,
+                    },
+                    Some(Drawing::Blank) => GlyphSource::Blank,
+                    None => continue,
                 };
                 keys.push(key);
-                glyphs.push(GlyphOutline::of(outline, face.font.metrics().units_per_em()));
+                glyphs.push(source);
             }
         }
         if keys.is_empty() {
@@ -249,7 +266,7 @@ impl Texts {
         let batch = self.batched;
         self.batches.push(Batch { batch, keys });
 
-        Some((GenerateGlyphs { glyphs }, Generating { batch }))
+        Some((Wanted { glyphs, images }, Generating { batch }))
     }
 
     /// Writes the glyphs the job of `batch` generated, `fields` and their texels `pixels`, into the atlas, on `gpu`.
@@ -262,7 +279,7 @@ impl Texts {
         let mut texels: HashMap<GlyphKey, Range<usize>> = HashMap::with_capacity(keys.len());
         let mut start = 0;
         for (key, field) in keys.iter().zip(fields) {
-            let end = start + field.width as usize * field.height as usize * 3;
+            let end = start + field.width as usize * field.height as usize * 4;
             texels.insert(*key, start..end);
             start = end;
         }
@@ -575,12 +592,34 @@ impl Kept {
     /// Gets the texts ready for this `Render`, on `gpu`: each laid into the atlas whose glyphs are all in it, each
     /// noted as drawn that will be, and each placement's uniforms written for its frames' sizes now. Answers the job
     /// that generates the glyphs texts still wait on, to run: none when none does.
-    pub(super) fn ready_texts(&mut self, gpu: Opened<'_>) -> Option<(GenerateGlyphs, Generating)> {
+    pub(super) fn ready_texts(&mut self, gpu: Opened<'_>) -> Option<(Wanted, Generating)> {
         self.text.refresh(gpu);
         self.text.mark_drawn(&self.lists);
         self.text.write_uniforms(gpu.1, |frame| self.walk(frame).map(super::walk::Walk::size));
 
         self.text.wanted()
+    }
+}
+
+impl Renderer {
+    /// Runs the job that generates `wanted`, its images' PNGs put as a blob it reads. A blob not put lets the batch go,
+    /// to be asked for again at the next `Render`.
+    pub(super) fn generate<S>(
+        &mut self,
+        turn: &mut Turn<'_, Self, S>,
+        wanted: Option<(Wanted, Generating)>,
+    ) -> Result<(), Fault> {
+        let Some((Wanted { glyphs, images }, generating)) = wanted else {
+            return Ok(());
+        };
+        let Ok(images) = turn.put(images) else {
+            turn.log(Level::Warn, format_args!("glyphs were not generated: their images were not put"));
+            turn.open(&mut self.kept)?.text.ungenerated(generating.batch);
+            return Ok(());
+        };
+        turn.run(&GenerateGlyphs { glyphs, images }, &generating)?;
+
+        Ok(())
     }
 }
 
@@ -677,9 +716,7 @@ impl Handles<CreateText> for Renderer {
         let kept = turn.open(&mut self.kept)?;
         let wanted = kept.text.wanted();
         let waits = kept.text.waits(id);
-        if let Some((job, generating)) = wanted {
-            turn.run(&job, &generating)?;
-        }
+        self.generate(turn, wanted)?;
         if waits {
             let held = turn.hold()?;
             self.owed.texts.push((id, held));
@@ -708,9 +745,7 @@ impl Handles<WriteText> for Renderer {
             Owned::NotOwner => turn.log(Level::Warn, format_args!("{:?} was not written: another made it", write.text)),
             Owned::Unknown => turn.log(Level::Warn, format_args!("{:?} was not written: no such thing", write.text)),
         }
-        if let Some((job, generating)) = wanted {
-            turn.run(&job, &generating)?;
-        }
+        self.generate(turn, wanted)?;
 
         Ok(())
     }
@@ -783,13 +818,8 @@ impl Receives<Answer<GlyphsGenerated, Generating>> for Renderer {
             }
         };
         let pixels = turn.read(&generated.pixels).to_vec();
-        let fields: Vec<Field> = generated
-            .fields
-            .iter()
-            .map(|field| Field { width: field.width, height: field.height, left: field.left, top: field.top })
-            .collect();
-        // Each field's three channels are written as four.
-        self.watch.uploaded(pixels.len() / 3 * 4);
+        let fields: Vec<Field> = generated.fields.iter().copied().map(Field::from).collect();
+        self.watch.uploaded(pixels.len());
         let gpu = turn.open(&mut self.gpu)?;
         let (device, queue) = (gpu.device().clone(), gpu.queue().clone());
         let kept = turn.open(&mut self.kept)?;

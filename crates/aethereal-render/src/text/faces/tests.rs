@@ -154,3 +154,21 @@ fn a_font_s_metrics_are_the_blobs_put_once_for_its_faces_in_order_each_its_own_f
         assert_eq!(decoded, Some(Ok(face.font.metrics().clone())), "{:?}'s blob is its own metrics", face.key);
     }
 }
+
+#[test]
+fn the_renderer_s_own_fonts_draw_an_emoji_from_its_emoji_font_after_the_fallbacks_a_maker_names() {
+    // Catches an emoji drawn as the missing glyph in the renderer's own fonts, which nearly every text is laid out in;
+    // and a font made from Sans that loses the emoji font, or tries it before the fallbacks its maker named.
+    let mut puts = puts();
+    let mut faces = faces_in(&mut puts);
+    let noto_own = noto(&mut puts);
+    let noto_font = made(&mut faces, 1, noto_own, &[]);
+    let over_noto = made(&mut faces, 2, Own::Sans, &[noto_font]);
+    let own = |font| faces.typeface(font).expect("the renderer's own font is kept");
+
+    let drawn = [drawn_by(own(Font::Sans), '\u{1f600}'), drawn_by(own(Font::Mono), '\u{1f600}')];
+
+    assert_eq!(drawn, [Some((FontKey::Emoji, false)); 2]);
+    let order: Vec<FontKey> = kept(&faces, over_noto).fallbacks.iter().map(|face| face.key).collect();
+    assert_eq!(order, [FontKey::Read(1), FontKey::Emoji]);
+}
