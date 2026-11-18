@@ -52,7 +52,7 @@ pub use exchange::{Asking, Deadline, Exchange, ExchangeConfig, Sending};
 pub use http::{Binding, Connect, Connected, Http, Peer, Reaching, ReachingUnix, Serve, Served, Unreached};
 pub use message::{Handling, Header, Method, Request, Response, ResponseBody, StreamedBody};
 pub use mount::{BodyBytes, BodyLength, BodyRead, Mount, ReadBody, RequestBody, StreamHandling, StreamedRequest};
-pub use router::{Captures, Unroutable};
+pub use router::{Captures, Route, Router, Routes, Unroutable};
 pub use server::{Server, ServerConfig};
 pub use settings::{BlobBytesTooLow, ClientLimits, HttpSettings, Limits, ReadLimitTooLow};
 pub use source::{ResponseBytes, ResponseLength, ResponseSource, SendBody, SourceEnd};

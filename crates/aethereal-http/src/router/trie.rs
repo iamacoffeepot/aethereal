@@ -7,14 +7,14 @@ use crate::Method;
 
 /// The routes, by method and pattern, each holding a value of its user's: a trie of their patterns' segments, its
 /// nodes in one arena, so a request is one walk down it, with no recursion.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trie<R> {
     /// The nodes; the root, before any segment, is the first.
     nodes: Vec<Node<R>>,
 }
 
 /// Where the segments walked so far lead.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Node<R> {
     /// The next segments, each to its node.
     children: Vec<Child>,
@@ -23,21 +23,21 @@ struct Node<R> {
 }
 
 /// A segment, and the node it leads to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Child {
     edge: Edge,
     node: usize,
 }
 
 /// A segment of a pattern, as the trie keys it: a capture's name is its route's, so two captures are one edge.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Edge {
     Literal(String),
     Capture,
 }
 
 /// One route, at the node its pattern ends on.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Route<R> {
     method: Method,
     /// As it was given, to name the route it is in a refusal.
@@ -148,19 +148,6 @@ impl<R> Trie<R> {
             self.nodes[from].children.push(Child { edge: Edge::of(segment), node });
             node
         })
-    }
-}
-
-impl<T> Routed<T> {
-    /// What `read` makes of the route found, such as its captures read as their type: a route it makes nothing of is
-    /// not found, as though no route matched the path (`404`).
-    #[must_use]
-    pub fn read<U>(self, read: impl FnOnce(T) -> Option<U>) -> Routed<U> {
-        match self {
-            Self::Found(found) => read(found).map_or(Routed::NotFound, Routed::Found),
-            Self::NotFound => Routed::NotFound,
-            Self::Unallowed(methods) => Routed::Unallowed(methods),
-        }
     }
 }
 

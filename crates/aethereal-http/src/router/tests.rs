@@ -142,23 +142,6 @@ fn a_path_that_routes_match_for_other_methods_only_is_unallowed_naming_them() ->
 }
 
 #[test]
-fn a_route_whose_captures_do_not_read_as_their_type_is_not_found() -> Result<(), Unroutable> {
-    // Catches a capture that does not read answered as found, or as `405` because another method's route matches the
-    // path, rather than `404`.
-    let trie = build(&[
-        route::<Blob>(Method::Get, "/git/{repo}/blobs/{id}"),
-        route::<Blob>(Method::Delete, "/git/{repo}/blobs/{id}"),
-    ])?;
-    let read = |method, path| trie.find(method, path).read(|found| Blob::read(&found.slices));
-
-    assert_eq!(read(Method::Get, "/git/aether/blobs/7"), Routed::Found(Blob { repo: "aether".to_owned(), id: 7 }));
-    assert_eq!(read(Method::Get, "/git/aether/blobs/seven"), Routed::NotFound);
-    assert_eq!(read(Method::Put, "/git/aether/blobs/seven"), Routed::Unallowed(vec![Method::Delete, Method::Get]));
-
-    Ok(())
-}
-
-#[test]
 fn a_path_is_matched_as_sent_never_normalised() -> Result<(), Unroutable> {
     // Catches `//` collapsed, a trailing `/` dropped, or percent-encoding decoded, any of which routes a path its
     // pattern does not name; and a capture handed its slice decoded.

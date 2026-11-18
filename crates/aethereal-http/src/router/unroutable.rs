@@ -1,10 +1,13 @@
 //! Why a route is refused as the router is built (ADR-0035).
 
+use aethereal_data::Plain;
 use core::error::Error;
 use core::fmt;
 
-/// Why a route is refused as the router is built, so the stack fails its `begin` and the program does not start.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Why a route is refused as the router is built, so the stack fails its `begin`, with this as its fault, and the
+/// program does not start.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.http.unroutable")]
 pub enum Unroutable {
     /// `pattern` matches a path `other` does, for one method.
     Overlaps { pattern: String, other: String },

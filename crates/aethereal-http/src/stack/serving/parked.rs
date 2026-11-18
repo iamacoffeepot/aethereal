@@ -3,18 +3,16 @@
 //! the response's place.
 
 use super::connection::{Phase, Stage};
-use super::{Deadline, Serving, Stepping};
+use super::{Deadline, Reaches, Serving, Stepping};
 use crate::Status;
 use crate::stack::actor::{Way, place};
 use crate::stack::{
-    Entered, Gathered, Gathering, Inward, LayerList, Outward, Parked, ParkedPart, ParkedResponse, PartStep, Request,
-    Response, Stack,
+    AsksEach, Entered, Gathered, Gathering, Inward, LayerList, Outward, Parked, ParkedPart, ParkedResponse, PartStep,
+    Response, Stack, StackSends,
 };
 use aethereal_actor::{
-    Actors, Answer, Answered, AnswersByType, Conforms, Fault, Handled, Handles, Level, Number, Part, Receives, Slept,
-    Turn, Unanswered,
+    Answer, Answered, Conforms, Fault, Handles, Level, Number, Part, Receives, Slept, Turn, Unanswered,
 };
-use aethereal_data::{Encode, Kind};
 use aethereal_tcp::{Accepting, HungUp, Reading, Unbound};
 use core::mem;
 
@@ -27,8 +25,6 @@ where
         + Receives<Answer<HungUp, Number>>
         + Receives<Answer<Slept, Deadline>>,
     T: LayerList,
-    T::Handler: AnswersByType<Request<T::Attached, ()>, Answer = Response>,
-    Request<T::Attached, ()>: Kind + Encode<Actors> + Handled,
 {
     /// An actor layer answered a request's head on the way in, as `answered` says, or did not: the request goes on in
     /// from after that layer, with what it attached; turns back from it, with its answer; or, when it did not answer,
@@ -39,13 +35,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn entered<X: 'static, Is>(
+    pub fn entered<X: 'static, Is, Js>(
         &mut self,
         (answered, parked): (Answered<Inward<X>>, Parked),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
         S: Conforms<Gathering, Is>,
+        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let standing = parked.standing();
         let number = standing.connection;
@@ -84,13 +81,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn returned<Is>(
+    pub fn returned<Is, Js>(
         &mut self,
         (answered, parked): (Answered<Outward>, ParkedResponse),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
         S: Conforms<Gathering, Is>,
+        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let standing = parked.standing();
         let number = standing.connection;
@@ -125,13 +123,14 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn passed<Is>(
+    pub fn passed<Is, Js>(
         &mut self,
         (answered, parked): (Answered<PartStep>, ParkedPart),
         turn: &mut Stepping<'_, S, T>,
     ) -> Result<(), Fault>
     where
         S: Conforms<Gathering, Is>,
+        StackSends<T>: AsksEach<T::Attached, Reaches<T>, Js>,
     {
         let (standing, way) = parked.standing();
         let number = standing.connection;

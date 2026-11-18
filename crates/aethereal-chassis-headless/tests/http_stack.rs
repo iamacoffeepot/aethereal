@@ -3,18 +3,18 @@
 
 use aethereal_actor::{
     Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
-    Number, Part, Receives, Root, Slept, ToSender, Top, Turn,
+    Number, Part, Receives, Root, Slept, ToSender, Top, Turn, path,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
-use aethereal_data::{Bound, Plain};
+use aethereal_data::{Bound, KindId, Plain};
 use aethereal_http::stack::{
     Answering, Binding, BodyPart, Credentials, Deadline, FromStack, Gather, Gathered, Gathering, Head, Inbound,
     InboundPart, Inward, Layer, LayerForm, Layers, Leaving, Listened, Outbound, Outward, Parked, ParkedPart,
     ParkedResponse, PartStep, Refused, Request, Response, Sending, Serving, Stack, StackSends, StackSettings, Step,
     layers,
 };
-use aethereal_http::{Header, Status};
+use aethereal_http::{Captures, Header, Method, Route, Router, Routes, Status, Unroutable};
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::{Accepting, HungUp, Listening, Reading, Shut, Tcp, Unbound, Wrote};
@@ -523,6 +523,213 @@ impl Receives<Answer<Gathered, Mirroring>> for Mirror {
     }
 }
 
+/// [`Shelf`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.shelf_settings")]
+#[settings]
+struct ShelfSettings {}
+
+/// A handler routed on `/shelf`, which answers each request it is asked at once, with `x-handler: shelf`, and counts
+/// them.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.shelf")]
+struct Shelf {
+    asked: u32,
+}
+
+impl ChildOf for Shelf {
+    type Parent = Top;
+}
+
+impl Actor for Shelf {
+    type Config = ShelfSettings;
+    type Key = ();
+    type Handles = (Request<Seen, ()>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ShelfSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { asked: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<Seen, ()>> for Shelf {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<Seen, ()>> for Shelf {
+    type Sends = (ToSender<Response>,);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        _: Request<Seen, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        self.asked += 1;
+        let mut response = Response::empty(Status::Ok);
+        response.headers.push(Header::new("x-handler", "shelf"));
+
+        Ok(turn.reply(&response)?)
+    }
+}
+
+/// An item's route's captures: its number, read from `{number}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+struct Numbered {
+    number: u64,
+}
+
+impl Captures for Numbered {
+    const NAMES: &'static [&'static str] = &["number"];
+
+    fn read(slices: &[&str]) -> Option<Self> {
+        let [number] = slices else {
+            return None;
+        };
+
+        number.parse().ok().map(|number| Self { number })
+    }
+}
+
+/// [`Items`]' settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.items_settings")]
+#[settings]
+struct ItemsSettings {}
+
+/// A root that stands up [`Item`] `1` and [`Item`] `2` beneath it as it begins, and nothing else.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.items")]
+struct Items;
+
+impl ChildOf for Items {
+    type Parent = Top;
+}
+
+impl Actor for Items {
+    type Config = ItemsSettings;
+    type Key = ();
+    type Handles = ();
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: ItemsSettings, turn: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        // A child that is not stood up fails the begin, so the program does not start.
+        for number in [1, 2] {
+            let Ok(_) = turn.spawn::<Item>(&number, ItemSettings { number }) else {
+                return Err(Fault::of_parts(KindId::of::<Self>(), Vec::new()));
+            };
+        }
+
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// [`Item`]'s settings: its own number.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.item_settings")]
+struct ItemSettings {
+    number: u64,
+}
+
+/// An instanced handler, keyed by its number, routed on `/items/{number}`: it answers each request with its own number
+/// in `x-item` and the number its route's captures read in `x-captured`.
+#[derive(Bound)]
+#[kind(name = "test.http_stack.item")]
+struct Item {
+    number: u64,
+}
+
+impl ChildOf for Item {
+    type Parent = Items;
+}
+
+impl Actor for Item {
+    type Config = ItemSettings;
+    type Key = u64;
+    type Handles = (Request<Seen, Numbered>,);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(settings: ItemSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { number: settings.number })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<Seen, Numbered>> for Item {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<Seen, Numbered>> for Item {
+    type Sends = (ToSender<Response>,);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        request: Request<Seen, Numbered>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        let mut response = Response::empty(Status::Ok);
+        response.headers.push(Header::new("x-item", &self.number.to_string()));
+        response.headers.push(Header::new("x-captured", &request.captures.number.to_string()));
+
+        Ok(turn.reply(&response)?)
+    }
+}
+
+/// The routes of [`ShelfStack`], after [`Count`]: `GET` and `POST` on `/shelf` to [`Shelf`], and `GET` on
+/// `/items/{number}` to the [`Item`] of that number.
+struct ShelfRoutes;
+
+impl LayerForm for ShelfRoutes {
+    type Form = Router<Self>;
+}
+
+impl Routes for ShelfRoutes {
+    type Attached = Seen;
+    type Handlers = (Route<Shelf, ()>, Route<Item, Numbered>);
+
+    fn routes(router: Router<Self>) -> Result<Router<Self>, Unroutable> {
+        router
+            .route(Method::Get, "/shelf", |()| path::<Shelf>(()))?
+            .route(Method::Post, "/shelf", |()| path::<Shelf>(()))?
+            .route(Method::Get, "/items/{number}", |numbered: Numbered| path::<Item>(numbered.number))
+    }
+}
+
+/// Routes that overlap: `GET /shelf/{number}` and `GET /shelf/1` both match `/shelf/1`.
+struct OverlappingRoutes;
+
+impl LayerForm for OverlappingRoutes {
+    type Form = Router<Self>;
+}
+
+impl Routes for OverlappingRoutes {
+    type Attached = Seen;
+    type Handlers = (Route<Shelf, ()>, Route<Item, Numbered>);
+
+    fn routes(router: Router<Self>) -> Result<Router<Self>, Unroutable> {
+        router.route(Method::Get, "/shelf/{number}", |numbered: Numbered| path::<Item>(numbered.number))?.route(
+            Method::Get,
+            "/shelf/1",
+            |()| path::<Shelf>(()),
+        )
+    }
+}
+
 /// A stack named `$stack`, of the kind `$name`, its settings the section `$section`, whose layers are `$layers` and
 /// whose actor layers pass on each of `$inward`: each of its handlers of HTTP's and TCP's kinds, and of its actor
 /// layers' answers, one call into its [`Serving`].
@@ -745,6 +952,8 @@ macro_rules! stack {
 stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), []);
 stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), []);
 stack!(GateStack, "test.http_stack.gate_stack", "gate_stack", (Count, Gate, Tag, Upper, Mirror), [Caller]);
+stack!(ShelfStack, "test.http_stack.shelf_stack", "shelf_stack", (Count, ShelfRoutes), []);
+stack!(OverlappingStack, "test.http_stack.overlapping_stack", "overlapping_stack", (Count, OverlappingRoutes), []);
 
 /// The engine's settings for a stack of `settings`: a head of its most bytes is read whole.
 fn engine(settings: &StackSettings) -> EngineSettings {
@@ -1149,4 +1358,112 @@ fn what_is_attached_chains_through_pure_and_actor_layers_in_any_order() -> Resul
     assert!(answered[1].head.contains("x-user: open+tag"), "{answered:?}");
 
     Ok(())
+}
+
+/// A host serving a [`ShelfStack`], and the port it listens on.
+fn shelved() -> Result<(Harness<Headless>, u16), Unheard> {
+    let settings = StackSettings::default();
+    let program = Headless::program()
+        .with_engine(engine(&settings))
+        .root::<Tcp>()
+        .root::<Shelf>()
+        .root::<Items>()
+        .root_with::<ShelfStack>(settings);
+    let mut harness = Harness::of(program)?;
+    let port = bound(&mut harness, |stack: &ShelfStack| stack.serving.port());
+
+    Ok((harness, port))
+}
+
+#[test]
+fn a_router_asks_each_route_its_own_handler_and_an_instance_by_its_captures() -> Result<(), Unheard> {
+    // Catches a route's request handed to another route's handler; captures not read into the handler's type, or read
+    // from the wrong segment; and every capture reaching one instance, so two keys do not reach two.
+    const SHELF: &[u8] = b"GET /shelf HTTP/1.1\r\n\r\n";
+    const FIRST: &[u8] = b"GET /items/1 HTTP/1.1\r\n\r\n";
+    const SECOND: &[u8] = b"GET /items/2 HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let (mut harness, port) = shelved()?;
+
+    let (answered, _) = heard(&mut harness, conversation(port, &[SHELF, FIRST, SECOND]));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+    assert!(answered[0].head.contains("x-handler: shelf"), "{answered:?}");
+    assert!(answered[1].head.contains("x-item: 1"), "{answered:?}");
+    assert!(answered[1].head.contains("x-captured: 1"), "{answered:?}");
+    assert!(answered[2].head.contains("x-item: 2"), "{answered:?}");
+    assert!(answered[2].head.contains("x-captured: 2"), "{answered:?}");
+    let shelf = harness.root::<Shelf>();
+    assert_eq!(harness.state(shelf)?.asked, 1, "the shelf is asked only for its own path");
+
+    Ok(())
+}
+
+#[test]
+fn a_path_no_route_matches_is_not_found_and_turns_back_through_the_layers_before_it() -> Result<(), Unheard> {
+    // Catches a request no route matches handed to some handler anyway, or left unanswered; the router's answer not
+    // passed back out through the layers before it; and a body left unread in the connection, to be read as the next
+    // request.
+    let (mut harness, port) = shelved()?;
+
+    let (answered, closed) =
+        heard(&mut harness, client(port, b"POST /nowhere HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody", 1));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 404"), "{answered:?}");
+    assert!(answered[0].head.contains("x-request: 1"), "the layer before the router passes it out: {answered:?}");
+    assert!(closed, "a request answered with its body unread closes its connection");
+    let shelf = harness.root::<Shelf>();
+    assert_eq!(harness.state(shelf)?.asked, 0, "no handler is asked a request no route matches");
+
+    Ok(())
+}
+
+#[test]
+fn a_path_routed_for_other_methods_is_not_allowed_and_names_them() -> Result<(), Unheard> {
+    // Catches a method no route takes answered as not found, or handed to the path's handler; and `Allow` naming
+    // methods the path's routes do not take, or leaving one out.
+    let (mut harness, port) = shelved()?;
+
+    let (answered, _) = heard(&mut harness, client(port, b"DELETE /shelf HTTP/1.1\r\nConnection: close\r\n\r\n", 1));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 405"), "{answered:?}");
+    assert!(answered[0].head.contains("allow: GET, POST"), "{answered:?}");
+    assert!(answered[0].head.contains("x-request: 1"), "{answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_capture_that_does_not_read_or_names_no_live_instance_is_not_found() -> Result<(), Unheard> {
+    // Catches a capture that does not read as its type handed on, or answered as anything but `404`; and a path to an
+    // instance that is not live answered `503` or `500` as an ask of it would be, or standing the instance up.
+    const UNREAD: &[u8] = b"GET /items/one HTTP/1.1\r\n\r\n";
+    const ABSENT: &[u8] = b"GET /items/3 HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let (mut harness, port) = shelved()?;
+
+    let (answered, _) = heard(&mut harness, conversation(port, &[UNREAD, ABSENT]));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 404"), "{answered:?}");
+    assert!(answered[1].head.starts_with("HTTP/1.1 404"), "{answered:?}");
+    assert!(answered[1].head.contains("x-request: 2"), "the connection is kept after either: {answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn routes_that_overlap_fail_the_stack_as_it_begins() {
+    // Catches routes that overlap compiled anyway, so which one a request reaches depends on their order.
+    let settings = StackSettings::default();
+    let program = Headless::program()
+        .with_engine(engine(&settings))
+        .root::<Tcp>()
+        .root::<Shelf>()
+        .root::<Items>()
+        .root_with::<OverlappingStack>(settings);
+
+    let begun = Harness::of(program);
+
+    let Err(Unheard::Program(why)) = begun else {
+        panic!("the program starts: {:?}", begun.err());
+    };
+    assert!(why.contains("overlapping_stack"), "the stack's begin is what failed: {why}");
 }

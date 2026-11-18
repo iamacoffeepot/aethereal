@@ -7,21 +7,18 @@
 //! for its method, with the slices of the path its captures matched; or the methods the path's routes take, for
 //! `405`; or nothing, for `404`.
 //!
-//! The trie holds each route's value, a type of its user's: the stack's typed router keeps what it needs to ask the
-//! route's handler there.
-
-#![cfg_attr(
-    not(test),
-    expect(dead_code, unused_imports, reason = "the stack's typed router is the trie's one user, and comes with it")
-)]
+//! The trie holds each route's value, a type of its user's: a routes type's [`Router`] keeps there which of its handlers
+//! the route reaches, and by which of the handler's routes, whose path it makes of the captures.
 
 mod captures;
 mod pattern;
+mod routes;
 mod trie;
 mod unroutable;
 mod walk;
 
 pub use captures::Captures;
+pub use routes::{Route, Router, Routes};
 pub use trie::{Found, Routed, Trie};
 pub use unroutable::Unroutable;
 
