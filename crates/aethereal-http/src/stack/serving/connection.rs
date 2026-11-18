@@ -57,8 +57,21 @@ pub(super) enum Phase {
     Returning(Returning),
     /// A streamed response's head is written, and its body is written as its source sends it.
     Outflow(Outflow),
-    /// A last response is written: the connection closes once it is sent.
+    /// A last response is written: the connection drains once it is sent, and closes when the write is not sent whole.
     Closing,
+    /// A last response is sent and the connection's write half shut: what the client still sends is read and dropped
+    /// until it closes, or its drain's bounds pass.
+    Draining(Draining),
+}
+
+/// A connection drained after its last response, as RFC 9112 §9.6 closes one in stages: its write half was shut at
+/// `began`, so the client reads the response and then its end, and what the client still sends is read and dropped, the
+/// last of it at `moved`. A socket closed with bytes it has not read resets the connection, and the reset can destroy
+/// the response before the client reads it; so the connection closes once the client closes, or once a bound passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+pub(super) struct Draining {
+    began: Time,
+    moved: Time,
 }
 
 /// A request parked on its way in, numbered `request` among the stack's, its head `head`, its body framed as `framing`
@@ -223,6 +236,18 @@ impl<F> Connection<F> {
         self.sleeping = Sleeping::Not;
     }
 
+    /// Its last response is sent and its write half shut, at `now`: it drains, keeping nothing of what it read and did
+    /// not parse, and sleeps until its drain's bound.
+    pub fn drain<Me>(&mut self, number: u64, settings: &StackSettings, turn: &mut Turn<'_, Me>) -> Result<(), Fault>
+    where
+        Me: Receives<Answer<Slept, Deadline>>,
+    {
+        self.buffer = Vec::new();
+        let draining = Draining::began(turn.now());
+
+        self.enter(Phase::Draining(draining), number, settings, turn)
+    }
+
     /// Enters `phase`, and sleeps until its deadline, in place of the last phase's sleep, which it cancels.
     pub fn enter<Me>(
         &mut self,
@@ -268,7 +293,7 @@ impl<F> Connection<F> {
 
     /// When its phase is late under `settings`: a head from its first byte; a body unread from when its request was
     /// asked, and one being gathered or streamed, either way, once it has not moved; the answer from when the body was
-    /// read, or the request asked when it has none; and the next request from the last response.
+    /// read, or the request asked when it has none; the next request from the last response; and a drain at its bound.
     fn due(&self, settings: &StackSettings) -> Due {
         let (since, within) = match &self.phase {
             Phase::Idle { since } => (*since, settings.idle_within_millis),
@@ -294,9 +319,36 @@ impl<F> Connection<F> {
             }
             Phase::Outflow(outflow) => (outflow.moved, settings.stall_within_millis),
             Phase::Closing => return Due::Never,
+            Phase::Draining(draining) => return Due::Before(draining.until(settings)),
         };
 
         Due::Before(since + Duration::from_millis(u64::from(within)))
+    }
+}
+
+impl Draining {
+    /// A drain begun at `now`.
+    const fn began(now: Time) -> Self {
+        Self { began: now, moved: now }
+    }
+
+    /// Its client sent more at `now`, which is dropped.
+    pub const fn read(&mut self, now: Time) {
+        self.moved = now;
+    }
+
+    /// Whether it has passed its bound by `now`, under `settings`.
+    pub fn is_over(&self, now: Time, settings: &StackSettings) -> bool {
+        now >= self.until(settings)
+    }
+
+    /// When it ends under `settings`: `drain_stall_within_millis` after its client last sent, or `drain_within_millis`
+    /// after it began, whichever comes first.
+    fn until(&self, settings: &StackSettings) -> Time {
+        let stalled = self.moved + Duration::from_millis(u64::from(settings.drain_stall_within_millis));
+        let spent = self.began + Duration::from_millis(u64::from(settings.drain_within_millis));
+
+        stalled.min(spent)
     }
 }
 

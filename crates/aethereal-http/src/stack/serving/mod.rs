@@ -24,8 +24,8 @@ use aethereal_actor::{
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::{
-    Accept, Accepting, Framing as Chunking, HungUp, Incoming, Listen, Listener, Listening, Read, Reading, Shut, Tcp,
-    Unbound, Wrote,
+    Accept, Accepting, Finish, Framing as Chunking, HungUp, Incoming, Listen, Listener, Listening, Read, Reading, Shut,
+    Tcp, Unbound, Wrote,
 };
 use body::Ending;
 use connection::{Connection, Entering, Inflow, Out, Passing, Phase, Returning};
@@ -226,6 +226,12 @@ where
         self.connections.values().map(|connection| connection.buffer.len()).sum()
     }
 
+    /// How many connections it holds open, those draining after their last response among them.
+    #[must_use]
+    pub fn connections(&self) -> usize {
+        self.connections.len()
+    }
+
     /// `Tcp` answered the listen: once bound, the stack opens its listener's stream of what it accepts. What it answered
     /// otherwise is handed back, for the stack to decide on.
     ///
@@ -292,7 +298,8 @@ where
 
     /// A connection read a chunk: it is buffered, and what it completes is parsed and passed on. While a request is out
     /// on the connection, or its response is being written, the chunk's credit is withheld, so a client that sends
-    /// ahead waits in the kernel.
+    /// ahead waits in the kernel. A connection draining after its last response drops the chunk, and grants its credit
+    /// back.
     ///
     /// # Errors
     ///
@@ -309,6 +316,11 @@ where
         let Some(connection) = self.connections.get_mut(&number) else {
             return Ok(());
         };
+        if let Phase::Draining(draining) = &mut connection.phase {
+            draining.read(turn.now());
+            self.reading.grant(turn, stream, NonZeroU32::MIN)?;
+            return Ok(());
+        }
         connection.buffer.extend_from_slice(turn.read(&value.bytes));
         if connection.is_held() {
             connection.withheld += 1;
@@ -342,7 +354,7 @@ where
     }
 
     /// A write was answered: a streamed response's head or parts go on as [`flowed`](Self::flowed) says; otherwise the
-    /// connection closes when it was its last, or the write was not sent whole.
+    /// connection drains when it was its last, sent whole, and closes when the write was not sent whole.
     ///
     /// # Errors
     ///
@@ -361,11 +373,14 @@ where
             Carries::Body { parts } => return self.flowed(connection, &answered, parts, turn),
         };
         let is_sent = answered == Answered::Yes(Wrote::Sent);
-        if is_sent && !closes {
+        if !is_sent {
+            return self.close(connection, Ending::HungUp(HungUp::Shut), turn);
+        }
+        if !closes {
             return Ok(());
         }
 
-        self.close(connection, Ending::HungUp(HungUp::Shut), turn)
+        self.drain(connection, turn)
     }
 
     /// The handler answered a request: its response goes out through every layer, in reverse, and is written. A
@@ -427,7 +442,8 @@ where
 
     /// The sleep that times a connection's phase has come, when it still stands: a request that did not come, or came
     /// too slowly, a body that stalled, either way, close the connection with no answer, its streams ended or stopped;
-    /// a request whose answer is late is answered `504`, and the connection closes.
+    /// a request whose answer is late is answered `504`, and the connection closes; and a drain past its bound closes
+    /// the connection, its client still not closed.
     ///
     /// # Errors
     ///
@@ -473,6 +489,8 @@ where
                 Late::Not
             }
             Phase::Outflow(outflow) if now < outflow.moved + stall => Late::Not,
+            Phase::Draining(draining) if !draining.is_over(now, &self.settings) => Late::Not,
+            Phase::Draining(_) => Late::Drained,
             Phase::Idle { .. }
             | Phase::Head { .. }
             | Phase::Out(Out {
@@ -490,6 +508,10 @@ where
                 self.close(number, Ending::Stalled, turn)
             }
             Late::Unanswered => self.time_out(number, turn),
+            Late::Drained => {
+                turn.log(Level::Info, "a connection's client did not close within its drain, and it closes");
+                self.close(number, Ending::HungUp(HungUp::Shut), turn)
+            }
         }
     }
 
@@ -528,7 +550,12 @@ where
                 Phase::Idle { .. } | Phase::Head { .. } => {}
                 Phase::Out(Out { body: Inflow::Gathering { .. }, .. }) => return self.gathered(number, turn),
                 Phase::Out(Out { body: Inflow::Streaming { .. }, .. }) => return self.stream(number, turn),
-                Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Outflow(_) | Phase::Closing => {
+                Phase::Entering(_)
+                | Phase::Out(_)
+                | Phase::Returning(_)
+                | Phase::Outflow(_)
+                | Phase::Closing
+                | Phase::Draining(_) => {
                     return Ok(());
                 }
             }
@@ -706,6 +733,8 @@ enum Late {
     Close,
     /// Its answer is late, and it is answered `504`.
     Unanswered,
+    /// It drained past its bound, its client still not closed, and it closes.
+    Drained,
 }
 
 impl<S, T> Serving<S, T>
@@ -776,11 +805,32 @@ where
             Phase::Returning(Returning { body: ResponseBody::Streamed(streamed), .. }) => {
                 outflow::abandon(&mut self.sources, number, streamed, turn)?;
             }
-            Phase::Returning(_) | Phase::Idle { .. } | Phase::Head { .. } | Phase::Entering(_) | Phase::Closing => {}
+            Phase::Returning(_)
+            | Phase::Idle { .. }
+            | Phase::Head { .. }
+            | Phase::Entering(_)
+            | Phase::Closing
+            | Phase::Draining(_) => {}
         }
         turn.to(connection.accepted).send(&Shut)?;
 
         Ok(())
+    }
+
+    /// Closes the connection numbered `number` in stages once its last response is sent, as RFC 9112 §9.6 does: its
+    /// `Accepted` is sent `Finish`, which shuts its write half, so the client reads the response and then its end; and
+    /// what the client still sends is read and dropped, the credit withheld for it granted, until the client closes or
+    /// a bound of the drain passes (`drain_stall_within_millis`, `drain_within_millis`), when it is closed. A socket
+    /// closed with bytes it has not read resets the connection, and the reset can destroy the response before the
+    /// client reads it.
+    fn drain(&mut self, number: u64, turn: &mut Turn<'_, S>) -> Result<(), Fault> {
+        let Some(connection) = self.connections.get_mut(&number) else {
+            return Ok(());
+        };
+        turn.to(connection.accepted).send(&Finish)?;
+        connection.drain(number, &self.settings, turn)?;
+
+        self.release(number, turn)
     }
 
     /// Closes the connection numbered `number`, which the engine had no room to write to (ADR-0014): the client is told

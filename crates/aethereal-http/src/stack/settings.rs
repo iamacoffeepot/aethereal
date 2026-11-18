@@ -35,6 +35,12 @@ pub struct StackSettings {
     /// The milliseconds the handler may take to answer once the body is read, or will not be, past which the request
     /// is answered `504`.
     pub answer_within_millis: u32,
+    /// The milliseconds a connection drained after its last response may go with nothing read from its client, past
+    /// which it closes.
+    pub drain_stall_within_millis: u32,
+    /// The milliseconds a connection drains in all after its last response, from when its write half is shut, past
+    /// which it closes however its client still sends.
+    pub drain_within_millis: u32,
 }
 
 impl Default for StackSettings {
@@ -50,6 +56,8 @@ impl Default for StackSettings {
             stall_within_millis: 60_000,
             idle_within_millis: 60_000,
             answer_within_millis: 300_000,
+            drain_stall_within_millis: 5_000,
+            drain_within_millis: 30_000,
         }
     }
 }
