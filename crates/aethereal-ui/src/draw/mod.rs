@@ -12,6 +12,13 @@
 //! its edge, and cut to a clip of its own. The clip is compared with the position the program placed, in the screen's
 //! own pixels, never with the fragment's position in the frame: a call that places the screen in its caller's
 //! coordinates moves what the program placed after it is placed (ADR-0055), and the clip moves with it.
+//!
+//! Both programs draw a box with its edges moved to the nearest whole pixels of the screen, a half rounded up. They
+//! shade a pixel by how far its middle lies within the box, so a box whose edges fell within pixels would draw more or
+//! less of them as it moved: a chart's columns, sliding a fraction of a pixel each frame, would shimmer, and a box laid
+//! out at a share of the window would draw its edges faint at some widths. On whole pixels a box a whole number of
+//! pixels wide keeps its width, and moves a pixel at a time. The records keep the boxes as laid out: the snapping is
+//! the programs' alone.
 
 #[cfg(test)]
 mod tests;
@@ -25,8 +32,9 @@ use aethereal_render::text::{Align, Font, Outline, Run, Wrap};
 use aethereal_render::texture::TextureId;
 use core::ops::Range;
 
-/// The program that draws every quad of a screen: the unit square's corner placed in its record's box and turned into
-/// clip space by the frame's size in the uniform; then the texture sampled at the record's region, its edges kept by
+/// The program that draws every quad of a screen: the unit square's corner placed in its record's box, its edges moved
+/// to the nearest whole pixels, and turned into clip space by the frame's size in the uniform; then the texture sampled
+/// at the record's region, its edges kept by
 /// the record's slices, tinted by its colour, under its border, rounded at its corners, and cut to its clip.
 pub const PROGRAM: &str = "
 @group(0) @binding(0) var<uniform> frame: vec4<f32>;
@@ -58,9 +66,10 @@ fn place(
     @location(7) inset: vec4<f32>,
     @location(8) slice_uv: vec4<f32>,
 ) -> Between {
-    let pixel = mix(rect.xy, rect.zw, corner);
+    let snapped = floor(rect + 0.5);
+    let pixel = mix(snapped.xy, snapped.zw, corner);
     let placed = vec2(pixel.x / frame.x * 2.0 - 1.0, 1.0 - pixel.y / frame.y * 2.0);
-    return Between(vec4(placed, 0.0, 1.0), pixel, rect, clip, colour, border_colour, shape, uv, inset, slice_uv);
+    return Between(vec4(placed, 0.0, 1.0), pixel, snapped, clip, colour, border_colour, shape, uv, inset, slice_uv);
 }
 
 // Where a point `along` pixels into a quad `size` pixels long samples, from `low` to `high` of the texture: within
@@ -111,7 +120,7 @@ fn shade(between: Between) -> @location(0) vec4<f32> {
 ";
 
 /// The program that draws a run of plain fills: the unit square's corner placed in its record's box, already cut to
-/// its clip, and turned into clip space by the frame's size in the uniform; then the record's colour, its edges eased
+/// its clip, its edges moved to the nearest whole pixels, and turned into clip space by the frame's size in the uniform; then the record's colour, its edges eased
 /// over a pixel as the library's program eases a square quad's.
 pub const FILL_PROGRAM: &str = "
 @group(0) @binding(0) var<uniform> frame: vec4<f32>;
@@ -125,9 +134,10 @@ struct Between {
 
 @vertex
 fn place(@location(0) corner: vec2<f32>, @location(1) rect: vec4<f32>, @location(2) colour: vec4<f32>) -> Between {
-    let pixel = mix(rect.xy, rect.zw, corner);
+    let snapped = floor(rect + 0.5);
+    let pixel = mix(snapped.xy, snapped.zw, corner);
     let placed = vec2(pixel.x / frame.x * 2.0 - 1.0, 1.0 - pixel.y / frame.y * 2.0);
-    return Between(vec4(placed, 0.0, 1.0), pixel, rect, colour);
+    return Between(vec4(placed, 0.0, 1.0), pixel, snapped, colour);
 }
 
 @fragment
