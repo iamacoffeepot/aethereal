@@ -9,10 +9,8 @@ use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, InitialWindow, InitialWindows, Opening, WindowFeed};
 use aethereal_actor::{ActorRef, Actors, Answered, Table, Time, actor, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
-use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
-use aethereal_substrate::{
-    Bootstrap, Bootstrapping, Builds, Clock, Engine, Host, ProgramError, Settled, Setup, Unbuilt,
-};
+use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard, desk};
+use aethereal_substrate::{Bootstrap, Bootstrapping, Clock, Engine, Host, Setup, Unbuilt};
 use std::num::NonZeroUsize;
 
 /// A clock that reads the same time always: the tests' steps take no time.
@@ -74,12 +72,10 @@ fn heard_by_the_listener(engine: &mut Engine) -> Vec<Event> {
     engine.take_turned().iter().filter(|turn| turn.path == listener).filter_map(|turn| turn.read().ok()).collect()
 }
 
-/// A host of the tests' own: it keeps the engine its program bootstrapped, and what the window root's bootstrap kept
-/// on it, and runs nothing.
-struct Desk {
-    engine: Engine,
-    kept: Kept,
-}
+desk!(
+    /// A desk that keeps what the window root's bootstrap kept on it.
+    struct Desk(Kept);
+);
 
 /// What the window root's bootstrap kept on the desk: the feed of each window it opened, in the order opened, and its
 /// end of the root's requests.
@@ -87,32 +83,6 @@ struct Desk {
 struct Kept {
     feeds: Vec<WindowFeed>,
     hostings: Vec<Hosting>,
-}
-
-/// The desk's own section, which sets nothing.
-#[derive(Plain, Debug, Default)]
-#[kind(name = "aether.test.desk.running")]
-#[settings]
-struct DeskRunning {}
-
-impl Host for Desk {
-    type Running = DeskRunning;
-    type Hosting<'host> = &'host mut Kept;
-    type Exit = Self;
-    type Error = ProgramError;
-
-    fn run(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        Self::build(settled)
-    }
-}
-
-impl Builds for Desk {
-    fn build(settled: Settled<Self>) -> Result<Self, ProgramError> {
-        let mut kept = Kept::default();
-        let (engine, _) = pollster::block_on(settled.bootstrap(&mut kept))?;
-
-        Ok(Self { engine, kept })
-    }
 }
 
 /// Opens two windows as a host does, `first`, windowed and focused, then `second`, maximized, both small, each closed
@@ -184,9 +154,8 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
     let Ok(mut desk) = Desk::program().with_cycle::<()>().root::<Windows>().root::<Listener>().build() else {
         panic!("the window root and its listener bootstrap");
     };
-    let engine = &mut desk.engine;
-    engine.record_turns();
-    let [first, second] = desk.kept.feeds.as_slice() else {
+    desk.engine().record_turns();
+    let [first, second] = desk.kept().feeds.as_slice() else {
         panic!("the window root's bootstrap opened two windows");
     };
     let small = Surface { width: 640, height: 480, scale: 1.0 };
@@ -211,6 +180,7 @@ fn a_subscriber_hears_its_window_as_it_stood_then_what_its_host_pushed_that_says
         second.push(Event::CloseRequested),
     ];
     assert!(pushed.iter().all(Result::is_ok), "the window root holds its source");
+    let engine = desk.engine();
     run(engine);
 
     let expected = [

@@ -251,7 +251,6 @@ dependencies = [
  "aethereal-tools",
  "aethereal-ui",
  "aethereal-window",
- "pollster",
  "wgpu",
 ]
 
@@ -386,7 +385,6 @@ dependencies = [
  "aethereal-math",
  "aethereal-substrate",
  "aethereal-tools",
- "pollster",
 ]
 
 [[package]]

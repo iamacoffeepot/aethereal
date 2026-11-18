@@ -1,9 +1,11 @@
 //! A harness: a host and its outside, which a test owns and steps, asking and being asked as any actor is (ADR-0036).
 
+mod desk;
 #[cfg(test)]
 mod tests;
 
 pub use crate::engine::outside::{Arrival, AskedToMove, Handed, Jobbed, Outside, Ran, Turned};
+pub use desk::{Benched, Desk, DeskRunning, desk};
 
 use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
@@ -258,20 +260,21 @@ impl Harness<Bench> {
     pub fn bare(engine: Engine) -> Result<Self, Unheard> {
         Self::over(Bench { engine, now: Time::ZERO })
     }
+}
 
+impl<H: Benched> Harness<H> {
     /// Moves the test's clock on by `by`, and says a cycle is due at the time it reaches (ADR-0020).
     pub fn advance(&mut self, by: Duration) {
         let nanos = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
-        self.host.now = Time::from_nanos(self.host.now.nanos().saturating_add(nanos));
-        let now = self.host.now;
-        self.host.engine.cycle(now);
+        let bench = self.host.bench();
+        bench.now = Time::from_nanos(bench.now.nanos().saturating_add(nanos));
+        let now = bench.now;
+        bench.engine.cycle(now);
     }
-}
 
-impl Harness<Bench> {
     /// Steps until the engine has nothing to run, and answers with every turn that ran, but those of the outside, step
-    /// by step. Only over a bare engine, which nothing moves between steps: a host's own threads may bring work to an
-    /// idle engine, so there idle is no end.
+    /// by step. Only over a bench, a bare engine or a desk's, which nothing moves between steps: a host's own threads
+    /// may bring work to an idle engine, so there idle is no end.
     pub fn settle_turns(&mut self) -> Vec<Turned> {
         let _ = self.host.engine().take_turned();
         self.settle();

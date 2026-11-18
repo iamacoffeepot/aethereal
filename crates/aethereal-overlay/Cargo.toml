@@ -40,10 +40,8 @@ aethereal-pace = { path = "../aethereal-pace", features = ["tools"] }
 aethereal-render = { path = "../aethereal-render", features = ["tools"] }
 aethereal-tcp = { path = "../aethereal-tcp" }
 aethereal-window = { path = "../aethereal-window", features = ["tools"] }
-# The overlay's test runs it in an engine the test steps, beside the renderer on a device that draws nothing (ADR-0036).
+# The overlay's test runs it on a desk the test steps, beside the renderer on a device that draws nothing (ADR-0036).
 aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
-# The test's host blocks on its program's bootstrap, as the native hosts do (ADR-0029).
-pollster = { workspace = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "noop"] }
 
 [lints]
