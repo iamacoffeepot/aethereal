@@ -6,7 +6,7 @@
 //! overlay's console calls the same tools, and the overlay's own `mark` and `memory`, from the window: the tools root
 //! is listed before the overlay, which subscribes to it and offers its own as it begins.
 //!
-//! With a hub from the headless `link_hub` example running, ask its `mint_token` tool for a token, which answers the
+//! With a hub from the `aethereal-hub` crate running, ask its `mint_token` tool for a token, which answers the
 //! arguments to start this engine with, then run `cargo run --release -p aethereal-overlay --example overlay -- <those
 //! arguments> --name overlay`; or spawn it from the hub's store. A link's frames are at most 16 MiB here, so an image
 //! of a large frame fits one. `--size 1920x1080` sizes its window, `--mode` shows it so as it opens, and `--title`

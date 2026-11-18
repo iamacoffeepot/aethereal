@@ -126,6 +126,17 @@ call_tool { engine: u32, tool: String, input: Json }     -> { output: Json }, or
 - **Tools come and go while an engine runs, and the agent sees them as data.** `call_tool` finds its tool in the latest set when it is called, so one offered a moment ago is called at once, and one withdrawn is refused as not found. The agent asks `describe_engine` again when a call is refused because the tools changed. The agent never passes a revision: the hub writes the one it converted with.
 - **`Json` is a new shape in `aethereal-data`:** a JSON value, carried as its text. Its JSON Schema is `{}`, any value. `from_json` checks the value is JSON and keeps its text, and `to_json` writes the text as it is. It is plain, and its bytes are a string's (ADR-0002). It is what lets one tool take or answer a value whose schema is known only when it runs.
 
+### The hub says what it was built from
+
+```rust
+// aethereal-hub, the hub's program's own tool
+describe_hub {}                                          -> { source: { Commit: { commit: String } } | "Unknown", link_revision: u32 }
+```
+
+- **`describe_hub` answers the commit the hub was built from and the link revision it speaks,** so an agent talking to a hub can tell which tools and fixes it has, and which engines can link to it. The program's build script reads the commit from git as it builds (`git rev-parse HEAD`), and builds again only when `HEAD` moves; where git reads none, as in a build from a source tarball or with no git installed, it is `Unknown`. Changes not committed are not said.
+- **It is a tool, not a field of `server/discover`** (ADR-0037). `server/discover` answers what the protocol asks of it, the versions spoken and the capabilities, and the `serverInfo` on every result is `aethereal-mcp`'s, which serves any program and knows no build of one. The build is known only to the program's own crate, and a tool is how a program answers the agent anything of its own.
+- **An engine's revision is the hub's,** as one of another is refused. An engine's build would cross the link in its `Hello`, a change to `Up` that takes the next revision; until it does, `list_engines` names the binary and hash a spawned engine came from (ADR-0040).
+
 ### Who dialed
 
 Every engine links with a token the hub minted for it, spawned or started by hand, and passed in the engine's arguments (ADR-0040), and `Hello` brings it. A `Hello` with none cannot be read. The hub refuses a token it did not mint, or one already used. A token is good for one `Hello`, so reading it from the process list after the engine has linked gains nothing. That is also how the hub ties a connection to the process it started.
