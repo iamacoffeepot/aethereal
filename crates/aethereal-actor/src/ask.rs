@@ -3,7 +3,7 @@
 #[cfg(feature = "std")]
 use crate::Bytes;
 use crate::declared::{Carries, DependsOn, Handled, Handles, Lists, Protocol, Role, Untaken};
-use crate::{ActorRef, Actors, ChildOf, Due, Item, Mail, Path, PathTo, ProtocolRef, Receives, Within, Written};
+use crate::{ActorRef, Actors, Admits, ChildOf, Due, Item, Mail, Path, PathTo, ProtocolRef, Receives, Within, Written};
 use aethereal_data::{Decode, DecodeError, Kind, KindId, Plain};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
@@ -593,18 +593,25 @@ where
 }
 
 /// A type at a typed path is asked as through a reference to it, at a path beneath a root of a type the asker depends
-/// on (ADR-0059).
-impl<Me, L, K, C, I> Askable<Me, K, C, I> for Path<L>
+/// on, at `I`, whose guard admits the asker's type, at `J` (ADR-0059).
+impl<Me, L, K, C, I, J> Askable<Me, K, C, (I, J)> for Path<L>
 where
     Me: DependsOn<L, I>,
     L: ChildOf + PathTo + AskedByType<Me, K, C>,
+    L::From: Admits<L, Me, J>,
     K: Kind + Handled,
 {
     type Answer = <L as AnswersByType<K>>::Answer;
 }
 
-/// A reference to a type is proven to reach it, so it is asked as the type says it answers.
-impl<Me, L: AskedByType<Me, K, C>, K: Kind + Handled, C> Askable<Me, K, C, ()> for ActorRef<L> {
+/// A reference to a type is proven to reach it, so it is asked as the type says it answers, by an asker whose type its
+/// guard admits (ADR-0059).
+impl<Me, L, K, C, I> Askable<Me, K, C, I> for ActorRef<L>
+where
+    L: AskedByType<Me, K, C>,
+    L::From: Admits<L, Me, I>,
+    K: Kind + Handled,
+{
     type Answer = <L as AnswersByType<K>>::Answer;
 }
 

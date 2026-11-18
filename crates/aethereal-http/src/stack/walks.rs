@@ -5,8 +5,8 @@
 use super::actor::{Inbound, Inward, Outbound, Outward, Parked, ParkedResponse};
 use super::{BodyPart, Head, Layer, Leaving, Response, Step, Unlayered};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Answer, Beginning, Carries, ChildOf, DependsOn, ErasedActorRef, Fault, Handled, Handles,
-    PathTo, Receives, Time, Turn, Within, path,
+    Actor, ActorRef, Actors, Admits, Answer, Beginning, Carries, ChildOf, DependsOn, ErasedActorRef, Fault, Handled,
+    Handles, PathTo, Receives, Time, Turn, Within, path,
 };
 use aethereal_data::{Decode, Encode, Kind, Plain};
 
@@ -252,6 +252,8 @@ where
         + Handles<Outbound>
         + Carries<Outbound, Answers = (Outward,)>,
     Inbound<In>: Kind + Handled + Encode<Actors>,
+    <A as Handles<Inbound<In>>>::From: Admits<A, Me, ()>,
+    <A as Handles<Outbound>>::From: Admits<A, Me, ()>,
     Inward<Out>: Kind + Decode<Actors> + 'static,
     Me: Receives<Answer<Inward<Out>, Parked>> + Receives<Answer<Outward, ParkedResponse>>,
 {

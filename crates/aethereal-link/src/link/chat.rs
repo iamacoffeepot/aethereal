@@ -13,7 +13,7 @@
 use super::Link;
 use crate::Up;
 use crate::frames::{self, Written};
-use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, Receives, Turn};
+use aethereal_actor::{Anyone, Ended, Fault, Handles, Level, Receives, Speaks, Turn};
 use aethereal_data::Plain;
 use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs, Tab};
 
@@ -91,15 +91,11 @@ impl Link {
 /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or the
 /// hub has shown nothing.
 impl Handles<Listen> for Link {
-    type From = Anyone;
+    type From = Speaks<Listening>;
     type Returns = ();
 
-    fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let sender = turn.sender();
-        let Some(listener) = turn.cast::<Listening>(sender) else {
-            turn.log(Level::Warn, "an actor that is not shown the chat asked to listen to it");
-            return Ok(());
-        };
+    fn handle(&mut self, _: Listen, turn: &mut Turn<'_, Self, Speaks<Listening>>) -> Result<(), Fault> {
+        let listener = *turn.from();
         let added = self.listeners.subscribe(turn, listener);
         let Shown::Sessions { tabs, asks } = &self.shown else {
             return Ok(());

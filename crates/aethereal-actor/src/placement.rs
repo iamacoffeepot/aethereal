@@ -78,7 +78,7 @@ pub trait ParentOf<C>: Copy {
 
 impl<P: ChildOf, C: ChildOf> ParentOf<C> for ActorRef<P>
 where
-    C::Parent: Admits<P, C>,
+    C::Parent: PlacesBeneath<P, C>,
 {
     fn seated(self) -> Seated {
         Self::seated(self)
@@ -134,7 +134,7 @@ impl<T: ChildOf> Placement for T {
 }
 
 /// Who may spawn an actor of a type, as the engine reads the type's parent: what a guest's host checks a guest's
-/// spawn by, as [`Admits`] checks a native one where it is built (ADR-0022).
+/// spawn by, as [`PlacesBeneath`] checks a native one where it is built (ADR-0022).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spawner {
     /// No actor: the type stands at the top, and only the chassis makes it.
@@ -351,16 +351,16 @@ impl<Me> Parented<Me> for Anywhere {
     label = "a `{C}` stands beneath `{Self}`",
     note = "a type spawns only what may stand beneath it: what its `ChildOf` names as its `Parent`"
 )]
-pub trait Admits<A, C> {}
+pub trait PlacesBeneath<A, C> {}
 
-impl<A: ChildOf, C> Admits<A, C> for A {}
+impl<A: ChildOf, C> PlacesBeneath<A, C> for A {}
 
-impl<A, C> Admits<A, C> for Anywhere {}
+impl<A, C> PlacesBeneath<A, C> for Anywhere {}
 
-impl<C> Admits<C, C> for Recursive {}
+impl<C> PlacesBeneath<C, C> for Recursive {}
 
 /// This list, the `Spawns` of an actor of type `Me`, lists `C`, at `I`, its place, which the compiler infers as
-/// [`Lists`](crate::Lists) finds a kind: a turn's `spawn` builds only when it does, beside [`Admits`], so the program's
+/// [`Lists`](crate::Lists) finds a kind: a turn's `spawn` builds only when it does, beside [`PlacesBeneath`], so the program's
 /// build check, which follows each type's list, walks every type an actor spawns (ADR-0059).
 ///
 /// A type is found in a tuple, nested as deep as it nests, and in an [`Each<L>`] [`Through`] the path into `L` that

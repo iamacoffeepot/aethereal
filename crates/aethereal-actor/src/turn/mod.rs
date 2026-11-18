@@ -598,6 +598,14 @@ struct Seat<'a> {
     due: Due,
 }
 
+/// What a seat lent for a guarded turn's code written for any sender counted, which the seat it was lent from takes
+/// back: how much it sent, and what it owes the source.
+#[derive(Clone, Copy)]
+struct Counted {
+    sent: u64,
+    owing: Owing,
+}
+
 /// What a turn owes the source of the item it handles (ADR-0017).
 ///
 /// It is read only when the turn answers or holds, so a turn that does neither reads nothing of it.
@@ -653,6 +661,52 @@ enum Replying {
 }
 
 impl Seat<'_> {
+    /// The same seat, lent for a shorter while: what is asked through it is asked of this one, and what it counts is
+    /// taken back by [`Self::restore`].
+    fn reborrow(&mut self) -> Seat<'_> {
+        Seat {
+            me: self.me,
+            path: self.path,
+            above: self.above,
+            table: self.table,
+            made: self.made,
+            asked: &mut *self.asked,
+            keeps: self.keeps.reborrow(),
+            sent: self.sent,
+            sent_before: self.sent_before,
+            declared: self.declared,
+            owing: self.owing,
+            due: self.due,
+        }
+    }
+
+    /// What this seat, lent by [`Self::reborrow`], counted: how much it sent, and what it owes the source. Every field is
+    /// named, so one added is decided here.
+    fn counted(self) -> Counted {
+        let Seat {
+            me: _,
+            path: _,
+            above: _,
+            table: _,
+            made: _,
+            asked: _,
+            keeps: _,
+            sent,
+            sent_before: _,
+            declared: _,
+            owing,
+            due: _,
+        } = self;
+
+        Counted { sent, owing }
+    }
+
+    /// Takes back what the seat it lent counted.
+    const fn restore(&mut self, counted: Counted) {
+        self.sent = counted.sent;
+        self.owing = counted.owing;
+    }
+
     /// Adds the effect by which this actor asks for `what`.
     fn ask(&mut self, what: What) {
         self.asked.buffers.effects.push(Effect::new(self.me, what));
@@ -1619,6 +1673,31 @@ impl<'a, Me, F: Guard<Me>> Turn<'a, Me, F> {
     /// ```
     pub const fn split(&mut self) -> (&mut Doing<'a, Me, F>, &mut Pool<'a>) {
         (&mut self.doing, &mut self.pool)
+    }
+
+    /// Runs `run` on the same turn with its guard set aside, as the turn of a handler that takes its kind from
+    /// [`Anyone`]: code written for any sender, such as a screen's methods, which a guarded handler calls. What `run`
+    /// asks is asked of this turn, and the sender it reads is the same, as it came, for the guard checked it already
+    /// (ADR-0058).
+    pub fn unguarded<R>(&mut self, run: impl FnOnce(&mut Turn<'_, Me>) -> R) -> R {
+        let Self { doing, pool } = self;
+        let Doing { seat, instances, source, from: _, chain, of } = doing;
+        let mut lent = Turn {
+            doing: Doing {
+                seat: seat.reborrow(),
+                instances,
+                source: *source,
+                from: ErasedActorRef::new(*source),
+                chain: *chain,
+                of: *of,
+            },
+            pool: pool.reborrow(),
+        };
+        let ran = run(&mut lent);
+        let counted = lent.doing.seat.counted();
+        seat.restore(counted);
+
+        ran
     }
 
     /// A buffer with room for at least `room` bytes from the turn's [`Pool`], as [`Pool::buffer`] hands one out. It

@@ -1,7 +1,7 @@
 //! The actors one actor sends to as they come and go: a list it holds, which it watches so the ended leave it
 //! (ADR-0016).
 
-use crate::{Ended, ErasedActorRef, ProtocolRef, Reachable, Receives, Turn, Vantage};
+use crate::{Ended, ErasedActorRef, Guard, ProtocolRef, Reachable, Receives, Turn, Vantage};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Reader, Schema, Shape, Writer,
 };
@@ -36,7 +36,14 @@ impl<P> Subscribers<P> {
     }
 
     /// Adds the actor `reference` refers to, and watches it: nothing, and answers false, when it is held already.
-    pub fn subscribe<A: Receives<Ended>>(&mut self, turn: &mut Turn<'_, A>, reference: ProtocolRef<P>) -> bool {
+    ///
+    /// The turn may hold any guard, so a handler that takes a subscribe from [`Speaks<P>`](crate::Speaks) keeps the
+    /// subscriber its guard handed on, `*turn.from()`, with no cast of its own.
+    pub fn subscribe<A: Receives<Ended>, G: Guard<A>>(
+        &mut self,
+        turn: &mut Turn<'_, A, G>,
+        reference: ProtocolRef<P>,
+    ) -> bool {
         let added = self.hold(reference);
         if added {
             turn.watch(reference);

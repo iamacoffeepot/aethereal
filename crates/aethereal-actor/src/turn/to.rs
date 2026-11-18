@@ -48,9 +48,10 @@ impl<Me, R, Mode> Toward<'_, '_, Me, R, Seated, Mode> {
     ///
     /// It builds only when the target [`Reaches`] `K` from this actor: an [`ActorRef<T>`](crate::ActorRef) whose `T`
     /// handles `K`, a [`ProtocolRef<P>`](crate::ProtocolRef) one of whose kinds `K` is, or a [`Path<L>`](crate::Path)
-    /// whose `L` handles `K`, beneath a root of a type this actor depends on (ADR-0059). What a reference reaches is
-    /// proven, so nothing is checked when it is sent; mail to a path that held no live actor of its type is dropped, as
-    /// mail to an actor that has gone is.
+    /// whose `L` handles `K`, beneath a root of a type this actor depends on; and, for a target that names its
+    /// receiver's type, when the receiver's guard of `K` [`Admits`](crate::Admits) this actor's type (ADR-0059). What a
+    /// reference reaches is proven, so nothing is checked when it is sent; mail to a path that held no live actor of its
+    /// type is dropped, as mail to an actor that has gone is.
     pub fn send<K, I>(&mut self, mail: &K) -> Result<&mut Self, EncodeError>
     where
         R: Reaches<Me, K, I>,
@@ -82,9 +83,9 @@ impl<Me, R> Toward<'_, '_, Me, R, Seated, Lives> {
     ///
     /// It builds only when the target is [`Askable`] from this actor: a [`ProtocolRef<P>`](crate::ProtocolRef), where
     /// `P` answers `K` with one kind, or a [`Path<L>`](crate::Path) or an [`ActorRef<L>`](crate::ActorRef), where `L`
-    /// does, as [`AnswersByType`](crate::AnswersByType) says, a path beneath a root of a type this actor depends on;
-    /// and this actor handles that answer with `C`. A path
-    /// that held no live actor of its type is asked as an actor that has gone: the request is answered
+    /// does, as [`AnswersByType`](crate::AnswersByType) says, a path beneath a root of a type this actor depends on,
+    /// whose guard of `K` [`Admits`](crate::Admits) this actor's type; and this actor handles that answer with `C`. A
+    /// path that held no live actor of its type is asked as an actor that has gone: the request is answered
     /// [`Unanswered::Ended`](crate::Unanswered::Ended).
     ///
     /// It is due as this target says: what [`within`](Self::within) stated, or the deadline of the request the turn
@@ -106,7 +107,7 @@ impl<Me, R: Proven, Mode> Toward<'_, '_, Me, R, &[R], Mode> {
     /// sent alone, and the bytes written once for all of them. What they reach is proven, so nothing is checked when
     /// it is sent.
     ///
-    /// It builds only when the references [`Reaches`] `K`, as a send to one does.
+    /// It builds only when the references [`Reaches`] `K`, as a send to one does, the receivers' guard among it.
     pub fn send<K, I>(&mut self, mail: &K) -> Result<&mut Self, EncodeError>
     where
         R: Reaches<Me, K, I>,

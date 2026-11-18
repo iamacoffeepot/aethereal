@@ -271,15 +271,19 @@ impl<A, Me, I, G: Guard<A>> Admits<A, Me, I> for G where G::Sent: SentBy<Me, I> 
 /// The checked sender a guard hands on can be an actor of type `Me`, found at `I`.
 pub trait SentBy<Me, I> {}
 
-impl<Me> SentBy<Me, ()> for ErasedActorRef {}                    // any sender
-impl<T> SentBy<T, ()> for ActorRef<T> {}                         // an actor of type `T`
-impl<Me, P: Listed, I> SentBy<Me, I> for ProtocolRef<P> { .. }   // an actor whose type handles every kind of `P`
+impl<Me> SentBy<Me, ()> for ErasedActorRef {}                            // any sender
+impl<T> SentBy<T, ()> for ActorRef<T> {}                                 // an actor of type `T`
+impl<Me: Conforms<P>, P: Listed> SentBy<Me, ()> for ProtocolRef<P> {}    // an actor whose type handles every kind of `P`
 ```
 
-- **`send` and `ask` on a target that names its receiver's type, `ActorRef<T>` or `Path<L>`, gain the bound `<T as Handles<K>>::From: Admits<T, Me, I>`,** with a diagnostic written for it: "`Producer` may not send `Ready` to `Pinger`: that handler's guard admits only `Counter`".
-- **No guard author writes anything new.** `Admits` has one blanket impl, over the guard's `Sent` type, which every guard already names (ADR-0058). The enum-guard derive writes `SentBy<Me, I>` for an enum `Sent` type, holding when `Me` is one of its cases' types, found at `I` as `Lists<Me, I>` finds a kind.
-- **A guard of a handler's own is checked through its `Sent`:** `ItsProcess` hands on an `ActorRef<Process>`, so only a `Process` may send `Spawned` its `Exited`. The check reads the type `admits` answers, so it cannot drift from it.
-- **Still checked only at delivery** (ADR-0058): a send through a `ProtocolRef`, which does not name its receiver's type; and the part of a guard that reads the seat or the mail, such as whether the sender is the parent's seat, or the process this spawn holds.
+- **`send` and `ask` on a target that names its receiver's type gain the bound `<T as Handles<K>>::From: Admits<T, Me, I>`**, where `Me` is the sending actor's type: an `ActorRef<T>`, a `Path<L>`, and a place beneath the sender, `child::<D>(keys)`, whose last type is its receiver's. Every turn sends through the same target, so the bound holds for a `Turn`, a `Doing`, a `Beginning`, an `Ending`, and a send to many references at once. A guard that refuses the sender's type is reported where the send is written, with a diagnostic written for it: "`Producer` may not send this mail: the receiver's guard admits only `ActorRef<Counter>`", which rustc follows with the receiver and kind the send names.
+- **No guard author writes anything new.** `Admits` has one blanket impl, over the guard's `Sent` type, which every guard already names (ADR-0058), so the check reads the type `admits` answers and cannot drift from it. Each library guard is checked through its `Sent`: `Anyone` through `ErasedActorRef`, so it admits any sender; `Itself` through `ActorRef<A>`, its own type; `Parent` through `ActorRef<A::Parent>`; `Child<T>` and `ActorRef<T>` through `ActorRef<T>`; and `Speaks<P>` through `ProtocolRef<P>`, an actor whose type handles every kind of `P` and answers each as a named protocol says, as an `ActorRef` is made a `ProtocolRef` (ADR-0016).
+- **A guard of a handler's own is checked through its `Sent`:** `ItsProcess` hands on an `ActorRef<Process>`, so only a `Process` may send `Spawned` its `Exited`.
+- **The index is `()` for each of the library's `Sent` types.** A protocol's kinds are found by `Conforms`, which reads the type's handlers and needs no index, so generic code that sends to a type of its own parameter states `<T as Handles<K>>::From: Admits<T, Me, ()>` and threads none, as the HTTP stack does of its layers and handlers. A `Holder` takes `Offer` and `Withdraw` from `Anyone`, as a toolbox is generic over its list and no guard that names a type could admit every toolbox. The index is there for an enum guard, whose derive writes `SentBy<Me, I>` holding when `Me` is one of its cases' types, found at `I` as `Lists<Me, I>` finds a kind (ADR-0058). No guard yet needs one, so the derive is built with `aethereal-actor-derive`, beside `#[actor]`.
+- **A guarded handler runs code written for any sender through `turn.unguarded(|turn| …)`,** the same turn with its guard set aside, as a screen's library takes a drop in from `Speaks<(DropAnswered,)>` and calls the screen's methods, each written for a turn from `Anyone`. What the code sends and answers is counted on the guarded turn.
+- **A sender that is not an actor is checked as the type it is.** A harness's sends are the outside's, whose type, `Outside`, handles nothing (ADR-0036): `Anyone` admits it, and a test that hands a typed guard its mail stands up the type the guard admits. The engine's own send from the outside names a seat and no type, as a `ProtocolRef` does, so delivery alone checks it. A bootstrap sends nothing; it hands over references (below). A guest's code is built against the same targets, its own type as `Me`, and its host repeats the check at delivery (below).
+- **Still checked only at delivery** (ADR-0058): a send through a `ProtocolRef` or to the sender's `parent::<P>()`, which do not name their receiver's type; and the part of a guard that reads the seat or the mail, such as whether the sender is the parent's seat, or the process this spawn holds.
+- **`Admits` is the guard's name alone.** The spawn's placement check, which reads where a type stands (ADR-0022), is `PlacesBeneath<A, C>`: a child `C`'s parent places it beneath an actor of type `A`.
 
 ### A library writes handlers of its own: `with(…)`
 
@@ -399,10 +403,6 @@ fn gathered(
 - Placement learns nothing from a declaration about who talks to whom (ADR-0013); that is left to traffic (Later).
 - Every actor is rewritten into its block, and every handler that replied returns its answer. The change is mechanical, and a site missed does not build.
 
-## To verify when implementing
-
-- **That `Admits<A, Me, I>` does not clash with the placement trait of the same name,** `Admits<A, C>` (`aethereal-actor/src/placement.rs`), which the spawn's check reads (ADR-0022); one of them is renamed if it does.
-
 ## Alternatives considered
 
 - **Keep the per-handler sends.** They cannot be derived from the body: a macro sees only tokens, about a thousand calls outside tests hand the turn to a helper, and stable Rust cannot collect facts from function bodies. So they stay written by hand, restating each call.
@@ -418,6 +418,8 @@ fn gathered(
 - **One word, `#[handles]`, with the return type deciding the role.** Split words read faster: the role is seen without reading the return type.
 - **The guard in the attribute,** `#[request(from = …)]`. The signature should show the type `turn.from()` answers, which the turn's guard argument does.
 - **A list in `#[actor(handles(…))]`, with handlers in `#[handlers]` blocks.** Two places to keep in step; one block lists every handler once.
+- **`Speaks<P>` checked at the call by `Lists`,** each of `P`'s kinds found at its place in the sender's list, as delivery reads a cast. Its index is a place for each kind, which every generic sender would thread through its bounds; `Conforms` reads the sender's handlers, needs no index, and is what makes an `ActorRef` a `ProtocolRef<P>`, so the reference a guard hands on is one the sender could have made of itself.
+- **Code written for any sender generic over the guard,** a screen's methods taking `Turn<'_, Self, G>`. Every method of every screen would name a guard for the sake of the one handler that takes a drop; `unguarded` lends that handler's turn as a turn from `Anyone`.
 
 ## Later
 

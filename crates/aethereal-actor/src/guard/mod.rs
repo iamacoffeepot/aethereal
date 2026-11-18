@@ -4,15 +4,19 @@
 //! guard is handed the receiver, the mail read as its kind, and the sender,
 //! and answers the sender checked, as its [`Sent`] type, or nothing, when the
 //! mail goes to the handler's `refused`. The library's guards are here; a
-//! handler writes its own as it writes any impl.
+//! handler writes its own as it writes any impl. A native send whose target
+//! names its receiver's type is checked against the guard's `Sent` type at its
+//! call too ([`Admits`], ADR-0059).
 //!
 //! [`Parent`] and [`Child`] are reached through this module, as the crate's root names the relative paths so.
 
+mod call;
 mod library;
 mod sender;
 #[cfg(test)]
 mod tests;
 
+pub use call::{Admits, SentBy};
 pub use library::{Anyone, Child, Itself, Parent, Speaks};
 pub use sender::Sender;
 

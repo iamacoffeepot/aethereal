@@ -18,7 +18,7 @@ use crate::drag::{Dropped, Drops};
 use crate::input::{Event, First, Key, Raised};
 use crate::screen::{Clipping, Copying, Heard, ImeAsked, Pasting};
 use crate::tree::Tree;
-use aethereal_actor::{Actor, Answer, DependsOn, Fault, Level, Receives, Turn, path};
+use aethereal_actor::{Actor, Answer, DependsOn, Fault, Guard, Level, Receives, Turn, path};
 use aethereal_window::{Copied, ImeAllowed, Pasted, ReadClipboard, Windows, WriteClipboard};
 
 /// What a screen writes by hand beside the methods its events call: what those methods and its `key` may send, the
@@ -126,8 +126,9 @@ pub enum Took {
 /// # Errors
 ///
 /// A fault when a send was not written.
-pub fn take_in<A, W>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A>) -> Result<Took, Fault>
+pub fn take_in<A, W, G>(screen: &mut A, heard: Heard, turn: &mut Turn<'_, A, G>) -> Result<Took, Fault>
 where
+    G: Guard<A>,
     A: View
         + DependsOn<Windows, W>
         + Receives<Answer<Pasted, Pasting>>
@@ -183,15 +184,18 @@ where
     } else {
         Took::Called
     };
-    for raised in raised {
-        match raised.typed::<A::Event>() {
-            Ok(raised) => screen.on(turn, raised)?,
-            Err(other) => turn.log(Level::Error, format!("a widget raised another screen's event: {other:?}")),
+    // The screen's methods are written for a turn from any sender, whatever guard the handler that takes this in states.
+    turn.unguarded(|turn| {
+        for raised in raised {
+            match raised.typed::<A::Event>() {
+                Ok(raised) => screen.on(turn, raised)?,
+                Err(other) => turn.log(Level::Error, format!("a widget raised another screen's event: {other:?}")),
+            }
         }
-    }
-    for key in keys {
-        screen.key(turn, key)?;
-    }
+        for key in keys {
+            screen.key(turn, key)?;
+        }
 
-    Ok(took)
+        Ok(took)
+    })
 }

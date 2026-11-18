@@ -1,8 +1,8 @@
 //! A reference to an actor the engine has established exists (ADR-0008).
 
 use crate::{
-    ChildOf, Conforms, Covers, DependsOn, Handled, Handles, Listed, Lists, Path, PathTo, Refers, SeatNumber, Seated,
-    Table, Vantage,
+    Admits, ChildOf, Conforms, Covers, DependsOn, Handled, Handles, Listed, Lists, Path, PathTo, Refers, SeatNumber,
+    Seated, Table, Vantage,
 };
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Kind, KindId, Reader, Schema, Shape,
@@ -475,7 +475,9 @@ impl<B: Boundary, P> Element<B> for ProtocolRef<P> {}
 )]
 pub trait Reaches<Me, K, I> {}
 
-impl<Me, T: Handles<K>, K: Kind + Handled> Reaches<Me, K, ()> for ActorRef<T> {}
+/// A reference names its receiver's type, so a send through it is checked against the receiver's guard too: the guard
+/// admits an actor of type `Me`, as its `Sent` type says (ADR-0059).
+impl<Me, T: Handles<K>, K: Kind + Handled, I> Reaches<Me, K, I> for ActorRef<T> where T::From: Admits<T, Me, I> {}
 
 impl<Me, P: Listed, K: Kind, I> Reaches<Me, K, I> for ProtocolRef<P> where P::Kinds: Lists<K, I> {}
 
@@ -500,8 +502,16 @@ impl<P> Proven for ProtocolRef<P> {
 /// A path is checked at each send, as it proves nothing: the actor found there must be of `L`'s type, and a place
 /// that holds another is as one that holds none, as two types of one name share an id (ADR-0022). Mail to a place
 /// that holds none is mailed to no seat, where the engine drops it as it drops mail to an actor that has gone. Its root
-/// is the root of a type the sender depends on (ADR-0059).
-impl<Me: DependsOn<L, I>, L: ChildOf + PathTo + Handles<K>, K: Kind + Handled, I> Reaches<Me, K, I> for Path<L> {}
+/// is the root of a type the sender depends on, at `I`, and the receiver's guard admits the sender's type, at `J`
+/// (ADR-0059).
+impl<Me, L, K, I, J> Reaches<Me, K, (I, J)> for Path<L>
+where
+    Me: DependsOn<L, I>,
+    L: ChildOf + PathTo + Handles<K>,
+    L::From: Admits<L, Me, J>,
+    K: Kind + Handled,
+{
+}
 
 /// What a turn's `to` takes, from an actor of type `Me`: one actor, through a reference, at a typed path, or at a
 /// place relative to the sender ([`parent`](crate::parent), [`child`](crate::child)), or several references at once,

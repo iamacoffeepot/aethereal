@@ -3,14 +3,14 @@
 #[cfg(test)]
 mod tests;
 
-pub use crate::engine::outside::{Arrival, AskedToMove, Handed, Jobbed, Ran, Turned};
+pub use crate::engine::outside::{Arrival, AskedToMove, Handed, Jobbed, Outside, Ran, Turned};
 
 use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine, table};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed, Protocol,
-    ProtocolRef, Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
+    Actor, ActorRef, Actors, Admits, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed,
+    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, SeatNumber, Seated, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::any;
@@ -128,7 +128,8 @@ pub struct Held<K> {
     owed: Owed,
 }
 
-/// What a harness can ask: a reference whose target answers the kind `K` with one kind (ADR-0016).
+/// What a harness can ask: a reference whose target answers the kind `K` with one kind (ADR-0016), and, for a reference
+/// that names its type, whose handler's guard admits the [`Outside`] (ADR-0059).
 pub trait Askable<K: Kind>: Proven {
     /// The one kind it is answered with.
     type Answer: Kind;
@@ -137,6 +138,7 @@ pub trait Askable<K: Kind>: Proven {
 impl<T, K, A> Askable<K> for ActorRef<T>
 where
     T: Actor + Handles<K> + Carries<K, Answers = (A,)>,
+    T::From: Admits<T, Outside, ()>,
     K: Kind + Handled,
     A: Kind,
 {
@@ -374,14 +376,15 @@ impl<H: Steps> Harness<H> {
         Ok(Asked { count, of: PhantomData })
     }
 
-    /// Sends `kind` to `target`, asking for nothing.
+    /// Sends `kind` to `target`, asking for nothing. It builds as a send from the [`Outside`] does: to a reference
+    /// that names its type only when the handler's guard admits any sender (ADR-0059).
     ///
     /// # Errors
     ///
     /// Why it does not encode.
     pub fn tell<R, K, I>(&mut self, target: R, kind: &K) -> Result<(), Unheard>
     where
-        R: Proven + Reaches<(), K, I>,
+        R: Proven + Reaches<Outside, K, I>,
         K: Kind + Encode<Actors>,
     {
         self.host.engine().send_outside(self.outside, target.seated(), kind, |_| Tie::TELL)?;
