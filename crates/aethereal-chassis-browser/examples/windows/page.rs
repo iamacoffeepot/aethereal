@@ -148,7 +148,7 @@ impl Actor for Stage {
     type Key = ();
     type Handles = ();
     type Depends = (Renderer,);
-    type Spawns = ();
+    type Spawns = (Scene,);
 
     fn begin(staged: Staged, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let mut entries = Vec::with_capacity(staged.scenes.len());
