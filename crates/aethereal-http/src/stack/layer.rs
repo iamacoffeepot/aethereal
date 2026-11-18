@@ -150,7 +150,7 @@ impl<'p> BodyPart<'p> {
 }
 
 /// Why a layer stops a body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 pub enum Refused {
     /// It is larger than the layer takes.
     TooLarge,

@@ -1,16 +1,18 @@
-//! A stack served on the native host (ADR-0035): its pure layers, its handler, and its limits, to clients on threads of
-//! their own over real loopback TCP.
+//! A stack served on the native host (ADR-0035): its pure layers, its actor layers, its handler, and its limits, to
+//! clients on threads of their own over real loopback TCP.
 
 use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level, Number,
-    Part, Receives, Root, Slept, ToSender, Top, Turn,
+    Actor, ActorRef, Answer, Answered, Anyone, Asks, Beginning, Carries, ChildOf, Ending, Fault, Handles, Held, Level,
+    Number, Part, Receives, Root, Slept, ToSender, Top, Turn,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
 use aethereal_http::stack::{
-    Answering, Binding, Credentials, Deadline, FromStack, Gather, Gathered, Gathering, Head, Layer, LayerForm, Layers,
-    Leaving, Listened, Request, Response, Sending, Serving, Stack, StackSends, StackSettings, Step, layers,
+    Answering, Binding, BodyPart, Credentials, Deadline, FromStack, Gather, Gathered, Gathering, Head, Inbound,
+    InboundPart, Inward, Layer, LayerForm, Layers, Leaving, Listened, Outbound, Outward, Parked, ParkedPart,
+    ParkedResponse, PartStep, Refused, Request, Response, Sending, Serving, Stack, StackSends, StackSettings, Step,
+    layers,
 };
 use aethereal_http::{Header, Status};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -212,10 +214,320 @@ impl Handles<Request<(), ()>> for Silent {
     }
 }
 
-/// A stack named `$stack`, of the kind `$name`, its settings the section `$section`, whose layers are `$layers`: each of
-/// its handlers of HTTP's and TCP's kinds one call into its [`Serving`].
+/// Who [`Gate`] says sent a request: the request's number on its connection, which [`Count`] attached before it, and
+/// the user its bearer names.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+struct Caller {
+    request: u32,
+    user: String,
+}
+
+/// [`Gate`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.gate_settings")]
+#[settings]
+struct GateSettings {}
+
+/// An actor layer that reads each request's bearer: `open` passes, naming its user; `wait` is held until it is told
+/// [`GateOrder::Release`]; any other is answered with a challenge. On the way out it writes `x-gate: passed`, in place
+/// of any `x-gate` the response had.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.gate")]
+struct Gate {
+    held: Vec<Waiting>,
+}
+
+/// A request [`Gate`] holds: the ask, and what [`Count`] attached to it.
+#[derive(Bound)]
+#[kind(name = "test.http_stack.waiting")]
+struct Waiting {
+    held: Held<Inward<Caller>>,
+    seen: Seen,
+}
+
+/// What [`Gate`] is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "test.http_stack.gate_order")]
+enum GateOrder {
+    /// Passes every request it holds.
+    Release,
+    /// Ends.
+    Close,
+}
+
+impl ChildOf for Gate {
+    type Parent = Top;
+}
+
+impl Actor for Gate {
+    type Config = GateSettings;
+    type Key = ();
+    type Handles = (Inbound<Seen>, Outbound, GateOrder);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: GateSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { held: Vec::new() })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Inbound<Seen>> for Gate {
+    type Answers = (Inward<Caller>,);
+}
+
+impl Carries<Outbound> for Gate {
+    type Answers = (Outward,);
+}
+
+impl Handles<Inbound<Seen>> for Gate {
+    type Sends = (ToSender<Inward<Caller>>,);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        Inbound { head, attached: seen }: Inbound<Seen>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        let inward = match &head.credentials {
+            Credentials::Bearer { token } if token == "open" => {
+                Inward::Pass(Caller { request: seen.request, user: String::from("open") })
+            }
+            Credentials::Bearer { token } if token == "wait" => {
+                self.held.push(Waiting { held: turn.hold()?, seen });
+                return Ok(());
+            }
+            _ => Inward::Answer(Response::challenge("Bearer", "gate")),
+        };
+
+        Ok(turn.reply(&inward)?)
+    }
+}
+
+impl Handles<Outbound> for Gate {
+    type Sends = (ToSender<Outward>,);
+    type From = FromStack;
+
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        let mut response = outbound.response;
+        response.headers.retain(|header| header.name != "x-gate");
+        response.headers.push(Header::new("x-gate", "passed"));
+
+        Ok(turn.reply(&Outward::Pass(response))?)
+    }
+}
+
+impl Handles<GateOrder> for Gate {
+    type Sends = ();
+    type From = Anyone;
+
+    fn handle(&mut self, order: GateOrder, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
+        match order {
+            GateOrder::Release => {
+                for Waiting { held, seen } in self.held.drain(..) {
+                    let caller = Caller { request: seen.request, user: String::from("wait") };
+                    turn.answer(held, &Inward::Pass(caller))?;
+                }
+            }
+            GateOrder::Close => turn.close(),
+        }
+
+        Ok(())
+    }
+}
+
+/// A pure layer that marks who [`Gate`] said sent a request, `+tag` after its user, and ends the request's body with
+/// `!`.
+#[derive(Debug, Default, Clone, Plain)]
+struct Tag;
+
+impl LayerForm for Tag {
+    type Form = Self;
+}
+
+impl Layer for Tag {
+    type In = Caller;
+    type Out = Caller;
+
+    fn inbound(&mut self, _: &Head, caller: Caller) -> Step<Caller> {
+        Step::Pass(Caller { user: format!("{}+tag", caller.user), ..caller })
+    }
+
+    fn inbound_body(&mut self, part: &mut BodyPart<'_>) {
+        if part.is_end() {
+            part.out().push(b'!');
+        }
+    }
+}
+
+/// [`Upper`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.upper_settings")]
+#[settings]
+struct UpperSettings {}
+
+/// An actor layer that passes every head as it came, and takes the request's body, each part of which it passes in
+/// upper case.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.upper")]
+struct Upper;
+
+impl ChildOf for Upper {
+    type Parent = Top;
+}
+
+impl Actor for Upper {
+    type Config = UpperSettings;
+    type Key = ();
+    type Handles = (Inbound<Caller>, Outbound, InboundPart);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: UpperSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Inbound<Caller>> for Upper {
+    type Answers = (Inward<Caller>,);
+}
+
+impl Carries<Outbound> for Upper {
+    type Answers = (Outward,);
+}
+
+impl Handles<Inbound<Caller>> for Upper {
+    type Sends = (ToSender<Inward<Caller>>,);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        inbound: Inbound<Caller>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        Ok(turn.reply(&Inward::Pass(inbound.attached))?)
+    }
+}
+
+impl Handles<Outbound> for Upper {
+    type Sends = (ToSender<Outward>,);
+    type From = FromStack;
+
+    fn handle(&mut self, outbound: Outbound, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        Ok(turn.reply(&Outward::Pass(outbound.response))?)
+    }
+}
+
+impl Handles<InboundPart> for Upper {
+    type Sends = (ToSender<PartStep>,);
+    type From = FromStack;
+
+    fn handle(&mut self, part: InboundPart, turn: &mut Turn<'_, Self, Self::Sends, Self::From>) -> Result<(), Fault> {
+        let upper = turn.read(&part.bytes).to_ascii_uppercase();
+        let step = turn.put(upper).map_or(PartStep::Refuse(Refused::TooLarge), PartStep::Pass);
+
+        Ok(turn.reply(&step)?)
+    }
+}
+
+/// [`Mirror`]'s settings: none.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "test.http_stack.mirror_settings")]
+#[settings]
+struct MirrorSettings {}
+
+/// A handler that gathers each request's body and answers it with the body, who sent it in `x-user` and `x-attached`,
+/// and `x-gate: unseen`; it counts the requests it is asked.
+#[derive(Bound, Bootstrap)]
+#[kind(name = "test.http_stack.mirror")]
+struct Mirror {
+    asked: u32,
+}
+
+/// What [`Mirror`] keeps while its request's body is gathered: the request, held, and who sent it.
+#[derive(Bound)]
+#[kind(name = "test.http_stack.mirroring")]
+struct Mirroring {
+    held: Held<Response>,
+    caller: Caller,
+}
+
+impl ChildOf for Mirror {
+    type Parent = Top;
+}
+
+impl Actor for Mirror {
+    type Config = MirrorSettings;
+    type Key = ();
+    type Handles = (Request<Caller, ()>, Answer<Gathered, Mirroring>);
+    type BeginSends = ();
+    type EndSends = ();
+
+    fn begin(_: MirrorSettings, _: &mut Beginning<'_, Self, ()>) -> Result<Self, Fault> {
+        Ok(Self { asked: 0 })
+    }
+
+    fn end(self, _: &mut Ending<'_, Self, ()>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+impl Carries<Request<Caller, ()>> for Mirror {
+    type Answers = (Response,);
+}
+
+impl Handles<Request<Caller, ()>> for Mirror {
+    type Sends = (ToSender<Response>, Asks<Gathering, Gather, Mirroring>);
+    type From = FromStack;
+
+    fn handle(
+        &mut self,
+        request: Request<Caller, ()>,
+        turn: &mut Turn<'_, Self, Self::Sends, Self::From>,
+    ) -> Result<(), Fault> {
+        self.asked += 1;
+        let mirroring = Mirroring { held: turn.hold()?, caller: request.attached };
+        turn.to(request.body.gatherer).ask(&request.body.whole(64), &mirroring)?;
+
+        Ok(())
+    }
+}
+
+impl Receives<Answer<Gathered, Mirroring>> for Mirror {
+    type Sends = ();
+
+    fn handle(
+        &mut self,
+        (gathered, Mirroring { held, caller }): (Answered<Gathered>, Mirroring),
+        turn: &mut Turn<'_, Self, ()>,
+    ) -> Result<(), Fault> {
+        let response = match gathered {
+            Answered::Yes(Gathered::Whole(body)) => {
+                let mut mirrored = Response::new(Status::Ok, "text/plain", body);
+                mirrored.headers.push(Header::new("x-user", &caller.user));
+                mirrored.headers.push(Header::new("x-attached", &caller.request.to_string()));
+                mirrored.headers.push(Header::new("x-gate", "unseen"));
+                mirrored
+            }
+            Answered::Yes(_) | Answered::No(_) => Response::empty(Status::BadRequest),
+        };
+
+        Ok(turn.answer(held, &response)?)
+    }
+}
+
+/// A stack named `$stack`, of the kind `$name`, its settings the section `$section`, whose layers are `$layers` and
+/// whose actor layers pass on each of `$inward`: each of its handlers of HTTP's and TCP's kinds, and of its actor
+/// layers' answers, one call into its [`Serving`].
 macro_rules! stack {
-    ($stack:ident, $name:tt, $section:tt, $layers:ty) => {
+    ($stack:ident, $name:tt, $section:tt, $layers:ty, [$($inward:ty),*]) => {
         #[derive(Bound)]
         #[kind(name = $name)]
         struct $stack {
@@ -257,6 +569,9 @@ macro_rules! stack {
                 Answer<Slept, Deadline>,
                 Gather,
                 Shut,
+                Answer<Outward, ParkedResponse>,
+                Answer<PartStep, ParkedPart>,
+                $(Answer<Inward<$inward>, Parked>,)*
             );
             type BeginSends = StackSends<$layers>;
             type EndSends = ();
@@ -386,11 +701,50 @@ macro_rules! stack {
                 self.serving.shut(turn)
             }
         }
+
+        impl Receives<Answer<Outward, ParkedResponse>> for $stack {
+            type Sends = StackSends<$layers>;
+
+            fn handle(
+                &mut self,
+                returned: (Answered<Outward>, ParkedResponse),
+                turn: &mut Turn<'_, Self, Self::Sends>,
+            ) -> Result<(), Fault> {
+                self.serving.returned(returned, turn)
+            }
+        }
+
+        impl Receives<Answer<PartStep, ParkedPart>> for $stack {
+            type Sends = StackSends<$layers>;
+
+            fn handle(
+                &mut self,
+                passed: (Answered<PartStep>, ParkedPart),
+                turn: &mut Turn<'_, Self, Self::Sends>,
+            ) -> Result<(), Fault> {
+                self.serving.passed(passed, turn)
+            }
+        }
+
+        $(
+            impl Receives<Answer<Inward<$inward>, Parked>> for $stack {
+                type Sends = StackSends<$layers>;
+
+                fn handle(
+                    &mut self,
+                    entered: (Answered<Inward<$inward>>, Parked),
+                    turn: &mut Turn<'_, Self, Self::Sends>,
+                ) -> Result<(), Fault> {
+                    self.serving.entered(entered, turn)
+                }
+            }
+        )*
     };
 }
 
-stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo));
-stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,));
+stack!(EchoStack, "test.http_stack.echo_stack", "echo_stack", (Count, Admit, Echo), []);
+stack!(SilentStack, "test.http_stack.silent_stack", "silent_stack", (Silent,), []);
+stack!(GateStack, "test.http_stack.gate_stack", "gate_stack", (Count, Gate, Tag, Upper, Mirror), [Caller]);
 
 /// The engine's settings for a stack of `settings`: a head of its most bytes is read whole.
 fn engine(settings: &StackSettings) -> EngineSettings {
@@ -614,6 +968,185 @@ fn a_body_gathered_past_its_most_bytes_is_refused_whole_and_the_connection_close
     assert!(sized_closed, "the rest of a body refused is not read, so its connection closes");
     assert!(chunked[0].head.starts_with("HTTP/1.1 413"), "{chunked:?}");
     assert!(chunked_closed, "the rest of a body refused is not read, so its connection closes");
+
+    Ok(())
+}
+
+/// A host serving a [`GateStack`] of `settings`, and the port it listens on.
+fn gated(settings: StackSettings) -> Result<(Harness<Headless>, u16), Unheard> {
+    let program = Headless::program()
+        .with_engine(engine(&settings))
+        .root::<Tcp>()
+        .root::<Gate>()
+        .root::<Upper>()
+        .root::<Mirror>()
+        .root_with::<GateStack>(settings);
+    let mut harness = Harness::of(program)?;
+    let port = bound(&mut harness, |stack: &GateStack| stack.serving.port());
+
+    Ok((harness, port))
+}
+
+/// How many requests `gate` holds, the harness stepping the host until it holds `count`.
+fn holding(harness: &mut Harness<Headless>, gate: ActorRef<Gate>, count: usize) -> usize {
+    let mut held = 0;
+    waiting::until(BUDGET, || {
+        harness.step();
+        held = harness.state(gate).map_or(0, |gate| gate.held.len());
+
+        held == count
+    });
+
+    held
+}
+
+#[test]
+fn an_actor_layer_attaches_who_sent_a_request_and_its_handler_reads_it() -> Result<(), Unheard> {
+    // Catches an actor layer's answer not handed on as what the layers after it take, so the handler reads a principal
+    // the layer did not attach, or the request stays parked; and what a pure layer before it attached not sent to it.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let sent = b"GET /who HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+
+    let (answered, closed) = heard(&mut harness, client(port, sent, 1));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+    assert!(answered[0].head.contains("x-user: open+tag"), "{answered:?}");
+    assert!(answered[0].head.contains("x-attached: 1"), "{answered:?}");
+    assert!(closed, "a request that asked to close is closed once answered");
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_layer_that_answers_turns_the_request_back_and_its_handler_is_not_asked() -> Result<(), Unheard> {
+    // Catches an actor layer's answer handed on to the handler anyway; the answer not passed back out through the
+    // layers before it; and the layer that answered handed its own response on the way out.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let sent = b"GET /who HTTP/1.1\r\nAuthorization: Bearer nope\r\nConnection: close\r\n\r\n";
+
+    let (refused, _) = heard(&mut harness, client(port, sent, 1));
+
+    assert!(refused[0].head.starts_with("HTTP/1.1 401"), "{refused:?}");
+    assert!(refused[0].head.contains("www-authenticate: Bearer realm=\"gate\""), "{refused:?}");
+    assert!(refused[0].head.contains("x-request: 1"), "the layer before it passes it out: {refused:?}");
+    assert!(!refused[0].head.contains("x-gate"), "the layer is not handed its own answer: {refused:?}");
+    let mirror = harness.root::<Mirror>();
+    assert_eq!(harness.state(mirror)?.asked, 0, "the handler is not asked a request a layer answered");
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_layer_changes_a_response_on_its_way_out() -> Result<(), Unheard> {
+    // Catches an actor layer not asked on the way out, or its answer's head not the one written, so a header it
+    // changes goes out as the handler wrote it.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let sent = b"GET /who HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+
+    let (answered, _) = heard(&mut harness, client(port, sent, 1));
+
+    assert!(answered[0].head.contains("x-gate: passed"), "{answered:?}");
+    assert!(!answered[0].head.contains("x-gate: unseen"), "{answered:?}");
+    assert!(answered[0].head.contains("x-request: 1"), "the layer before it still passes it out: {answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_request_parked_at_an_actor_layer_holds_up_no_other_connection() -> Result<(), Unheard> {
+    // Catches a stack that waits for an actor layer's answer before it serves anything else, so one slow ask holds up
+    // every connection; and a parked request not taken up again once its layer answers.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let gate = harness.root::<Gate>();
+    let waiting = client(port, b"GET /wait HTTP/1.1\r\nAuthorization: Bearer wait\r\nConnection: close\r\n\r\n", 1);
+    assert_eq!(holding(&mut harness, gate, 1), 1, "the gate holds the first request");
+
+    let open = b"GET /open HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+    let (passed, _) = heard(&mut harness, client(port, open, 1));
+
+    assert!(passed[0].head.starts_with("HTTP/1.1 200 OK"), "{passed:?}");
+    assert_eq!(harness.state(gate)?.held.len(), 1, "the first request is still parked");
+
+    harness.tell(gate, &GateOrder::Release)?;
+    let (released, _) = heard(&mut harness, waiting);
+
+    assert!(released[0].head.starts_with("HTTP/1.1 200 OK"), "{released:?}");
+    assert!(released[0].head.contains("x-user: wait+tag"), "{released:?}");
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_layer_that_never_answers_is_timed_out() -> Result<(), Unheard> {
+    // Catches an ask of an actor layer with no deadline, so a layer that never answers holds its request for ever;
+    // the late ask answered as anything but `504`; and a `504` written before `answer_within_millis` has passed.
+    let settings = StackSettings { answer_within_millis: 200, ..StackSettings::default() };
+    let (mut harness, port) = gated(settings)?;
+    #[allow(clippy::disallowed_methods)] // The test times the request against its deadline on real time.
+    let sent = Instant::now();
+
+    let waiting = b"GET /wait HTTP/1.1\r\nAuthorization: Bearer wait\r\nConnection: close\r\n\r\n";
+
+    let (timed_out, _) = heard(&mut harness, client(port, waiting, 1));
+
+    assert!(timed_out[0].head.starts_with("HTTP/1.1 504"), "{timed_out:?}");
+    assert!(timed_out[0].head.contains("x-request: 1"), "the status goes out through the layers before it");
+    assert!(sent.elapsed() >= Duration::from_millis(200), "it waited for its deadline: {:?}", sent.elapsed());
+
+    Ok(())
+}
+
+#[test]
+fn an_actor_layer_that_has_ended_answers_unavailable() -> Result<(), Unheard> {
+    // Catches an ask of an actor layer that has ended answered as one that failed, or not answered at all.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let gate = harness.root::<Gate>();
+    harness.tell(gate, &GateOrder::Close)?;
+    waiting::until(BUDGET, || {
+        harness.step();
+
+        harness.state(gate).is_err()
+    });
+    let sent = b"GET /who HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+
+    let (unavailable, _) = heard(&mut harness, client(port, sent, 1));
+
+    assert!(unavailable[0].head.starts_with("HTTP/1.1 503"), "{unavailable:?}");
+    assert!(unavailable[0].head.contains("x-request: 1"), "the status goes out through the layers before it");
+
+    Ok(())
+}
+
+#[test]
+fn a_body_passes_an_actor_layer_that_takes_it_rewritten_and_one_that_does_not_untouched() -> Result<(), Unheard> {
+    // Catches a part asked of an actor layer whose type does not list it, so it fails; a part an actor layer rewrote
+    // not the one gathered; and a pure layer's end of the body lost on its way through an actor layer after it.
+    let (mut harness, port) = gated(StackSettings::default())?;
+    let sent =
+        b"POST /echo HTTP/1.1\r\nAuthorization: Bearer open\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+
+    let (answered, _) = heard(&mut harness, client(port, sent, 1));
+
+    assert!(answered[0].head.starts_with("HTTP/1.1 200 OK"), "{answered:?}");
+    assert_eq!(answered[0].body, b"HELLO!", "{answered:?}");
+
+    Ok(())
+}
+
+#[test]
+fn what_is_attached_chains_through_pure_and_actor_layers_in_any_order() -> Result<(), Unheard> {
+    // Catches a pure layer after an actor layer skipped, or handed what the layer before the actor attached; and an
+    // actor layer handed what the pure layer before it attached for another request on the connection.
+    const FIRST: &[u8] = b"GET /one HTTP/1.1\r\nAuthorization: Bearer open\r\n\r\n";
+    const SECOND: &[u8] = b"GET /two HTTP/1.1\r\nAuthorization: Bearer open\r\nConnection: close\r\n\r\n";
+    let (mut harness, port) = gated(StackSettings::default())?;
+
+    let (answered, _) = heard(&mut harness, conversation(port, &[FIRST, SECOND]));
+
+    assert!(answered[0].head.contains("x-attached: 1"), "{answered:?}");
+    assert!(answered[0].head.contains("x-user: open+tag"), "{answered:?}");
+    assert!(answered[1].head.contains("x-attached: 2"), "{answered:?}");
+    assert!(answered[1].head.contains("x-user: open+tag"), "{answered:?}");
 
     Ok(())
 }

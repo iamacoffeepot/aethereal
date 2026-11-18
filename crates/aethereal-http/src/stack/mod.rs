@@ -4,10 +4,13 @@
 //! in reverse.
 //!
 //! A pure layer, a [`Layer`], is a value the stack keeps for each open connection and calls as a function in its own
-//! turn. The handler is an actor that lists [`Request`], asked through its reference, and reads the body through the
-//! request's [`BodyHandle`]. The stack lists its layers as one tuple of types, read by [`layers`]; what it holds and
-//! does is [`Serving`], into which each of its handlers of HTTP's and TCP's kinds is one call.
+//! turn. An actor layer is an actor of its own, whose state is shared between connections: it handles [`Inbound`] and
+//! [`Outbound`], and the stack asks it and parks the request until it answers. The handler is an actor that lists
+//! [`Request`], asked through its reference, and reads the body through the request's [`BodyHandle`]. The stack lists
+//! its layers as one tuple of types, read by [`layers`]; what it holds and does is [`Serving`], into which each of its
+//! handlers of HTTP's and TCP's kinds, and of its actor layers' answers, is one call.
 
+mod actor;
 mod gather;
 mod head;
 mod layer;
@@ -15,7 +18,12 @@ mod layers;
 mod message;
 mod serving;
 mod settings;
+mod walks;
 
+pub use actor::{
+    Inbound, InboundPart, InboundParts, Inward, Outbound, OutboundPart, OutboundParts, Outward, Parked, ParkedPart,
+    ParkedResponse, PartStep,
+};
 pub use gather::{Gather, Gathered, Gathering};
 pub use head::{Credentials, Head};
 pub use layer::{BodyPart, Layer, LayerForm, Leaving, Refused, Step};
@@ -23,6 +31,7 @@ pub use layers::{Entered, LayerList, Layers, Slot, Unlayered, layers};
 pub use message::{BodyHandle, Request, Response, ResponseBody, ResponseHead};
 pub use serving::{Answering, Binding, Deadline, Listened, Sending, Serving, StackSends};
 pub use settings::StackSettings;
+pub use walks::{Ask, Formed, Returned, Taker, Unasked, Walked, Walks};
 
 use aethereal_actor::{Actor, Handles, Speaks};
 use layer::Passed;

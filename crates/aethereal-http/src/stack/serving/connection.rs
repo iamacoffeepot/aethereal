@@ -1,9 +1,12 @@
 //! A stack's entry for one connection (ADR-0035): not an actor, but what the stack keeps of it, keyed by its number:
-//! what has been read and not parsed, the request out, its pure layers' values, and the deadline it sleeps until.
+//! what has been read and not parsed, the request out or parked at an actor layer, its layers' forms, and the deadline
+//! it sleeps until.
 
 use super::{Deadline, Owed};
 use crate::body::Body;
-use crate::stack::{Gathered, Head, StackSettings};
+use crate::request_head::Framing;
+use crate::stack::actor::{Standing, held};
+use crate::stack::{Gathered, Head, Response, ResponseBody, ResponseHead, StackSettings};
 use aethereal_actor::{ActorRef, Answer, Due, Fault, Held, JobId, Number, Receives, Sleep, Slept, Time, Turn};
 use aethereal_data::Bound;
 use aethereal_tcp::{Accepted, SocketAddress};
@@ -18,7 +21,8 @@ pub(super) struct Connection<F> {
     pub peer: SocketAddress,
     /// The stream the stack reads it through.
     pub reader: Number,
-    /// Its pure layers' values, made from the template as it was accepted.
+    /// Its layers' forms, made from the template as it was accepted: its pure layers' values, and a reference to each
+    /// actor layer.
     pub layers: F,
     /// What has been read and not yet parsed.
     pub buffer: Vec<u8>,
@@ -42,10 +46,49 @@ pub(super) enum Phase {
     Idle { since: Time },
     /// Part of a head has come, its first byte at `since`.
     Head { since: Time },
+    /// A request is parked at an actor layer on the way in, whose ask has a deadline of its own.
+    Entering(Entering),
     /// A request is out at the handler.
     Out(Out),
+    /// A response is parked at an actor layer on the way out, whose ask has a deadline of its own.
+    Returning(Returning),
     /// A last response is written: the connection closes once it is sent.
     Closing,
+}
+
+/// A request parked on its way in, numbered `request` among the stack's, its head `head`, its body framed as `framing`
+/// and unread, owed a response as `owed` says: at the actor layer `at`, which was asked about it.
+#[derive(Bound)]
+pub(super) struct Entering {
+    pub request: u64,
+    pub head: Head,
+    pub framing: Framing,
+    pub owed: Owed,
+    pub at: u32,
+}
+
+/// A response on its way out to the request numbered `request`, whose head is `head`, written as `owed` says: its
+/// head `response` and its body `body`, which pass back through the layers before `body_before`. It stands at the
+/// layer `at`, and has passed every layer after it; `stage` says which half of it is there.
+#[derive(Bound)]
+pub(super) struct Returning {
+    pub request: u64,
+    pub head: Head,
+    pub response: ResponseHead,
+    pub body: ResponseBody,
+    pub owed: Owed,
+    pub body_before: u32,
+    pub at: u32,
+    pub stage: Stage,
+}
+
+/// Which half of a response stands at a layer on the way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+pub(super) enum Stage {
+    /// Its head.
+    Head,
+    /// Its body, as one part and its end.
+    Body,
 }
 
 /// A request asked of the handler, numbered `request` among the stack's, its head kept for the layers on the way out,
@@ -67,10 +110,20 @@ pub(super) enum Inflow {
     /// request was asked.
     Unread { left: Body, since: Time },
     /// It is gathered into `gathered`, as `left` says is left of it, for the gather `held`, up to `most` bytes: it last
-    /// moved at `moved`.
-    Gathering { left: Body, gathered: Vec<u8>, most: u64, held: Held<Gathered>, moved: Time },
+    /// moved at `moved`, and its last part read is `passing` the layers.
+    Gathering { left: Body, gathered: Vec<u8>, most: u64, held: Held<Gathered>, moved: Time, passing: Passing },
     /// It is read, or will not be: its answer is awaited from `since`.
     Read { since: Time },
+}
+
+/// Where the last part read of a body being gathered stands among the layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Bound)]
+pub(super) enum Passing {
+    /// It has passed them all, so the next is read.
+    Through,
+    /// It is parked at the actor layer `at`, which was asked about it, and the body ends after it when `end`: no more
+    /// is read until the layer answers.
+    Parked { at: u32, end: bool },
 }
 
 /// Whether a connection's phase has a deadline it sleeps until.
@@ -99,9 +152,34 @@ impl<F> Connection<F> {
         }
     }
 
-    /// Whether a request is out on it, or its last response is written, so what it reads waits for the response.
+    /// Whether a request is out on it, or parked at a layer, or its last response is written, so what it reads waits
+    /// for the response.
     pub const fn is_held(&self) -> bool {
-        matches!(self.phase, Phase::Out(_) | Phase::Closing)
+        matches!(self.phase, Phase::Entering(_) | Phase::Out(_) | Phase::Returning(_) | Phase::Closing)
+    }
+
+    /// Whether it is between requests, so the credit it withheld is granted and what it buffered is parsed.
+    pub const fn is_idle(&self) -> bool {
+        matches!(self.phase, Phase::Idle { .. })
+    }
+
+    /// Whether the request `standing` names is parked at its actor layer on the way in.
+    pub const fn is_entering(&self, standing: Standing) -> bool {
+        matches!(&self.phase, Phase::Entering(entering) if entering.stands(standing))
+    }
+
+    /// Whether the response to the request `standing` names is parked at its actor layer on the way out, its `stage`.
+    pub fn is_returning(&self, standing: Standing, stage: Stage) -> bool {
+        matches!(&self.phase, Phase::Returning(returning) if returning.stands(standing, stage))
+    }
+
+    /// Whether a part of the body of the request `standing` names is parked at its actor layer on the way in.
+    pub const fn is_passing(&self, standing: Standing) -> bool {
+        matches!(
+            self.phase,
+            Phase::Out(Out { request, body: Inflow::Gathering { passing: Passing::Parked { at, .. }, .. }, .. })
+                if request == standing.request && at == standing.at
+        )
     }
 
     /// Whether the request numbered `request` is the one out on it.
@@ -174,6 +252,12 @@ impl<F> Connection<F> {
         let (since, within) = match &self.phase {
             Phase::Idle { since } => (*since, settings.idle_within_millis),
             Phase::Head { since } => (*since, settings.head_within_millis),
+            // Each ask of an actor layer is answered by its own deadline.
+            Phase::Entering(_)
+            | Phase::Returning(_)
+            | Phase::Out(Out { body: Inflow::Gathering { passing: Passing::Parked { .. }, .. }, .. }) => {
+                return Due::Never;
+            }
             Phase::Out(Out { body: Inflow::Bodiless { since } | Inflow::Read { since }, .. }) => {
                 (*since, settings.answer_within_millis)
             }
@@ -183,5 +267,28 @@ impl<F> Connection<F> {
         };
 
         Due::Before(since + Duration::from_millis(u64::from(within)))
+    }
+}
+
+impl Entering {
+    /// Whether it is the request `standing` names, at its layer.
+    const fn stands(&self, standing: Standing) -> bool {
+        self.request == standing.request && self.at == standing.at
+    }
+}
+
+impl Returning {
+    /// The response `response` to the request numbered `request`, whose head is `head`, written as `owed` says: it
+    /// passes back through each layer before `before`, its head first.
+    pub fn new(request: u64, head: Head, response: Response, owed: Owed, before: usize) -> Self {
+        let (response, body) = response.into_parts();
+        let before = held(before);
+
+        Self { request, head, response, body, owed, body_before: before, at: before, stage: Stage::Head }
+    }
+
+    /// Whether it is the response to the request `standing` names, its `stage` at its layer.
+    fn stands(&self, standing: Standing, stage: Stage) -> bool {
+        self.request == standing.request && self.at == standing.at && self.stage == stage
     }
 }

@@ -144,7 +144,7 @@ impl<'s, 'a> Vantage<'s, 'a> {
         let Some(parent) = self.seat.above() else {
             return Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
         };
-        let cast = self.seat.cast::<P>(ErasedActorRef::new(parent));
+        let cast = self.seat.cast::<P>(P::KINDS, ErasedActorRef::new(parent));
 
         cast.map_or(Seated { id: parent.id, seat: SeatNumber::NOWHERE }, ProtocolRef::seated)
     }
