@@ -7,7 +7,7 @@
 use super::*;
 use crate::event::{Button, Mode, Subscribe, Surface};
 use crate::host::{Hosting, InitialWindow, InitialWindows, Opening, WindowFeed};
-use aethereal_actor::{ActorRef, Actors, Answered, Time, actor, path};
+use aethereal_actor::{ActorRef, Actors, Answered, Table, Time, actor, path};
 use aethereal_data::{ActorPath, DecodeError, Encode, Kind, KindId, PathSegment};
 use aethereal_substrate::harness::{Arrival, Askable, Bench, Harness, Steps, Unheard};
 use aethereal_substrate::{

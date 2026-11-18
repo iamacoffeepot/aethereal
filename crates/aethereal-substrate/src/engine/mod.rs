@@ -52,7 +52,7 @@ use aethereal_actor::{
     Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
     JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
     Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, Sleep, Standings, Stood,
-    Submitted, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Submitted, Table, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -904,7 +904,7 @@ impl Engine {
         begin: impl FnOnce(
             Seated,
             &ActorPath,
-            &dyn aethereal_actor::Table,
+            &dyn Table,
             &mut Asked,
             &mut Instances,
             &mut Keeping,

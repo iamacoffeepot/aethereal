@@ -7,7 +7,7 @@ use crate::host::{Hosting, Opening, WindowFeed};
 use crate::keys::KeysListed;
 use crate::window::Window;
 use crate::windows::{Heard, Windowing, Windows};
-use aethereal_actor::{ActorRef, Fault, SeatNumber, Seated, Turn, actor, path};
+use aethereal_actor::{ActorRef, Fault, SeatNumber, Seated, Table, Turn, actor, path};
 use aethereal_data::{ActorId, ActorPath, Kind, KindId, PathSegment};
 use aethereal_substrate::Engine;
 use aethereal_substrate::harness::{Bench, Harness, Steps, Unheard};

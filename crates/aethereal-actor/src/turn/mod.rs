@@ -1392,7 +1392,7 @@ impl Seat<'_> {
         let live = |path: &ActorPath, kind: KindId| {
             let is_me = path == self.path && kind == self.declared.id();
 
-            is_me || self.table.reach(path, kind).seat != SeatNumber::NOWHERE
+            is_me || self.table.holds(path, kind)
         };
 
         declared.missing(live).map_or(Ok(()), |segment| Err(Refused::Missing(segment.name.clone())))

@@ -10,7 +10,7 @@ use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine};
 use aethereal_actor::{
     Actor, ActorRef, Actors, Admits, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed,
-    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, Seated, Tie, Time, Unanswered,
+    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, Seated, Table, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::any;

@@ -5,7 +5,7 @@ use super::{Host, Serves, Stage, Unbuilt};
 use crate::Feed;
 use aethereal_actor::{
     ActorRef, Actors, Bytes, ChildOf, Controller, Given, Path, PathTo, Publisher, Requests, Resource, Root, Rooted,
-    Source,
+    Source, Table,
 };
 use aethereal_data::config::RootSettings;
 use aethereal_data::{ActorId, Encode, Kind, KindId};
