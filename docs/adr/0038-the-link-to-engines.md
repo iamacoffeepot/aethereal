@@ -39,7 +39,7 @@ tool <──Call── Tools <──CallTool── Link <══ Call { call, too
 // aethereal-tools
 pub trait Holder: Actor<Key = ()> + ChildOf<Parent = Top> + Carries<Offer, Answers = (Offered,)> + Handles<Withdraw> {}
 
-pub struct Toolbox<L, H> { /* .. */ }   // depends on H: asks it Offer, and tells it Withdraw as it ends
+pub struct Toolbox<L, H> { /* .. */ }   // #[actor(spawns(L), depends(H))]: asks H Offer, and tells it Withdraw as it ends
 
 // a hub                                        // an engine
 .root::<Mcp>()                                  .root::<Tools>()

@@ -62,8 +62,8 @@ turn.to(renderer).ask(&mesh, &Made::Ground)?.ask(&texture, &Made::Sky)?;
 ```
 
 `to` is generic over what it takes (`Reachable`): a reference, a typed path (ADR-0022), or a slice, array, or `Vec` of references. A send through it is checked at its call (ADR-0059):
-- to an `ActorRef<T>` it builds when `T` handles `K`;
-- to a `ProtocolRef<P>` it builds when `K` is one of `P`'s kinds.
+- to an `ActorRef<T>` it builds when `T` handles `K`, and its handler's guard admits the sender's type (ADR-0058);
+- to a `ProtocolRef<P>` it builds when `K` is one of `P`'s kinds, and the receiver's guard is checked at delivery.
 
 Neither is checked when it is sent: the reference is the proof. **The target comes first, rather than in flat verbs, one call naming its action, target, and mail** (`send_to(reference, &mail)`, `ask_to(reference, &mail, &context)`, `send_to_all(&references, &mail)`), so that what names it (a typed path's turbofish, ADR-0022) is a call of its own, and every send and ask to one target reads it once. A turn holds its target while it lives, so nothing else is asked of the turn between two sends through a target held. A send through a target answers the target, not `()`, so the last send of a handler is a statement, followed by `Ok(())`. There are no sends by a `To` name (`turn.send(To::Parent, &mail)`, `turn.send_to_any`): each name has a typed target (ADR-0013, ADR-0022). A closing turn's target sends and does not ask (ADR-0017). **A send through a `ProtocolRef<P>` builds only when `K` is one of `P`'s kinds.**
 
