@@ -14,6 +14,8 @@ std = ["dep:blake3", "blake3/std", "dep:crossbeam-queue"]
 guest = ["std"]
 
 [dependencies]
+# The macros an actor is written with, #[actor] and #[protocol], and the derives of an enum guard (ADR-0058, ADR-0059).
+aethereal-actor-derive = { path = "../aethereal-actor-derive" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-data-derive = { path = "../aethereal-data-derive" }
 blake3 = { workspace = true, optional = true }

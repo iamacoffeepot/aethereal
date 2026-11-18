@@ -37,6 +37,7 @@ mod instances;
 mod item;
 mod job;
 mod log;
+mod macros;
 mod mail;
 mod moves;
 mod path;
@@ -100,6 +101,7 @@ pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submi
 #[cfg(feature = "std")]
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
 pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
+pub use macros::{Guard, Sent, actor, protocol};
 pub use mail::{Mail, MailId};
 pub use moves::{Behind, HeadMoves, Moves, Standing, Standings};
 pub use path::{

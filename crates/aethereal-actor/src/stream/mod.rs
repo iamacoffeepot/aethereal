@@ -17,7 +17,7 @@ pub use kinds::{Enough, More, Number, Open, Part, StreamKey, Unreachable};
 pub use serving::{Serving, Streaming, Unsent};
 pub use streams::{Streams, Taken};
 
-use crate::{Actors, Carries, Protocol};
+use crate::{Actors, protocol};
 use aethereal_data::{Decode, Encode, Kind};
 use core::marker::PhantomData;
 
@@ -150,20 +150,5 @@ pub trait Stream: 'static {
 /// The protocol a stream of `S` is opened through: its request, answered with `S::Done`, and the asker's [`More`] and
 /// [`Enough`] (ADR-0016). An actor that serves the stream handles all three, and is asked through a
 /// `ProtocolRef<Streamed<S>>`.
-pub struct Streamed<S>(PhantomData<fn() -> S>);
-
-impl<S: Stream> Protocol for Streamed<S> {
-    type Kinds = (Open<S>, More, Enough);
-}
-
-impl<S: Stream> Carries<Open<S>> for Streamed<S> {
-    type Answers = (S::Done,);
-}
-
-impl<S: Stream> Carries<More> for Streamed<S> {
-    type Answers = ();
-}
-
-impl<S: Stream> Carries<Enough> for Streamed<S> {
-    type Answers = ();
-}
+#[protocol(Open<S>(answers = S::Done), More, Enough)]
+pub struct Streamed<S: Stream>(PhantomData<fn() -> S>);

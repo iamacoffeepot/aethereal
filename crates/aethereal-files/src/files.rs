@@ -4,10 +4,7 @@ use crate::load::Load;
 use crate::save::Save;
 use crate::scan::Scan;
 use crate::{FileRead, FileWritten, FilesListed, ListFiles, ReadFile, WriteFile};
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Receives, Reply, Top,
-    Turn,
-};
+use aethereal_actor::{Answered, Fault, Held, Later, Reply, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use std::collections::BTreeMap;
 
@@ -59,38 +56,14 @@ pub struct Scanning {
     number: u64,
 }
 
-impl ChildOf for Files {
-    type Parent = Top;
-}
-
-impl Actor for Files {
-    type Config = FilesConfig;
-    type Key = ();
-    type Handles = (
-        ReadFile,
-        Answer<FileRead, Reading>,
-        WriteFile,
-        Answer<FileWritten, Saving>,
-        ListFiles,
-        Answer<FilesListed, Scanning>,
-    );
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: FilesConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Files {
+    fn begin(_: FilesConfig) -> Result<Self, Fault> {
         Ok(Self { waiting: BTreeMap::new(), writing: BTreeMap::new(), listing: BTreeMap::new(), next: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<ReadFile> for Files {
-    type From = Anyone;
-    type Returns = Later<FileRead>;
-
-    fn handle(&mut self, read: ReadFile, turn: &mut Turn<'_, Self>) -> Result<Later<FileRead>, Fault> {
+    #[request]
+    fn read(&mut self, read: ReadFile, turn: &mut Turn<'_, Self>) -> Result<Later<FileRead>, Fault> {
         let (held, later) = turn.hold();
         let number = self.number();
         turn.run(&Load::new(read.namespace, read.path), &Reading { number })?;
@@ -98,13 +71,27 @@ impl Handles<ReadFile> for Files {
 
         Ok(later)
     }
-}
 
-impl Handles<WriteFile> for Files {
-    type From = Anyone;
-    type Returns = Reply<FileWritten>;
+    #[answer]
+    fn loaded(
+        &mut self,
+        (answered, reading): (Answered<FileRead>, Reading),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.waiting.remove(&reading.number) else {
+            return Ok(());
+        };
+        let read = match answered {
+            Answered::Yes(read) => read,
+            Answered::No(_) => FileRead::Failed,
+        };
+        turn.answer(held, &read)?;
 
-    fn handle(&mut self, write: WriteFile, turn: &mut Turn<'_, Self>) -> Result<Reply<FileWritten>, Fault> {
+        Ok(())
+    }
+
+    #[request]
+    fn write(&mut self, write: WriteFile, turn: &mut Turn<'_, Self>) -> Result<Reply<FileWritten>, Fault> {
         if !write.namespace.is_written() {
             return Ok(Reply::Now(FileWritten::ReadOnly));
         }
@@ -115,10 +102,9 @@ impl Handles<WriteFile> for Files {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<FileWritten, Saving>> for Files {
-    fn handle(
+    #[answer]
+    fn saved(
         &mut self,
         (answered, saving): (Answered<FileWritten>, Saving),
         turn: &mut Turn<'_, Self>,
@@ -134,13 +120,9 @@ impl Receives<Answer<FileWritten, Saving>> for Files {
 
         Ok(())
     }
-}
 
-impl Handles<ListFiles> for Files {
-    type From = Anyone;
-    type Returns = Reply<FilesListed>;
-
-    fn handle(&mut self, list: ListFiles, turn: &mut Turn<'_, Self>) -> Result<Reply<FilesListed>, Fault> {
+    #[request]
+    fn list(&mut self, list: ListFiles, turn: &mut Turn<'_, Self>) -> Result<Reply<FilesListed>, Fault> {
         if !list.namespace.is_listed() {
             return Ok(Reply::Now(FilesListed::NotListed));
         }
@@ -151,10 +133,9 @@ impl Handles<ListFiles> for Files {
 
         Ok(Reply::Later(later))
     }
-}
 
-impl Receives<Answer<FilesListed, Scanning>> for Files {
-    fn handle(
+    #[answer]
+    fn scanned(
         &mut self,
         (answered, scanning): (Answered<FilesListed>, Scanning),
         turn: &mut Turn<'_, Self>,
@@ -171,33 +152,12 @@ impl Receives<Answer<FilesListed, Scanning>> for Files {
 
         Ok(())
     }
-}
 
-impl Files {
     /// The number of the next job it runs, taken.
     const fn number(&mut self) -> u64 {
         let number = self.next;
         self.next += 1;
 
         number
-    }
-}
-
-impl Receives<Answer<FileRead, Reading>> for Files {
-    fn handle(
-        &mut self,
-        (answered, reading): (Answered<FileRead>, Reading),
-        turn: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
-        let Some(held) = self.waiting.remove(&reading.number) else {
-            return Ok(());
-        };
-        let read = match answered {
-            Answered::Yes(read) => read,
-            Answered::No(_) => FileRead::Failed,
-        };
-        turn.answer(held, &read)?;
-
-        Ok(())
     }
 }

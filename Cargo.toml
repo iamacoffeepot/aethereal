@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/aethereal-actor",
+    "crates/aethereal-actor-derive",
     "crates/aethereal-chassis-browser",
     "crates/aethereal-chassis-desktop",
     "crates/aethereal-chassis-headless",
@@ -32,6 +33,7 @@ members = [
 # run as `cargo xtask`, and linted and tested with the rest by `--workspace`.
 default-members = [
     "crates/aethereal-actor",
+    "crates/aethereal-actor-derive",
     "crates/aethereal-chassis-browser",
     "crates/aethereal-chassis-desktop",
     "crates/aethereal-chassis-headless",

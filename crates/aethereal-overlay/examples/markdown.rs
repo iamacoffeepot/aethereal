@@ -8,10 +8,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // An example prints how it ended.
 
-use aethereal_actor::{
-    Actor, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Level, On, Prepare, Receives, Render,
-    Tick, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Beginning, Fault, Level, Prepare, Render, Tick, Turn, actor, path};
 use aethereal_chassis_desktop::{Desktop, WindowSettings, WindowsSettings};
 use aethereal_chassis_headless::Exit;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
@@ -166,17 +163,8 @@ impl Reply {
     }
 }
 
-impl ChildOf for Reply {
-    type Parent = Top;
-}
-
-impl Actor for Reply {
-    type Config = ReplyConfig;
-    type Key = ();
-    type Handles = aethereal_ui::handles![Event, On<Tick>, Answer<Read, Shooting>];
-    type Depends = aethereal_ui::depends!();
-    type Spawns = ();
-
+#[actor(with(aethereal_ui::screen))]
+impl Reply {
     fn begin(config: ReplyConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(config.window.actor()).send(&window::Subscribe)?;
         turn.subscribe::<Tick>();
@@ -202,16 +190,8 @@ impl Actor for Reply {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Event> for Reply {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn event(&mut self, event: Event, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Event::Resized(surface) = event else {
             return Ok(());
         };
@@ -220,12 +200,11 @@ impl Handles<Event> for Reply {
         let viewport = Viewport::window(surface.width, surface.height, surface.scale as f32);
         self.ui.resize(viewport).send(turn)
     }
-}
 
-impl Receives<On<Tick>> for Reply {
     /// Streams the next characters of the reply in; once it has come and settled, reads the frame back when a file is
     /// named to write it to.
-    fn handle(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let streamed = usize::try_from(self.streamed).unwrap_or(usize::MAX);
         if streamed < REPLY.len() {
             let next = (streamed + CHARACTERS_PER_FRAME..=REPLY.len())
@@ -242,11 +221,10 @@ impl Receives<On<Tick>> for Reply {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Read, Shooting>> for Reply {
     /// Writes the frame read back as a PPM to the file named: its red, green, and blue, row by row from the top.
-    fn handle(
+    #[answer]
+    fn read_back(
         &mut self,
         (answered, Shooting): (Answered<Read>, Shooting),
         turn: &mut Turn<'_, Self>,

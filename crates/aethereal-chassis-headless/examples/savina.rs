@@ -46,8 +46,8 @@
 
 use aethereal_actor::guard::Child;
 use aethereal_actor::{
-    Actor, ActorRef, Admits, Anyone, Anywhere, Beginning, ChildOf, Ending, Fault, Guard, Handles, ListsChild,
-    PlacesBeneath, Root, Spawn, Speaks, Top, Turn, parent,
+    Actor, ActorRef, Admits, Anywhere, Beginning, ChildOf, Fault, Guard, Handles, ListsChild, PlacesBeneath, Root,
+    Spawn, Speaks, Turn, actor, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Plain};
@@ -152,17 +152,8 @@ struct Number {
 #[kind(name = "aether.savina.pinger")]
 struct Pinger;
 
-impl ChildOf for Pinger {
-    type Parent = Top;
-}
-
-impl Actor for Pinger {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready, Pong);
-    type Depends = ();
-    type Spawns = (Ponger,);
-
+#[actor(key = u64, spawns(Ponger))]
+impl Pinger {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(ponger) = turn.spawn::<Ponger>(&0, Number { number: 0 }) else {
             panic!("the pong side begins");
@@ -172,27 +163,15 @@ impl Actor for Pinger {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Pinger {
-    type From = Child<Ponger>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
         turn.to(*turn.from()).send(&Ping { left: PINGS - 1 })?;
 
         Ok(())
     }
-}
 
-impl Handles<Pong> for Pinger {
-    type From = Child<Ponger>;
-    type Returns = ();
-
-    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
+    #[tell]
+    fn pong(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self, Child<Ponger>>) -> Result<(), Fault> {
         if left > 0 {
             turn.to(*turn.from()).send(&Ping { left: left - 1 })?;
         }
@@ -206,32 +185,22 @@ impl Handles<Pong> for Pinger {
 #[kind(name = "aether.savina.ponger")]
 struct Ponger;
 
-impl ChildOf for Ponger {
-    type Parent = Pinger;
-}
-
-impl Actor for Ponger {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ping, Ready);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Pinger)]
+impl Ponger {
+    fn begin(_: Number) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, ActorRef<Pinger>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong { left })?;
+
         Ok(())
     }
-}
 
-impl Handles<Ping> for Ponger {
-    type From = ActorRef<Pinger>;
-    type Returns = ();
-
-    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, ActorRef<Pinger>>) -> Result<(), Fault> {
-        turn.to(*turn.from()).send(&Pong { left })?;
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -243,17 +212,8 @@ impl Handles<Ping> for Ponger {
 #[kind(name = "aether.savina.producer")]
 struct Producer;
 
-impl ChildOf for Producer {
-    type Parent = Top;
-}
-
-impl Actor for Producer {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready, Total);
-    type Depends = ();
-    type Spawns = (Counter,);
-
+#[actor(key = u64, spawns(Counter))]
+impl Producer {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
@@ -263,16 +223,8 @@ impl Actor for Producer {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Producer {
-    type From = Child<Counter>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Counter>>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Counter>>) -> Result<(), Fault> {
         for _ in 0..COUNTS {
             turn.to(*turn.from()).send(&Increment)?;
         }
@@ -280,13 +232,9 @@ impl Handles<Ready> for Producer {
 
         Ok(())
     }
-}
 
-impl Handles<Total> for Producer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn total(&mut self, Total { count }: Total) -> Result<(), Fault> {
         assert_eq!(count, COUNTS, "the counter counts every piece of mail");
 
         Ok(())
@@ -299,17 +247,8 @@ impl Handles<Total> for Producer {
 #[kind(name = "aether.savina.begin_producer")]
 struct BeginProducer;
 
-impl ChildOf for BeginProducer {
-    type Parent = Top;
-}
-
-impl Actor for BeginProducer {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Total,);
-    type Depends = ();
-    type Spawns = (Counter,);
-
+#[actor(key = u64, spawns(Counter))]
+impl BeginProducer {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(counter) = turn.spawn::<Counter>(&0, Number { number: 0 }) else {
             panic!("the counter begins");
@@ -322,16 +261,8 @@ impl Actor for BeginProducer {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Total> for BeginProducer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Total { count }: Total, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn total(&mut self, Total { count }: Total) -> Result<(), Fault> {
         assert_eq!(count, COUNTS, "the counter counts every piece of mail");
 
         Ok(())
@@ -345,43 +276,29 @@ struct Counter {
     count: u64,
 }
 
-impl ChildOf for Counter {
-    type Parent = Anywhere;
-}
-
-impl Actor for Counter {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Increment, Retrieve, Ready);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere)]
+impl Counter {
+    fn begin(_: Number) -> Result<Self, Fault> {
         Ok(Self { count: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Increment> for Counter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn increment(&mut self, _: Increment) -> Result<(), Fault> {
         self.count += 1;
 
         Ok(())
     }
-}
 
-impl Handles<Retrieve> for Counter {
-    type From = Speaks<(Total,)>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Retrieve, turn: &mut Turn<'_, Self, Speaks<(Total,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn retrieve(&mut self, _: Retrieve, turn: &mut Turn<'_, Self, Speaks<(Total,)>>) -> Result<(), Fault> {
         turn.to(*turn.from()).send(&Total { count: self.count })?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -395,17 +312,8 @@ struct Forker {
     workers: Vec<ActorRef<Forked>>,
 }
 
-impl ChildOf for Forker {
-    type Parent = Top;
-}
-
-impl Actor for Forker {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready,);
-    type Depends = ();
-    type Spawns = (Forked,);
-
+#[actor(key = u64, spawns(Forked))]
+impl Forker {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let workers: Vec<ActorRef<Forked>> = (0..FORKS).map(|number| spawned(turn, number)).collect();
         ready(turn, &workers)?;
@@ -413,16 +321,8 @@ impl Actor for Forker {
         Ok(Self { workers })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Forker {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for _ in 0..FORKED {
             for worker in &self.workers {
                 turn.to(*worker).send(&Work)?;
@@ -438,33 +338,23 @@ impl Handles<Ready> for Forker {
 #[kind(name = "aether.savina.forked")]
 struct Forked;
 
-impl ChildOf for Forked {
-    type Parent = Forker;
-}
-
-impl Actor for Forked {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Work, Ready);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Forker)]
+impl Forked {
+    fn begin(_: Number) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Work> for Forked {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Work, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn work(&mut self, _: Work) -> Result<(), Fault> {
         let sine = hint::black_box(37.2_f64).sin();
         hint::black_box(sine * sine);
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -478,17 +368,8 @@ struct Crowd {
     actors: Vec<ActorRef<Pinging>>,
 }
 
-impl ChildOf for Crowd {
-    type Parent = Top;
-}
-
-impl Actor for Crowd {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready,);
-    type Depends = ();
-    type Spawns = (Pinging,);
-
+#[actor(key = u64, spawns(Pinging))]
+impl Crowd {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let actors: Vec<ActorRef<Pinging>> = (0..BIG_ACTORS).map(|number| spawned(turn, number)).collect();
         ready(turn, &actors)?;
@@ -496,16 +377,8 @@ impl Actor for Crowd {
         Ok(Self { actors })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Crowd {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for actor in &self.actors {
             for other in self.actors.iter().filter(|other| *other != actor) {
                 turn.to(*actor).send(&Neighbour { other: *other })?;
@@ -527,7 +400,47 @@ struct Pinging {
     random: u64,
 }
 
+#[actor(key = u64, parent = Crowd)]
 impl Pinging {
+    fn begin(config: Number) -> Result<Self, Fault> {
+        Ok(Self { neighbours: Vec::new(), random: config.number * 0x9e37_79b9_7f4a_7c15 + 1 })
+    }
+
+    #[tell]
+    fn neighbour(&mut self, Neighbour { other }: Neighbour) -> Result<(), Fault> {
+        self.neighbours.push(other);
+
+        Ok(())
+    }
+
+    #[tell]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.ping(turn, BIG_PINGS - 1)
+    }
+
+    #[tell]
+    fn pinged(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, ActorRef<Self>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong { left })?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn pong(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if left > 0 {
+            self.ping(turn, left - 1)?;
+        }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
+
+        Ok(())
+    }
+
     /// Pings a neighbour picked at random, with `left` to go after it.
     fn ping(&mut self, turn: &mut Turn<'_, Self>, left: u64) -> Result<(), Fault> {
         self.random ^= self.random << 13;
@@ -536,70 +449,6 @@ impl Pinging {
         let count = u64::try_from(self.neighbours.len()).unwrap_or(1).max(1);
         let picked = usize::try_from(self.random % count).unwrap_or(0);
         turn.to(self.neighbours[picked]).send(&Ping { left })?;
-
-        Ok(())
-    }
-}
-
-impl ChildOf for Pinging {
-    type Parent = Crowd;
-}
-
-impl Actor for Pinging {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Neighbour, Start, Ping, Pong, Ready);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        Ok(Self { neighbours: Vec::new(), random: config.number * 0x9e37_79b9_7f4a_7c15 + 1 })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Neighbour> for Pinging {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Neighbour { other }: Neighbour, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.neighbours.push(other);
-
-        Ok(())
-    }
-}
-
-impl Handles<Start> for Pinging {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.ping(turn, BIG_PINGS - 1)
-    }
-}
-
-impl Handles<Ping> for Pinging {
-    type From = ActorRef<Self>;
-    type Returns = ();
-
-    fn handle(&mut self, Ping { left }: Ping, turn: &mut Turn<'_, Self, ActorRef<Self>>) -> Result<(), Fault> {
-        turn.to(*turn.from()).send(&Pong { left })?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Pong> for Pinging {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Pong { left }: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if left > 0 {
-            self.ping(turn, left - 1)?;
-        }
 
         Ok(())
     }
@@ -624,17 +473,8 @@ struct Response {
 #[kind(name = "aether.savina.fib_root")]
 struct FibRoot;
 
-impl ChildOf for FibRoot {
-    type Parent = Top;
-}
-
-impl Actor for FibRoot {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready, Response);
-    type Depends = ();
-    type Spawns = (Fib,);
-
+#[actor(key = u64, spawns(Fib))]
+impl FibRoot {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let first: ActorRef<Fib> = spawned(turn, 0);
         ready(turn, &[first])?;
@@ -642,28 +482,16 @@ impl Actor for FibRoot {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for FibRoot {
-    type From = Child<Fib>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Fib>>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Fib>>) -> Result<(), Fault> {
         turn.to(*turn.from()).send(&Request { number: FIB })?;
 
         Ok(())
     }
-}
 
-/// The first actor's answer, which ends the program.
-impl Handles<Response> for FibRoot {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Response, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    /// The first actor's answer, which ends the program.
+    #[tell]
+    fn response(&mut self, _: Response) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -677,31 +505,14 @@ struct Fib {
     answers: u64,
 }
 
-impl ChildOf for Fib {
-    type Parent = Anywhere;
-}
-
-impl Actor for Fib {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Request, Response, Ready);
-    type Depends = ();
-    type Spawns = (Self,);
-
-    fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere, spawns(Self))]
+impl Fib {
+    fn begin(_: Number) -> Result<Self, Fault> {
         Ok(Self { sum: 0, answers: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Request> for Fib {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn request(&mut self, Request { number }: Request, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if number <= 2 {
             turn.to(parent::<(Response,)>()).send(&Response { value: 1 })?;
             turn.close();
@@ -716,19 +527,22 @@ impl Handles<Request> for Fib {
 
         Ok(())
     }
-}
 
-impl Handles<Response> for Fib {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn response(&mut self, Response { value }: Response, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.sum += value;
         self.answers += 1;
         if self.answers == 2 {
             turn.to(parent::<(Response,)>()).send(&Response { value: self.sum })?;
             turn.close();
         }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -752,17 +566,8 @@ struct Exit;
 #[kind(name = "aether.savina.sieve")]
 struct Sieve;
 
-impl ChildOf for Sieve {
-    type Parent = Top;
-}
-
-impl Actor for Sieve {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready,);
-    type Depends = ();
-    type Spawns = (Filter,);
-
+#[actor(key = u64, spawns(Filter))]
+impl Sieve {
     fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Ok(first) = turn.spawn::<Filter>(&0, Number { number: 2 }) else {
             panic!("the first filter begins");
@@ -772,16 +577,8 @@ impl Actor for Sieve {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Sieve {
-    type From = Child<Filter>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Filter>>) -> Result<(), Fault> {
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Filter>>) -> Result<(), Fault> {
         for number in (3..=SIEVE_LIMIT).step_by(2) {
             turn.to(*turn.from()).send(&Candidate { number })?;
         }
@@ -809,31 +606,14 @@ struct Filter {
     next: Next,
 }
 
-impl ChildOf for Filter {
-    type Parent = Anywhere;
-}
-
-impl Actor for Filter {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Candidate, Exit, Ready);
-    type Depends = ();
-    type Spawns = (Self,);
-
-    fn begin(first: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere, spawns(Self))]
+impl Filter {
+    fn begin(first: Number) -> Result<Self, Fault> {
         Ok(Self { primes: vec![first.number], next: Next::Last })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Candidate> for Filter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn candidate(&mut self, Candidate { number }: Candidate, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let divided = self.primes.iter().any(|prime| number % prime == 0);
         if divided {
             return Ok(());
@@ -853,17 +633,20 @@ impl Handles<Candidate> for Filter {
 
         Ok(())
     }
-}
 
-impl Handles<Exit> for Filter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Exit, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn exit(&mut self, _: Exit, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Next::Filter(next) = self.next {
             turn.to(next).send(&Exit)?;
         }
         turn.close();
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -891,7 +674,35 @@ struct Churn {
     spawners: u64,
 }
 
+#[actor(key = u64, spawns(Mortal))]
 impl Churn {
+    /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
+    fn begin(config: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        let first: ActorRef<Mortal> = spawned(turn, 0);
+        ready(turn, &[first])?;
+
+        Ok(Self { spawned: 1, spawners: config.number.max(1) })
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Mortal>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Live { left: CHURN_LIFE })?;
+        while self.spawned < CHURN_ALIVE / self.spawners {
+            self.spawn_next(turn)?;
+        }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn died(&mut self, _: Died, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if self.spawned < CHURN_TOTAL / self.spawners {
+            self.spawn_next(turn)?;
+        }
+
+        Ok(())
+    }
+
     /// Spawns the next actor and starts its life, in a turn whose guard is `F`.
     fn spawn_next<F: Guard<Self>>(&mut self, turn: &mut Turn<'_, Self, F>) -> Result<(), Fault> {
         let Ok(child) = turn.spawn::<Mortal>(&self.spawned, Number { number: self.spawned }) else {
@@ -904,93 +715,32 @@ impl Churn {
     }
 }
 
-impl ChildOf for Churn {
-    type Parent = Top;
-}
-
-impl Actor for Churn {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready, Died);
-    type Depends = ();
-    type Spawns = (Mortal,);
-
-    /// A root configured with `number` shares the program among that many roots, none and one alike being the whole.
-    fn begin(config: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        let first: ActorRef<Mortal> = spawned(turn, 0);
-        ready(turn, &[first])?;
-
-        Ok(Self { spawned: 1, spawners: config.number.max(1) })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Churn {
-    type From = Child<Mortal>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Child<Mortal>>) -> Result<(), Fault> {
-        turn.to(*turn.from()).send(&Live { left: CHURN_LIFE })?;
-        while self.spawned < CHURN_ALIVE / self.spawners {
-            self.spawn_next(turn)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Handles<Died> for Churn {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Died, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if self.spawned < CHURN_TOTAL / self.spawners {
-            self.spawn_next(turn)?;
-        }
-
-        Ok(())
-    }
-}
-
 /// An actor of the churn program: it lives a number of hops of mail to itself, then tells its parent and closes.
 #[derive(Plain)]
 #[kind(name = "aether.savina.mortal")]
 struct Mortal;
 
-impl ChildOf for Mortal {
-    type Parent = Churn;
-}
-
-impl Actor for Mortal {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Live, Ready);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Churn)]
+impl Mortal {
+    fn begin(_: Number) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Live> for Mortal {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn live(&mut self, Live { left }: Live, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if left > 0 {
             turn.to(turn.me()).send(&Live { left: left - 1 })?;
         } else {
             turn.to(turn.parent()).send(&Died)?;
             turn.close();
         }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -1040,7 +790,42 @@ struct Region {
     spawned: u64,
 }
 
+#[actor(key = u64, spawns(Body))]
 impl Region {
+    fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        let places: Vec<ActorRef<Body>> = (0..WORLD_BODIES).map(|place| spawned(turn, place)).collect();
+        ready(turn, &places)?;
+
+        Ok(Self { places, frame: 0, answered: 0, spawned: WORLD_BODIES })
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.next_frame(turn)
+    }
+
+    #[tell]
+    fn moved(&mut self, _: Moved, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.answer(turn)
+    }
+
+    /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
+    #[tell]
+    fn expired(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if self.frame < WORLD_FRAMES {
+            let Ok(body) = turn.spawn(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
+                panic!("a body begins");
+            };
+            self.spawned += 1;
+            let Ok(place) = usize::try_from(place) else {
+                panic!("a place is an index of the row");
+            };
+            self.places[place] = body;
+        }
+
+        self.answer(turn)
+    }
+
     /// Sends every body its frame, or, once the frames are run, the word that the world is over, and closes.
     fn next_frame(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.answered = 0;
@@ -1077,68 +862,6 @@ impl Region {
     }
 }
 
-impl ChildOf for Region {
-    type Parent = Top;
-}
-
-impl Actor for Region {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Ready, Moved, Expired);
-    type Depends = ();
-    type Spawns = (Body,);
-
-    fn begin(_: Number, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
-        let places: Vec<ActorRef<Body>> = (0..WORLD_BODIES).map(|place| spawned(turn, place)).collect();
-        ready(turn, &places)?;
-
-        Ok(Self { places, frame: 0, answered: 0, spawned: WORLD_BODIES })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ready> for Region {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.next_frame(turn)
-    }
-}
-
-impl Handles<Moved> for Region {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Moved, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.answer(turn)
-    }
-}
-
-impl Handles<Expired> for Region {
-    type From = Anyone;
-    type Returns = ();
-
-    /// Puts a new body, with a whole life, in the expired one's place, unless the world is over after this frame.
-    fn handle(&mut self, Expired { place }: Expired, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if self.frame < WORLD_FRAMES {
-            let Ok(body) = turn.spawn(&self.spawned, Number { number: (WORLD_LIFE << 32) | place }) else {
-                panic!("a body begins");
-            };
-            self.spawned += 1;
-            let Ok(place) = usize::try_from(place) else {
-                panic!("a place is an index of the row");
-            };
-            self.places[place] = body;
-        }
-
-        self.answer(turn)
-    }
-}
-
 /// A body of the world program: each frame it moves, pushed by what its neighbours nudged it with, nudges them in
 /// turn, and answers its region. It lives a number of frames, its last answer saying it has expired.
 #[derive(Plain)]
@@ -1151,21 +874,12 @@ struct Body {
     pushed: f32,
 }
 
-impl ChildOf for Body {
-    type Parent = Region;
-}
-
-impl Actor for Body {
-    type Config = Number;
-    type Key = u64;
-    type Handles = (Frame, Nudge, Over, Ready);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Region)]
+impl Body {
     /// A body made from `number` has the frames it lives in its upper half, and its place in the lower; a body made
     /// as its region begins, numbered by its place alone, lives a share of a life, so that bodies expire a few a
     /// frame and not all at once.
-    fn begin(Number { number }: Number, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+    fn begin(Number { number }: Number) -> Result<Self, Fault> {
         let place = number & u64::from(u32::MAX);
         let left = match number >> 32 {
             0 => place % WORLD_LIFE + 1,
@@ -1176,16 +890,8 @@ impl Actor for Body {
         Ok(Self { place, left, position: at, velocity: 1.0 - at / WORLD_BODIES as f32, pushed: 0.0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Frame> for Body {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Frame { left, right }: Frame, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn frame(&mut self, Frame { left, right }: Frame, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.velocity = (self.velocity + self.pushed) * 0.99;
         self.position += self.velocity;
         let is_out = self.position.abs() > WORLD_BODIES as f32;
@@ -1206,25 +912,24 @@ impl Handles<Frame> for Body {
 
         Ok(())
     }
-}
 
-impl Handles<Nudge> for Body {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Nudge { push }: Nudge, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn nudge(&mut self, Nudge { push }: Nudge) -> Result<(), Fault> {
         self.pushed += push;
 
         Ok(())
     }
-}
 
-impl Handles<Over> for Body {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Over, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn over(&mut self, _: Over, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ready(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Ready)?;
 
         Ok(())
     }
@@ -1295,25 +1000,6 @@ where
 
     Ok(())
 }
-
-/// Each of `actors` tells the word that a program can start back to the root that sent it: a root that handles the
-/// word, as some of them are children of any parent.
-macro_rules! answers_ready {
-    ($($actor:ty),*) => {$(
-        impl Handles<Ready> for $actor {
-            type From = Speaks<(Ready,)>;
-            type Returns = ();
-
-            fn handle(&mut self, _: Ready, turn: &mut Turn<'_, Self, Speaks<(Ready,)>>) -> Result<(), Fault> {
-                turn.to(*turn.from()).send(&Ready)?;
-
-                Ok(())
-            }
-        }
-    )*};
-}
-
-answers_ready!(Ponger, Counter, Forked, Pinging, Fib, Filter, Mortal, Body);
 
 /// A child of type `A` numbered `number`, spawned by `turn`.
 fn spawned<Me, A, I>(turn: &mut Beginning<'_, Me>, number: u64) -> ActorRef<A>

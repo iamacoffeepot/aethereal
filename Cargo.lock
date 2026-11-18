@@ -37,10 +37,20 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "aethereal-actor"
 version = "0.1.0"
 dependencies = [
+ "aethereal-actor-derive",
  "aethereal-data",
  "aethereal-data-derive",
  "blake3",
  "crossbeam-queue",
+]
+
+[[package]]
+name = "aethereal-actor-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! Tuning (ADR-0050): the values an actor takes while the program runs, one settings kind read whole and set whole by
 //! mail any actor may send, apart from the settings the program is set up with (ADR-0028).
 
-use crate::{Actor, ActorRef, Bytes, Carries, Fault, Handles, Protocol, ProtocolRef, Turn};
+use crate::{Actor, ActorRef, Bytes, Fault, Handles, ProtocolRef, Turn, protocol};
 use aethereal_data::config::Settings;
 use aethereal_data::{Bound, Budget, Plain, from_bytes, to_bytes};
 use alloc::string::String;
@@ -51,19 +51,8 @@ pub trait Tunable: Actor + Handles<ReadTuning> + Handles<Tune> {
 }
 
 /// The protocol a tunable actor is read and tuned through: [`ReadTuning`] and [`Tune`].
+#[protocol(ReadTuning(answers = Tuning), Tune(answers = Tuned))]
 pub struct Tunes;
-
-impl Protocol for Tunes {
-    type Kinds = (ReadTuning, Tune);
-}
-
-impl Carries<ReadTuning> for Tunes {
-    type Answers = (Tuning,);
-}
-
-impl Carries<Tune> for Tunes {
-    type Answers = (Tuned,);
-}
 
 /// Asks an actor for its tuning, answered with [`Tuning`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

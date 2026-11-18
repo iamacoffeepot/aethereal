@@ -16,7 +16,7 @@ mod sender;
 #[cfg(test)]
 mod tests;
 
-pub use call::{Admits, SentBy};
+pub use call::{Admits, CasesSentBy, SentBy};
 pub use library::{Anyone, Child, Itself, Parent, Speaks};
 pub use sender::Sender;
 
