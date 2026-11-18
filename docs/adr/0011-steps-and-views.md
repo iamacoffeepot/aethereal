@@ -122,7 +122,7 @@ pub trait View {
 - A chain of mail takes one step for each actor it passes through, unless its sends are fused, when it takes one step for each budget's worth of hops (ADR-0013).
 - The count of changes in ADR-0008's table goes, and so does a reader holding a number: the step's number is the position.
 - ADR-0009 said no worker waits for the others and there is no moment when all of them stop. Between two steps there is such a moment.
-- **Not decided here:** domains of actors that never meet, each with steps of its own (ADR-0013 works out each step's domains, and leaves their steps undecided), so that a slow turn in one does not hold back another; how the cost of a wake is kept true when few workers are being woken; and how much power an idle worker kept spinning costs, which the plan does not yet weigh.
+- **Not decided here:** domains of actors that never meet, each with steps of its own (ADR-0013 and ADR-0059 leave domains to be learned from traffic, and their steps undecided), so that a slow turn in one does not hold back another; how the cost of a wake is kept true when few workers are being woken; and how much power an idle worker kept spinning costs, which the plan does not yet weigh.
 
 ## Alternatives considered
 

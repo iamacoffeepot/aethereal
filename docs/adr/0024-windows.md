@@ -28,7 +28,7 @@ turn.to(path::<Window>(window)).send(&Subscribe)?;     // send me this window's 
 
 - **The window root, `Windows`, holds what the host brings in, and anything that spans windows.** It makes an actor for each window beneath it, `Window`, keyed by the window's `WindowId`. Today nothing spans windows, so the root only routes.
 - **A `WindowId` is the window capability's number for a window**, `0` for the first opened, then `1`, never a host's own name for it: a page's canvas has none, and winit's `WindowId` is opaque and the host's. A chassis keeps its own map from its windows to the feed of each (below).
-- **An actor reaches a window by its typed path**, `path::<Window>(id)`, declared `Tells<Path<Window>, Subscribe>` (ADR-0022), and subscribes with one `Subscribe`; `Unsubscribe` takes it off, and a subscriber that ends is taken off by the watch `Subscribers` keeps (ADR-0016). A subscriber must handle `Event`: the window casts it to `(Event,)`, and logs and ignores one that does not.
+- **An actor reaches a window by its typed path**, `path::<Window>(id)`, which reaches beneath the root `Windows`, in its `depends` (ADR-0022, ADR-0059), and subscribes with one `Subscribe`; `Unsubscribe` takes it off, and a subscriber that ends is taken off by the watch `Subscribers` keeps (ADR-0016). A subscriber must handle `Event`: the window casts it to `(Event,)`, and logs and ignores one that does not.
 
 ### What a window hears
 
@@ -67,12 +67,10 @@ pub enum Event {
 ```rust
 pub struct Heard { window: WindowId, event: Event }    // what the root's one source brings in
 
-impl Handles<Heard> for Windows {                      // brought from the source: from this actor to itself
-    type Sends = (ToType<Window, Event>,);
-    fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.to(child::<Window>(heard.window)).send(&heard.event)?;
-        Ok(())
-    }
+#[tell]                                                // in Windows' #[actor] block: brought from the source, from this actor to itself
+fn heard(&mut self, heard: Heard, turn: &mut Turn<'_, Self, Itself>) -> Result<(), Fault> {
+    turn.to(child::<Window>(heard.window)).send(&heard.event)?;
+    Ok(())
 }
 ```
 

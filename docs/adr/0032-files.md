@@ -20,7 +20,7 @@ The earlier engine reached files by mail to one actor that owned named roots (it
 ```rust
 turn.to(files).ask(&ReadFile { namespace: Namespace::Assets, path: FilePath::new("tiles/grass.png")? }, &Loading { tile })?;
 
-impl Handles<Answer<FileRead, Loading>> for Tiles { .. }
+#[answer] fn read(&mut self, read: (Answered<FileRead>, Loading), turn: &mut Turn<'_, Self>) -> Result<(), Fault> { .. }   // Tiles'
 
 pub enum FileRead {
     Read { bytes: Bytes },     // the whole file, as a blob (ADR-0014)

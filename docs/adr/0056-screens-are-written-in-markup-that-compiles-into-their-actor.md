@@ -85,9 +85,9 @@ aethereal_ui::view! { Inventory, ui,
 
 #[aethereal_ui::events]
 impl Inventory {
-    fn select(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
-    fn place(&mut self, turn: &mut Turn<'_, Self, InventorySends>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
-    fn equip(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
+    fn select(&mut self, turn: &mut Turn<'_, Self>, item: ItemId) -> Result<(), Fault> { … }
+    fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
+    fn equip(&mut self, turn: &mut Turn<'_, Self>, item: ItemId) -> Result<(), Fault> { … }
 }
 ```
 
@@ -163,15 +163,15 @@ Node::new(Segment::Place(2), scroll.list(lines), list_style(), built)
 ### Events call the screen's methods
 
 ```rust
-fn select(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId) -> Result<(), Fault> { … }
-fn rename(&mut self, turn: &mut Turn<'_, Self, InventorySends>, item: ItemId, text: String) -> Result<(), Fault> { … }
+fn select(&mut self, turn: &mut Turn<'_, Self>, item: ItemId) -> Result<(), Fault> { … }
+fn rename(&mut self, turn: &mut Turn<'_, Self>, item: ItemId, text: String) -> Result<(), Fault> { … }
 ```
 
 - **An event names the method and its arguments:** `click => self.select(item.id)`. The turn is passed implicitly, as Rust passes `self`.
 - **An event's arguments are copied when the view is built, and must be `Copy`.** That steers them to ids, never to a snapshot of an item that may have changed between the draw and the click.
 - **A widget that hands a value with its event hands it after the arguments:** a text input's `change` and `submit` the text, a toggle's `change` whether it is on, a slider's `change` its value. `change => self.rename(item.id)` calls `rename(turn, item, text)`.
 - **rustc checks the call against the method's signature:** the macro writes the call with the markup's spans, so an error in it points at the event.
-- **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self, S>`, with `S` what the screen's methods may send**. A turn names what its handler sends, so there is no `Turn<'_, Self>`; the screen declares `S` once, beside its methods, and the library adds its own ask of the window's input method (below), and the drop a release mails to another actor and its answer to one, taken or refused (see Drag and drop is one path).
+- **A method an event calls takes the turn of the screen's input handlers, `Turn<'_, Self>`**, typed by its actor as every turn is (ADR-0059). No handler declares what it sends, so each send a method makes, and the library's own, its ask of the window's input method (below) and the drop a release mails to another actor and its answer to one (see Drag and drop is one path), is checked at its call.
 
 **What the markup compiles into**. The tree compares by value, so an event is a value, never a closure: each event of a screen's markup becomes a variant of one enum, holding the arguments the view copied, and the screen's `on` matches each variant to the method it names. A widget raises its event with the value it hands, as one of `Raised::{Event(E), Text(E, String), Flag(E, bool), Number(E, f32), Index(E, u32), Dropped(E, Payload)}`, `Index` a choice counted from zero, as tabs', and `Dropped` the payload a drag carried, as a drop's, a `drop_accepted`'s, and a `drop_outside`'s.
 
@@ -188,7 +188,7 @@ impl View for Inventory {
 
     fn view(&self) -> Tree { … }   // ItemSlot { click: InventoryEvent::Select(item.id).into(), … }, built from the item now
 
-    fn on(&mut self, turn: &mut Turn<'_, Self, Self::Sends>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
+    fn on(&mut self, turn: &mut Turn<'_, Self>, raised: Raised<InventoryEvent>) -> Result<(), Fault> {
         match raised.event() {
             InventoryEvent::Select(item) => Method::call(Self::select, self, turn, (item,), raised),   // Raised::Event: select(turn, item)
             InventoryEvent::Rename(item) => Method::call(Self::rename, self, turn, (item,), raised),   // Raised::Text: rename(turn, item, text)
@@ -201,13 +201,10 @@ aethereal_ui::screen!(Inventory, ui);   // the handlers of `Prepare`, `Pointed`,
 
 ```rust
 // inventory.rs, beside the view!, by hand
-type InventorySends = aethereal_ui::sends![Tells<Path<Game>, Equip>];   // the library's sends, then the screen's own
-
 impl Controls for Inventory {
-    type Sends = InventorySends;
     const HOTKEYS: &'static [&'static str] = &["KeyI", "Escape"];
 
-    fn key(&mut self, turn: &mut Turn<'_, Self, InventorySends>, key: Key) -> Result<(), Fault> {
+    fn key(&mut self, turn: &mut Turn<'_, Self>, key: Key) -> Result<(), Fault> {
         match key.code.as_str() { "KeyI" | "Escape" => self.close(turn), _ => Ok(()) }
     }
 }
@@ -352,7 +349,7 @@ let row = self.ui.laid(&ConsoleNode::Printed(ItemKey::from(number)).path());
 - **A screen moves its focus and hands keys on of its own accord**, each to a widget its markup names (see Named nodes). `Screen::focus(path)` gives focus to the widget at `path` when it can hold it, as a press on it would, as a console gives its line focus as it opens. `Screen::press_key(path, key)` hands a key to the widget at `path` as though it had focus, and answers what it raised for the screen's handler to take in, as a console hands Page Up to its scrollback while its line has focus. A screen sends a scroll to its end with `Screen::jump(path, Jump::End)`, as a console does its scrollback when a line is entered, never with a key it makes up.
 - **The modifiers are watched, not taken**. A key event carries no modifiers (ADR-0024), so beside a set short of every key the library declares Shift, Control, Alt, and Meta in a second entry that does not block, and keeps which are down. Shift-Tab and a text input's Shift-arrow read them, and the game still hears Shift.
 - **A focused text input uses every key that types text,** a key whose meaning is one character with neither Control nor Meta held, as its text comes after it (ADR-0051); so a letter typed into it never reaches the screen's hotkeys, and a key it passes, F2 or Tab, still does.
-- **The library allows the window's input method while a widget that types has focus, and stops it after** (ADR-0051: `AllowIme`), each asked only as it changes, from the turn of input that moved focus, or from the `Prepare` that found the focused key gone. So the screen's input handlers send that ask besides the screen's own, which `sends![…]` adds.
+- **The library allows the window's input method while a widget that types has focus, and stops it after** (ADR-0051: `AllowIme`), each asked only as it changes, from the turn of input that moved focus, or from the `Prepare` that found the focused key gone. So the screen's input handlers send that ask besides the screen's own.
 - **A widget that holds focus may stand outside Tab's round**: `Widget::tabbable`, the same as `focusable` unless the widget says otherwise. A text read rather than filled in, `Selectable`, takes focus on a press so its copy reaches it, and Tab passes it, so tabbing through a transcript does not visit every message.
 - **Moving focus by direction, for a gamepad or arrow keys, is left out** until something needs it.
 
@@ -440,7 +437,7 @@ Node::call(Segment::Place(2), self.minimap.clone(), CallArea::Inherit, minimap_s
 - **`area: CallArea::Inherit` is `Area::Inherit` at the content box's corner,** in the screen's coordinates. **`area: CallArea::Absolute` is `Area::Absolute`,** the slot's box taken to be in the window's pixels, which holds for a screen that is a root or is itself called in the window's pixels. An absolute child is told its size and never where its slot is, so it is for a child that draws where it is by the window's pixels, as a scene does; a child that is a screen lays out from its own corner, and is called `CallArea::Inherit`.
 - **The size is `Resize { viewport }`,** a plain kind, as it carries no reference: the slot's content box's size in pixels, in the screen's frame and at its UI scale. The `Prepare` that lays a slot out mails it when it is not what that child was told by the layout before, so a move sends nothing, and a resize, or a change of the screen's frame or scale, sends one, once. A child shown again after it was left out is told again, as it may have missed a change while it was hidden.
 - **A child that is a screen lays out to it, as a root screen lays out to its window's size:** `handles!` lists `Resize`, and `screen!` writes its handler, which hands the viewport to `Screen::resize`, so the screen lays out at its next `Prepare`. Every screen takes it, so a screen can be placed by another as it is; a root is never sent one. A child that is not a screen handles `Resize` itself.
-- **What it costs:** every screen handles one kind more, `Resize`, whose handler sends the library's sends. Those, which `Prepare` and the handlers of the library's answers declare, gain one send place, `ToAny<(Resize,), Resize>`, which reaches a child of any type through the reference its `Called` holds; so a screen's own sends, its `Controls::Sends`, gain nothing, and a child of a new type adds nothing to either.
+- **What it costs:** every screen handles one kind more, `Resize`, which it sends on to a child of any type through the reference its `Called` holds, as a send through the protocol `(Resize,)`; a child of a new type adds nothing.
 - **Each screen keeps its own focus, and Tab does not cross into a child or out of one.** Tab and Shift-Tab move through the screen's own tree, which holds the slot and not the child's widgets, and the slot cannot hold focus. A press into the child leaves its parent as a press elsewhere in the parent does: the library lists a hit over each shown child, after its call and over what the child is cut to, whose pointer is `Presses` (ADR-0055), so it hears the press alone, passes it on to the child, declares no cursor, and takes no hover, move, wheel, release, or capture. On that press the parent's focus clears, stopping its input method, and each open popup it lands outside of shuts; nothing is raised, and the child's own focus is the child's. A child in a popup's content has its hit in the top layer with its call, and a hidden child lists none. Keys reach declarations top-down, and a screen lists its keys before its widgets, so a child, called after its parent declared its keys, hears a key first: while both hold focus, the child's focused widget takes the keys it hears, and the parent's, a focused text input among them, the keys the child passes.
 
 ### Drag and drop is one path
@@ -450,9 +447,9 @@ ItemSlot { item: item, drag: item.id, drop => self.place(item.slot), drop_accept
 ```
 
 ```rust
-fn place(&mut self, turn: &mut Turn<'_, Self, InventorySends>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
-fn release(&mut self, turn: &mut Turn<'_, Self, InventorySends>, dragged: ItemId) -> Result<(), Fault> { … }
-fn discard(&mut self, turn: &mut Turn<'_, Self, InventorySends>, dragged: ItemId) -> Result<(), Fault> { … }
+fn place(&mut self, turn: &mut Turn<'_, Self>, to: SlotId, dragged: ItemId) -> Result<(), Fault> { … }
+fn release(&mut self, turn: &mut Turn<'_, Self>, dragged: ItemId) -> Result<(), Fault> { … }
+fn discard(&mut self, turn: &mut Turn<'_, Self>, dragged: ItemId) -> Result<(), Fault> { … }
 ```
 
 1. **A press on a widget with `drag`, then a move of a few pixels, starts a drag.** The payload is copied when the view is built, as an event's arguments are. The held button keeps every move at the source.
@@ -490,7 +487,7 @@ Raised::Dropped(InventoryEvent::Discard, payload) => aethereal_ui::dropped(turn,
 - **A drop on another actor is mail, `Dropped`, to the protocol `Drops = (Dropped,)`.** The source casts the actor its release was over to `Drops`, and mails it the payload, as its kind's id and its bytes as a blob (ADR-0042, as bytes between actors are), the entry, the release's place in that entry's coordinates, and the source's key path. An erased reference casts only to a tuple of kinds, never to a named protocol, and only a named protocol can be asked (ADR-0016, ADR-0022), so the drop is a tell, not an ask. A screen's library takes it in as its own drop: the innermost target around the entry's widget that takes the kind raises its `drop`. An actor that is not a screen handles `Dropped` itself.
 - **The target replies once, either way, with one kind: `DropAnswered { payload, source, outcome }`,** the payload and the source's path handed back and `outcome` a `DropOutcome`, `Accepted` where a target at the entry takes the payload and `Refused` where none does. The source's one handler matches the outcome: `Accepted` raises its `drop_accepted` with the payload, as the view then builds it, and `Refused` its `drop_outside`. A screen's library writes the answer; an actor that is not a screen replies `dropped.answer(DropOutcome::Accepted)` or `dropped.answer(DropOutcome::Refused)`. So a source learns a drop on another actor was taken as it learns one on its own screen was, and an item that moved leaves it, by its own markup, with no mail of the program's own. A source with no `drop_accepted` ignores the reply. A cast that fails, the actor taking no drops, raises `drop_outside` at once.
 - **A target in the source's screen lights up:** while a drag is under way, the target it would land on, found as the drop finds it from the topmost hit the pointer reaches, is drawn with `Draws::drop_over` true, as `Draws::focused` tells focus; the stock widgets show their focus ring then. The pointer coming onto or leaving a hit during a drag lays the screen out at the next `Prepare`.
-- **What it costs.** A screen handles two kinds more, `Dropped` and `DropAnswered`, whose handlers call its methods and so send its `Controls::Sends`; those gain two places from `sends!`, `ToAny<Drops, Dropped>` for the drop a release mails and `ToSender<DropAnswered>` for the answer, so a screen's own sends are at most 21. The library's own sends, those of `Prepare` and its answers, gain nothing. A drop on another actor costs a blob for its payload, which the answer hands back unchanged, and every drop on another actor is answered, a mail more than a drop taken in silence.
+- **What it costs.** A screen handles two kinds more, `Dropped` and `DropAnswered`, whose handlers call its methods. A drop on another actor costs a blob for its payload, which the answer hands back unchanged, and every drop on another actor is answered, a mail more than a drop taken in silence.
 
 ### Stock widgets
 
@@ -638,9 +635,9 @@ markdown ──> Document (read again only from its last blocks as it grows) ─
 - **An actor for each widget:** a mailbox, a turn, and a copy of its data for every row, and a click spread across several turns.
 - **Child actors placed only in absolute window pixels:** every move would cascade down the subtree as mail, a turn per level, so children would trail their parents. Each call states its mode instead (ADR-0055).
 - **Drag payloads carried by the window:** the window would need to know every payload kind. Reporting what is under the pointer is enough, and the actors use mail.
-- **A drop kind generic over its payload,** `Dropped<ItemId>`: a kind, a handler, and a send place for every payload kind a program drags, which each screen would list, though the library cannot know them. One erased kind serves them all, and the target compares kind ids.
+- **A drop kind generic over its payload,** `Dropped<ItemId>`: a kind and a handler for every payload kind a program drags, which each screen would list, though the library cannot know them. One erased kind serves them all, and the target compares kind ids.
 - **A drop asked of its target:** an erased reference casts only to a tuple of kinds, not a named protocol, and only a named protocol can be asked (ADR-0016, ADR-0022), so a drop to an actor the source knows only from `over` is a tell; the target replies to it either way, with what the source needs handed back, as an answer would.
-- **Two reply kinds, one for a drop taken and one for a drop refused:** one drop gets exactly one answer, so it is one kind, its `DropOutcome` matched in one handler; two kinds would be two handlers and two send places on every screen for that one answer, a send place more of the screen's own.
+- **Two reply kinds, one for a drop taken and one for a drop refused:** one drop gets exactly one answer, so it is one kind, its `DropOutcome` matched in one handler; two kinds would be two handlers on every screen for that one answer.
 - **A target that replies only to refuse:** a drop taken would be answered with nothing, so a source could not let go of an item that moved to another actor without a mail of the program's own, from target to source, which every program that moves items between actors would write again.
 - **The source assuming every drop on another actor is taken:** an item dropped on a panel that takes only spells would vanish, never put back nor dropped on the ground.
 - **Writing our own flex and grid layout:** Taffy already does it, and is used by Bevy, Zed, Dioxus, and Lapce's UI library.

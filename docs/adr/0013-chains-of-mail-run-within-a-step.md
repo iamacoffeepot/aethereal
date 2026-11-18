@@ -21,7 +21,6 @@ Work that is not a benchmark spawns and closes actors in the middle of chains. S
 
 **A send may be fused: handed to its receiver at once, and the receiver's turn run in the same step.** A chain of fused sends is a run. A send is fused only when all of these hold, and otherwise goes out as mail, as today:
 
-- the send is one that the handler it was sent from declares, as every send is;
 - the receiver sits in the same part as the sender, and is seated;
 - the part has hops left in the step's budget;
 - the send is the first its turn makes. A turn that sends several pieces of mail fuses at most the first, and the rest go out as mail. A chain fuses and a burst spreads, so a fan-out still reaches the workers;
@@ -48,37 +47,43 @@ The other views are not read by a turn, so their records wait for the step's fol
 
 **Each part gives the seats of the children its turns spawn, and what it gives depends on the parts alone.** Whether a send fuses depends on which part its receiver sits in, so placement must be the same however many workers run the step. Seats given out by worker, each worker numbering new seats in every few parts by its place among the workers, would put the same child in a different part on a different number of workers. So each part keeps its own seats, its free ones and its next new number, and as a step begins the engine gives each part that runs its room, and makes up to eight the seats it sets aside for that part in the other parts that have room, one in each in turn from the part after it. A child takes a seat of its parent's part while there is room, then one set aside, then one of its parent's part again. A seat set aside stays with the part it was set aside for until a child takes it. A root sits in the part with the fewest actors, and the children its `begin` stands up take that part's seats while it has room, then a new seat in the part that has numbered fewest.
 
-**Every actor type declares what it handles, and each of its handlers declares what it may send.** An actor type lists what it handles: kinds of mail, each once, whose handler states who may send it the kind, which the engine checks where the mail is delivered (ADR-0058); the ending of an actor it watches; and, when it wants one, a fallback for mail of any kind it does not list. Each has a handler of its own, and each handler, the type's `begin`, and its `end` lists what it may send: a kind, and where it goes. Where it goes is one of three things:
+**Every actor type declares what it handles, and no handler declares what it may send.** An actor type lists what it handles: kinds of mail, each once, whose handler states who may send it the kind, which the engine checks where the mail is delivered (ADR-0058); the ending of an actor it watches; and, when it wants one, a fallback for mail of any kind it does not list. Each has a handler of its own, and the list is collected from the handlers of the type's one `#[actor]` block, so it names every handler and nothing else (ADR-0059). A send is checked at its call against what it names: an actor of a type, which handles the kind; any actor whose type lists all of some kinds, which is what a reference that names a protocol, and not a type, resolves to, and a fallback does not count as listing a kind; and, at a typed path, a root the sender's type depends on (ADR-0059).
 
-- **a type**: an actor of that type, which handles the kind;
-- **the sender**: the source of the item being handled;
-- **whoever handles some kinds**: any actor whose type lists all of them. This is what a reference that names a protocol, and not a type, resolves to. A fallback does not count as listing a kind.
-
-A watch is not a send, and is not listed beside the sends: a turn may watch an actor when its actor's type handles endings, as the ending is handed to that handler, which the compiler checks at the watch (ADR-0022, which types a turn by its actor). **A watch is not listed as `Watches` among a handler's sends**, which would put in the list of who a handler reaches something that reaches no one.
+A watch is not a send: a turn may watch an actor when its actor's type handles endings, as the ending is handed to that handler, which the compiler checks at the watch (ADR-0022, which types a turn by its actor).
 
 ```rust
-impl Actor for Ponger {
-    type Handles = (Ping, Ended, Others);   // Ended when it watches, Others for its fallback
-    type BeginSends = ();
-    type EndSends = (ToType<Pinger, Done>,);
-    // begin, end
-}
-
-impl Handles<Ping> for Ponger {
-    type Sends = (ToSender<Pong>,);   // it may watch whoever pinged it, as it handles Ended
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.reply(&Pong)
+#[actor(parent = Pinger)]
+impl Ponger {
+    fn begin(_: Number) -> Result<Self, Fault> {
+        Ok(Self)
     }
+
+    fn end(self, turn: &mut Ending<'_, Self>) -> Result<(), Fault> {
+        turn.to(turn.parent()).send(&Done)?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn ping(&mut self, _: Ping, turn: &mut Turn<'_, Self, ActorRef<Pinger>>) -> Result<(), Fault> {
+        turn.to(*turn.from()).send(&Pong)?;   // it may watch whoever pinged it, as it handles Ended
+
+        Ok(())
+    }
+
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> { .. }      // when it watches
+
+    #[others]
+    fn others(&mut self, mail: Mail<'_>) -> Result<(), Fault> { .. }   // its fallback
 }
 ```
 
-**The declaration is the handler's own type, so the two cannot disagree.** A handler is handed a turn typed by its actor's type and by what it declares (ADR-0022), and that turn offers only those sends: a send to a type its handler does not list for that kind, a reply it does not list, or a send to a protocol it does not list does not build, nor a watch by an actor whose type does not handle endings, as its watcher could never be handed one. The checks a declaration's constants make run on each declaration the program uses, so it stops a build, not a check of types alone, and passes over a type nothing runs. A declaration written beside the code it describes, as a list the engine reads apart from the handler, would be a claim nothing ties to that code. The engine reads the same declaration as plain data, made from those types when the program is built: for each handler, what it handles and what it may send. There is no undeclared type, since a type is written as its handlers, and the declaration is the one way an actor is written.
+**The declaration is read from the handlers, so the two cannot disagree.** A handler is handed a turn typed by its actor's type and its guard (ADR-0022, ADR-0058), and a send through it builds only when its target takes the kind (ADR-0059), nor does a watch build by an actor whose type does not handle endings, as its watcher could never be handed one. The checks a declaration's constants make run on each declaration the program uses, so it stops a build, not a check of types alone, and passes over a type nothing runs. A declaration written beside the code it describes, as a list the engine reads apart from the handler, would be a claim nothing ties to that code. The engine reads the same declaration as plain data, made from those types when the program is built: for each handler, what it handles. There is no undeclared type, since a type is written as its handlers, and the declaration is the one way an actor is written.
 
-**What the types cannot see, the engine checks where the receiver is found.** A native actor sends through a target a turn's `to` makes (ADR-0016): a reference proves its receiver's type when it is made, by the spawn, resolve, or cast that saw it, and a path or a place relative to the sender is checked as the target is made, a place that holds another type being as an empty one (ADR-0022). **Nothing is checked at the send.** A send by name would need a check at each send, its receiver's type against the declared send each time, a mismatch stopping the engine; but every name such a send would take (a parent, a child, a sender, or an erased reference) has a typed target, so there is no `To` and no send by name. Mail is handed to the handler of its kind, or to the fallback when the receiver lists no handler for it. A send that breaks the declaration, and mail its receiver neither lists nor falls back on, is a false declaration. In a native actor it is a bug in the program, and the engine panics, naming the actor's type, its handler, and the send. A declaration is a promise the engine relies on, as an id is (ADR-0008), and a run built on a false one would not leave the views the program's turns imply. A false watch does not build. A guest's host holds its records to the same declaration, so a guest that sends or watches past it, which only one not built from the guest library can, fails that turn (ADR-0015).
+**What the types cannot see, the engine checks where the receiver is found.** A native actor sends through a target a turn's `to` makes (ADR-0016): a reference proves its receiver's type when it is made, by the spawn, resolve, or cast that saw it, and a path or a place relative to the sender is checked as the target is made, a place that holds another type being as an empty one (ADR-0022). **Nothing is checked at the send as it runs.** A send by name would need a check at each send, its receiver's type against the kind each time, a mismatch stopping the engine; but every name such a send would take (a parent, a child, a sender, or an erased reference) has a typed target, so there is no `To` and no send by name. Mail is handed to the handler of its kind, or to the fallback when the receiver lists no handler for it. Mail its receiver neither lists nor falls back on is a false declaration. In a native actor it is a bug in the program, and the engine panics, naming the actor's type and the kind. A declaration is a promise the engine relies on, as an id is (ADR-0008), and a run built on a false one would not leave the views the program's turns imply. A false watch does not build. A guest's host holds its records to its declaration, so a guest that sends at a typed path past its `depends`, or watches past what it handles, which only one not built from the guest library can, fails that turn (ADR-0015).
 
-**A guest declares the same way.** Its handlers are generated from the same impls in the guest's code, and its module carries the declaration as data the engine reads when it loads the module. The engine hands an item to a guest's handler by its number, through the guest's one export, and checks each send when it reads the effects the guest's turn wrote (ADR-0015). A guest is code the engine loaded and may not trust, so a false declaration by a guest fails the turn with a fault, and does not stop the engine.
-
-**What the declarations make possible: domains, worked out each step.** When a type is first seated, the engine numbers each of its handlers and works out once which handlers each one can reach by following declared sends. When a step is planned, each item waiting is a starting point, the handler of its receiver's type for its kind. Starting points whose reach shares an actor type belong to one domain, since a type's handlers share its actors' state. A domain is the set of actors whose turns in that step can affect one another. Domains are worked out again every step from what is waiting, so two domains that a burst of traffic joined split again once it stops. Fusing does not need them: the rules above are enough for it. They are what planning by domain needs, and what domains with steps of their own would stand on. The engine works them out once something in it uses them.
+**A guest declares the same way.** Its handlers are generated from the same impls in the guest's code, and its module carries the declaration as data the engine reads when it loads the module. The engine hands an item to a guest's handler by its number, through the guest's one export, and checks each send at a typed path against the type's `depends` when it reads the effects the guest's turn wrote (ADR-0015). A guest is code the engine loaded and may not trust, so a false declaration by a guest fails the turn with a fault, and does not stop the engine.
 
 ## Consequences
 
@@ -89,11 +94,9 @@ impl Handles<Ping> for Ponger {
 - The chains a part's waiting items begin share its budget, so many chains in one part each move a few hops in a step, where one chain alone would move many. An actor that sends a burst into its own part fuses nothing more until the next step.
 - Fusing saves steps, and leaves the work of each piece of mail as it was: a fused hop costs about what mail does, without its share of a step. Where a step holds a great deal of mail, that share is small, so fewer steps take about as long; where it holds little, as for a lone chain, the share is most of what mail costs.
 - A part keeps up to eight seats in other parts set aside, unused until it spawns past its room.
-- Every actor type declares its handlers, and every send is checked. The types catch a native actor's false declarations when the program is built; mail no handler takes stops the engine, and a guest's false send fails its turn, as its host checks it.
-- A handler is handed its kind already read, so the handler of a kind cannot be handed mail of another. Mail of a kind the receiver neither lists nor falls back on stops the engine at delivery, where a send to the sender or a reference could not be checked before.
-- The reach of each handler is worked out again whenever a new type is first seated, which happens between steps.
-- A reference that names a protocol reaches every type that handles that protocol's kinds, so domains are as precise as the declarations are, and a reference whose target type is unknown makes them coarse.
-- **Not decided here:** seating a child at once in its parent's part, in the step that stood it up, so a run could mail it fused; domains with steps of their own; using the time a step would spend waiting at its end, and not a fixed count, as the budget; following where references go kind by kind, from what each send declares it carries; and references that can be used only by the actor they are sent to and passed no further, which would make that following unnecessary for them.
+- Every actor type declares its handlers, and every send is checked at its call. The types catch a native actor's false send when the program is built; mail no handler takes stops the engine, and a guest's false send fails its turn, as its host checks it.
+- A handler is handed its kind already read, so the handler of a kind cannot be handed mail of another. Mail of a kind the receiver neither lists nor falls back on stops the engine at delivery.
+- **Not decided here:** seating a child at once in its parent's part, in the step that stood it up, so a run could mail it fused; domains, the sets of actors whose turns in a step can affect one another, learned from traffic as mail is routed and not from declarations (ADR-0059), and domains with steps of their own; using the time a step would spend waiting at its end, and not a fixed count, as the budget; and references that can be used only by the actor they are sent to and passed no further.
 
 ## Alternatives considered
 
@@ -101,7 +104,7 @@ impl Handles<Ping> for Ponger {
 - **A declared group of actor types that send only to one another, checked actor by actor.** Two instances of the group's types mailing one actor is ordinary, and a check that one actor was mailed only by its own run stopped correct programs. Order between two sources is promised nothing (ADR-0009), so mail from outside a run breaks nothing.
 - **One set of table changes for each part.** Whether a turn found an actor would then depend on which runs shared its part, and placement would change what a program does.
 - **Stopping a run at the first spawn or ending.** Simple, and correct, but the chains of real work spawn and close, and would stop fusing where they matter.
-- **A declaration beside one `handle` that takes every item.** The engine would read a list of what the actor sends, and nothing would tie that list to the code that sends. Every false declaration would be found only at a send, at run time.
-- **A type that declares nothing, whose sends are never checked or fused.** Two ways to write an actor, and a type that opts out of the check is a type the engine can plan nothing about.
+- **A declaration beside one `handle` that takes every item.** The engine would read a list of what the actor handles, and nothing would tie that list to the code that handles it. Every false declaration would be found only at delivery, at run time.
+- **A type that declares nothing, whose mail is never checked.** Two ways to write an actor, and a type that opts out of the check is one whose mail the engine cannot hand to a handler by its kind.
 - **The host handing the engine its groups between steps.** The engine has no step where it learns its types, so one would have to be added, and what a host hands over can disagree with the code it describes.
 - **Running ahead and undoing what proves wrong.** It needs every view to be undone, for a gain the rules above already take.

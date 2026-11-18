@@ -16,7 +16,7 @@ Every program on the browser writes the same lines again with `open([canvas], ..
 
 ADR-0028 makes a program's configuration plain data, read once as the program is set up, and leaves the second half of a standard start open: how each root's config is built from the configuration and from what the host makes. That half decides what a section belongs to. A configuration whose sections are listed apart from the roots that read them can hold a section nothing reads, which is a setting that does nothing, the failure ADR-0028 exists to prevent. And it can lack a section a root reads, found only when the program runs.
 
-What a setup already checks: `Setup::ready` builds only when each root reaches at a typed path of a singleton root only a root made before it (`Ordered<I>`, `MadeAfter`, in `aethereal-actor/src/path/roots.rs`, ADR-0022). A root states whom it reaches in its sends (`BeginSends`, each handler's `Sends`, `EndSends`), never in its config. What a root's config holds beyond plain data is what the host made: a `Given` (ADR-0019), a source or a controller made in a pair whose other end the host keeps (`Setup::source`, `Setup::controller`), and values another root's setup made, such as the `WindowId` a window was opened under.
+What a setup already checks: `Setup::ready` builds only when the setup holds every root type each root depends on, and each root is made after every singleton root type it depends on (`Ordered<I>`, `MadeAfter`, in `aethereal-actor/src/path/roots.rs`, ADR-0022). A root states which roots it reaches in its `depends` (ADR-0059), never in its config. What a root's config holds beyond plain data is what the host made: a `Given` (ADR-0019), a source or a controller made in a pair whose other end the host keeps (`Setup::source`, `Setup::controller`), and values another root's setup made, such as the `WindowId` a window was opened under.
 
 ## Decision
 
@@ -110,7 +110,7 @@ A section belongs to the root that reads it, so a composed section that nothing 
 
 | | when |
 |---|---|
-| a root reaches a singleton root not bootstrapped before it | compile, at `run` (`Ordered<I>`, as at `ready` now) |
+| a root depends on a root type the program does not bootstrap, or on a singleton root not bootstrapped before it | compile, at `run` (`Ordered<I>`, as at `ready` now) |
 | a root needs what no root before it provides | compile, at `run` / `build`, naming the type |
 | a root the host does not bootstrap | compile, at `.root` |
 | a host end the host does not serve | compile, in the root's `bootstrap` |

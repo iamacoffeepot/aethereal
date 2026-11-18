@@ -60,20 +60,18 @@ pub struct Stop;
 **An actor subscribes to a stage in a turn, and the engine sends it the stage.**
 
 ```rust
-type Handles = (Spawned, On<Render>, On<Present>);   // the stages it handles, and so may subscribe to
+// in Renderer's #[actor] block, whose #[on] handlers of Render and Present are the stages it handles,
+// and so may subscribe to
+#[tell]
+fn spawned(&mut self, _: Spawned, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    turn.subscribe::<Render>();    // builds only when Renderer handles On<Render>
+    turn.subscribe::<Present>();
 
-impl Handles<Spawned> for Renderer {
-    type Sends = ();
-    fn handle(&mut self, _: Spawned, turn: &mut Turn<'_, Self, Self::Sends>) -> Result<(), Fault> {
-        turn.subscribe::<Render>();    // builds only when Renderer handles On<Render>
-        turn.subscribe::<Present>();
-
-        Ok(())
-    }
+    Ok(())
 }
 ```
 
-- **What an actor may subscribe to is part of what its type declares**: the stages it handles, each listed in its `Handles` as `On<K>`, whose handler is handed the stage `K`. `turn.subscribe::<K>()` builds only when the actor's type handles `On<K>`, read from the turn's actor (ADR-0022). A guest's module carries each as a handler of a stage in its section, as it carries the rest of its declaration (ADR-0015), and its host checks a guest's subscription against them. **A subscription is not declared as `Subscribes<K>` among a handler's sends**: a subscription reaches no other actor, and the list of sends names who a handler reaches. A handled stage alone says which of a type's kinds are stages, as every kind is handled alike, so `On<K>` marks it; which handler may subscribe is not declared, as any turn of the actor may.
+- **What an actor may subscribe to is part of what its type declares**: the stages it handles, each listed in its `Handles` as `On<K>`, whose handler is handed the stage `K`. `turn.subscribe::<K>()` builds only when the actor's type handles `On<K>`, read from the turn's actor (ADR-0022). A guest's module carries each as a handler of a stage in its section, as it carries the rest of its declaration (ADR-0015), and its host checks a guest's subscription against them. **A subscription is not declared beside the stage it subscribes to**: a handled stage alone says which of a type's kinds are stages, as every kind is handled alike, so `On<K>` marks it; which handler may subscribe is not declared, as any turn of the actor may.
 - **An actor whose type handles a stage its engine's cycle does not hold is refused where it is made**, a root by `add_root` and a child by its spawn, which is refused naming the stage: a renderer on a server's engine is never made. So native code and guests are checked in one place, before any of their code runs, and a `subscribe` in a turn never finds its stage missing. A native actor and a chassis built into one program could be matched when it is built, but a guest is put while the program runs, so the check at the spawn would be needed anyway.
 - The spawn's refusal is `Refused::Unstaged`, holding the stage's kind. A spawn's check reads the cycle through the table its turn reads, as it reads the time (ADR-0018). So a guest's turn asks its host, in a call out, whether a stage is run, before it begins a child of its own blob. A module that skipped the check would make an actor that is never sent its stage, which changes nothing for any other actor. So its host does not check again.
 - Subscribing, and unsubscribing with `turn.unsubscribe::<K>()`, are effects, folded into a view of each stage's subscribers: many actors write one stage's set, and a set is the same in whatever order its records arrive (ADR-0011). A `begin` may subscribe. An actor that ends leaves every set.
