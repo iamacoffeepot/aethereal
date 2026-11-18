@@ -5,10 +5,9 @@ mod moving;
 pub use moving::{Breaker, Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report, Stubborn};
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Anywhere, Beginning, BlobId, Bytes, Carries, ChildOf, Ended, Ending,
-    ErasedActorRef, Fault, Given, Handle, Handles, Held, How, Job, JobId, Later, Level, On, Origin, Portability,
-    Protocol, ProtocolRef, Receives, Recursive, Refused, Resource, Runner, Running, Spawn, Speaks, Start, Stop, Tick,
-    Top, Turn, Unanswered, Upgrade, Upgrades, Within, parent, path,
+    ActorRef, Answered, Anywhere, Beginning, BlobId, Bytes, Ended, Ending, ErasedActorRef, Fault, Given, Handle, Held,
+    How, Job, JobId, Later, Level, Origin, Portability, ProtocolRef, Recursive, Refused, Resource, Runner, Running,
+    Speaks, Start, Stop, Tick, Turn, Unanswered, Upgrade, Upgrades, Within, actor, parent, path, protocol,
 };
 use aethereal_data::{
     ActorPath, Bound, Decode, DecodeError, Encode, EncodeError, KindId, KindName, Plain, Schema, Shape, Writer,
@@ -66,66 +65,37 @@ pub struct Echo {
     counted: u64,
 }
 
-impl ChildOf for Echo {
-    type Parent = Anywhere;
-}
-
-impl Actor for Echo {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping, Parcel, Increment, Shut);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Anywhere)]
+impl Echo {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.log(Level::Info, "echo began");
 
         Ok(Self { answered: 0, counted: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Echo {
-    type From = Anyone;
-    type Returns = Pong;
-
-    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+    #[request]
+    fn ping(&mut self, ping: Ping) -> Result<Pong, Fault> {
         self.answered += 1;
 
         Ok(Pong { n: ping.n })
     }
-}
 
-impl Handles<Parcel> for Echo {
-    type From = Anyone;
-    type Returns = Pong;
-
-    fn handle(&mut self, parcel: Parcel, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+    #[request]
+    fn parcel(&mut self, parcel: Parcel) -> Result<Pong, Fault> {
         self.answered += 1;
 
         Ok(Pong { n: u64::try_from(parcel.text.len()).unwrap_or(u64::MAX) })
     }
-}
 
-impl Handles<Increment> for Echo {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Increment, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn increment(&mut self, _: Increment) -> Result<(), Fault> {
         self.counted += 1;
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Echo {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -138,51 +108,26 @@ impl Handles<Shut> for Echo {
 #[kind(name = "aether.guest.mirror")]
 pub struct Mirror;
 
-impl ChildOf for Mirror {
-    type Parent = Top;
-}
-
-impl Actor for Mirror {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping, Shut, Crash);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Mirror {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Mirror {
-    type From = Anyone;
-    type Returns = Pong;
-
-    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+    #[request]
+    fn ping(&mut self, ping: Ping) -> Result<Pong, Fault> {
         Ok(Pong { n: ping.n })
     }
-}
 
-impl Handles<Shut> for Mirror {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
     }
-}
 
-impl Handles<Crash> for Mirror {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Crash, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn crash(&mut self, _: Crash) -> Result<(), Fault> {
         panic!("a mirror crashes when it is told to");
     }
 }
@@ -193,17 +138,8 @@ impl Handles<Crash> for Mirror {
 #[kind(name = "aether.guest.starter")]
 pub struct Starter;
 
-impl ChildOf for Starter {
-    type Parent = Top;
-}
-
-impl Actor for Starter {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (On<Start>, On<Stop>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Starter {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         turn.subscribe::<Stop>();
@@ -211,22 +147,16 @@ impl Actor for Starter {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Starter {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "started");
         turn.quit();
 
         Ok(())
     }
-}
 
-impl Receives<On<Stop>> for Starter {
-    fn handle(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn stop(&mut self, _: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, "stopping");
 
         Ok(())
@@ -238,30 +168,16 @@ impl Receives<On<Stop>> for Starter {
 #[kind(name = "aether.guest.ticker")]
 pub struct Ticker;
 
-impl ChildOf for Ticker {
-    type Parent = Anywhere;
-}
-
-impl Actor for Ticker {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (On<Tick>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Anywhere)]
+impl Ticker {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Tick>();
 
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Tick>> for Ticker {
-    fn handle(&mut self, _: Tick, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn tick(&mut self, _: Tick) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -272,17 +188,8 @@ impl Receives<On<Tick>> for Ticker {
 #[kind(name = "aether.guest.metronome")]
 pub struct Metronome;
 
-impl ChildOf for Metronome {
-    type Parent = Top;
-}
-
-impl Actor for Metronome {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Ticker,);
-
+#[actor(spawns(Ticker))]
+impl Metronome {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn::<Ticker>(&(), EchoConfig);
         let said = match spawned {
@@ -293,10 +200,6 @@ impl Actor for Metronome {
         turn.log(Level::Info, said);
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -360,17 +263,8 @@ pub struct Foreman {
     ran: Vec<JobId>,
 }
 
-impl ChildOf for Foreman {
-    type Parent = Top;
-}
-
-impl Actor for Foreman {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Go, CallOff, Shut, Answer<Pong, Shift>);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Foreman {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let blob = turn.put(vec![7; 3]).map_err(|why| unhatched(&why))?;
         let job = turn.run(&Measure { blob }, &Shift { at: 0 })?;
@@ -379,16 +273,8 @@ impl Actor for Foreman {
         Ok(Self { ran: vec![job] })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Go> for Foreman {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, go: Go, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn go(&mut self, go: Go, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         turn.to(*turn.from()).send(&Pong { n: go.n })?;
         let first = turn.run(&Chore { n: go.n }, &Shift { at: go.n })?;
         let second = turn.run(&Chore { n: go.n + 1 }, &Shift { at: go.n + 1 })?;
@@ -398,13 +284,9 @@ impl Handles<Go> for Foreman {
 
         Ok(())
     }
-}
 
-impl Handles<CallOff> for Foreman {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: CallOff, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn call_off(&mut self, _: CallOff, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         for job in self.ran.drain(..) {
             turn.cancel(job);
         }
@@ -412,21 +294,16 @@ impl Handles<CallOff> for Foreman {
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Foreman {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Pong, Shift>> for Foreman {
-    fn handle(&mut self, (done, shift): (Answered<Pong>, Shift), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (done, shift): (Answered<Pong>, Shift), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = match done {
             Answered::Yes(pong) => format!("{} answered {}", shift.at, pong.n),
             Answered::No(why) => format!("{} unanswered: {why:?}", shift.at),
@@ -442,25 +319,12 @@ impl Receives<Answer<Pong, Shift>> for Foreman {
 #[kind(name = "aether.guest.overseer")]
 pub struct Overseer;
 
-impl ChildOf for Overseer {
-    type Parent = Top;
-}
-
-impl Actor for Overseer {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Apprentice,);
-
+#[actor(spawns(Apprentice))]
+impl Overseer {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.spawn::<Apprentice>(&(), Chore { n: 7 }).map_err(|why| unhatched(&why))?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -470,17 +334,8 @@ impl Actor for Overseer {
 #[kind(name = "aether.guest.apprentice")]
 pub struct Apprentice;
 
-impl ChildOf for Apprentice {
-    type Parent = Overseer;
-}
-
-impl Actor for Apprentice {
-    type Config = Chore;
-    type Key = ();
-    type Handles = (Answer<Pong, Shift>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Overseer)]
+impl Apprentice {
     fn begin(chore: Chore, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let at = chore.n;
         turn.run(&chore, &Shift { at })?;
@@ -488,13 +343,8 @@ impl Actor for Apprentice {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pong, Shift>> for Apprentice {
-    fn handle(&mut self, (done, shift): (Answered<Pong>, Shift), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (done, shift): (Answered<Pong>, Shift), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let said = match done {
             Answered::Yes(pong) => format!("{} answered {}", shift.at, pong.n),
             Answered::No(why) => format!("{} unanswered: {why:?}", shift.at),
@@ -510,31 +360,14 @@ impl Receives<Answer<Pong, Shift>> for Apprentice {
 #[kind(name = "aether.guest.timekeeper")]
 pub struct Timekeeper;
 
-impl ChildOf for Timekeeper {
-    type Parent = Top;
-}
-
-impl Actor for Timekeeper {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Timekeeper {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Timekeeper {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, _: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         let n = turn.now().nanos();
         turn.to(*turn.from()).send(&Pong { n })?;
 
@@ -551,43 +384,22 @@ pub struct Responder {
     answered: u64,
 }
 
-impl ChildOf for Responder {
-    type Parent = Top;
-}
-
-impl Actor for Responder {
-    type Config = EchoConfig;
-    type Key = u64;
-    type Handles = (Ping, Shut);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64)]
+impl Responder {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Responder {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         self.answered += 1;
         turn.to(*turn.from()).send(&Pong { n: ping.n })?;
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Responder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -599,23 +411,10 @@ impl Handles<Shut> for Responder {
 #[kind(name = "aether.guest.doomed")]
 pub struct Doomed;
 
-impl ChildOf for Doomed {
-    type Parent = Top;
-}
-
-impl Actor for Doomed {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Doomed {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         panic!("a doomed actor crashes as it begins");
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -639,17 +438,8 @@ pub struct Brood {
     next: u64,
 }
 
-impl ChildOf for Brood {
-    type Parent = Top;
-}
-
-impl Actor for Brood {
-    type Config = BroodConfig;
-    type Key = ();
-    type Handles = (Grow,);
-    type Depends = ();
-    type Spawns = (Adder,);
-
+#[actor(spawns(Adder))]
+impl Brood {
     fn begin(config: BroodConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.children {
             let config = AddBy { by: 10 * key + 1, deeper: u64::from(key == 0) };
@@ -661,16 +451,8 @@ impl Actor for Brood {
         Ok(Self { next: config.children })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Grow> for Brood {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn grow(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let key = self.next;
         if turn.spawn::<Adder>(&key, AddBy { by: 10 * key + 1, deeper: 0 }).is_err() {
             turn.log(Level::Error, "an adder was refused");
@@ -697,17 +479,8 @@ pub struct Adder {
     by: u64,
 }
 
-impl ChildOf for Adder {
-    type Parent = Anywhere;
-}
-
-impl Actor for Adder {
-    type Config = AddBy;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = (Self,);
-
+#[actor(key = u64, parent = Anywhere, spawns(Self))]
+impl Adder {
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if config.deeper > 0 {
             let below = AddBy { by: config.by + 1000, deeper: config.deeper - 1 };
@@ -719,16 +492,8 @@ impl Actor for Adder {
         Ok(Self { by: config.by })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Adder {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         turn.to(*turn.from()).send(&Pong { n: ping.n + self.by })?;
 
         Ok(())
@@ -748,17 +513,8 @@ pub struct Seek {
 #[kind(name = "aether.guest.seeker")]
 pub struct Seeker;
 
-impl ChildOf for Seeker {
-    type Parent = Top;
-}
-
-impl Actor for Seeker {
-    type Config = Seek;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Seeker {
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
             if let Some(found) = turn.resolve(path).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -767,10 +523,6 @@ impl Actor for Seeker {
         }
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -781,17 +533,8 @@ impl Actor for Seeker {
 #[kind(name = "aether.guest.caster")]
 pub struct Caster;
 
-impl ChildOf for Caster {
-    type Parent = Top;
-}
-
-impl Actor for Caster {
-    type Config = Seek;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Caster {
     fn begin(seek: Seek, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for (n, path) in (0..).zip(&seek.paths) {
             let Some(found) = turn.resolve(path) else {
@@ -806,10 +549,6 @@ impl Actor for Caster {
         }
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -836,17 +575,8 @@ pub struct Watcher {
     tell: ProtocolRef<(Ping,)>,
 }
 
-impl ChildOf for Watcher {
-    type Parent = Top;
-}
-
-impl Actor for Watcher {
-    type Config = Watching;
-    type Key = ();
-    type Handles = (Ended,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Watcher {
     fn begin(watching: Watching, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(tell) = turn.resolve(&watching.tell).and_then(|found| turn.cast(found)) else {
             return Err(Fault::new(&Untold)?);
@@ -862,13 +592,8 @@ impl Actor for Watcher {
         Ok(Self { watched, tell })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Ended> for Watcher {
-    fn handle(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let place = (0..).zip(&self.watched).find_map(|(place, watched)| (*watched == ended.actor()).then_some(place));
         let how = match ended.how() {
             How::Closed => 1,
@@ -891,31 +616,14 @@ pub struct Reporter {
     key: u64,
 }
 
-impl ChildOf for Reporter {
-    type Parent = Anywhere;
-}
-
-impl Actor for Reporter {
-    type Config = AddBy;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(config: AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Anywhere)]
+impl Reporter {
+    fn begin(config: AddBy) -> Result<Self, Fault> {
         Ok(Self { key: config.by })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Reporter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&Pong { n: ping.n + self.key })?;
 
         Ok(())
@@ -944,26 +652,13 @@ const fn refused(refused: &Refused) -> u64 {
 #[kind(name = "aether.guest.chick")]
 pub struct Chick;
 
-impl ChildOf for Chick {
-    type Parent = Hatcher;
-}
-
-impl Actor for Chick {
-    type Config = AddBy;
-    type Key = u64;
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Hatcher)]
+impl Chick {
     fn begin(config: AddBy, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(turn.parent()).send(&Pong { n: 100 + config.by })?;
         turn.log(Level::Info, "a chick began");
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -973,31 +668,14 @@ impl Actor for Chick {
 #[kind(name = "aether.guest.chick")]
 pub struct FakeChick;
 
-impl ChildOf for FakeChick {
-    type Parent = Hatcher;
-}
-
-impl Actor for FakeChick {
-    type Config = AddBy;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: AddBy, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Hatcher)]
+impl FakeChick {
+    fn begin(_: AddBy) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for FakeChick {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, _: Ping) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -1007,23 +685,10 @@ impl Handles<Ping> for FakeChick {
 #[kind(name = "aether.guest.stray")]
 pub struct Stray;
 
-impl ChildOf for Stray {
-    type Parent = Hatcher;
-}
-
-impl Actor for Stray {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Hatcher)]
+impl Stray {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1059,17 +724,8 @@ pub struct Hatcher {
     grown: u64,
 }
 
-impl ChildOf for Hatcher {
-    type Parent = Anywhere;
-}
-
-impl Actor for Hatcher {
-    type Config = Hatch;
-    type Key = ();
-    type Handles = (Pong, Grow);
-    type Depends = ();
-    type Spawns = (Boomerang, Reporter, Chick, Stray, FakeChick);
-
+#[actor(parent = Anywhere, spawns(Boomerang, Reporter, Chick, Stray, FakeChick))]
+impl Hatcher {
     fn begin(hatch: Hatch, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let reporter = turn.spawn_from::<Reporter>(Origin::Blob(&hatch.other), &7, &AddBy { by: 20, deeper: 0 });
         turn.to(reporter.map_err(|why| unhatched(&why))?).send(&Ping { n: 0 })?;
@@ -1077,27 +733,15 @@ impl Actor for Hatcher {
         Ok(Self { other: hatch.other, home: hatch.home, grown: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Pong> for Hatcher {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pong(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&pong)?;
 
         Ok(())
     }
-}
 
-impl Handles<Grow> for Hatcher {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn grow(&mut self, _: Grow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let chick = AddBy { by: 10 * self.grown + 2, deeper: 0 };
         let _: ActorRef<Chick> = turn.spawn(&self.grown, chick).map_err(|why| unhatched(&why))?;
         let stray: Result<ActorRef<Stray>, _> = turn.spawn(&(), EchoConfig);
@@ -1137,17 +781,8 @@ pub struct Boomerang {
     home: Bytes,
 }
 
-impl ChildOf for Boomerang {
-    type Parent = Hatcher;
-}
-
-impl Actor for Boomerang {
-    type Config = Home;
-    type Key = ();
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = (Reporter,);
-
+#[actor(parent = Hatcher, spawns(Reporter))]
+impl Boomerang {
     fn begin(home: Home, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&home.home), &0, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(300, |why| 300 + refused(&why));
@@ -1156,16 +791,8 @@ impl Actor for Boomerang {
         Ok(Self { home: home.home })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Boomerang {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let spawned = turn.spawn_from::<Reporter>(Origin::Blob(&self.home), &1, &AddBy { by: 0, deeper: 0 });
         let n = spawned.err().map_or(400, |why| 400 + refused(&why));
         turn.to(turn.parent()).send(&Pong { n })?;
@@ -1180,26 +807,13 @@ impl Handles<Ping> for Boomerang {
 #[kind(name = "aether.guest.heir")]
 pub struct Heir;
 
-impl ChildOf for Heir {
-    type Parent = Top;
-}
-
-impl Actor for Heir {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Reporter,);
-
+#[actor(spawns(Reporter))]
+impl Heir {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let spawned = turn.spawn_from(Origin::Head, &5, &AddBy { by: 1, deeper: 0 });
         let _: ActorRef<Reporter> = spawned.map_err(|why| unhatched(&why))?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1227,17 +841,8 @@ pub struct Librarian {
     book: Bytes,
 }
 
-impl ChildOf for Librarian {
-    type Parent = Anywhere;
-}
-
-impl Actor for Librarian {
-    type Config = Shelf;
-    type Key = ();
-    type Handles = (Ping, Book, Shut);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Anywhere)]
+impl Librarian {
     fn begin(shelf: Shelf, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let n = turn.read(&shelf.book).len() as u64;
         if let Some(tell) = turn.resolve(&shelf.tell).and_then(|found| turn.cast::<(Pong,)>(found)) {
@@ -1247,41 +852,25 @@ impl Actor for Librarian {
         Ok(Self { book: shelf.book })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Librarian {
-    type From = Speaks<(Book,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         turn.to(*turn.from()).send(&Book { blob })?;
 
         Ok(())
     }
-}
 
-impl Handles<Book> for Librarian {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn book(&mut self, book: Book, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         let n = 100 + turn.read(&book.blob).len() as u64;
         turn.to(*turn.from()).send(&Pong { n })?;
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Librarian {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -1314,26 +903,13 @@ fn forged(id: BlobId) -> Bytes {
 #[kind(name = "aether.guest.forger")]
 pub struct Forger;
 
-impl ChildOf for Forger {
-    type Parent = Top;
-}
-
-impl Actor for Forger {
-    type Config = Forge;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Forger {
     fn begin(forge: Forge, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let forged = forged(BlobId::new(forge.engine, forge.bits));
         let _ = turn.read(&forged).len();
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1345,23 +921,10 @@ pub struct Hoarder {
     forged: Bytes,
 }
 
-impl ChildOf for Hoarder {
-    type Parent = Top;
-}
-
-impl Actor for Hoarder {
-    type Config = Forge;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(forge: Forge, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Hoarder {
+    fn begin(forge: Forge) -> Result<Self, Fault> {
         Ok(Self { forged: forged(BlobId::new(forge.engine, forge.bits)) })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1372,31 +935,14 @@ impl Actor for Hoarder {
 #[kind(name = "aether.guest.spendthrift")]
 pub struct Spendthrift;
 
-impl ChildOf for Spendthrift {
-    type Parent = Top;
-}
-
-impl Actor for Spendthrift {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = (Librarian,);
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(spawns(Librarian))]
+impl Spendthrift {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Spendthrift {
-    type From = Speaks<(Book,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Book,)>>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         let book = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         let tell = ActorPath::from_root(&aethereal_data::PathSegment::new(KindName::new("aether.guest.no_one"), &()));
@@ -1425,17 +971,8 @@ pub struct Parting {
     pings: u64,
 }
 
-impl ChildOf for Parting {
-    type Parent = Top;
-}
-
-impl Actor for Parting {
-    type Config = Farewell;
-    type Key = u64;
-    type Handles = (Ping, Shut);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64)]
+impl Parting {
     fn begin(farewell: Farewell, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Some(tell) = turn.resolve(&farewell.tell).and_then(|found| turn.cast(found)) else {
             return Err(Fault::new(&Untold)?);
@@ -1451,13 +988,9 @@ impl Actor for Parting {
 
         Ok(())
     }
-}
 
-impl Handles<Ping> for Parting {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping) -> Result<(), Fault> {
         if ping.n == 0 {
             return Err(Fault::new(&Untold)?);
         }
@@ -1465,13 +998,9 @@ impl Handles<Ping> for Parting {
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for Parting {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -1492,17 +1021,8 @@ pub struct Stacks {
 #[kind(name = "aether.guest.archive")]
 pub struct Archive;
 
-impl ChildOf for Archive {
-    type Parent = Top;
-}
-
-impl Actor for Archive {
-    type Config = Stacks;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Reader,);
-
+#[actor(spawns(Reader))]
+impl Archive {
     fn begin(stacks: Stacks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..stacks.readers {
             if turn.spawn::<Reader>(&key, Book { blob: stacks.book.clone() }).is_err() {
@@ -1511,10 +1031,6 @@ impl Actor for Archive {
         }
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -1526,31 +1042,14 @@ pub struct Reader {
     book: Bytes,
 }
 
-impl ChildOf for Reader {
-    type Parent = Archive;
-}
-
-impl Actor for Reader {
-    type Config = Book;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(book: Book, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Archive)]
+impl Reader {
+    fn begin(book: Book) -> Result<Self, Fault> {
         Ok(Self { book: book.blob })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Reader {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         let n = ping.n + turn.read(&self.book).len() as u64;
         turn.to(*turn.from()).send(&Pong { n })?;
         turn.close();
@@ -1624,17 +1123,8 @@ impl<A> Resolves for Turn<'_, A> {
     }
 }
 
-impl ChildOf for Porter {
-    type Parent = Recursive;
-}
-
-impl Actor for Porter {
-    type Config = Porting;
-    type Key = u64;
-    type Handles = (Hand,);
-    type Depends = ();
-    type Spawns = (Self, Bearer);
-
+#[actor(key = u64, parent = Recursive, spawns(Self, Bearer))]
+impl Porter {
     fn begin(config: Porting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Porting { to, lamps, how } = config;
         let held: Vec<Handle<Lamp>> = lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
@@ -1663,16 +1153,8 @@ impl Actor for Porter {
         Ok(porter)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Hand> for Porter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, hand: Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn hand(&mut self, hand: Hand, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held: Vec<Handle<Lamp>> = hand.lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
         let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
         let to = self.to(turn)?;
@@ -1692,17 +1174,8 @@ pub struct Bearer {
     lamps: Vec<Handle<Lamp>>,
 }
 
-impl ChildOf for Bearer {
-    type Parent = Porter;
-}
-
-impl Actor for Bearer {
-    type Config = Porting;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64, parent = Porter)]
+impl Bearer {
     fn begin(config: Porting, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let Porting { to, lamps, .. } = config;
         let lamps = lamps.into_iter().map(|lamp| turn.take(lamp)).collect::<Result<_, _>>()?;
@@ -1710,16 +1183,8 @@ impl Actor for Bearer {
         Ok(Self { to, lamps })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Bearer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, _: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = core::mem::take(&mut self.lamps);
         let lamps = held.into_iter().map(|lamp| turn.give(lamp)).collect::<Result<Vec<_>, _>>()?;
         let to = turn.resolve_cast(&self.to).ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))?;
@@ -1730,28 +1195,14 @@ impl Handles<Ping> for Bearer {
 }
 
 /// The protocol an echo is asked pings through: each answered with a pong.
+#[protocol(Ping(answers = Pong))]
 pub struct Pings;
-
-impl Protocol for Pings {
-    type Kinds = (Ping,);
-}
-
-impl Carries<Ping> for Pings {
-    type Answers = (Pong,);
-}
 
 /// The protocol an echo is asked to count through, as if each were answered with a pong: an echo counts and does not
 /// answer, so the engine says it went unanswered. An echo's type does not conform to it, as its handler of an
 /// increment answers nothing: an asker reaches it through a cast, which reads only that the echo takes the kind.
+#[protocol(Increment(answers = Pong))]
 pub struct Counts;
-
-impl Protocol for Counts {
-    type Kinds = (Increment,);
-}
-
-impl Carries<Increment> for Counts {
-    type Answers = (Pong,);
-}
 
 /// A word to a querent to ask its echo `pings` pings and then to count once, each kept with which it was, counting
 /// from `first`.
@@ -1786,33 +1237,16 @@ pub struct Querent {
     echo: ActorRef<Echo>,
 }
 
-impl ChildOf for Querent {
-    type Parent = Anywhere;
-}
-
-impl Actor for Querent {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Query, Answer<Pong, Which>);
-    type Depends = ();
-    type Spawns = (Echo,);
-
+#[actor(parent = Anywhere, spawns(Echo))]
+impl Querent {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { echo })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Query> for Querent {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn query(&mut self, query: Query, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let last = query.first + query.pings;
         for at in query.first..last {
             turn.to(self.echo.protocol::<Pings>()).ask(&Ping { n: at * 10 }, &Which { at })?;
@@ -1824,10 +1258,9 @@ impl Handles<Query> for Querent {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Pong, Which>> for Querent {
-    fn handle(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let heard = match pong {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
@@ -1853,17 +1286,8 @@ pub struct Opening {
 #[kind(name = "aether.guest.opener")]
 pub struct Opener;
 
-impl ChildOf for Opener {
-    type Parent = Anywhere;
-}
-
-impl Actor for Opener {
-    type Config = Opening;
-    type Key = u64;
-    type Handles = (Answer<Pong, Which>, Heard);
-    type Depends = ();
-    type Spawns = (Echo, Self, Inlet);
-
+#[actor(key = u64, parent = Anywhere, spawns(Echo, Self, Inlet))]
+impl Opener {
     fn begin(opening: Opening, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo: ActorRef<Echo> = turn.spawn(&(), EchoConfig).map_err(|why| unhatched(&why))?;
         turn.to(echo.protocol::<Pings>()).ask(&Ping { n: opening.n }, &Which { at: opening.n })?;
@@ -1879,13 +1303,8 @@ impl Actor for Opener {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pong, Which>> for Opener {
-    fn handle(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let heard = match pong {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
@@ -1894,13 +1313,9 @@ impl Receives<Answer<Pong, Which>> for Opener {
 
         Ok(())
     }
-}
 
-impl Handles<Heard> for Opener {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, heard: Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn heard(&mut self, heard: Heard, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Heard,)>()).send(&heard)?;
 
         Ok(())
@@ -1913,17 +1328,8 @@ impl Handles<Heard> for Opener {
 #[kind(name = "aether.guest.inlet")]
 pub struct Inlet;
 
-impl ChildOf for Inlet {
-    type Parent = Opener;
-}
-
-impl Actor for Inlet {
-    type Config = Ping;
-    type Key = ();
-    type Handles = (Answer<Pong, Which>,);
-    type Depends = ();
-    type Spawns = (Echo,);
-
+#[actor(parent = Opener, spawns(Echo))]
+impl Inlet {
     fn begin(ping: Ping, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn::<Echo>(&(), EchoConfig).map_err(|why| unhatched(&why))?;
         turn.to(echo.protocol::<Pings>()).ask(&Ping { n: ping.n }, &Which { at: ping.n })?;
@@ -1931,13 +1337,8 @@ impl Actor for Inlet {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pong, Which>> for Inlet {
-    fn handle(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let heard = match pong {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
@@ -1954,31 +1355,14 @@ impl Receives<Answer<Pong, Which>> for Inlet {
 #[kind(name = "aether.guest.shelver")]
 pub struct Shelver;
 
-impl ChildOf for Shelver {
-    type Parent = Anywhere;
-}
-
-impl Actor for Shelver {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere)]
+impl Shelver {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Shelver {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let len = usize::try_from(ping.n).unwrap_or(0);
         turn.to(parent::<(Pong,)>()).send(&Pong { n: ping.n })?;
         for more in 0..2 {
@@ -2005,15 +1389,8 @@ pub struct Weight {
 }
 
 /// The protocol a steward is asked to weigh through.
+#[protocol(Weigh(answers = Weight))]
 pub struct Weighs;
-
-impl Protocol for Weighs {
-    type Kinds = (Weigh,);
-}
-
-impl Carries<Weigh> for Weighs {
-    type Answers = (Weight,);
-}
 
 /// What a steward does with the pings it holds: `0` answers each, `1` lets go of each, `2` closes on them, and `3`
 /// keeps each in what it keeps for a request of its own, and answers it as what became of that request is handed back.
@@ -2033,43 +1410,25 @@ pub struct Envoy {
     held: Vec<Held<Pong>>,
 }
 
-impl ChildOf for Envoy {
-    type Parent = Anywhere;
-}
-
-impl Actor for Envoy {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping, Answer<Pong, Which>);
-    type Depends = ();
-    type Spawns = (Steward,);
-
+#[actor(parent = Anywhere, spawns(Steward))]
+impl Envoy {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let steward = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { steward, held: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Envoy {
-    type From = Anyone;
-    type Returns = Later<Pong>;
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+    #[request]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
         let (held, later) = turn.hold();
         self.held.push(held);
         turn.to(self.steward.protocol::<Pings>()).ask(&Ping { n: ping.n }, &Which { at: ping.n })?;
 
         Ok(later)
     }
-}
 
-impl Receives<Answer<Pong, Which>> for Envoy {
-    fn handle(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, which): (Answered<Pong>, Which), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let heard = match pong {
             Answered::Yes(pong) => Heard::Pong { at: which.at, n: pong.n },
             Answered::No(why) => Heard::No { at: which.at, why },
@@ -2101,17 +1460,8 @@ pub struct Steward {
     closed_on: u64,
 }
 
-impl ChildOf for Steward {
-    type Parent = Anywhere;
-}
-
-impl Actor for Steward {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping, Weigh, Release, Answer<Pong, Kept>);
-    type Depends = ();
-    type Spawns = (Echo,);
-
+#[actor(parent = Anywhere, spawns(Echo))]
+impl Steward {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
@@ -2132,37 +1482,25 @@ impl Actor for Steward {
 
         Ok(())
     }
-}
 
-impl Handles<Ping> for Steward {
-    type From = Anyone;
-    type Returns = Later<Pong>;
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
+    #[request]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self>) -> Result<Later<Pong>, Fault> {
         let (held, later) = turn.hold();
         self.held.push((ping.n, held));
 
         Ok(later)
     }
-}
 
-impl Handles<Weigh> for Steward {
-    type From = Anyone;
-    type Returns = Later<Weight>;
-
-    fn handle(&mut self, weigh: Weigh, turn: &mut Turn<'_, Self>) -> Result<Later<Weight>, Fault> {
+    #[request]
+    fn weigh(&mut self, weigh: Weigh, turn: &mut Turn<'_, Self>) -> Result<Later<Weight>, Fault> {
         let (held, later) = turn.hold();
         self.weighing.push((weigh.n, held));
 
         Ok(later)
     }
-}
 
-impl Handles<Release> for Steward {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn release(&mut self, release: Release, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let held = mem::take(&mut self.held);
         let weighing = mem::take(&mut self.weighing);
         match release.how {
@@ -2196,10 +1534,9 @@ impl Handles<Release> for Steward {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Pong, Kept>> for Steward {
-    fn handle(&mut self, (_, kept): (Answered<Pong>, Kept), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (_, kept): (Answered<Pong>, Kept), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.answer(kept.held, &Pong { n: 200 + kept.n })?;
 
         Ok(())
@@ -2228,43 +1565,25 @@ pub struct Stasher {
     echo: ActorRef<Echo>,
 }
 
-impl ChildOf for Stasher {
-    type Parent = Anywhere;
-}
-
-impl Actor for Stasher {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Stash, Answer<Pong, Stashed>);
-    type Depends = ();
-    type Spawns = (Echo,);
-
+#[actor(parent = Anywhere, spawns(Echo))]
+impl Stasher {
     fn begin(_: EchoConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let echo = turn.spawn(&(), EchoConfig).map_err(|_| Fault::new(&Shut).unwrap_or_else(Fault::from))?;
 
         Ok(Self { echo })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Stash> for Stasher {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, stash: Stash, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn stash(&mut self, stash: Stash, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let len = usize::try_from(stash.len).unwrap_or_default();
         let blob = turn.put(vec![7; len]).map_err(|why| unhatched(&why))?;
         turn.to(self.echo.protocol::<Pings>()).ask(&Ping { n: 0 }, &Stashed { blob })?;
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Pong, Stashed>> for Stasher {
-    fn handle(&mut self, (pong, stashed): (Answered<Pong>, Stashed), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (pong, stashed): (Answered<Pong>, Stashed), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let at = turn.read(&stashed.blob).len() as u64;
         let heard = match pong {
             Answered::Yes(pong) => Heard::Pong { at, n: pong.n },
@@ -2282,26 +1601,13 @@ impl Receives<Answer<Pong, Stashed>> for Stasher {
 #[kind(name = "aether.guest.nestling")]
 pub struct Nestling;
 
-impl ChildOf for Nestling {
-    type Parent = Nester;
-}
-
-impl Actor for Nestling {
-    type Config = Book;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(parent = Nester)]
+impl Nestling {
     fn begin(book: Book, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let n = 200 + turn.read(&book.blob).len() as u64;
         turn.to(turn.parent()).send(&Pong { n })?;
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -2311,42 +1617,21 @@ impl Actor for Nestling {
 #[kind(name = "aether.guest.nester")]
 pub struct Nester;
 
-impl ChildOf for Nester {
-    type Parent = Anywhere;
-}
-
-impl Actor for Nester {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Book, Pong);
-    type Depends = ();
-    type Spawns = (Nestling,);
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, spawns(Nestling))]
+impl Nester {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Book> for Nester {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, book: Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn book(&mut self, book: Book, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.spawn::<Nestling>(&(), book).map_err(|why| unhatched(&why))?;
 
         Ok(())
     }
-}
 
-impl Handles<Pong> for Nester {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn pong(&mut self, pong: Pong, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.to(parent::<(Pong,)>()).send(&pong)?;
 
         Ok(())
@@ -2370,31 +1655,14 @@ pub struct Ring {
 #[kind(name = "aether.guest.bell")]
 pub struct Bell;
 
-impl ChildOf for Bell {
-    type Parent = Top;
-}
-
-impl Actor for Bell {
-    type Config = EchoConfig;
-    type Key = u64;
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64)]
+impl Bell {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Bell {
-    type From = Anyone;
-    type Returns = Pong;
-
-    fn handle(&mut self, ping: Ping, _: &mut Turn<'_, Self>) -> Result<Pong, Fault> {
+    #[request]
+    fn ping(&mut self, ping: Ping) -> Result<Pong, Fault> {
         Ok(Pong { n: ping.n + 1 })
     }
 }
@@ -2407,30 +1675,16 @@ pub struct Ringer {
     keeper: ActorPath,
 }
 
-impl ChildOf for Ringer {
-    type Parent = Top;
-}
-
-impl Actor for Ringer {
-    type Config = Ring;
-    type Key = ();
-    type Handles = (Answer<Pong, Ringing>,);
-    type Depends = (Bell,);
-    type Spawns = ();
-
+#[actor(depends(Bell))]
+impl Ringer {
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.to(path::<Bell>(0)).ask(&Ping { n: 4 }, &Ringing)?;
 
         Ok(Self { keeper: ring.keeper })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Pong, Ringing>> for Ringer {
-    fn handle(&mut self, (answered, _): (Answered<Pong>, Ringing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[answer]
+    fn pong(&mut self, (answered, _): (Answered<Pong>, Ringing), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let n = match answered {
             Answered::Yes(pong) => pong.n,
             Answered::No(_) => 90,
@@ -2448,31 +1702,14 @@ impl Receives<Answer<Pong, Ringing>> for Ringer {
 #[kind(name = "aether.guest.steeple")]
 pub struct Steeple;
 
-impl ChildOf for Steeple {
-    type Parent = Top;
-}
-
-impl Actor for Steeple {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = (Ping,);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Steeple {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for Steeple {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Ping, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, _: Ping) -> Result<(), Fault> {
         Ok(())
     }
 }
@@ -2483,23 +1720,10 @@ impl Handles<Ping> for Steeple {
 #[kind(name = "aether.guest.sexton")]
 pub struct Sexton;
 
-impl ChildOf for Sexton {
-    type Parent = Anywhere;
-}
-
-impl Actor for Sexton {
-    type Config = EchoConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = (Steeple,);
-    type Spawns = ();
-
-    fn begin(_: EchoConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(parent = Anywhere, depends(Steeple))]
+impl Sexton {
+    fn begin(_: EchoConfig) -> Result<Self, Fault> {
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -2511,30 +1735,16 @@ pub struct Chimer {
     keeper: ActorPath,
 }
 
-impl ChildOf for Chimer {
-    type Parent = Top;
-}
-
-impl Actor for Chimer {
-    type Config = Ring;
-    type Key = ();
-    type Handles = (On<Start>,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Chimer {
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
 
         Ok(Self { keeper: ring.keeper })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Chimer {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if let Some(keeper) = turn.resolve(&self.keeper).and_then(|found| turn.cast::<(Ping,)>(found)) {
             turn.to(keeper).send(&Ping { n: 7 })?;
         }
@@ -2554,17 +1764,8 @@ pub struct Usher {
     found_as_it_began: bool,
 }
 
-impl ChildOf for Usher {
-    type Parent = Top;
-}
-
-impl Actor for Usher {
-    type Config = Ring;
-    type Key = ();
-    type Handles = (On<Start>,);
-    type Depends = ();
-    type Spawns = (Echo,);
-
+#[actor(spawns(Echo))]
+impl Usher {
     fn begin(ring: Ring, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         turn.subscribe::<Start>();
         let _ = turn.spawn::<Echo>(&(), EchoConfig);
@@ -2574,13 +1775,8 @@ impl Actor for Usher {
         Ok(Self { keeper: ring.keeper, found_as_it_began })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<On<Start>> for Usher {
-    fn handle(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[on]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(keeper) = turn.resolve(&self.keeper) else {
             return Ok(());
         };
@@ -2609,17 +1805,8 @@ pub struct LitterConfig {
 #[kind(name = "aether.guest.litter")]
 pub struct Litter;
 
-impl ChildOf for Litter {
-    type Parent = Top;
-}
-
-impl Actor for Litter {
-    type Config = LitterConfig;
-    type Key = ();
-    type Handles = ();
-    type Depends = ();
-    type Spawns = (Homebody,);
-
+#[actor(spawns(Homebody))]
+impl Litter {
     fn begin(config: LitterConfig, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         for key in 0..config.children {
             if turn.spawn::<Homebody>(&key, HomebodyConfig).is_err() {
@@ -2628,10 +1815,6 @@ impl Actor for Litter {
         }
 
         Ok(Self)
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 
@@ -2670,23 +1853,10 @@ pub struct Homebody {
     tether: Tether,
 }
 
-impl ChildOf for Homebody {
-    type Parent = Litter;
-}
-
-impl Actor for Homebody {
-    type Config = HomebodyConfig;
-    type Key = u64;
-    type Handles = ();
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: HomebodyConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64, parent = Litter)]
+impl Homebody {
+    fn begin(_: HomebodyConfig) -> Result<Self, Fault> {
         Ok(Self { tether: Tether })
-    }
-
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
     }
 }
 

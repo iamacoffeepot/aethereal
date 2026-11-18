@@ -5,8 +5,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use aethereal_actor::{
-    Actor, ActorName, ActorRef, Answered, Anyone, Beginning, Bytes, ChildOf, Ended, Ending, Entry, Fault, Given,
-    Handle, Handles, How, Level, Publisher, Receives, Root, Standing, Top, Turn, Unanswered, Upgrade, path,
+    Actor, ActorName, ActorRef, Answered, Beginning, Bytes, Ended, Entry, Fault, Given, Handle, How, Level, Publisher,
+    Root, Standing, Turn, Unanswered, Upgrade, actor, path,
 };
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_data::{ActorPath, Bound, Kind, KindName, PathSegment, Plain};
@@ -57,31 +57,14 @@ struct Library {
     publisher: Handle<Publisher>,
 }
 
-impl ChildOf for Library {
-    type Parent = Top;
-}
-
-impl Actor for Library {
-    type Config = Shelves;
-    type Key = ();
-    type Handles = (Publish,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Library {
     fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Publish> for Library {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, publish: Publish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn publish(&mut self, publish: Publish, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &publish.kind, &publish.blob);
         let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
@@ -99,31 +82,14 @@ struct LettingGo {
     publisher: Handle<Publisher>,
 }
 
-impl ChildOf for LettingGo {
-    type Parent = Top;
-}
-
-impl Actor for LettingGo {
-    type Config = Shelves;
-    type Key = ();
-    type Handles = (PublishLettingGo,);
-    type Depends = (echo::Mover,);
-    type Spawns = ();
-
+#[actor(depends(echo::Mover))]
+impl LettingGo {
     fn begin(shelves: Shelves, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         Ok(Self { publisher: turn.take(shelves.publisher)? })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<PublishLettingGo> for LettingGo {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn publish_letting_go(&mut self, publish: PublishLettingGo, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let published = turn.publish(&self.publisher, &echo::Mover::NAME, &publish.blob);
         let Ok(_) = published else {
             return Err(Fault::new(&Unpublished)?);
@@ -178,17 +144,8 @@ struct Lookout {
     seen: Vec<Sighting>,
 }
 
-impl ChildOf for Lookout {
-    type Parent = Top;
-}
-
-impl Actor for Lookout {
-    type Config = Looks;
-    type Key = ();
-    type Handles = (Ended, Recall);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor]
+impl Lookout {
     fn begin(looks: Looks, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         if let Some(found) = turn.resolve(&looks.at) {
             turn.watch(found);
@@ -197,24 +154,15 @@ impl Actor for Lookout {
         Ok(Self { seen: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Receives<Ended> for Lookout {
-    fn handle(&mut self, ended: Ended, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[ended]
+    fn ended(&mut self, ended: Ended) -> Result<(), Fault> {
         self.seen.push(Sighting::from(ended.how()));
 
         Ok(())
     }
-}
 
-impl Handles<Recall> for Lookout {
-    type From = Anyone;
-    type Returns = Sightings;
-
-    fn handle(&mut self, _: Recall, _: &mut Turn<'_, Self>) -> Result<Sightings, Fault> {
+    #[request]
+    fn recall(&mut self, _: Recall) -> Result<Sightings, Fault> {
         Ok(Sightings { endings: self.seen.clone() })
     }
 }

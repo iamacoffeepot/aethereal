@@ -2,10 +2,7 @@
 //! replies, and, run by hand, the build host's own daemon.
 #![cfg(unix)]
 
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, ProtocolRef,
-    Receives, Streams, Top, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Fault, Number, Part, ProtocolRef, Streams, Turn, actor};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
@@ -87,26 +84,9 @@ struct Session {
     events_done: Vec<EventsDone>,
 }
 
-impl ChildOf for Session {
-    type Parent = Top;
-}
-
-impl Actor for Session {
-    type Config = Unset;
-    type Key = ();
-    type Handles = (
-        Order,
-        Part<Attaching>,
-        Part<Logging>,
-        Part<Watching>,
-        Answer<Detached, Number>,
-        Answer<LogsDone, Number>,
-        Answer<EventsDone, Number>,
-    );
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Session {
+    fn begin(_: Unset) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Unset)?);
         };
@@ -124,29 +104,8 @@ impl Actor for Session {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Session {
-    const SECTION: &'static str = "session";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Order> for Session {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Attach { docker, attach } => {
                 self.attaching.open(turn, docker.protocol(), attach, ())?;
@@ -168,13 +127,9 @@ impl Handles<Order> for Session {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Attaching>> for Session {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn attaching(&mut self, part: Part<Attaching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.attaching.part(turn, part)? else {
             return Ok(());
         };
@@ -186,13 +141,9 @@ impl Handles<Part<Attaching>> for Session {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Logging>> for Session {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn logging(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.logging.part_held(turn, part),
             Pace::Taking => self.logging.part(turn, part)?,
@@ -208,13 +159,9 @@ impl Handles<Part<Logging>> for Session {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Watching>> for Session {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn watching(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(taken) = self.watching.part(turn, part)? else {
             return Ok(());
         };
@@ -222,14 +169,9 @@ impl Handles<Part<Watching>> for Session {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Detached, Number>> for Session {
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<Detached>, Number),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn detached(&mut self, (answered, number): (Answered<Detached>, Number)) -> Result<(), Fault> {
         self.attaching.answered(number);
         if let Answered::Yes(detached) = answered {
             self.detached.push(detached);
@@ -237,14 +179,9 @@ impl Receives<Answer<Detached, Number>> for Session {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<LogsDone, Number>> for Session {
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<LogsDone>, Number),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn logs_done(&mut self, (answered, number): (Answered<LogsDone>, Number)) -> Result<(), Fault> {
         self.logging.answered(number);
         if let Answered::Yes(done) = answered {
             self.logs_done.push(done);
@@ -252,18 +189,26 @@ impl Receives<Answer<LogsDone, Number>> for Session {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<EventsDone, Number>> for Session {
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<EventsDone>, Number),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn events_done(&mut self, (answered, number): (Answered<EventsDone>, Number)) -> Result<(), Fault> {
         self.watching.answered(number);
         if let Answered::Yes(done) = answered {
             self.events_done.push(done);
         }
+
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Session {
+    const SECTION: &'static str = "session";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Unset)?;
 
         Ok(())
     }

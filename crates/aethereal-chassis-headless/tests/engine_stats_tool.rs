@@ -1,9 +1,7 @@
 //! `engine_stats` on the native host (ADR-0053, ADR-0036): a root that says it holds bytes unsent as it is told, and
 //! the tool reading the engine's figures, the test asking the tool's worker each call as a holder would.
 
-use aethereal_actor::{
-    Actor, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn, path,
-};
+use aethereal_actor::{Answered, Fault, ProtocolRef, Turn, actor, path};
 use aethereal_chassis_headless::Headless;
 use aethereal_data::{Budget, Plain, from_bytes, to_bytes};
 use aethereal_substrate::Host;
@@ -36,42 +34,21 @@ struct Stop;
 #[kind(name = "aether.test.stats.sender")]
 struct Sender;
 
-impl ChildOf for Sender {
-    type Parent = Top;
-}
-
-impl Actor for Sender {
-    type Config = Self;
-    type Key = ();
-    type Handles = (Hold, Stop);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(sender: Self, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Sender {
+    fn begin(sender: Self) -> Result<Self, Fault> {
         Ok(sender)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Hold> for Sender {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Hold { bytes }: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn hold(&mut self, Hold { bytes }: Hold, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.holds_unsent(bytes, MOST_UNSENT);
 
         Ok(())
     }
-}
 
-impl Handles<Stop> for Sender {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Stop: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn stop(&mut self, Stop: Stop, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())

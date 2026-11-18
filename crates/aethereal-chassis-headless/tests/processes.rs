@@ -4,10 +4,7 @@
 //! program whose stdin or stdout is piped is a system one, `cat` or `sh`, read by a [`Reader`].
 #![cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
 
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, ProtocolRef,
-    Receives, Streams, Top, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Fault, Number, Part, ProtocolRef, Streams, Turn, actor};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_data::{Bound, Plain};
@@ -285,40 +282,19 @@ struct Leave;
 #[kind(name = "aether.test.starter")]
 struct Starter;
 
-impl ChildOf for Starter {
-    type Parent = Top;
-}
-
-impl Actor for Starter {
-    type Config = StarterConfig;
-    type Key = ();
-    type Handles = (Exited, Leave);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Starter {
+    fn begin(_: StarterConfig) -> Result<Self, Fault> {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn exited(&mut self, _: Exited) -> Result<(), Fault> {
         Ok(())
     }
-}
 
-impl Handles<Exited> for Starter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Exited, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Leave> for Starter {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Leave, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn leave(&mut self, _: Leave, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
@@ -390,18 +366,9 @@ struct Reader {
     hung_up: Vec<HungUp>,
 }
 
-impl ChildOf for Reader {
-    type Parent = Top;
-}
-
-impl Actor for Reader {
-    type Config = StarterConfig;
-    type Key = ();
-    type Handles = (Follow, Part<Reading>, Answer<HungUp, Number>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: StarterConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Reader {
+    fn begin(_: StarterConfig) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&StarterConfig)?);
         };
@@ -409,7 +376,30 @@ impl Actor for Reader {
         Ok(Self { reading: Streams::new(window), bytes: Vec::new(), hung_up: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn follow(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.reading.open(turn, pipe.protocol(), Read, ())?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn reading(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Some(taken) = self.reading.part(turn, part)? else {
+            return Ok(());
+        };
+        self.bytes.extend_from_slice(turn.read(&taken.value.bytes));
+
+        Ok(())
+    }
+
+    #[answer]
+    fn hung_up(&mut self, (answered, number): (Answered<HungUp>, Number)) -> Result<(), Fault> {
+        self.reading.answered(number);
+        if let Answered::Yes(hung_up) = answered {
+            self.hung_up.push(hung_up);
+        }
+
         Ok(())
     }
 }
@@ -422,42 +412,6 @@ impl Bootstrap<Headless> for Reader {
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), StarterConfig)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Follow> for Reader {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, Follow(pipe): Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.reading.open(turn, pipe.protocol(), Read, ())?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Part<Reading>> for Reader {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Some(taken) = self.reading.part(turn, part)? else {
-            return Ok(());
-        };
-        self.bytes.extend_from_slice(turn.read(&taken.value.bytes));
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<HungUp, Number>> for Reader {
-    fn handle(&mut self, (answered, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.reading.answered(number);
-        if let Answered::Yes(hung_up) = answered {
-            self.hung_up.push(hung_up);
-        }
 
         Ok(())
     }

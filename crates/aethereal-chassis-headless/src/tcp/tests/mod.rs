@@ -6,10 +6,7 @@ mod unix;
 
 use super::*;
 use crate::waiting;
-use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Number, Part, Receives,
-    Streams, Top, Turn,
-};
+use aethereal_actor::{ActorRef, Answered, Fault, Number, Part, Streams, Turn, actor};
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::Host;
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -139,18 +136,9 @@ struct Streamer {
     heard: Vec<Heard>,
 }
 
-impl ChildOf for Streamer {
-    type Parent = Top;
-}
-
-impl Actor for Streamer {
-    type Config = Asked;
-    type Key = ();
-    type Handles = (Follow, Part<Accepting>, Part<Reading>, Answer<Unbound, Number>, Answer<HungUp, Number>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Asked, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Streamer {
+    fn begin(_: Asked) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Asked)?);
         };
@@ -163,7 +151,50 @@ impl Actor for Streamer {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn follow(&mut self, follow: Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        match follow {
+            Follow::Accepting(listener) => self.accepting.open(turn, listener.protocol(), Accept, Asked)?,
+            Follow::Reading(connection) => self.reading.open(turn, connection.protocol(), Read, Side::Client)?,
+        };
+
+        Ok(())
+    }
+
+    #[tell]
+    fn accepting(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Some(taken) = self.accepting.part(turn, part)? else {
+            return Ok(());
+        };
+        let connection = taken.value.connection;
+        self.accepted.push(connection);
+        self.reading.open(turn, connection.protocol(), Read, Side::Server)?;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn reading(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Some(taken) = self.reading.part(turn, part)? else {
+            return Ok(());
+        };
+        let heard = Heard { side: *taken.kept, bytes: turn.read(&taken.value.bytes).to_vec() };
+        self.heard.push(heard);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn unbound(&mut self, (_, number): (Answered<Unbound>, Number)) -> Result<(), Fault> {
+        self.accepting.answered(number);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn hung_up(&mut self, (_, number): (Answered<HungUp>, Number)) -> Result<(), Fault> {
+        self.reading.answered(number);
+
         Ok(())
     }
 }
@@ -176,67 +207,6 @@ impl Bootstrap<Headless> for Streamer {
 
     async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
         cx.begin(&(), Asked)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Follow> for Streamer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, follow: Follow, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        match follow {
-            Follow::Accepting(listener) => self.accepting.open(turn, listener.protocol(), Accept, Asked)?,
-            Follow::Reading(connection) => self.reading.open(turn, connection.protocol(), Read, Side::Client)?,
-        };
-
-        Ok(())
-    }
-}
-
-impl Handles<Part<Accepting>> for Streamer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Accepting>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Some(taken) = self.accepting.part(turn, part)? else {
-            return Ok(());
-        };
-        let connection = taken.value.connection;
-        self.accepted.push(connection);
-        self.reading.open(turn, connection.protocol(), Read, Side::Server)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Part<Reading>> for Streamer {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Reading>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let Some(taken) = self.reading.part(turn, part)? else {
-            return Ok(());
-        };
-        let heard = Heard { side: *taken.kept, bytes: turn.read(&taken.value.bytes).to_vec() };
-        self.heard.push(heard);
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<Unbound, Number>> for Streamer {
-    fn handle(&mut self, (_, number): (Answered<Unbound>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.accepting.answered(number);
-
-        Ok(())
-    }
-}
-
-impl Receives<Answer<HungUp, Number>> for Streamer {
-    fn handle(&mut self, (_, number): (Answered<HungUp>, Number), _: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.reading.answered(number);
 
         Ok(())
     }

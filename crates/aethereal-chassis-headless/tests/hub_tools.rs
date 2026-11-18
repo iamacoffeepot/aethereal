@@ -2,7 +2,7 @@
 //! asking it each call as a holder would, and an engine played by a real socket speaking the link's own typed frames,
 //! on a thread of its own where it waits on the hub, or by a real `Link` started with what `mint_token` answers.
 
-use aethereal_actor::{Actor, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, ProtocolRef, Top, Turn};
+use aethereal_actor::{Answered, Fault, ProtocolRef, actor};
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Invocation, Invoked, NativeLayers};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -62,42 +62,21 @@ struct Stand {
     table: Table,
 }
 
-impl ChildOf for Stand {
-    type Parent = Top;
-}
-
 impl Holder for Stand {}
 
-impl Actor for Stand {
-    type Config = StandConfig;
-    type Key = ();
-    type Handles = (Offer, Withdraw);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: StandConfig, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Stand {
+    fn begin(_: StandConfig) -> Result<Self, Fault> {
         Ok(Self { table: Table::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Offer> for Stand {
-    type From = Anyone;
-    type Returns = Offered;
-
-    fn handle(&mut self, offer: Offer, _: &mut Turn<'_, Self>) -> Result<Offered, Fault> {
+    #[request]
+    fn offer(&mut self, offer: Offer) -> Result<Offered, Fault> {
         Ok(self.table.take(offer.tools, offer.worker, 16))
     }
-}
 
-impl Handles<Withdraw> for Stand {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, withdraw: Withdraw, _: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn withdraw(&mut self, withdraw: Withdraw) -> Result<(), Fault> {
         self.table.withdraw(&withdraw.tool, withdraw.worker);
 
         Ok(())

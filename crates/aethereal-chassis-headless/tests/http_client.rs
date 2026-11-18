@@ -3,8 +3,7 @@
 #![cfg(unix)]
 
 use aethereal_actor::{
-    Actor, ActorRef, Answer, Answered, Anyone, Beginning, ChildOf, Ending, Fault, Handles, Held, Later, Number, Part,
-    ProtocolRef, Receives, Streams, Top, Turn, Unanswered,
+    ActorRef, Answered, Fault, Held, Later, Number, Part, ProtocolRef, Streams, Turn, Unanswered, actor,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -78,18 +77,9 @@ struct Follower {
     finished: Vec<Finished>,
 }
 
-impl ChildOf for Follower {
-    type Parent = Top;
-}
-
-impl Actor for Follower {
-    type Config = Unset;
-    type Key = ();
-    type Handles = (Order, Part<Receiving>, Answer<Finished, Number>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Unset, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Follower {
+    fn begin(_: Unset) -> Result<Self, Fault> {
         let Some(window) = NonZeroU32::new(WINDOW) else {
             return Err(Fault::new(&Unset)?);
         };
@@ -103,29 +93,8 @@ impl Actor for Follower {
         })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Bootstrap<Headless> for Follower {
-    const SECTION: &'static str = "follower";
-    type Settings = ();
-    type Needs = ();
-    type Provides = ();
-
-    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
-        cx.begin(&(), Unset)?;
-
-        Ok(())
-    }
-}
-
-impl Handles<Order> for Follower {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn order(&mut self, order: Order, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         match order {
             Order::Follow { client, follow, pace } => {
                 self.pace = pace;
@@ -141,13 +110,9 @@ impl Handles<Order> for Follower {
 
         Ok(())
     }
-}
 
-impl Handles<Part<Receiving>> for Follower {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn receiving(&mut self, part: Part<Receiving>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let taken = match self.pace {
             Pace::Holding => self.receiving.part_held(turn, part),
             Pace::Taking => self.receiving.part(turn, part)?,
@@ -167,18 +132,26 @@ impl Handles<Part<Receiving>> for Follower {
 
         Ok(())
     }
-}
 
-impl Receives<Answer<Finished, Number>> for Follower {
-    fn handle(
-        &mut self,
-        (answered, number): (Answered<Finished>, Number),
-        _: &mut Turn<'_, Self>,
-    ) -> Result<(), Fault> {
+    #[answer]
+    fn finished(&mut self, (answered, number): (Answered<Finished>, Number)) -> Result<(), Fault> {
         self.receiving.answered(number);
         if let Answered::Yes(finished) = answered {
             self.finished.push(finished);
         }
+
+        Ok(())
+    }
+}
+
+impl Bootstrap<Headless> for Follower {
+    const SECTION: &'static str = "follower";
+    type Settings = ();
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap((): (), (): (), cx: &mut Bootstrapping<'_, Headless, Self>) -> Result<(), Unbuilt> {
+        cx.begin(&(), Unset)?;
 
         Ok(())
     }
@@ -234,34 +207,17 @@ struct Echoing {
     held: Held<Response>,
 }
 
-impl ChildOf for Echo {
-    type Parent = Top;
-}
-
-impl Actor for Echo {
-    type Config = EchoSettings;
-    type Key = ();
-    type Handles = (Request<(), ()>, Answer<Gathered, Echoing>);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: EchoSettings, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor]
+impl Echo {
+    fn begin(_: EchoSettings) -> Result<Self, Fault> {
         Ok(Self { asked: Vec::new() })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Request<(), ()>> for Echo {
-    type From = FromStack;
-    type Returns = Later<Response>;
-
-    fn handle(
+    #[request]
+    fn request(
         &mut self,
         request: Request<(), ()>,
-        turn: &mut Turn<'_, Self, Self::From>,
+        turn: &mut Turn<'_, Self, FromStack>,
     ) -> Result<Later<Response>, Fault> {
         let host = String::from(request.header("host").unwrap_or_default());
         self.asked.push(Asked { host, peer: request.peer });
@@ -270,10 +226,9 @@ impl Handles<Request<(), ()>> for Echo {
 
         Ok(later)
     }
-}
 
-impl Receives<Answer<Gathered, Echoing>> for Echo {
-    fn handle(
+    #[answer]
+    fn gathered(
         &mut self,
         (gathered, Echoing { held }): (Answered<Gathered>, Echoing),
         turn: &mut Turn<'_, Self>,

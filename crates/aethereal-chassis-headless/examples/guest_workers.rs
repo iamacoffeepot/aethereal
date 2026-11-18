@@ -8,8 +8,8 @@
 #![allow(clippy::print_stdout)] // A measure prints its rounds.
 #![allow(clippy::cast_precision_loss)] // Nanoseconds a piece, printed whole, lose nothing they show.
 
-use aethereal_actor::{Actor, Beginning, ChildOf, Ending, Fault, Handles, Top, Turn};
-use aethereal_actor::{Anyone, Bytes, Speaks};
+use aethereal_actor::{Beginning, Fault, Turn};
+use aethereal_actor::{Bytes, Speaks, actor};
 use aethereal_chassis_headless::guest::Runtime;
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorPath, Bound, KindName, PathSegment, Plain};
@@ -55,17 +55,8 @@ struct Volley {
 #[kind(name = "aether.bench.pinger")]
 struct Pinger;
 
-impl ChildOf for Pinger {
-    type Parent = Top;
-}
-
-impl Actor for Pinger {
-    type Config = Volley;
-    type Key = u64;
-    type Handles = (Pong,);
-    type Depends = ();
-    type Spawns = ();
-
+#[actor(key = u64)]
+impl Pinger {
     fn begin(volley: Volley, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let responder = ActorPath::from_root(&PathSegment::new(KindName::new("aether.guest.responder"), &volley.with));
         if let Some(responder) = turn.resolve(&responder).and_then(|found| turn.cast::<(Ping,)>(found)) {
@@ -75,16 +66,8 @@ impl Actor for Pinger {
         Ok(Self)
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Pong> for Pinger {
-    type From = Speaks<(Ping, Shut)>;
-    type Returns = ();
-
-    fn handle(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Speaks<(Ping, Shut)>>) -> Result<(), Fault> {
+    #[tell]
+    fn pong(&mut self, pong: Pong, turn: &mut Turn<'_, Self, Speaks<(Ping, Shut)>>) -> Result<(), Fault> {
         if pong.n > 0 {
             turn.to(*turn.from()).send(&Ping { n: pong.n - 1 })?;
         } else {
@@ -104,43 +87,22 @@ struct NativeResponder {
     answered: u64,
 }
 
-impl ChildOf for NativeResponder {
-    type Parent = Top;
-}
-
-impl Actor for NativeResponder {
-    type Config = Volley;
-    type Key = u64;
-    type Handles = (Ping, Shut);
-    type Depends = ();
-    type Spawns = ();
-
-    fn begin(_: Volley, _: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+#[actor(key = u64)]
+impl NativeResponder {
+    fn begin(_: Volley) -> Result<Self, Fault> {
         Ok(Self { answered: 0 })
     }
 
-    fn end(self, _: &mut Ending<'_, Self>) -> Result<(), Fault> {
-        Ok(())
-    }
-}
-
-impl Handles<Ping> for NativeResponder {
-    type From = Speaks<(Pong,)>;
-    type Returns = ();
-
-    fn handle(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
+    #[tell]
+    fn ping(&mut self, ping: Ping, turn: &mut Turn<'_, Self, Speaks<(Pong,)>>) -> Result<(), Fault> {
         self.answered += 1;
         turn.to(*turn.from()).send(&Pong { n: ping.n })?;
 
         Ok(())
     }
-}
 
-impl Handles<Shut> for NativeResponder {
-    type From = Anyone;
-    type Returns = ();
-
-    fn handle(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    #[tell]
+    fn shut(&mut self, _: Shut, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.close();
 
         Ok(())
