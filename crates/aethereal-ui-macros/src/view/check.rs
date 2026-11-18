@@ -4,7 +4,7 @@
 //! A method called by two events is one variant, so every call of it copies as many arguments, and is a widget's event
 //! or a drop alike: a drop's method takes the payload after them, and a widget's event's the value its widget hands.
 
-use crate::markup::{Call, Dropping, Element, Head, Names, Naming, Outside, Scope, variant};
+use crate::markup::{Call, Dropping, Element, Head, Names, Naming, Scope, variant};
 use syn::Ident;
 
 /// What a screen's markup names: `self`, its locals, and Rust items, and its events call its methods.
@@ -51,7 +51,7 @@ pub struct Variant {
 pub enum Taking {
     /// What its widget hands with the event, if it hands anything: a text, a flag, a number, or a choice.
     Handed,
-    /// The payload of a drag: a drop's, or a `drop_outside`'s.
+    /// The payload of a drag: a drop's, a `drop_accepted`'s, or a `drop_outside`'s.
     Payload,
 }
 
@@ -69,11 +69,9 @@ pub fn variants(root: &Element) -> syn::Result<Vec<Variant>> {
             Dropping::Refuses => None,
             Dropping::Takes(call) => Some((call, Taking::Payload)),
         };
-        let outside = match &element.outside {
-            Outside::Nothing => None,
-            Outside::Raises(call) => Some((call, Taking::Payload)),
-        };
-        for (call, taking) in handed.chain(dropped).chain(outside) {
+        let ended =
+            [element.accepted.call(), element.outside.call()].into_iter().flatten().map(|call| (call, Taking::Payload));
+        for (call, taking) in handed.chain(dropped).chain(ended) {
             let Call::Method { method, arguments, .. } = call else {
                 continue;
             };

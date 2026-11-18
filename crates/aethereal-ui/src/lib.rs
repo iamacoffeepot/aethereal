@@ -34,8 +34,8 @@
 //! - [`DragSource`] and [`DropTarget`]: a widget a press and a move past [`DRAG_THRESHOLD`] drag, carrying the
 //!   [`Payload`] its view copied, and one that takes a payload of the kind its drop's method takes last. A drop on the
 //!   screen's own widget raises that widget's drop; one on another actor mails it [`Dropped`], which a screen's library
-//!   takes in the same way and refuses, [`DropRefused`], when nothing takes it; and one nothing takes raises the
-//!   source's `drop_outside`.
+//!   takes in the same way and answers with one [`DropAnswered`], its [`DropOutcome`] saying whether a target took it;
+//!   a drop taken, wherever, raises the source's `drop_accepted`, and one nothing takes its `drop_outside`.
 //!
 //! A screen is written in markup (ADR-0056: Markup): its view in [`view!`], its styles in [`style!`], its own
 //! composites in [`widget!`], and, on the impl of the methods its events call, [`events`](macro@events), which declares
@@ -144,7 +144,8 @@ pub mod widgets;
 pub use aethereal_ui_macros::{events, style, view, widget};
 pub use child::{CallArea, Called, Resize, Resizes};
 pub use drag::{
-    Carried, DRAG_THRESHOLD, DragSource, DropMethod, DropRefused, DropTarget, Dropped, Drops, Payload, dropped,
+    Carried, DRAG_THRESHOLD, DragSource, DropAnswered, DropMethod, DropOutcome, DropTarget, Dropped, Drops, Payload,
+    dropped,
 };
 pub use fonts::{Measuring, Unmeasured};
 pub use input::{
@@ -183,6 +184,7 @@ pub mod prelude {
 /// What [`screen!`], [`handles!`], and [`sends!`] name, so a screen's crate need not.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::drag::Lent;
     pub use aethereal_actor::{
         Answer, Answered, Anyone, Asks, Fault, Handles, On, Path, Prepare, Receives, Slept, ToAny, ToSender, Turn,
     };
@@ -200,8 +202,8 @@ pub mod __private {
 /// A screen's `Handles`: what the library handles, `Prepare`, the pointer and the keys its list reaches, the answer to
 /// each of its asks with the ask's context, the end of a tooltip's sleep with the tooltip and its hover, the clipboard's
 /// answers to a paste and a copy with the widget that asked, the size a
-/// screen that places it as a child mails it, a drag another actor dropped on it, and the refusal of one it dropped on
-/// another; then each of `$own`, what the screen handles of its own.
+/// screen that places it as a child mails it, a drag another actor dropped on it, and the answer, taken or refused, to
+/// one it dropped on another, one kind with its outcome; then each of `$own`, what the screen handles of its own.
 #[macro_export]
 macro_rules! handles {
     ($($own:ty),* $(,)?) => {
@@ -225,14 +227,14 @@ macro_rules! handles {
             $crate::__private::Answer<$crate::__private::Copied, $crate::Copying>,
             $crate::Resize,
             $crate::Dropped,
-            $crate::DropRefused,
+            $crate::DropAnswered,
             $($own,)*
         )
     };
 }
 
 /// A screen's [`Controls::Sends`]: the library's ask of the window's input method, which input may make, its drop mailed
-/// to another actor, which a release may make, and its refusal of a drop it takes nothing of, which a drop may make;
+/// to another actor, which a release may make, and its one answer to a drop, taken or refused, which a drop may make;
 /// then each of `$own`, what the screen's event methods and its `key` send of their own. A handler's sends are at most
 /// 24, so a screen's own are at most 21.
 #[macro_export]
@@ -245,7 +247,7 @@ macro_rules! sends {
                 $crate::ImeAsked,
             >,
             $crate::__private::ToAny<$crate::Drops, $crate::Dropped>,
-            $crate::__private::ToSender<$crate::DropRefused>,
+            $crate::__private::ToSender<$crate::DropAnswered>,
             $($own,)*
         )
     };
@@ -260,8 +262,8 @@ macro_rules! sends {
 /// asked, or cut its selection, and call its methods with what that raises; the size a screen that places it as a child
 /// mails it, which it
 /// lays out to as a root screen lays out to its window's; and a drag dropped on it by another actor, which raises its
-/// target's drop as a drop of its own does, and a refusal of one it dropped, which raises its source's
-/// `drop_outside`. A screen's markup compiles into a call of it.
+/// target's drop as a drop of its own does and is answered once, taken or refused, and the answer to one it dropped,
+/// whose outcome raises its source's `drop_accepted` or `drop_outside`. A screen's markup compiles into a call of it.
 #[macro_export]
 macro_rules! screen {
     ($screen:ty, $field:ident) => {
@@ -390,23 +392,26 @@ macro_rules! screen {
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
                 let payload = dropped.payload.payload(|blob| turn.read(blob));
                 match self.$field.dropped(dropped.entry, &payload) {
-                    $crate::Landing::Taken(heard) => $crate::screen!(@take $field, self, heard, turn),
-                    $crate::Landing::Refused => Ok(turn.reply(&dropped.refused())?),
+                    $crate::Landing::Taken(heard) => {
+                        turn.reply(&dropped.answer($crate::DropOutcome::Accepted))?;
+                        $crate::screen!(@take $field, self, heard, turn)
+                    }
+                    $crate::Landing::Refused => Ok(turn.reply(&dropped.answer($crate::DropOutcome::Refused))?),
                 }
             }
         }
 
-        impl $crate::__private::Handles<$crate::DropRefused> for $screen {
+        impl $crate::__private::Handles<$crate::DropAnswered> for $screen {
             type Sends = <Self as $crate::Controls>::Sends;
             type From = $crate::__private::Anyone;
 
             fn handle(
                 &mut self,
-                refused: $crate::DropRefused,
+                answered: $crate::DropAnswered,
                 turn: &mut $crate::__private::Turn<'_, Self, Self::Sends>,
             ) -> ::core::result::Result<(), $crate::__private::Fault> {
-                let payload = refused.payload.payload(|blob| turn.read(blob));
-                let heard = self.$field.refused(&refused.source, payload);
+                let payload = answered.payload.payload(|blob| turn.read(blob));
+                let heard = self.$field.answered(&answered.source, payload, answered.outcome);
                 $crate::screen!(@take $field, self, heard, turn)
             }
         }

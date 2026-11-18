@@ -5,16 +5,21 @@
 //!
 //! ```text
 //! press on a source ──> move past the threshold ──> the drag begins: the pressed hit's cursor is the drag's
-//! release ──> over the screen's own hit ──> the innermost target around it that takes the kind? ──> its drop
+//! release ──> over the screen's own hit ──> the innermost target around it that takes the kind?
+//!         │       └─> the source's drop_accepted, then the target's drop
 //!         ├─> over another actor's entry ──> cast to Drops? ──> Dropped, mailed ──> its library finds its target
-//!         │                                                         └─> none takes it ──> DropRefused, replied
+//!         │       └─> DropAnswered, replied once ──> its outcome?
+//!         │               ├─> Accepted: one took it, its drop raised ──> the source's drop_accepted
+//!         │               └─> Refused: none took it ──> the source's drop_outside
 //!         └─> over nothing, or nothing takes it ──> the source's drop_outside
 //! ```
 //!
-//! A payload crosses actors, so it is a kind, carried erased with its kind's id: one kind of mail, [`Dropped`], serves
-//! every payload of every program, a target compares the id with the kind its widget takes, and the method its drop
-//! calls reads the payload back as that kind ([`dropped`]). Between actors its bytes are a blob (ADR-0042), put by the
-//! source as it mails the drop and read by the target as it takes it in, and a refusal hands the same blob back.
+//! The source hears how every drop ended, wherever it landed: `drop_accepted` when a target took it, so it lets go of
+//! what moved, and `drop_outside` when nothing did. A payload crosses actors, so it is a kind, carried erased with its
+//! kind's id: one kind of mail, [`Dropped`], serves every payload of every program, a target compares the id with the
+//! kind its widget takes, and the method its drop calls reads the payload back as that kind ([`dropped`]). Between
+//! actors its bytes are a blob (ADR-0042), put by the source as it mails the drop and read by the target as it takes it
+//! in, and the answer hands the same blob back.
 
 #[cfg(test)]
 pub mod tests;
@@ -125,23 +130,48 @@ impl<E: Event> Copied for E {
     }
 }
 
-/// What the markup's `drag` and `drop_outside` compile into: a widget a press and a move drag, carrying `payload`,
-/// copied as the view was built; the cursor the window shows while it drags, its image or a closed hand; and the event
-/// it raises with the payload when nothing takes it, its `drop_outside`, when it has one.
+/// What the markup's `drag` reads its payload through: a reference may name a field that holds the payload,
+/// `drag: item.id`, or a list's binding may be the payload itself, `items: self.ids as id key id.0 … drag: id`, which
+/// `items` lends; a method call copies it out of either, reading through the loan.
+#[doc(hidden)]
+pub trait Lent: Kind + Plain + Copy + PartialEq {
+    /// It, copied.
+    #[must_use]
+    fn lent(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Kind + Plain + Copy + PartialEq> Lent for T {}
+
+/// What the markup's `drag`, `drop_accepted`, and `drop_outside` compile into: a widget a press and a move drag,
+/// carrying `payload`, copied as the view was built; the cursor the window shows while it drags, its image or a closed
+/// hand; and the events it raises with the payload when a target takes it, its `drop_accepted`, and when nothing takes
+/// it, its `drop_outside`, each when it has one.
 #[derive(Debug)]
 pub struct DragSource {
     payload: Payload,
     cursor: Cursor,
+    /// Its `drop_accepted`, fixed when the view builds it: none for a source the markup gives none, whose payload a
+    /// target takes raises nothing at the source.
+    accepted: Option<Box<dyn Copied>>,
     /// Its `drop_outside`, fixed when the view builds it: none for a source the markup gives none, whose payload
     /// dropped where nothing takes it raises nothing.
     outside: Option<Box<dyn Copied>>,
 }
 
 impl DragSource {
-    /// A source that drags `payload`, showing a closed hand while it does, with no `drop_outside`.
+    /// A source that drags `payload`, showing a closed hand while it does, with no `drop_accepted` and no
+    /// `drop_outside`.
     #[must_use]
     pub fn new<T: Kind + Plain + Copy + PartialEq>(payload: T) -> Self {
-        Self { payload: Payload::of(payload), cursor: Cursor::Grabbing, outside: None }
+        Self { payload: Payload::of(payload), cursor: Cursor::Grabbing, accepted: None, outside: None }
+    }
+
+    /// It, raising `accepted` with its payload when a target takes it, in its own screen or another actor's.
+    #[must_use]
+    pub fn accepted<E: Event>(self, accepted: E) -> Self {
+        Self { accepted: Some(Box::new(accepted)), ..self }
     }
 
     /// It, raising `outside` with its payload when nothing under the release takes it.
@@ -167,6 +197,11 @@ impl DragSource {
         &self.cursor
     }
 
+    /// Its `drop_accepted` raised with `payload`, when it has one.
+    pub(crate) fn accepted_raised(&self, payload: Payload) -> Option<Raised<Erased>> {
+        self.accepted.as_ref().map(|accepted| accepted.raised(payload))
+    }
+
     /// Its `drop_outside` raised with `payload`, when it has one.
     pub(crate) fn outside_raised(&self, payload: Payload) -> Option<Raised<Erased>> {
         self.outside.as_ref().map(|outside| outside.raised(payload))
@@ -177,13 +212,19 @@ impl PartialEq for DragSource {
     fn eq(&self, other: &Self) -> bool {
         let payload = self.payload == other.payload;
         let cursor = self.cursor == other.cursor;
-        let outside = match (&self.outside, &other.outside) {
-            (Some(mine), Some(theirs)) => mine.same(&**theirs),
-            (None, None) => true,
-            (Some(_), None) | (None, Some(_)) => false,
-        };
+        let accepted = same_event(self.accepted.as_deref(), other.accepted.as_deref());
+        let outside = same_event(self.outside.as_deref(), other.outside.as_deref());
 
-        payload && cursor && outside
+        payload && cursor && accepted && outside
+    }
+}
+
+/// Whether two events a source may raise are the same: both absent, or both the same value.
+fn same_event(mine: Option<&dyn Copied>, theirs: Option<&dyn Copied>) -> bool {
+    match (mine, theirs) {
+        (Some(mine), Some(theirs)) => mine.same(theirs),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
     }
 }
 
@@ -358,9 +399,10 @@ drop_methods! {
 
 /// What a drag dropped on another actor's entry mails it: the payload; the entry of its list the release was over, and
 /// the release's place in that entry's coordinates, as the window reported them; and the widget it was dragged from, in
-/// its sender's tree, which a refusal hands back. A screen's library finds the target at the entry and raises its drop;
-/// an actor that is not a screen handles it as it will, and replies [`Dropped::refused`] to have the source raise its
-/// `drop_outside`.
+/// its sender's tree, which the answer hands back. A screen's library finds the target at the entry, raises its drop,
+/// and answers whether it took it; an actor that is not a screen handles it as it will, and answers too, once:
+/// [`Dropped::answer`] with [`DropOutcome::Accepted`] to have the source raise its `drop_accepted`, and with
+/// [`DropOutcome::Refused`] its `drop_outside`.
 #[derive(Debug, Clone, PartialEq, Bound)]
 #[kind(name = "aether.ui.dropped")]
 pub struct Dropped {
@@ -371,20 +413,31 @@ pub struct Dropped {
 }
 
 impl Dropped {
-    /// The reply that refuses it: its payload and its source, handed back, so the source raises its `drop_outside`.
+    /// The answer to it: its payload and its source, handed back, with `outcome`, on which the source raises its
+    /// `drop_accepted` or its `drop_outside`.
     #[must_use]
-    pub fn refused(self) -> DropRefused {
-        DropRefused { payload: self.payload, source: self.source }
+    pub fn answer(self, outcome: DropOutcome) -> DropAnswered {
+        DropAnswered { payload: self.payload, source: self.source, outcome }
     }
 }
 
-/// What an actor a drag was dropped on replies when nothing there takes the payload: the payload and the widget it was
-/// dragged from, handed back, so the source raises its `drop_outside`. A drop taken is answered with nothing.
+/// What an actor a drag was dropped on answers, once for each [`Dropped`]: the payload and the widget it was dragged
+/// from, handed back, and whether it took the payload, so the source lets go of what moved or keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Bound)]
-#[kind(name = "aether.ui.drop_refused")]
-pub struct DropRefused {
+#[kind(name = "aether.ui.drop_answered")]
+pub struct DropAnswered {
     pub payload: Carried,
     pub source: KeyPath,
+    pub outcome: DropOutcome,
+}
+
+/// How a drop on another actor ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum DropOutcome {
+    /// A target there took the payload: the source raises its `drop_accepted`.
+    Accepted,
+    /// Nothing there took it: the source raises its `drop_outside`.
+    Refused,
 }
 
 /// What an actor a drag can be dropped on takes: every screen, as [`handles!`](crate::handles!) lists it, and any other
@@ -393,8 +446,8 @@ pub struct DropRefused {
 pub type Drops = (Dropped,);
 
 /// Calls `method` with `turn` and `payload` read as the kind `method` takes: what a screen's generated
-/// [`View::on`](crate::View::on) calls for a drop and a `drop_outside`, the payload appended after the arguments the
-/// view copied. A payload of another kind, which only a tree built by hand can raise, is logged.
+/// [`View::on`](crate::View::on) calls for a drop, a `drop_accepted`, and a `drop_outside`, the payload appended after
+/// the arguments the view copied. A payload of another kind, which only a tree built by hand can raise, is logged.
 ///
 /// # Errors
 ///

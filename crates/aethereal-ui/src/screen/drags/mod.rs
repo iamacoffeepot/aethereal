@@ -5,13 +5,20 @@
 //! that hit lands it where its `over` says:
 //!
 //! - **on a hit of the screen's own:** the innermost widget at or around it, on its own surface, whose
-//!   [`DropTarget`](crate::DropTarget) takes the payload's kind raises its drop with the payload;
+//!   [`DropTarget`](crate::DropTarget) takes the payload's kind raises its drop with the payload, after the source
+//!   raises its `drop_accepted` with it;
 //! - **on another actor's entry:** the screen casts the actor to [`Drops`](crate::Drops) and mails it
 //!   [`Dropped`](crate::Dropped), its payload put as a blob, as [`take_in`](crate::take_in) does with what the turn of
 //!   input leaves; that actor's library finds its target the same way, from the entry ([`Screen::dropped`]), and
-//!   replies [`DropRefused`](crate::DropRefused) when none takes it ([`Landing::Refused`]);
+//!   replies one [`DropAnswered`](crate::DropAnswered), whose outcome is [`DropOutcome::Accepted`] when one takes it
+//!   and [`DropOutcome::Refused`] when none does ([`Landing::Refused`]); on it the source raises its `drop_accepted`
+//!   or its `drop_outside` ([`Screen::answered`]);
 //! - **on nothing, on what nothing takes, on an actor that takes no drops, or refused:** the source raises its
 //!   `drop_outside` with the payload.
+//!
+//! So the source hears a drop taken the same way wherever it landed. In its own screen it hears it first: the source
+//! lets go of what moved before the target takes it in, so a drop back onto the list it came from moves the item
+//! rather than taking in a copy the source's `drop_accepted` would then let go of with it.
 //!
 //! While a drag is under way, the target it is over in its own screen, found the same way from the topmost hit the
 //! pointer reaches, is drawn lit ([`Draws::drop_over`](crate::Draws::drop_over)).
@@ -21,7 +28,7 @@ mod tests;
 
 use super::input::place;
 use super::{Fresh, Heard, Last, Listed, Screen};
-use crate::drag::{DRAG_THRESHOLD, Payload};
+use crate::drag::{DRAG_THRESHOLD, DropOutcome, Payload};
 use crate::input::{Erased, Raised};
 use crate::tree::{KeyPath, Node};
 use aethereal_actor::ProtocolRef;
@@ -136,8 +143,9 @@ impl Screen {
     }
 
     /// Lands `payload`, dragged from the widget at `source`, where its release was over, `me` the screen's actor: on a
-    /// hit of its own, the innermost target around it that takes it raises its drop; on another actor's entry, it is
-    /// left in `heard` to mail; and where nothing takes it, the source raises its `drop_outside`.
+    /// hit of its own, the innermost target around it that takes it raises its drop, after the source raises its
+    /// `drop_accepted`; on another actor's entry, it is left in `heard` to mail; and where nothing takes it, the source
+    /// raises its `drop_outside`.
     pub(super) fn land(&self, source: &KeyPath, payload: Payload, over: Over, me: ActorId, heard: &mut Heard) {
         let Over::Entry { actor, entry, x, y } = over else {
             heard.raised.extend(self.outside(source, payload));
@@ -150,8 +158,12 @@ impl Screen {
             heard.away.push(Away { to: actor, payload, entry, at, source: source.clone(), outside });
             return;
         }
-        let raised = self.taken_at(entry, &payload).or_else(|| self.outside(source, payload));
-        heard.raised.extend(raised);
+        let Some(taken) = self.taken_at(entry, &payload) else {
+            heard.raised.extend(self.outside(source, payload));
+            return;
+        };
+        heard.raised.extend(self.accepted_at(source, payload));
+        heard.raised.push(taken);
     }
 
     /// Takes in `payload`, which another actor dropped on the entry numbered `entry` of the screen's list: the innermost
@@ -165,11 +177,16 @@ impl Screen {
         Landing::Taken(Heard { raised: vec![raised], ..Heard::default() })
     }
 
-    /// Takes in `payload`, which the screen dropped from the widget at `source` on another actor, refused: that widget
-    /// raises its `drop_outside` with the payload, as the view now builds it.
-    pub fn refused(&mut self, source: &KeyPath, payload: Payload) -> Heard {
+    /// Takes in `payload`, which the screen dropped from the widget at `source` on another actor, answered with
+    /// `outcome`: that widget raises its `drop_accepted` with the payload when it was taken, and its `drop_outside` when
+    /// it was refused, as the view now builds it.
+    pub fn answered(&mut self, source: &KeyPath, payload: Payload, outcome: DropOutcome) -> Heard {
+        let raised = match outcome {
+            DropOutcome::Accepted => self.accepted_at(source, payload),
+            DropOutcome::Refused => self.outside(source, payload),
+        };
         let mut heard = Heard::default();
-        heard.raised.extend(self.outside(source, payload));
+        heard.raised.extend(raised);
 
         heard
     }
@@ -204,6 +221,11 @@ impl Screen {
             let target = self.node(at).and_then(Node::drop_target);
             target.is_some_and(|target| target.takes(kind))
         })
+    }
+
+    /// The `drop_accepted` of the source at `source` in the last tree built, raised with `payload`, if it has one.
+    fn accepted_at(&self, source: &KeyPath, payload: Payload) -> Option<Raised<Erased>> {
+        self.node(source).and_then(Node::drag).and_then(|drag| drag.accepted_raised(payload))
     }
 
     /// The `drop_outside` of the source at `source` in the last tree built, raised with `payload`, if it has one.

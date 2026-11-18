@@ -18,7 +18,7 @@ impl<E: Debug + PartialEq + Copy + Send + 'static> Event for E {}
 
 /// An event raised, and the value its widget hands with it: none, as a button's click; the text, as a text input's
 /// change and submit; whether it is on, as a toggle's change; a number, as a slider's; which of its choices, counted
-/// from zero, as tabs' change; or the payload a drag carried, as a drop's and a `drop_outside`'s.
+/// from zero, as tabs' change; or the payload a drag carried, as a drop's, a `drop_accepted`'s, and a `drop_outside`'s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Raised<E> {
     Event(E),

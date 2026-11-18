@@ -5,7 +5,7 @@
 //! Each refusal is an error at the token that caused it; every one found is reported, not only the first.
 
 use super::reference::{Head, Reference};
-use super::{Call, Dropping, Element, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown};
+use super::{Call, Dropping, Element, Kind, Look, Memo, Naming, Raising, Repeat, Rest, Shown};
 use crate::style;
 use proc_macro2::Span;
 use syn::Ident;
@@ -136,8 +136,9 @@ fn memo(element: &Element, span: Span, names: &impl Names, found: &mut Found) {
     }
     let fixed = matches!(element.drag, super::Drag::Fixed);
     let refuses = matches!(element.drop, Dropping::Refuses);
-    let still = matches!(element.outside, Outside::Nothing);
-    let placed = fixed && refuses && still;
+    let unanswered = matches!(element.accepted, Raising::Nothing);
+    let still = matches!(element.outside, Raising::Nothing);
+    let placed = fixed && refuses && unanswered && still;
     if !placed {
         let message =
             "`memo` keeps a composite built from its fields alone: `drag` and `drop` go on an element around it";
@@ -168,12 +169,17 @@ fn widget(element: &Element, names: &impl Names, scope: &Scope, found: &mut Foun
         found.keep(names.drop(taken));
         arguments(taken, names, scope, found);
     }
-    if let Outside::Raises(outside) = &element.outside {
+    let ends = [("drop_accepted", &element.accepted), ("drop_outside", &element.outside)];
+    for (name, raised) in ends {
+        let Raising::Raises(raised) = raised else {
+            continue;
+        };
         let fixed = matches!(element.drag, super::Drag::Fixed);
         if fixed {
-            found.keep(Err(syn::Error::new(outside.span(), "`drop_outside` belongs to an element with `drag`")));
+            let message = format!("`{name}` belongs to an element with `drag`");
+            found.keep(Err(syn::Error::new(raised.span(), message)));
         }
-        call(outside, names, scope, found);
+        call(raised, names, scope, found);
     }
     for hole in element.text.iter().flat_map(super::text::Text::holes) {
         reference(hole, names, scope, found);

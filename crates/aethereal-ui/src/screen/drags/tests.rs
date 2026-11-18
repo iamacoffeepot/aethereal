@@ -8,7 +8,7 @@ use super::super::tests::{last_list, screen};
 use super::super::{Heard, Outcome, Screen};
 use super::{Grip, Landing};
 use crate::drag::tests::{Item, Spell};
-use crate::drag::{DragSource, DropTarget, Payload};
+use crate::drag::{DragSource, DropOutcome, DropTarget, Payload};
 use crate::input::Raised;
 use crate::style::Style;
 use crate::tree::{KeyPath, Node, Segment, Tree};
@@ -32,12 +32,12 @@ fn button(place: u32, click: u32) -> Node {
     Node::new(Segment::Place(place), Button::new(Ev::Click(click)), sized(40.0, 20.0), vec![])
 }
 
-/// The column the tests drag in: a button that drags the item numbered `item`, raising `Discarded` when nothing takes
-/// it; a button that takes items, raising `Placed(3)`; one that takes no drops; and one that takes spells, raising
+/// The column the tests drag in: a button that drags the item numbered `item`, raising `LetGo` when a target takes it
+/// and `Discarded` when nothing does; a button that takes items, raising `Placed(3)`; one that takes no drops; and one that takes spells, raising
 /// `Placed(4)`. Each is 20 high, the first at the top.
 fn shelf(item: u32) -> Tree {
     column(vec![
-        button(0, 1).with_drag(DragSource::new(Item { id: item }).outside(Ev::Discarded)),
+        button(0, 1).with_drag(DragSource::new(Item { id: item }).accepted(Ev::LetGo).outside(Ev::Discarded)),
         button(1, 2).with_drop(DropTarget::new(Ev::Placed(3), place_item)),
         button(2, 3),
         button(3, 4).with_drop(DropTarget::new(Ev::Placed(4), place_spell)),
@@ -134,16 +134,18 @@ fn the_pressed_hit_declares_the_drag_s_cursor_once_the_drag_begins_and_its_own_a
 }
 
 #[test]
-fn a_drop_on_a_target_in_the_screen_raises_its_drop_with_the_payload_after_its_arguments() {
+fn a_drop_on_a_target_in_the_screen_lets_go_at_the_source_then_raises_its_drop_with_the_payload() {
     // Catches a drop raised by the source rather than the target, the target's arguments lost, or the payload left
-    // off, so `place(slot, item)` is called with nothing to place.
+    // off, so `place(slot, item)` is called with nothing to place; a source that hears a drop taken in its own screen
+    // as it never would from another actor, so it keeps an item that moved; and the source's `drop_accepted` raised
+    // after the target's drop, so an item dropped back on the list it came from is taken in and then let go of.
     let (mut screen, source) = shelved();
     let target = hit(&screen, &child(1));
 
     drag(&mut screen, source, 10.0);
     let dropped = raised(release(&mut screen, source, 10.0, 30.0, over(target, 10.0, 30.0)));
 
-    assert_eq!(dropped, vec![Raised::Dropped(Ev::Placed(3), item(7))]);
+    assert_eq!(dropped, vec![Raised::Dropped(Ev::LetGo, item(7)), Raised::Dropped(Ev::Placed(3), item(7))]);
 }
 
 #[test]
@@ -235,12 +237,15 @@ fn a_drop_mailed_to_a_screen_raises_its_target_s_drop_or_is_refused() {
 }
 
 #[test]
-fn a_refused_drop_raises_its_source_s_drop_outside() {
-    // Catches a refusal that the source ignores, so an item dropped on an actor that took nothing is lost.
+fn an_answered_drop_raises_its_source_s_drop_accepted_or_drop_outside() {
+    // Catches an answer that the source ignores, so an item an actor took stays at the source too, or one an actor
+    // refused is lost; and the two answers crossed, so a taken item is put back and a refused one let go of.
     let (mut screen, _) = shelved();
 
-    let refused = raised(screen.refused(&child(0), item(7)));
+    let accepted = raised(screen.answered(&child(0), item(7), DropOutcome::Accepted));
+    let refused = raised(screen.answered(&child(0), item(7), DropOutcome::Refused));
 
+    assert_eq!(accepted, vec![Raised::Dropped(Ev::LetGo, item(7))]);
     assert_eq!(refused, vec![Raised::Dropped(Ev::Discarded, item(7))]);
 }
 
@@ -256,7 +261,7 @@ fn a_drag_carries_the_payload_its_view_copied_when_the_press_reached_it() {
     point(&mut screen, source, PointerEvent::PointerMoved { x: 20.0, y: 10.0 });
     let dropped = raised(release(&mut screen, source, 10.0, 30.0, over(target, 10.0, 30.0)));
 
-    assert_eq!(dropped, vec![Raised::Dropped(Ev::Placed(3), item(7))]);
+    assert_eq!(dropped, vec![Raised::Dropped(Ev::LetGo, item(7)), Raised::Dropped(Ev::Placed(3), item(7))]);
 }
 
 /// A well that draws itself only while a drag it takes is over it.

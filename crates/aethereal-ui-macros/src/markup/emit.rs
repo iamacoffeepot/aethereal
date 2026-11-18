@@ -51,7 +51,7 @@
 
 use super::check::Scope;
 use super::reference::{Head, Reference};
-use super::{Call, Drag, Dropping, Element, Kind, Look, Memo, Naming, Outside, Repeat, Rest, Shown, Value};
+use super::{Call, Drag, Dropping, Element, Kind, Look, Memo, Naming, Raising, Repeat, Rest, Shown, Value};
 use crate::spans;
 use crate::style;
 use core::cell::RefCell;
@@ -371,20 +371,31 @@ impl<'markup> Emitter<'markup> {
         }
     }
 
-    /// The `.with_drag` of a dragged element, its `drop_outside` with it.
+    /// The `.with_drag` of a dragged element, its `drop_accepted` and `drop_outside` with it.
     fn drag(&self, element: &Element) -> TokenStream {
         let Drag::Carries(payload) = &element.drag else {
             return quote!();
         };
-        let outside = match &element.outside {
-            Outside::Nothing => quote!(),
-            Outside::Raises(call) => {
-                let event = self.event(call);
-                quote_spanned!(spans::at(call.span())=> .outside(#event))
-            }
-        };
+        let accepted = self.drag_end(&element.accepted, &quote!(accepted));
+        let outside = self.drag_end(&element.outside, &quote!(outside));
 
-        quote_spanned!(spans::at(payload.span())=> .with_drag(::aethereal_ui::DragSource::new(#payload) #outside))
+        // A method call copies the payload out whether the reference names it or a list's binding lends it.
+        let copied = quote_spanned!(spans::at(payload.span())=> {
+            use ::aethereal_ui::__private::Lent as _;
+            (#payload).lent()
+        });
+
+        quote_spanned!(spans::at(payload.span())=> .with_drag(::aethereal_ui::DragSource::new(#copied) #accepted #outside))
+    }
+
+    /// The call of the source's builder `method` that gives it `raised`, the event of one of its drag's ends, if any.
+    fn drag_end(&self, raised: &Raising, method: &TokenStream) -> TokenStream {
+        let Raising::Raises(call) = raised else {
+            return quote!();
+        };
+        let event = self.event(call);
+
+        quote_spanned!(spans::at(call.span())=> .#method(#event))
     }
 
     /// The `.with_drop` of an element that takes drops: its event, and the method that names the payload's kind.
