@@ -1,12 +1,11 @@
 //! The console's chat, as its state: what the hub shows it, built into rows, and what the owner does, come to the chat
 //! the link is told. Claude's events are written as Claude Code 2.1 writes them, cut to the members the console reads.
 
-use super::read::Container;
 use super::transcript::Compaction;
 use super::{Chats, Icon, Look, Open, Row, Status, Tone, Typed, Which, typed};
 use crate::console::Mode;
 use aethereal_data::{Budget, Json};
-use aethereal_sessions::{Chat, Connection, Ended, Entry, Grew, Note, Numbered, SessionRow, ShowAsk, Speaker, State};
+use aethereal_sessions::{Chat, Connection, Entry, Grew, Numbered, SessionRow, ShowAsk, Speaker, State};
 
 /// A session's row, `session`, named so, in `state`, its container as `state` has it, with `asking` asks waiting.
 fn tab(session: u32, state: State, asking: u32) -> SessionRow {
@@ -320,44 +319,29 @@ fn an_ask_waits_until_answered_here_or_its_session_waits_on_none() {
 fn a_session_s_status_is_its_ask_first_then_a_compaction_then_its_container_then_its_state() {
     // Catches an ask hidden behind a running turn or a compaction, a compaction the transcript shows hidden behind the
     // hub's state, a container starting or lost hidden behind the conversation's state, and a session the hub wound
-    // down shown lost, or one whose container went by itself shown merely stopped.
+    // down, or is archiving, shown lost.
     let status = Status::of;
     let (idle, compacting) = (Compaction::Idle, Compaction::Compacting);
-    let (none, attached) = (Connection::None, Connection::Attached);
+    let (none, attached, lost) = (Connection::None, Connection::Attached, Connection::Lost);
 
-    assert_eq!(status(State::Working, attached, 1, compacting, Container::Gone), Status::Waiting);
-    assert_eq!(status(State::Hibernating, none, 2, idle, Container::Gone), Status::Waiting);
-    assert_eq!(status(State::Working, attached, 0, compacting, Container::Started), Status::Compacting);
-    assert_eq!(status(State::Idle, Connection::Starting, 0, idle, Container::Unsaid), Status::Starting);
-    assert_eq!(status(State::Hibernating, Connection::Lost, 0, idle, Container::Unsaid), Status::Lost);
-    assert_eq!(status(State::Waiting, attached, 0, idle, Container::Started), Status::Working);
-    assert_eq!(status(State::Idle, attached, 0, idle, Container::Started), Status::Idle);
-    assert_eq!(status(State::Hibernating, none, 0, idle, Container::WoundDown), Status::Stopped);
-    assert_eq!(status(State::Hibernating, none, 0, idle, Container::Unsaid), Status::Stopped);
-    assert_eq!(status(State::Hibernating, none, 0, idle, Container::Gone), Status::Lost);
+    assert_eq!(status(State::Working, attached, 1, compacting), Status::Waiting);
+    assert_eq!(status(State::Hibernating, lost, 2, idle), Status::Waiting);
+    assert_eq!(status(State::Working, attached, 0, compacting), Status::Compacting);
+    assert_eq!(status(State::Idle, Connection::Starting, 0, idle), Status::Starting);
+    assert_eq!(status(State::Hibernating, lost, 0, idle), Status::Lost);
+    assert_eq!(status(State::Waiting, attached, 0, idle), Status::Working);
+    assert_eq!(status(State::Idle, attached, 0, idle), Status::Idle);
+    assert_eq!(status(State::Hibernating, none, 0, idle), Status::Stopped);
+    assert_eq!(status(State::Archived, attached, 0, idle), Status::Stopped);
 }
 
 #[test]
-fn a_tab_is_marked_lost_by_the_hub_s_last_word_of_its_container_and_the_console_s_own_is_unmarked() {
-    // Catches a stop the hub noted as lost read as wound down, an old loss outliving the run started after it, an
-    // output line taken for a word of the container, and the console's own tab given a status.
-    let note = |number: u64, note: Note| Numbered { number, entry: Entry::Hub(note) };
+fn a_tab_is_marked_lost_as_the_hub_lists_its_container_and_the_console_s_own_is_unmarked() {
+    // Catches a tab marked by anything but the hub's row of its container, so a session the hub lists as lost shows
+    // merely stopped, and the console's own tab given a status.
     let mut chats = Chats::default();
-    let _ = chats.listed(vec![tab(1, State::Hibernating, 0)]);
-    chats.shown(1, &[note(1, Note::Stopped { run: 1, why: Ended::Lost })]);
+    let _ = chats.listed(vec![SessionRow { container: Connection::Lost, ..tab(1, State::Hibernating, 0) }]);
 
     assert_eq!(chats.titles()[0].icon, Icon::Unmarked);
     assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Lost));
-
-    let output = Numbered { number: 4, entry: Entry::Stdout { text: String::from("bye"), bytes: 4 } };
-    chats.shown(
-        1,
-        &[
-            note(2, Note::Started { run: 2, resumed: true }),
-            note(3, Note::Stopped { run: 2, why: Ended::Idle }),
-            output,
-        ],
-    );
-
-    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Stopped));
 }

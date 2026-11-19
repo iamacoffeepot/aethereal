@@ -155,10 +155,12 @@ pub enum Within {
 impl Within {
     /// The time left at `now` before `due`: none once it has come, and unbounded for a request never due.
     #[must_use]
-    pub const fn left(due: Due, now: Time) -> Self {
+    pub fn left(due: Due, now: Time) -> Self {
         match due {
             Due::Never => Self::Unbounded,
-            Due::Before(before) => Self::Millis(before.nanos().saturating_sub(now.nanos()) / NANOS_PER_MILLI),
+            Due::Before(before) => {
+                Self::Millis(u64::try_from(before.saturating_duration_since(now).as_millis()).unwrap_or(u64::MAX))
+            }
         }
     }
 
@@ -171,9 +173,6 @@ impl Within {
         }
     }
 }
-
-/// The nanoseconds of a millisecond.
-const NANOS_PER_MILLI: u64 = 1_000_000;
 
 /// Why a hub refused an engine's `Hello`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]

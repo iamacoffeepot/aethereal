@@ -32,18 +32,23 @@ pub enum Conversation {
 }
 
 /// Where a session stood when the hub last wrote its record: awake, with a container of it that may exist and what a
-/// hub that starts again finds it by among the containers Docker lists; hibernating; or archived. Each case keeps its
-/// place, as a record is read by the place of its case, so a record written before a case was renamed still reads.
+/// hub that starts again finds it by among the containers Docker lists; hibernating, its last container removed by the
+/// hub or lost; or archived. Each case keeps its place, as a record is read by the place of its case, so a record
+/// written before a case was renamed or added still reads.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.standing")]
 pub enum Standing {
     /// Awake: its container of the run `run` was made, and may run still.
     Awake { container: ContainerId, run: u32 },
-    /// No container of it exists: it hibernates, and the next line wakes it.
+    /// No container of it exists, as the hub removed its last or has made none: it hibernates, and the next line wakes
+    /// it.
     Hibernating,
     /// It was archived: its container is gone, and it never wakes again.
     Archived,
     /// Awake: its container of the run `run` may be being made, under the name its number and the run give it, as
-    /// Docker has not yet answered its id. Last of the cases, so a record written before there was one still reads.
+    /// Docker has not yet answered its id. After `Archived`, so a record written before there was one still reads.
     Starting { run: u32 },
+    /// No container of it exists, as its last ended without the hub ending it: it hibernates, shown as lost until the
+    /// next line wakes it. Last of the cases, after `Starting`, so a record written before there was one still reads.
+    Lost,
 }

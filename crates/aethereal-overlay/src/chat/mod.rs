@@ -40,7 +40,6 @@ use aethereal_render::text::Colour;
 use aethereal_sessions::{Chat, Entry, Numbered, SessionRow, ShowAsk, Speaker, State};
 use aethereal_ui::markdown::Blocks;
 use core::iter;
-use read::Container;
 use std::collections::BTreeMap;
 use transcript::{Compaction, Transcript};
 
@@ -467,14 +466,11 @@ impl Chats {
     }
 
     /// Each tab, the console's own first, unmarked, then each session's titled with its name and marked with its
-    /// status: as the hub lists it, its asks, and what the engine holds of its transcript, a compaction running or its
-    /// container gone.
+    /// status: as the hub lists it, and its asks, and a compaction the engine's transcript of it shows running.
     pub fn titles(&self) -> Vec<Title> {
         let sessions = self.live().into_iter().map(|tab| {
-            let transcript = self.transcripts.get(&tab.session);
-            let compaction = transcript.map_or(Compaction::Idle, Transcript::compaction);
-            let container = transcript.map_or(Container::Unsaid, Transcript::container);
-            let status = Status::of(tab.state, tab.container, tab.asking, compaction, container);
+            let compaction = self.transcripts.get(&tab.session).map_or(Compaction::Idle, Transcript::compaction);
+            let status = Status::of(tab.state, tab.container, tab.asking, compaction);
             (tab.name.clone(), Icon::Marked(status))
         });
 

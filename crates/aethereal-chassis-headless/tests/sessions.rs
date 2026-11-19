@@ -1814,10 +1814,11 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
     Ok((harness, daemon, session))
 }
 
-/// Waits until the hub has left `session` stopped, its record saying so, and answers its transcript.
-fn left_stopped(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Vec<Numbered>, Unheard> {
-    // The record says the session stopped only once the hub has read its sessions back, before which none is listed.
-    until(harness, daemon, |_, daemon| kept(daemon, session) == Some(Standing::Hibernating));
+/// Waits until the hub has left `session` hibernating, its container lost and its record saying so, and answers its
+/// transcript.
+fn left_lost(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Vec<Numbered>, Unheard> {
+    // The record says the session was lost only once the hub has read its sessions back, before which none is listed.
+    until(harness, daemon, |_, daemon| kept(daemon, session) == Some(Standing::Lost));
     until_state(harness, daemon, session, State::Hibernating)?;
 
     read(harness, daemon, session, 0)
@@ -1838,26 +1839,37 @@ fn adopts(test: &str, kill: Kill, said: &[&str]) -> Result<(), Unheard> {
 }
 
 #[test]
-fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_its_session_stopped() -> Result<(), Unheard> {
-    // Catches a container asked for before the record naming it lands, and a hub that starts again and leaves a
-    // session whose record says it starts as it found it, when no container of it is listed.
+fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_its_session_lost_through_the_next_restart()
+-> Result<(), Unheard> {
+    // Catches a container asked for before the record naming it lands, a hub that starts again and leaves a session
+    // whose record says it starts as it found it, when no container of it is listed, and a session so lost shown as
+    // one the hub wound down once the hub starts yet again.
     let (mut harness, mut daemon, session) = killed_at("kill-creating", Kill::Creating)?;
-    let entries = left_stopped(&mut harness, &mut daemon, session)?;
+    let entries = left_lost(&mut harness, &mut daemon, session)?;
 
     assert_eq!(daemon.made.len(), 1, "no container of the run is made");
     let last = entries.last().map(|numbered| &numbered.entry);
     assert_eq!(last, Some(&Entry::Hub(Note::Stopped { run: 2, why: Ended::Lost })));
 
+    drop(harness);
+    daemon.connections.clear();
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    // A list is answered at once, before the sessions are read back: it is asked again until they are.
+    waiting::until(BUDGET, || listed(&mut harness, &mut daemon).is_ok_and(|sessions| !sessions.is_empty()));
+    let listed = row(&mut harness, &mut daemon, session)?;
+
+    assert_eq!((listed.state, listed.container), (State::Hibernating, Housed::Lost), "lost through the next restart");
+
     Ok(())
 }
 
 #[test]
-fn a_hub_killed_before_a_run_s_container_starts_removes_it_and_leaves_its_session_stopped() -> Result<(), Unheard> {
+fn a_hub_killed_before_a_run_s_container_starts_removes_it_and_leaves_its_session_lost() -> Result<(), Unheard> {
     // Catches a container that does not run, found by the name a record of a starting run gives it, left in place, or
     // the session's record saying it stopped while the container is still there.
     let (mut harness, mut daemon, session) = killed_at("kill-launching", Kill::Launching)?;
     let second = daemon.made(1);
-    let entries = left_stopped(&mut harness, &mut daemon, session)?;
+    let entries = left_lost(&mut harness, &mut daemon, session)?;
 
     assert!(!daemon.containers.contains_key(&second), "the run's container is removed");
     let last = entries.last().map(|numbered| &numbered.entry);

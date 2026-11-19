@@ -126,7 +126,7 @@ console line in ! mode ──> the engine's own tool, now ──> Up::Ran ──
 - **When an engine closes,** only its open tabs end. A turn running carries on, a line already sent is still delivered, and a question waiting for an answer stays waiting until an engine opens the session and answers it.
 - **The capability keeps its sessions through `Files`, in `Save`, as any actor does,** so the hub has one service that touches its disk, and where `Save` lives is the hub's `Files` setting:
   - `sessions/index` lists every session's number, written whole as a session is added;
-  - `sessions/<n>/record` is a session's name, conversation id, runs, and where it stood (starting its container of a run, named by the session's number and the run, as Docker has not answered its id; awake in its container of a run, named by its id; hibernating; or archived), written whole;
+  - `sessions/<n>/record` is a session's name, conversation id, runs, and where it stood (starting its container of a run, named by the session's number and the run, as Docker has not answered its id; awake in its container of a run, named by its id; hibernating; hibernating with its last container lost, so a hub that starts again still shows it lost; or archived), written whole;
   - `sessions/<n>/transcript` is its transcript, each entry a frame, its length and then its bytes, appended (ADR-0039's `Writes::Append`).
 
   One write runs at a time: a session's new frames are appended, and only once that append is answered is its record written, so a record never stands ahead of its transcript, and no two appends to one transcript are in flight at once.

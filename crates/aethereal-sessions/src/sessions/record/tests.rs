@@ -20,6 +20,7 @@ fn a_record_an_earlier_hub_saved_reads_as_where_its_session_stood() {
     assert_eq!(read(&[1, 0, 0, 0]), Ok(record(Standing::Hibernating)));
     assert_eq!(read(&[2, 0, 0, 0]), Ok(record(Standing::Archived)));
     assert_eq!(read(&[3, 0, 0, 0, 2, 0, 0, 0]), Ok(record(Standing::Starting { run: 2 })));
+    assert_eq!(read(&[4, 0, 0, 0]), Ok(record(Standing::Lost)));
     let awake = read(&[0, 0, 0, 0, 1, 0, 0, 0, b'c', 2, 0, 0, 0]);
     assert!(matches!(awake, Ok(Record { kept: Standing::Awake { run: 2, .. }, .. })), "{awake:?}");
 }

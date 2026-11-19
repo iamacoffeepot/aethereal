@@ -4,9 +4,9 @@
 //! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
 //! removed when it does not, the session left hibernating, its container lost, once it is gone; a record whose
 //! container is not listed leaves its session hibernating, its container lost; and each container carrying the label
-//! that no record names is reported, never removed. A list Docker does not answer with its containers fails the
-//! capability before anything is noted or written: which sessions still run is unknown, and every record is left as it
-//! is for a hub that starts again to list them.
+//! that no record names is reported, never removed. A record that says its session hibernates lost reads back so. A
+//! list Docker does not answer with its containers fails the capability before anything is noted or written: which
+//! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
 
 use super::asked::Waiting;
 use super::container;
@@ -137,8 +137,9 @@ impl Sessions {
     }
 
     /// Every session `reading` found, each held as hibernating until the containers carrying the hub's label are
-    /// listed: one whose record says it was awake as lost, unless its container is found running and adopted. Each is
-    /// held whatever it stood as, archived ones among them, so any reads in full with no container.
+    /// listed: one whose record says it was lost as lost, and one whose record says it was awake as lost too, unless
+    /// its container is found running and adopted. Each is held whatever it stood as, archived ones among them, so any
+    /// reads in full with no container.
     fn found(&mut self, turn: &mut Turn<'_, Self>, reading: Reading, waiting: Vec<Waiting>) -> Result<(), Fault> {
         let Some(docker) = turn.found(&path::<Docker>(())) else {
             turn.log(Level::Error, "no Docker client is listed before the sessions");
@@ -155,12 +156,14 @@ impl Sessions {
                     let name = container::name(&self.settings, session, *run);
                     recorded.push(Recorded { session, container: Named::Starting(name), run: *run });
                 }
-                Standing::Hibernating | Standing::Archived => {}
+                Standing::Hibernating | Standing::Lost | Standing::Archived => {}
             }
             let life = match record.kept {
                 Standing::Archived => Life::Archived,
                 Standing::Hibernating => Life::Hibernating { gone: Gone::Removed },
-                Standing::Awake { .. } | Standing::Starting { .. } => Life::Hibernating { gone: Gone::Lost },
+                Standing::Lost | Standing::Awake { .. } | Standing::Starting { .. } => {
+                    Life::Hibernating { gone: Gone::Lost }
+                }
             };
             let transcript = transcripts.remove(&session).unwrap_or_default();
             let Record { name, conversation, runs, .. } = record;

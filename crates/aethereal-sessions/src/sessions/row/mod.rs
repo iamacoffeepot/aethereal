@@ -72,13 +72,10 @@ impl Grew {
     /// This time, held at `from` on one clock, as the moment as long before `to` on another: how a row's time crosses
     /// from the hub's clock to an engine's, as two clocks are their own (ADR-0041).
     #[must_use]
-    pub const fn rebased(self, from: Time, to: Time) -> Self {
+    pub fn rebased(self, from: Time, to: Time) -> Self {
         match self {
             Self::Unseen => Self::Unseen,
-            Self::At(at) => {
-                let ago = from.nanos().saturating_sub(at.nanos());
-                Self::At(Time::from_nanos(to.nanos().saturating_sub(ago)))
-            }
+            Self::At(at) => Self::At(to.saturating_sub(from.saturating_duration_since(at))),
         }
     }
 }

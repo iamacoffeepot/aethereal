@@ -170,7 +170,8 @@ impl Session {
     }
 
     /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
-    /// exist, and names it.
+    /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
+    /// it lost until it wakes.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
@@ -179,7 +180,8 @@ impl Session {
                 Standing::Awake { container: container.clone(), run: *run }
             }
             Life::Starting { run, .. } => Standing::Starting { run: *run },
-            Life::Hibernating { .. } => Standing::Hibernating,
+            Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
+            Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
             Life::Archived => Standing::Archived,
         };
 
