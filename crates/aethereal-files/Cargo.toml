@@ -16,5 +16,9 @@ aethereal-actor = { path = "../aethereal-actor" }
 aethereal-data = { path = "../aethereal-data" }
 aethereal-tools = { path = "../aethereal-tools", optional = true }
 
+[dev-dependencies]
+# The tests run the root on a desk whose jobs a runner of their own finishes in the order they choose (ADR-0036).
+aethereal-substrate = { path = "../aethereal-substrate", features = ["harness"] }
+
 [lints]
 workspace = true
