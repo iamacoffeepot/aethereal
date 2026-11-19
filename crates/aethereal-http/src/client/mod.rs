@@ -20,7 +20,7 @@ pub use settings::{ClientLimits, HttpSettings};
 use crate::Method;
 use crate::http1::body::{Body, Decoded, Progress};
 use aethereal_actor::{
-    ActorRef, Answered, Beginning, Ended, Enough, Fault, Held, Later, Level, More, Number, Open, Part, Serving,
+    ActorRef, Answered, Beginning, Ended, Enough, Fault, Held, Later, Level, More, Number, Open, Part, Serving, Speaks,
     StreamKey, Streams, Taken, Turn, Unsent, actor,
 };
 use aethereal_data::{Bound, Plain};
@@ -177,14 +177,18 @@ impl Client {
     }
 
     #[request]
-    fn open(&mut self, open: Open<Receiving>, turn: &mut Turn<'_, Self>) -> Result<Later<Finished>, Fault> {
-        let (key, Follow { request, switch }, later) = self.serving.open(turn, open)?;
+    fn open(
+        &mut self,
+        open: Open<Receiving>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Receiving>,)>>,
+    ) -> Result<Later<Finished>, Fault> {
+        let (key, Follow { request, switch }, later) = self.serving.open(turn, open);
         let head_only = request.method == Method::Head;
         let switches = matches!(switch, Switch::To { .. });
-        let written = self.write(turn, request, &switch)?;
+        let written = turn.unguarded(|turn| self.write(turn, request, &switch))?;
         match written {
             Written::Asked => self.phase = Phase::Head { asker: Asker::Following { key, switches }, head_only },
-            Written::Unsent(failure) => self.finish(turn, key, &Finished::Failed(failure))?,
+            Written::Unsent(failure) => turn.unguarded(|turn| self.finish(turn, key, &Finished::Failed(failure)))?,
         }
 
         Ok(later)

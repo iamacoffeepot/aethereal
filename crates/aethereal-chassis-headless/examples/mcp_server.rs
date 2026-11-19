@@ -6,7 +6,8 @@
 //! --assets DIR --save DIR`.
 
 use aethereal_actor::{
-    Answered, Beginning, Ended, Enough, Fault, Later, Level, More, Number, Open, Part, Reply, Slept, Turn, actor,
+    Answered, Beginning, Ended, Enough, Fault, Later, Level, More, Number, Open, Part, Reply, Slept, Speaks, Turn,
+    actor,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
@@ -130,7 +131,11 @@ impl McpStack {
     }
 
     #[request]
-    fn open(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<BodyRead>, Fault> {
+    fn open(
+        &mut self,
+        open: Open<InboundBody>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<InboundBody>,)>>,
+    ) -> Result<Later<BodyRead>, Fault> {
         self.serving.open_body(open, turn)
     }
 

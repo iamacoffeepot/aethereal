@@ -19,7 +19,7 @@ use crate::ready::{Ready, Wait};
 use crate::{Framing, Interest, Readied, Socket};
 use aethereal_actor::{
     Answer, Answered, Beginning, Bytes, Ended, Enough, ErasedActorRef, Fault, Given, Handle, Held, Later, More, Open,
-    Receives, Reply, Serving, Stream, StreamKey, Turn, Unsent, protocol,
+    Part, Receives, Reply, Serving, Speaks, Stream, StreamKey, Turn, Unsent, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use std::io::{self, ErrorKind, IoSlice, Read as _};
@@ -255,10 +255,10 @@ impl Connection {
     /// and its `More` is what reads.
     pub fn open<A: Receives<Ended>>(
         &mut self,
-        turn: &mut Turn<'_, A>,
+        turn: &mut Turn<'_, A, Speaks<(Part<Reading>,)>>,
         open: Open<Reading>,
     ) -> Result<Later<HungUp>, Fault> {
-        let (stream, Read, later) = self.reading.open(turn, open)?;
+        let (stream, Read, later) = self.reading.open(turn, open);
         let refused = match self.read_half {
             ReadHalf::Waiting => {
                 self.read_half = ReadHalf::Reading { stream, reader: turn.sender() };

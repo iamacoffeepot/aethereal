@@ -131,8 +131,7 @@ pub use stage::{
 };
 pub use stats::{Against, Backlog, EngineStats, Figures, GuestMemory, LARGEST, Process};
 pub use stream::{
-    Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unreachable,
-    Unsent,
+    Enough, More, Number, Open, Part, Serving, Stream, StreamKey, Streamed, Streaming, Streams, Taken, Unsent,
 };
 pub use subscribers::Subscribers;
 pub use time::Time;

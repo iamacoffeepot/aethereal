@@ -16,7 +16,7 @@
 
 use aethereal_actor::{
     Answered, Beginning, Bytes, Ended, Enough, Fault, Later, Level, More, Number, Open, Part, Reply, Serving, Slept,
-    Turn, actor,
+    Speaks, Turn, actor,
 };
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::waiting::{self, BUDGET};
@@ -111,8 +111,12 @@ impl Source {
     }
 
     #[request]
-    fn open(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<SourceEnd>, Fault> {
-        let (_, _, later) = self.serving.open(turn, open)?;
+    fn open(
+        &mut self,
+        open: Open<OutboundBody>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<OutboundBody>,)>>,
+    ) -> Result<Later<SourceEnd>, Fault> {
+        let (_, _, later) = self.serving.open(turn, open);
         self.sent = 0;
 
         Ok(later)
@@ -283,7 +287,11 @@ impl BenchStack {
     }
 
     #[request]
-    fn open(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<BodyRead>, Fault> {
+    fn open(
+        &mut self,
+        open: Open<InboundBody>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<InboundBody>,)>>,
+    ) -> Result<Later<BodyRead>, Fault> {
         self.serving.open_body(open, turn)
     }
 
