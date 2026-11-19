@@ -4,7 +4,7 @@
 use Name::{A, B, L};
 use aethereal_actor::{
     ActorRef, Answered, Anywhere, Beginning, Ended, Enough, Fault, Later, More, Number, Open, Part, Seated, Serving,
-    Stream, StreamKey, Streams, Taken, Time, Turn, Unanswered, Unsent, actor,
+    Speaks, Stream, StreamKey, Streams, Taken, Time, Turn, Unanswered, Unsent, actor,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_substrate::{Clock, Engine};
@@ -254,13 +254,21 @@ impl Library {
     }
 
     #[request]
-    fn open_files(&mut self, open: Open<Files>, turn: &mut Turn<'_, Self>) -> Result<Later<ReadDone>, Fault> {
-        serve(&mut self.files, &mut self.files_left, turn, open)
+    fn open_files(
+        &mut self,
+        open: Open<Files>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Files>,)>>,
+    ) -> Result<Later<ReadDone>, Fault> {
+        Ok(serve(&mut self.files, &mut self.files_left, turn, open))
     }
 
     #[request]
-    fn open_logs(&mut self, open: Open<Logs>, turn: &mut Turn<'_, Self>) -> Result<Later<LogDone>, Fault> {
-        serve(&mut self.logs, &mut self.logs_left, turn, open)
+    fn open_logs(
+        &mut self,
+        open: Open<Logs>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Logs>,)>>,
+    ) -> Result<Later<LogDone>, Fault> {
+        Ok(serve(&mut self.logs, &mut self.logs_left, turn, open))
     }
 
     #[tell]
@@ -298,14 +306,14 @@ impl Library {
 fn serve<S: Ends>(
     serving: &mut Serving<S>,
     left: &mut Vec<Left>,
-    turn: &mut Turn<'_, Library>,
+    turn: &mut Turn<'_, Library, Speaks<(Part<S>,)>>,
     open: Open<S>,
-) -> Result<Later<S::Done>, Fault> {
-    let (key, asked, later) = serving.open(turn, open)?;
+) -> Later<S::Done> {
+    let (key, asked, later) = serving.open(turn, open);
     let (chunks, close_after) = S::asked(asked);
     left.push(Left { key, next: 0, chunks, close_after });
 
-    Ok(later)
+    later
 }
 
 /// Sends the stream `key` as many chunks as its credit allows, finishing it once the last is sent, or closing the
@@ -565,6 +573,57 @@ fn ended<S: Ends>(tag: Option<Tag>, answered: Answered<S::Done>) -> Took {
     Took::Done { name, how }
 }
 
+/// What a passerby is made with: the library it opens a stream on.
+#[derive(Bound)]
+#[kind(name = "aether.test.stream.passing")]
+struct Passing {
+    library: ActorRef<Library>,
+}
+
+/// What a passerby sends itself as it begins, to open its stream in a turn.
+#[derive(Plain)]
+#[kind(name = "aether.test.stream.ask")]
+struct Ask;
+
+/// An asker that is not its library's parent, whose type its library holds for its life: it opens a file stream and
+/// closes in the turn it opens it, so with no fused hops it has ended by the time its library is handed the request.
+/// It grants one chunk of ten, so its library still holds the stream as it learns the passerby has ended.
+#[derive(Bound)]
+#[kind(name = "aether.test.stream.passerby")]
+struct Passerby {
+    library: ActorRef<Library>,
+    files: Streams<Files, Name>,
+}
+
+#[actor]
+impl Passerby {
+    fn begin(passing: Passing, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        turn.to(turn.me()).send(&Ask)?;
+
+        Ok(Self { library: passing.library, files: Streams::new(NonZeroU32::MIN) })
+    }
+
+    #[tell]
+    fn ask(&mut self, _: Ask, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.files.open(turn, self.library.protocol(), Files::asking(10, None), A)?;
+        turn.close();
+
+        Ok(())
+    }
+
+    #[tell]
+    fn part(&mut self, _: Part<Files>) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    #[answer]
+    fn read_done(&mut self, (_, number): (Answered<ReadDone>, Number)) -> Result<(), Fault> {
+        self.files.answered(number);
+
+        Ok(())
+    }
+}
+
 /// A clock that never moves.
 struct Stopped;
 
@@ -717,5 +776,36 @@ fn a_receiver_lets_go_of_the_streams_of_an_asker_that_ended() {
         let run = run(engine, 4, &[read(A, 10).leaving()]);
 
         assert_eq!(run.library, [files(4), files(1), Served::AskerGone(1)], "{engine:?}");
+    }
+}
+
+#[test]
+fn a_receiver_outlives_an_asker_that_ended_before_its_request_was_handled() {
+    // Catches a receiver whose turn fails on a request from an asker that ended after sending it, which would end a
+    // listener or a connection for what another actor did (ADR-0017), and the stream of such an asker kept for as long
+    // as its receiver lives.
+    for (parts, hops) in ENGINES {
+        let Some(parts) = NonZeroUsize::new(parts) else {
+            panic!("an engine has parts");
+        };
+        let mut engine = Engine::new(parts, 1024, 1 << 20, 1 << 20, hops).ready();
+        let Ok(id) = engine.add_root::<Library>(&1, Blank) else {
+            panic!("the library begins");
+        };
+        let Some(seat) = engine.table().seat(id) else {
+            panic!("the library is seated");
+        };
+        let library = Seated { id, seat };
+        let passing = Passing { library: ActorRef::found(library) };
+        let Ok(_) = engine.add_root::<Passerby>(&(), passing) else {
+            panic!("the passerby begins");
+        };
+
+        for _ in 0..8 {
+            engine.step(Time::ZERO, &Stopped);
+        }
+
+        let served = engine.state::<Library>(library).map(|library| library.served.last().copied());
+        assert_eq!(served, Some(Some(Served::AskerGone(1))), "{parts:?} {hops}");
     }
 }

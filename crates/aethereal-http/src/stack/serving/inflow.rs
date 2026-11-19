@@ -12,8 +12,8 @@ use crate::stack::request_head::Refusal;
 use crate::stack::{BodyBytes, BodyRead, InboundBody, OutboundBody, SourceEnd};
 use crate::stack::{InboundPart, InboundParts, PartStep, WalkedBy};
 use aethereal_actor::{
-    Answer, Bytes, Ended, Enough, Fault, Handles, Later, Level, More, Number, Open, Part, Receives, Slept, StreamKey,
-    Turn, Unsent,
+    Answer, Bytes, Ended, Enough, Fault, Handles, Later, Level, More, Number, Open, Part, Receives, Slept, Speaks,
+    StreamKey, Turn, Unsent,
 };
 use aethereal_tcp::HungUp;
 use aethereal_tcp::Wrote;
@@ -35,12 +35,16 @@ where
     /// # Errors
     ///
     /// The fault of mail that does not encode, or of a sleep the engine would not run.
-    pub fn open_body(&mut self, open: Open<InboundBody>, turn: &mut Turn<'_, S>) -> Result<Later<BodyRead>, Fault>
+    pub fn open_body(
+        &mut self,
+        open: Open<InboundBody>,
+        turn: &mut Turn<'_, S, Speaks<(Part<InboundBody>,)>>,
+    ) -> Result<Later<BodyRead>, Fault>
     where
         S: Receives<Ended>,
     {
-        let (reader, asked, later) = self.readers.open(turn, open)?;
-        self.start_reading(reader, asked.request(), turn)?;
+        let (reader, asked, later) = self.readers.open(turn, open);
+        turn.unguarded(|turn| self.start_reading(reader, asked.request(), turn))?;
 
         Ok(later)
     }

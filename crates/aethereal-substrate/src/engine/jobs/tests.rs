@@ -368,6 +368,8 @@ enum What {
     Bump(How),
     /// Gives a [`Bump`] a counter of one, and cancels it in the same turn.
     BumpAndCancel,
+    /// Gives a [`Bump`] a counter of one, which hands it back, and keeps it, to cancel later.
+    HoldBump,
 }
 
 /// How a job a test holds comes to an end.
@@ -514,6 +516,13 @@ impl Worker {
                 let bump = Bump { counter: turn.give(counter)?, how: How::HandsBack };
                 let id = turn.run(&bump, &which)?;
                 turn.cancel(id);
+                id
+            }
+            What::HoldBump => {
+                let counter = turn.keep(Counter { count: 1 })?;
+                let bump = Bump { counter: turn.give(counter)?, how: How::HandsBack };
+                let id = turn.run(&bump, &which)?;
+                self.kept.push(id);
                 id
             }
         };
@@ -705,12 +714,12 @@ struct Holding {
 }
 
 impl Holding {
-    /// Runs every job but [`Sleeps`], [`Measure`]s, and [`Hangs`], which it holds.
+    /// Runs every job but [`Sleeps`], [`Measure`]s, [`Hangs`], and [`Bump`]s, which it holds.
     fn new() -> Self {
         Self { inline: Inline::new(Arc::new(Services::none())), held: Mutex::default(), most: usize::MAX }
     }
 
-    /// Finishes each job it holds: a sleep as doubling to seven, and a measure by running it.
+    /// Finishes each job it holds: a sleep as doubling to seven, and any other by running it.
     fn let_go(&self) {
         let Ok(mut held) = self.held.lock() else {
             panic!("the list is not poisoned");
@@ -740,7 +749,8 @@ impl Jobs for Holding {
         let sleeps = of.kind() == KindId::of::<Sleeps>();
         let measures = of.kind() == KindId::of::<Measure>();
         let hangs = of.kind() == KindId::of::<Hangs>();
-        let is_held = sleeps || measures || hangs;
+        let bumps = of.kind() == KindId::of::<Bump>();
+        let is_held = sleeps || measures || hangs || bumps;
         if !is_held {
             self.inline.start(id, of, job);
             return;
@@ -1277,6 +1287,24 @@ fn a_cancelled_or_faulted_job_drops_the_resource_it_was_given_and_logs_it() {
 
     let dropped = vec![any::type_name::<Counter>(); 2];
     assert_eq!(counted(&engine, seated), (vec![doubled(0, 2), faulted(2)], dropped));
+}
+
+#[test]
+fn a_resource_a_cancelled_job_finished_with_is_dropped_and_logged() {
+    // Catches the resource carried by the answer of a job that finished before it was cancelled kept for the rest of
+    // its actor's life, unlogged: the answer finds nothing filed and runs no turn, so nothing takes the resource, and it
+    // must be dropped as one a turn does not take is.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, What::HoldBump);
+    holding.let_go();
+    poke(&mut engine, 2, What::LetGo);
+
+    engine.bring();
+    settle(&mut engine);
+
+    let dropped = vec![any::type_name::<Counter>()];
+    assert_eq!(counted(&engine, seated), (vec![doubled(0, 2)], dropped), "the counter the passed-over answer carried");
 }
 
 #[test]

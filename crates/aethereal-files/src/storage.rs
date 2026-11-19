@@ -127,6 +127,9 @@ pub type Writing<'a> = Pin<Box<dyn Future<Output = Result<(), Unwritten>> + 'a>>
 ///
 /// A read, a write, or a listing never blocks the thread that polls it: a host whose work blocks does it on threads of
 /// its own, and wakes each once it is done.
+///
+/// It need promise no order between two writes of one file: [`Files`](crate::Files) asks it one write of a file at a
+/// time, the next once the one before is answered (ADR-0039).
 pub trait Storage: Send + Sync {
     /// Reads the whole file at `path` in `namespace` into a buffer taken from `lent`, the buffers its job was lent,
     /// with [`Spares::take`] once it knows the file's size, so the file lands in one of them when it fits by the rule

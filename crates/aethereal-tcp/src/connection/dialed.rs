@@ -3,7 +3,7 @@
 use super::{Connection, ConnectionConfig, Finish, HungUp, Reading, Shut, Write, Wrote};
 use crate::Tcp;
 use crate::{Interest, Readied};
-use aethereal_actor::{Answered, Beginning, Ended, Enough, Fault, Later, More, Open, Reply, Turn, actor};
+use aethereal_actor::{Answered, Beginning, Ended, Enough, Fault, Later, More, Open, Part, Reply, Speaks, Turn, actor};
 use aethereal_data::Bound;
 
 /// A connection beneath the root, keyed by the root's count: read through a [`Reading`] stream, written with [`Write`], finished with [`Finish`], hung up with [`Shut`] (ADR-0033).
@@ -21,7 +21,11 @@ impl Dialed {
     }
 
     #[request]
-    fn open(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
+    fn open(
+        &mut self,
+        open: Open<Reading>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Reading>,)>>,
+    ) -> Result<Later<HungUp>, Fault> {
         self.connection.open(turn, open)
     }
 

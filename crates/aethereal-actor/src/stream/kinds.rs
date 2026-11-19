@@ -142,10 +142,3 @@ impl StreamKey {
         self.number
     }
 }
-
-/// The reason a receiver's turn fails when the actor that asked to open a stream does not take its parts. Only a
-/// request [`Streams`](super::Streams) did not make can be one, since it opens streams only for an actor that handles
-/// them.
-#[derive(Debug, PartialEq, Eq, Plain)]
-#[kind(name = "aether.stream.unreachable")]
-pub struct Unreachable;

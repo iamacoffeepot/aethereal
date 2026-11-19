@@ -13,8 +13,8 @@ use super::{
     Watching, reply,
 };
 use aethereal_actor::{
-    ActorRef, Answered, Enough, Fault, Later, More, Number, Open, Part, ProtocolRef, Serving, Stream, StreamKey, Taken,
-    Turn, Unsent,
+    ActorRef, Answered, Enough, Fault, Later, More, Number, Open, Part, ProtocolRef, Serving, Speaks, Stream,
+    StreamKey, Taken, Turn, Unsent,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Client, Failure, Finished, Follow, Received, Receiving, Switch};
@@ -98,12 +98,12 @@ impl Docker {
     pub(super) fn handle_open_attaching(
         &mut self,
         open: Open<Attaching>,
-        turn: &mut Turn<'_, Self>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Attaching>,)>>,
     ) -> Result<Later<Detached>, Fault> {
-        let (key, attach, later) = self.attaching.open(turn, open)?;
+        let (key, attach, later) = self.attaching.open(turn, open);
         let downstream = Downstream::Attach { key, demux: Demux::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, attach.call())?;
+        turn.unguarded(|turn| self.relay(turn, downstream, attach.call()))?;
 
         Ok(later)
     }
@@ -111,12 +111,12 @@ impl Docker {
     pub(super) fn handle_open_logging(
         &mut self,
         open: Open<Logging>,
-        turn: &mut Turn<'_, Self>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Logging>,)>>,
     ) -> Result<Later<LogsDone>, Fault> {
-        let (key, logs, later) = self.logging.open(turn, open)?;
+        let (key, logs, later) = self.logging.open(turn, open);
         let downstream = Downstream::Logs { key, demux: Demux::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, logs.call())?;
+        turn.unguarded(|turn| self.relay(turn, downstream, logs.call()))?;
 
         Ok(later)
     }
@@ -124,12 +124,12 @@ impl Docker {
     pub(super) fn handle_open_watching(
         &mut self,
         open: Open<Watching>,
-        turn: &mut Turn<'_, Self>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Watching>,)>>,
     ) -> Result<Later<EventsDone>, Fault> {
-        let (key, events, later) = self.watching.open(turn, open)?;
+        let (key, events, later) = self.watching.open(turn, open);
         let downstream = Downstream::Events { key, lines: Lines::new(), queue: VecDeque::new() };
 
-        self.relay(turn, downstream, events.call())?;
+        turn.unguarded(|turn| self.relay(turn, downstream, events.call()))?;
 
         Ok(later)
     }

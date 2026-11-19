@@ -1,7 +1,7 @@
 //! A file's path within a namespace (ADR-0032).
 
 use crate::plain::write_text;
-use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Plain, Reader, Schema, Shape, Writer};
+use crate::{Boundary, Decode, DecodeError, Element, Encode, EncodeError, Key, Plain, Reader, Schema, Shape, Writer};
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
@@ -140,6 +140,8 @@ impl<B: Boundary> Decode<B> for FilePath {
 impl Plain for FilePath {}
 
 impl<B: Boundary> Element<B> for FilePath {}
+
+impl Key for FilePath {}
 
 #[cfg(test)]
 mod tests {

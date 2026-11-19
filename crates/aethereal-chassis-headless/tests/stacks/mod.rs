@@ -178,7 +178,11 @@ macro_rules! stack {
             fn open(
                 &mut self,
                 open: ::aethereal_actor::Open<::aethereal_http::stack::InboundBody>,
-                turn: &mut ::aethereal_actor::Turn<'_, Self>,
+                turn: &mut ::aethereal_actor::Turn<
+                    '_,
+                    Self,
+                    ::aethereal_actor::Speaks<(::aethereal_actor::Part<::aethereal_http::stack::InboundBody>,)>,
+                >,
             ) -> Result<::aethereal_actor::Later<::aethereal_http::stack::BodyRead>, ::aethereal_actor::Fault> {
                 self.serving.open_body(open, turn)
             }

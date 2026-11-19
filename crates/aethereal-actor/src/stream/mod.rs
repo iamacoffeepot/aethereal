@@ -13,7 +13,7 @@ mod kinds;
 mod serving;
 mod streams;
 
-pub use kinds::{Enough, More, Number, Open, Part, StreamKey, Unreachable};
+pub use kinds::{Enough, More, Number, Open, Part, StreamKey};
 pub use serving::{Serving, Streaming, Unsent};
 pub use streams::{Streams, Taken};
 

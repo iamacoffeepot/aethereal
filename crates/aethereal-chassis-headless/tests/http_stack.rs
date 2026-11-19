@@ -2,7 +2,7 @@
 //! either way, and its limits, to clients on threads of their own over real loopback TCP.
 
 use aethereal_actor::{
-    ActorRef, Answered, Beginning, Ended, Enough, Fault, Held, Later, More, Number, Open, Part, Reply, Serving,
+    ActorRef, Answered, Beginning, Ended, Enough, Fault, Held, Later, More, Number, Open, Part, Reply, Serving, Speaks,
     StreamKey, Streams, Taken, Turn, Unsent, actor, path,
 };
 use aethereal_chassis_headless::Headless;
@@ -1628,10 +1628,14 @@ impl Serve {
     }
 
     #[request]
-    fn open(&mut self, open: Open<OutboundBody>, turn: &mut Turn<'_, Self>) -> Result<Later<SourceEnd>, Fault> {
-        let (stream, _, later) = self.serving.open(turn, open)?;
+    fn open(
+        &mut self,
+        open: Open<OutboundBody>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<OutboundBody>,)>>,
+    ) -> Result<Later<SourceEnd>, Fault> {
+        let (stream, _, later) = self.serving.open(turn, open);
         self.making = Making::Parts { stream, next: 0 };
-        self.send_planned(turn)?;
+        turn.unguarded(|turn| self.send_planned(turn))?;
 
         Ok(later)
     }
