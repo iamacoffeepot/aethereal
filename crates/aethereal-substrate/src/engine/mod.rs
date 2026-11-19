@@ -1941,8 +1941,9 @@ impl Reading<'_> {
                         let source = handed.source();
                         let tie = handed.tie();
                         let answering = waiting.answering(tie);
-                        // An answer to nothing it waits on runs no turn.
+                        // An answer to nothing it waits on runs no turn, so nothing takes what it carries (ADR-0010).
                         if matches!(answering, Answering::Stray) {
+                            lists.drop_untaken(me, keeping, handed);
                             return;
                         }
                         let (item, context) = batch::read(handed, self, carried, &pins, answering);
@@ -2506,8 +2507,8 @@ impl Lists {
 }
 
 impl Lists {
-    /// Drops what came for the actor `me`, which keeps `keeping`, with `handed` and its turn did not take, as the
-    /// actor's log records (ADR-0010).
+    /// Drops what came for the actor `me`, which keeps `keeping`, with `handed` and its turn did not take, or with an
+    /// answer it passed over, which runs no turn, as the actor's log records (ADR-0010).
     #[inline]
     fn drop_untaken(&mut self, me: Seated, keeping: &mut Keeping, handed: Handed<'_>) {
         // Most actors keep nothing at all.
