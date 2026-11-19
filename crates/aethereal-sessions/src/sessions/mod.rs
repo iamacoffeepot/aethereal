@@ -117,7 +117,8 @@ pub struct Resting {
     pub rest: u64,
 }
 
-/// Why the capability failed: it could not read its sessions, found no Docker client, or had no room to write.
+/// Why the capability failed: it could not read its sessions, found no Docker client, had no room to write, or could
+/// not list its sessions' containers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.unfound")]
 pub enum Unfound {
@@ -127,6 +128,9 @@ pub enum Unfound {
     Docker,
     /// The engine had no room to hold what it writes.
     NoRoom,
+    /// Docker could not list the sessions' containers, so which sessions still run is unknown. Every record is left as
+    /// it is, for a hub that starts again to list them.
+    Unlisted,
 }
 
 /// The sessions capability (ADR-0057): asked at its typed path, `path::<Sessions>(())`, to open a session

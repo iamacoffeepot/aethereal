@@ -20,11 +20,11 @@ use aethereal_sessions::{
     Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
     Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say,
     Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State,
-    Transcribed, Transcript,
+    Transcribed, Transcript, Unfound,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Halted, Host, Lifecycle, Unbuilt};
 use aethereal_tcp::{Interface, Tcp};
 use aethereal_tools::{Call, Called, Caller as By, Offer, Offered, Output, ToolSheet, Toolbox, Tooling};
 use core::fmt::Write as _;
@@ -237,6 +237,15 @@ enum Hold {
     Start,
 }
 
+/// How the fake daemon answers a list of the containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lists {
+    /// With every container it holds.
+    Containers,
+    /// With a daemon's error: it could not list them.
+    Failing,
+}
+
 /// One connection to the fake daemon.
 struct Connection {
     peer: UnixStream,
@@ -261,6 +270,8 @@ struct Daemon {
     events: Vec<String>,
     /// Which requests it takes and never answers.
     hold: Hold,
+    /// How it answers a list of the containers.
+    lists: Lists,
 }
 
 impl Daemon {
@@ -284,6 +295,7 @@ impl Daemon {
             volumes: BTreeMap::new(),
             events: Vec::new(),
             hold: Hold::Nothing,
+            lists: Lists::Containers,
         }
     }
 
@@ -427,6 +439,9 @@ impl Daemon {
             ("GET", ["events"]) => {
                 write(peer, b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
                 return Role::Events { sent: self.events.len() };
+            }
+            ("GET", ["containers", "json"]) if self.lists == Lists::Failing => {
+                respond(peer, "500 Internal Server Error", r#"{"message":"the daemon could not list them"}"#);
             }
             ("GET", ["containers", "json"]) => {
                 let listed: Vec<String> = self
@@ -1168,6 +1183,59 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     say(&mut harness, &mut daemon, session, "still there?")?;
     let written = stdin(&mut harness, &mut daemon, &id, 2);
     assert_eq!(written[1], r#"{"type":"user","message":{"role":"user","content":"still there?"}}"#);
+
+    Ok(())
+}
+
+/// The bytes of the sessions' index and of `session`'s record and transcript on the disk, each empty when missing.
+fn saved_bytes(daemon: &Daemon, session: u32) -> [Vec<u8>; 3] {
+    let files = [
+        String::from("sessions/index"),
+        format!("sessions/{session}/record"),
+        format!("sessions/{session}/transcript"),
+    ];
+
+    files.map(|file| fs::read(daemon.saved(&file)).unwrap_or_default())
+}
+
+#[test]
+fn a_hub_that_starts_again_and_cannot_list_its_containers_fails_and_leaves_every_record_as_it_was()
+-> Result<(), Unheard> {
+    // Catches a list Docker failed read as no containers: each recorded session noted lost and its record saying it
+    // stopped, while its container still runs, for the next hub to report as a stray.
+    let mut daemon = Daemon::new("unlisted");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let session = open(&mut harness, &mut daemon, "kept")?;
+    let id = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "hello")?;
+    answer_turn(&mut daemon, &id, "before");
+    transcript_with(&mut harness, &mut daemon, session, 3)?;
+    until(&mut harness, &mut daemon, |_, daemon| {
+        matches!(kept(daemon, session), Some(Standing::Running { run: 1, .. }))
+    });
+    drop(harness);
+    daemon.connections.clear();
+
+    let before = saved_bytes(&daemon, session);
+    daemon.lists = Lists::Failing;
+    let mut harness = hub(&daemon, settings)?;
+    let mut lifecycle = harness.host().engine().lifecycle();
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+        lifecycle = harness.host().engine().lifecycle();
+
+        matches!(lifecycle, Lifecycle::Stopped(_) | Lifecycle::Unbooted(_))
+    });
+    let Lifecycle::Stopped(Halted::Failed(_, fault)) = lifecycle else {
+        panic!("the hub stops as its sessions failed: {lifecycle:?}");
+    };
+    assert_eq!(fault.read::<Unfound>(&mut Budget::new(64)), Ok(Some(Unfound::Unlisted)));
+    drop(harness);
+
+    assert_eq!(saved_bytes(&daemon, session), before, "every record and transcript is as it was");
+    assert!(daemon.runs(0), "the session's container still runs");
 
     Ok(())
 }

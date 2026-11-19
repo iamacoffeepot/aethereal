@@ -3,7 +3,9 @@
 //! nothing that happens to one falls between the two. It reads only those two facts, what each record says and what
 //! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
 //! removed when it does not, the session left stopped once it is gone; a record whose container is not listed leaves
-//! its session stopped; and each container carrying the label that no record names is reported, never removed.
+//! its session stopped; and each container carrying the label that no record names is reported, never removed. A
+//! list Docker does not answer with its containers fails the capability before anything is noted or written: which
+//! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
 
 use super::asked::Waiting;
 use super::container;
@@ -171,7 +173,8 @@ impl Sessions {
 
     /// The containers carrying the hub's label: each a record says may exist is adopted when it runs, and noted lost
     /// and removed when it does not; a record whose container is not listed is noted lost; and each no record names is
-    /// reported.
+    /// reported. A list that fails fails the capability, [`Unfound::Unlisted`], before any session is noted or any
+    /// record written, as which containers exist is unknown and none may be taken as gone.
     pub(super) fn handle_listed(
         &mut self,
         (answered, Reconciling): (Answered<Listed>, Reconciling),
@@ -182,18 +185,18 @@ impl Sessions {
         else {
             return Ok(());
         };
-        self.phase = Phase::Ready { docker };
         let listings = match answered {
             Answered::Yes(Listed::Containers(listings)) => listings,
             Answered::Yes(Listed::Failed(why)) => {
                 turn.log(Level::Error, format_args!("the sessions' containers could not be listed: {why:?}"));
-                Vec::new()
+                return Err(Fault::new(&Unfound::Unlisted)?);
             }
             Answered::No(why) => {
                 turn.log(Level::Error, format_args!("the sessions' containers went unlisted: {why:?}"));
-                Vec::new()
+                return Err(Fault::new(&Unfound::Unlisted)?);
             }
         };
+        self.phase = Phase::Ready { docker };
         for listing in &listings {
             let is_named = recorded.iter().any(|recorded| recorded.names(listing));
             if !is_named {
