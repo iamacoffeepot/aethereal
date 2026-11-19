@@ -1,5 +1,6 @@
-//! A session's container through its life (ADR-0057): its volumes made and the credential read, made from the
-//! settings, started, attached and followed, and stopped and removed once it is idle, archived, or has ended.
+//! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
+//! credential read, made from the settings, started, attached and followed, and stopped and removed once it is idle,
+//! archived, or has ended.
 
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
@@ -8,7 +9,7 @@ use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
 use super::streams::user_line;
-use super::transcript::{Ended, Entry, Note, Turning};
+use super::transcript::{Counted, Ended, Entry, Note, Turning};
 use super::{Act, Acting, Asking, Feed, Sessions};
 use crate::{
     Acted, Attach, ContainerId, ContainerState, Create, Created, DockerError, Inspect, Inspected, Logs, Remove, Start,
@@ -19,13 +20,10 @@ use core::mem;
 use std::collections::BTreeSet;
 
 impl Sessions {
-    /// Starts a container of `session` for its run `run`, which its life is already `Starting` for at its first step:
-    /// its volumes made first, and the credential read.
-    pub(super) fn start(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32) -> Result<(), Fault> {
-        self.house(turn, session, run, 0)?;
+    /// Starts a container of `session`, whose life is already `Starting` its run at its first step: its record, saying
+    /// so, is written first, and once that lands, its volumes are made and the credential read.
+    pub(super) fn start(&mut self, session: u32) {
         self.dirty(session);
-
-        Ok(())
     }
 
     /// Attaches to and follows `container`, of `session`'s run `run`, which runs: its logs from the start, skipping
@@ -114,11 +112,55 @@ impl Sessions {
             return Ok(());
         };
         running.activity.cancel(turn);
-        let container = running.container;
-        held.life = Life::Stopping { container: container.clone(), run, then: Then::Rest { lines: Vec::new() } };
         self.note(session, Entry::Hub(Note::Stopped { run, why }));
 
+        self.retire(turn, session, running.container, run)
+    }
+
+    /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has
+    /// removed it, so its record names the container until it is gone, and is then left stopped, to be resumed.
+    pub(super) fn retire(
+        &mut self,
+        turn: &mut Turn<'_, Self>,
+        session: u32,
+        container: ContainerId,
+        run: u32,
+    ) -> Result<(), Fault> {
+        if let Some(held) = self.held.get_mut(&session) {
+            held.life = Life::Stopping { container: container.clone(), run, then: Then::Rest { lines: Vec::new() } };
+        }
+
         self.remove(turn, session, container, run)
+    }
+
+    /// Adopts `container`, of `session`'s run `run`, which a hub before this one started and which runs: the
+    /// transcript notes the run started unless it does already, so it counts the run's output from its start, and the
+    /// container is attached to and followed from its logs, skipping what the transcript holds of them.
+    pub(super) fn adopt(
+        &mut self,
+        turn: &mut Turn<'_, Self>,
+        session: u32,
+        container: ContainerId,
+        run: u32,
+    ) -> Result<(), Fault> {
+        let Some(held) = self.held.get(&session) else {
+            return Ok(());
+        };
+        if held.transcript.counted() != Counted::Run(run) {
+            self.note_started(session, run);
+        }
+
+        self.resume(turn, session, container, run)
+    }
+
+    /// Notes in `session`'s transcript that its container of `run` started, carrying on Claude's conversation when it
+    /// has one.
+    fn note_started(&mut self, session: u32, run: u32) {
+        let Some(held) = self.held.get(&session) else {
+            return;
+        };
+        let resumed = held.resumes();
+        self.note(session, Entry::Hub(Note::Started { run, resumed }));
     }
 
     /// Asks Docker to remove `container`, of `session`'s run `run`.
@@ -268,11 +310,10 @@ impl Sessions {
         }
         let container = container.clone();
         if let Acted::Failed(why) = acted {
-            self.remove(turn, session, container, run)?;
-            return self.unstarted(turn, session, run, &Refusal::Docker(why));
+            self.unstarted(turn, session, run, &Refusal::Docker(why))?;
+            return self.retire(turn, session, container, run);
         }
-        let resumed = matches!(held.conversation, Conversation::Begun(_));
-        self.note(session, Entry::Hub(Note::Started { run, resumed }));
+        self.note_started(session, run);
         let opening = match self.held.get_mut(&session).map(|held| &mut held.life) {
             Some(Life::Starting { opening, .. }) => mem::take(opening),
             _ => Vec::new(),
@@ -333,7 +374,7 @@ impl Sessions {
         match then {
             Then::Rest { lines } => {
                 if !lines.is_empty() {
-                    self.restart(turn, session, lines)?;
+                    self.restart(session, lines);
                 }
             }
             Then::Archive { archiving } => {
@@ -356,15 +397,14 @@ impl Sessions {
     }
 
     /// Resumes `session`, which is stopped, in a new container, writing `lines` to it once it is attached.
-    pub(super) fn restart(&mut self, turn: &mut Turn<'_, Self>, session: u32, lines: Vec<String>) -> Result<(), Fault> {
+    pub(super) fn restart(&mut self, session: u32, lines: Vec<String>) {
         let Some(held) = self.held.get_mut(&session) else {
-            return Ok(());
+            return;
         };
         held.runs += 1;
-        let run = held.runs;
-        held.life = Life::Starting { run, step: Step::Housing { made: 0 }, opening: Vec::new(), lines };
+        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening: Vec::new(), lines };
 
-        self.start(turn, session, run)
+        self.start(session);
     }
 
     /// The state of a container whose logs or attach ended: one still running is followed again, and one that is not

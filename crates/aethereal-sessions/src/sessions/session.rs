@@ -3,6 +3,7 @@
 use super::asks::{self, Archived, Opened, State};
 use super::output::Reading;
 use super::record::{Conversation, Record, Standing};
+use super::saves::Landing;
 use super::transcript::Transcript;
 use crate::ContainerId;
 use aethereal_actor::{Held, JobId, Number, ProtocolRef};
@@ -40,6 +41,9 @@ pub(super) enum Life {
 /// How far a container being started is.
 #[derive(Bound)]
 pub(super) enum Step {
+    /// The session's record, saying it starts this run, is written: nothing of the run is made until it lands, so a
+    /// hub that starts again finds whatever is.
+    Recording,
     /// Docker makes the next of the volumes it mounts, `made` of them made already.
     Housing { made: u32 },
     /// The credential is read.
@@ -117,7 +121,7 @@ impl Session {
             conversation: Conversation::Unbegun,
             runs: 1,
             transcript: Transcript::new(),
-            life: Life::Starting { run: 1, step: Step::Housing { made: 0 }, opening, lines: Vec::new() },
+            life: Life::Starting { run: 1, step: Step::Recording, opening, lines: Vec::new() },
         }
     }
 
@@ -148,7 +152,8 @@ impl Session {
         matches!(self.life, Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. })
     }
 
-    /// Its record, as it stands.
+    /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
+    /// exist, and names it.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Running { container: running.container.clone(), run: running.run },
@@ -156,10 +161,27 @@ impl Session {
             Life::Starting { step: Step::Launching { container }, run, .. } => {
                 Standing::Running { container: container.clone(), run: *run }
             }
-            Life::Starting { .. } | Life::Stopped => Standing::Stopped,
+            Life::Starting { run, .. } => Standing::Starting { run: *run },
+            Life::Stopped => Standing::Stopped,
             Life::Archived => Standing::Archived,
         };
 
         Record { name: self.name.clone(), conversation: self.conversation.clone(), runs: self.runs, kept }
+    }
+
+    /// What its record's write, as it stands, lets go ahead once it lands, as the session numbered `session`: the
+    /// start of its run, while that waits on its record.
+    pub const fn landing(&self, session: u32) -> Landing {
+        match &self.life {
+            Life::Starting { run, step: Step::Recording, .. } => Landing::Starting { session, run: *run },
+            Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. } | Life::Stopped | Life::Archived => {
+                Landing::Nothing
+            }
+        }
+    }
+
+    /// Whether a container started now carries on Claude's conversation rather than beginning one.
+    pub const fn resumes(&self) -> bool {
+        matches!(self.conversation, Conversation::Begun(_))
     }
 }

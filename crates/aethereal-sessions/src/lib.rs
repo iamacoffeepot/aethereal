@@ -34,12 +34,12 @@ pub use docker::{
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Conversation, Credential, Crediting,
-    Ended, Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions,
-    ListedSession, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned, ReadTranscript,
-    Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed, SessionsSettings,
-    ShowAsk, ShowEvents, ShowTabs, Showing, Since, Speaker, Standing, State, TARGET, Tab, Transcribed, Transcript,
-    Turning, Typing, Unfound, Unlabelled, WindDown,
+    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Conversation, Counted, Credential,
+    Crediting, Ended, Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping,
+    ListSessions, ListedSession, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned,
+    ReadTranscript, Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed,
+    SessionsSettings, ShowAsk, ShowEvents, ShowTabs, Showing, Since, Speaker, Standing, State, TARGET, Tab,
+    Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
 };
 #[cfg(feature = "tools")]
 pub use tools::{Asking as ToolsAsking, Entered, Read, SessionsTools, SessionsToolsConfig};
