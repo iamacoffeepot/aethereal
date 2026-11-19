@@ -3,11 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use super::ask;
+use super::{REQUESTS_KEPT, ask};
 use crate::Context;
-use crate::by_number::ByNumber;
+use crate::room::{trim, trim_table};
 use aethereal_actor::{Asked, Fault, NotOwed, Owed, Owes, Seated, Tie, holders};
 use aethereal_data::KindId;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 use std::mem;
 
@@ -31,11 +32,13 @@ enum Holds {
 
 /// The debts an actor that has held a request owes now, each under the request's id, so a turn that holds or answers
 /// one finds its place without a walk over the others, however many it owes.
+///
+/// Each table gives back its room past [`REQUESTS_KEPT`] requests' once it is emptied.
 #[derive(Default)]
 struct Owing {
-    debts: ByNumber<RequestId, Debt>,
+    debts: FxHashMap<RequestId, Debt>,
     /// The debts the turn being filed has answered, in the order it answered them, for it to put back when it then
-    /// answers one it does not owe. Emptied once each turn is filed, and kept for its room.
+    /// answers one it does not owe. Emptied once each turn is filed.
     answered: Vec<(RequestId, Debt)>,
 }
 
@@ -129,9 +132,13 @@ impl Debts {
         }
         let debt = filed.get_mut();
         debt.holders += by;
-        let is_let_go = debt.holders <= 0;
+        if debt.holders > 0 {
+            return None;
+        }
+        let debt = filed.remove();
+        trim_table(&mut owing.debts, REQUESTS_KEPT);
 
-        is_let_go.then(|| filed.remove())
+        Some(debt)
     }
 
     /// Whether it still owes the request `asker` asked as its `request`th piece of mail.
@@ -153,18 +160,31 @@ impl Debts {
 }
 
 impl Owing {
-    /// Every debt it owes, in the order its map holds them.
+    /// Every debt it owes, in the order its map holds them, which its hash, the same on every run, makes the same on
+    /// every run of the same steps.
     #[cold]
     #[inline(never)]
     fn into_debts(self) -> Vec<Debt> {
         self.debts.into_values().collect()
     }
 
+    /// Files what a turn of `me` at `chain` did to its debts, `owes`, as [`Self::file_in_order`] does, then gives back
+    /// the room of each of its tables that is empty.
+    fn file(&mut self, me: Seated, owes: &[Owes], chain: Context) -> Result<(), NotOwed> {
+        let filed = self.file_in_order(me, owes, chain);
+        // Emptied either way: let go of once the turn is filed, or put back from as it failed.
+        self.answered.clear();
+        trim(&mut self.answered, REQUESTS_KEPT);
+        trim_table(&mut self.debts, REQUESTS_KEPT);
+
+        filed
+    }
+
     /// Files what a turn of `me` at `chain` did to its debts, `owes`, in the order it did it: a request it held is owed,
     /// and a debt it answered is not. At the first it does not owe, a debt it answered that it does not hold of that
     /// kind or a request it held that is owed already, what it filed before is put back, so a turn that fails with
     /// [`NotOwed`] changes no debt.
-    fn file(&mut self, me: Seated, owes: &[Owes], chain: Context) -> Result<(), NotOwed> {
+    fn file_in_order(&mut self, me: Seated, owes: &[Owes], chain: Context) -> Result<(), NotOwed> {
         for (at, done) in owes.iter().enumerate() {
             let filed = match *done {
                 Owes::Holds { owed, answer } => self.hold(owed, answer, chain),
@@ -176,7 +196,6 @@ impl Owing {
                 return Err(not_owed);
             }
         }
-        self.answered.clear();
 
         Ok(())
     }

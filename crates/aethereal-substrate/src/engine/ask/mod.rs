@@ -6,9 +6,11 @@ mod tests;
 #[cfg(test)]
 mod unreadable;
 
+use super::REQUESTS_KEPT;
 use super::due::Expiring;
-use crate::by_number::ByNumber;
+use crate::room::trim_table;
 use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, Tie, Tied, Unanswered};
+use rustc_hash::FxHashMap;
 
 /// The contexts an actor's requests keep until they are answered, beside it in its seat, under each request's count
 /// (ADR-0017). Dropped with the actor.
@@ -32,7 +34,7 @@ enum Asks {
 
 /// The requests an actor that has asked waits on now, each with its context, under its count: so an answer finds its
 /// context without a walk over the others, however many the actor waits on.
-type Filed = ByNumber<u64, Asking>;
+type Filed = FxHashMap<u64, Asking>;
 
 /// What an item is to the asker it is handed to.
 #[derive(Clone, Copy)]
@@ -99,10 +101,12 @@ impl Waiting {
         self.forget_count(count);
     }
 
-    /// Lets go of the context the request of the count `count` kept, when it still waits on it.
+    /// Lets go of the context the request of the count `count` kept, when it still waits on it, and the room of the
+    /// requests it waited on when it waits on none now.
     fn forget_count(&mut self, count: u64) {
         if let Asks::Waits(filed) = &mut self.asks {
             filed.remove(&count);
+            trim_table(filed, REQUESTS_KEPT);
         }
     }
 

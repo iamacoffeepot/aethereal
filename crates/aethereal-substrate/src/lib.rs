@@ -15,7 +15,6 @@ extern crate self as aethereal_substrate;
 
 mod blob;
 mod by_actor;
-mod by_number;
 mod by_seat;
 mod clock;
 mod context;
@@ -28,6 +27,7 @@ mod lives;
 mod log;
 mod mail;
 mod program;
+mod room;
 mod stages;
 mod stats;
 mod stream;

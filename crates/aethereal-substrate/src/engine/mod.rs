@@ -2780,6 +2780,11 @@ pub const MOST_KEPT_BYTES: usize = 16 << 20;
 /// How many seats in other parts a part is given in each step it runs, for its children past its room.
 const ASIDE: usize = 8;
 
+/// How many requests' room an actor's table of the requests it holds, or waits on, keeps once it is emptied: as many
+/// as a busy actor keeps out at once (each `savina` asker keeps 64), in a few kilobytes, so an actor that holds no
+/// more never gives room back to take it again.
+const REQUESTS_KEPT: usize = 64;
+
 /// Which of the two arenas of each writer step `step` writes.
 const fn parity(step: u64) -> usize {
     (step % 2) as usize

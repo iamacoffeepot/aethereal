@@ -24,7 +24,7 @@ const DEBT: Debt = Debt { asker: OWED.asker, request: OWED.request, answer: ANSW
 
 /// Debts that owe [`DEBT`].
 fn owing() -> Debts {
-    let mut debts = ByNumber::default();
+    let mut debts = FxHashMap::default();
     debts.insert(request_id(OWED.asker, OWED.request), DEBT);
 
     Debts { held: Holds::Owes(Box::new(Owing { debts, answered: Vec::new() })) }
@@ -128,4 +128,22 @@ fn a_turn_that_answers_what_it_does_not_owe_changes_no_debt() {
 
     assert!(filed.is_err(), "the turn answered a debt it had answered already");
     assert_eq!(debts.take_all(), [DEBT], "the debts are as they were before the turn");
+}
+
+#[test]
+fn an_actor_that_answered_a_burst_gives_back_its_room() {
+    // Catches a table that keeps the room of the most debts its actor ever held, or answered in one turn, for as long as
+    // the actor lives.
+    let burst = (0..4_096).map(|request| Owed { request, ..OWED });
+    let holds: Vec<Owes> = burst.clone().map(|owed| Owes::Holds { owed, answer: ANSWER }).collect();
+    let answers: Vec<Owes> = burst.map(|owed| Owes::Answers { owed, answer: ANSWER }).collect();
+    let mut owing = Owing::default();
+
+    let held = owing.file(actor(1), &holds, CHAIN).is_ok();
+    let answered = owing.file(actor(1), &answers, CHAIN).is_ok();
+
+    assert!(held, "the turn holds each request");
+    assert!(answered, "the next answers each");
+    assert!(owing.debts.capacity() <= 2 * REQUESTS_KEPT, "the debts give back their room");
+    assert!(owing.answered.capacity() <= 2 * REQUESTS_KEPT, "and so does the stack of what the turn answered");
 }
