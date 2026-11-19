@@ -691,6 +691,16 @@ impl Handed<'_> {
         }
     }
 
+    /// Of a request, the section of its asker its answer goes back to: `WHOLE` for an ending, mail that asks nothing,
+    /// or a request from a whole actor (spike: keyed sections).
+    #[must_use]
+    pub const fn returns(self) -> SectionKey {
+        match self {
+            Self::Mail { envelope, .. } => envelope.returns,
+            Self::Ended { .. } => SectionKey::WHOLE,
+        }
+    }
+
     /// When the request it is stops being waited for: `Never` for an ending, or mail that asks nothing (ADR-0041).
     #[must_use]
     pub const fn due(self) -> Due {
@@ -765,9 +775,9 @@ impl View for Streams {
 /// envelope.
 #[must_use]
 pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
-    let Mailed { by, sent_as, to, count, kind, bytes, tie, due, section } = mailed;
+    let Mailed { by, sent_as, to, count, kind, bytes, tie, due, section, returns } = mailed;
     let (root, depth, tying) = (context.root, context.depth, Tying::of(tie, due));
-    let envelope = Envelope { sender_seat: by.seat, sent_as, root, depth, kind, bytes, tying };
+    let envelope = Envelope { sender_seat: by.seat, sent_as, root, depth, kind, bytes, tying, returns };
     let entry = Entry { to: to.id.bits(), section, order: (by.id.bits(), count), item: Stored::Mail(envelope) };
     // A section of a keyed actor is kept in the part of its lane, spread across the parts by its key, and not in the
     // part of its actor's seat (spike: keyed sections).

@@ -768,7 +768,8 @@ impl HolderRecord {
     /// It, as the out buffer holds it.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::BYTES] {
-        let Owed { holder, asker, request } = self.owed;
+        // Spike: a guest's records carry no section, as guests are not split into sections.
+        let Owed { holder, asker, request, section: _, returns: _ } = self.owed;
         let mut out = [0; Self::BYTES];
         out[..16].copy_from_slice(&seated_bytes(holder));
         out[16..32].copy_from_slice(&seated_bytes(asker));
@@ -781,7 +782,9 @@ impl HolderRecord {
     /// The record `bytes` begin with.
     #[must_use]
     pub fn read(bytes: &[u8]) -> Option<Self> {
-        let owed = Owed { holder: seated_at(bytes, 0)?, asker: seated_at(bytes, 16)?, request: u64_at(bytes, 32)? };
+        let (section, returns) = (crate::SectionKey::WHOLE, crate::SectionKey::WHOLE);
+        let (holder, asker, request) = (seated_at(bytes, 0)?, seated_at(bytes, 16)?, u64_at(bytes, 32)?);
+        let owed = Owed { holder, asker, request, section, returns };
         let by = i64::from_le_bytes(bytes.get(40..48)?.try_into().ok()?);
 
         Some(Self { owed, by })

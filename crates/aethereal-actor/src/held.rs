@@ -1,7 +1,7 @@
 //! Held requests: a request an actor answers in a later turn than the one that handled it, and what the engine keeps
 //! of the debt until it is answered (ADR-0017).
 
-use crate::{Due, Fault, Seated, Within};
+use crate::{Due, Fault, Seated, SectionKey, Within};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, KindId, Plain, Reader, Schema, Shape,
     Writer,
@@ -30,11 +30,17 @@ pub struct Held<A> {
 }
 
 /// A debt an actor holds: who holds it, who asked, and the asker's count of the request (ADR-0017).
+///
+/// For a keyed actor, also the section of the holder whose turn held it, where the engine keeps the debt, and the
+/// section of the asker its answer goes back to, the request's return stamp: both [`SectionKey::WHOLE`] for actors
+/// that are not split into sections (spike: keyed sections).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owed {
     pub holder: Seated,
     pub asker: Seated,
     pub request: u64,
+    pub section: SectionKey,
+    pub returns: SectionKey,
 }
 
 /// What a turn did to the debts its actor holds, for the engine to file once the turn has run (ADR-0017).
@@ -44,6 +50,18 @@ pub enum Owes {
     Holds { owed: Owed, answer: KindId },
     /// It answered a debt with a kind `answer` names.
     Answers { owed: Owed, answer: KindId },
+}
+
+impl Owed {
+    /// Whether it is the debt `holder` owes `asker` for its request of the count `request`, whatever the sections.
+    #[must_use]
+    pub fn names(&self, holder: Seated, asker: Seated, request: u64) -> bool {
+        let is_holder = self.holder == holder;
+        let is_asker = self.asker == asker;
+        let is_request = self.request == request;
+
+        is_holder && is_asker && is_request
+    }
 }
 
 impl Owes {
@@ -116,6 +134,8 @@ impl<A> Schema for Held<A> {
             Field { name: "asker", shape: u64::SHAPE },
             Field { name: "asker_seat", shape: u64::SHAPE },
             Field { name: "request", shape: u64::SHAPE },
+            Field { name: "section", shape: u64::SHAPE },
+            Field { name: "returns", shape: u64::SHAPE },
             Field { name: "due", shape: Due::SHAPE },
         ],
     };
@@ -125,12 +145,14 @@ impl<A> Schema for Held<A> {
 /// takes it over: so a debt kept in what an actor keeps for a request of its own is not let go of (ADR-0017).
 impl<A> Encode<Within> for Held<A> {
     fn encode(&self, out: &mut Writer<'_, Within>) -> Result<(), EncodeError> {
-        let Owed { holder, asker, request } = self.owed;
+        let Owed { holder, asker, request, section, returns } = self.owed;
         holder.id.bits().encode(out)?;
         holder.seat.number().encode(out)?;
         asker.id.bits().encode(out)?;
         asker.seat.number().encode(out)?;
         request.encode(out)?;
+        section.bits().encode(out)?;
+        returns.bits().encode(out)?;
         self.due.encode(out)?;
         holders::change(self.owed, 1);
 
@@ -143,9 +165,11 @@ impl<A> Decode<Within> for Held<A> {
         let holder = seated(input)?;
         let asker = seated(input)?;
         let request = u64::decode(input)?;
+        let section = SectionKey::from_bits(u64::decode(input)?);
+        let returns = SectionKey::from_bits(u64::decode(input)?);
         let due = Due::decode(input)?;
 
-        Ok(Self::new(Owed { holder, asker, request }, due))
+        Ok(Self::new(Owed { holder, asker, request, section, returns }, due))
     }
 }
 

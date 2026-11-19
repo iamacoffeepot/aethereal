@@ -1,7 +1,7 @@
 //! The debts the engine keeps beside an actor, as values hold them and turns answer them (ADR-0017).
 
 use super::*;
-use aethereal_actor::{Due, Held, MailId, SeatNumber, Unanswered, Written};
+use aethereal_actor::{Due, Held, MailId, SeatNumber, SectionKey, Unanswered, Written};
 use aethereal_data::{ActorId, to_bytes};
 
 /// The actor numbered `n`, in the seat of the same number.
@@ -10,7 +10,8 @@ const fn actor(n: u64) -> Seated {
 }
 
 /// The debt the board, `1`, owes the pointer, `2`, for its request of the count `3`.
-const OWED: Owed = Owed { holder: actor(1), asker: actor(2), request: 3 };
+const OWED: Owed =
+    Owed { holder: actor(1), asker: actor(2), request: 3, section: SectionKey::WHOLE, returns: SectionKey::WHOLE };
 
 /// The chain the request was handled at.
 const CHAIN: Context = Context { root: MailId { sender: ActorId::new(2), count: 1 }, depth: 2 };
@@ -21,7 +22,8 @@ const OTHER: KindId = KindId::of::<NotOwed>();
 
 /// Debts that owe [`OWED`], held by one value, to be answered with [`ANSWER`].
 fn owing() -> Debts {
-    let debt = Debt { asker: OWED.asker, request: OWED.request, answer: ANSWER, holders: 1, chain: CHAIN };
+    let returns = SectionKey::WHOLE;
+    let debt = Debt { asker: OWED.asker, request: OWED.request, answer: ANSWER, holders: 1, chain: CHAIN, returns };
 
     Debts { held: Holds::Owes(Box::new(Owing { debts: vec![debt] })) }
 }
@@ -44,9 +46,9 @@ fn written(held: &Held<Unanswered>) -> Written {
     written
 }
 
-/// [`OWED`] in bytes, of a request due never, as a held request writes it.
+/// [`OWED`] in bytes, of a request due never, as a held request writes it: its sections, both whole, after its count.
 fn written_owed() -> Written {
-    let words = [1_u64, 1, 2, 2, 3].iter().flat_map(|word| to_bytes(word).unwrap_or_default());
+    let words = [1_u64, 1, 2, 2, 3, 0, 0].iter().flat_map(|word| to_bytes(word).unwrap_or_default());
     let due = to_bytes(&Due::Never).unwrap_or_default();
 
     Written::new(words.chain(due).collect(), Vec::new())

@@ -7,7 +7,7 @@ mod tests;
 mod unreadable;
 
 use super::due::Expiring;
-use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, Tie, Tied, Unanswered};
+use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, SectionKey, Tie, Tied, Unanswered};
 
 /// The contexts an actor's requests keep until they are answered, beside it in its seat, under each request's count
 /// (ADR-0017). Dropped with the actor.
@@ -114,6 +114,14 @@ impl Waiting {
             for job in &asked.buffers().cancelled {
                 self.forget_count(job.mail().count);
             }
+        }
+    }
+
+    /// Whether it waits on nothing (spike: keyed sections, where a section that waits on nothing may be dropped).
+    pub(super) fn is_empty(&self) -> bool {
+        match &self.asks {
+            Asks::Never => true,
+            Asks::Waits(filed) => filed.counts.is_empty(),
         }
     }
 
@@ -239,10 +247,17 @@ pub(super) const fn item<'a>(mail: Mail<'a>, answering: Answering<'a>) -> Item<'
 /// Says to `source`, the asker, what became of its request to `me`, when the mail tied as `tie` is one and the turn that
 /// handled it, which had sent `sent` pieces of mail before it and ended as `outcome` says, did not answer it: `Failed`,
 /// `Unreadable` when its handler never ran as the request did not read, or `Unreplied`. The mail is added to what the
-/// turn sent, after it, as `me`'s next; of a failed turn it is all that is sent (ADR-0017).
+/// turn sent, after it, as `me`'s next; of a failed turn it is all that is sent (ADR-0017). It goes to the section of
+/// the asker `returns`, the request's return stamp, names (spike: keyed sections).
 #[cold]
 #[inline(never)]
-pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fault>, sent: u64, asked: &mut Asked) {
+pub(super) fn owed(
+    me: Seated,
+    (source, tie, returns): (Seated, Tie, SectionKey),
+    outcome: &Result<(), Fault>,
+    sent: u64,
+    asked: &mut Asked,
+) {
     let Tied::Asks(request) = tie.read() else {
         return;
     };
@@ -256,7 +271,7 @@ pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fa
     } else {
         (Unanswered::Unreplied, asked.last_sent(me).unwrap_or(sent) + 1)
     };
-    let mailed = asked.unanswered(me, source, count, request, why);
+    let mailed = asked.unanswered(me, source, (count, request), why, returns);
     asked.buffers_mut().mailed.push(mailed);
 }
 

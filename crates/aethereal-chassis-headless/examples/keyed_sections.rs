@@ -16,23 +16,25 @@
 //! Beside them, `keyed-16keys` and `children-16keys` draw from 16 keys only, so each key's run is long, and
 //! `children-4096` keeps a child for each of the 4,096 keys: what a run costs, apart from what a put costs.
 //!
-//! And what a keyed turn's rollback costs, by its section's size: `rb64-*`, `rb1k-*`, and `rb16k-*`, uniform, a put
-//! stirring one word of a section of that size; `-keep` keeps a copy of the section before each turn and compares it
-//! with its default after, `-skip` compares and keeps no copy, and `-bare` does neither.
+//! And what dropping a section at its default costs, by its section's size: `rb64-*`, `rb1k-*`, and `rb16k-*`,
+//! uniform, a put stirring one word of a section of that size; `-skip` compares the section with its default after
+//! each run, and `-bare` does not. (The first spike's `-keep`, a copy kept to put back on a fault, is gone: a fault
+//! ends the actor.)
 //!
 //! And requests: `ask-*`, where each sender asks `BATCH` questions of the dictionary at once, each stirring its key's
 //! entry as a put does and answered at once, and asks the next batch once all are answered; and `hold-*`, where the
 //! dictionary holds each question, asks a stamper actor for the value to stir with, and stirs and answers the question
 //! it held when the stamp comes back. One is a round trip through the dictionary; the other is two, the second asked
-//! from it, with a held request between.
+//! from it, with a held request between. `-keyed` is one actor split into a section for each key, whose sections
+//! answer, hold, and ask.
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 #![allow(clippy::cast_possible_truncation)] // A key below `KEYS` is an index.
 
 use aethereal_actor::{
-    ActorRef, Answered, Beginning, Fault, Held, Item, KeyOf, Later, Root, RunsSections, SectionRunner, Sectioned, Turn,
-    Turning, actor, hand_section,
+    ActorRef, Answer, Answered, Beginning, Fault, Held, Item, KeyOf, Later, Root, RunsSections, SectionRunner,
+    Sectioned, Turn, Turning, actor, hand_section, is_of,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorId, Bound, Kind, PathSegment, Plain};
@@ -150,6 +152,8 @@ macro_rules! keyed {
         }
 
         impl KeyOf<Put> for $dictionary {
+            type From = Put;
+
             fn key(put: &Put) -> u64 {
                 put.key
             }
@@ -158,8 +162,12 @@ macro_rules! keyed {
         impl Sectioned for $dictionary {
             type Section = Block<$words>;
 
-            fn section(&self, section: &mut Block<$words>, item: Item<'_>, turning: Turning<'_>) -> Result<u64, Fault> {
-                hand_section::<Self, Put>(self, section, item, turning, Self::put_into)
+            fn section(&self, section: &mut Block<$words>, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+                hand_section::<Self, Put, ()>(self, section, item, turning, Self::put_into)
+            }
+
+            fn is_unused(section: &Block<$words>) -> bool {
+                *section == Block::default()
             }
         }
 
@@ -773,6 +781,221 @@ fn check_children(engine: &Engine) {
     assert_eq!(puts, total(), "every put reaches its child");
 }
 
+/// A dictionary split into a section for each key, whose sections answer questions, or hold them and ask the stamper.
+#[derive(Bound)]
+#[kind(name = "aether.spike.asked")]
+struct Asked64 {
+    stamper: Vec<ActorRef<Stamper>>,
+}
+
+/// A whole-actor handler of a keyed actor: what reaches it came without its key, and is refused.
+fn unkeyed<T>() -> Result<T, Fault> {
+    Err(Fault::new(&Unkeyed).unwrap_or_else(|_| unreachable!("a unit encodes")))
+}
+
+#[actor(key = u64)]
+impl Asked64 {
+    fn begin(asked: Asked64) -> Result<Self, Fault> {
+        Ok(asked)
+    }
+
+    #[request]
+    fn get(&mut self, _: Get) -> Result<Got, Fault> {
+        unkeyed()
+    }
+
+    #[request]
+    fn fetch(&mut self, _: Fetch) -> Result<Got, Fault> {
+        unkeyed()
+    }
+
+    #[answer]
+    fn stamped(&mut self, _: (Answered<Stamped>, Stamping)) -> Result<(), Fault> {
+        unkeyed()
+    }
+}
+
+impl KeyOf<Get> for Asked64 {
+    type From = Get;
+
+    fn key(get: &Get) -> u64 {
+        get.key
+    }
+}
+
+impl KeyOf<Fetch> for Asked64 {
+    type From = Fetch;
+
+    fn key(fetch: &Fetch) -> u64 {
+        fetch.key
+    }
+}
+
+/// A stamp's answer goes back to the section of the key its context names.
+impl KeyOf<Answer<Stamped, Stamping>> for Asked64 {
+    type From = Stamping;
+
+    fn key(stamping: &Stamping) -> u64 {
+        stamping.key
+    }
+}
+
+impl Sectioned for Asked64 {
+    type Section = Block<7>;
+
+    fn section(&self, block: &mut Block<7>, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
+        if is_of::<Get>(&item) {
+            return hand_section::<Self, Get, Got>(self, block, item, turning, Self::get_from);
+        }
+        if is_of::<Fetch>(&item) {
+            return hand_section::<Self, Fetch, Later<Got>>(self, block, item, turning, Self::fetch_into);
+        }
+        hand_section::<Self, Answer<Stamped, Stamping>, ()>(self, block, item, turning, Self::stamped_into)
+    }
+
+    fn is_unused(block: &Block<7>) -> bool {
+        *block == Block::default()
+    }
+}
+
+#[allow(clippy::unnecessary_wraps, reason = "a section's handler returns a turn's result")]
+#[allow(clippy::needless_pass_by_value, reason = "a handler is handed its mail by value")]
+#[allow(clippy::unused_self, reason = "a section's handler is handed its actor to read, whether it reads it or not")]
+impl Asked64 {
+    /// Stirs the section and answers at once.
+    fn get_from(&self, block: &mut Block<7>, get: Get, _: &mut Turn<'_, Self>) -> Result<Got, Fault> {
+        stir(&mut block.words, get.value);
+        block.puts += 1;
+
+        Ok(Got { puts: block.puts })
+    }
+
+    /// Holds the question, and asks the stamper what to stir with: the answer comes back to this section.
+    fn fetch_into(&self, _: &mut Block<7>, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<Later<Got>, Fault> {
+        let Some(stamper) = self.stamper.first().copied() else {
+            return Err(no_answer());
+        };
+        let (held, later) = turn.hold();
+        turn.to(stamper).ask_returning(&Stamp { value: fetch.value }, &Stamping { key: fetch.key, held })?;
+
+        Ok(later)
+    }
+
+    /// Stirs the section with what the stamper answered, and answers the question it held.
+    fn stamped_into(
+        &self,
+        block: &mut Block<7>,
+        (answered, stamping): (Answered<Stamped>, Stamping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(stamped) = answered else {
+            return Err(no_answer());
+        };
+        stir(&mut block.words, stamped.value);
+        block.puts += 1;
+        turn.answer(stamping.held, &Got { puts: block.puts })?;
+
+        Ok(())
+    }
+}
+
+/// What the root of the keyed dictionary's askers is made from: the dictionary, and whether its sections hold.
+#[derive(Bound)]
+#[kind(name = "aether.spike.keyed_asking")]
+struct KeyedAsking {
+    to: ActorRef<Asked64>,
+    number: u64,
+    holds: bool,
+}
+
+/// The root of the keyed dictionary's askers.
+#[derive(Plain)]
+#[kind(name = "aether.spike.keyed_askers")]
+struct KeyedAskers;
+
+#[actor(key = u64, spawns(KeyedAsker))]
+impl KeyedAskers {
+    fn begin(asking: KeyedAsking, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        for number in 0..CLIENTS {
+            let Ok(asker) = turn.spawn::<KeyedAsker>(&number, KeyedAsking { number, ..asking }) else {
+                panic!("an asker begins");
+            };
+            turn.to(asker).send(&Go)?;
+        }
+
+        Ok(Self)
+    }
+}
+
+/// An asker of the keyed dictionary, as the other askers are.
+#[derive(Bound)]
+#[kind(name = "aether.spike.keyed_asker")]
+struct KeyedAsker {
+    asking: KeyedAsking,
+    asked: u64,
+    answered: u64,
+}
+
+#[actor(key = u64, parent = KeyedAskers)]
+impl KeyedAsker {
+    fn begin(asking: KeyedAsking) -> Result<Self, Fault> {
+        Ok(Self { asking, asked: 0, answered: 0 })
+    }
+
+    #[tell]
+    fn go(&mut self, _: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.ask_batch(turn)
+    }
+
+    #[answer]
+    fn got(&mut self, (answered, _): (Answered<Got>, Pending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(_) = answered else {
+            return Err(no_answer());
+        };
+        self.answered += 1;
+        let is_batch_done = self.answered == self.asked;
+        let is_more = self.asked < PUTS;
+        if is_batch_done && is_more {
+            self.ask_batch(turn)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl KeyedAsker {
+    /// Asks the next batch of questions, each of the section of its key.
+    fn ask_batch(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let end = (self.asked + BATCH).min(PUTS);
+        for index in self.asked..end {
+            let key = key_of(self.asking.number, index, false);
+            let value = (self.asking.number << 32) | index;
+            if self.asking.holds {
+                turn.to(self.asking.to).ask_keyed(&Fetch { key, value }, &Pending)?;
+            } else {
+                turn.to(self.asking.to).ask_keyed(&Get { key, value }, &Pending)?;
+            }
+        }
+        self.asked = end;
+
+        Ok(())
+    }
+}
+
+/// Starts the keyed way of asking for the run `round`: its sections hold what they are asked when `holds`.
+fn start_asked(engine: &mut Engine, round: u64, holds: bool) {
+    DRAWN.store(KEYS, Ordering::Relaxed);
+    let load = if holds {
+        Load::Holds
+    } else {
+        Load::Asks
+    };
+    let stamper = stamper(engine, round, load);
+    let runs = Box::new(SectionRunner::<Asked64, true>::new(Asked64 { stamper: stamper.clone() }));
+    let filling = |to| KeyedAsking { to, number: 0, holds };
+    start_keyed::<Asked64, KeyedAskers>(engine, round, (Asked64 { stamper }, runs), filling);
+}
+
 /// A program of the spike: its name, what starts it for a run, and what checks it took every put.
 struct Program {
     name: &'static str,
@@ -780,14 +1003,14 @@ struct Program {
     check: fn(&Engine),
 }
 
-/// A keyed program of sections `$block`, whose runner keeps and drops as `$keeps` and `$drops` say.
+/// A keyed program of sections `$block`, whose runner drops as `$drops` says.
 macro_rules! keyed_program {
-    ($name:literal, $dictionary:ident, $filler:ident, $filling:ident, $keeps:literal, $drops:literal, $hot:literal, $words:literal) => {
+    ($name:literal, $dictionary:ident, $filler:ident, $filling:ident, $drops:literal, $hot:literal, $words:literal) => {
         Program {
             name: $name,
             start: |engine, round| {
                 DRAWN.store(KEYS, Ordering::Relaxed);
-                let runs = Box::new(SectionRunner::<$dictionary, $keeps, $drops>::new($dictionary));
+                let runs = Box::new(SectionRunner::<$dictionary, $drops>::new($dictionary));
                 let filling = |to| $filling { to, number: 0, hot: $hot };
                 start_keyed::<$dictionary, $filler>(engine, round, ($dictionary, runs), filling);
             },
@@ -796,9 +1019,9 @@ macro_rules! keyed_program {
     };
 }
 
-const PROGRAMS: [Program; 22] = [
-    keyed_program!("keyed-uniform", Keyed64, KeyedFill64, KeyedFilling64, true, true, false, 7),
-    keyed_program!("keyed-hot", Keyed64, KeyedFill64, KeyedFilling64, true, true, true, 7),
+const PROGRAMS: [Program; 21] = [
+    keyed_program!("keyed-uniform", Keyed64, KeyedFill64, KeyedFilling64, true, false, 7),
+    keyed_program!("keyed-hot", Keyed64, KeyedFill64, KeyedFilling64, true, true, 7),
     Program { name: "one-uniform", start: |engine, round| start_one(engine, round, puts(false)), check: check_one },
     Program { name: "one-hot", start: |engine, round| start_one(engine, round, puts(true)), check: check_one },
     Program {
@@ -815,7 +1038,7 @@ const PROGRAMS: [Program; 22] = [
         name: "keyed-16keys",
         start: |engine, round| {
             DRAWN.store(SHARDS, Ordering::Relaxed);
-            let runs = Box::new(SectionRunner::<Keyed64, true, true>::new(Keyed64));
+            let runs = Box::new(SectionRunner::<Keyed64, true>::new(Keyed64));
             let filling = |to| KeyedFilling64 { to, number: 0, hot: false };
             start_keyed::<Keyed64, KeyedFill64>(engine, round, (Keyed64, runs), filling);
         },
@@ -831,15 +1054,12 @@ const PROGRAMS: [Program; 22] = [
         start: |engine, round| start_children_of(engine, round, puts(false), (KEYS, KEYS)),
         check: check_children,
     },
-    keyed_program!("rb64-keep", Keyed64, KeyedFill64, KeyedFilling64, true, true, false, 7),
-    keyed_program!("rb64-skip", Keyed64, KeyedFill64, KeyedFilling64, false, true, false, 7),
-    keyed_program!("rb64-bare", Keyed64, KeyedFill64, KeyedFilling64, false, false, false, 7),
-    keyed_program!("rb1k-keep", Keyed1k, KeyedFill1k, KeyedFilling1k, true, true, false, 127),
-    keyed_program!("rb1k-skip", Keyed1k, KeyedFill1k, KeyedFilling1k, false, true, false, 127),
-    keyed_program!("rb1k-bare", Keyed1k, KeyedFill1k, KeyedFilling1k, false, false, false, 127),
-    keyed_program!("rb16k-keep", Keyed16k, KeyedFill16k, KeyedFilling16k, true, true, false, 2047),
-    keyed_program!("rb16k-skip", Keyed16k, KeyedFill16k, KeyedFilling16k, false, true, false, 2047),
-    keyed_program!("rb16k-bare", Keyed16k, KeyedFill16k, KeyedFilling16k, false, false, false, 2047),
+    keyed_program!("rb64-skip", Keyed64, KeyedFill64, KeyedFilling64, true, false, 7),
+    keyed_program!("rb64-bare", Keyed64, KeyedFill64, KeyedFilling64, false, false, 7),
+    keyed_program!("rb1k-skip", Keyed1k, KeyedFill1k, KeyedFilling1k, true, false, 127),
+    keyed_program!("rb1k-bare", Keyed1k, KeyedFill1k, KeyedFilling1k, false, false, 127),
+    keyed_program!("rb16k-skip", Keyed16k, KeyedFill16k, KeyedFilling16k, true, false, 2047),
+    keyed_program!("rb16k-bare", Keyed16k, KeyedFill16k, KeyedFilling16k, false, false, 2047),
     Program {
         name: "ask-one",
         start: |engine, round| start_one(engine, round, Way { hot: false, load: Load::Asks }),
@@ -860,6 +1080,8 @@ const PROGRAMS: [Program; 22] = [
         start: |engine, round| start_children(engine, round, Way { hot: false, load: Load::Holds }),
         check: check_children,
     },
+    Program { name: "ask-keyed", start: |engine, round| start_asked(engine, round, false), check: check_keyed::<7> },
+    Program { name: "hold-keyed", start: |engine, round| start_asked(engine, round, true), check: check_keyed::<7> },
 ];
 
 /// One run of `program` on `workers` workers: the nanoseconds it took, from its roots' `begin` to the last step, and

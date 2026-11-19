@@ -137,6 +137,11 @@ pub struct Mailed {
     /// The section of its receiver it is for, which its sender worked out from the mail as it sent it, or the whole
     /// actor (spike: keyed sections).
     pub section: SectionKey,
+    /// Of a request, the section of its asker its answer goes back to, which the asker worked out from the context it
+    /// keeps, and which the engine stamps on the answer as its `section`, whoever gives it: the receiver now, the
+    /// receiver later through a hold, or the engine when none comes. [`SectionKey::WHOLE`] for an asker that is not
+    /// split into sections, and for mail that asks nothing (spike: keyed sections, return stamps).
+    pub returns: SectionKey,
 }
 
 /// Which section of a keyed actor a piece of mail is for, stamped on it at the send by the sender, which knows the
@@ -178,6 +183,28 @@ impl SectionKey {
     pub const fn bits(self) -> u64 {
         self.0
     }
+
+    /// The stamp whose eight bytes are `bits`, as [`Self::bits`] gives them.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+}
+
+/// The two stamps a turn of a keyed actor carries: the section the turn runs for, and the section of the asker of the
+/// request it handles that the request's answer goes back to, its return stamp. Both [`SectionKey::WHOLE`] for a turn
+/// of an actor that is not split, of mail that asks nothing (spike: keyed sections).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamps {
+    /// The section of the actor whose turn it is.
+    pub section: SectionKey,
+    /// The return stamp of the request the turn handles.
+    pub returns: SectionKey,
+}
+
+impl Stamps {
+    /// A turn of the whole actor, of mail whose asker is a whole actor or that asks nothing.
+    pub const WHOLE: Self = Self { section: SectionKey::WHOLE, returns: SectionKey::WHOLE };
 }
 
 /// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).

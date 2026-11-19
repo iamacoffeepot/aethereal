@@ -142,6 +142,7 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
                 tie,
                 due,
                 section: aethereal_actor::SectionKey::WHOLE,
+                returns: aethereal_actor::SectionKey::WHOLE,
             });
         }
 

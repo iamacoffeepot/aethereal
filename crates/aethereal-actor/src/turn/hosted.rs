@@ -6,7 +6,8 @@ use crate::resource::{Reach, Resources};
 use crate::{
     Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
     Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Runs,
-    SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry, take_claimed,
+    SeatNumber, Seated, Seats, SentAs, Spares, Stamps, Submitted, Table, Tie, Unreadable, What, Written, carry,
+    take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -158,12 +159,14 @@ impl<'a> Turning<'a> {
     /// lent, for the host to take the instance its code runs in from.
     #[must_use]
     pub fn hosted(self, declared: &'static Declared) -> (Hosted<'a>, &'a mut Instances) {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due, .. } = self;
         let owing = Owing::Item(tie);
         // A guest puts by handing its bytes to its host, and its jobs are lent nothing, so its host's turn reaches the
         // actor's resources alone (ADR-0042).
         let keeps = keeps.reach();
-        let seat = Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due };
+        let stamps = Stamps::WHOLE;
+        let seat =
+            Seat { me, path, above, table, made, asked, keeps, sent, sent_before: sent, declared, owing, due, stamps };
 
         (Hosted { seat, source: Source::Item(source), chain, spawned: Vec::new(), sent: Sent::Nothing }, instances)
     }
@@ -177,8 +180,22 @@ impl<'a> Closing<'a> {
         let Self { me, path, above, table, asked, instances, keeps, sent, why } = self;
         let (owing, due) = (Owing::NOTHING, Due::Never);
         let keeps = keeps.reach();
-        let seat =
-            Seat { me, path, above, table, made: &(), asked, keeps, sent, sent_before: sent, declared, owing, due };
+        let stamps = Stamps::WHOLE;
+        let seat = Seat {
+            me,
+            path,
+            above,
+            table,
+            made: &(),
+            asked,
+            keeps,
+            sent,
+            sent_before: sent,
+            declared,
+            owing,
+            due,
+            stamps,
+        };
         let chain = Chain { root: MailId { sender: me.id, count: sent }, depth: 0 };
         let hosted = Hosted { seat, source: Source::End, chain, spawned: Vec::new(), sent: Sent::Nothing };
 
@@ -213,6 +230,7 @@ impl<'a> Hosted<'a> {
             declared,
             owing: Owing::NOTHING,
             due: Due::Never,
+            stamps: Stamps::WHOLE,
         };
         let chain = Chain { root: MailId { sender: me.id, count: 0 }, depth: 0 };
 
@@ -316,6 +334,7 @@ impl<'a> Hosted<'a> {
             tie,
             due,
             section: crate::SectionKey::WHOLE,
+            returns: crate::SectionKey::WHOLE,
         };
         let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
@@ -432,7 +451,8 @@ impl<'a> Hosted<'a> {
         if !answers {
             return Err(FalseSend);
         }
-        let owed = Owed { holder: by, asker: to, request };
+        let (section, returns) = (crate::SectionKey::WHOLE, crate::SectionKey::WHOLE);
+        let owed = Owed { holder: by, asker: to, request, section, returns };
         self.seat.asked.owes.push(Owes::Answers { owed, answer: kind });
 
         Ok(Tie::answers(request))

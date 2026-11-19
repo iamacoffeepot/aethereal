@@ -1,11 +1,11 @@
 //! What a turn's `to` hands back: a target, found once, that sends and asks chain on (ADR-0016, ADR-0022).
 
 use super::Seat;
-#[cfg(feature = "std")]
-use crate::KeyedTarget;
 use crate::{
     Actors, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
 };
+#[cfg(feature = "std")]
+use crate::{Answer, KeyOf, KeyedTarget, SectionKey};
 use aethereal_data::{ActorId, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::marker::PhantomData;
 
@@ -115,6 +115,42 @@ impl<Me, R> Toward<'_, '_, Me, R, Seated, Lives> {
         C: Kind + Encode<Within>,
     {
         self.seat.request(self.at, mail, KindId::of::<R::Answer>(), context, self.due)?;
+
+        Ok(self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<Me, R> Toward<'_, '_, Me, R, Seated, Lives> {
+    /// Asks `mail` of the section of the keyed actor it is for, as [`Self::ask`] asks an actor, whose key the
+    /// receiver's type works out from it here and stamps on the request, as [`Self::send_keyed`] does (spike: keyed
+    /// sections). The asker is a whole actor, so the answer comes back to it whole.
+    pub fn ask_keyed<K, C, I>(&mut self, mail: &K, context: &C) -> Result<&mut Self, EncodeError>
+    where
+        R: Askable<Me, K, C, I> + KeyedTarget<K>,
+        K: Kind + Encode<Actors>,
+        C: Kind + Encode<Within>,
+    {
+        let (answer, stamps) = (KindId::of::<R::Answer>(), (R::section(mail), SectionKey::WHOLE));
+        self.seat.request_stamped(self.at, mail, (answer, context), self.due, stamps)?;
+
+        Ok(self)
+    }
+
+    /// Asks `mail` of the actor, as [`Self::ask`] does, from a section of a keyed actor: the asker works out from
+    /// `context`, through its [`KeyOf`] the answer, the section the answer goes back to, and the request carries it as
+    /// its return stamp, which the engine puts on whatever answers it (spike: keyed sections). The receiver is a whole
+    /// actor.
+    pub fn ask_returning<K, C, I>(&mut self, mail: &K, context: &C) -> Result<&mut Self, EncodeError>
+    where
+        R: Askable<Me, K, C, I>,
+        Me: KeyOf<Answer<R::Answer, C>, From = C>,
+        K: Kind + Encode<Actors>,
+        C: Kind + Encode<Within>,
+    {
+        let returns = SectionKey::of(<Me as KeyOf<Answer<R::Answer, C>>>::key(context));
+        let (answer, stamps) = (KindId::of::<R::Answer>(), (SectionKey::WHOLE, returns));
+        self.seat.request_stamped(self.at, mail, (answer, context), self.due, stamps)?;
 
         Ok(self)
     }

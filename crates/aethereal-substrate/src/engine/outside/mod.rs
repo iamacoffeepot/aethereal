@@ -5,8 +5,8 @@ use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
     Actors, Asking, Chain, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed, Owed,
-    PinSource, Pinning, Preparing, Refused, Runs, Seated, SenderType, StateSchema, Tie, Tied, Turning, Unanswered,
-    Upgrade, Upgraded, Why, Written, actor,
+    PinSource, Pinning, Preparing, Refused, Runs, Seated, SectionKey, SenderType, StateSchema, Tie, Tied, Turning,
+    Unanswered, Upgrade, Upgraded, Why, Written, actor,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -134,7 +134,9 @@ impl Runs for Taking {
                 // What it is answered with is the asker's to say, and read as it is answered: the debt's own kind is
                 // read only for a turn that answers, and the outside answers between steps.
                 hosted.hold(KindId::of::<Unanswered>())?;
-                self.take(mail, Reached::Asked(Owed { holder: me, asker: source, request }));
+                // Spike: the outside answers a section's request to its asker's whole (keyed sections).
+                let (section, returns) = (SectionKey::WHOLE, SectionKey::WHOLE);
+                self.take(mail, Reached::Asked(Owed { holder: me, asker: source, request, section, returns }));
             }
             Item::Answer { mail, asking } => self.take(mail, Reached::Answered(asking.count)),
             Item::Unanswered { mail, asking } => self.take(mail, Reached::Unanswered(asking.count)),
@@ -240,7 +242,11 @@ impl Recording {
         let handed = match item {
             Item::Mail(mail) => {
                 let reached = match tie.read() {
-                    Tied::Asks(request) => Reached::Asked(Owed { holder: me, asker: source, request }),
+                    Tied::Asks(request) => {
+                        let (section, returns) = (SectionKey::WHOLE, SectionKey::WHOLE);
+
+                        Reached::Asked(Owed { holder: me, asker: source, request, section, returns })
+                    }
                     Tied::Tell | Tied::Answers(_) | Tied::Unanswered(_) => Reached::Told,
                 };
 
@@ -413,8 +419,8 @@ impl Engine {
         self.lives.fold_records([lives::sent(by, count)], &[]);
         // The outside states no deadline (ADR-0041).
         let (sent_as, kind) = (self.sent_as(by), KindId::of::<K>());
-        let section = aethereal_actor::SectionKey::WHOLE;
-        let mailed = Mailed { by, sent_as, to, count, kind, bytes, tie: tie(count), due: Due::Never, section };
+        let (section, returns) = (SectionKey::WHOLE, SectionKey::WHOLE);
+        let mailed = Mailed { by, sent_as, to, count, kind, bytes, tie: tie(count), due: Due::Never, section, returns };
         self.fold_brought(vec![mailed], Vec::new(), parity, |mailed| MailId {
             sender: mailed.by.id,
             count: mailed.count,

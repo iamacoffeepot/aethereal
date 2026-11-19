@@ -5,8 +5,8 @@ use super::super::*;
 use super::{Answering, Waiting, owed};
 use aethereal_actor::Written;
 use aethereal_actor::{
-    ActorRef, Answered, Anywhere, Asking, Bytes, Due, Ending, Fault, Held, Reply, Tie, Turn, Unanswered, child,
-    protocol,
+    ActorRef, Answered, Anywhere, Asking, Bytes, Due, Ending, Fault, Held, Reply, SectionKey, Tie, Turn, Unanswered,
+    child, protocol,
 };
 use aethereal_actor::{Time, actor};
 use aethereal_data::{Bound, Kind, Plain};
@@ -709,18 +709,18 @@ fn the_engine_answers_after_what_the_turn_sent_and_only_a_request_the_turn_left_
         Seated { id: ActorId::new(2), seat: SeatNumber::new(1) },
     );
     let mut asked = Asked::new();
-    let mut told = asked.unanswered(me, pointer, 5, 3, Unanswered::Unreplied);
+    let mut told = asked.unanswered(me, pointer, (5, 3), Unanswered::Unreplied, SectionKey::WHOLE);
     told.tie = Tie::TELL;
     asked.buffers_mut().mailed.push(told);
 
-    owed(me, pointer, Tie::asks(3), &Ok(()), 2, &mut asked);
+    owed(me, (pointer, Tie::asks(3), SectionKey::WHOLE), &Ok(()), 2, &mut asked);
 
     let mailed = asked.mailed();
     assert_eq!(mailed.len(), 2, "the engine says the request was not answered");
     assert_eq!((mailed[1].count, mailed[1].tie), (6, Tie::unanswered(3)), "after what the turn sent");
 
     asked.buffers_mut().mailed[1].tie = Tie::answers(3);
-    owed(me, pointer, Tie::asks(3), &Ok(()), 2, &mut asked);
+    owed(me, (pointer, Tie::asks(3), SectionKey::WHOLE), &Ok(()), 2, &mut asked);
 
     assert_eq!(asked.mailed().len(), 2, "a request the turn answered is not answered again");
 }

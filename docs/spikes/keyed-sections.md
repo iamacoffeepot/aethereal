@@ -483,3 +483,237 @@ Do not use it for the HTTP stack until sections may be non-flat and own their st
   falls in from outside a view. It should be `pub(crate)` in `view.rs`.
 - **The benchmark's harness** (`keyed_sections.rs`, `run` and `main`) copies `savina.rs`'s. *One user*; an example
   cannot share code with another without a module both include.
+
+## 10. Asks, answers and debts in sections
+
+**Question.** The sections above never asked, held, or were asked. What an actor waits on and what it owes are kept
+beside it in its seat (`Held { keeping, waiting, debts }`, `engine/mod.rs:301` on `main`), in the part of its seat,
+which another worker may own in the step. Can each section keep its own, in its lane's part, with answers finding their
+section by a return stamp, and what does that cost?
+
+**Rulings this section works under.** A failed turn closes the whole actor, as ADR-0009 says, and nothing is rolled
+back; whole-actor turns as a barrier are out of scope. The first spike's rollback is switched off, not left in: a
+section that holds a request holds a `Held<A>`, which is not `Copy`, so the bound had to go. `Sectioned::Section` is
+now `Default + Send` (`keyed.rs:48`), and the default check is the type's own `Sectioned::is_unused` (`keyed.rs:58`),
+since a `Held<A>` is not `PartialEq` either.
+
+**Run it.** `cargo test -p aethereal-substrate --lib keyed` (eight tests, `engine/keyed/tests.rs`), and
+`cargo run --release -p aethereal-chassis-headless --example keyed_sections ask-keyed ask-one ask-children hold-keyed
+hold-one hold-children`. Commit `f68cc69` is the benchmark's ordinary programs on the engine before return stamps, the
+baseline for what they cost.
+
+### Answer, first
+
+It works, all five points, and the shape is simple: **a section keeps a `SectionHeld { waiting, debts }` beside its
+state in its lane's part, built from the same `Waiting` and `Debts` a seat keeps, and every answer carries a return
+stamp that routes it to its section's lane as keyed mail.** Nothing new is locked or merged: the worker that owns the
+part owns the section's requests, as it owns its state.
+
+Three things were not obvious, and two of them change the model:
+
+- **The return stamp is the asking section, always.** The context is filed in the section whose turn asked, in that
+  section's part. An answer stamped with any other key goes to another section, which waits on nothing of that count,
+  and is dropped as a stray. So the key the asker computes from its context (`KeyOf<Answer<A, C>>`, as
+  `#[answer(key = ..)]` would declare) can only ever be right when it equals the key of the turn asking, which the
+  engine already knows. The declaration is redundant, and a mistake in it loses the answer silently.
+- **The part, not the section, numbers a section's mail.** With one count per `(actor, part)` (`first_count`,
+  `engine/keyed/mod.rs:112`), no two sections that run at once share a count, and a section dropped and made again
+  goes on from its part's count. So "keep a section that has sent mail" goes away: the drop rule is only "unused, and
+  waiting on nothing, and owing nothing". A section's count was what pinned every section that ever sent.
+- **Ending is a sweep between steps.** The worker that runs the closing turn owns one part. The debts of the actor's
+  other sections are in every other part, so the engine sweeps them once the actor is gone, between steps, on the
+  stepping thread (`sweep_sections`, `engine/keyed/mod.rs:278`), at a cost of a look at every part for each keyed actor
+  that ends.
+
+### What was built, and where
+
+File references are to the branch at the commit that adds this section.
+
+- **The stamps.** `Mailed::returns` (`aethereal-actor/src/effect.rs:144`), the return stamp a request carries, copied
+  into the stream's `Envelope` (`aethereal-substrate/src/mail.rs:31`) and read by the receiver's turn as
+  `Handed::returns` (`stream.rs:697`). `Stamps { section, returns }` (`effect.rs:198`) is what a turn carries: the
+  section it runs for and the return stamp of the request it handles, set on `Turning` by `stamped`
+  (`turn/mod.rs:1696`) and kept on the turn's `Seat`.
+- **Asking.** `Toward::ask_keyed` (`turn/to.rs:128`) asks a section of a keyed actor from a whole actor, stamping the
+  receiver's key as `send_keyed` does. `Toward::ask_returning` (`turn/to.rs:144`) asks from a section: it calls the
+  asker's `KeyOf<Answer<A, C>>` (`keyed.rs:22`, which now names what the key is read from, `type From`) on the context
+  and stamps the result as the request's `returns`, through `Seat::request_stamped` (`turn/mod.rs:963`).
+- **Echoing.** Every answer, whoever gives it, goes to the section the request's return stamp names, as its
+  `section`: an answer returned now (`turn/mod.rs:941`); a held one, whose `Owed` now carries the holder's section and
+  the request's return stamp (`held.rs:38`, set at `turn/mod.rs:1033`, read at `:1057`); and every `Unanswered` the
+  engine says, through `Asked::unanswered`'s new `returns` (`turn/mod.rs:305`): `Failed`, `Unreplied`, and
+  `Unreadable` from the turn (`ask::owed`, `engine/ask/mod.rs:254`), `Ended` for a request to a gone actor
+  (`ended_before`, `say_unanswered`, `engine/mod.rs:2647`), `Ended` for a debt at the closing turn, and `Unreplied` for
+  a let-go debt (`Debt::returns`, `engine/debts/mod.rs`). An answer stamped keyed is keyed mail, so it is never fused
+  (the first spike's rule in `hand`).
+- **A section's requests.** `SectionHeld { waiting, debts }` (`engine/keyed/mod.rs:98`), one per section that waits or
+  owes, in `ActorSections::held` (`:83`) beside the store of states and the part's count. `keyed_turns` (`:174`) takes
+  the section's `SectionHeld` out for its run, finds each answer's context in it (`:218`), and files what each turn
+  asked, held and answered with the same `tied` the seat's turns use (`:247`); a failed turn goes through `Ran::of`,
+  which ends the actor (`:249`). The rest of the run is never handed once the actor ends.
+- **Letting go.** A `Held<A>` a section drops is counted as a seat's is (ADR-0017); `let_go` finds the debt in the
+  section the `Owed` names (`Sections::change`, `engine/keyed/mod.rs:141`, from `engine/mod.rs:2667`).
+- **The drop rule.** After a run, a section whose `SectionHeld` is empty is handed to `RunsSections::release`
+  (`keyed.rs:168`), which drops its state if `is_unused`; one that waits or owes keeps both (`engine/keyed/mod.rs:262`).
+- **Ending.** `sweep_sections` (`engine/keyed/mod.rs:278`), called as each step is applied (`engine/mod.rs:1219`,
+  `:1473`): for each keyed actor the table no longer seats, every part's sections of it are taken out; each debt is
+  answered `Ended` to its asker's section, and each waiting context is dropped with its pins.
+- **Handlers.** `hand_section` (`keyed.rs:87`) takes any `Handled` (a kind, or an `Answer<A, C>`) and a handler that
+  returns what an ordinary handler returns (`()`, `A`, `Later<A>`, `Reply<A>`), and sends an answer given now, as
+  `Reached::hand` does. `is_answer_of` (`keyed.rs:72`) is the dispatch's test for an answer.
+- **For tests.** `Engine::section_holds` and `Engine::keeps_sections` (`engine/keyed/mod.rs:328`, `:335`).
+
+### The five points
+
+1. **A section asks, and its answer comes to that section, with sections on two workers asking in one step: works.**
+   `sections_on_two_workers_ask_in_one_step_and_each_answer_comes_back_to_its_own_section`
+   (`engine/keyed/tests.rs:640`) runs two keys' parts on two workers in one step, each section asking the oracle, and
+   each section hears its own answer with its own context. Broken on purpose, it fails when replies are not stamped
+   with the return stamp, and when every part numbers its sections' mail from one count (the oracle's part drops one
+   of two requests with one id).
+2. **A section holds a request and answers it in a later turn: works.**
+   `a_section_holds_a_request_and_answers_it_in_a_later_turn` (`:662`), and
+   `a_held_request_a_section_lets_go_of_is_answered_unreplied` (`:680`) for a held request dropped. The benchmark's
+   `hold-keyed` holds a request in a section, asks the stamper from the section with a `Held<Got>` inside its context,
+   and answers from the stamp's answer, 262,144 times a run.
+3. **Ending answers every debt and drops every wait: works.**
+   `a_fault_in_any_section_ends_the_actor_and_every_section_s_debts_are_answered_ended` (`:709`) and
+   `a_section_that_closes_its_actor_ends_it_and_every_section_s_debts_are_answered_ended` (`:726`): two sections owe a
+   request, a third waits on an answer that never comes, and a fourth fails (or closes). The asker hears `Ended` for
+   both, the engine goes idle, and no part keeps anything of the actor. Broken on purpose (no sweep), both fail.
+4. **A section is dropped at its default only when it waits on and owes nothing: works.**
+   `a_section_left_at_its_default_while_it_waits_is_kept_and_its_answer_finds_its_context` (`:740`): the section asks
+   and changes nothing, so it is at its default with a context filed; it is kept, the answer finds the context, and
+   once it is told to forget, it is dropped although it has sent mail. Broken on purpose (the section's requests
+   dropped with it), six of the eight tests fail.
+5. **Costs: measured,** below.
+
+### What it costs
+
+Best of three runs, nanoseconds a request (a put for `savina`'s programs, a piece of mail), each cell the range of two
+passes. 64 senders each ask 4,096 questions, 64 at a time; the dictionary has 4,096 keys. `ask-*` answers at once;
+`hold-*` holds each question, asks a stamper, and answers when the stamp comes back.
+
+**(a) What the return stamp costs mail that is not keyed.** The engine before return stamps (`f68cc69`) against after,
+on the same programs. The machine drifted between passes, so the change is read against the baseline pass run between
+the two passes after.
+
+| program         | workers | before      | after       | change              |
+|-----------------|--------:|------------:|------------:|---------------------|
+| `ask-one`       |       1 |     332–346 |     343–355 | 0 to +3%            |
+| `ask-one`       |       4 |     193–204 |     198–210 | noise               |
+| `ask-children`  |       1 |     355–373 |     360–383 | noise               |
+| `ask-children`  |       4 |     113–118 |     118–122 | 0 to +3%            |
+| `hold-one`      |       1 | 9,709–10,572 | 11,051–11,740 | +5 to +11%      |
+| `hold-one`      |      16 |  8,124–8,478 |  9,171–9,730 | +13 to +20%     |
+| `hold-children` |       1 |   1,682–1,797 |   1,933–1,937 | +8%           |
+| `hold-children` |       4 |     851–856 |   1,156–1,165 | +35%            |
+| `hold-children` |      16 |   1,178–1,278 |   1,902–1,958 | +50%          |
+| `pingpong`      |       1 |   1,096–1,146 |   1,165–1,169 | +2%           |
+| `big`           |       1 |     168–178 |         186 | +4.5%               |
+| `churn`         |       1 |     209–221 |         226 | +2%                 |
+| `world`         |       1 |     150–159 |         163 | +2.5%               |
+| `fjthrput`      |       1 |     241–253 |         284 | +12%                |
+
+`ask-*` on 16 workers moves by 10 percent between passes on both builds and is left out.
+
+What grew: `Mailed` 104 → 112 bytes, the stream's `Envelope` 72 → 80 and its `Entry` 104 → 112 (the first spike's
+section stamp and this return stamp together: 16 bytes on every piece of mail), `Owed` 40 → 56 and the `Debt` the
+engine keeps by 8, a turn's `Turning` and `Seat` by 16, and the reply path by one store of eight bytes. Plain mail pays
+2 to 5 percent, as the first stamp did. Held requests pay much more, worst on many workers, and this spike did not
+find why: the debts list a turn that holds copies is larger, and `holders` changes compare a larger `Owed`, but neither
+explains 50 percent on 16 workers. It needs a profile before an ADR prices the stamp.
+
+**(b) A round trip through sections, an ordinary actor, and children.** After return stamps:
+
+| program         | 1 worker      | 4 workers   | 16 workers  |
+|-----------------|--------------:|------------:|------------:|
+| `ask-keyed`     |       422–423 |     131–132 |     139–141 |
+| `ask-one`       |       343–355 |     198–210 |     276–301 |
+| `ask-children`  |       360–383 |     118–122 |     111–127 |
+| `hold-keyed`    |   1,332–1,336 |     573–576 |     586–602 |
+| `hold-one`      | 11,051–11,740 | 9,159–9,205 | 9,171–9,730 |
+| `hold-children` |   1,933–1,937 | 1,156–1,165 | 1,902–1,958 |
+
+- **Answered at once, sections cost what children cost on many workers, and 20 percent more than either on one.** A
+  question to a section is one run, as a put was (section 9, surprise 6): the per-run cost is paid per request.
+- **Held, sections win outright**, 1.3 microseconds a request on one worker against 1.9 for 16 children and 11 for one
+  actor, and two to three times faster than children on 4 and 16 workers. Not because sections are cheap, but because
+  what an actor holds is costly in the seat: a turn that holds or answers copies the whole list of the actor's debts
+  (`Debts::filed`, `engine/debts/mod.rs:110`), and an answer finds its context by a walk over every request waiting
+  (`Filed::at`, `engine/ask/mod.rs:44`). The one actor holds about 4,000 at once, each child about 250, each section
+  about one. Splitting the `Held` is what wins, and an ordinary actor that holds many would want those two lists
+  keyed, sections or not.
+
+### What was not obvious
+
+1. **The return stamp could be the engine's, not the asker's** (above). If it is the asker's, a key that disagrees
+   with the asking section loses the answer as a stray, and the spike does not catch it. A key from the context is only
+   needed for an answer that should reach a section other than the one asking, which is an ask from the whole actor
+   (a `begin`, or the barrier turns this section leaves out) on behalf of a section: and then the context must be filed
+   in that section's part, which the asking worker does not own, so it would be filed at the fold.
+2. **A section's `Held` beside its state, not inside it, makes the drop rule cheap.** The engine keeps an entry only
+   for a section that waits or owes, so "is its `Held` empty" is "has it an entry"; and the state is checked with
+   `is_unused` only for a section with none. A section's state can still be dropped while it waits without losing
+   anything (a default state is made again), so the rule that matters is that the requests are never dropped with it.
+3. **`Owed` needs both sections.** The return stamp, for the answer; and the holder's section, so that the count of
+   values holding a debt, taken after each part (ADR-0017's `holders`), finds the debt in the section that holds it.
+   A debt's holder section has to travel inside the `Held<A>`, through any bytes it is written into.
+4. **Releasing at the end of a run, not after each turn, removes the count problem the first spike met.** A section
+   dropped after a turn and made again by the next item of the same run would number its mail from the start again in
+   the same step. Dropping only after the run means no section is made twice in one part in one step, and the part's
+   count does the rest.
+5. **The actor is gone only the step after its closing turn.** A failed section turn ends the actor at the fold; the
+   closing turn runs the next step in the seat's part; the table drops the actor at that fold; only then does the
+   sweep run. Sections in other parts keep running until the table drops it, so they may still ask and hold during
+   that step: the sweep, which runs after, catches what they filed. ADR-0011's "an actor that ends handles no more
+   mail" holds from the step after the closing turn.
+6. **The ending order is not the asking order.** The askers of a gone actor's debts are told in the order of parts
+   and of a hash, not the order they asked. ADR-0017 promises only that each is told once.
+7. **An answer to a section is keyed mail, so it never joins a run and is never fused.** A round trip from a section
+   costs at least a step each way, as any mail between parts does.
+
+### Corners cut
+
+- The return stamp from the context is not checked against the asking section.
+- Deadlines on what a section asks are never kept: the section's asks file no `Expiring`, so they are never answered
+  `Expired` (`engine/keyed/mod.rs`, the scratch `expiring`).
+- A section cannot run a job: a job's answer is sent to the whole actor.
+- The outside seat (ADR-0036) and a guest's records answer to the whole actor: their `Owed` carries no sections.
+- A keyed actor asking a keyed actor needs both stamps at once; the two verbs, `ask_keyed` and `ask_returning`, each
+  set one. `Seat::request_stamped` takes both, so a third verb is a line.
+- A whole-actor turn of a keyed actor still cannot ask for a section (point 1 above).
+- The sweep looks at every keyed actor every step to find those gone, and at every part for each; a real one would be
+  handed the endings at the fold.
+- A section left neither waiting nor owing by a debt let go at the end of a part keeps its state until its next run.
+- A part's count starts at `(part + 1) << 40`: a part's sections send fewer than `2^40` pieces of mail.
+- The two stamps are carried by every piece of mail, in `Mailed` and the `Envelope`.
+- The first spike's rollback measurement (`rb*-keep`) is gone with the rollback.
+
+### What an ADR would need to say
+
+- **A section keeps its own requests**: the contexts of what it asks, and what it holds, beside its state in its
+  lane's part, in the same structures a seat keeps. A section that waits on an answer or owes one is never dropped;
+  any other is dropped once it is unused.
+- **An answer goes back to the section that asked**, stamped by the engine from the turn that asked, carried on the
+  request, and put on whatever answers it: the receiver now, the receiver later through a held request, or the engine.
+  Whether the author also declares it (`#[answer(key = ..)]`) is the question below.
+- **A held request names its holder's section** as well as its holder, wherever it is written.
+- **A keyed actor's mail is numbered by the part**, one count for each actor and part, and ADR-0012's mail id stays
+  `(actor, count)`.
+- **A keyed actor that ends** has every section's debts answered `Ended` and every section's waits dropped, between
+  steps, once its closing turn has run; until then its sections run.
+- **What the stamps cost**, priced against a profile of held requests on many workers, and whether they ride on every
+  piece of mail or only on keyed mail and requests.
+
+### Reinvented or library gaps
+
+- **`SectionHeld`** (`engine/keyed/mod.rs:98`) is the seat's `Held` without its actor or `Keeping`: it reuses
+  `Waiting` and `Debts` as they are, and adds only `is_empty` to each. Nothing duplicated.
+- **`Owed::names`** (`held.rs:58`) compares a debt by holder, asker and request, ignoring the sections, where
+  `has_answered` compared whole `Owed`s. *One user.*
+- **`found`**, a root's reference from its id, is written in both the tests and the benchmark. *One user* each; the
+  engine has no public way to hand back a root's typed reference from `add_root` but `add_sectioned_root`.
+- **`sweep_sections`** writes the engine's `Unanswered` mail by hand, as `expire_due` does; `fold_brought` would have
+  routed it but finds each piece's part by its receiver's seat, which is wrong for keyed mail. *Different meaning*:
+  `fold_brought` should find the part from the stream entry's key, which would serve both.

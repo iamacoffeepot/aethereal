@@ -53,15 +53,15 @@ use aethereal_actor::{
     Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
     JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
     Publisher, Puts, Reads, Refused, Resource, Root, Runs, RunsSections, SeatNumber, Seated, Seats, SectionKey,
-    SectionStore, Sectioned, SenderType, SentAs, Sleep, Standings, Stood, Submitted, Table, Tie, Tied, Time, Turning,
-    Unanswered, Unfit, What, Why, config_bytes, holders,
+    SectionStore, Sectioned, SenderType, SentAs, Sleep, Stamps, Standings, Stood, Submitted, Table, Tie, Tied, Time,
+    Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
 use birth::Births;
 use costs::{CostKey, Costs, ItemKind, toward};
 use crossbeam_queue::SegQueue;
-use debts::Debts;
+use debts::{Debt, Debts};
 use due::{Alarm, Deadlines, Expiring};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
@@ -519,7 +519,7 @@ impl Engine {
             waiting: Vec::new(),
             instances: (0..parts.get()).map(|_| Instances::default()).collect(),
             keyed: KeyedActors::default(),
-            sections: (0..parts.get()).map(|_| Sections::default()).collect(),
+            sections: (0..parts.get()).map(Sections::of_part).collect(),
             guests: Arc::new(NoGuests),
             links: Arc::default(),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
@@ -1216,6 +1216,7 @@ impl Engine {
         }
         touched.clear();
         self.spare.touched = touched;
+        self.sweep_sections();
         self.hand_on(forward);
         self.ask_idle();
         self.start_waiting();
@@ -1469,6 +1470,7 @@ impl Engine {
             self.spare.folds.push(piles);
         }
 
+        self.sweep_sections();
         self.hand_on(forward);
         self.ask_idle();
         self.start_waiting();
@@ -1579,7 +1581,7 @@ impl Engine {
             actors: mem::replace(&mut self.actors[part], BySeat::empty(parts)),
             instances: mem::take(&mut self.instances[part]),
             seats: mem::take(&mut self.seats[part]),
-            sections: mem::take(&mut self.sections[part]),
+            sections: mem::replace(&mut self.sections[part], Sections::of_part(part)),
         }
     }
 
@@ -1834,7 +1836,9 @@ impl Reading<'_> {
             if lists.fusing.carries(hop.to.id) {
                 let Hop { to, from, sent_as, count, root, depth, kind, tie, due, .. } = hop;
                 let tying = Tying::of(tie, due);
-                let envelope = |bytes| Envelope { sender_seat: from.seat, sent_as, root, depth, kind, bytes, tying };
+                let returns = SectionKey::WHOLE;
+                let envelope =
+                    |bytes| Envelope { sender_seat: from.seat, sent_as, root, depth, kind, bytes, tying, returns };
                 room.streams.carry_hop(
                     to,
                     (from.id.bits(), count),
@@ -1858,7 +1862,7 @@ impl Reading<'_> {
         let mut changes = holders::close();
         // Most parts hold nothing.
         if !changes.is_empty() {
-            lists.let_go(asked, room.actors, &mut changes);
+            lists.let_go(asked, (room.actors, room.sections), &mut changes);
         }
         lists.holders = changes;
     }
@@ -1910,7 +1914,7 @@ impl Reading<'_> {
                 lists.lose_arriving(keeping);
                 // What it held and never answered is answered for it: it has ended.
                 for debt in debts.take_all() {
-                    lists.unanswered(asked, me, debt.asker, debt.request, Unanswered::Ended, debt.chain);
+                    lists.unanswered(asked, me, &debt, Unanswered::Ended);
                 }
                 // Whatever reaches an actor that has gone is dropped when the engine would hand it over.
                 seating.seated.remove(me);
@@ -1998,6 +2002,7 @@ impl Reading<'_> {
                         asked.next_turn();
                         let source = handed.source();
                         let tie = handed.tie();
+                        let returns = handed.returns();
                         let answering = waiting.answering(tie);
                         // An answer to nothing it waits on runs no turn.
                         if matches!(answering, Answering::Stray) {
@@ -2020,7 +2025,8 @@ impl Reading<'_> {
                             chain,
                             tie,
                             handed.due(),
-                        );
+                        )
+                        .stamped(Stamps { section: SectionKey::WHOLE, returns });
                         #[cfg(any(test, feature = "harness"))]
                         let noted = self.recording.note(&item, me, source, tie, chain.depth, self.read_limit);
                         let mut outcome = actor.turn(item, turning);
@@ -2028,7 +2034,7 @@ impl Reading<'_> {
                         let is_tied = !tie.is_tell() || asked.is_tied();
                         if is_tied {
                             let filed = (&mut *waiting, &mut *debts, &mut lists.expiring);
-                            tied(me, (source, tie, context, stepped.sent), filed, asked, &mut outcome);
+                            tied(me, (source, tie, context, stepped.sent, returns), filed, asked, &mut outcome);
                         }
                         #[cfg(any(test, feature = "harness"))]
                         noted.finish(me, &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
@@ -2161,13 +2167,13 @@ impl Reading<'_> {
         let me = hop.to;
         let unhanded = Context { root: hop.root, depth: hop.depth + 1 };
         let (Some(seat), Some(life), Some(held)) = (seating.seated.get(me), lives.life(me), actors.get_mut(me)) else {
-            lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
+            lists.ended_before(asked, me, (hop.from, hop.tie, SectionKey::WHOLE), unhanded);
             return;
         };
         let mut stepped = lists.fusing.stepped(me, life.sent());
         let is_live = life.is_live() && !stepped.ended;
         if !is_live {
-            lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
+            lists.ended_before(asked, me, (hop.from, hop.tie, SectionKey::WHOLE), unhanded);
             return;
         }
         let Holding::Here(mut actor) = mem::replace(&mut held.actor, Holding::Away) else {
@@ -2182,7 +2188,7 @@ impl Reading<'_> {
                 Upgrading::Moved(onto) => kind = onto,
                 Upgrading::Ended => {
                     stepped.ended = true;
-                    lists.ended_before(asked, me, hop.from, hop.tie, unhanded);
+                    lists.ended_before(asked, me, (hop.from, hop.tie, SectionKey::WHOLE), unhanded);
                     lists.fusing.keep(me, stepped);
                     held.actor = Holding::Here(actor);
                     return;
@@ -2263,7 +2269,8 @@ impl Reading<'_> {
                 if is_tied {
                     let chain = Context { root: hop.root, depth: hop.depth + 1 };
                     let filed = (&mut *waiting, &mut *debts, &mut lists.expiring);
-                    tied(me, (hop.from, hop.tie, chain, sent_before), filed, asked, &mut outcome);
+                    // A hop is a whole actor's send, never a section's, so it carries no return stamp (spike: keyed sections).
+                    tied(me, (hop.from, hop.tie, chain, sent_before, SectionKey::WHOLE), filed, asked, &mut outcome);
                 }
                 #[cfg(any(test, feature = "harness"))]
                 noted.finish(me, &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
@@ -2475,15 +2482,15 @@ fn hand(
 #[inline(never)]
 fn tied(
     me: Seated,
-    (source, tie, chain, sent): (Seated, Tie, Context, u64),
+    (source, tie, chain, sent, returns): (Seated, Tie, Context, u64, SectionKey),
     (waiting, debts, expiring): (&mut Waiting, &mut Debts, &mut Vec<Expiring>),
     asked: &mut Asked,
     outcome: &mut Result<(), Fault>,
 ) {
     if asked.has_owes() {
-        debts.settle(me, (source, tie, chain, sent), asked, outcome);
+        debts.settle(me, (source, tie, chain, sent, returns), asked, outcome);
     } else if !tie.is_tell() {
-        ask::owed(me, source, tie, outcome, sent, asked);
+        ask::owed(me, (source, tie, returns), outcome, sent, asked);
     }
     waiting.settle(me, tie, asked, outcome, expiring);
 }
@@ -2609,32 +2616,43 @@ impl Lists {
     fn unhanded(&mut self, asked: &mut Asked, to: Seated, handed: Handed<'_>) {
         if let Handed::Mail { envelope, .. } = handed {
             let context = Context { root: envelope.root, depth: envelope.depth + 1 };
-            self.ended_before(asked, to, handed.source(), handed.tie(), context);
+            self.ended_before(asked, to, (handed.source(), handed.tie(), handed.returns()), context);
         }
     }
 
     /// Says to `from`, when mail tied as `tie` is its request, that `to` had ended or was gone when it was to be
     /// handed to it: in `context`, the request's chain, as a reply would be (ADR-0017).
     #[cold]
-    fn ended_before(&mut self, asked: &mut Asked, to: Seated, from: Seated, tie: Tie, context: Context) {
+    fn ended_before(
+        &mut self,
+        asked: &mut Asked,
+        to: Seated,
+        (from, tie, returns): (Seated, Tie, SectionKey),
+        context: Context,
+    ) {
         let Tied::Asks(request) = tie.read() else {
             return;
         };
-        self.unanswered(asked, to, from, request, Unanswered::Ended, context);
+        self.say_unanswered(asked, (to, from), (request, returns), Unanswered::Ended, context);
     }
 
-    /// Says to `to`, from `by`, that its request of the count `request` went unanswered, as `why`: in `context`, the
-    /// request's chain, after all `by` sent (ADR-0017).
-    fn unanswered(
+    /// Says to the asker of `debt`, from `by`, which held it, that it went unanswered, as `why`: in the request's
+    /// chain, after all `by` sent, to the section of the asker its return stamp names (ADR-0017).
+    fn unanswered(&mut self, asked: &mut Asked, by: Seated, debt: &Debt, why: Unanswered) {
+        self.say_unanswered(asked, (by, debt.asker), (debt.request, debt.returns), why, debt.chain);
+    }
+
+    /// Says to `to`, from `by`, that its request of the count `request`, with the return stamp `returns`, went
+    /// unanswered, as `why`: in `context`, the request's chain, after all `by` sent (ADR-0017).
+    fn say_unanswered(
         &mut self,
         asked: &mut Asked,
-        by: Seated,
-        to: Seated,
-        request: u64,
+        (by, to): (Seated, Seated),
+        (request, returns): (u64, SectionKey),
         why: Unanswered,
         context: Context,
     ) {
-        let mailed = asked.unanswered(by, to, ask::ended_order(request), request, why);
+        let mailed = asked.unanswered(by, to, (ask::ended_order(request), request), why, returns);
         let (key, entry) = stream::entry(mailed, &context);
         self.routes.streams.put(key, entry);
     }
@@ -2643,13 +2661,23 @@ impl Lists {
     /// of `actors`, the part's: each asker of a debt no value holds any longer is told it went unanswered (ADR-0017).
     #[cold]
     #[inline(never)]
-    fn let_go(&mut self, asked: &mut Asked, actors: &mut BySeat<Held>, changes: &mut Vec<holders::Change>) {
+    ///
+    /// A debt a section of a keyed actor holds is kept with that section, in the part of its lane (spike: keyed
+    /// sections).
+    fn let_go(
+        &mut self,
+        asked: &mut Asked,
+        (actors, sections): (&mut BySeat<Held>, &mut Sections),
+        changes: &mut Vec<holders::Change>,
+    ) {
         for (owed, by) in debts::summed(changes) {
-            let Some(held) = actors.get_mut(owed.holder) else {
-                continue;
+            let let_go = if owed.section.is_keyed() {
+                sections.change(owed, by)
+            } else {
+                actors.get_mut(owed.holder).and_then(|held| held.debts.change(owed, by))
             };
-            if let Some(debt) = held.debts.change(owed, by) {
-                self.unanswered(asked, owed.holder, debt.asker, debt.request, Unanswered::Unreplied, debt.chain);
+            if let Some(debt) = let_go {
+                self.unanswered(asked, owed.holder, &debt, Unanswered::Unreplied);
             }
         }
     }

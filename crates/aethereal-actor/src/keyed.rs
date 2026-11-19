@@ -3,20 +3,28 @@
 //!
 //! Spike code: the shape a macro would write, written by hand. See `docs/spikes/keyed-sections.md`.
 
+use crate::answering::Token;
 use crate::{
-    Actor, ActorRef, Actors, Anyone, ChildOf, Declared, ErasedActorRef, Fault, Handled, Item, SectionKey, Turn, Turning,
+    Actor, ActorRef, Answering, Anyone, ChildOf, Declared, ErasedActorRef, Fault, Handled, Item, SectionKey, Turn,
+    Turning,
 };
-use aethereal_data::{Decode, Kind, KindId};
+use aethereal_data::{Kind, KindId};
 use alloc::boxed::Box;
 use core::any::Any;
 use core::hash::{BuildHasherDefault, Hasher};
 use std::collections::HashMap;
 
-/// How an actor of this type finds the key of mail of kind `K`: the key belongs to the receiver, not the kind, so the
-/// same kind can go unkeyed to an actor that is not split.
+/// How an actor of this type finds the key of what it handles as `K`, from `From`: for mail of a kind, the mail
+/// itself, so the key belongs to the receiver, not the kind, and the same kind can go unkeyed to an actor that is not
+/// split; for an [`Answer<A, C>`](crate::Answer), the context `C` its asker keeps, which the asker reads as it asks to
+/// find the section the answer goes back to, as `#[answer(key = ..)]` would declare (spike: keyed sections, return
+/// stamps).
 pub trait KeyOf<K>: Sectioned {
-    /// The key of `mail`.
-    fn key(mail: &K) -> u64;
+    /// What the key is read from.
+    type From;
+
+    /// The key of `from`.
+    fn key(from: &Self::From) -> u64;
 }
 
 /// A target that names the type of a keyed receiver, so a send through it works out the key of what it sends.
@@ -25,7 +33,7 @@ pub trait KeyedTarget<K> {
     fn section(mail: &K) -> SectionKey;
 }
 
-impl<T: KeyOf<K>, K> KeyedTarget<K> for ActorRef<T> {
+impl<T: KeyOf<K, From = K>, K> KeyedTarget<K> for ActorRef<T> {
     fn section(mail: &K) -> SectionKey {
         SectionKey::of(T::key(mail))
     }
@@ -34,14 +42,20 @@ impl<T: KeyOf<K>, K> KeyedTarget<K> for ActorRef<T> {
 /// An actor whose state is split into sections, one for each key. Its handlers are handed the section of their mail's
 /// key to change, and the actor itself only to read: what it fixed as it began.
 ///
-/// `Sync`, since every worker that runs one of its sections in a step reads it at once.
+/// `Sync`, since every worker that runs one of its sections in a step reads it at once. A section need not be flat: a
+/// failed turn ends the whole actor, as any failed turn does (ADR-0009), so no copy of it is kept to put back, and it
+/// may hold what is not `Copy`, such as a held request.
 pub trait Sectioned: Actor + ChildOf + Sync {
-    /// One key's state. Flat, so a turn's copy of it, kept to put back when the turn fails, is a copy of its bytes.
-    type Section: Copy + Default + PartialEq + Send + 'static;
+    /// One key's state.
+    type Section: Default + Send + 'static;
 
     /// Hands `item` to the handler of its kind, with `section`, the section of the mail's key: what [`hand_section`]
-    /// does for one handler. Answers with how many pieces of mail the section has sent, this turn's included.
-    fn section(&self, section: &mut Self::Section, item: Item<'_>, turning: Turning<'_>) -> Result<u64, Fault>;
+    /// does for one handler.
+    fn section(&self, section: &mut Self::Section, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault>;
+
+    /// Whether `section` is no different from a section never made: at its default, holding nothing. The engine drops
+    /// such a section once its turns have run and it neither waits on an answer nor owes one.
+    fn is_unused(section: &Self::Section) -> bool;
 }
 
 /// Whether `item` is mail of kind `K`.
@@ -53,35 +67,44 @@ pub fn is_of<K: Kind>(item: &Item<'_>) -> bool {
     }
 }
 
-/// A section's handler of mail of kind `K`: the actor to read, the section to change, the mail, and its turn.
-pub type SectionHandler<A, K> = fn(&A, &mut <A as Sectioned>::Section, K, &mut Turn<'_, A>) -> Result<(), Fault>;
+/// Whether `item` is what became of a request this actor asked, to be answered with `A`.
+#[must_use]
+pub fn is_answer_of<A: Kind>(item: &Item<'_>) -> bool {
+    match item {
+        Item::Answer { asking, .. } | Item::Unanswered { asking, .. } => asking.answer == KindId::of::<A>(),
+        _ => false,
+    }
+}
 
-/// Hands `item`, mail of kind `K`, to `handler`, with the actor `actor` to read and `section` to change, in a turn of
-/// its own: what a macro would write for a handler that declares its key. Answers with how many pieces of mail the
-/// section has sent, this turn's included.
-pub fn hand_section<A: Sectioned, K: Kind + Decode<Actors> + 'static>(
+/// A section's handler of what it handles as `H`: the actor to read, the section to change, what it is handed, and
+/// its turn. It answers as an ordinary handler of `H` does: `()` for a tell or an answer, the answer `A`, a `Later<A>`
+/// its hold made, or a `Reply<A>`.
+pub type SectionHandler<A, H, R> =
+    for<'a, 't> fn(&A, &mut <A as Sectioned>::Section, <H as Handled>::Item<'a>, &mut Turn<'t, A>) -> Result<R, Fault>;
+
+/// Hands `item`, what `A` handles as `H`, to `handler`, with the actor `actor` to read and `section` to change, in a
+/// turn of its own, and sends what it answers now: what a macro would write for a handler that declares its key.
+pub fn hand_section<A: Sectioned, H: Handled, R: Answering>(
     actor: &A,
     section: &mut A::Section,
     item: Item<'_>,
     turning: Turning<'_>,
-    handler: SectionHandler<A, K>,
-) -> Result<u64, Fault> {
-    let sent = turning.sent();
-    let mail = match <K as Handled>::take(item) {
-        Ok(mail) => mail,
-        Err(untaken) => return turning.untaken(untaken).map(|()| sent),
+    handler: SectionHandler<A, H, R>,
+) -> Result<(), Fault> {
+    let taken = match H::take(item) {
+        Ok(taken) => taken,
+        Err(untaken) => return turning.untaken(untaken),
     };
     let sender = ErasedActorRef::new(turning.source());
     let mut turn = turning.declaring::<A, Anyone>(Declared::of::<A>(), sender);
-    handler(actor, section, mail, &mut turn)?;
-    turn.settled()?;
+    handler(actor, section, taken, &mut turn)?.send(&mut turn, Token::new())?;
 
-    Ok(turn.sent_count())
+    turn.settled()
 }
 
-/// One part's sections of one keyed actor, by key, each with the count of the mail it has sent.
+/// One part's sections of one keyed actor, by key.
 pub struct SectionStore<S> {
-    cells: HashMap<u64, Cell<S>, BuildHasherDefault<KeyBits>>,
+    cells: HashMap<u64, S, BuildHasherDefault<KeyBits>>,
 }
 
 /// The hash of a key: its bits spread by a multiply, as an author's keys are often small numbers in a row, which a
@@ -106,18 +129,11 @@ impl Hasher for KeyBits {
     }
 }
 
-/// One section, and how many pieces of mail it has sent: a section counts its own, so two of one actor sending side
-/// by side give no two pieces one id.
-struct Cell<S> {
-    state: S,
-    sent: u64,
-}
-
 impl<S> SectionStore<S> {
     /// The section of `key`, when it is not at its default.
     #[must_use]
     pub fn get(&self, key: u64) -> Option<&S> {
-        self.cells.get(&key).map(|cell| &cell.state)
+        self.cells.get(&key)
     }
 
     /// How many sections it holds.
@@ -133,12 +149,6 @@ impl<S> SectionStore<S> {
     }
 }
 
-/// Where the count of a section's mail starts: its key in the high half, so the counts of two sections never meet,
-/// and above the actor's own, which start at one. Spike: a key below `2^30`, and a section that sends below `2^32`.
-const fn first_count(key: u64) -> u64 {
-    (key + 1) << 32
-}
-
 /// A keyed actor as the engine runs it without naming its type: shared by every worker that runs one of its sections,
 /// and handed the sections of the part it runs.
 pub trait RunsSections: Send + Sync {
@@ -149,26 +159,40 @@ pub trait RunsSections: Send + Sync {
     fn store(&self) -> Box<dyn Any + Send>;
 
     /// The turn of `item`, for the section of `key`, found in `store`, a store [`Self::store`] made: a section at its
-    /// default is made for a key's first mail, and dropped once a turn leaves it at its default and it has sent
-    /// nothing.
+    /// default is made for a key's first item.
     fn turn(&self, store: &mut (dyn Any + Send), key: u64, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault>;
+
+    /// Drops the section of `key` from `store` when it is unused: for the engine, once a run of the section's turns has
+    /// left it neither waiting on an answer nor owing one. A section that waits or owes is never handed here, so the
+    /// context of an answer still to come is never dropped with it.
+    fn release(&self, store: &mut (dyn Any + Send), key: u64);
 }
 
-/// A keyed actor, as the engine runs it: the actor, to read; whether each turn keeps a copy of its section from
-/// before it, to put back when the turn fails; and whether a section left at its default is dropped, which compares it
-/// with the default after every turn. `KEEPS` and `DROPS` are off only to measure what each costs.
-pub struct SectionRunner<A, const KEEPS: bool, const DROPS: bool> {
+/// A keyed actor, as the engine runs it: the actor, to read, and whether a section left unused is dropped, which
+/// looks at it after every run. `DROPS` is off only to measure what that costs.
+pub struct SectionRunner<A, const DROPS: bool> {
     actor: A,
 }
 
-impl<A, const KEEPS: bool, const DROPS: bool> SectionRunner<A, KEEPS, DROPS> {
+impl<A, const DROPS: bool> SectionRunner<A, DROPS> {
     /// The runner of `actor`.
     pub const fn new(actor: A) -> Self {
         Self { actor }
     }
 }
 
-impl<A: Sectioned, const KEEPS: bool, const DROPS: bool> RunsSections for SectionRunner<A, KEEPS, DROPS> {
+impl<A: Sectioned, const DROPS: bool> SectionRunner<A, DROPS> {
+    /// The store `store` is, as this runner's actor made it.
+    fn sections(store: &mut (dyn Any + Send)) -> &mut SectionStore<A::Section> {
+        let Some(store) = store.downcast_mut::<SectionStore<A::Section>>() else {
+            unreachable!("a part's store of an actor's sections is the one that actor made");
+        };
+
+        store
+    }
+}
+
+impl<A: Sectioned, const DROPS: bool> RunsSections for SectionRunner<A, DROPS> {
     fn declared(&self) -> &'static Declared {
         Declared::of::<A>()
     }
@@ -178,40 +202,19 @@ impl<A: Sectioned, const KEEPS: bool, const DROPS: bool> RunsSections for Sectio
     }
 
     fn turn(&self, store: &mut (dyn Any + Send), key: u64, item: Item<'_>, turning: Turning<'_>) -> Result<(), Fault> {
-        let Some(store) = store.downcast_mut::<SectionStore<A::Section>>() else {
-            unreachable!("a part's store of an actor's sections is the one that actor made");
-        };
-        let cell =
-            store.cells.entry(key).or_insert_with(|| Cell { state: A::Section::default(), sent: first_count(key) });
-        let turning = turning.with_sent(cell.sent);
-        let outcome = if KEEPS {
-            // The rollback: the section as it was, copied to the stack, and put back over what a failed turn left.
-            let kept = cell.state;
-            let outcome = self.actor.section(&mut cell.state, item, turning);
-            if outcome.is_err() {
-                cell.state = kept;
-            }
+        let section = Self::sections(store).cells.entry(key).or_default();
 
-            outcome
-        } else {
-            self.actor.section(&mut cell.state, item, turning)
-        };
-        if let Ok(sent) = outcome {
-            cell.sent = sent;
-        }
+        self.actor.section(section, item, turning)
+    }
 
+    fn release(&self, store: &mut (dyn Any + Send), key: u64) {
         if !DROPS {
-            return outcome.map(|_| ());
+            return;
         }
-        // A section at its default that has sent nothing is no different from one never made. One that has sent keeps
-        // its count, so its next mail is not numbered as mail it sent before.
-        let is_default = cell.state == A::Section::default();
-        let is_unsent = cell.sent == first_count(key);
-        let is_unused = is_default && is_unsent;
+        let cells = &mut Self::sections(store).cells;
+        let is_unused = cells.get(&key).is_some_and(A::is_unused);
         if is_unused {
-            store.cells.remove(&key);
+            cells.remove(&key);
         }
-
-        outcome.map(|_| ())
     }
 }

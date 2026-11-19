@@ -16,7 +16,6 @@ pub use refused::Refused;
 pub use spawn::Spawn;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
-use crate::SectionKey;
 use crate::Submitted;
 use crate::guard::{Anyone, Guard, Sender, SenderType};
 #[cfg(feature = "std")]
@@ -37,6 +36,7 @@ use crate::{Answer, Job, JobId, Unrun};
 use crate::{Birth, BlobHash, Bytes, Config, Guests, Maker, Publisher, Unfit, config_bytes};
 #[cfg(feature = "std")]
 use crate::{Buffer, JobCode, JobType, Kept, Pool};
+use crate::{SectionKey, Stamps};
 use aethereal_data::{
     ActorId, ActorPath, Decode, Encode, EncodeError, Kind, KindId, KindName, PathSegment, PathTooDeep, Writer,
 };
@@ -299,14 +299,34 @@ impl Asked {
     /// What the engine says to `to` of its request of the count `request`, which `by` did not answer, as `why`: mail of
     /// kind [`Unanswered`], the `count`th `by` is counted as sending, written to this arena and not yet sent
     /// (ADR-0017). The engine says it, so it is stamped as sent by no actor's code: `by` may have ended, or never been.
+    ///
+    /// It goes to the section of `to` that `returns`, the request's return stamp, names (spike: keyed sections).
     #[must_use]
-    pub fn unanswered(&mut self, by: Seated, to: Seated, count: u64, request: u64, why: Unanswered) -> Mailed {
+    pub fn unanswered(
+        &mut self,
+        by: Seated,
+        to: Seated,
+        (count, request): (u64, u64),
+        why: Unanswered,
+        returns: SectionKey,
+    ) -> Mailed {
         let Ok(bytes) = self.arena.write_mail(&why) else {
             unreachable!("a reason why a request was not answered is a byte, and refers to nothing");
         };
-        let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(request));
+        let (kind, tie, due) = (KindId::of::<Unanswered>(), Tie::unanswered(request), Due::Never);
 
-        Mailed { by, sent_as: SentAs::Engine, to, count, kind, bytes, tie, due: Due::Never, section: SectionKey::WHOLE }
+        Mailed {
+            by,
+            sent_as: SentAs::Engine,
+            to,
+            count,
+            kind,
+            bytes,
+            tie,
+            due,
+            section: returns,
+            returns: SectionKey::WHOLE,
+        }
     }
 
     /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
@@ -315,8 +335,8 @@ impl Asked {
     pub fn has_answered(&self, by: Seated, asker: Seated, request: u64) -> bool {
         let answer = Tie::answers(request);
         let replied = self.buffers.mailed.iter().any(|mailed| mailed.by.id == by.id && mailed.tie == answer);
-        let owed = Owed { holder: by, asker, request };
-        let held = self.owes.iter().any(|owes| matches!(owes, Owes::Holds { owed: held, .. } if *held == owed));
+        let held =
+            self.owes.iter().any(|owes| matches!(owes, Owes::Holds { owed, .. } if owed.names(by, asker, request)));
 
         replied || held
     }
@@ -597,6 +617,8 @@ struct Seat<'a> {
     /// When the request the turn handles is due, which an ask that states no deadline of its own inherits: `Never`
     /// when the item is no request, and for a `begin` or a closing turn, which handle none (ADR-0041).
     due: Due,
+    /// The section the turn runs for, and the return stamp of the request it handles (spike: keyed sections).
+    stamps: Stamps,
 }
 
 /// The type a refused sender sent its mail as, as the refusal's line names it (ADR-0058).
@@ -710,6 +732,7 @@ impl Seat<'_> {
             declared: self.declared,
             owing: self.owing,
             due: self.due,
+            stamps: self.stamps,
         }
     }
 
@@ -729,6 +752,7 @@ impl Seat<'_> {
             declared: _,
             owing,
             due: _,
+            stamps: _,
         } = self;
 
         Counted { sent, owing }
@@ -890,11 +914,18 @@ impl Seat<'_> {
         section: SectionKey,
     ) -> Result<(), EncodeError> {
         self.write_after(to, mail, false, Tie::TELL, Due::Never)?;
-        if let Some(last) = self.asked.buffers.mailed.last_mut() {
-            last.section = section;
-        }
+        self.stamp_last(section, SectionKey::WHOLE);
 
         Ok(())
+    }
+
+    /// Stamps the piece of mail this turn pushed last, which joined no run, as for the section `section` of its
+    /// receiver, and, when it is a request, with the return stamp `returns` (spike: keyed sections).
+    fn stamp_last(&mut self, section: SectionKey, returns: SectionKey) {
+        if let Some(last) = self.asked.buffers.mailed.last_mut() {
+            last.section = section;
+            last.returns = returns;
+        }
     }
 
     /// Answers `mail` to `to`, the source of the item handled, as its handler returned it: the answer to it, when it
@@ -904,8 +935,10 @@ impl Seat<'_> {
         let Replying::Request(count) = self.owing.answers()? else {
             return Ok(());
         };
-        // An answer is a piece of its own, never part of a run.
+        // An answer is a piece of its own, never part of a run. It goes back to the section of its asker that the
+        // request's return stamp names (spike: keyed sections).
         self.write_after(to, mail, false, Tie::answers(count), Due::Never)?;
+        self.stamp_last(self.stamps.returns, SectionKey::WHOLE);
         self.owing = Owing::Answered;
 
         Ok(())
@@ -922,9 +955,23 @@ impl Seat<'_> {
         context: &C,
         due: Due,
     ) -> Result<(), EncodeError> {
+        self.request_stamped(to, mail, (answer, context), due, (SectionKey::WHOLE, SectionKey::WHOLE))
+    }
+
+    /// As [`Self::request`], to the section `section` of `to`, with the return stamp `returns`: the section of this
+    /// actor its answer goes back to (spike: keyed sections).
+    fn request_stamped<K: Kind + Encode<Actors>, C: Encode<Within>>(
+        &mut self,
+        to: Seated,
+        mail: &K,
+        (answer, context): (KindId, &C),
+        due: Due,
+        (section, returns): (SectionKey, SectionKey),
+    ) -> Result<(), EncodeError> {
         let context = Written::of(context)?;
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count), due)?;
+        self.stamp_last(section, returns);
         self.asked.asks.push((self.me, Asking { count, answer, context, lent: Vec::new(), due }));
 
         Ok(())
@@ -983,7 +1030,8 @@ impl Seat<'_> {
     fn hold(&mut self, source: Seated, answer: KindId) -> Result<Owed, NotOwed> {
         let request = self.owing.held()?;
         self.owing = Owing::Answered;
-        let owed = Owed { holder: self.me, asker: source, request };
+        let Stamps { section, returns } = self.stamps;
+        let owed = Owed { holder: self.me, asker: source, request, section, returns };
         self.asked.owes.push(Owes::Holds { owed, answer });
 
         Ok(owed)
@@ -997,13 +1045,16 @@ impl Seat<'_> {
     fn misheld(&mut self, source: Seated) -> Owed {
         self.owing = Owing::Misheld;
 
-        Owed { holder: self.me, asker: source, request: 0 }
+        let Stamps { section, returns } = self.stamps;
+
+        Owed { holder: self.me, asker: source, request: 0, section, returns }
     }
 
     /// Answers the debt `owed` with `mail`: on the chain of this turn, checked by the engine once the turn has run to
     /// be one its actor holds, of the kind of `mail` (ADR-0017).
     fn answer<K: Kind + Encode<Actors>>(&mut self, owed: Owed, mail: &K) -> Result<(), EncodeError> {
         self.write_after(owed.asker, mail, false, Tie::answers(owed.request), Due::Never)?;
+        self.stamp_last(owed.returns, SectionKey::WHOLE);
         self.asked.owes.push(Owes::Answers { owed, answer: KindId::of::<K>() });
 
         Ok(())
@@ -1035,7 +1086,7 @@ impl Seat<'_> {
             return Ok(());
         }
         let sent_as = SentAs::Actor(self.declared);
-        let section = SectionKey::WHOLE;
+        let (section, returns) = (SectionKey::WHOLE, SectionKey::WHOLE);
         self.asked.buffers.mailed.push(Mailed {
             by: self.me,
             sent_as,
@@ -1046,6 +1097,7 @@ impl Seat<'_> {
             tie,
             due,
             section,
+            returns,
         });
 
         Ok(())
@@ -1073,8 +1125,9 @@ impl Seat<'_> {
         for to in to {
             self.sent += 1;
             let (count, tie, due) = (self.sent, Tie::TELL, Due::Never);
-            let section = SectionKey::WHOLE;
-            self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count, kind, bytes, tie, due, section });
+            let (section, returns) = (SectionKey::WHOLE, SectionKey::WHOLE);
+            let mailed = Mailed { by: self.me, sent_as, to, count, kind, bytes, tie, due, section, returns };
+            self.asked.buffers.mailed.push(mailed);
         }
 
         Ok(())
@@ -1328,6 +1381,7 @@ impl Seat<'_> {
             declared,
             owing: Owing::NOTHING,
             due: Due::Never,
+            stamps: Stamps::WHOLE,
         };
         let began = C::begin(config, &mut Beginning { seat: child, instances, pool, of: PhantomData });
         match began {
@@ -1591,6 +1645,8 @@ pub struct Turning<'a> {
     tie: Tie,
     /// When the request the item is stops being waited for: `Never` for an item that is no request (ADR-0041).
     due: Due,
+    /// The section the turn runs for, and the return stamp of the request it handles (spike: keyed sections).
+    stamps: Stamps,
 }
 
 impl<'a> Turning<'a> {
@@ -1617,28 +1673,36 @@ impl<'a> Turning<'a> {
         tie: Tie,
         due: Due,
     ) -> Self {
-        Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due }
+        Self {
+            me,
+            path,
+            above,
+            table,
+            made,
+            asked,
+            instances,
+            keeps,
+            sent,
+            source,
+            chain,
+            tie,
+            due,
+            stamps: Stamps::WHOLE,
+        }
+    }
+
+    /// The same turn, for the section and of the request with the return stamp `stamps` names (spike: keyed sections).
+    #[must_use]
+    pub const fn stamped(mut self, stamps: Stamps) -> Self {
+        self.stamps = stamps;
+
+        self
     }
 
     /// The source of the item the turn handles.
     #[must_use]
     pub const fn source(&self) -> Seated {
         self.source
-    }
-
-    /// How many pieces of mail the actor had sent before the turn (spike: keyed sections).
-    #[must_use]
-    pub const fn sent(&self) -> u64 {
-        self.sent
-    }
-
-    /// The same turn, having sent `sent` pieces of mail before it: for a section of a keyed actor, which counts its
-    /// own mail (spike: keyed sections).
-    #[must_use]
-    pub const fn with_sent(mut self, sent: u64) -> Self {
-        self.sent = sent;
-
-        self
     }
 
     /// Where the item the turn handles stands in its chain.
@@ -1685,7 +1749,8 @@ impl<'a> Turning<'a> {
     /// The turn of the handler of `A`, whose type declares `declared`, and whose guard `F` checked the sender as
     /// `from`.
     pub(crate) fn declaring<A: Actor, F: Guard<A>>(self, declared: &'static Declared, from: F::Sent) -> Turn<'a, A, F> {
-        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due } = self;
+        let Self { me, path, above, table, made, asked, instances, keeps, sent, source, chain, tie, due, stamps } =
+            self;
         let (keeps, pool) = keeps.split(asked.most_kept_bytes);
         let seat = Seat {
             me,
@@ -1700,6 +1765,7 @@ impl<'a> Turning<'a> {
             declared,
             owing: Owing::Item(tie),
             due,
+            stamps,
         };
 
         Turn { doing: Doing { seat, instances, source, from, chain, of: PhantomData }, pool }
@@ -2104,11 +2170,6 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
         self.seat.reply(self.source, mail)
     }
 
-    /// How many pieces of mail the actor has sent, this turn's included (spike: keyed sections).
-    pub(crate) const fn sent_count(&self) -> u64 {
-        self.seat.sent
-    }
-
     /// How the turn ends, once its handler has returned and its answer is sent: it fails with [`NotOwed`] when it held
     /// what it did not owe (ADR-0017).
     #[allow(clippy::inline_always, reason = "once for every turn, after the call to the handler")]
@@ -2473,6 +2534,7 @@ impl<'a, Me: ChildOf> Beginning<'a, Me> {
             declared,
             owing: Owing::NOTHING,
             due: Due::Never,
+            stamps: Stamps::WHOLE,
         };
 
         Self { seat, instances, pool, of: PhantomData }
@@ -2883,6 +2945,7 @@ impl<'a> Closing<'a> {
             declared,
             owing: Owing::NOTHING,
             due: Due::Never,
+            stamps: Stamps::WHOLE,
         };
 
         Ending { seat, why, of: PhantomData }

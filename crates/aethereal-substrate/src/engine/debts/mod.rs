@@ -5,7 +5,7 @@ mod tests;
 
 use super::ask;
 use crate::Context;
-use aethereal_actor::{Asked, Fault, NotOwed, Owed, Owes, Seated, Tie, holders};
+use aethereal_actor::{Asked, Fault, NotOwed, Owed, Owes, Seated, SectionKey, Tie, holders};
 use aethereal_data::KindId;
 use std::mem;
 
@@ -53,6 +53,8 @@ pub(super) struct Debt {
     holders: i64,
     /// The request's chain, where what the engine says of it goes.
     pub(super) chain: Context,
+    /// The section of the asker its answer goes back to, the request's return stamp (spike: keyed sections).
+    pub(super) returns: SectionKey,
 }
 
 impl Debts {
@@ -87,7 +89,7 @@ impl Debts {
     pub(super) fn settle(
         &mut self,
         me: Seated,
-        (source, tie, chain, sent): (Seated, Tie, Context, u64),
+        (source, tie, chain, sent, returns): (Seated, Tie, Context, u64, SectionKey),
         asked: &mut Asked,
         outcome: &mut Result<(), Fault>,
     ) {
@@ -98,7 +100,7 @@ impl Debts {
             }
         }
         // What the turn held is read before it is taken: a request it held is answered later.
-        ask::owed(me, source, tie, outcome, sent, asked);
+        ask::owed(me, (source, tie, returns), outcome, sent, asked);
         asked.take_owes().for_each(drop);
     }
 
@@ -108,8 +110,8 @@ impl Debts {
         let mut after = self.owed().to_vec();
         for owes in owes {
             match *owes {
-                Owes::Holds { owed: Owed { asker, request, .. }, answer } => {
-                    after.push(Debt { asker, request, answer, holders: 1, chain });
+                Owes::Holds { owed: Owed { asker, request, returns, .. }, answer } => {
+                    after.push(Debt { asker, request, answer, holders: 1, chain, returns });
                 }
                 Owes::Answers { owed: answered, answer } => {
                     let Some(at) = after.iter().position(|debt| debt.answers(me, answered, answer)) else {
@@ -140,6 +142,11 @@ impl Debts {
     /// Whether it still owes the request `asker` asked as its `request`th piece of mail.
     pub(super) fn owes(&self, asker: Seated, request: u64) -> bool {
         self.owed().iter().any(|debt| debt.asker == asker && debt.request == request)
+    }
+
+    /// Whether it owes nothing (spike: keyed sections, where a section that owes nothing may be dropped).
+    pub(super) fn is_empty(&self) -> bool {
+        self.owed().is_empty()
     }
 
     /// Takes every debt still owed: for an actor that has ended, whose askers are each told so.

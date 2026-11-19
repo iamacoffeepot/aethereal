@@ -1,6 +1,6 @@
 //! A piece of mail as the engine carries it (ADR-0012).
 
-use aethereal_actor::{Due, MailId, Payload, SeatNumber, SentAs, Tie, Tied, Time};
+use aethereal_actor::{Due, MailId, Payload, SeatNumber, SectionKey, SentAs, Tie, Tied, Time};
 use aethereal_data::KindId;
 
 /// A piece of mail as the engine carries it: what it is, the seat it comes from and the type its sender sent it as, and
@@ -26,6 +26,9 @@ pub struct Envelope {
     pub bytes: Payload,
     /// What it is to a request, and when a request it is stops being waited for (ADR-0017, ADR-0041).
     pub tying: Tying,
+    /// Of a request, the section of its asker its answer goes back to: the request's return stamp, which whatever
+    /// answers it puts on the answer (spike: keyed sections).
+    pub returns: SectionKey,
 }
 
 /// What a piece of mail is to a request, as an envelope keeps it, in the eight bytes its [`Tie`] alone took before

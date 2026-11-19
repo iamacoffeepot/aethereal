@@ -396,6 +396,7 @@ fn begin_and_end_send_as_their_own_actor() {
         tie: Tie::TELL,
         due: Due::Never,
         section: SectionKey::WHOLE,
+        returns: SectionKey::WHOLE,
     };
     let spawn = Effect::new(ME, What::Spawn { from: Code::Linked(Declared::of::<Herald>()), seat: SeatNumber::new(0) });
     assert_eq!(asked.effects(), [spawn]);
@@ -480,6 +481,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
         tie: Tie::answers(1),
         due: Due::Never,
         section: SectionKey::WHOLE,
+        returns: SectionKey::WHOLE,
     };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Poke>(), &[], Tie::asks(1)), (Ok(()), vec![poked], Vec::new()));
     let closed = vec![Effect::new(ME, What::Close)];
@@ -500,6 +502,7 @@ fn handler_asks_by_the_kind_of_its_mail() {
         tie: Tie::TELL,
         due: Due::Never,
         section: SectionKey::WHOLE,
+        returns: SectionKey::WHOLE,
     };
     assert_eq!(handle(&mut leaf, &table, KindId::of::<Meet>(), &meet, Tie::TELL), (Ok(()), vec![poke], Vec::new()));
 }
