@@ -27,8 +27,8 @@ pub enum Writes {
     /// After what the file holds, made when missing, and synced before it is answered.
     ///
     /// An append is not all or nothing: a crash can leave a cut-off tail, so whoever appends frames what it writes
-    /// and reads back only whole frames. Two appends to one file in flight at once may land in either order, so whoever
-    /// appends waits for one's answer before it sends the next.
+    /// and reads back only whole frames. Appends to one file land in the order they were asked, as every write of one
+    /// file does.
     Append,
 }
 
