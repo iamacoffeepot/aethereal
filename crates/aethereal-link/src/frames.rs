@@ -12,8 +12,9 @@ use core::time::Duration;
 /// brought [`Outcome::Image`] and each sheet's `Output` (ADR-0043), which a side of `2` misreads. `4` brought the chat
 /// frames of trusted engines (ADR-0057), which a side of `3` misreads. `5` brought each session's row, its
 /// conversation's state and its container's apart, with the time it was sent, and [`Down::Declined`] (ADR-0057), which
-/// a side of `4` misreads.
-pub const REVISION: u32 = 5;
+/// a side of `4` misreads. `6` brought [`Up::Hibernate`] and [`Up::Wake`], and a refusal past the most awake naming the
+/// awake sessions (ADR-0057), which a side of `5` misreads.
+pub const REVISION: u32 = 6;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
@@ -36,7 +37,7 @@ pub enum Up {
     Ran { session: u32, line: String, printed: String },
     /// The owner's answer to the ask numbered `ask`.
     Answer { ask: u64, allow: bool },
-    /// Stop the session's turn.
+    /// Interrupt the session's running turn: the session carries on.
     Interrupt { session: u32 },
     /// A tab opened, to be shown every event of the session's transcript after `after`, then each as it comes.
     Open { session: u32, after: u64 },
@@ -44,8 +45,12 @@ pub enum Up {
     Close { session: u32 },
     /// A session made.
     New { name: String },
-    /// A session ended.
+    /// A session archived: it never wakes again.
     Archive { session: u32 },
+    /// A session wound down to hibernate, as an idle one is.
+    Hibernate { session: u32 },
+    /// A hibernating session woken.
+    Wake { session: u32 },
 }
 
 impl Up {
@@ -64,6 +69,8 @@ impl Up {
             Self::Close { session } => Ok(Chat::Close { session }),
             Self::New { name } => Ok(Chat::New { name }),
             Self::Archive { session } => Ok(Chat::Archive { session }),
+            Self::Hibernate { session } => Ok(Chat::Hibernate { session }),
+            Self::Wake { session } => Ok(Chat::Wake { session }),
             tools @ (Self::Hello { .. } | Self::Sheets { .. } | Self::Called { .. }) => Err(tools),
         }
     }
@@ -81,6 +88,8 @@ impl From<Chat> for Up {
             Chat::Close { session } => Self::Close { session },
             Chat::New { name } => Self::New { name },
             Chat::Archive { session } => Self::Archive { session },
+            Chat::Hibernate { session } => Self::Hibernate { session },
+            Chat::Wake { session } => Self::Wake { session },
         }
     }
 }

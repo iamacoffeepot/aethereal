@@ -5,7 +5,7 @@
 //! no relay, or an untrusted one, which the hub shows no chat, keeps the console as it was.
 
 use super::Overlay;
-use crate::chat::{Typed, typed};
+use crate::chat::{Open, Typed, typed};
 use crate::console::Command;
 use crate::relay::Relays;
 use aethereal_actor::{Fault, Level, ProtocolRef, Speaks, Turn};
@@ -137,11 +137,22 @@ impl Overlay {
         Ok(())
     }
 
-    /// A chat frame of this engine's that the hub could not do: logged, as the console does not print it yet.
+    /// A chat frame of this engine's that the hub could not do: printed in the console's open tab, in the error's ink,
+    /// so the owner learns it went nowhere: the console's own scrollback, or the open session's tab, after what it
+    /// holds.
     #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
-    pub(super) fn handle_show_declined(declined: &ShowDeclined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    pub(super) fn handle_show_declined(
+        &mut self,
+        declined: &ShowDeclined,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
         let ShowDeclined { chat, why } = declined;
         turn.log(Level::Info, format_args!("the hub declined {chat:?}: {why:?}"));
+        let text = self.chats.declined(chat, why);
+        match self.chats.open() {
+            Open::Console => self.console.refused(&text),
+            Open::Session(_) => self.chats.aside(text),
+        }
 
         Ok(())
     }

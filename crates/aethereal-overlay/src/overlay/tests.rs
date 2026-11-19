@@ -18,7 +18,10 @@ use aethereal_render::shape::ColourFormat;
 use aethereal_render::stats::FrameBudget;
 use aethereal_render::surface::{Front, WindowFormat};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
-use aethereal_sessions::{Connection, Entry, Grew, Numbered, SessionRow, ShowEvents, ShowSessions, Speaker, State};
+use aethereal_sessions::{
+    Chat, Connection, Entry, Grew, Numbered, Refusal, SessionRow, ShowDeclined, ShowEvents, ShowSessions, Speaker,
+    State,
+};
 use aethereal_substrate::harness::{Harness, Unheard, desk};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tools::{Call, Called, Caller, Tool, Tools};
@@ -429,6 +432,45 @@ fn a_long_line_wraps_at_the_scrollback_s_width_and_the_charts_fill_the_boxes_lai
     let expected = Columns { chart: across(chart, MOST_COLUMNS), meters: across(meter, MOST_METER_COLUMNS) };
     assert_eq!(state.columns, expected);
     assert!(expected.chart > expected.meters, "the frame chart is the band's widest graph: {expected:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_chat_frame_the_hub_declines_is_printed_in_the_console_s_open_tab() -> Result<(), Unheard> {
+    // Catches a frame the hub declined only logged, so the owner never learns it went nowhere, and one printed in a tab
+    // that is not open, where the owner is not looking.
+    let (mut harness, on) = program()?;
+    run(&mut harness, 3);
+    for _ in 0..2 {
+        key(&mut harness, on, down("Backquote", "`"))?;
+        key(&mut harness, on, typed("`"))?;
+        run(&mut harness, 3);
+    }
+    let overlay = harness.root::<Overlay>();
+    harness.tell(overlay, &ShowSessions { list: vec![idle(1, "work")] })?;
+    run(&mut harness, 3);
+    let declined = ShowDeclined { chat: Chat::Wake { session: 1 }, why: Refusal::Archived };
+    let said = "the hub could not wake `work`: the session is archived";
+    let printed = |harness: &mut Harness<Desk>| -> Result<(usize, usize), Unheard> {
+        let state = harness.state(overlay)?;
+        let in_tab = state.chats.rows().iter().filter(|row| row.text().contains(said)).count();
+        let in_console = state.console.rows().filter(|row| row.text().contains(said)).count();
+        Ok((in_tab, in_console))
+    };
+
+    harness.tell(overlay, &declined)?;
+    run(&mut harness, 3);
+    let with_session_open = printed(&mut harness)?;
+    key(&mut harness, on, down("AltLeft", "Alt"))?;
+    key(&mut harness, on, down("Digit1", "1"))?;
+    key(&mut harness, on, up("AltLeft", "Alt"))?;
+    harness.tell(overlay, &declined)?;
+    run(&mut harness, 3);
+
+    assert_eq!(with_session_open, (1, 0), "printed in the session's tab, open");
+    assert_eq!(harness.state(overlay)?.chats.open(), Open::Console);
+    assert_eq!(printed(&mut harness)?.1, 1, "printed in the console's own scrollback, open");
 
     Ok(())
 }

@@ -1,11 +1,10 @@
 //! The console's chat, as its state: what the hub shows it, built into rows, and what the owner does, come to the chat
 //! the link is told. Claude's events are written as Claude Code 2.1 writes them, cut to the members the console reads.
 
-use super::transcript::Compaction;
 use super::{Chats, Icon, Look, Open, Row, Status, Tone, Typed, Which, typed};
 use crate::console::Mode;
 use aethereal_data::{Budget, Json};
-use aethereal_sessions::{Chat, Connection, Entry, Grew, Numbered, SessionRow, ShowAsk, Speaker, State};
+use aethereal_sessions::{Chat, Connection, Entry, Grew, Numbered, Refusal, SessionRow, ShowAsk, Speaker, State};
 
 /// A session's row, `session`, named so, in `state`, its container as `state` has it, with `asking` asks waiting.
 fn tab(session: u32, state: State, asking: u32) -> SessionRow {
@@ -89,19 +88,21 @@ fn a_subagents_events_fold_under_the_call_that_started_it_closed_until_opened() 
 }
 
 #[test]
-fn a_compaction_is_a_divider_with_its_tokens_and_the_tab_is_marked_compacting_while_it_runs() {
-    // Catches a compaction left out of the transcript or shown without its counts, and a tab that shows the session
-    // idle while it compacts, or compacting once it has.
+fn a_compaction_is_a_divider_with_its_tokens() {
+    // Catches a compaction left out of the transcript or shown without its counts, and Claude Code's status moving
+    // past compacting shown as a line of its own.
     let mut chats = opened();
-    chats.shown(1, &[claude(1, r#"{"type":"system","subtype":"status","status":"compacting"}"#)]);
-
-    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Compacting));
-
     let boundary = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":52000,"post_tokens":3100}}"#;
-    chats.shown(1, &[claude(2, boundary)]);
+    chats.shown(
+        1,
+        &[
+            claude(1, r#"{"type":"system","subtype":"status","status":"compacting"}"#),
+            claude(2, boundary),
+            claude(3, r#"{"type":"system","subtype":"status","status":null}"#),
+        ],
+    );
 
-    assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Idle));
-    assert_eq!(texts(&chats.rows()).last().map(String::as_str), Some("compacted · 52k → 3k tokens"));
+    assert_eq!(texts(&chats.rows()), ["· compacting", "compacted · 52k → 3k tokens"]);
 }
 
 #[test]
@@ -216,21 +217,23 @@ fn an_owner_s_line_is_a_turn_and_a_line_the_hub_or_a_caller_wrote_is_not() {
 
 #[test]
 fn a_word_names_the_open_session_or_one_by_its_name_and_says_why_none_is() {
-    // Catches a word that stops or archives a session other than the one named, one that guesses among sessions of one
-    // name, and one from the console's own tab that names none but acts.
+    // Catches a word that interrupts, hibernates, wakes, or archives a session other than the one named, one that
+    // guesses among sessions of one name, and one from the console's own tab that names none but acts.
     let mut chats = Chats::default();
     let _ = chats.listed(vec![tab(1, State::Idle, 0), tab(2, State::Idle, 0), tab(3, State::Idle, 0)]);
     let _ =
         chats.listed(vec![tab(1, State::Idle, 0), tab(2, State::Idle, 0), row(3, String::from("s2"), State::Idle, 0)]);
 
-    assert_eq!(chats.stop(&Which::Open), Ok(Chat::Interrupt { session: 3 }));
+    assert_eq!(chats.interrupt(&Which::Open), Ok(Chat::Interrupt { session: 3 }));
+    assert_eq!(chats.hibernate(&Which::Named(String::from("s1"))), Ok(Chat::Hibernate { session: 1 }));
+    assert_eq!(chats.wake(&Which::Open), Ok(Chat::Wake { session: 3 }));
     assert_eq!(chats.archive(&Which::Named(String::from("s1"))), Ok(Chat::Archive { session: 1 }));
     assert!(chats.archive(&Which::Named(String::from("s2"))).is_err(), "two sessions are named s2");
-    assert!(chats.stop(&Which::Named(String::from("s9"))).is_err(), "none is named s9");
+    assert!(chats.interrupt(&Which::Named(String::from("s9"))).is_err(), "none is named s9");
 
     let _ = chats.choose(0);
 
-    assert!(chats.stop(&Which::Open).is_err(), "the console's own tab is no session");
+    assert!(chats.interrupt(&Which::Open).is_err(), "the console's own tab is no session");
 }
 
 #[test]
@@ -316,32 +319,56 @@ fn an_ask_waits_until_answered_here_or_its_session_waits_on_none() {
 }
 
 #[test]
-fn a_session_s_status_is_its_ask_first_then_a_compaction_then_its_container_then_its_state() {
-    // Catches an ask hidden behind a running turn or a compaction, a compaction the transcript shows hidden behind the
-    // hub's state, a container starting or lost hidden behind the conversation's state, and a session the hub wound
-    // down, or is archiving, shown lost.
+fn a_session_s_status_is_its_ask_first_then_its_container_then_its_state() {
+    // Catches an ask hidden behind a running turn or a compaction, a container starting or lost hidden behind the
+    // conversation's state, a compaction the hub lists shown as anything else, and a session the hub wound down, or is
+    // archiving, shown lost.
     let status = Status::of;
-    let (idle, compacting) = (Compaction::Idle, Compaction::Compacting);
     let (none, attached, lost) = (Connection::None, Connection::Attached, Connection::Lost);
 
-    assert_eq!(status(State::Working, attached, 1, compacting), Status::Waiting);
-    assert_eq!(status(State::Hibernating, lost, 2, idle), Status::Waiting);
-    assert_eq!(status(State::Working, attached, 0, compacting), Status::Compacting);
-    assert_eq!(status(State::Idle, Connection::Starting, 0, idle), Status::Starting);
-    assert_eq!(status(State::Hibernating, lost, 0, idle), Status::Lost);
-    assert_eq!(status(State::Waiting, attached, 0, idle), Status::Working);
-    assert_eq!(status(State::Idle, attached, 0, idle), Status::Idle);
-    assert_eq!(status(State::Hibernating, none, 0, idle), Status::Stopped);
-    assert_eq!(status(State::Archived, attached, 0, idle), Status::Stopped);
+    assert_eq!(status(State::Compacting, attached, 1), Status::Waiting);
+    assert_eq!(status(State::Hibernating, lost, 2), Status::Waiting);
+    assert_eq!(status(State::Compacting, attached, 0), Status::Compacting);
+    assert_eq!(status(State::Idle, Connection::Starting, 0), Status::Starting);
+    assert_eq!(status(State::Hibernating, lost, 0), Status::Lost);
+    assert_eq!(status(State::Waiting, attached, 0), Status::Working);
+    assert_eq!(status(State::Idle, attached, 0), Status::Idle);
+    assert_eq!(status(State::Hibernating, none, 0), Status::Hibernating);
+    assert_eq!(status(State::Archived, attached, 0), Status::Hibernating);
 }
 
 #[test]
 fn a_tab_is_marked_lost_as_the_hub_lists_its_container_and_the_console_s_own_is_unmarked() {
     // Catches a tab marked by anything but the hub's row of its container, so a session the hub lists as lost shows
-    // merely stopped, and the console's own tab given a status.
+    // merely hibernating, and the console's own tab given a status.
     let mut chats = Chats::default();
     let _ = chats.listed(vec![SessionRow { container: Connection::Lost, ..tab(1, State::Hibernating, 0) }]);
 
     assert_eq!(chats.titles()[0].icon, Icon::Unmarked);
     assert_eq!(chats.titles()[1].icon, Icon::Marked(Status::Lost));
+}
+
+#[test]
+fn an_aside_is_shown_after_the_entry_held_as_it_was_printed_and_a_decline_names_the_session_listed() {
+    // Catches a frame the hub declined printed at the transcript's top or bottom, wherever entries come after it, so
+    // it reads as an answer to something else; one whose key repeats an entry's, so the console draws one row for both;
+    // and a decline that names a session by its number though the hub lists its name.
+    let mut chats = opened();
+    chats.shown(1, &[claude(1, REPLY)]);
+    let why = Refusal::Working;
+    let declined = chats.declined(&Chat::Hibernate { session: 1 }, &why);
+    chats.aside(declined);
+    chats.shown(1, &[claude(2, REPLY)]);
+
+    let rows = chats.rows();
+    assert_eq!(
+        texts(&rows),
+        [
+            "<reply>",
+            "· the hub could not hibernate `s1`: a turn or a background task runs in the session: interrupt it first",
+            "<reply>",
+        ]
+    );
+    let keys: Vec<u64> = rows.iter().map(|row| row.key).collect();
+    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "each row's key is its own, in order: {keys:?}");
 }

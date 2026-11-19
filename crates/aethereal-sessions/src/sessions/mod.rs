@@ -25,8 +25,8 @@ mod transcript;
 mod volumes;
 
 pub use asks::{
-    Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
-    ReadTranscript, Refusal, Said, Say, Transcribed,
+    Archive, Archived, AwakeSession, Hibernate, Hibernated, Interrupt, Interrupted, ListSessions,
+    Listed as SessionsListed, NewSession, Opened, ReadTranscript, Refusal, Said, Say, Transcribed, Wake,
 };
 pub use bearers::Bearer;
 pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing};
@@ -36,7 +36,9 @@ pub use record::{Conversation, Record, Standing};
 pub use row::{Connection, Grew, SessionRow, State};
 pub use saves::{Index, Keeping, Loading};
 pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
-pub use transcript::{Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
+pub use transcript::{
+    Compaction, Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown,
+};
 pub use volumes::Homing;
 
 use crate::{
@@ -138,13 +140,16 @@ pub enum Unfound {
 
 /// The sessions capability (ADR-0057): asked at its typed path, `path::<Sessions>(())`, to open a session
 /// ([`NewSession`]), write a line to one ([`Say`]), read its transcript ([`ReadTranscript`]), list them
-/// ([`ListSessions`]), interrupt one's turn ([`Interrupt`]), or archive one ([`Archive`]).
+/// ([`ListSessions`]), interrupt one's turn ([`Interrupt`]), hibernate one ([`Hibernate`]), wake one ([`Wake`]), or
+/// archive one ([`Archive`]).
 ///
 /// A session is a record, and its container only its connection to Claude: while it is awake, it runs in a container
 /// of its own, made by [`Docker`] only from the settings and the session's number, so nothing a caller asks reaches
-/// what a container is made of. At most the settings' number are awake at once. A session with no turn and no
-/// background task for the idle time is told it is about to be compacted, compacted, and its container stopped, so it
-/// hibernates, and the next line wakes it in a new container on the same home, a named volume of its own. Any session,
+/// what a container is made of. At most the settings' number are awake at once, and a new session or a wake past it is
+/// refused, naming the awake ones; none is hibernated to make room. A session with no turn and no background task for
+/// the idle time, or one asked to, is told it is about to be compacted, compacted, and its container stopped, so it
+/// hibernates, and the next line, or a wake, wakes it in a new container on the same home, a named volume of its own.
+/// Nothing ends a session but archiving. Any session,
 /// archived ones among them, reads in full from its transcript with no container. Every line its
 /// container writes and every line written to it is numbered in its transcript, kept with its record in `Files`'
 /// `Save` namespace, which it asks as any actor does and needs listed before it, so a hub that starts again knows its
@@ -269,6 +274,21 @@ impl Sessions {
     #[request]
     fn interrupt(&mut self, interrupt: Interrupt, turn: &mut Turn<'_, Self>) -> Result<Later<Interrupted>, Fault> {
         self.handle_interrupt(interrupt, turn)
+    }
+
+    /// The session wound down to hibernate, as an idle one is: refused while a turn or a background task runs in it or
+    /// one waits on the owner's answer, and answered as it stands once its wind-down has begun, or when it is winding
+    /// down or hibernates already.
+    #[request]
+    fn hibernate(&mut self, hibernate: Hibernate, turn: &mut Turn<'_, Self>) -> Result<Later<Hibernated>, Fault> {
+        self.handle_hibernate(hibernate, turn)
+    }
+
+    /// The session woken in a new container on its home, which resumes its conversation: answered once it runs, or why
+    /// not, as a new session is. A wake past the most awake is refused, naming the awake sessions.
+    #[request]
+    fn wake(&mut self, wake: Wake, turn: &mut Turn<'_, Self>) -> Result<Later<Opened>, Fault> {
+        self.handle_wake(wake, turn)
     }
 
     /// The session archived: its container stopped and removed, its transcript and home kept, and it stays held, so it

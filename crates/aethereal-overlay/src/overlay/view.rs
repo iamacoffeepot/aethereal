@@ -131,7 +131,7 @@ fn pulse(nanos: u64) -> f32 {
 
 impl Status {
     /// The shape it is drawn as, and in which ink: a ring coming up, idle, or compacting, half filled while it
-    /// compacts; a dot while a turn runs, or an ask waits; a dash stopped; and a square lost.
+    /// compacts; a dot while a turn runs, or an ask waits; a dash hibernating; and a square lost.
     const fn drawn(self) -> (Shape, Ink) {
         match self {
             Self::Starting => (Shape::Ring, Ink::Lichen),
@@ -139,7 +139,7 @@ impl Status {
             Self::Working => (Shape::Dot, Ink::Lichen),
             Self::Compacting => (Shape::HalfRing, Ink::Lichen),
             Self::Waiting => (Shape::Dot, Ink::Mark),
-            Self::Stopped => (Shape::Dash, Ink::Faint),
+            Self::Hibernating => (Shape::Dash, Ink::Faint),
             Self::Lost => (Shape::Square, Ink::Error),
         }
     }

@@ -1,5 +1,5 @@
-//! What a line of Claude Code's stream-json output says to the hub (ADR-0057): whether a turn began or ended, the
-//! session was compacted, or a background task started or ended, and the id of Claude's own session it names.
+//! What a line of Claude Code's stream-json output says to the hub (ADR-0057): whether a turn began or ended, a
+//! compaction began or ended, or a background task started or ended, and the id of Claude's own session it names.
 
 #[cfg(test)]
 mod tests;
@@ -19,8 +19,13 @@ pub enum Heard {
     Init,
     /// `result`: a turn ended.
     Result,
+    /// `system` `status` of `compacting`: Claude Code began to compact the session, as the hub's wind-down, the owner's
+    /// `/compact`, or its own context running full asked.
+    Compacting,
     /// `system` `compact_boundary`: the session was compacted.
     CompactBoundary,
+    /// `system` `status` of anything else, or of none: Claude Code's status moved on, past any compaction.
+    Status,
     /// `system` `task_started`: a background task of this id began.
     TaskStarted(String),
     /// `system` `task_notification`, or `task_updated` to a state it does not leave: the task of this id ended.
@@ -45,13 +50,17 @@ pub fn read(line: &str) -> (Heard, Option<String>) {
     let kind = text(&tree, root, "type");
     let subtype = text(&tree, root, "subtype");
     let task = text(&tree, root, "task_id").map(String::from);
-    let is_done = text(&tree, root, "status").is_some_and(is_final);
+    let status = text(&tree, root, "status");
+    let is_done = status.is_some_and(is_final);
+    let is_compacting = status == Some("compacting");
     if kind == Some("control_request") {
         return (asked(&tree, root).unwrap_or(Heard::Other), session);
     }
     let heard = match (kind, subtype, task) {
         (Some("result"), _, _) => Heard::Result,
         (Some("system"), Some("init"), _) => Heard::Init,
+        (Some("system"), Some("status"), _) if is_compacting => Heard::Compacting,
+        (Some("system"), Some("status"), _) => Heard::Status,
         (Some("system"), Some("compact_boundary"), _) => Heard::CompactBoundary,
         (Some("system"), Some("task_started"), Some(task)) => Heard::TaskStarted(task),
         (Some("system"), Some("task_notification"), Some(task)) => Heard::TaskEnded(task),

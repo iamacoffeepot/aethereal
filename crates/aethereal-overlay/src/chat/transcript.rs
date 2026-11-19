@@ -9,6 +9,8 @@
 //!                                     a subagent's events under the tool call that started it, folded until opened
 //!                                     compact_boundary a centred divider with its tokens; conversation_reset one
 //!                                     saying it was cleared; a turn begun with no line marked
+//!                                     each aside, after the entry it was printed after
+//! the engine's aside, a chat frame the hub declined ──> kept after the last entry held, never sent
 //! ```
 //!
 //! The entries are kept whole, so scrolling back builds the earlier rows from what the engine holds: the scroll builds
@@ -28,6 +30,10 @@ const OTHER_TAG_OPACITY: f32 = 0.7;
 
 /// How many rows one entry may show: past it, a part's key would run into the next entry's.
 const PARTS_PER_ENTRY: u64 = 1 << 16;
+
+/// The most asides a transcript keeps: the oldest leave past it. Each is keyed from the top of the keys of the entry it
+/// follows, below its parts' folds, which start halfway up.
+const MOST_ASIDES: usize = 64;
 
 /// Whose a row's text is, and so how it is inked.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,13 +157,6 @@ impl Row {
     }
 }
 
-/// Whether the session is being compacted, as its transcript shows it.
-#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compaction {
-    Idle,
-    Compacting,
-}
-
 /// Whose a line said at an engine is, as far as the engine knows.
 #[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mine {
@@ -167,13 +166,23 @@ pub enum Mine {
     Engine(u32),
 }
 
+/// A line the engine printed in a session's tab itself, never sent: `text`, after the entry numbered `after`, the last
+/// the engine held as it printed it.
+#[derive(Plain, Debug, Clone, PartialEq, Eq)]
+struct Aside {
+    after: u64,
+    text: String,
+}
+
 /// A session's transcript as the engine holds it: every entry shown it, read, the subagents' folds the owner opened,
-/// and the rows built from them.
+/// the engine's own asides, and the rows built from them.
 #[derive(Plain, Debug, Clone, Default)]
 pub struct Transcript {
     entries: BTreeMap<u64, Vec<Read>>,
     /// The tool calls whose subagents' folds are open.
     opened: Vec<String>,
+    /// What the engine printed in the tab itself, oldest first.
+    asides: Vec<Aside>,
     rows: Vec<Row>,
 }
 
@@ -225,21 +234,17 @@ impl Transcript {
         }
     }
 
-    /// Whether the session is being compacted: a `status` of compacting came, and no compaction or other status since.
-    pub fn compaction(&self) -> Compaction {
-        let latest = self.entries.values().flatten().rev().find_map(|read| match read.told {
-            Told::Compacting => Some(Compaction::Compacting),
-            Told::Compacted { .. } | Told::Status => Some(Compaction::Idle),
-            _ => None,
-        });
-
-        latest.unwrap_or(Compaction::Idle)
+    /// Keeps `text`, printed by the engine, after the last entry held: the oldest leaves past the most kept.
+    pub fn aside(&mut self, text: String) {
+        self.asides.push(Aside { after: self.last(), text });
+        let over = self.asides.len().saturating_sub(MOST_ASIDES);
+        self.asides.drain(..over);
     }
 
     /// Builds the rows again, the lines said at `mine` inked as its own. Each part under the main conversation is
     /// shown in order; a tool's call with a subagent's events under it is followed by its fold, and, while the fold is
     /// open, by those events, each subagent's in turn, walked with a stack. Events whose call the engine does not hold
-    /// are shown where they come.
+    /// are shown where they come, and each aside after the entry it followed, as an alert.
     pub fn build(&mut self, mine: Mine) {
         let mut children: BTreeMap<&str, Vec<(u64, u32)>> = BTreeMap::new();
         let mut called: BTreeSet<&str> = BTreeSet::new();
@@ -255,6 +260,7 @@ impl Transcript {
         }
 
         let mut rows = Vec::new();
+        let mut asides = self.asides.iter().zip(0..).peekable();
         let mut said = Turned::Said;
         let mut stack: Vec<(u64, u32, u32)> = Vec::new();
         for (number, reads) in self.entries.iter().rev() {
@@ -277,6 +283,9 @@ impl Transcript {
             let main = depth == 0;
             if main {
                 said = said.after(&read.told);
+                while let Some((aside, place)) = asides.next_if(|(aside, _)| aside.after < number) {
+                    rows.push(aside.row(place));
+                }
             }
             rows.extend(shown(&read.told, mine, key, &indent, number, part, said));
             let Told::Tool { id, .. } = &read.told else {
@@ -298,8 +307,18 @@ impl Transcript {
                 stack.extend(under.iter().rev().map(|&(number, part)| (number, part, depth + 1)));
             }
         }
+        rows.extend(asides.map(|(aside, place)| aside.row(place)));
 
         self.rows = rows;
+    }
+}
+
+impl Aside {
+    /// Its row, the `place`-th aside kept: an alert, keyed from the top of the keys of the entry it follows down.
+    fn row(&self, place: u64) -> Row {
+        let key = (self.after + 1) * PARTS_PER_ENTRY - 1 - place;
+
+        Row { key, look: Look::Line { text: format!("· {}", self.text), tone: Tone::Alert } }
     }
 }
 
@@ -369,7 +388,7 @@ fn shown(told: &Told, mine: Mine, key: u64, indent: &str, number: u64, part: u32
             vec![line(format!("· {text}"), tone)]
         }
         Told::Began if said == Turned::ByItself => vec![line(String::from("· a turn began by itself"), Tone::Faint)],
-        Told::Began | Told::Status => Vec::new(),
+        Told::Began => Vec::new(),
         Told::Reply(_) => vec![Row { key, look: Look::Reply { number, part } }],
         Told::Tool { name, summary, .. } => vec![line(format!("* {name}  {summary}"), Tone::Tool)],
         Told::Result { summary, error } => {

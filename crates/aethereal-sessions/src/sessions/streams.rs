@@ -200,7 +200,7 @@ impl Sessions {
                     return self.settle(turn, session);
                 }
             }
-            Heard::CompactBoundary | Heard::Asked { .. } | Heard::Other => {}
+            Heard::Compacting | Heard::CompactBoundary | Heard::Status | Heard::Asked { .. } | Heard::Other => {}
         }
 
         Ok(())

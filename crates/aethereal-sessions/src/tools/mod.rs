@@ -1,12 +1,13 @@
 //! The sessions' tools (ADR-0057): the hub's caller opens a session, says a line to it, reads its transcript, lists
-//! the sessions, interrupts a turn, and archives a session, each the capability's own ask.
+//! the sessions, interrupts a turn, hibernates or wakes a session, and archives one, each the capability's own ask.
+//! Each is named as a verb and its noun, never a bare common word.
 
 #[cfg(test)]
 mod tests;
 
 use crate::{
-    Archive, Archived, Interrupt, Interrupted, ListSessions, NewSession, Numbered, Opened, ReadTranscript, Refusal,
-    Said, Say, SessionRow, Sessions, SessionsListed as Listed, Transcribed,
+    Archive, Archived, Hibernate, Hibernated, Interrupt, Interrupted, ListSessions, NewSession, Numbered, Opened,
+    ReadTranscript, Said, Say, SessionRow, Sessions, SessionsListed as Listed, Transcribed, Wake,
 };
 use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
@@ -14,17 +15,21 @@ use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooli
 use std::collections::BTreeMap;
 
 /// The tool that opens a session.
-const SESSION_NEW: &str = "session_new";
+const NEW_SESSION: &str = "new_session";
 /// The tool that says a line to a session.
-const SESSION_SAY: &str = "session_say";
+const MESSAGE_SESSION: &str = "message_session";
 /// The tool that reads a session's transcript.
-const SESSION_READ: &str = "session_read";
+const READ_SESSION: &str = "read_session";
 /// The tool that lists the sessions.
-const SESSION_LIST: &str = "session_list";
+const LIST_SESSIONS: &str = "list_sessions";
 /// The tool that interrupts a session's turn.
-const SESSION_INTERRUPT: &str = "session_interrupt";
+const INTERRUPT_SESSION: &str = "interrupt_session";
+/// The tool that hibernates a session.
+const HIBERNATE_SESSION: &str = "hibernate_session";
+/// The tool that wakes a session.
+const WAKE_SESSION: &str = "wake_session";
 /// The tool that archives a session.
-const SESSION_ARCHIVE: &str = "session_archive";
+const ARCHIVE_SESSION: &str = "archive_session";
 
 /// The most bytes reading an input may take: a line said may be long.
 const INPUT_BYTES: usize = 1 << 20;
@@ -41,19 +46,30 @@ pub struct Asking {
 #[kind(name = "aether.sessions.sessions_tools_config")]
 pub struct SessionsToolsConfig;
 
-/// What `session_say` and `session_interrupt` answer: the number of the transcript's entry they made.
+/// What `message_session` and `interrupt_session` answer: the number of the transcript's entry they made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.entered")]
 pub struct Entered {
     pub number: u64,
 }
 
-/// What `session_read` answers: the entries, in order, and the number of the transcript's last.
+/// What `read_session` answers: the entries, in order, and the number of the transcript's last.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.read")]
 pub struct Read {
     pub entries: Vec<Numbered>,
     pub last: u64,
+}
+
+/// What `hibernate_session` answers: where the session stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.hibernation")]
+pub enum Hibernation {
+    /// It is being wound down: told, compacted, and its container stopped. `list_sessions` lists it hibernating once it
+    /// is.
+    WindingDown,
+    /// It hibernates already.
+    Hibernating,
 }
 
 /// What a call asks of the capability.
@@ -63,10 +79,12 @@ enum Order {
     Read(ReadTranscript),
     List,
     Interrupt(Interrupt),
+    Hibernate(Hibernate),
+    Wake(Wake),
     Archive(Archive),
 }
 
-/// The sessions' six tools for the hub's caller (ADR-0057), served by one worker: each takes the capability's own ask
+/// The sessions' eight tools for the hub's caller (ADR-0057), served by one worker: each takes the capability's own ask
 /// as its input, and answers what it answers, a refusal as text the caller reads.
 #[derive(Bound)]
 #[kind(name = "aether.sessions.sessions_tools")]
@@ -104,6 +122,8 @@ impl SessionsTools {
             Order::Read(read) => turn.to(sessions).ask(&read, &asking)?,
             Order::List => turn.to(sessions).ask(&ListSessions, &asking)?,
             Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &asking)?,
+            Order::Hibernate(hibernate) => turn.to(sessions).ask(&hibernate, &asking)?,
+            Order::Wake(wake) => turn.to(sessions).ask(&wake, &asking)?,
             Order::Archive(archive) => turn.to(sessions).ask(&archive, &asking)?,
         };
         self.calls.insert(asking.number, held);
@@ -153,6 +173,15 @@ impl SessionsTools {
     }
 
     #[answer]
+    fn hibernated(
+        &mut self,
+        (answered, asking): (Answered<Hibernated>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.answered(answered, asking, turn)
+    }
+
+    #[answer]
     fn archived(
         &mut self,
         (answered, asking): (Answered<Archived>, Asking),
@@ -188,20 +217,21 @@ impl Tool for SessionsTools {
     fn sheets() -> Vec<ToolSheet> {
         vec![
             ToolSheet::of::<NewSession>(
-                SESSION_NEW,
+                NEW_SESSION,
                 "Opens a new Claude session in a container of its own on the hub's machine, and answers once it runs: \
                  its number, which every other session tool names it by. The name is only shown. Refused when as many \
-                 sessions run as may, naming them.",
+                 sessions are awake as may, naming the awake ones: hibernate one first.",
                 Output::Value(SchemaNodes::of(&SessionRow::SHAPE)),
             ),
             ToolSheet::of::<Say>(
-                SESSION_SAY,
+                MESSAGE_SESSION,
                 "Says a line to a session, as a user's message. A line said while a turn runs is taken after it, in \
-                 order; a hibernating session is woken. Answers the number of the transcript's entry the line is.",
+                 order; a hibernating session is woken, unless as many are awake as may, which refuses it naming them. \
+                 Answers the number of the transcript's entry the line is.",
                 Output::Value(SchemaNodes::of(&Entered::SHAPE)),
             ),
             ToolSheet::of::<ReadTranscript>(
-                SESSION_READ,
+                READ_SESSION,
                 "Reads a session's transcript after the entry numbered `after`, 0 for the start: every event Claude \
                  wrote, every line said to it and who said it, and what the hub did with its container. Any session \
                  reads, hibernating and archived ones too. Answers the entries and the number of the last; read on \
@@ -209,7 +239,7 @@ impl Tool for SessionsTools {
                 Output::Value(SchemaNodes::of(&Read::SHAPE)),
             ),
             ToolSheet::json::<ListSessions>(
-                SESSION_LIST,
+                LIST_SESSIONS,
                 "Lists every session: its number, name, its conversation's state, its container's state, when its \
                  transcript last grew on the hub's clock, and how many of its asks wait; the hub's time as it listed \
                  them; how many may be awake at once; and any container carrying the hub's label that the hub has no \
@@ -217,14 +247,30 @@ impl Tool for SessionsTools {
                 Output::Value(SchemaNodes::of(&Listed::SHAPE)),
             ),
             ToolSheet::of::<Interrupt>(
-                SESSION_INTERRUPT,
+                INTERRUPT_SESSION,
                 "Interrupts the turn a session runs. The session carries on and takes the next line.",
                 Output::Value(SchemaNodes::of(&Entered::SHAPE)),
             ),
+            ToolSheet::of::<Hibernate>(
+                HIBERNATE_SESSION,
+                "Hibernates a session now, as one idle a while is: it is told it will be compacted and hibernated, \
+                 so it writes down its loose threads, then compacted, and its container stopped and removed. Its \
+                 conversation, transcript, and home are kept, and a line or `wake_session` wakes it. Refused while a \
+                 turn or a background task runs in it, or a turn waits on the owner's answer to an ask: interrupt or \
+                 answer it first. Answers whether it is winding down or hibernates already.",
+                Output::Value(SchemaNodes::of(&Hibernation::SHAPE)),
+            ),
+            ToolSheet::of::<Wake>(
+                WAKE_SESSION,
+                "Wakes a hibernating session in a new container on its home, which resumes its conversation, and \
+                 answers once it runs, as `new_session` does. Refused when as many sessions are awake as may, naming \
+                 the awake ones: hibernate one first.",
+                Output::Value(SchemaNodes::of(&SessionRow::SHAPE)),
+            ),
             ToolSheet::of::<Archive>(
-                SESSION_ARCHIVE,
+                ARCHIVE_SESSION,
                 "Archives a session: its container is stopped and removed, and its transcript and home are kept. An \
-                 archived session never runs again.",
+                 archived session never wakes again, and still reads.",
                 Output::Value(SchemaNodes::of(&Done::SHAPE)),
             ),
         ]
@@ -245,7 +291,7 @@ impl Answers for Opened {
     fn output(self) -> Result<Vec<u8>, String> {
         match self {
             Self::Open(session) => bytes(&session),
-            Self::Refused(why) => Err(refusal(&why)),
+            Self::Refused(why) => Err(why.to_string()),
         }
     }
 }
@@ -254,7 +300,7 @@ impl Answers for Said {
     fn output(self) -> Result<Vec<u8>, String> {
         match self {
             Self::Taken { number } => bytes(&Entered { number }),
-            Self::Refused(why) => Err(refusal(&why)),
+            Self::Refused(why) => Err(why.to_string()),
         }
     }
 }
@@ -263,7 +309,7 @@ impl Answers for Transcribed {
     fn output(self) -> Result<Vec<u8>, String> {
         match self {
             Self::Entries { entries, last } => bytes(&Read { entries, last }),
-            Self::Refused(why) => Err(refusal(&why)),
+            Self::Refused(why) => Err(why.to_string()),
         }
     }
 }
@@ -278,7 +324,17 @@ impl Answers for Interrupted {
     fn output(self) -> Result<Vec<u8>, String> {
         match self {
             Self::Sent { number } => bytes(&Entered { number }),
-            Self::Refused(why) => Err(refusal(&why)),
+            Self::Refused(why) => Err(why.to_string()),
+        }
+    }
+}
+
+impl Answers for Hibernated {
+    fn output(self) -> Result<Vec<u8>, String> {
+        match self {
+            Self::WindingDown => bytes(&Hibernation::WindingDown),
+            Self::Hibernating => bytes(&Hibernation::Hibernating),
+            Self::Refused(why) => Err(why.to_string()),
         }
     }
 }
@@ -287,7 +343,7 @@ impl Answers for Archived {
     fn output(self) -> Result<Vec<u8>, String> {
         match self {
             Self::Done => bytes(&Done {}),
-            Self::Refused(why) => Err(refusal(&why)),
+            Self::Refused(why) => Err(why.to_string()),
         }
     }
 }
@@ -297,34 +353,18 @@ fn bytes<T: Plain>(value: &T) -> Result<Vec<u8>, String> {
     to_bytes(value).map_err(|why| format!("the answer could not be written: {why:?}"))
 }
 
-/// What a refusal says, for the caller to read.
-fn refusal(why: &Refusal) -> String {
-    match why {
-        Refusal::NoSuchSession => String::from("no session has that number"),
-        Refusal::Archived => String::from("the session is archived"),
-        Refusal::Full { most, running } => {
-            format!("at most {most} sessions run at once, and these run: {running:?}")
-        }
-        Refusal::NotRunning => String::from("the session has no container, so no turn runs"),
-        Refusal::Busy => String::from("the session's container is starting or stopping: ask again once it is not"),
-        Refusal::NoCredential => String::from("the hub could not read the credential's file as KEY=VALUE lines"),
-        Refusal::NoBearer => String::from("the hub's randomness drew no bearer for the session's route"),
-        Refusal::NoDropBox => String::from("the store could not make the session's drop box"),
-        Refusal::Docker(error) => format!("Docker: {error:?}"),
-        Refusal::Unrecorded => String::from("the hub could not write the session's record, so it made nothing"),
-    }
-}
-
 /// What a call of `tool` with `input`, the bytes of its input, asks of the capability, or its refusal.
 fn order(tool: &str, input: &[u8]) -> Result<Order, Called> {
     let budget = &mut Budget::new(INPUT_BYTES);
     let read = match tool {
-        SESSION_NEW => from_bytes(input, budget).map(Order::New),
-        SESSION_SAY => from_bytes(input, budget).map(Order::Say),
-        SESSION_READ => from_bytes(input, budget).map(Order::Read),
-        SESSION_LIST => from_bytes::<ListSessions>(input, budget).map(|_| Order::List),
-        SESSION_INTERRUPT => from_bytes(input, budget).map(Order::Interrupt),
-        SESSION_ARCHIVE => from_bytes(input, budget).map(Order::Archive),
+        NEW_SESSION => from_bytes(input, budget).map(Order::New),
+        MESSAGE_SESSION => from_bytes(input, budget).map(Order::Say),
+        READ_SESSION => from_bytes(input, budget).map(Order::Read),
+        LIST_SESSIONS => from_bytes::<ListSessions>(input, budget).map(|_| Order::List),
+        INTERRUPT_SESSION => from_bytes(input, budget).map(Order::Interrupt),
+        HIBERNATE_SESSION => from_bytes(input, budget).map(Order::Hibernate),
+        WAKE_SESSION => from_bytes(input, budget).map(Order::Wake),
+        ARCHIVE_SESSION => from_bytes(input, budget).map(Order::Archive),
         other => return Err(Called::Refused(format!("there is no tool `{other}` here"))),
     };
 

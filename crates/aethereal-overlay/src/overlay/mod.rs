@@ -10,7 +10,7 @@
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
 //! a relay's Relays ──> kept;  its ShowSessions, ShowEvents, ShowAsk ──> the chat ──> Chat to the relay (ADR-0057);
-//!   its ShowDeclined ──> logged
+//!   its ShowDeclined ──> printed in the console's open tab
 //! begun ──> spawn OverlayTools ──> Offer `mark`, `memory`, `set_theme` with it as their worker
 //! first listed ──> Offer the chat's words with the same worker
 //! the worker's Marked ──> a mark kept;  Choice ──> the palette of the theme named, ThemesShown;
@@ -240,7 +240,7 @@ impl Overlay {
 
     #[tell]
     fn show_declined(&mut self, declined: ShowDeclined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        Self::handle_show_declined(&declined, turn)
+        self.handle_show_declined(&declined, turn)
     }
 
     #[tell]

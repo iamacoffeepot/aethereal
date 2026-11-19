@@ -66,18 +66,20 @@ pub enum Note {
     Stopped { run: u32, why: Ended },
     /// The container of `run` could not be made or started, as `why` says, and a line said meanwhile went nowhere.
     Unstarted { run: u32, why: String },
-    /// A step of winding an idle session down took past its deadline: the session is stopped anyway.
+    /// A step of winding a session down to hibernate took past its deadline: its container is stopped anyway.
     Overdue { step: WindDown },
     /// A line to the session's stdin was not written, as `why` says.
     Unwritten { why: String },
 }
 
-/// How a session's container came to stop.
+/// How a session's container came to stop. Kept in the transcript's file, each case read by its place: a case is never
+/// moved, and a new one goes last.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.ended")]
 pub enum Ended {
-    /// The hub stopped it, as nothing ran in it for the idle time.
-    Idle,
+    /// The hub stopped it, so the session hibernates: nothing ran in it for the idle time, or it was asked to
+    /// hibernate.
+    Hibernated,
     /// The hub stopped it, as the session was archived.
     Archived,
     /// Its process ended by itself, with `code`.
@@ -88,7 +90,7 @@ pub enum Ended {
     Lost,
 }
 
-/// A step of winding an idle session down.
+/// A step of winding a session down to hibernate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.wind_down")]
 pub enum WindDown {
@@ -107,7 +109,8 @@ pub enum Since {
     Turned,
 }
 
-/// A session's transcript, held whole, with what it says of the session's container's output and its compaction.
+/// A session's transcript, held whole, with what it says of the session's container's output, its turns, and its
+/// compactions.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct Transcript {
     entries: Vec<Numbered>,
@@ -118,6 +121,7 @@ pub struct Transcript {
     stderr_bytes: u64,
     since: Since,
     turn: Turning,
+    compaction: Compaction,
     grew: Grew,
 }
 
@@ -139,6 +143,16 @@ pub enum Turning {
     Running,
 }
 
+/// Whether the latest container's session is being compacted, as far as the transcript shows: by the hub's wind-down,
+/// the owner's `/compact`, or Claude Code by itself, each of which Claude Code says with its `status` of compacting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Compaction {
+    /// None runs.
+    Idle,
+    /// Claude Code's status is compacting, and no `compact_boundary`, other status, or end of its turn has come since.
+    Running,
+}
+
 impl Transcript {
     /// A transcript of nothing.
     #[must_use]
@@ -150,6 +164,7 @@ impl Transcript {
             stderr_bytes: 0,
             since: Since::Compacted,
             turn: Turning::Ended,
+            compaction: Compaction::Idle,
             grew: Grew::Unseen,
         }
     }
@@ -193,9 +208,15 @@ impl Transcript {
                     Heard::Result => {
                         self.since = Since::Turned;
                         self.turn = Turning::Ended;
+                        self.compaction = Compaction::Idle;
                     }
                     Heard::Init => self.turn = Turning::Running,
-                    Heard::CompactBoundary => self.since = Since::Compacted,
+                    Heard::Compacting => self.compaction = Compaction::Running,
+                    Heard::CompactBoundary => {
+                        self.since = Since::Compacted;
+                        self.compaction = Compaction::Idle;
+                    }
+                    Heard::Status => self.compaction = Compaction::Idle,
                     Heard::TaskStarted(_) | Heard::TaskEnded(_) | Heard::Asked { .. } | Heard::Other => {}
                 }
             }
@@ -206,6 +227,7 @@ impl Transcript {
                 self.stdout_bytes = 0;
                 self.stderr_bytes = 0;
                 self.turn = Turning::Ended;
+                self.compaction = Compaction::Idle;
             }
             Entry::Said { .. } | Entry::Ran { .. } => self.turn = Turning::Running,
             Entry::Interrupted { .. } | Entry::Hub(_) | Entry::Answered { .. } => {}
@@ -249,6 +271,12 @@ impl Transcript {
     #[must_use]
     pub const fn since(&self) -> Since {
         self.since
+    }
+
+    /// Whether the latest container's session is being compacted, whoever asked for it.
+    #[must_use]
+    pub const fn compaction(&self) -> Compaction {
+        self.compaction
     }
 
     /// When it last grew: unseen when nothing was added to it since it was read, or made empty.

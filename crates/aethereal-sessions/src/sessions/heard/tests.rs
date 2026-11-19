@@ -4,8 +4,9 @@ const ID: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
 
 #[test]
 fn the_events_that_move_a_session_s_turns_are_told_apart() {
-    // Catches a turn's start or end, a compaction, or a task's start or end read as something else, so the hub never
-    // stops an idle session, stops one with a task running, or never finishes winding one down; and Claude Code's ask
+    // Catches a turn's start or end, a compaction or its start or end, or a task's start or end read as something else,
+    // so the hub never hibernates an idle session, hibernates one with a task running, never finishes winding one down,
+    // or lists a compaction the owner asked for as working, or one ended as compacting; and Claude Code's ask
     // to use a tool missed, or another control request taken for one, so a turn waits on an answer no owner is asked
     // for, or the owner is asked what nothing waits on.
     let lines = [
@@ -15,6 +16,8 @@ fn the_events_that_move_a_session_s_turns_are_told_apart() {
             String::from(r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{}}"#),
             Heard::CompactBoundary,
         ),
+        (String::from(r#"{"type":"system","subtype":"status","status":"compacting"}"#), Heard::Compacting),
+        (String::from(r#"{"type":"system","subtype":"status","status":null}"#), Heard::Status),
         (
             String::from(r#"{"type":"system","subtype":"task_started","task_id":"t1"}"#),
             Heard::TaskStarted(String::from("t1")),

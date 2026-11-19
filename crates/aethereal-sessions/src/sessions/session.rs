@@ -6,7 +6,7 @@ use super::output::Reading;
 use super::record::{Conversation, Record, Standing};
 use super::row::{Connection, SessionRow, State};
 use super::saves::Landing;
-use super::transcript::Transcript;
+use super::transcript::{Compaction, Transcript};
 use crate::ContainerId;
 use aethereal_actor::{JobId, Number, ProtocolRef};
 use aethereal_data::{Bound, Plain};
@@ -34,7 +34,8 @@ pub(super) enum Life {
     Running(Box<Running>),
     /// Its container of `run` is being stopped, then removed, and then the session is left as `then` says.
     Stopping { container: ContainerId, run: u32, then: Then },
-    /// No container of it exists: it hibernates, and the next line wakes it. `gone` says how its last container ended.
+    /// No container of it exists: it hibernates, and the next line, or a wake, wakes it. `gone` says how its last
+    /// container ended.
     Hibernating { gone: Gone },
     /// It was archived, and never wakes again.
     Archived,
@@ -69,9 +70,10 @@ pub(super) enum Step {
 /// What a session is left as once its container is stopped and removed.
 #[derive(Bound)]
 pub(super) enum Then {
-    /// Hibernating, its container gone as `gone` says: it was idle, or its container ended by itself. `lines` said
-    /// meanwhile wake it once its container is removed.
-    Rest { lines: Vec<String>, gone: Gone },
+    /// Hibernating, its container gone as `gone` says: it was idle, asked to hibernate, or its container ended by
+    /// itself. A wake or a line meanwhile wakes it again once its container is removed: `opening` waits to be answered
+    /// once its next container runs, and `lines` to be written to it.
+    Hibernate { opening: Vec<Asker<Opened>>, lines: Vec<String>, gone: Gone },
     /// Archived, `archiving` answered once it is.
     Archive { archiving: Vec<Asker<Archived>> },
 }
@@ -146,16 +148,23 @@ impl Session {
     }
 
     /// Its conversation's state and its container's, with `asking` of its asks waiting for the owner. Lines that wait
-    /// for its container are a turn to come, so it is working; a container the hub stops for an idle session leaves it
-    /// idle until Docker has removed it, as nothing runs in it and a line said meanwhile wakes it again.
+    /// for its container are a turn to come, so it is working; a compaction Claude Code runs is compacting, whoever
+    /// asked for it; a container the hub stops for a session to hibernate leaves it idle until Docker has removed it,
+    /// as nothing runs in it and a line said meanwhile wakes it again.
     fn states(&self, asking: u32) -> (State, Connection) {
         match &self.life {
             Life::Starting { lines, .. } => (waits(lines), Connection::Starting),
             Life::Running(_) if asking > 0 => (State::Waiting, Connection::Attached),
-            Life::Running(running) => (running.activity.state(), Connection::Attached),
-            Life::Stopping { then: Then::Rest { gone: Gone::Lost, .. }, .. }
+            Life::Running(running) => {
+                let state = match self.transcript.compaction() {
+                    Compaction::Running => State::Compacting,
+                    Compaction::Idle => running.activity.state(),
+                };
+                (state, Connection::Attached)
+            }
+            Life::Stopping { then: Then::Hibernate { gone: Gone::Lost, .. }, .. }
             | Life::Hibernating { gone: Gone::Lost } => (State::Hibernating, Connection::Lost),
-            Life::Stopping { then: Then::Rest { gone: Gone::Removed, lines }, .. } => {
+            Life::Stopping { then: Then::Hibernate { gone: Gone::Removed, lines, .. }, .. } => {
                 (waits(lines), Connection::Attached)
             }
             Life::Stopping { then: Then::Archive { .. }, .. } => (State::Archived, Connection::Attached),
@@ -164,7 +173,8 @@ impl Session {
         }
     }
 
-    /// Whether its container counts against the most running: it is being started, runs, or is being stopped.
+    /// Whether it is awake, and so counts against the most awake at once: its container is being started, runs, or is
+    /// being stopped and removed.
     pub const fn counts(&self) -> bool {
         matches!(self.life, Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. })
     }

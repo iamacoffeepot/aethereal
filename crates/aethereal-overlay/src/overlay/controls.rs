@@ -158,7 +158,7 @@ impl Overlay {
     }
 
     /// Escape: with the console's own tab open, closes the console; with a session's, empties the line typed, or with
-    /// none typed leaves `!` mode, or in chat mode stops the session's turn.
+    /// none typed leaves `!` mode, or in chat mode interrupts the session's turn.
     fn escape(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if self.chats.open() == Open::Console {
             self.close();
@@ -172,7 +172,7 @@ impl Overlay {
             self.chats.switch(Mode::Chat);
             return Ok(());
         }
-        let interrupt = self.chats.interrupt();
+        let interrupt = self.chats.interrupt_open();
 
         self.tell(turn, interrupt)
     }
