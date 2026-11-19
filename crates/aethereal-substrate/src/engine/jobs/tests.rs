@@ -405,6 +405,14 @@ struct Worker {
     refused: Vec<bool>,
 }
 
+/// Runs a `Bump` of a new counter, kept and given to the job, which does `how` with it.
+fn bump(turn: &mut Turn<'_, Worker>, how: How, which: &Which) -> Result<JobId, Fault> {
+    let counter = turn.keep(Counter { count: 1 })?;
+    let bump = Bump { counter: turn.give(counter)?, how };
+
+    Ok(turn.run(&bump, which)?)
+}
+
 #[actor(spawns(Failing, Newborn, Mute))]
 impl Worker {
     fn begin(_: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
@@ -506,22 +514,14 @@ impl Worker {
                 turn.run(&Double { n: 0 }, &which)?;
                 return Err(Fault::of_parts(KindId::of::<Go>(), Vec::new()));
             }
-            What::Bump(how) => {
-                let counter = turn.keep(Counter { count: 1 })?;
-                let bump = Bump { counter: turn.give(counter)?, how };
-                turn.run(&bump, &which)?
-            }
+            What::Bump(how) => bump(turn, how, &which)?,
             What::BumpAndCancel => {
-                let counter = turn.keep(Counter { count: 1 })?;
-                let bump = Bump { counter: turn.give(counter)?, how: How::HandsBack };
-                let id = turn.run(&bump, &which)?;
+                let id = bump(turn, How::HandsBack, &which)?;
                 turn.cancel(id);
                 id
             }
             What::HoldBump => {
-                let counter = turn.keep(Counter { count: 1 })?;
-                let bump = Bump { counter: turn.give(counter)?, how: How::HandsBack };
-                let id = turn.run(&bump, &which)?;
+                let id = bump(turn, How::HandsBack, &which)?;
                 self.kept.push(id);
                 id
             }
