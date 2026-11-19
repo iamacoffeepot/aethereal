@@ -30,9 +30,9 @@ use std::mem;
 pub struct Files {
     /// The reads it holds, each by the number of the job it ran for it.
     waiting: BTreeMap<u64, Held<FileRead>>,
-    /// The writes it holds: for each file it runs a write of, that write and those asked of the file after it. A list
-    /// found by file, as a path is no map key.
-    writing: Vec<Saves>,
+    /// The writes it holds, by the path of each file of [`Namespace::Save`] it runs a write of: that write and those
+    /// asked of the file after it. `Save` is the one namespace written.
+    saves: BTreeMap<FilePath, Saves>,
     /// The listings it holds, each by the number of the job it ran for it.
     listing: BTreeMap<u64, Held<FilesListed>>,
     /// The number of the next job it runs.
@@ -51,27 +51,24 @@ pub struct Reading {
     number: u64,
 }
 
-/// What the file capability keeps for a write it runs: the file it writes, which runs no other write until it is
-/// answered.
+/// What the file capability keeps for a write it runs: the path of the file of [`Namespace::Save`] it writes, which
+/// runs no other write until it is answered.
 #[derive(Debug, PartialEq, Eq, Plain)]
 #[kind(name = "aether.files.saving")]
 pub struct Saving {
-    namespace: Namespace,
     path: FilePath,
 }
 
 impl Saving {
     /// The job that writes `bytes` to this file, as `how` says.
     fn save(&self, bytes: Bytes, how: Writes) -> Save {
-        Save::new(self.namespace, self.path.clone(), bytes, how)
+        Save::new(Namespace::Save, self.path.clone(), bytes, how)
     }
 }
 
 /// The writes of one file the file capability holds: the one running, and those asked after it, in the order asked.
 #[derive(Bound)]
 struct Saves {
-    /// The file they write.
-    file: Saving,
     /// Whoever asked the write running.
     running: Held<FileWritten>,
     /// The writes asked after it, each run once the one before it is answered.
@@ -87,14 +84,9 @@ struct Queued {
 }
 
 impl Saves {
-    /// The writes of `file`, whose one write runs for `running`.
-    const fn new(file: Saving, running: Held<FileWritten>) -> Self {
-        Self { file, running, queued: VecDeque::new() }
-    }
-
-    /// Whether they are the writes of `file`.
-    fn writes(&self, file: &Saving) -> bool {
-        self.file == *file
+    /// The writes of a file, whose one write runs for `running`.
+    const fn new(running: Held<FileWritten>) -> Self {
+        Self { running, queued: VecDeque::new() }
     }
 
     /// Queues `queued` behind the writes asked before it.
@@ -128,7 +120,7 @@ pub struct Scanning {
 #[actor]
 impl Files {
     fn begin(_: FilesConfig) -> Result<Self, Fault> {
-        Ok(Self { waiting: BTreeMap::new(), writing: Vec::new(), listing: BTreeMap::new(), next: 0 })
+        Ok(Self { waiting: BTreeMap::new(), saves: BTreeMap::new(), listing: BTreeMap::new(), next: 0 })
     }
 
     #[request]
@@ -161,19 +153,21 @@ impl Files {
 
     #[request]
     fn write(&mut self, write: WriteFile, turn: &mut Turn<'_, Self>) -> Result<Reply<FileWritten>, Fault> {
-        if !write.namespace.is_written() {
-            return Ok(Reply::Now(FileWritten::ReadOnly));
-        }
-        let (held, later) = turn.hold();
         let WriteFile { namespace, path, bytes, how } = write;
-        let file = Saving { namespace, path };
-        let running = self.writing.iter_mut().find(|saves| saves.writes(&file));
-        if let Some(saves) = running {
-            saves.queue(Queued { held, bytes, how });
+        // `Save` is the one namespace written, so it alone has a map of the writes it holds. Making another namespace
+        // written stops this compiling until that namespace is given a map of its own.
+        let saves = match namespace {
+            Namespace::Save => &mut self.saves,
+            Namespace::Assets | Namespace::Code => return Ok(Reply::Now(FileWritten::ReadOnly)),
+        };
+        let (held, later) = turn.hold();
+        if let Some(running) = saves.get_mut(&path) {
+            running.queue(Queued { held, bytes, how });
             return Ok(Reply::Later(later));
         }
-        turn.run(&file.save(bytes, how), &file)?;
-        self.writing.push(Saves::new(file, held));
+        let saving = Saving { path };
+        turn.run(&saving.save(bytes, how), &saving)?;
+        saves.insert(saving.path, Saves::new(held));
 
         Ok(Reply::Later(later))
     }
@@ -184,20 +178,22 @@ impl Files {
         (answered, saving): (Answered<FileWritten>, Saving),
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
-        let Some(at) = self.writing.iter().position(|saves| saves.writes(&saving)) else {
+        let Some(saves) = self.saves.get_mut(&saving.path) else {
             return Ok(());
         };
         let written = match answered {
             Answered::Yes(written) => written,
             Answered::No(_) => FileWritten::Failed,
         };
-        // The file's next write runs only now the one before it is answered, so the two never land out of order.
-        let Some(Queued { held, bytes, how }) = self.writing[at].next() else {
-            turn.answer(self.writing.swap_remove(at).last(), &written)?;
-            return Ok(());
-        };
-        turn.run(&saving.save(bytes, how), &saving)?;
-        turn.answer(self.writing[at].runs(held), &written)?;
+
+        // The file's next write runs only now the one before it is answered, so the two never land out of order; with
+        // none waiting, the file leaves the map.
+        if let Some(Queued { held, bytes, how }) = saves.next() {
+            turn.run(&saving.save(bytes, how), &saving)?;
+            turn.answer(saves.runs(held), &written)?;
+        } else if let Some(finished) = self.saves.remove(&saving.path) {
+            turn.answer(finished.last(), &written)?;
+        }
 
         Ok(())
     }
