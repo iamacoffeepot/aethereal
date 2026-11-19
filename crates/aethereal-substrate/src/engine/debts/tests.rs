@@ -19,11 +19,15 @@ const CHAIN: Context = Context { root: MailId { sender: ActorId::new(2), count: 
 const ANSWER: KindId = KindId::of::<Unanswered>();
 const OTHER: KindId = KindId::of::<NotOwed>();
 
-/// Debts that owe [`OWED`], held by one value, to be answered with [`ANSWER`].
-fn owing() -> Debts {
-    let debt = Debt { asker: OWED.asker, request: OWED.request, answer: ANSWER, holders: 1, chain: CHAIN };
+/// The debt [`OWED`] names, held by one value, to be answered with [`ANSWER`].
+const DEBT: Debt = Debt { asker: OWED.asker, request: OWED.request, answer: ANSWER, holders: 1, chain: CHAIN };
 
-    Debts { held: Holds::Owes(Box::new(Owing { debts: vec![debt] })) }
+/// Debts that owe [`DEBT`].
+fn owing() -> Debts {
+    let mut debts = FxHashMap::default();
+    debts.insert(request_id(OWED.asker, OWED.request), DEBT);
+
+    Debts { held: Holds::Owes(Box::new(Owing { debts, answered: Vec::new() })) }
 }
 
 /// A held request read back from `written`, as its holder reads one out of what it kept.
@@ -55,8 +59,9 @@ fn written_owed() -> Written {
 /// The changes noted since the last time, settled against `debts`: each debt let go of.
 fn settled(debts: &mut Debts, changes: &mut Vec<holders::Change>) -> Vec<Debt> {
     holders::take(changes);
+    sum(changes);
 
-    summed(changes).into_iter().filter_map(|(owed, by)| debts.change(owed, by)).collect()
+    changes.drain(..).filter_map(|(owed, by)| debts.change(owed, by)).collect()
 }
 
 #[test]
@@ -87,18 +92,58 @@ fn a_debt_handed_through_bytes_is_let_go_of_only_once_no_value_holds_it() {
 fn a_turn_answers_only_a_debt_its_actor_holds_of_the_kind_it_answers_with() {
     // Catches an answer the engine takes for one its actor owes when it is another's, of another kind, or answered
     // already, which would answer a request twice or with a kind its asker does not handle.
-    let debts = owing();
     let answers = |owed, answer| [Owes::Answers { owed, answer }];
     let others = Owed { holder: actor(4), ..OWED };
     let twice = [Owes::Answers { owed: OWED, answer: ANSWER }, Owes::Answers { owed: OWED, answer: ANSWER }];
+    let mut answered = owing();
 
-    let owed = matches!(debts.filed(actor(1), &answers(OWED, ANSWER), CHAIN), Filed::Owes(left) if left.is_empty());
-    let not_mine = matches!(debts.filed(actor(1), &answers(others, ANSWER), CHAIN), Filed::NotOwed);
-    let not_kind = matches!(debts.filed(actor(1), &answers(OWED, OTHER), CHAIN), Filed::NotOwed);
-    let not_twice = matches!(debts.filed(actor(1), &twice, CHAIN), Filed::NotOwed);
+    let owed = answered.file(actor(1), &answers(OWED, ANSWER), CHAIN).is_ok();
+    let not_mine = owing().file(actor(1), &answers(others, ANSWER), CHAIN).is_err();
+    let not_kind = owing().file(actor(1), &answers(OWED, OTHER), CHAIN).is_err();
+    let not_twice = owing().file(actor(1), &twice, CHAIN).is_err();
 
     assert!(owed, "the debt it holds is answered");
+    assert!(!answered.owes(OWED.asker, OWED.request), "and is no longer owed");
     assert!(not_mine, "another's debt is not");
     assert!(not_kind, "nor one answered with another kind");
     assert!(not_twice, "nor one answered already");
+}
+
+#[test]
+fn a_turn_that_answers_what_it_does_not_owe_changes_no_debt() {
+    // Catches a turn that fails partway keeping what it filed before the debt it did not owe: a debt it answered, whose
+    // answer is dropped with its mail, would be answered by no one, and a request it held would be owed by an actor
+    // whose turn never held it.
+    let mut debts = owing();
+    let handled = Owed { asker: actor(5), request: 7, ..OWED };
+    let turn = [
+        Owes::Answers { owed: OWED, answer: ANSWER },
+        Owes::Holds { owed: handled, answer: ANSWER },
+        Owes::Answers { owed: handled, answer: ANSWER },
+        Owes::Answers { owed: OWED, answer: ANSWER },
+    ];
+    let later = Context { depth: CHAIN.depth + 1, ..CHAIN };
+
+    let filed = debts.file(actor(1), &turn, later);
+
+    assert!(filed.is_err(), "the turn answered a debt it had answered already");
+    assert_eq!(debts.take_all(), [DEBT], "the debts are as they were before the turn");
+}
+
+#[test]
+fn an_actor_that_answered_a_burst_gives_back_its_room() {
+    // Catches a table that keeps the room of the most debts its actor ever held, or answered in one turn, for as long as
+    // the actor lives.
+    let burst = (0..4_096).map(|request| Owed { request, ..OWED });
+    let holds: Vec<Owes> = burst.clone().map(|owed| Owes::Holds { owed, answer: ANSWER }).collect();
+    let answers: Vec<Owes> = burst.map(|owed| Owes::Answers { owed, answer: ANSWER }).collect();
+    let mut owing = Owing::default();
+
+    let held = owing.file(actor(1), &holds, CHAIN).is_ok();
+    let answered = owing.file(actor(1), &answers, CHAIN).is_ok();
+
+    assert!(held, "the turn holds each request");
+    assert!(answered, "the next answers each");
+    assert!(owing.debts.capacity() <= 2 * REQUESTS_KEPT, "the debts give back their room");
+    assert!(owing.answered.capacity() <= 2 * REQUESTS_KEPT, "and so does the stack of what the turn answered");
 }

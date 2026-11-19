@@ -31,6 +31,12 @@
 //!   starts the next frame once all have answered. A body lives up to 32 frames, a few expiring each frame, and the
 //!   region puts a new one in the place of each.
 //!
+//! And four of requests (ADR-0017): 64 askers each ask 4,096 questions, 64 at once, the next 64 once all are
+//! answered, of one keeper (`-one`) or spread over 16 (`-children`), and the root tells each asker to start as it
+//! begins. In `ask-*` the keeper answers each question in the turn that handles it; in `hold-*` it holds each, asks a
+//! stamper for a stamp, and answers what it held when the stamp comes back, so `hold-one`'s keeper holds up to all
+//! 4,096 of a round at once. A request is two pieces of mail in `ask-*`, and four in `hold-*`.
+//!
 //! As in Savina, each program's root sends its first mail from a turn, on a start message: it tells its last child
 //! the program can start as it begins, and sends on the child's answer. `count-begin` is `count` with the producer sending everything from its `begin`
 //! instead, which runs between steps: it is beside the programs to show what a root that sends a great deal as it
@@ -46,8 +52,8 @@
 
 use aethereal_actor::guard::Child;
 use aethereal_actor::{
-    Actor, ActorRef, Admits, Anywhere, Beginning, ChildOf, Fault, Guard, Handles, ListsChild, PlacesBeneath, Root,
-    Spawn, Speaks, Turn, actor, parent,
+    Actor, ActorRef, Admits, Answered, Anywhere, Beginning, ChildOf, Fault, Guard, Handles, Held, Later, ListsChild,
+    PlacesBeneath, Root, Spawn, Speaks, Turn, actor, parent,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{Bound, Plain};
@@ -84,6 +90,12 @@ const WORLD_REGIONS: u64 = 16;
 const WORLD_BODIES: u64 = 256;
 const WORLD_FRAMES: u64 = 64;
 const WORLD_LIFE: u64 = 32;
+/// How many askers the request programs have, how many questions each asks, and how many it asks at once.
+const ASKERS: u64 = 64;
+const ASKED: u64 = 4_096;
+const ASKED_AT_ONCE: u64 = 64;
+/// How many keepers the request programs that split their answering among children have.
+const KEEPERS: u64 = 16;
 
 /// A ping with this many to go after it.
 #[derive(Plain)]
@@ -935,6 +947,238 @@ impl Body {
     }
 }
 
+/// A question a keeper answers in the turn that handles it.
+#[derive(Plain)]
+#[kind(name = "aether.savina.question")]
+struct Question {
+    value: u64,
+}
+
+/// A question a keeper holds: it asks the stamper for a stamp, and answers what it held once the stamp comes back.
+#[derive(Plain)]
+#[kind(name = "aether.savina.fetch")]
+struct Fetch {
+    value: u64,
+}
+
+/// The answer to a [`Question`] or a [`Fetch`]: how many the keeper has answered.
+#[derive(Plain)]
+#[kind(name = "aether.savina.reply")]
+struct Reply {
+    answered: u64,
+}
+
+/// What a keeper asks the stamper for each fetch it holds.
+#[derive(Plain)]
+#[kind(name = "aether.savina.stamp")]
+struct Stamp {
+    value: u64,
+}
+
+/// The stamper's answer to a [`Stamp`].
+#[derive(Plain)]
+#[kind(name = "aether.savina.stamped")]
+struct Stamped {
+    value: u64,
+}
+
+/// What an asker keeps for each question it waits on: nothing.
+#[derive(Plain)]
+#[kind(name = "aether.savina.pending")]
+struct Pending;
+
+/// What a keeper keeps for each stamp it waits on: the fetch it holds.
+#[derive(Bound)]
+#[kind(name = "aether.savina.stamping")]
+struct Stamping {
+    held: Held<Reply>,
+}
+
+/// Why a request program went wrong: an answer did not come.
+#[derive(Plain)]
+#[kind(name = "aether.savina.no_answer")]
+struct NoAnswer;
+
+/// The fault of an answer that did not come.
+fn no_answer() -> Fault {
+    Fault::new(&NoAnswer).unwrap_or_else(|_| unreachable!("a unit encodes"))
+}
+
+/// What the root of a request program is made from: how many keepers answer, and whether they hold what they are
+/// asked.
+#[derive(Plain)]
+#[kind(name = "aether.savina.questioning")]
+struct Questioning {
+    keepers: u64,
+    holds: bool,
+}
+
+/// The root of a request program: it spawns the stamper, the keepers, and the askers, and tells each asker to start
+/// as it begins.
+#[derive(Plain)]
+#[kind(name = "aether.savina.questions")]
+struct Questions;
+
+#[actor(key = u64, spawns(Stamper, Keeper, Asker))]
+impl Questions {
+    fn begin(questioning: Questioning, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
+        let Ok(stamper) = turn.spawn::<Stamper>(&0, Number { number: 0 }) else {
+            panic!("the stamper begins");
+        };
+        let keepers = (0..questioning.keepers).map(|number| turn.spawn::<Keeper>(&number, Keeping { stamper }));
+        let keepers = keepers.collect::<Result<Vec<_>, _>>().unwrap_or_else(|_| panic!("a keeper begins"));
+        for number in 0..ASKERS {
+            let asking = Asking { keepers: keepers.clone(), holds: questioning.holds };
+            let Ok(asker) = turn.spawn::<Asker>(&number, asking) else {
+                panic!("an asker begins");
+            };
+            turn.to(asker).send(&Start)?;
+        }
+
+        Ok(Self)
+    }
+}
+
+/// The stamper of a request program: it answers each stamp in the turn that handles it.
+#[derive(Plain)]
+#[kind(name = "aether.savina.stamper")]
+struct Stamper;
+
+#[actor(key = u64, parent = Questions)]
+impl Stamper {
+    fn begin(_: Number) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    #[request]
+    fn stamp(&mut self, Stamp { value }: Stamp) -> Result<Stamped, Fault> {
+        Ok(Stamped { value: value.rotate_left(1) })
+    }
+}
+
+/// What a keeper is made from: the stamper it asks for a stamp for each fetch it holds.
+#[derive(Bound)]
+#[kind(name = "aether.savina.keeping")]
+struct Keeping {
+    stamper: ActorRef<Stamper>,
+}
+
+/// A keeper of a request program: it answers a question at once, and holds a fetch until the stamp it asks for it
+/// comes back, so it holds as many fetches as are asked of it at once. It counts what it answers.
+#[derive(Bound)]
+#[kind(name = "aether.savina.keeper")]
+struct Keeper {
+    stamper: ActorRef<Stamper>,
+    answered: u64,
+}
+
+#[actor(key = u64, parent = Questions)]
+impl Keeper {
+    fn begin(keeping: Keeping) -> Result<Self, Fault> {
+        Ok(Self { stamper: keeping.stamper, answered: 0 })
+    }
+
+    #[request]
+    fn question(&mut self, _: Question) -> Result<Reply, Fault> {
+        self.answered += 1;
+
+        Ok(Reply { answered: self.answered })
+    }
+
+    #[request]
+    fn fetch(&mut self, Fetch { value }: Fetch, turn: &mut Turn<'_, Self>) -> Result<Later<Reply>, Fault> {
+        let (held, later) = turn.hold();
+        turn.to(self.stamper).ask(&Stamp { value }, &Stamping { held })?;
+
+        Ok(later)
+    }
+
+    #[answer]
+    fn stamped(
+        &mut self,
+        (answered, stamping): (Answered<Stamped>, Stamping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(_) = answered else {
+            return Err(no_answer());
+        };
+        self.answered += 1;
+        turn.answer(stamping.held, &Reply { answered: self.answered })?;
+
+        Ok(())
+    }
+}
+
+/// What an asker is made from: the keepers it asks, and whether it asks what they hold.
+#[derive(Bound)]
+#[kind(name = "aether.savina.asking")]
+struct Asking {
+    keepers: Vec<ActorRef<Keeper>>,
+    holds: bool,
+}
+
+/// An asker of a request program: it asks a batch of questions at once, spread over the keepers, and the next batch
+/// once all are answered, until it has asked all it asks.
+#[derive(Bound)]
+#[kind(name = "aether.savina.asker")]
+struct Asker {
+    keepers: Vec<ActorRef<Keeper>>,
+    holds: bool,
+    asked: u64,
+    answered: u64,
+}
+
+#[actor(key = u64, parent = Questions)]
+impl Asker {
+    fn begin(asking: Asking) -> Result<Self, Fault> {
+        Ok(Self { keepers: asking.keepers, holds: asking.holds, asked: 0, answered: 0 })
+    }
+
+    #[tell]
+    fn start(&mut self, _: Start, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.ask_batch(turn)
+    }
+
+    #[answer]
+    fn reply(&mut self, (answered, _): (Answered<Reply>, Pending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(_) = answered else {
+            return Err(no_answer());
+        };
+        self.answered += 1;
+        if self.answered == ASKED {
+            QUESTIONS_ANSWERED.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let is_batch_done = self.answered == self.asked;
+        let is_more = self.asked < ASKED;
+        if is_batch_done && is_more {
+            self.ask_batch(turn)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Asker {
+    /// Asks the next batch of questions, each of the next keeper in turn.
+    fn ask_batch(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let end = (self.asked + ASKED_AT_ONCE).min(ASKED);
+        let count = u64::try_from(self.keepers.len()).unwrap_or(1).max(1);
+        for value in self.asked..end {
+            let picked = usize::try_from(value % count).unwrap_or(0);
+            let keeper = self.keepers[picked];
+            if self.holds {
+                turn.to(keeper).ask(&Fetch { value }, &Pending)?;
+            } else {
+                turn.to(keeper).ask(&Question { value }, &Pending)?;
+            }
+        }
+        self.asked = end;
+
+        Ok(())
+    }
+}
+
 /// How many actors and pieces of mail a program makes.
 struct Size {
     actors: u64,
@@ -1088,6 +1332,36 @@ fn world_size() -> Size {
     }
 }
 
+/// The roots of a request program, its answering split among `KEEPERS` keepers, which hold what they are asked when
+/// `HOLDS`.
+fn questions<const KEEPERS: u64, const HOLDS: bool>(engine: &mut Engine, round: u64) {
+    let Ok(_) = engine.add_root::<Questions>(&round, Questioning { keepers: KEEPERS, holds: HOLDS }) else {
+        panic!("the root begins");
+    };
+}
+
+/// How many askers of a request program have had every question answered since its last run was checked.
+static QUESTIONS_ANSWERED: AtomicU64 = AtomicU64::new(0);
+
+/// Stops the benchmark unless every asker of a request program's last run had every question answered: an asker
+/// waiting on an answer that was lost goes idle unseen, and the run looks quicker.
+fn questions_check() {
+    let answered = QUESTIONS_ANSWERED.swap(0, Ordering::Relaxed);
+    assert_eq!(answered, ASKERS, "every asker has every question answered");
+}
+
+/// A request program's size: the root, the stamper, `KEEPERS` keepers, and the askers; each asker's start, and each
+/// question and its answer, with a stamp and its answer beside each that is held when `HOLDS`.
+const fn questions_size<const KEEPERS: u64, const HOLDS: bool>() -> Size {
+    let each = if HOLDS {
+        4
+    } else {
+        2
+    };
+
+    Size { actors: 2 + KEEPERS + ASKERS, mails: ASKERS * (1 + each * ASKED) }
+}
+
 /// The wide churn program's size: each root's share of the churn program, and the roots.
 fn churn_wide_size() -> Size {
     let lived = CHURN_TOTAL / CHURN_SPAWNERS * CHURN_SPAWNERS;
@@ -1095,7 +1369,7 @@ fn churn_wide_size() -> Size {
     Size { actors: lived + CHURN_SPAWNERS, mails: lived * (CHURN_LIFE + 2) + 2 * CHURN_SPAWNERS }
 }
 
-const PROGRAMS: [Program; 10] = [
+const PROGRAMS: [Program; 14] = [
     Program {
         name: "pingpong",
         size: || Size { actors: 2, mails: 2 * PINGS },
@@ -1139,6 +1413,20 @@ const PROGRAMS: [Program; 10] = [
     },
     Program { name: "churn-wide", size: churn_wide_size, start: churn_wide, check: unchecked },
     Program { name: "world", size: world_size, start: world, check: world_check },
+    Program { name: "ask-one", size: questions_size::<1, false>, start: questions::<1, false>, check: questions_check },
+    Program {
+        name: "ask-children",
+        size: questions_size::<KEEPERS, false>,
+        start: questions::<KEEPERS, false>,
+        check: questions_check,
+    },
+    Program { name: "hold-one", size: questions_size::<1, true>, start: questions::<1, true>, check: questions_check },
+    Program {
+        name: "hold-children",
+        size: questions_size::<KEEPERS, true>,
+        start: questions::<KEEPERS, true>,
+        check: questions_check,
+    },
 ];
 
 /// One run of `program` on `workers` workers, each part running at most `hops` fused hops a step: the nanoseconds it

@@ -17,6 +17,8 @@ aethereal-data-derive = { path = "../aethereal-data-derive" }
 crossbeam-queue = { workspace = true }
 # A desk blocks on its program's bootstrap, as the native hosts do (ADR-0029, ADR-0036).
 pollster = { workspace = true, optional = true }
+# A map under the numbers the engine counts out itself, with a hash that is the same on every run.
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 # An integration test reads actors' state through the engine, which only this feature opens (ADR-0036).

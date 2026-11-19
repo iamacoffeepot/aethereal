@@ -27,6 +27,7 @@ mod lives;
 mod log;
 mod mail;
 mod program;
+mod room;
 mod stages;
 mod stats;
 mod stream;

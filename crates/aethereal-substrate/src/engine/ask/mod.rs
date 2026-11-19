@@ -6,8 +6,11 @@ mod tests;
 #[cfg(test)]
 mod unreadable;
 
+use super::REQUESTS_KEPT;
 use super::due::Expiring;
+use crate::room::trim_table;
 use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, Tie, Tied, Unanswered};
+use rustc_hash::FxHashMap;
 
 /// The contexts an actor's requests keep until they are answered, beside it in its seat, under each request's count
 /// (ADR-0017). Dropped with the actor.
@@ -29,45 +32,9 @@ enum Asks {
     Waits(Box<Filed>),
 }
 
-/// The requests an actor that has asked waits on now, each with its context.
-///
-/// Each request's count is kept again in a list of its own, in the same order, so a request is found by a walk over
-/// counts alone, whatever an [`Asking`] holds beside it.
-#[derive(Default)]
-struct Filed {
-    counts: Vec<u64>,
-    asks: Vec<Asking>,
-}
-
-impl Filed {
-    /// Where the request of the count `count` lies, when it waits on it.
-    fn at(&self, count: u64) -> Option<usize> {
-        self.counts.iter().position(|filed| *filed == count)
-    }
-
-    /// The request of the count `count`, when it waits on it.
-    fn find(&self, count: u64) -> Option<&Asking> {
-        self.at(count).map(|at| &self.asks[at])
-    }
-
-    /// Files `asking`.
-    fn push(&mut self, asking: Asking) {
-        self.counts.push(asking.count);
-        self.asks.push(asking);
-    }
-
-    /// Lets go of the request that lies at `at`.
-    fn remove(&mut self, at: usize) {
-        self.counts.swap_remove(at);
-        self.asks.swap_remove(at);
-    }
-
-    /// Files the request that lies at `at` again, under the count `count`.
-    fn refile(&mut self, at: usize, count: u64) {
-        self.counts[at] = count;
-        self.asks[at].count = count;
-    }
-}
+/// The requests an actor that has asked waits on now, each with its context, under its count: so an answer finds its
+/// context without a walk over the others, however many the actor waits on.
+type Filed = FxHashMap<u64, Asking>;
 
 /// What an item is to the asker it is handed to.
 #[derive(Clone, Copy)]
@@ -134,17 +101,21 @@ impl Waiting {
         self.forget_count(count);
     }
 
-    /// Lets go of the context the request of the count `count` kept, when it still waits on it.
+    /// Lets go of the context the request of the count `count` kept, when it still waits on it, and the room of the
+    /// requests it waited on when it waits on none now.
     fn forget_count(&mut self, count: u64) {
-        if let Asks::Waits(filed) = &mut self.asks
-            && let Some(at) = filed.at(count)
-        {
-            filed.remove(at);
+        if let Asks::Waits(filed) = &mut self.asks {
+            filed.remove(&count);
+            trim_table(filed, REQUESTS_KEPT);
         }
     }
 
     /// Files the requests a turn of the actor `me` asked, each with its context, and adds each with a deadline to
     /// `expiring`, for the engine to keep by when it is due (ADR-0041).
+    ///
+    /// Kept out of line: every actor's birth calls it, through [`Self::of_begin`], and most file nothing. Inlined there,
+    /// the map's insert made a spawn dearer, by about 3 percent of a piece of mail in `churn`, measured.
+    #[inline(never)]
     pub(super) fn file(&mut self, me: Seated, asks: impl Iterator<Item = Asking>, expiring: &mut Vec<Expiring>) {
         let mut asks = asks.peekable();
         // Most turns ask nothing.
@@ -159,7 +130,7 @@ impl Waiting {
                 if let Due::Before(at) = asking.due {
                     expiring.push(Expiring::at(at, me, asking.count));
                 }
-                filed.push(asking);
+                filed.insert(asking.count, asking);
             }
         }
     }
@@ -172,10 +143,11 @@ impl Waiting {
         let Asks::Waits(filed) = &mut self.asks else {
             return false;
         };
-        let Some(at) = filed.at(count) else {
+        let Some(mut asking) = filed.remove(&count) else {
             return false;
         };
-        filed.refile(at, notice);
+        asking.count = notice;
+        filed.insert(notice, asking);
 
         true
     }
@@ -187,7 +159,7 @@ impl Waiting {
             return None;
         };
 
-        filed.find(count).map(|asking| asking.answer)
+        filed.get(&count).map(|asking| asking.answer)
     }
 
     /// What mail tied as `tie` is to the actor: when it is an answer, the context it kept for the request it answers,
@@ -213,7 +185,7 @@ impl Waiting {
         let Asks::Waits(filed) = &self.asks else {
             return Answering::Stray;
         };
-        let Some(asking) = filed.find(count) else {
+        let Some(asking) = filed.get(&count) else {
             return Answering::Stray;
         };
         if is_answer {

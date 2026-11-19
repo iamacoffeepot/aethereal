@@ -2,7 +2,7 @@
 //! (ADR-0017).
 
 use super::super::*;
-use super::{Answering, Waiting, owed};
+use super::{Answering, Asks, Waiting, owed};
 use aethereal_actor::Written;
 use aethereal_actor::{
     ActorRef, Answered, Anywhere, Asking, Bytes, Due, Ending, Fault, Held, Reply, Tie, Turn, Unanswered, child,
@@ -642,6 +642,27 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
         assert!(kept, "{answer:?}");
         assert!(matches!(waiting.answering(answer), Answering::Stray), "{answer:?}");
     }
+}
+
+#[test]
+fn an_actor_whose_burst_of_requests_was_answered_gives_back_their_room() {
+    // Catches a table of contexts that keeps the room of the most requests its actor ever waited on, for as long as
+    // the actor lives.
+    let mut waiting = Waiting::default();
+    let mut asked = Asked::new();
+    let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
+    let asking =
+        |count| Asking { count, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
+
+    waiting.file(me, (1..=4_096).map(asking), &mut Vec::new());
+    for count in 1..=4_096 {
+        waiting.settle(me, Tie::answers(count), &mut asked, &Ok(()), &mut Vec::new());
+    }
+
+    let Asks::Waits(filed) = &waiting.asks else {
+        panic!("the actor has asked");
+    };
+    assert!(filed.capacity() <= 2 * REQUESTS_KEPT, "{}", filed.capacity());
 }
 
 #[test]

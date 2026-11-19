@@ -2569,11 +2569,13 @@ impl Lists {
     }
 
     /// Settles `changes`, the changes to how many values hold each debt the turns of a part made, against the debts
-    /// of `actors`, the part's: each asker of a debt no value holds any longer is told it went unanswered (ADR-0017).
+    /// of `actors`, the part's, and empties it: each asker of a debt no value holds any longer is told it went
+    /// unanswered (ADR-0017).
     #[cold]
     #[inline(never)]
     fn let_go(&mut self, asked: &mut Asked, actors: &mut BySeat<Held>, changes: &mut Vec<holders::Change>) {
-        for (owed, by) in debts::summed(changes) {
+        debts::sum(changes);
+        for (owed, by) in changes.drain(..) {
             let Some(held) = actors.get_mut(owed.holder) else {
                 continue;
             };
@@ -2777,6 +2779,11 @@ pub const MOST_KEPT_BYTES: usize = 16 << 20;
 
 /// How many seats in other parts a part is given in each step it runs, for its children past its room.
 const ASIDE: usize = 8;
+
+/// How many requests' room an actor's table of the requests it holds, or waits on, keeps once it is emptied: as many
+/// as a busy actor keeps out at once (each `savina` asker keeps 64), in a few kilobytes, so an actor that holds no
+/// more never gives room back to take it again.
+const REQUESTS_KEPT: usize = 64;
 
 /// Which of the two arenas of each writer step `step` writes.
 const fn parity(step: u64) -> usize {

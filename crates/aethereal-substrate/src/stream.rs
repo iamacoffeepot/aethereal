@@ -1,5 +1,6 @@
 //! The view of what each actor has to react to (ADR-0009, ADR-0011).
 
+use crate::room::trim;
 use crate::watch::Notice;
 use crate::{Context, Envelope, Tying, View};
 use aethereal_actor::{
@@ -141,14 +142,6 @@ pub const IDLE_STEPS: u32 = 4;
 
 /// The fewest items a list of a part's stream keeps room for once it is emptied.
 const KEPT_LEAST: usize = 256;
-
-/// Empties nothing, and gives back what room `list`, an empty list, has past `room`.
-fn trim<T>(list: &mut Vec<T>, room: usize) {
-    let is_spare = list.is_empty() && list.capacity() > room;
-    if is_spare {
-        list.shrink_to(room);
-    }
-}
 
 /// Where an item stands in its stream: its source's bits, then the order that source caused it in.
 pub type Order = (u64, u64);

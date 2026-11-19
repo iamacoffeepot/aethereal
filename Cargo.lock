@@ -328,6 +328,7 @@ dependencies = [
  "aethereal-substrate",
  "crossbeam-queue",
  "pollster",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]

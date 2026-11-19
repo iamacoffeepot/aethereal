@@ -1,6 +1,7 @@
 //! A view: state many actors read, folded from the effects of finished turns (ADR-0011).
 
 use crate::Context;
+use crate::room::trim;
 use aethereal_actor::{Arena, Effect};
 use std::mem;
 use std::num::NonZeroUsize;
@@ -279,10 +280,7 @@ impl<V: View> Routed<V> {
         let Some(bucket) = self.buckets.get_mut(part) else {
             return;
         };
-        let is_spare = bucket.is_empty() && bucket.capacity() > room;
-        if is_spare {
-            bucket.shrink_to(room);
-        }
+        trim(bucket, room);
     }
 
     /// Puts one record under `key` in the bucket of the part it falls in.
