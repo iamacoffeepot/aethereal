@@ -3,7 +3,7 @@
 use crate::watch::Notice;
 use crate::{Context, Envelope, Tying, View};
 use aethereal_actor::{
-    Arena, CARRIED, Due, Effect, Ended, MailId, Mailed, Payload, Pinning, SeatNumber, Seated, Tie, within,
+    Arena, CARRIED, Due, Effect, Ended, MailId, Mailed, Payload, Pinning, SeatNumber, Seated, SectionKey, Tie, within,
 };
 use aethereal_data::ActorId;
 use std::iter;
@@ -70,6 +70,7 @@ pub struct Shard {
 struct Segment {
     seat: u64,
     to: u64,
+    section: SectionKey,
     range: Range<usize>,
 }
 
@@ -77,8 +78,11 @@ struct Segment {
 /// bits, the runs of the backlog it carried over, which come first, and where what arrived for it lies.
 #[derive(Clone, Copy)]
 pub struct Run {
+    /// The number of the seat, or of the lane of a section of a keyed actor (spike: keyed sections).
     pub seat: u64,
     pub bits: u64,
+    /// The section of a keyed actor the run is for, or the whole actor.
+    pub section: SectionKey,
     carried: Span,
     fresh: Span,
 }
@@ -161,6 +165,8 @@ pub type Order = (u64, u64);
 pub struct Entry {
     /// The bits of the actor it is for.
     to: u64,
+    /// The section of that actor it is for, as its sender stamped it, or the whole actor (spike: keyed sections).
+    section: SectionKey,
     /// Where it stands in that actor's stream. For mail, its id: its sender's bits and that sender's count.
     order: Order,
     item: Stored,
@@ -200,7 +206,7 @@ impl Shard {
         self.segments.clear();
         // Hops carried after an actor was cut off add runs behind those of the actors after it: a stable sort keeps
         // each actor's in order.
-        self.handing.sort_by_key(|segment| (segment.seat, segment.to));
+        self.handing.sort_by_key(|segment| (segment.seat, segment.to, segment.section));
         let is_drained = self.handing.is_empty();
         if is_drained {
             self.backlog.clear();
@@ -224,25 +230,28 @@ impl Shard {
         // What was handed out at the last step is the list items now arrive in.
         let room = self.room();
         trim(&mut self.arrived, room);
-        self.handed.sort_unstable_by_key(|(seat, entry)| (*seat, entry.to, entry.order));
-        self.handed.dedup_by_key(|(seat, entry)| (*seat, entry.to, entry.order));
+        self.handed.sort_unstable_by_key(|(seat, entry)| (*seat, entry.to, entry.section, entry.order));
+        self.handed.dedup_by_key(|(seat, entry)| (*seat, entry.to, entry.section, entry.order));
 
         let mut begins = 0;
         let mut fresh = self
             .handed
-            .chunk_by(|(seat, one), (next_seat, next)| (*seat, one.to) == (*next_seat, next.to))
+            .chunk_by(|(seat, one), (next_seat, next)| {
+                (*seat, one.to, one.section) == (*next_seat, next.to, next.section)
+            })
             .map(|run| {
                 let range = begins..begins + run.len();
                 begins = range.end;
 
-                (run[0].0, run[0].1.to, range)
+                ((run[0].0, run[0].1.to, run[0].1.section), range)
             })
             .peekable();
         // Most steps carry nothing over, and the runs are what arrived.
         if self.handing.is_empty() {
-            runs.extend(fresh.map(|(seat, bits, fresh)| Run {
+            runs.extend(fresh.map(|((seat, bits, section), fresh)| Run {
                 seat,
                 bits,
+                section,
                 carried: Span::of(0..0),
                 fresh: Span::of(fresh),
             }));
@@ -250,8 +259,8 @@ impl Shard {
         }
         let mut segment = 0;
         loop {
-            let carried_key = self.handing.get(segment).map(|run| (run.seat, run.to));
-            let fresh_key = fresh.peek().map(|(seat, bits, _)| (*seat, *bits));
+            let carried_key = self.handing.get(segment).map(|run| (run.seat, run.to, run.section));
+            let fresh_key = fresh.peek().map(|(key, _)| *key);
             let key = match (carried_key, fresh_key) {
                 (None, None) => break,
                 (Some(carried), Some(fresh)) => carried.min(fresh),
@@ -261,14 +270,16 @@ impl Shard {
             while self.is_carried_for(segment, key) {
                 segment += 1;
             }
-            let arrived = fresh.next_if(|(seat, bits, _)| (*seat, *bits) == key).map_or(0..0, |(_, _, range)| range);
-            runs.push(Run { seat: key.0, bits: key.1, carried: Span::of(first..segment), fresh: Span::of(arrived) });
+            let arrived = fresh.next_if(|(found, _)| *found == key).map_or(0..0, |(_, range)| range);
+            let (seat, bits, section) = key;
+            runs.push(Run { seat, bits, section, carried: Span::of(first..segment), fresh: Span::of(arrived) });
         }
     }
 
-    /// Whether the carried segment `segment` is there, and of the actor `key` names, by its seat and its bits.
-    fn is_carried_for(&self, segment: usize, key: (u64, u64)) -> bool {
-        self.handing.get(segment).is_some_and(|run| (run.seat, run.to) == key)
+    /// Whether the carried segment `segment` is there, and of the actor `key` names, by its seat, its bits, and the
+    /// section.
+    fn is_carried_for(&self, segment: usize, key: (u64, u64, SectionKey)) -> bool {
+        self.handing.get(segment).is_some_and(|run| (run.seat, run.to, run.section) == key)
     }
 
     /// Moves what the backlog still holds to the front of its lists, in order, and drops what was handed out of it.
@@ -355,7 +366,7 @@ impl Shard {
     /// bytes out of `mail`, the writers' arenas, which later steps write on.
     pub fn carry(&mut self, run: &Run, mut taken: u32, mail: &[Arena]) {
         for index in run.carried.range() {
-            let Segment { seat, to, range } = self.handing[index].clone();
+            let Segment { seat, to, section, range } = self.handing[index].clone();
             let mut start = range.start;
             loop {
                 let is_left = start < range.end;
@@ -378,7 +389,7 @@ impl Shard {
                 taken = 0;
             }
             if start < range.end {
-                self.segments.push(Segment { seat, to, range: start..range.end });
+                self.segments.push(Segment { seat, to, section, range: start..range.end });
             }
         }
 
@@ -418,10 +429,11 @@ impl Shard {
             let (sender, count) = entry.order;
             let order = (sender, count + u64::from(taken));
             taken = 0;
-            self.backlog.push((seat, Entry { to: entry.to, order, item }));
+            self.backlog.push((seat, Entry { to: entry.to, section: entry.section, order, item }));
         }
         if self.backlog.len() > begins {
-            self.segments.push(Segment { seat: run.seat, to: run.bits, range: begins..self.backlog.len() });
+            let range = begins..self.backlog.len();
+            self.segments.push(Segment { seat: run.seat, to: run.bits, section: run.section, range });
         }
     }
 
@@ -444,18 +456,19 @@ impl Shard {
         self.backlog_bytes.extend_from_slice(bytes);
         arena.pin_copied(written, start, &mut self.backlog_pins);
         let bytes = Payload::InArena { slot: CARRIED, start, len, pieces: 1 };
-        let entry = Entry { to: to.id.bits(), order, item: Stored::Mail(envelope(bytes)) };
+        let entry = Entry { to: to.id.bits(), section: SectionKey::WHOLE, order, item: Stored::Mail(envelope(bytes)) };
         let seat = to.seat.number();
         let at = self.backlog.len();
         self.backlog.push((seat, entry));
-        let goes_on =
-            self.segments.last().is_some_and(|last| (last.seat, last.to) == (seat, entry.to) && last.range.end == at);
+        let goes_on = self.segments.last().is_some_and(|last| {
+            (last.seat, last.to, last.section) == (seat, entry.to, SectionKey::WHOLE) && last.range.end == at
+        });
         if goes_on {
             if let Some(last) = self.segments.last_mut() {
                 last.range.end = at + 1;
             }
         } else {
-            self.segments.push(Segment { seat, to: entry.to, range: at..at + 1 });
+            self.segments.push(Segment { seat, to: entry.to, section: SectionKey::WHOLE, range: at..at + 1 });
         }
     }
 
@@ -494,7 +507,7 @@ impl Shard {
         let order = (ended.actor().seated().id.bits(), u64::MAX);
         self.arrived_endings.push((ended, context));
         let item = Stored::Ended(self.arrived_endings.len() - 1);
-        self.arrived.push((to.seat.number(), Entry { to: to.id.bits(), order, item }));
+        self.arrived.push((to.seat.number(), Entry { to: to.id.bits(), section: SectionKey::WHOLE, order, item }));
     }
 
     /// How many items an emptied list of the part keeps room for: twice what it has been handed in a step of late.
@@ -752,12 +765,32 @@ impl View for Streams {
 /// envelope.
 #[must_use]
 pub fn entry(mailed: Mailed, context: &Context) -> (u64, Entry) {
-    let Mailed { by, sent_as, to, count, kind, bytes, tie, due } = mailed;
+    let Mailed { by, sent_as, to, count, kind, bytes, tie, due, section } = mailed;
     let (root, depth, tying) = (context.root, context.depth, Tying::of(tie, due));
     let envelope = Envelope { sender_seat: by.seat, sent_as, root, depth, kind, bytes, tying };
-    let entry = Entry { to: to.id.bits(), order: (by.id.bits(), count), item: Stored::Mail(envelope) };
+    let entry = Entry { to: to.id.bits(), section, order: (by.id.bits(), count), item: Stored::Mail(envelope) };
+    // A section of a keyed actor is kept in the part of its lane, spread across the parts by its key, and not in the
+    // part of its actor's seat (spike: keyed sections).
+    let routed = if section.is_keyed() {
+        lane(to.id.bits(), section)
+    } else {
+        to.seat.number()
+    };
 
-    (to.seat.number(), entry)
+    (routed, entry)
+}
+
+/// The lane of the section `section` of the actor whose bits are `actor`: the number its items are kept under in the
+/// streams, in place of a seat, whose low bits pick its part (spike: keyed sections). A mix of both, so the sections of
+/// one actor spread across every part.
+#[must_use]
+pub const fn lane(actor: u64, section: SectionKey) -> u64 {
+    // SplitMix64's finaliser.
+    let mut mixed = actor ^ section.bits().rotate_left(17);
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+
+    mixed ^ (mixed >> 31)
 }
 
 #[cfg(test)]
@@ -768,7 +801,9 @@ mod tests {
     fn handed(items: u64) -> Shard {
         let mut shard = Shard::default();
         for count in 0..items {
-            shard.arrived.push((0, Entry { to: 1, order: (2, count), item: Stored::Ended(0) }));
+            shard
+                .arrived
+                .push((0, Entry { to: 1, section: SectionKey::WHOLE, order: (2, count), item: Stored::Ended(0) }));
         }
         let mut runs = Vec::new();
         shard.hand(&mut runs);
@@ -794,7 +829,7 @@ mod tests {
         for _ in 1..IDLE_STEPS {
             assert!(!busy.rest());
         }
-        busy.arrived.push((0, Entry { to: 1, order: (2, 0), item: Stored::Ended(0) }));
+        busy.arrived.push((0, Entry { to: 1, section: SectionKey::WHOLE, order: (2, 0), item: Stored::Ended(0) }));
         busy.hand(&mut Vec::new());
         for _ in 1..IDLE_STEPS {
             assert!(!busy.rest());
@@ -812,7 +847,8 @@ mod tests {
         let ended = Ended::new(Seated { id: ActorId::new(3), seat: SeatNumber::new(0) }, aethereal_actor::How::Closed);
         let mut part = Shard::default();
         part.arrived_endings.push((ended, Context { root: chain, depth: 1 }));
-        part.arrived.push((0, Entry { to: 1, order: (3, u64::MAX), item: Stored::Ended(0) }));
+        part.arrived
+            .push((0, Entry { to: 1, section: SectionKey::WHOLE, order: (3, u64::MAX), item: Stored::Ended(0) }));
         assert!(part.holds_chain(chain), "an ending of the chain has arrived");
         assert!(!part.holds_chain(other));
 
@@ -831,9 +867,13 @@ mod tests {
         // Catches a part that keeps what it carried once it is all handed: the backlog is cleared when a part is next
         // handed, and an idle part is never handed again until mail reaches it.
         let mut part = handed(1);
-        part.backlog.extend((0..10_000).map(|count| (0, Entry { to: 1, order: (2, count), item: Stored::Ended(0) })));
+        part.backlog.extend(
+            (0..10_000).map(|count| {
+                (0, Entry { to: 1, section: SectionKey::WHOLE, order: (2, count), item: Stored::Ended(0) })
+            }),
+        );
         part.backlog_bytes.resize(10_000, 0);
-        part.handing.push(Segment { seat: 0, to: 1, range: 0..10_000 });
+        part.handing.push(Segment { seat: 0, to: 1, section: SectionKey::WHOLE, range: 0..10_000 });
         assert!(!part.has_items());
 
         for _ in 0..IDLE_STEPS {

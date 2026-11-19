@@ -466,6 +466,7 @@ impl Engine {
                 bytes,
                 tie: tied,
                 due: RequestDue::Never,
+                section: aethereal_actor::SectionKey::WHOLE,
             });
         }
         self.arenas[parity][ROOTS] = arena;

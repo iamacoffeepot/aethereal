@@ -132,7 +132,17 @@ impl<K: Kind + Encode<Actors> + Send + 'static> Brings for Fed<K> {
             sent += 1;
             let kind = KindId::of::<K>();
             let (tie, due) = (Tie::TELL, Due::Never);
-            mailed.push(Mailed { by: owner, sent_as, to: owner, count: sent, kind, bytes, tie, due });
+            mailed.push(Mailed {
+                by: owner,
+                sent_as,
+                to: owner,
+                count: sent,
+                kind,
+                bytes,
+                tie,
+                due,
+                section: aethereal_actor::SectionKey::WHOLE,
+            });
         }
 
         Brought { sent, unwritten }

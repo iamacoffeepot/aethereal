@@ -16,6 +16,7 @@ pub use refused::Refused;
 pub use spawn::Spawn;
 pub use to::{Leaves, Lives, Toward, Vantage};
 
+use crate::SectionKey;
 use crate::Submitted;
 use crate::guard::{Anyone, Guard, Sender, SenderType};
 #[cfg(feature = "std")]
@@ -305,7 +306,7 @@ impl Asked {
         };
         let (kind, tie) = (KindId::of::<Unanswered>(), Tie::unanswered(request));
 
-        Mailed { by, sent_as: SentAs::Engine, to, count, kind, bytes, tie, due: Due::Never }
+        Mailed { by, sent_as: SentAs::Engine, to, count, kind, bytes, tie, due: Due::Never, section: SectionKey::WHOLE }
     }
 
     /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
@@ -879,6 +880,23 @@ impl Seat<'_> {
         self.write_after(to, mail, is_like_last, Tie::TELL, Due::Never)
     }
 
+    /// Encodes `mail` and adds the effect that sends it to the section `section` of the keyed actor `to` (spike: keyed
+    /// sections). It joins no run, since a run is one item of one section: the stamp goes on the piece it pushes.
+    #[cfg(feature = "std")]
+    fn write_keyed<K: Kind + Encode<Actors>>(
+        &mut self,
+        to: Seated,
+        mail: &K,
+        section: SectionKey,
+    ) -> Result<(), EncodeError> {
+        self.write_after(to, mail, false, Tie::TELL, Due::Never)?;
+        if let Some(last) = self.asked.buffers.mailed.last_mut() {
+            last.section = section;
+        }
+
+        Ok(())
+    }
+
     /// Answers `mail` to `to`, the source of the item handled, as its handler returned it: the answer to it, when it
     /// is a request this turn has not answered or held, and refused when it has. An answer to mail that asked for
     /// none is dropped, as nothing waits for it (ADR-0017, ADR-0059).
@@ -1017,7 +1035,18 @@ impl Seat<'_> {
             return Ok(());
         }
         let sent_as = SentAs::Actor(self.declared);
-        self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count: self.sent, kind, bytes, tie, due });
+        let section = SectionKey::WHOLE;
+        self.asked.buffers.mailed.push(Mailed {
+            by: self.me,
+            sent_as,
+            to,
+            count: self.sent,
+            kind,
+            bytes,
+            tie,
+            due,
+            section,
+        });
 
         Ok(())
     }
@@ -1044,7 +1073,8 @@ impl Seat<'_> {
         for to in to {
             self.sent += 1;
             let (count, tie, due) = (self.sent, Tie::TELL, Due::Never);
-            self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count, kind, bytes, tie, due });
+            let section = SectionKey::WHOLE;
+            self.asked.buffers.mailed.push(Mailed { by: self.me, sent_as, to, count, kind, bytes, tie, due, section });
         }
 
         Ok(())
@@ -1596,6 +1626,21 @@ impl<'a> Turning<'a> {
         self.source
     }
 
+    /// How many pieces of mail the actor had sent before the turn (spike: keyed sections).
+    #[must_use]
+    pub const fn sent(&self) -> u64 {
+        self.sent
+    }
+
+    /// The same turn, having sent `sent` pieces of mail before it: for a section of a keyed actor, which counts its
+    /// own mail (spike: keyed sections).
+    #[must_use]
+    pub const fn with_sent(mut self, sent: u64) -> Self {
+        self.sent = sent;
+
+        self
+    }
+
     /// Where the item the turn handles stands in its chain.
     #[must_use]
     pub const fn chain(&self) -> Chain {
@@ -2057,6 +2102,11 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
     /// as the handler returns (ADR-0059).
     pub(crate) fn answer_now<K: Kind + Encode<Actors>>(&mut self, mail: &K) -> Result<(), EncodeError> {
         self.seat.reply(self.source, mail)
+    }
+
+    /// How many pieces of mail the actor has sent, this turn's included (spike: keyed sections).
+    pub(crate) const fn sent_count(&self) -> u64 {
+        self.seat.sent
     }
 
     /// How the turn ends, once its handler has returned and its answer is sent: it fails with [`NotOwed`] when it held

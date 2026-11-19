@@ -389,7 +389,17 @@ impl Engine {
             let mail = MailId { sender: by.id, count: sent };
             arrivals.extend(kept.into_iter().map(|kept| Arrival { to: by, by, mail, kept }));
             let sent_as = self.sent_as(by);
-            mailed.push(Mailed { by, sent_as, to: by, count: sent, kind, bytes, tie, due: Due::Never });
+            mailed.push(Mailed {
+                by,
+                sent_as,
+                to: by,
+                count: sent,
+                kind,
+                bytes,
+                tie,
+                due: Due::Never,
+                section: aethereal_actor::SectionKey::WHOLE,
+            });
         }
         self.arenas[parity][ROOTS] = arena;
         // Most jobs are given no resource.

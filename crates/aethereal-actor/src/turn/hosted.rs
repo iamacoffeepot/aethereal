@@ -306,7 +306,17 @@ impl<'a> Hosted<'a> {
             Request::Asks { answer, context, due } => (self.ask(by, count, answer, context, due)?, due),
             Request::Answers { request } => (self.answer(by, to, kind, request)?, Due::Never),
         };
-        let mailed = Mailed { by, sent_as: SentAs::Actor(declared), to, count, kind, bytes, tie, due };
+        let mailed = Mailed {
+            by,
+            sent_as: SentAs::Actor(declared),
+            to,
+            count,
+            kind,
+            bytes,
+            tie,
+            due,
+            section: crate::SectionKey::WHOLE,
+        };
         let pieces = self.seat.asked.buffers.mailed.len();
         self.seat.asked.buffers.mailed.push(mailed);
         self.sent = match self.sent {

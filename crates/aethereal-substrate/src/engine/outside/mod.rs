@@ -413,7 +413,8 @@ impl Engine {
         self.lives.fold_records([lives::sent(by, count)], &[]);
         // The outside states no deadline (ADR-0041).
         let (sent_as, kind) = (self.sent_as(by), KindId::of::<K>());
-        let mailed = Mailed { by, sent_as, to, count, kind, bytes, tie: tie(count), due: Due::Never };
+        let section = aethereal_actor::SectionKey::WHOLE;
+        let mailed = Mailed { by, sent_as, to, count, kind, bytes, tie: tie(count), due: Due::Never, section };
         self.fold_brought(vec![mailed], Vec::new(), parity, |mailed| MailId {
             sender: mailed.by.id,
             count: mailed.count,

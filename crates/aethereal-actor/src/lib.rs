@@ -36,6 +36,8 @@ mod held;
 mod instances;
 mod item;
 mod job;
+#[cfg(feature = "std")]
+mod keyed;
 mod log;
 mod macros;
 mod mail;
@@ -85,7 +87,7 @@ pub use declared::{
     Received, Receives, Role, RootIs, RootsHold, Spawns, StateSchema, Through, TypeList, Untaken, Whole,
 };
 pub use due::Due;
-pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, Seen, Tie, Tied, What};
+pub use effect::{BlobType, Code, Effect, Level, Line, Mailed, SectionKey, Seen, Tie, Tied, What};
 pub use ended::{Ended, How};
 pub use fault::{Fault, Unreadable, Unwritable};
 pub use guard::{Admits, Anyone, Checks, Guard, Itself, Sender, SenderType, SenderTypes, Sent, SentBy, Speaks};
@@ -100,6 +102,10 @@ pub use item::Item;
 pub use job::{Copied, Driven, Fills, Job, JobCode, JobId, Runner, Running, Submitted, Unrun, Working};
 #[cfg(feature = "std")]
 pub use job::{JobList, JobType, Lending, Outcome, Produced, lending};
+#[cfg(feature = "std")]
+pub use keyed::{
+    KeyOf, KeyedTarget, RunsSections, SectionHandler, SectionRunner, SectionStore, Sectioned, hand_section, is_of,
+};
 pub use log::{ActorName, Entry, KeptLog, Logged, Named, Recent, RecentRing, Recorded};
 pub use macros::{Guard, Sent, actor, protocol};
 pub use mail::{Mail, MailId, SentAs};

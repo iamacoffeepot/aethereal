@@ -134,6 +134,50 @@ pub struct Mailed {
     pub tie: Tie,
     /// When the request it is stops being waited for: `Never` for mail that asks nothing (ADR-0041).
     pub due: Due,
+    /// The section of its receiver it is for, which its sender worked out from the mail as it sent it, or the whole
+    /// actor (spike: keyed sections).
+    pub section: SectionKey,
+}
+
+/// Which section of a keyed actor a piece of mail is for, stamped on it at the send by the sender, which knows the
+/// receiver's type and so how that type finds the key of the mail (spike: keyed sections). The engine routes on the
+/// stamp and never reads the mail to find a key.
+///
+/// It is eight bytes, as a [`Tie`] is: the top bit marks a key, so a key is any number below `2^63`, and the rest is
+/// the key. Mail for an actor that is not split into sections carries [`Self::WHOLE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SectionKey(u64);
+
+/// The bit that marks a stamp as a key.
+const KEYED: u64 = 1 << 63;
+
+impl SectionKey {
+    /// The whole actor: mail for an actor that is not split into sections.
+    pub const WHOLE: Self = Self(0);
+
+    /// The section `key` names, its top bit dropped.
+    #[must_use]
+    pub const fn of(key: u64) -> Self {
+        Self(key | KEYED)
+    }
+
+    /// Whether it names a section.
+    #[must_use]
+    pub const fn is_keyed(self) -> bool {
+        self.0 & KEYED != 0
+    }
+
+    /// The key of the section it names: nought for the whole actor.
+    #[must_use]
+    pub const fn key(self) -> u64 {
+        self.0 & !KEYED
+    }
+
+    /// Its eight bytes.
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
 }
 
 /// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).

@@ -3,6 +3,7 @@
 use super::birth::{self, Birth};
 use super::costs::{CostKey, Costs, ItemKind};
 use super::gift::{self, Arrival};
+use super::keyed::KeyedActors;
 use super::{Held, Seating, Sitting, item_kind};
 use crate::heads::Heads;
 use crate::stages::Stages;
@@ -79,6 +80,8 @@ impl Pile {
 /// The engine as a step's workers read it while they fold: what turns are expected to cost (ADR-0011).
 pub struct Folding<'a> {
     pub(super) costs: &'a Costs,
+    /// The keyed actors, the kinds of whose sections' items are found by their actors (spike: keyed sections).
+    pub(super) keyed: &'a KeyedActors,
     /// How long an actor kept to a slice runs in a step, in nanoseconds.
     pub(super) slice: u64,
     /// The step's arenas, by writer, where the text of the lines its turns logged lies.
@@ -107,8 +110,14 @@ impl Folding<'_> {
             pile.stages.fold(self.written);
             pile.heads.fold(self.written);
             pile.watches.shard_mut().settle(&mut pile.forward);
-            pile.expected =
-                expected(pile.streams.shard(), pile.lives.shard(), &pile.seating.seated, self.costs, self.slice);
+            pile.expected = expected(
+                pile.streams.shard(),
+                pile.lives.shard(),
+                &pile.seating.seated,
+                self.keyed,
+                self.costs,
+                self.slice,
+            );
         }
 
         fold
@@ -121,13 +130,16 @@ pub(super) fn expected(
     streams: &stream::Shard,
     lives: &lives::Shard,
     seated: &BySeat<Sitting>,
+    keyed: &KeyedActors,
     costs: &Costs,
     slice: u64,
 ) -> u64 {
     // Items that arrive together are mostly for one kind of actor, of one kind, so the last cost looked up is kept.
     let mut last = None;
     let mut cost = |me: Seated, item: ItemKind| {
-        let Some(actor) = seated.get(me).map(|sitting| sitting.kind) else {
+        // A section of a keyed actor lies in the part of its lane, not of its actor's seat (spike: keyed sections).
+        let found = seated.get(me).map(|sitting| sitting.kind).or_else(|| keyed.kind_of(me.id.bits()));
+        let Some(actor) = found else {
             return 0;
         };
         let key = CostKey { actor, item };

@@ -1,6 +1,8 @@
 //! What a turn's `to` hands back: a target, found once, that sends and asks chain on (ADR-0016, ADR-0022).
 
 use super::Seat;
+#[cfg(feature = "std")]
+use crate::KeyedTarget;
 use crate::{
     Actors, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
 };
@@ -58,6 +60,22 @@ impl<Me, R, Mode> Toward<'_, '_, Me, R, Seated, Mode> {
         K: Kind + Encode<Actors>,
     {
         self.seat.write(self.at, mail)?;
+
+        Ok(self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<Me, R, Mode> Toward<'_, '_, Me, R, Seated, Mode> {
+    /// Sends `mail` to the section of the keyed actor it is for, whose key the receiver's type works out from it here,
+    /// at the send, and stamps on the mail: the engine routes on the stamp, and never reads the mail to find a key
+    /// (spike: keyed sections).
+    pub fn send_keyed<K, I>(&mut self, mail: &K) -> Result<&mut Self, EncodeError>
+    where
+        R: Reaches<Me, K, I> + KeyedTarget<K>,
+        K: Kind + Encode<Actors>,
+    {
+        self.seat.write_keyed(self.at, mail, R::section(mail))?;
 
         Ok(self)
     }

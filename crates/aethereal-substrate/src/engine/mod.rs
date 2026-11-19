@@ -12,6 +12,7 @@ mod fold;
 mod fuse;
 mod gift;
 mod jobs;
+mod keyed;
 pub use jobs::{Finish, Inline, Jobs, NoRoom, NoRunner, Panicked, Taken, Waits};
 mod lifecycle;
 mod made;
@@ -51,8 +52,9 @@ use aethereal_actor::{
     Above, ActorName, ActorRef, ActorsWriter, Arena, Asked, Beginning, Birth, BlobHash, Buffers, Bytes, Carried, Chain,
     Closing, Code, Cycling, Declared, Effect, Entry, Fault, Figures, Gift, Given, Giver, Guests, Holds, How, Instances,
     JobId, JobType, Keeping, KeptLog, Links, Mail, MailId, Mailed, Maker, NoGuests, PinSource, Preparing, Process,
-    Publisher, Puts, Reads, Refused, Resource, Root, Runs, SeatNumber, Seated, Seats, SenderType, SentAs, Sleep,
-    Standings, Stood, Submitted, Table, Tie, Tied, Time, Turning, Unanswered, Unfit, What, Why, config_bytes, holders,
+    Publisher, Puts, Reads, Refused, Resource, Root, Runs, RunsSections, SeatNumber, Seated, Seats, SectionKey,
+    SectionStore, Sectioned, SenderType, SentAs, Sleep, Standings, Stood, Submitted, Table, Tie, Tied, Time, Turning,
+    Unanswered, Unfit, What, Why, config_bytes, holders,
 };
 use aethereal_data::{ActorId, ActorPath, Encode, KindId, KindName, PathSegment, Writer};
 use ask::{Answering, Waiting};
@@ -63,11 +65,13 @@ use debts::Debts;
 use due::{Alarm, Deadlines, Expiring};
 use fuse::{Fusing, Hand, Hop, Stepped};
 use gift::{Arrival, Gifts};
+use keyed::{KeyedActor, KeyedActors, Sections};
 pub use lifecycle::{Halted, Lifecycle, Unbooted};
 use lifecycle::{LIFECYCLE, Staging};
 use made::Made;
 use plan::Packing;
 use since::{Sees, Since};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -128,6 +132,10 @@ pub struct Engine {
     /// The instances each part's actors run their code in, which the engine carries with the part and never looks
     /// into (ADR-0015).
     instances: Vec<Instances>,
+    /// The actors whose state is split into sections by key, which every worker reads (spike: keyed sections).
+    keyed: KeyedActors,
+    /// Each part's sections of the keyed actors, carried with the part (spike: keyed sections).
+    sections: Vec<Sections>,
     /// The guests' code the engine runs, which each part's instances carry (ADR-0015): none for an engine made
     /// without it.
     guests: Arc<dyn Guests>,
@@ -323,6 +331,8 @@ pub struct Reading<'a> {
     /// Which engine of the process it reads, whose pins its turns change.
     engine: u32,
     table: &'a ActorTable,
+    /// The keyed actors, whose sections' turns run on whichever worker runs their parts (spike: keyed sections).
+    keyed: &'a KeyedActors,
     /// The blobs the store held as the step began.
     blobs: &'a Blobs,
     /// The arenas the last step's mail was written to, by writer.
@@ -381,6 +391,7 @@ pub struct Parcel {
     actors: BySeat<Held>,
     instances: Instances,
     seats: Seats,
+    sections: Sections,
 }
 
 /// One part of the engine as its turns change it, where it lies: in a parcel a worker owns, or in the engine.
@@ -391,6 +402,7 @@ struct Room<'a> {
     actors: &'a mut BySeat<Held>,
     instances: &'a mut Instances,
     seats: &'a mut Seats,
+    sections: &'a mut Sections,
 }
 
 /// What one worker's share of a step left: its turns and how long they took, and the parts it ran.
@@ -506,6 +518,8 @@ impl Engine {
             actors: (0..parts.get()).map(|_| BySeat::empty(parts)).collect(),
             waiting: Vec::new(),
             instances: (0..parts.get()).map(|_| Instances::default()).collect(),
+            keyed: KeyedActors::default(),
+            sections: (0..parts.get()).map(|_| Sections::default()).collect(),
             guests: Arc::new(NoGuests),
             links: Arc::default(),
             seats: (0..parts.get()).map(|part| Seats::of_part(new_seat(part), new_seat(parts.get()))).collect(),
@@ -769,6 +783,39 @@ impl Engine {
         )?;
 
         Ok(ActorRef::found(made))
+    }
+
+    /// Makes a root of the keyed type `A` under `key`, as [`Self::add_root`] does, and keeps it as a keyed actor whose
+    /// sections' turns `runs` runs side by side, a [`SectionRunner`](aethereal_actor::SectionRunner) of an `A` (spike:
+    /// keyed sections). Spike: the runner's actor is made by the caller, beside the one the root's `begin` makes,
+    /// which handles nothing.
+    ///
+    /// # Errors
+    ///
+    /// Refused as [`Self::add_root`] is.
+    pub fn add_sectioned_root<A: Root + Sectioned>(
+        &mut self,
+        key: &A::Key,
+        config: A::Config,
+        runs: Box<dyn RunsSections>,
+    ) -> Result<ActorRef<A>, Refused> {
+        let reference = self.begin_root::<A>(key, config)?;
+        let path = ActorPath::from_root(&PathSegment::new(A::NAME, key));
+        let me = reference.seated();
+        self.keyed.keep(KeyedActor { runs, me, path, above: Above::Chassis, kind: Declared::of::<A>().id() });
+
+        Ok(reference)
+    }
+
+    /// The section of `key` of the keyed actor `actor`, whose sections are `S`, as of the last step: none when it is at
+    /// its default (spike: keyed sections).
+    #[must_use]
+    pub fn section<S: 'static>(&self, actor: ActorId, key: u64) -> Option<&S> {
+        let lane = stream::lane(actor.bits(), SectionKey::of(key));
+        let part = view_part(lane, self.sections.len());
+        let store: &dyn Any = self.sections[part].get(actor.bits())?;
+
+        store.downcast_ref::<SectionStore<S>>()?.get(key)
     }
 
     /// Keeps `value`, a resource the chassis made, and answers with what names it, to put in the config of the root
@@ -1088,6 +1135,7 @@ impl Engine {
         let reading = Reading {
             engine: self.number.0,
             table: &self.table,
+            keyed: &self.keyed,
             blobs: &self.blobs,
             mail,
             #[cfg(any(test, feature = "harness"))]
@@ -1110,6 +1158,7 @@ impl Engine {
                 actors: &mut self.actors[*part],
                 instances: &mut self.instances[*part],
                 seats: &mut self.seats[*part],
+                sections: &mut self.sections[*part],
             };
             reading.run_part(room, clock, &mut tally, &mut asked, &mut lists);
         }
@@ -1316,6 +1365,7 @@ impl Engine {
         Reading {
             engine: self.number.0,
             table: &self.table,
+            keyed: &self.keyed,
             blobs: &self.blobs,
             mail,
             #[cfg(any(test, feature = "harness"))]
@@ -1399,7 +1449,7 @@ impl Engine {
     /// The engine as the step's workers read it while they fold.
     #[must_use]
     pub fn folding(&self) -> Folding<'_> {
-        Folding { costs: &self.costs, slice: self.slice, written: &self.arenas[parity(self.step)] }
+        Folding { costs: &self.costs, keyed: &self.keyed, slice: self.slice, written: &self.arenas[parity(self.step)] }
     }
 
     /// Ends a step: puts back every part the workers folded, and puts the endings their watches handed on in the
@@ -1462,7 +1512,8 @@ impl Engine {
 
     /// What the turns waiting in part `part` are expected to cost, in nanoseconds.
     fn expect(&self, part: usize) -> u64 {
-        fold::expected(self.streams.at(part), self.lives.at(part), &self.seating[part].seated, &self.costs, self.slice)
+        let seated = &self.seating[part].seated;
+        fold::expected(self.streams.at(part), self.lives.at(part), seated, &self.keyed, &self.costs, self.slice)
     }
 
     /// Takes part `part` of every view out, with every worker's records for it, to fold, into a spare pile.
@@ -1528,12 +1579,14 @@ impl Engine {
             actors: mem::replace(&mut self.actors[part], BySeat::empty(parts)),
             instances: mem::take(&mut self.instances[part]),
             seats: mem::take(&mut self.seats[part]),
+            sections: mem::take(&mut self.sections[part]),
         }
     }
 
     /// Puts back a part a worker ran.
     fn put(&mut self, parcel: Parcel) {
-        let Parcel { part, streams, lives, seating, actors, instances, seats } = parcel;
+        let Parcel { part, streams, lives, seating, actors, instances, seats, sections } = parcel;
+        self.sections[part] = sections;
         self.streams.put(part, streams);
         self.lives.put(part, lives);
         self.seating[part] = seating;
@@ -1753,6 +1806,11 @@ impl Reading<'_> {
         let mut runs = mem::take(&mut lists.runs);
         room.streams.hand(&mut runs);
         for run in &runs {
+            // A section of a keyed actor runs where its lane is, not its seat (spike: keyed sections).
+            if run.section.is_keyed() {
+                self.keyed_turns(&mut room, *run, clock, tally, asked, lists);
+                continue;
+            }
             let me = Seated { id: ActorId::new(run.bits), seat: SeatNumber::new(run.seat) };
             let is_live = room.lives.life(me).is_some_and(lives::Life::is_live);
             if is_live {
@@ -2280,8 +2338,8 @@ impl Reading<'_> {
             };
             let burst = sends.count();
             if let Some(index) = first {
-                let Mailed { sent_as, to, count, kind, bytes, tie, due, .. } = mailed[index];
-                let hand = hand(to, *stepped, seating, lives, &lists.fusing);
+                let Mailed { sent_as, to, count, kind, bytes, tie, due, section, .. } = mailed[index];
+                let hand = hand(to, section, *stepped, seating, lives, &lists.fusing);
                 lists.fusing.hops.count(hand);
                 let pieces = bytes.pieces();
                 let is_run = pieces > 1;
@@ -2374,7 +2432,19 @@ enum Origin {
 ///
 /// Each rule is looked at only once the ones before it have passed, so a send to another part costs no lookup of
 /// what was done in the step.
-fn hand(to: Seated, stepped: Stepped, seating: &Seating, lives: &lives::Shard, fusing: &Fusing) -> Hand {
+fn hand(
+    to: Seated,
+    section: SectionKey,
+    stepped: Stepped,
+    seating: &Seating,
+    lives: &lives::Shard,
+    fusing: &Fusing,
+) -> Hand {
+    // Mail for a section runs where its lane is, not where its actor sits, so it is never fused (spike: keyed
+    // sections).
+    if section.is_keyed() {
+        return Hand::Elsewhere;
+    }
     let was_stood = !fusing.stood.is_empty() && fusing.stood.contains_key(&to.id.bits());
     if was_stood {
         return Hand::Unseated;
@@ -2440,6 +2510,7 @@ impl Parcel {
             actors: &mut self.actors,
             instances: &mut self.instances,
             seats: &mut self.seats,
+            sections: &mut self.sections,
         }
     }
 }
@@ -2757,6 +2828,12 @@ const fn item_kind(handed: Handed<'_>) -> ItemKind {
         Handed::Mail { envelope, .. } => ItemKind::Mail(envelope.kind),
         Handed::Ended { .. } => ItemKind::Ended,
     }
+}
+
+/// The part a key of a view falls in, among `parts`, a power of two (spike: keyed sections).
+#[allow(clippy::cast_possible_truncation, reason = "the part is less than the count of parts, a usize")]
+const fn view_part(key: u64, parts: usize) -> usize {
+    (key & (parts as u64).wrapping_sub(1)) as usize
 }
 
 /// Which of `parts` parts, a power of two, `seat` falls in.
