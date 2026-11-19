@@ -2569,11 +2569,13 @@ impl Lists {
     }
 
     /// Settles `changes`, the changes to how many values hold each debt the turns of a part made, against the debts
-    /// of `actors`, the part's: each asker of a debt no value holds any longer is told it went unanswered (ADR-0017).
+    /// of `actors`, the part's, and empties it: each asker of a debt no value holds any longer is told it went
+    /// unanswered (ADR-0017).
     #[cold]
     #[inline(never)]
     fn let_go(&mut self, asked: &mut Asked, actors: &mut BySeat<Held>, changes: &mut Vec<holders::Change>) {
-        for (owed, by) in debts::summed(changes) {
+        debts::sum(changes);
+        for (owed, by) in changes.drain(..) {
             let Some(held) = actors.get_mut(owed.holder) else {
                 continue;
             };

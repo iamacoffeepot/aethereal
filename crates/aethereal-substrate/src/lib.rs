@@ -15,6 +15,7 @@ extern crate self as aethereal_substrate;
 
 mod blob;
 mod by_actor;
+mod by_number;
 mod by_seat;
 mod clock;
 mod context;
