@@ -1,17 +1,18 @@
 //! What the capability is asked (ADR-0057): a session opened, a line said, a transcript read, the sessions listed, a
-//! turn interrupted, and a session archived.
+//! turn interrupted, and a session archived. Any session reads in full from the transcript it holds, with no container,
+//! whether it is awake, hibernating, or archived.
 
 use super::asks::{
-    Archive, Archived, Interrupt, Interrupted, ListSessions, Listed, NewSession, Opened, ReadTranscript, Refusal, Said,
-    Say, Transcribed,
+    Archive, Archived, Interrupt, Interrupted, ListSessions, Listed, NewSession, Opened, ReadTranscript, Refusal,
+    Refuses, Said, Say, Transcribed,
 };
 use super::chat::Chat;
 use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
 use super::{Phase, Sessions};
-use aethereal_actor::{Fault, Held, Later, Level, Turn};
-use aethereal_data::Bound;
+use aethereal_actor::{Actors, Fault, Held, Later, Turn};
+use aethereal_data::{Bound, Encode, Kind};
 use core::fmt::Write as _;
 
 /// The most entries a read answers when it states no most of its own, and the most it may state.
@@ -41,11 +42,20 @@ pub(super) enum Waiting {
         held: Held<Archived>,
         session: u32,
     },
-    /// What the owner did at the trusted engine `engine` (ADR-0057), which answers nothing.
+    /// What the owner did at the trusted engine `engine` (ADR-0057), which is answered only when it cannot be done.
     Chat {
         engine: u32,
         chat: Chat,
     },
+}
+
+/// Who waits on what an ask comes to: a caller of the capability, answered with it, or the trusted engine `engine`
+/// whose chat frame `chat` it was, which is declined when it is refused and told nothing otherwise, as the session list
+/// shows it what came of it.
+#[derive(Bound)]
+pub(super) enum Asker<A> {
+    Caller(Held<A>),
+    Engine { engine: u32, chat: Chat },
 }
 
 impl Sessions {
@@ -61,7 +71,7 @@ impl Sessions {
         Ok(later)
     }
 
-    /// A line for a session: written to it in order, a turn running or not; a stopped session is resumed first.
+    /// A line for a session: written to it in order, a turn running or not; a hibernating session is woken first.
     pub(super) fn handle_say(&mut self, say: Say, turn: &mut Turn<'_, Self>) -> Result<Later<Said>, Fault> {
         let (held, later) = turn.hold();
         self.take(turn, Waiting::Say { held, session: say.session, text: say.text })?;
@@ -81,10 +91,15 @@ impl Sessions {
     }
 
     #[allow(clippy::unnecessary_wraps, reason = "a handler's body, it takes and answers what its handler does")]
-    pub(super) fn handle_list_sessions(&mut self, ListSessions: ListSessions) -> Result<Listed, Fault> {
-        let sessions = self.held.iter().map(|(&session, held)| held.listed(session)).collect();
+    pub(super) fn handle_list_sessions(
+        &mut self,
+        ListSessions: ListSessions,
+        turn: &Turn<'_, Self>,
+    ) -> Result<Listed, Fault> {
+        let sessions = self.rows();
+        let most_running = self.settings.most_running;
 
-        Ok(Listed { sessions, most_running: self.settings.most_running, strays: self.strays.clone() })
+        Ok(Listed { sessions, now: turn.now(), most_running, strays: self.strays.clone() })
     }
 
     /// The session's running turn interrupted, through the control request Claude Code reads on its stdin.
@@ -128,7 +143,7 @@ impl Sessions {
             Phase::Ready { .. } => {}
         }
         match waiting {
-            Waiting::New { held, name } => self.open(turn, vec![held], name)?,
+            Waiting::New { held, name } => self.open(turn, Asker::Caller(held), name)?,
             Waiting::Say { held, session, text } => {
                 let said = self.say(turn, session, Speaker::Caller, text)?;
                 turn.answer(held, &said)?;
@@ -138,37 +153,28 @@ impl Sessions {
                 let interrupted = self.interrupt(turn, session, Speaker::Caller)?;
                 turn.answer(held, &interrupted)?;
             }
-            Waiting::Archive { held, session } => self.archive(turn, vec![held], session)?,
+            Waiting::Archive { held, session } => self.archive(turn, Asker::Caller(held), session)?,
             Waiting::Chat { engine, chat } => self.chat(turn, engine, chat)?,
         }
 
         self.flush(turn)
     }
 
-    /// Opens a session named `name`, numbered after every other, its first container started: each of `opening` is
-    /// answered once it runs.
-    pub(super) fn open(
-        &mut self,
-        turn: &mut Turn<'_, Self>,
-        opening: Vec<Held<Opened>>,
-        name: String,
-    ) -> Result<(), Fault> {
+    /// Opens a session named `name`, numbered after every other, its first container started: `opener` is answered
+    /// once it runs, or why not.
+    pub(super) fn open(&mut self, turn: &mut Turn<'_, Self>, opener: Asker<Opened>, name: String) -> Result<(), Fault> {
         if let Err(why) = self.may_start() {
-            turn.log(Level::Info, format_args!("a new session was refused: {why:?}"));
-            for held in opening {
-                turn.answer(held, &Opened::Refused(why.clone()))?;
-            }
-            return Ok(());
+            return self.reply(turn, opener, &Opened::Refused(why));
         }
         let session = self.held.keys().next_back().map_or(1, |last| last + 1);
-        self.held.insert(session, Session::new(name, opening));
+        self.held.insert(session, Session::new(name, opener));
         self.indexed = Indexed::Changed;
         self.start(session);
 
         Ok(())
     }
 
-    /// The entries `read` asks for.
+    /// The entries `read` asks for, from the transcript held, whatever the session stands as.
     fn read(&self, read: &ReadTranscript) -> Transcribed {
         let ReadTranscript { session, after, most } = *read;
         let Some(held) = self.held.get(&session) else {
@@ -198,34 +204,52 @@ impl Sessions {
         if !is_running {
             return Ok(Interrupted::Refused(Refusal::NotRunning));
         }
-        let number = self.note(session, Entry::Interrupted { by });
+        let number = self.note(turn, session, Entry::Interrupted { by });
         self.type_interrupt(turn, session, number)?;
 
         Ok(Interrupted::Sent { number })
     }
 
-    /// Archives `session`, answering each of `archiving` once no container of it is left.
+    /// Archives `session`, answering `archiver` once no container of it is left.
     pub(super) fn archive(
         &mut self,
         turn: &mut Turn<'_, Self>,
-        archiving: Vec<Held<Archived>>,
+        archiver: Asker<Archived>,
         session: u32,
     ) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
-            return answer_each(turn, archiving, &Archived::Refused(Refusal::NoSuchSession));
+            return self.reply(turn, archiver, &Archived::Refused(Refusal::NoSuchSession));
         };
         match &mut held.life {
-            Life::Archived => answer_each(turn, archiving, &Archived::Done)?,
-            Life::Stopped => {
+            Life::Archived => self.reply(turn, archiver, &Archived::Done)?,
+            Life::Hibernating { .. } => {
                 held.life = Life::Archived;
                 self.dirty(session);
-                answer_each(turn, archiving, &Archived::Done)?;
+                self.reply(turn, archiver, &Archived::Done)?;
             }
             Life::Starting { .. } | Life::Stopping { then: Then::Rest { .. }, .. } => {
-                answer_each(turn, archiving, &Archived::Refused(Refusal::Busy))?;
+                self.reply(turn, archiver, &Archived::Refused(Refusal::Busy))?;
             }
-            Life::Stopping { then: Then::Archive { archiving: waiting }, .. } => waiting.extend(archiving),
-            Life::Running(_) => self.stop(turn, session, Ended::Archived, Then::Archive { archiving })?,
+            Life::Stopping { then: Then::Archive { archiving }, .. } => archiving.push(archiver),
+            Life::Running(_) => {
+                let then = Then::Archive { archiving: vec![archiver] };
+                self.stop(turn, session, Ended::Archived, then)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Answers `asker` with `answer`: a caller with it, and an engine, when it refuses, with the refusal, declined.
+    pub(super) fn reply<A: Kind + Encode<Actors> + Refuses>(
+        &self,
+        turn: &mut Turn<'_, Self>,
+        asker: Asker<A>,
+        answer: &A,
+    ) -> Result<(), Fault> {
+        match asker {
+            Asker::Caller(held) => turn.answer(held, answer)?,
+            Asker::Engine { engine, chat } => self.decline(turn, engine, chat, answer)?,
         }
 
         Ok(())
@@ -278,18 +302,18 @@ impl Sessions {
             Life::Stopping { then: Then::Archive { .. }, .. } => Taking::Refused(Refusal::Busy),
             Life::Stopping { then: Then::Rest { .. }, .. } | Life::Starting { .. } => Taking::Kept,
             Life::Running(_) => Taking::Typed,
-            Life::Stopped => match self.may_start() {
-                Ok(()) => Taking::Resumed,
+            Life::Hibernating { .. } => match self.may_start() {
+                Ok(()) => Taking::Woken,
                 Err(why) => Taking::Refused(why),
             },
         };
         if let Taking::Refused(why) = &taking {
             return Ok(Said::Refused(why.clone()));
         }
-        let number = self.note(session, entry);
+        let number = self.note(turn, session, entry);
         match taking {
             Taking::Kept => {
-                if let Some(Life::Stopping { then: Then::Rest { lines }, .. } | Life::Starting { lines, .. }) =
+                if let Some(Life::Stopping { then: Then::Rest { lines, .. }, .. } | Life::Starting { lines, .. }) =
                     self.held.get_mut(&session).map(|held| &mut held.life)
                 {
                     lines.push(written);
@@ -302,7 +326,7 @@ impl Sessions {
                 }
                 self.type_line(turn, session, &written)?;
             }
-            Taking::Resumed => self.restart(session, vec![written]),
+            Taking::Woken => self.restart(session, vec![written]),
             Taking::Refused(_) => {}
         }
 
@@ -332,15 +356,6 @@ fn ran(engine: u32, line: &str, printed: &str) -> String {
     written
 }
 
-/// Answers each of `held` with `answer`.
-fn answer_each(turn: &mut Turn<'_, Sessions>, held: Vec<Held<Archived>>, answer: &Archived) -> Result<(), Fault> {
-    for held in held {
-        turn.answer(held, answer)?;
-    }
-
-    Ok(())
-}
-
 /// What becomes of a line said to a session.
 enum Taking {
     /// It is refused.
@@ -349,12 +364,12 @@ enum Taking {
     Kept,
     /// It is written to the session's stdin.
     Typed,
-    /// It resumes the session, which is stopped.
-    Resumed,
+    /// It wakes the session, which hibernates.
+    Woken,
 }
 
 impl Sessions {
-    /// Whether one more session may start: the capability is ready, and fewer than the most run.
+    /// Whether one more session may wake: fewer than the most are awake.
     fn may_start(&self) -> Result<(), Refusal> {
         let running: Vec<u32> =
             self.held.iter().filter(|(_, held)| held.counts()).map(|(&session, _)| session).collect();

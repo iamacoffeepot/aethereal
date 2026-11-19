@@ -1,12 +1,14 @@
 //! One session as the capability holds it: its record, its transcript, and where its container is in its life.
 
-use super::asks::{self, Archived, Opened, State};
+use super::asked::Asker;
+use super::asks::{Archived, Opened};
 use super::output::Reading;
 use super::record::{Conversation, Record, Standing};
+use super::row::{Connection, SessionRow, State};
 use super::saves::Landing;
 use super::transcript::Transcript;
 use crate::ContainerId;
-use aethereal_actor::{Held, JobId, Number, ProtocolRef};
+use aethereal_actor::{JobId, Number, ProtocolRef};
 use aethereal_data::{Bound, Plain};
 use aethereal_tcp::Writing;
 use std::collections::BTreeSet;
@@ -27,15 +29,25 @@ pub(super) struct Session {
 pub(super) enum Life {
     /// Its container of `run` is being made and started: `step` says how far. `opening` waits to be answered once it
     /// runs, and `lines` wait to be written to it once its stdin is attached.
-    Starting { run: u32, step: Step, opening: Vec<Held<Opened>>, lines: Vec<String> },
+    Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<String> },
     /// Its container runs.
     Running(Box<Running>),
     /// Its container of `run` is being stopped, then removed, and then the session is left as `then` says.
     Stopping { container: ContainerId, run: u32, then: Then },
-    /// No container of it runs: the next line resumes it.
-    Stopped,
-    /// It was archived, and never runs again.
+    /// No container of it exists: it hibernates, and the next line wakes it. `gone` says how its last container ended.
+    Hibernating { gone: Gone },
+    /// It was archived, and never wakes again.
     Archived,
+}
+
+/// How a hibernating session's last container ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub(super) enum Gone {
+    /// The hub stopped and removed it, or it never started, or the hub has made none since it began.
+    Removed,
+    /// It ended without the hub ending it: its process exited, the kernel killed it for its memory, or it was gone
+    /// when the hub came back to it.
+    Lost,
 }
 
 /// How far a container being started is.
@@ -57,11 +69,11 @@ pub(super) enum Step {
 /// What a session is left as once its container is stopped and removed.
 #[derive(Bound)]
 pub(super) enum Then {
-    /// Stopped, to be resumed: it was idle, or its container ended by itself. `lines` said meanwhile resume it once
-    /// its container is removed.
-    Rest { lines: Vec<String> },
+    /// Hibernating, its container gone as `gone` says: it was idle, or its container ended by itself. `lines` said
+    /// meanwhile wake it once its container is removed.
+    Rest { lines: Vec<String>, gone: Gone },
     /// Archived, `archiving` answered once it is.
-    Archive { archiving: Vec<Held<Archived>> },
+    Archive { archiving: Vec<Asker<Archived>> },
 }
 
 /// A session whose container runs.
@@ -104,7 +116,7 @@ pub(super) enum Activity {
     /// A turn runs, or a line was written and its turn has not ended.
     Working,
     /// No turn runs, but a background task does: it is not idle.
-    Waiting,
+    Tasked,
     /// Nothing runs: once the idle time is up, `sleep`, rest `rest` ends, and it is wound down.
     Idle { sleep: JobId, rest: u64 },
     /// The hub told it it is about to be compacted, and waits for that turn's result until `deadline`.
@@ -114,36 +126,41 @@ pub(super) enum Activity {
 }
 
 impl Session {
-    /// A new session named `name`, about to start its first container.
-    pub fn new(name: String, opening: Vec<Held<Opened>>) -> Self {
+    /// A new session named `name`, about to start its first container, `opener` answered once it runs.
+    pub fn new(name: String, opener: Asker<Opened>) -> Self {
         Self {
             name,
             conversation: Conversation::Unbegun,
             runs: 1,
             transcript: Transcript::new(),
-            life: Life::Starting { run: 1, step: Step::Recording, opening, lines: Vec::new() },
+            life: Life::Starting { run: 1, step: Step::Recording, opening: vec![opener], lines: Vec::new() },
         }
     }
 
-    /// The session as it is listed, numbered `session`.
-    pub fn listed(&self, session: u32) -> asks::Session {
-        asks::Session { session, name: self.name.clone(), state: self.state(), last: self.transcript.last() }
+    /// The session as it is listed, numbered `session`, with `asking` of its asks waiting for the owner.
+    pub fn row(&self, session: u32, asking: u32) -> SessionRow {
+        let (state, container) = self.states(asking);
+        let grew = self.transcript.grew();
+
+        SessionRow { session, name: self.name.clone(), state, container, grew, asking }
     }
 
-    /// Where it is, as it is listed.
-    pub fn state(&self) -> State {
+    /// Its conversation's state and its container's, with `asking` of its asks waiting for the owner. Lines that wait
+    /// for its container are a turn to come, so it is working; a container the hub stops for an idle session leaves it
+    /// idle until Docker has removed it, as nothing runs in it and a line said meanwhile wakes it again.
+    fn states(&self, asking: u32) -> (State, Connection) {
         match &self.life {
-            Life::Starting { .. } => State::Starting,
-            Life::Running(running) => match running.activity {
-                Activity::Working => State::Working,
-                Activity::Waiting => State::Waiting,
-                Activity::Idle { .. } => State::Idle,
-                Activity::Noticed { .. } => State::Noticed,
-                Activity::Compacting { .. } => State::Compacting,
-            },
-            Life::Stopping { .. } => State::Stopping,
-            Life::Stopped => State::Stopped,
-            Life::Archived => State::Archived,
+            Life::Starting { lines, .. } => (waits(lines), Connection::Starting),
+            Life::Running(_) if asking > 0 => (State::Waiting, Connection::Attached),
+            Life::Running(running) => (running.activity.state(), Connection::Attached),
+            Life::Stopping { then: Then::Rest { gone: Gone::Lost, .. }, .. }
+            | Life::Hibernating { gone: Gone::Lost } => (State::Hibernating, Connection::Lost),
+            Life::Stopping { then: Then::Rest { gone: Gone::Removed, lines }, .. } => {
+                (waits(lines), Connection::Attached)
+            }
+            Life::Stopping { then: Then::Archive { .. }, .. } => (State::Archived, Connection::Attached),
+            Life::Hibernating { gone: Gone::Removed } => (State::Hibernating, Connection::None),
+            Life::Archived => (State::Archived, Connection::None),
         }
     }
 
@@ -153,16 +170,18 @@ impl Session {
     }
 
     /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
-    /// exist, and names it.
+    /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
+    /// it lost until it wakes.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
-            Life::Running(running) => Standing::Running { container: running.container.clone(), run: running.run },
-            Life::Stopping { container, run, .. } => Standing::Running { container: container.clone(), run: *run },
+            Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
+            Life::Stopping { container, run, .. } => Standing::Awake { container: container.clone(), run: *run },
             Life::Starting { step: Step::Launching { container }, run, .. } => {
-                Standing::Running { container: container.clone(), run: *run }
+                Standing::Awake { container: container.clone(), run: *run }
             }
             Life::Starting { run, .. } => Standing::Starting { run: *run },
-            Life::Stopped => Standing::Stopped,
+            Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
+            Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
             Life::Archived => Standing::Archived,
         };
 
@@ -174,14 +193,38 @@ impl Session {
     pub const fn landing(&self, session: u32) -> Landing {
         match &self.life {
             Life::Starting { run, step: Step::Recording, .. } => Landing::Starting { session, run: *run },
-            Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. } | Life::Stopped | Life::Archived => {
-                Landing::Nothing
-            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { .. }
+            | Life::Archived => Landing::Nothing,
         }
     }
 
     /// Whether a container started now carries on Claude's conversation rather than beginning one.
     pub const fn resumes(&self) -> bool {
         matches!(self.conversation, Conversation::Begun(_))
+    }
+}
+
+impl Activity {
+    /// The conversation's state while its container runs and no ask waits: the notice's turn, as it is wound down, and
+    /// a background task are each work.
+    const fn state(&self) -> State {
+        match self {
+            Self::Working | Self::Tasked | Self::Noticed { .. } => State::Working,
+            Self::Idle { .. } => State::Idle,
+            Self::Compacting { .. } => State::Compacting,
+        }
+    }
+}
+
+/// The state of a session no turn runs in, with `lines` waiting for its container: working, as each is a turn to come,
+/// or idle when none waits.
+const fn waits(lines: &[String]) -> State {
+    if lines.is_empty() {
+        State::Idle
+    } else {
+        State::Working
     }
 }

@@ -1,8 +1,10 @@
 //! What the sessions capability is asked, and what it answers (ADR-0057). Each is plain, so the hub's tools take an
 //! ask as their input and answer what it answers.
 
+use super::row::SessionRow;
 use super::transcript::Numbered;
 use crate::DockerError;
+use aethereal_actor::Time;
 use aethereal_data::Plain;
 
 /// Asked: open a new session, named `name`. Answered once its container runs, or why it does not.
@@ -14,8 +16,8 @@ pub struct NewSession {
     pub name: String,
 }
 
-/// Asked: write `text` to the session as a user's message. A session stopped as idle is resumed; one with a turn
-/// running takes the line after it, in order.
+/// Asked: write `text` to the session as a user's message. A hibernating session is woken; one with a turn running
+/// takes the line after it, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.say")]
 pub struct Say {
@@ -65,48 +67,12 @@ pub struct Archive {
     pub session: u32,
 }
 
-/// A session as it is listed.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.listed_session")]
-pub struct Session {
-    /// Its number, which every ask names it by.
-    pub session: u32,
-    pub name: String,
-    pub state: State,
-    /// The number of its transcript's last entry.
-    pub last: u64,
-}
-
-/// Where a session is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.state")]
-pub enum State {
-    /// Its container is being made and started.
-    Starting,
-    /// A turn runs.
-    Working,
-    /// No turn runs, but a background task of its does.
-    Waiting,
-    /// Nothing runs in it: it waits for a line, and is stopped once it has waited the idle time.
-    Idle,
-    /// It was idle, and has been told it is about to be compacted.
-    Noticed,
-    /// It was idle, and is being compacted before it is stopped.
-    Compacting,
-    /// Its container is being stopped.
-    Stopping,
-    /// No container of it runs: the next line resumes it.
-    Stopped,
-    /// It was archived, and never runs again.
-    Archived,
-}
-
 /// What a new session came to.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.opened")]
 pub enum Opened {
     /// It runs.
-    Open(Session),
+    Open(SessionRow),
     Refused(Refusal),
 }
 
@@ -138,7 +104,9 @@ pub enum Transcribed {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.sessions_listed")]
 pub struct Listed {
-    pub sessions: Vec<Session>,
+    pub sessions: Vec<SessionRow>,
+    /// The hub's time as it listed them, the clock each row's time is on.
+    pub now: Time,
     /// How many may run at once.
     pub most_running: u32,
     /// The containers found carrying the hub's label that it has no record of, by name: reported, never removed.
@@ -175,9 +143,9 @@ pub enum Refusal {
     Archived,
     /// As many sessions run as may: `most`, these.
     Full { most: u32, running: Vec<u32> },
-    /// The session's container does not run, so there is no turn to interrupt.
+    /// The session has no container, so there is no turn to interrupt.
     NotRunning,
-    /// The session is starting or stopping: ask again once it is not.
+    /// The session's container is starting or stopping: ask again once it is not.
     Busy,
     /// The credential's file could not be read, or does not read as `KEY=VALUE` lines.
     NoCredential,
@@ -190,4 +158,46 @@ pub enum Refusal {
     /// The session's record, saying it starts, was not written, so nothing of it was made that a hub starting again
     /// would not find.
     Unrecorded,
+}
+
+/// An answer that may refuse its ask: what a trusted engine whose chat frame it answers is declined with.
+pub(super) trait Refuses {
+    /// The refusal it is, when it is one.
+    fn refusal(&self) -> Option<&Refusal>;
+}
+
+impl Refuses for Opened {
+    fn refusal(&self) -> Option<&Refusal> {
+        match self {
+            Self::Open(_) => None,
+            Self::Refused(why) => Some(why),
+        }
+    }
+}
+
+impl Refuses for Said {
+    fn refusal(&self) -> Option<&Refusal> {
+        match self {
+            Self::Taken { .. } => None,
+            Self::Refused(why) => Some(why),
+        }
+    }
+}
+
+impl Refuses for Interrupted {
+    fn refusal(&self) -> Option<&Refusal> {
+        match self {
+            Self::Sent { .. } => None,
+            Self::Refused(why) => Some(why),
+        }
+    }
+}
+
+impl Refuses for Archived {
+    fn refusal(&self) -> Option<&Refusal> {
+        match self {
+            Self::Done => None,
+            Self::Refused(why) => Some(why),
+        }
+    }
 }

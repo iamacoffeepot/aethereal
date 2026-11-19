@@ -1,9 +1,9 @@
 //! An idle session wound down (ADR-0057): once it has had no turn and no background task for the idle time, a session
 //! that has had a turn since it was last compacted is told it is about to be compacted, so it writes down its loose
-//! threads, then compacted, and then stopped. A line said meanwhile makes it active again, and each step that takes
-//! past its deadline is noted, and the session stopped anyway.
+//! threads, then compacted, and then its container stopped, so it hibernates. A line said meanwhile makes it active
+//! again, and each step that takes past its deadline is noted, and the container stopped anyway.
 
-use super::session::{Activity, Life, Then};
+use super::session::{Activity, Gone, Life, Then};
 use super::transcript::{Ended, Entry, Note, Since, Speaker, WindDown};
 use super::{Resting, Sessions};
 use aethereal_actor::{Answered, Fault, JobId, Sleep, Slept, Turn};
@@ -23,7 +23,7 @@ impl Sessions {
         running.activity.cancel(turn);
         let is_tasked = !running.tasks.is_empty();
         if is_tasked {
-            running.activity = Activity::Waiting;
+            running.activity = Activity::Tasked;
             return Ok(());
         }
         let sleep = wait(turn, session, rest, idle_secs)?;
@@ -42,14 +42,14 @@ impl Sessions {
         running.activity.cancel(turn);
         let deadline = wait(turn, session, rest, wind_down_secs)?;
         running.activity = Activity::Compacting { deadline, rest };
-        self.note(session, Entry::Said { by: Speaker::Hub, text: String::from(COMPACT) });
+        self.note(turn, session, Entry::Said { by: Speaker::Hub, text: String::from(COMPACT) });
 
         self.type_line(turn, session, COMPACT)
     }
 
-    /// The compaction's turn ended: the session is stopped.
+    /// The compaction's turn ended: the session is stopped, to hibernate.
     pub(super) fn wound_down(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
-        self.stop(turn, session, Ended::Idle, Then::Rest { lines: Vec::new() })
+        self.stop(turn, session, Ended::Idle, Then::Rest { lines: Vec::new(), gone: Gone::Removed })
     }
 
     /// A session's idle time, or a step's deadline, is up: unless it was active since, it is wound down a step.
@@ -76,13 +76,13 @@ impl Sessions {
             | Activity::Noticed { .. }
             | Activity::Compacting { .. }
             | Activity::Working
-            | Activity::Waiting => Due::Passed,
+            | Activity::Tasked => Due::Passed,
         };
         match (due, since) {
             (Due::Idle, Since::Turned) => self.notice(turn, session)?,
             (Due::Idle, Since::Compacted) => self.wound_down(turn, session)?,
             (Due::Overdue(step), _) => {
-                self.note(session, Entry::Hub(Note::Overdue { step }));
+                self.note(turn, session, Entry::Hub(Note::Overdue { step }));
                 self.wound_down(turn, session)?;
             }
             (Due::Passed, _) => {}
@@ -103,7 +103,7 @@ impl Sessions {
         };
         let deadline = wait(turn, session, rest, wind_down_secs)?;
         running.activity = Activity::Noticed { deadline, rest };
-        self.note(session, Entry::Said { by: Speaker::Hub, text: notice.clone() });
+        self.note(turn, session, Entry::Said { by: Speaker::Hub, text: notice.clone() });
 
         self.type_line(turn, session, &notice)
     }

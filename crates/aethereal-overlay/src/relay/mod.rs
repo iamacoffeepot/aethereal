@@ -7,7 +7,7 @@
 //! ```text
 //! begin ──> Relays to the overlay ──> the overlay tells it each Chat from then on
 //!       ──> Listen to the link
-//! the link's ShowTabs / ShowEvents / ShowAsk ──> the overlay
+//! the link's ShowSessions / ShowEvents / ShowAsk / ShowDeclined ──> the overlay
 //! the overlay's Chat ──> the link ──> Up::Say / Ran / Answer / Interrupt / Open / Close / New / Archive ──> the hub
 //! ```
 //!
@@ -17,7 +17,7 @@ use crate::overlay::Overlay;
 use aethereal_actor::{ActorRef, Beginning, Fault, Turn, actor, path};
 use aethereal_data::Plain;
 use aethereal_link::{Link, Listen};
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, ShowAsk, ShowDeclined, ShowEvents, ShowSessions};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 
 /// Told to the overlay by an actor that carries its chat to the engine's link: the sender, which must handle the
@@ -59,7 +59,7 @@ impl ChatRelay {
 
     /// The sessions the hub lists, told to the overlay.
     #[tell]
-    fn show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
+    fn show_sessions(&mut self, shown: ShowSessions, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&shown)?;
 
         Ok(())
@@ -77,6 +77,18 @@ impl ChatRelay {
     #[tell]
     fn show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self, ActorRef<Link>>) -> Result<(), Fault> {
         turn.to(path::<Overlay>(())).send(&ask)?;
+
+        Ok(())
+    }
+
+    /// A chat frame of this engine's that the hub could not do, told to the overlay.
+    #[tell]
+    fn show_declined(
+        &mut self,
+        declined: ShowDeclined,
+        turn: &mut Turn<'_, Self, ActorRef<Link>>,
+    ) -> Result<(), Fault> {
+        turn.to(path::<Overlay>(())).send(&declined)?;
 
         Ok(())
     }

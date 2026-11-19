@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 /// One thread that runs the jobs that wait, so a job waiting on time or a socket holds no thread a computation could
 /// use. Each is polled when it is handed out and whenever its waker wakes, and the thread sleeps in its poller until
@@ -168,9 +167,9 @@ fn run(shared: &Arc<Shared>) {
             continue;
         }
         // Anything handed, stopped, or woken from now notifies the poller, and then this returns at once.
-        let sleep = waits.first_key_value().map_or(Sleep::Forever, |((at, _), _)| {
-            Sleep::Within(Duration::from_nanos(at.nanos().saturating_sub(now.nanos())))
-        });
+        let sleep = waits
+            .first_key_value()
+            .map_or(Sleep::Forever, |((at, _), _)| Sleep::Within(at.saturating_duration_since(now)));
         shared.poller.sleep(sleep);
     }
 }

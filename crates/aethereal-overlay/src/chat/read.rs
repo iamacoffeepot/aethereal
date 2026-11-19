@@ -50,9 +50,8 @@ pub enum Told {
     Interrupted { by: Speaker },
     /// An ask answered, and by whom.
     Answered { ask: u64, allow: bool, by: Speaker },
-    /// What the hub did, or a line of the container's own output, shown faint, or as an alert, and what it says of the
-    /// session's container.
-    Note { text: String, alert: bool, container: Container },
+    /// What the hub did, or a line of the container's own output, shown faint, or as an alert.
+    Note { text: String, alert: bool },
     /// A turn began, asked for or not.
     Began,
     /// Text Claude wrote, read as markdown.
@@ -81,26 +80,15 @@ impl Read {
     }
 }
 
-/// What a note says of the session's container: nothing, as a line of its output or a note of no run's start or end
-/// says; that it started; that the hub wound it down, idle or archived; or that it is gone by no word of the hub's, as
-/// it exited by itself, ran out of memory, was lost while the hub was away, or never started.
-#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Container {
-    Unsaid,
-    Started,
-    WoundDown,
-    Gone,
-}
-
 /// What `entry` shows, in order: none for an event of Claude's the console does not show.
 pub fn read(entry: &Entry) -> Vec<Read> {
     match entry {
         Entry::Claude(json) => claude(json.as_str()),
         Entry::Stdout { text, .. } => {
-            vec![Read::main(Told::Note { text: text.clone(), alert: false, container: Container::Unsaid })]
+            vec![Read::main(Told::Note { text: text.clone(), alert: false })]
         }
         Entry::Stderr { text, .. } => {
-            vec![Read::main(Told::Note { text: text.clone(), alert: true, container: Container::Unsaid })]
+            vec![Read::main(Told::Note { text: text.clone(), alert: true })]
         }
         Entry::Said { by, text } => vec![Read::main(Told::Said { by: *by, text: text.clone() })],
         Entry::Interrupted { by } => vec![Read::main(Told::Interrupted { by: *by })],
@@ -114,24 +102,16 @@ pub fn read(entry: &Entry) -> Vec<Read> {
 
 /// What the hub's note says, as a line.
 fn noted(note: &Note) -> Told {
-    let (text, alert, container) = match note {
-        Note::Started { run, resumed: false } => (format!("run {run} started"), false, Container::Started),
-        Note::Started { run, resumed: true } => (format!("run {run} started, resuming"), false, Container::Started),
-        Note::Stopped { run, why } => (format!("run {run} stopped: {}", ended(why)), false, stopped(why)),
-        Note::Unstarted { run, why } => (format!("run {run} did not start: {why}"), true, Container::Gone),
-        Note::Overdue { step } => (format!("winding down overdue at {step:?}"), true, Container::Unsaid),
-        Note::Unwritten { why } => (format!("a line was not written: {why}"), true, Container::Unsaid),
+    let (text, alert) = match note {
+        Note::Started { run, resumed: false } => (format!("run {run} started"), false),
+        Note::Started { run, resumed: true } => (format!("run {run} started, resuming"), false),
+        Note::Stopped { run, why } => (format!("run {run} stopped: {}", ended(why)), false),
+        Note::Unstarted { run, why } => (format!("run {run} did not start: {why}"), true),
+        Note::Overdue { step } => (format!("winding down overdue at {step:?}"), true),
+        Note::Unwritten { why } => (format!("a line was not written: {why}"), true),
     };
 
-    Told::Note { text, alert, container }
-}
-
-/// What a container stopped as `why` says is: wound down by the hub, or gone by no word of its.
-const fn stopped(why: &Ended) -> Container {
-    match why {
-        Ended::Idle | Ended::Archived => Container::WoundDown,
-        Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => Container::Gone,
-    }
+    Told::Note { text, alert }
 }
 
 /// How a container stopped, in words.

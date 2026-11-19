@@ -14,7 +14,7 @@
 //! The entries are kept whole, so scrolling back builds the earlier rows from what the engine holds: the scroll builds
 //! only the rows in view.
 
-use super::read::{Container, Read, Told, Under, read};
+use super::read::{Read, Told, Under, read};
 use crate::colour::{Ink, Palette};
 use crate::console::{LOCAL, Mode, Shade};
 use aethereal_data::Plain;
@@ -234,17 +234,6 @@ impl Transcript {
         });
 
         latest.unwrap_or(Compaction::Idle)
-    }
-
-    /// What the latest note that says anything of the session's container says: unsaid when none does.
-    pub fn container(&self) -> Container {
-        let latest = self.entries.values().flatten().rev().find_map(|read| match read.told {
-            Told::Note { container: Container::Unsaid, .. } => None,
-            Told::Note { container, .. } => Some(container),
-            _ => None,
-        });
-
-        latest.unwrap_or(Container::Unsaid)
     }
 
     /// Builds the rows again, the lines said at `mine` inked as its own. Each part under the main conversation is

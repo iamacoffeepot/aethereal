@@ -18,7 +18,7 @@ use aethereal_actor::{
     Unanswered, actor, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents};
+use aethereal_sessions::{Chat, ShowAsk, ShowDeclined, ShowEvents};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Connect, Connected, Dialed, Framing, HungUp, Read, Reading, Shut, Tcp, Write, Writing, Wrote};
 use aethereal_tools::{CallTool, Called, Sheets, Subscribe, Tools};
@@ -213,9 +213,10 @@ impl Link {
                 let due = within.due(turn.now());
                 self.call(turn, call, due, &CallTool { tool, revision, input })
             }
-            Down::Sessions { list } => self.tabs(turn, list),
+            Down::Sessions { list, now } => self.sessions(turn, list, now),
             Down::Show { session, events } => self.events(turn, &ShowEvents { session, events }),
             Down::Ask { ask, session, what } => self.ask(turn, ShowAsk { ask, session, what }),
+            Down::Declined { chat, why } => self.declined(turn, &ShowDeclined { chat, why }),
         }
     }
 
@@ -273,7 +274,7 @@ impl Link {
         self.answer(turn, call, called)
     }
 
-    /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or
+    /// Adds the sender, and shows it the list and the asks that wait as they stand: nothing, when it listens already or
     /// the hub has shown nothing.
     #[tell]
     fn listen(&mut self, listen: Listen, turn: &mut Turn<'_, Self, Speaks<Listening>>) -> Result<(), Fault> {
