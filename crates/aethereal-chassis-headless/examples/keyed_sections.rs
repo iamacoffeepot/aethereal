@@ -19,14 +19,20 @@
 //! And what a keyed turn's rollback costs, by its section's size: `rb64-*`, `rb1k-*`, and `rb16k-*`, uniform, a put
 //! stirring one word of a section of that size; `-keep` keeps a copy of the section before each turn and compares it
 //! with its default after, `-skip` compares and keeps no copy, and `-bare` does neither.
+//!
+//! And requests: `ask-*`, where each sender asks `BATCH` questions of the dictionary at once, each stirring its key's
+//! entry as a put does and answered at once, and asks the next batch once all are answered; and `hold-*`, where the
+//! dictionary holds each question, asks a stamper actor for the value to stir with, and stirs and answers the question
+//! it held when the stamp comes back. One is a round trip through the dictionary; the other is two, the second asked
+//! from it, with a held request between.
 
 #![allow(clippy::print_stdout)] // A bench prints its table.
 #![allow(clippy::cast_precision_loss)] // A rate printed to two places loses nothing it shows.
 #![allow(clippy::cast_possible_truncation)] // A key below `KEYS` is an index.
 
 use aethereal_actor::{
-    ActorRef, Beginning, Fault, Item, KeyOf, Root, RunsSections, SectionRunner, Sectioned, Turn, Turning, actor,
-    hand_section,
+    ActorRef, Answered, Beginning, Fault, Held, Item, KeyOf, Later, Root, RunsSections, SectionRunner, Sectioned, Turn,
+    Turning, actor, hand_section,
 };
 use aethereal_chassis_headless::{Headless, Monotonic};
 use aethereal_data::{ActorId, Bound, Kind, PathSegment, Plain};
@@ -283,49 +289,217 @@ fn check_keyed<const N: usize>(engine: &Engine) {
     assert_eq!(puts, total(), "every put reaches its section");
 }
 
-/// A dictionary that is one ordinary actor, holding every key's entry, 64 bytes each.
+/// A question for a key: the dictionary stirs the key's entry with `value`, as a put does, and answers at once.
 #[derive(Plain)]
+#[kind(name = "aether.spike.get")]
+struct Get {
+    key: u64,
+    value: u64,
+}
+
+/// The answer to a [`Get`]: how many puts the key has taken.
+#[derive(Plain)]
+#[kind(name = "aether.spike.got")]
+struct Got {
+    puts: u64,
+}
+
+/// What an asker keeps for each question it waits on: nothing.
+#[derive(Plain)]
+#[kind(name = "aether.spike.pending")]
+struct Pending;
+
+/// A question for a key that the dictionary holds, to stir with what a stamper answers and answer then.
+#[derive(Plain)]
+#[kind(name = "aether.spike.fetch")]
+struct Fetch {
+    key: u64,
+    value: u64,
+}
+
+/// What a dictionary asks the stamper for each question it holds: the value it was asked with.
+#[derive(Plain)]
+#[kind(name = "aether.spike.stamp")]
+struct Stamp {
+    value: u64,
+}
+
+/// The stamper's answer: the value to stir with.
+#[derive(Plain)]
+#[kind(name = "aether.spike.stamped")]
+struct Stamped {
+    value: u64,
+}
+
+/// What a dictionary keeps for each stamp it waits on: the key it is for, and the question it holds.
+#[derive(Bound)]
+#[kind(name = "aether.spike.stamping")]
+struct Stamping {
+    key: u64,
+    held: Held<Got>,
+}
+
+/// Why a round trip of the benchmark went wrong: an answer did not come.
+#[derive(Plain)]
+#[kind(name = "aether.spike.unanswered")]
+struct NoAnswer;
+
+/// The fault of an answer that did not come.
+fn no_answer() -> Fault {
+    Fault::new(&NoAnswer).unwrap_or_else(|_| unreachable!("a unit encodes"))
+}
+
+/// An actor that answers each stamp at once, with its value mixed.
+#[derive(Plain)]
+#[kind(name = "aether.spike.stamper")]
+struct Stamper;
+
+#[actor(key = u64)]
+impl Stamper {
+    fn begin(_: Unkeyed) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+
+    #[request]
+    fn stamp(&mut self, stamp: Stamp) -> Result<Stamped, Fault> {
+        Ok(Stamped { value: mix(stamp.value) })
+    }
+}
+
+/// What an ordinary dictionary or child is made from: the stamper it asks for what it holds, when it holds.
+#[derive(Bound)]
+#[kind(name = "aether.spike.store")]
+struct Store {
+    stamper: Vec<ActorRef<Stamper>>,
+}
+
+/// A dictionary that is one ordinary actor, holding every key's entry, 64 bytes each.
+#[derive(Bound)]
 #[kind(name = "aether.spike.whole")]
 struct Whole {
     entries: Vec<u64>,
+    stamper: Vec<ActorRef<Stamper>>,
 }
 
 #[actor(key = u64)]
 impl Whole {
-    fn begin(_: Unkeyed) -> Result<Self, Fault> {
-        Ok(Self { entries: vec![0; (KEYS * 8) as usize] })
+    fn begin(store: Store) -> Result<Self, Fault> {
+        Ok(Self { entries: vec![0; (KEYS * 8) as usize], stamper: store.stamper })
     }
 
     #[tell]
     fn put(&mut self, put: Put) -> Result<(), Fault> {
-        let at = (put.key * 8) as usize;
-        stir(&mut self.entries[at..at + STIRRED], put.value);
-        self.entries[at + STIRRED] += 1;
+        self.stir(put.key, put.value);
 
         Ok(())
+    }
+
+    #[request]
+    fn get(&mut self, get: Get) -> Result<Got, Fault> {
+        Ok(Got { puts: self.stir(get.key, get.value) })
+    }
+
+    #[request]
+    fn fetch(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<Later<Got>, Fault> {
+        let Some(stamper) = self.stamper.first().copied() else {
+            return Err(no_answer());
+        };
+        let (held, later) = turn.hold();
+        turn.to(stamper).ask(&Stamp { value: fetch.value }, &Stamping { key: fetch.key, held })?;
+
+        Ok(later)
+    }
+
+    #[answer]
+    fn stamped(
+        &mut self,
+        (answered, stamping): (Answered<Stamped>, Stamping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(stamped) = answered else {
+            return Err(no_answer());
+        };
+        let puts = self.stir(stamping.key, stamped.value);
+        turn.answer(stamping.held, &Got { puts })?;
+
+        Ok(())
+    }
+}
+
+impl Whole {
+    /// Stirs the entry of `key` with `value` and counts it: what a put does. Answers how many it has taken.
+    fn stir(&mut self, key: u64, value: u64) -> u64 {
+        let at = (key * 8) as usize;
+        stir(&mut self.entries[at..at + STIRRED], value);
+        self.entries[at + STIRRED] += 1;
+
+        self.entries[at + STIRRED]
     }
 }
 
 /// One of today's children, holding the keys that fall to it, each key at its index among them.
-#[derive(Plain)]
+#[derive(Bound)]
 #[kind(name = "aether.spike.shard")]
 struct Shard {
     entries: Vec<u64>,
+    stamper: Vec<ActorRef<Stamper>>,
 }
 
 #[actor(key = u64, parent = Sharded)]
 impl Shard {
-    fn begin(_: Unkeyed) -> Result<Self, Fault> {
-        Ok(Self { entries: vec![0; (KEYS.div_ceil(CHILDREN.load(Ordering::Relaxed)) * 8) as usize] })
+    fn begin(store: Store) -> Result<Self, Fault> {
+        let entries = vec![0; (KEYS.div_ceil(CHILDREN.load(Ordering::Relaxed)) * 8) as usize];
+
+        Ok(Self { entries, stamper: store.stamper })
     }
 
     #[tell]
     fn put(&mut self, put: Put) -> Result<(), Fault> {
-        let at = (put.key / CHILDREN.load(Ordering::Relaxed) * 8) as usize;
-        stir(&mut self.entries[at..at + STIRRED], put.value);
-        self.entries[at + STIRRED] += 1;
+        self.stir(put.key, put.value);
 
         Ok(())
+    }
+
+    #[request]
+    fn get(&mut self, get: Get) -> Result<Got, Fault> {
+        Ok(Got { puts: self.stir(get.key, get.value) })
+    }
+
+    #[request]
+    fn fetch(&mut self, fetch: Fetch, turn: &mut Turn<'_, Self>) -> Result<Later<Got>, Fault> {
+        let Some(stamper) = self.stamper.first().copied() else {
+            return Err(no_answer());
+        };
+        let (held, later) = turn.hold();
+        turn.to(stamper).ask(&Stamp { value: fetch.value }, &Stamping { key: fetch.key, held })?;
+
+        Ok(later)
+    }
+
+    #[answer]
+    fn stamped(
+        &mut self,
+        (answered, stamping): (Answered<Stamped>, Stamping),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Answered::Yes(stamped) = answered else {
+            return Err(no_answer());
+        };
+        let puts = self.stir(stamping.key, stamped.value);
+        turn.answer(stamping.held, &Got { puts })?;
+
+        Ok(())
+    }
+}
+
+impl Shard {
+    /// Stirs the entry of `key` with `value` and counts it: what a put does. Answers how many it has taken.
+    fn stir(&mut self, key: u64, value: u64) -> u64 {
+        let at = (key / CHILDREN.load(Ordering::Relaxed) * 8) as usize;
+        stir(&mut self.entries[at..at + STIRRED], value);
+        self.entries[at + STIRRED] += 1;
+
+        self.entries[at + STIRRED]
     }
 }
 
@@ -339,34 +513,57 @@ struct Sending {
     hot: bool,
 }
 
+/// What the senders of a run do: put, ask what is answered at once, or ask what is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+enum Load {
+    Puts,
+    Asks,
+    Holds,
+}
+
 /// The root of the other two ways: it spawns the children, when they are the way, and the senders.
 #[derive(Plain)]
 #[kind(name = "aether.spike.sharded")]
 struct Sharded;
 
-/// What that root is made from: the one actor, when it is the way, and whether keys are hot.
+/// What that root is made from: the one actor, when it is the way, whether keys are hot, what the senders do, and the
+/// stamper the children ask for what they hold, when they hold.
 #[derive(Bound)]
 #[kind(name = "aether.spike.sharding")]
 struct Sharding {
     whole: Vec<ActorRef<Whole>>,
     hot: bool,
+    load: Load,
+    stamper: Vec<ActorRef<Stamper>>,
 }
 
-#[actor(key = u64, spawns(Shard, Sender))]
+#[actor(key = u64, spawns(Shard, Sender, Asker))]
 impl Sharded {
     fn begin(sharding: Sharding, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let shards = if sharding.whole.is_empty() {
-            let spawned = (0..CHILDREN.load(Ordering::Relaxed)).map(|number| turn.spawn::<Shard>(&number, Unkeyed));
+            let spawned = (0..CHILDREN.load(Ordering::Relaxed))
+                .map(|number| turn.spawn::<Shard>(&number, Store { stamper: sharding.stamper.clone() }));
             spawned.collect::<Result<Vec<_>, _>>().unwrap_or_else(|_| panic!("a child begins"))
         } else {
             Vec::new()
         };
         for number in 0..CLIENTS {
             let sending = Sending { whole: sharding.whole.clone(), shards: shards.clone(), number, hot: sharding.hot };
-            let Ok(sender) = turn.spawn::<Sender>(&number, sending) else {
-                panic!("a sender begins");
-            };
-            turn.to(sender).send(&Go)?;
+            match sharding.load {
+                Load::Puts => {
+                    let Ok(sender) = turn.spawn::<Sender>(&number, sending) else {
+                        panic!("a sender begins");
+                    };
+                    turn.to(sender).send(&Go)?;
+                }
+                Load::Asks | Load::Holds => {
+                    let asking = Asking { sending, holds: sharding.load == Load::Holds };
+                    let Ok(asker) = turn.spawn::<Asker>(&number, asking) else {
+                        panic!("an asker begins");
+                    };
+                    turn.to(asker).send(&Go)?;
+                }
+            }
         }
 
         Ok(Self)
@@ -408,35 +605,144 @@ impl Sender {
     }
 }
 
+/// What an asker is made from: where its questions go, and whether they are held.
+#[derive(Bound)]
+#[kind(name = "aether.spike.asking")]
+struct Asking {
+    sending: Sending,
+    holds: bool,
+}
+
+/// An asker of the other two ways: it asks a batch of questions at once, and the next batch once all are answered.
+#[derive(Bound)]
+#[kind(name = "aether.spike.asker")]
+struct Asker {
+    sending: Sending,
+    holds: bool,
+    asked: u64,
+    answered: u64,
+}
+
+#[actor(key = u64, parent = Sharded)]
+impl Asker {
+    fn begin(asking: Asking) -> Result<Self, Fault> {
+        Ok(Self { sending: asking.sending, holds: asking.holds, asked: 0, answered: 0 })
+    }
+
+    #[tell]
+    fn go(&mut self, _: Go, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.ask_batch(turn)
+    }
+
+    #[answer]
+    fn got(&mut self, (answered, _): (Answered<Got>, Pending), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Answered::Yes(_) = answered else {
+            return Err(no_answer());
+        };
+        self.answered += 1;
+        let is_batch_done = self.answered == self.asked;
+        let is_more = self.asked < PUTS;
+        if is_batch_done && is_more {
+            self.ask_batch(turn)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Asker {
+    /// Asks the next batch of questions.
+    fn ask_batch(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let end = (self.asked + BATCH).min(PUTS);
+        for index in self.asked..end {
+            let key = key_of(self.sending.number, index, self.sending.hot);
+            let value = (self.sending.number << 32) | index;
+            match (self.sending.whole.first(), self.holds) {
+                (Some(whole), false) => {
+                    turn.to(*whole).ask(&Get { key, value }, &Pending)?;
+                }
+                (Some(whole), true) => {
+                    turn.to(*whole).ask(&Fetch { key, value }, &Pending)?;
+                }
+                (None, false) => {
+                    let shard = self.sending.shards[(key % self.sending.shards.len() as u64) as usize];
+                    turn.to(shard).ask(&Get { key, value }, &Pending)?;
+                }
+                (None, true) => {
+                    let shard = self.sending.shards[(key % self.sending.shards.len() as u64) as usize];
+                    turn.to(shard).ask(&Fetch { key, value }, &Pending)?;
+                }
+            }
+        }
+        self.asked = end;
+
+        Ok(())
+    }
+}
+
 /// The last ordinary dictionary or root of children started, whose state a check reads.
 static ORDINARY: AtomicU64 = AtomicU64::new(0);
 
+/// The reference to the root `id` of type `T`, which `engine` has just seated.
+fn found<T>(engine: &Engine, id: ActorId) -> ActorRef<T> {
+    let Some(seat) = engine.table().seat(id) else {
+        panic!("a root is seated");
+    };
+
+    ActorRef::found(aethereal_actor::Seated { id, seat })
+}
+
+/// A stamper for the run `round`, in a list, when the dictionary holds what it is asked: an empty list when it does not.
+fn stamper(engine: &mut Engine, round: u64, load: Load) -> Vec<ActorRef<Stamper>> {
+    if load != Load::Holds {
+        return Vec::new();
+    }
+    let Ok(id) = engine.add_root::<Stamper>(&round, Unkeyed) else {
+        panic!("the stamper begins");
+    };
+
+    vec![found(engine, id)]
+}
+
+/// How a run of the other two ways goes: whether its keys are hot, and what its senders do.
+#[derive(Clone, Copy)]
+struct Way {
+    hot: bool,
+    load: Load,
+}
+
+/// Puts, uniform or hot.
+const fn puts(hot: bool) -> Way {
+    Way { hot, load: Load::Puts }
+}
+
 /// Starts the one-actor way for the run `round`.
-fn start_one(engine: &mut Engine, round: u64, hot: bool) {
+fn start_one(engine: &mut Engine, round: u64, way: Way) {
     DRAWN.store(KEYS, Ordering::Relaxed);
-    let Ok(id) = engine.add_root::<Whole>(&round, Unkeyed) else {
+    let stamper = stamper(engine, round, way.load);
+    let Ok(id) = engine.add_root::<Whole>(&round, Store { stamper }) else {
         panic!("the dictionary begins");
     };
-    let Some(seat) = engine.table().seat(id) else {
-        panic!("the dictionary is seated");
-    };
-    let whole = ActorRef::found(aethereal_actor::Seated { id, seat });
+    let whole = found(engine, id);
     ORDINARY.store(id.bits(), Ordering::Relaxed);
-    let Ok(_) = engine.add_root::<Sharded>(&round, Sharding { whole: vec![whole], hot }) else {
+    let sharding = Sharding { whole: vec![whole], hot: way.hot, load: way.load, stamper: Vec::new() };
+    let Ok(_) = engine.add_root::<Sharded>(&round, sharding) else {
         panic!("the senders begin");
     };
 }
 
 /// Starts today's way, children, for the run `round`.
-fn start_children(engine: &mut Engine, round: u64, hot: bool) {
-    start_children_of(engine, round, hot, (KEYS, SHARDS));
+fn start_children(engine: &mut Engine, round: u64, way: Way) {
+    start_children_of(engine, round, way, (KEYS, SHARDS));
 }
 
 /// Starts today's way for the run `round`, drawing from and keeping as many keys and children as `sizes` says.
-fn start_children_of(engine: &mut Engine, round: u64, hot: bool, (keys, children): (u64, u64)) {
+fn start_children_of(engine: &mut Engine, round: u64, way: Way, (keys, children): (u64, u64)) {
     DRAWN.store(keys, Ordering::Relaxed);
     CHILDREN.store(children, Ordering::Relaxed);
-    let Ok(root) = engine.add_root::<Sharded>(&round, Sharding { whole: Vec::new(), hot }) else {
+    let stamper = stamper(engine, round, way.load);
+    let sharding = Sharding { whole: Vec::new(), hot: way.hot, load: way.load, stamper };
+    let Ok(root) = engine.add_root::<Sharded>(&round, sharding) else {
         panic!("the children and senders begin");
     };
     ORDINARY.store(root.bits(), Ordering::Relaxed);
@@ -490,17 +796,21 @@ macro_rules! keyed_program {
     };
 }
 
-const PROGRAMS: [Program; 18] = [
+const PROGRAMS: [Program; 22] = [
     keyed_program!("keyed-uniform", Keyed64, KeyedFill64, KeyedFilling64, true, true, false, 7),
     keyed_program!("keyed-hot", Keyed64, KeyedFill64, KeyedFilling64, true, true, true, 7),
-    Program { name: "one-uniform", start: |engine, round| start_one(engine, round, false), check: check_one },
-    Program { name: "one-hot", start: |engine, round| start_one(engine, round, true), check: check_one },
+    Program { name: "one-uniform", start: |engine, round| start_one(engine, round, puts(false)), check: check_one },
+    Program { name: "one-hot", start: |engine, round| start_one(engine, round, puts(true)), check: check_one },
     Program {
         name: "children-uniform",
-        start: |engine, round| start_children(engine, round, false),
+        start: |engine, round| start_children(engine, round, puts(false)),
         check: check_children,
     },
-    Program { name: "children-hot", start: |engine, round| start_children(engine, round, true), check: check_children },
+    Program {
+        name: "children-hot",
+        start: |engine, round| start_children(engine, round, puts(true)),
+        check: check_children,
+    },
     Program {
         name: "keyed-16keys",
         start: |engine, round| {
@@ -513,12 +823,12 @@ const PROGRAMS: [Program; 18] = [
     },
     Program {
         name: "children-16keys",
-        start: |engine, round| start_children_of(engine, round, false, (SHARDS, SHARDS)),
+        start: |engine, round| start_children_of(engine, round, puts(false), (SHARDS, SHARDS)),
         check: check_children,
     },
     Program {
         name: "children-4096",
-        start: |engine, round| start_children_of(engine, round, false, (KEYS, KEYS)),
+        start: |engine, round| start_children_of(engine, round, puts(false), (KEYS, KEYS)),
         check: check_children,
     },
     keyed_program!("rb64-keep", Keyed64, KeyedFill64, KeyedFilling64, true, true, false, 7),
@@ -530,6 +840,26 @@ const PROGRAMS: [Program; 18] = [
     keyed_program!("rb16k-keep", Keyed16k, KeyedFill16k, KeyedFilling16k, true, true, false, 2047),
     keyed_program!("rb16k-skip", Keyed16k, KeyedFill16k, KeyedFilling16k, false, true, false, 2047),
     keyed_program!("rb16k-bare", Keyed16k, KeyedFill16k, KeyedFilling16k, false, false, false, 2047),
+    Program {
+        name: "ask-one",
+        start: |engine, round| start_one(engine, round, Way { hot: false, load: Load::Asks }),
+        check: check_one,
+    },
+    Program {
+        name: "ask-children",
+        start: |engine, round| start_children(engine, round, Way { hot: false, load: Load::Asks }),
+        check: check_children,
+    },
+    Program {
+        name: "hold-one",
+        start: |engine, round| start_one(engine, round, Way { hot: false, load: Load::Holds }),
+        check: check_one,
+    },
+    Program {
+        name: "hold-children",
+        start: |engine, round| start_children(engine, round, Way { hot: false, load: Load::Holds }),
+        check: check_children,
+    },
 ];
 
 /// One run of `program` on `workers` workers: the nanoseconds it took, from its roots' `begin` to the last step, and
