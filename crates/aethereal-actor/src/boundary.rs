@@ -47,8 +47,9 @@ pub trait Table {
     /// Whether the actor `id` stands for is live.
     fn is_live(&self, id: ActorId) -> bool;
 
-    /// What the type of the actor `id` stands for declares (ADR-0013), when it has been made, live or ended, or this
-    /// actor stood it up in an earlier turn of the step.
+    /// What the type of the actor `id` stands for declares (ADR-0013), when it was live as the step began, or this
+    /// actor stood it up in an earlier turn of the step. An actor that has ended is not found, so a check of whoever
+    /// sent mail reads the type the mail was sent as, never this (ADR-0058).
     fn declared(&self, id: ActorId) -> Option<&'static Declared>;
 
     /// Whether the type of the actor `id` stands for lists every one of `kinds`, as [`Self::declared`] finds it: what

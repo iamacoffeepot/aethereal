@@ -2,7 +2,7 @@
 
 use crate::{Exits, Processes};
 use aethereal_actor::{
-    Answered, Beginning, Ended, Enough, Fault, Given, Later, More, Open, ProtocolRef, Reply, Turn, actor,
+    Answered, Beginning, Ended, Enough, Fault, Given, Later, More, Open, Part, ProtocolRef, Reply, Speaks, Turn, actor,
 };
 use aethereal_data::Bound;
 use aethereal_tcp::{
@@ -53,7 +53,11 @@ impl Pipe {
     }
 
     #[request]
-    fn open(&mut self, open: Open<Reading>, turn: &mut Turn<'_, Self>) -> Result<Later<HungUp>, Fault> {
+    fn open(
+        &mut self,
+        open: Open<Reading>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Reading>,)>>,
+    ) -> Result<Later<HungUp>, Fault> {
         self.connection.open(turn, open)
     }
 

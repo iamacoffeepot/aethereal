@@ -7,8 +7,8 @@ mod failure;
 use crate::ready::Ready;
 use crate::{Accepted, BoundSocket, ConnectionConfig, Framing, Interest, Readied, Shut, Socket, SocketAddress, Tcp};
 use aethereal_actor::{
-    ActorRef, Answered, Beginning, Ended, Enough, Fault, Given, Handle, JobId, Later, More, Open, Serving, Sleep,
-    Slept, Spawn, Stream, StreamKey, Turn, Unsent, actor,
+    ActorRef, Answered, Beginning, Ended, Enough, Fault, Given, Handle, JobId, Later, More, Open, Part, Serving, Sleep,
+    Slept, Spawn, Speaks, Stream, StreamKey, Turn, Unsent, actor,
 };
 use aethereal_data::{Bound, Plain};
 use core::time::Duration;
@@ -127,8 +127,12 @@ impl Listener {
     }
 
     #[request]
-    fn open(&mut self, open: Open<Accepting>, turn: &mut Turn<'_, Self>) -> Result<Later<Unbound>, Fault> {
-        let (key, Accept, later) = self.accepting.open(turn, open)?;
+    fn open(
+        &mut self,
+        open: Open<Accepting>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Accepting>,)>>,
+    ) -> Result<Later<Unbound>, Fault> {
+        let (key, Accept, later) = self.accepting.open(turn, open);
         if let Acceptor::Accepting(_) = self.acceptor {
             if let Some(second) = self.accepting.take(key) {
                 second.finish(turn, &Unbound::Busy)?;

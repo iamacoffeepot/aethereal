@@ -50,8 +50,8 @@ pub use streams::{
 };
 
 use aethereal_actor::{
-    Answered, Ended, Enough, Fault, Later, More, Number, Open, Part, Reply, Serving, Streams, Turn, actor, path,
-    protocol,
+    Answered, Ended, Enough, Fault, Later, More, Number, Open, Part, Reply, Serving, Speaks, Streams, Turn, actor,
+    path, protocol,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::{Connect, Connected, Fetch, Fetched, Finished, Http, Peer, Receiving, Unreached};
@@ -178,17 +178,29 @@ impl Docker {
     }
 
     #[request]
-    fn open_attaching(&mut self, open: Open<Attaching>, turn: &mut Turn<'_, Self>) -> Result<Later<Detached>, Fault> {
+    fn open_attaching(
+        &mut self,
+        open: Open<Attaching>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Attaching>,)>>,
+    ) -> Result<Later<Detached>, Fault> {
         self.handle_open_attaching(open, turn)
     }
 
     #[request]
-    fn open_logging(&mut self, open: Open<Logging>, turn: &mut Turn<'_, Self>) -> Result<Later<LogsDone>, Fault> {
+    fn open_logging(
+        &mut self,
+        open: Open<Logging>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Logging>,)>>,
+    ) -> Result<Later<LogsDone>, Fault> {
         self.handle_open_logging(open, turn)
     }
 
     #[request]
-    fn open_watching(&mut self, open: Open<Watching>, turn: &mut Turn<'_, Self>) -> Result<Later<EventsDone>, Fault> {
+    fn open_watching(
+        &mut self,
+        open: Open<Watching>,
+        turn: &mut Turn<'_, Self, Speaks<(Part<Watching>,)>>,
+    ) -> Result<Later<EventsDone>, Fault> {
         self.handle_open_watching(open, turn)
     }
 
