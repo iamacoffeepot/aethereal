@@ -747,6 +747,27 @@ fn the_engine_answers_after_what_the_turn_sent_and_only_a_request_the_turn_left_
 }
 
 #[test]
+fn a_request_left_unanswered_is_answered_so_though_its_turn_answered_another_asker_s_request_of_its_count() {
+    // Catches an answer to one asker read as the answer to another's request of the same count, as each sender counts
+    // its own mail: the asker left unanswered would never be told, and wait for good.
+    let (me, dropped, answered) = (
+        Seated { id: ActorId::new(1), seat: SeatNumber::new(0) },
+        Seated { id: ActorId::new(2), seat: SeatNumber::new(1) },
+        Seated { id: ActorId::new(3), seat: SeatNumber::new(2) },
+    );
+    let mut asked = Asked::new();
+    let mut reply = asked.unanswered(me, answered, 3, 4, Unanswered::Unreplied);
+    reply.tie = Tie::answers(4);
+    asked.buffers_mut().mailed.push(reply);
+
+    owed(me, dropped, Tie::asks(4), &Ok(()), 2, &mut asked);
+
+    let mailed = asked.mailed();
+    assert_eq!(mailed.len(), 2, "the engine says the request was not answered");
+    assert_eq!((mailed[1].to, mailed[1].tie), (dropped, Tie::unanswered(4)), "to the asker it left unanswered");
+}
+
+#[test]
 fn what_the_engine_says_of_a_request_to_an_ended_actor_comes_after_all_that_actor_sent() {
     // Catches the engine's answer ordered by the asker's count among the receiver's own mail, which would hand it
     // before what the receiver sent first, or drop that mail as the same item where the two counts meet.

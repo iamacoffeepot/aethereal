@@ -308,12 +308,13 @@ impl Asked {
         Mailed { by, sent_as: SentAs::Engine, to, count, kind, bytes, tie, due: Due::Never }
     }
 
-    /// Whether `by` has answered the request of the count `request` of the actor `asker` in the turn running, or held
-    /// it (ADR-0017).
+    /// Whether `by`, which had sent `sent` pieces of mail before the turn running, has answered the request of the
+    /// count `request` of the actor `asker` in that turn, or held it (ADR-0017). The buffers hold earlier turns' mail
+    /// too, which a count above `sent` leaves out.
     #[must_use]
-    pub fn has_answered(&self, by: Seated, asker: Seated, request: u64) -> bool {
-        let answer = Tie::answers(request);
-        let replied = self.buffers.mailed.iter().any(|mailed| mailed.by.id == by.id && mailed.tie == answer);
+    pub fn has_answered(&self, by: Seated, sent: u64, asker: Seated, request: u64) -> bool {
+        let sent_in_turn = |mailed: &&Mailed| mailed.by.id == by.id && mailed.count > sent;
+        let replied = self.buffers.mailed.iter().filter(sent_in_turn).any(|mailed| mailed.answers(asker, request));
         let owed = Owed { holder: by, asker, request };
         let held = self.owes.iter().any(|owes| matches!(owes, Owes::Holds { owed: held, .. } if *held == owed));
 
