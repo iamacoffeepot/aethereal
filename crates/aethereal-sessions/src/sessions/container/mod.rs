@@ -121,7 +121,7 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
         shelves(settings, session)?.map(|shelf| Volume { name: shelf.name, target: String::from(shelf.target) });
 
     Ok(ContainerSpec {
-        name: format!("aethereal-session-{}-{session}-{run}", settings.label),
+        name: name(settings, session, run),
         image: settings.image.clone(),
         user: settings.user.clone(),
         working_dir: String::from(HOME),
@@ -139,6 +139,14 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
         labels: labels(settings, session)?,
         stdin: Stdin::Kept,
     })
+}
+
+/// The name of the container of the session numbered `session` for its run `run`, `aethereal-session-<label>-<n>-<run>`:
+/// named for the hub's label, so two hubs on one daemon never share one, and known before Docker makes it, so a record
+/// written before names it.
+#[must_use]
+pub fn name(settings: &SessionsSettings, session: u32, run: u32) -> String {
+    format!("aethereal-session-{}-{session}-{run}", settings.label)
 }
 
 /// Claude Code in print mode, reading and writing stream-json, on the settings' model, its permissions skipped as the

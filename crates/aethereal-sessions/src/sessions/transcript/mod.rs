@@ -109,11 +109,22 @@ pub enum Since {
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub struct Transcript {
     entries: Vec<Numbered>,
+    /// Whose output the counts after it are of: the latest container whose start it notes.
+    counted: Counted,
     /// The bytes of the latest container's stdout and stderr the transcript holds, which a re-attach skips.
     stdout_bytes: u64,
     stderr_bytes: u64,
     since: Since,
     turn: Turning,
+}
+
+/// Which container's output a transcript counts: the latest whose start it notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Counted {
+    /// None's: it notes no container started.
+    Unstarted,
+    /// The container of the run `run`'s.
+    Run(u32),
 }
 
 /// Whether the latest container's session has a turn running, as far as the transcript shows.
@@ -129,7 +140,14 @@ impl Transcript {
     /// A transcript of nothing.
     #[must_use]
     pub const fn new() -> Self {
-        Self { entries: Vec::new(), stdout_bytes: 0, stderr_bytes: 0, since: Since::Compacted, turn: Turning::Ended }
+        Self {
+            entries: Vec::new(),
+            counted: Counted::Unstarted,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            since: Since::Compacted,
+            turn: Turning::Ended,
+        }
     }
 
     /// The transcript `bytes` keep, its frames read in order: a frame cut short at the end, as a crash mid-append
@@ -178,7 +196,8 @@ impl Transcript {
             }
             Entry::Stdout { bytes, .. } => self.stdout_bytes += bytes + 1,
             Entry::Stderr { bytes, .. } => self.stderr_bytes += bytes + 1,
-            Entry::Hub(Note::Started { .. }) => {
+            Entry::Hub(Note::Started { run, .. }) => {
+                self.counted = Counted::Run(*run);
                 self.stdout_bytes = 0;
                 self.stderr_bytes = 0;
                 self.turn = Turning::Ended;
@@ -201,6 +220,12 @@ impl Transcript {
         let start = self.entries.partition_point(|numbered| numbered.number <= after);
 
         self.entries[start..].iter().take(most).cloned().collect()
+    }
+
+    /// Which container's output it counts: the latest whose start it notes.
+    #[must_use]
+    pub const fn counted(&self) -> Counted {
+        self.counted
     }
 
     /// The bytes of the latest container's stdout and of its stderr the transcript holds.

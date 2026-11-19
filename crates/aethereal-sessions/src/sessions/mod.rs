@@ -33,7 +33,7 @@ pub use heard::Heard;
 pub use record::{Conversation, Record, Standing};
 pub use saves::{Index, Keeping, Loading};
 pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
-pub use transcript::{Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
+pub use transcript::{Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
 pub use volumes::Homing;
 
 use crate::{
@@ -117,7 +117,8 @@ pub struct Resting {
     pub rest: u64,
 }
 
-/// Why the capability failed: it could not read its sessions, found no Docker client, or had no room to write.
+/// Why the capability failed: it could not read its sessions, found no Docker client, had no room to write, or could
+/// not list its sessions' containers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.unfound")]
 pub enum Unfound {
@@ -127,6 +128,9 @@ pub enum Unfound {
     Docker,
     /// The engine had no room to hold what it writes.
     NoRoom,
+    /// Docker could not list the sessions' containers, so which sessions still run is unknown. Every record is left as
+    /// it is, for a hub that starts again to list them.
+    Unlisted,
 }
 
 /// The sessions capability (ADR-0057): asked at its typed path, `path::<Sessions>(())`, to open a session
@@ -139,8 +143,10 @@ pub enum Unfound {
 /// and the next line resumes it in a new container on the same home, a named volume of its own. Every line its
 /// container writes and every line written to it is numbered in its transcript, kept with its record in `Files`'
 /// `Save` namespace, which it asks as any actor does and needs listed before it, so a hub that starts again knows its
-/// sessions: it follows Docker's events, lists the containers that carry its label, and re-attaches to each that still
-/// runs, reading what it missed from its logs.
+/// sessions: it follows Docker's events, lists the containers that carry its label, and adopts each a record names that
+/// still runs, reading what it missed from its logs. A session's record says a container of it may exist before
+/// anything of the container is made, and says so until it is removed, so no point a hub is killed at leaves a
+/// container its record does not name.
 ///
 /// It is the actor layer of the stack that serves the sessions' port (ADR-0035): each container is given a bearer it
 /// mints and holds, and a request on that port bearing one it holds passes on as that session's
@@ -183,12 +189,21 @@ enum Phase {
     Ready { docker: ActorRef<Docker> },
 }
 
-/// A container a session's record says may still run.
+/// A container a session's record says may exist, of its run `run`.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 struct Recorded {
     session: u32,
-    container: ContainerId,
+    container: Named,
     run: u32,
+}
+
+/// What a record names a container by, to find it among those Docker lists.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+enum Named {
+    /// The id Docker answered as it made it.
+    Made(ContainerId),
+    /// The name it is made under, as Docker had not answered its id when the record was written.
+    Starting(String),
 }
 
 #[actor(depends(Docker, Files))]
@@ -261,7 +276,8 @@ impl Sessions {
         self.handle_file_read(answered, turn)
     }
 
-    /// A write is done: the next is sent, and once none waits, those of what changed meanwhile.
+    /// A write is done: what waited on it goes ahead, the next is sent, and once none waits, those of what changed
+    /// meanwhile.
     #[answer]
     fn file_written(
         &mut self,
@@ -317,8 +333,9 @@ impl Sessions {
         self.handle_inspected(answered, turn)
     }
 
-    /// The containers carrying the hub's label: each a record says may run is re-attached when it runs, and noted
-    /// lost when it does not; each with no record is reported.
+    /// The containers carrying the hub's label: each a record says may exist is adopted when it runs, and noted lost
+    /// and removed when it does not; a record whose container is not listed is noted lost; and each no record names is
+    /// reported.
     #[answer]
     fn listed(
         &mut self,

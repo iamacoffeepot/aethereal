@@ -8,7 +8,7 @@ use aethereal_actor::{Service, Spares, actor};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
-use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Writing};
+use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Unwritten, Writing};
 use aethereal_http::stack::StackSettings;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{
@@ -20,14 +20,15 @@ use aethereal_sessions::{
     Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
     Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say,
     Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State,
-    Transcribed, Transcript,
+    Transcribed, Transcript, Unfound,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
+use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Halted, Host, Lifecycle, Unbuilt};
 use aethereal_tcp::{Interface, Tcp};
 use aethereal_tools::{Call, Called, Caller as By, Offer, Offered, Output, ToolSheet, Toolbox, Tooling};
 use core::fmt::Write as _;
+use core::future::{pending, ready};
 use core::mem;
 use core::time::Duration;
 use std::collections::BTreeMap;
@@ -219,8 +220,30 @@ enum Role {
     Logs { id: String, sent: usize },
     /// The events: how many were written on it.
     Events { sent: usize },
+    /// A request the daemon holds, and never answers.
+    Held,
     /// Answered, or hung up.
     Done,
+}
+
+/// Which of the hub's requests the fake daemon takes and never answers, as a daemon a killed hub left mid-request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// None: it answers each.
+    Nothing,
+    /// Each create: no container is made.
+    Create,
+    /// Each start: a container made is never started.
+    Start,
+}
+
+/// How the fake daemon answers a list of the containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lists {
+    /// With every container it holds.
+    Containers,
+    /// With a daemon's error: it could not list them.
+    Failing,
 }
 
 /// One connection to the fake daemon.
@@ -245,6 +268,10 @@ struct Daemon {
     volumes: BTreeMap<String, String>,
     /// Every event, a JSON line each.
     events: Vec<String>,
+    /// Which requests it takes and never answers.
+    hold: Hold,
+    /// How it answers a list of the containers.
+    lists: Lists,
 }
 
 impl Daemon {
@@ -267,6 +294,8 @@ impl Daemon {
             names: Vec::new(),
             volumes: BTreeMap::new(),
             events: Vec::new(),
+            hold: Hold::Nothing,
+            lists: Lists::Containers,
         }
     }
 
@@ -361,7 +390,7 @@ impl Daemon {
                 }
                 *sent = self.events.len();
             }
-            Role::Done => {}
+            Role::Held | Role::Done => {}
         }
     }
 
@@ -374,6 +403,8 @@ impl Daemon {
         let (route, query) = target.split_once('?').unwrap_or((target, ""));
         let parts: Vec<&str> = route.trim_start_matches('/').split('/').collect();
         match (method, parts.as_slice()) {
+            ("POST", ["containers", "create"]) if self.hold == Hold::Create => return Role::Held,
+            ("POST", ["containers", _, "start"]) if self.hold == Hold::Start => return Role::Held,
             ("POST", ["containers", "create"]) => {
                 let name = query.strip_prefix("name=").unwrap_or_default().to_owned();
                 let body = String::from_utf8_lossy(body).into_owned();
@@ -408,6 +439,9 @@ impl Daemon {
             ("GET", ["events"]) => {
                 write(peer, b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
                 return Role::Events { sent: self.events.len() };
+            }
+            ("GET", ["containers", "json"]) if self.lists == Lists::Failing => {
+                respond(peer, "500 Internal Server Error", r#"{"message":"the daemon could not list them"}"#);
             }
             ("GET", ["containers", "json"]) => {
                 let listed: Vec<String> = self
@@ -489,6 +523,18 @@ impl Daemon {
         String::from_utf8_lossy(&written).lines().map(String::from).collect()
     }
 
+    /// Whether it holds a request it will never answer.
+    fn holds(&self) -> bool {
+        self.connections.iter().any(|connection| matches!(connection.role, Role::Held))
+    }
+
+    /// Whether the `nth` container made, from 0, runs.
+    fn runs(&self, nth: usize) -> bool {
+        let container = self.made.get(nth).and_then(|id| self.containers.get(id));
+
+        container.is_some_and(|container| container.running)
+    }
+
     /// The id of the `nth` container made, from 0.
     fn made(&self, nth: usize) -> String {
         self.made.get(nth).cloned().unwrap_or_else(|| panic!("a container {nth} was made"))
@@ -549,6 +595,15 @@ fn chunk_of(bytes: &[u8]) -> Vec<u8> {
 /// A hub of `Tcp`, `Http`, `Mcp`, `Files` in the test's directory, the Docker client on the fake's socket, the sessions
 /// as `sessions` say with their tools, the sessions' port served on the loopback, and the caller.
 fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>, Unheard> {
+    withholding_hub(daemon, sessions, Withhold::Nothing)
+}
+
+/// A hub as [`hub`] makes, whose storage keeps from landing what `withhold` says.
+fn withholding_hub(
+    daemon: &Daemon,
+    sessions: SessionsSettings,
+    withhold: Withhold,
+) -> Result<Harness<Headless>, Unheard> {
     let program = Headless::program()
         .with_engine(engine())
         .root::<Tcp>()
@@ -556,6 +611,7 @@ fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>,
         .root::<Mcp>()
         .root_with::<Store>(daemon.store())
         .root_with::<Files>(daemon.files())
+        .root_with::<Withholder>(WithholdSettings { roots: daemon.files(), withhold })
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
         .root::<Toolbox<(SessionsTools,), Mcp>>()
@@ -1099,14 +1155,8 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
     let file = daemon.saved("sessions/1/transcript");
-    // A record is written after the append before it, so a hub whose writes are slow can hold every entry on disk while
-    // its record still says the session was starting: the hub is stopped only once both say the container runs.
-    until(&mut harness, &mut daemon, |_, daemon| {
-        let transcribed = Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 5;
-        let recorded = matches!(kept(daemon, session), Some(Standing::Running { .. }));
-
-        transcribed && recorded
-    });
+    // Whether the record after these entries has landed or not, it names the container, so the next hub finds it.
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 5);
     drop(harness);
     daemon.connections.clear();
 
@@ -1133,6 +1183,59 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     say(&mut harness, &mut daemon, session, "still there?")?;
     let written = stdin(&mut harness, &mut daemon, &id, 2);
     assert_eq!(written[1], r#"{"type":"user","message":{"role":"user","content":"still there?"}}"#);
+
+    Ok(())
+}
+
+/// The bytes of the sessions' index and of `session`'s record and transcript on the disk, each empty when missing.
+fn saved_bytes(daemon: &Daemon, session: u32) -> [Vec<u8>; 3] {
+    let files = [
+        String::from("sessions/index"),
+        format!("sessions/{session}/record"),
+        format!("sessions/{session}/transcript"),
+    ];
+
+    files.map(|file| fs::read(daemon.saved(&file)).unwrap_or_default())
+}
+
+#[test]
+fn a_hub_that_starts_again_and_cannot_list_its_containers_fails_and_leaves_every_record_as_it_was()
+-> Result<(), Unheard> {
+    // Catches a list Docker failed read as no containers: each recorded session noted lost and its record saying it
+    // stopped, while its container still runs, for the next hub to report as a stray.
+    let mut daemon = Daemon::new("unlisted");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let session = open(&mut harness, &mut daemon, "kept")?;
+    let id = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "hello")?;
+    answer_turn(&mut daemon, &id, "before");
+    transcript_with(&mut harness, &mut daemon, session, 3)?;
+    until(&mut harness, &mut daemon, |_, daemon| {
+        matches!(kept(daemon, session), Some(Standing::Running { run: 1, .. }))
+    });
+    drop(harness);
+    daemon.connections.clear();
+
+    let before = saved_bytes(&daemon, session);
+    daemon.lists = Lists::Failing;
+    let mut harness = hub(&daemon, settings)?;
+    let mut lifecycle = harness.host().engine().lifecycle();
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+        lifecycle = harness.host().engine().lifecycle();
+
+        matches!(lifecycle, Lifecycle::Stopped(_) | Lifecycle::Unbooted(_))
+    });
+    let Lifecycle::Stopped(Halted::Failed(_, fault)) = lifecycle else {
+        panic!("the hub stops as its sessions failed: {lifecycle:?}");
+    };
+    assert_eq!(fault.read::<Unfound>(&mut Budget::new(64)), Ok(Some(Unfound::Unlisted)));
+    drop(harness);
+
+    assert_eq!(saved_bytes(&daemon, session), before, "every record and transcript is as it was");
+    assert!(daemon.runs(0), "the session's container still runs");
 
     Ok(())
 }
@@ -1416,6 +1519,339 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
     assert!(record.exists());
 
     Ok(())
+}
+
+/// What the withholding storage keeps from landing, told by what a write holds.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.test.sessions.withhold")]
+enum Withhold {
+    /// Nothing: every write lands.
+    #[default]
+    Nothing,
+    /// A record saying the session's run `run` runs is begun and never answered, so no write after it is sent.
+    StallRunning { run: u32 },
+    /// A record saying the session's run `run` runs is refused, and each write after it lands.
+    RefuseRunning { run: u32 },
+    /// An append whose first entry notes that the run `run` started is begun and never answered.
+    StallStarted { run: u32 },
+}
+
+/// What becomes of one write the withholding storage is asked.
+enum Kept {
+    /// It is written.
+    Lands,
+    /// It is begun and never answered.
+    Stalled,
+    /// It is answered failed, and nothing is written.
+    Refused,
+}
+
+impl Withhold {
+    /// What becomes of `bytes` written whole.
+    fn whole(self, bytes: &[u8]) -> Kept {
+        let standing = from_bytes::<Record>(bytes, &mut Budget::new(4096)).map(|record| record.kept);
+        let Ok(Standing::Running { run: running, .. }) = standing else {
+            return Kept::Lands;
+        };
+
+        match self {
+            Self::StallRunning { run } if run == running => Kept::Stalled,
+            Self::RefuseRunning { run } if run == running => Kept::Refused,
+            Self::Nothing | Self::StallRunning { .. } | Self::RefuseRunning { .. } | Self::StallStarted { .. } => {
+                Kept::Lands
+            }
+        }
+    }
+
+    /// What becomes of `bytes` appended.
+    fn appended(self, bytes: &[u8]) -> Kept {
+        let Self::StallStarted { run } = self else {
+            return Kept::Lands;
+        };
+        let first = Transcript::read(bytes).after(0, 1);
+        if noted(&first, run) > 0 {
+            return Kept::Stalled;
+        }
+
+        Kept::Lands
+    }
+}
+
+impl Kept {
+    /// What a write kept so comes to: `lands`, the write itself, only when it lands.
+    fn writing<'a>(self, lands: impl FnOnce() -> Writing<'a>) -> Writing<'a> {
+        match self {
+            Self::Lands => lands(),
+            Self::Stalled => Box::pin(pending()),
+            Self::Refused => Box::pin(ready(Err(Unwritten::Failed))),
+        }
+    }
+}
+
+/// The host's storage, keeping from landing what `withhold` says, and landing everything else as `Files`' own does.
+struct Withholding {
+    directories: Directories,
+    withhold: Withhold,
+}
+
+impl Storage for Withholding {
+    fn read<'a>(&'a self, namespace: Namespace, path: &'a FilePath, lent: Spares) -> Reading<'a> {
+        self.directories.read(namespace, path, lent)
+    }
+
+    fn write<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        self.withhold.whole(&bytes).writing(|| self.directories.write(namespace, path, bytes))
+    }
+
+    fn append<'a>(&'a self, namespace: Namespace, path: &'a FilePath, bytes: Vec<u8>) -> Writing<'a> {
+        self.withhold.appended(&bytes).writing(|| self.directories.append(namespace, path, bytes))
+    }
+
+    fn list(&self, namespace: Namespace) -> Listing<'_> {
+        self.directories.list(namespace)
+    }
+}
+
+/// [`Withholder`]'s settings: the directories `Files` keeps, and what is kept from landing in them.
+#[derive(Debug, Default, Plain)]
+#[kind(name = "aether.test.sessions.withhold_settings")]
+#[settings]
+struct WithholdSettings {
+    roots: FileRoots,
+    withhold: Withhold,
+}
+
+/// A root that serves the withholding storage in place of the one `Files` served, as it is listed after it.
+#[derive(Bound)]
+#[kind(name = "aether.test.sessions.withholder")]
+struct Withholder;
+
+#[actor]
+impl Withholder {
+    fn begin(_: Unset) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+}
+
+impl Bootstrap<Headless> for Withholder {
+    const SECTION: &'static str = "withholder";
+    type Settings = WithholdSettings;
+    type Needs = ();
+    type Provides = ();
+
+    async fn bootstrap(
+        WithholdSettings { roots, withhold }: WithholdSettings,
+        (): (),
+        cx: &mut Bootstrapping<'_, Headless, Self>,
+    ) -> Result<(), Unbuilt> {
+        let withholding = Withholding { directories: Directories::new(&roots), withhold };
+        cx.serve(Service::<dyn Storage>::of(Arc::new(withholding)));
+        cx.begin(&(), Unset)?;
+
+        Ok(())
+    }
+}
+
+/// Where a hub is killed as it starts a session's second container: each point between its record saying the run
+/// starts, the run's container made and started, the run's first entries landing, and its record saying it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kill {
+    /// The record says the run starts, and Docker, asked to make its container, never answers.
+    Creating,
+    /// The record says the run starts, and Docker made its container and, asked to start it, never answers.
+    Launching,
+    /// The record says the run starts, the container runs, and nothing of the run has landed.
+    Started,
+    /// The record says the run starts, and the run's first entries have landed, with a turn of Claude's.
+    Appended,
+    /// The record says the container runs, and nothing of the run is in the transcript.
+    Recorded,
+}
+
+impl Kill {
+    /// What the fake daemon takes and never answers.
+    const fn hold(self) -> Hold {
+        match self {
+            Self::Creating => Hold::Create,
+            Self::Launching => Hold::Start,
+            Self::Started | Self::Appended | Self::Recorded => Hold::Nothing,
+        }
+    }
+
+    /// What the hub's storage keeps from landing.
+    const fn withhold(self) -> Withhold {
+        match self {
+            Self::Creating => Withhold::Nothing,
+            Self::Launching | Self::Started => Withhold::StallRunning { run: 2 },
+            Self::Appended => Withhold::RefuseRunning { run: 2 },
+            Self::Recorded => Withhold::StallStarted { run: 2 },
+        }
+    }
+
+    /// Whether the hub has come to this point, as the daemon and the disk show.
+    fn reached(self, daemon: &Daemon, session: u32) -> bool {
+        match self {
+            Self::Creating | Self::Launching => daemon.holds(),
+            Self::Started => daemon.runs(1),
+            Self::Appended => claude_events(&on_disk(daemon, session)) == 6,
+            Self::Recorded => {
+                let recorded = matches!(kept(daemon, session), Some(Standing::Running { run: 2, .. }));
+
+                recorded && daemon.runs(1)
+            }
+        }
+    }
+
+    /// Whether the killed hub left on disk what this point leaves: `record`, and the second run noted started
+    /// `started` times.
+    fn left(self, record: Option<&Standing>, started: usize) -> bool {
+        let starting = record == Some(&Standing::Starting { run: 2 });
+        let running = matches!(record, Some(Standing::Running { run: 2, .. }));
+        match self {
+            Self::Creating | Self::Launching | Self::Started => starting && started == 0,
+            Self::Appended => starting && started == 1,
+            Self::Recorded => running && started == 0,
+        }
+    }
+}
+
+/// The entries of `session`'s transcript on disk.
+fn on_disk(daemon: &Daemon, session: u32) -> Vec<Numbered> {
+    let bytes = fs::read(daemon.saved(&format!("sessions/{session}/transcript"))).unwrap_or_default();
+
+    Transcript::read(&bytes).after(0, usize::MAX)
+}
+
+/// How many of `entries` note that the run `run` started.
+fn noted(entries: &[Numbered], run: u32) -> usize {
+    entries
+        .iter()
+        .filter(|numbered| matches!(numbered.entry, Entry::Hub(Note::Started { run: started, .. }) if started == run))
+        .count()
+}
+
+/// The text of each of Claude's messages in `entries`, in order.
+fn messages(entries: &[Numbered]) -> Vec<String> {
+    let texts = entries.iter().filter_map(|numbered| match &numbered.entry {
+        Entry::Claude(json) => json.as_str().split(r#""text":""#).nth(1)?.split('"').next().map(String::from),
+        _ => None,
+    });
+
+    texts.collect()
+}
+
+/// Kills a hub at `kill` as it starts the second container of a session whose first ran a turn and ended, Claude
+/// writes a turn in that container while no hub runs, and a hub starts again on what the killed one left: answers it,
+/// the fake daemon, and the session's number.
+fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32), Unheard> {
+    let mut daemon = Daemon::new(test);
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = withholding_hub(&daemon, settings.clone(), kill.withhold())?;
+    let session = open(&mut harness, &mut daemon, "killed")?;
+    let first = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "hello")?;
+    answer_turn(&mut daemon, &first, "before");
+    transcript_with(&mut harness, &mut daemon, session, 3)?;
+    daemon.stop(&first);
+    until_state(&mut harness, &mut daemon, session, State::Stopped)?;
+
+    daemon.hold = kill.hold();
+    say(&mut harness, &mut daemon, session, "again")?;
+    if kill == Kill::Appended {
+        until(&mut harness, &mut daemon, |_, daemon| daemon.runs(1));
+        let second = daemon.made(1);
+        answer_turn(&mut daemon, &second, "during");
+    }
+    until(&mut harness, &mut daemon, |_, daemon| kill.reached(daemon, session));
+    drop(harness);
+    daemon.connections.clear();
+    daemon.hold = Hold::Nothing;
+
+    let record = kept(&daemon, session);
+    let started = noted(&on_disk(&daemon, session), 2);
+    assert!(kill.left(record.as_ref(), started), "killed at {kill:?}: {record:?}, run 2 noted started {started} times");
+    if daemon.runs(1) {
+        let second = daemon.made(1);
+        answer_turn(&mut daemon, &second, "while the hub was away");
+    }
+    let harness = hub(&daemon, settings)?;
+
+    Ok((harness, daemon, session))
+}
+
+/// Waits until the hub has left `session` stopped, its record saying so, and answers its transcript.
+fn left_stopped(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Vec<Numbered>, Unheard> {
+    // The record says the session stopped only once the hub has read its sessions back, before which none is listed.
+    until(harness, daemon, |_, daemon| kept(daemon, session) == Some(Standing::Stopped));
+    until_state(harness, daemon, session, State::Stopped)?;
+
+    read(harness, daemon, session, 0)
+}
+
+/// Kills a hub at `kill`, after which the session's second container runs, and checks that the next hub adopts it:
+/// Claude's messages, `said`, each in the transcript once and in order, the run noted started once, and the record
+/// saying the container runs.
+fn adopts(test: &str, kill: Kill, said: &[&str]) -> Result<(), Unheard> {
+    let (mut harness, mut daemon, session) = killed_at(test, kill)?;
+    let entries = transcript_with(&mut harness, &mut daemon, session, said.len() * 3)?;
+
+    assert_eq!(messages(&entries), said, "each of Claude's messages once, in order: {entries:?}");
+    assert_eq!(noted(&entries, 2), 1, "the second run is noted started once: {entries:?}");
+    until(&mut harness, &mut daemon, |_, daemon| {
+        matches!(kept(daemon, session), Some(Standing::Running { run: 2, .. }))
+    });
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_its_session_stopped() -> Result<(), Unheard> {
+    // Catches a container asked for before the record naming it lands, and a hub that starts again and leaves a
+    // session whose record says it starts as it found it, when no container of it is listed.
+    let (mut harness, mut daemon, session) = killed_at("kill-creating", Kill::Creating)?;
+    let entries = left_stopped(&mut harness, &mut daemon, session)?;
+
+    assert_eq!(daemon.made.len(), 1, "no container of the run is made");
+    let last = entries.last().map(|numbered| &numbered.entry);
+    assert_eq!(last, Some(&Entry::Hub(Note::Stopped { run: 2, why: Ended::Lost })));
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_killed_before_a_run_s_container_starts_removes_it_and_leaves_its_session_stopped() -> Result<(), Unheard> {
+    // Catches a container that does not run, found by the name a record of a starting run gives it, left in place, or
+    // the session's record saying it stopped while the container is still there.
+    let (mut harness, mut daemon, session) = killed_at("kill-launching", Kill::Launching)?;
+    let second = daemon.made(1);
+    let entries = left_stopped(&mut harness, &mut daemon, session)?;
+
+    assert!(!daemon.containers.contains_key(&second), "the run's container is removed");
+    let last = entries.last().map(|numbered| &numbered.entry);
+    assert_eq!(last, Some(&Entry::Hub(Note::Stopped { run: 2, why: Ended::Lost })));
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_killed_once_a_run_s_container_runs_and_before_anything_of_the_run_lands_adopts_it() -> Result<(), Unheard> {
+    // Catches a running container whose record says only that its run starts treated as a stray, and one adopted
+    // with the transcript still counting the first run's output, which skips the start of the second's.
+    adopts("kill-started", Kill::Started, &["before", "while the hub was away"])
+}
+
+#[test]
+fn a_hub_killed_after_a_run_s_first_entries_and_before_its_record_says_it_runs_adopts_it() -> Result<(), Unheard> {
+    // Catches a run noted started twice, or what the transcript already holds of it read again, when the record still
+    // says the run starts.
+    adopts("kill-appended", Kill::Appended, &["before", "during", "while the hub was away"])
+}
+
+#[test]
+fn a_hub_killed_after_a_run_s_record_says_it_runs_and_before_its_first_entry_adopts_it() -> Result<(), Unheard> {
+    // Catches a container adopted by its record's id with the transcript still counting the first run's output, which
+    // skips the start of the second's.
+    adopts("kill-recorded", Kill::Recorded, &["before", "while the hub was away"])
 }
 
 /// How long the live run waits on Claude: a container's start and a model's turn take far longer than the fake's.

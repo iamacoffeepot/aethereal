@@ -1,15 +1,20 @@
 //! How the capability begins (ADR-0057): it reads its sessions through `Files`, the index and then each session's
 //! record and transcript, follows Docker's events for its label, and only then lists the containers carrying it, so
-//! nothing that happens to one falls between the two. Each container a record says may still run is re-attached when
-//! it does, and each it has no record of is reported, never removed.
+//! nothing that happens to one falls between the two. It reads only those two facts, what each record says and what
+//! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
+//! removed when it does not, the session left stopped once it is gone; a record whose container is not listed leaves
+//! its session stopped; and each container carrying the label that no record names is reported, never removed. A
+//! list Docker does not answer with its containers fails the capability before anything is noted or written: which
+//! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
 
 use super::asked::Waiting;
+use super::container;
 use super::record::{Record, Standing};
 use super::saves::{Index, Loading, record, transcript};
 use super::session::{Life, Session};
 use super::transcript::{Ended, Entry, Note, Transcript};
-use super::{Phase, Reconciling, Recorded, Sessions, Unfound};
-use crate::{ContainerId, Docker, Events, List, Listed, Listing, Phase as DockerPhase};
+use super::{Named, Phase, Reconciling, Recorded, Sessions, Unfound};
+use crate::{Docker, Events, List, Listed, Listing, Phase as DockerPhase};
 use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use aethereal_data::{Budget, Plain, from_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
@@ -139,12 +144,19 @@ impl Sessions {
         let Reading { records, mut transcripts, .. } = reading;
         let mut recorded = Vec::new();
         for (session, record) in records {
-            if let Standing::Running { container, run } = &record.kept {
-                recorded.push(Recorded { session, container: container.clone(), run: *run });
+            match &record.kept {
+                Standing::Running { container, run } => {
+                    recorded.push(Recorded { session, container: Named::Made(container.clone()), run: *run });
+                }
+                Standing::Starting { run } => {
+                    let name = container::name(&self.settings, session, *run);
+                    recorded.push(Recorded { session, container: Named::Starting(name), run: *run });
+                }
+                Standing::Stopped | Standing::Archived => {}
             }
             let life = match record.kept {
                 Standing::Archived => Life::Archived,
-                Standing::Running { .. } | Standing::Stopped => Life::Stopped,
+                Standing::Running { .. } | Standing::Starting { .. } | Standing::Stopped => Life::Stopped,
             };
             let transcript = transcripts.remove(&session).unwrap_or_default();
             let Record { name, conversation, runs, .. } = record;
@@ -159,8 +171,10 @@ impl Sessions {
         Ok(())
     }
 
-    /// The containers carrying the hub's label: each a record says may run is re-attached when it runs, and noted
-    /// lost when it does not; each with no record is reported.
+    /// The containers carrying the hub's label: each a record says may exist is adopted when it runs, and noted lost
+    /// and removed when it does not; a record whose container is not listed is noted lost; and each no record names is
+    /// reported. A list that fails fails the capability, [`Unfound::Unlisted`], before any session is noted or any
+    /// record written, as which containers exist is unknown and none may be taken as gone.
     pub(super) fn handle_listed(
         &mut self,
         (answered, Reconciling): (Answered<Listed>, Reconciling),
@@ -171,35 +185,37 @@ impl Sessions {
         else {
             return Ok(());
         };
-        self.phase = Phase::Ready { docker };
         let listings = match answered {
             Answered::Yes(Listed::Containers(listings)) => listings,
             Answered::Yes(Listed::Failed(why)) => {
                 turn.log(Level::Error, format_args!("the sessions' containers could not be listed: {why:?}"));
-                Vec::new()
+                return Err(Fault::new(&Unfound::Unlisted)?);
             }
             Answered::No(why) => {
                 turn.log(Level::Error, format_args!("the sessions' containers went unlisted: {why:?}"));
-                Vec::new()
+                return Err(Fault::new(&Unfound::Unlisted)?);
             }
         };
-        let known: Vec<ContainerId> = recorded.iter().map(|recorded| recorded.container.clone()).collect();
-        for Recorded { session, container, run } in recorded {
-            let listing = listings.iter().find(|listing| listing.id == container);
-            let runs = listing.is_some_and(|listing| listing.phase == DockerPhase::Running);
-            if runs {
-                self.resume(turn, session, container, run)?;
-            } else {
-                self.note(session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
-                if listing.is_some() {
-                    self.remove(turn, session, container, run)?;
-                }
+        self.phase = Phase::Ready { docker };
+        for listing in &listings {
+            let is_named = recorded.iter().any(|recorded| recorded.names(listing));
+            if !is_named {
+                let name = &listing.name;
+                turn.log(Level::Warn, format_args!("a container carries the hub's label with no session: {name}"));
+                self.strays.push(name.clone());
             }
         }
-        for Listing { id, name, .. } in listings {
-            if !known.contains(&id) {
-                turn.log(Level::Warn, format_args!("a container carries the hub's label with no session: {name}"));
-                self.strays.push(name);
+        for Recorded { session, container, run } in recorded {
+            let found = listings.iter().find(|listing| container.names(listing));
+            match found {
+                Some(Listing { id, phase: DockerPhase::Running, .. }) => self.adopt(turn, session, id.clone(), run)?,
+                Some(Listing { id, .. }) => {
+                    self.note(session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
+                    self.retire(turn, session, id.clone(), run)?;
+                }
+                None => {
+                    self.note(session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
+                }
             }
         }
 
@@ -208,5 +224,22 @@ impl Sessions {
         }
 
         self.flush(turn)
+    }
+}
+
+impl Recorded {
+    /// Whether `listing` is the container this record names.
+    fn names(&self, listing: &Listing) -> bool {
+        self.container.names(listing)
+    }
+}
+
+impl Named {
+    /// Whether `listing` is the container this names: by its id, or by its name.
+    fn names(&self, listing: &Listing) -> bool {
+        match self {
+            Self::Made(id) => listing.id == *id,
+            Self::Starting(name) => listing.name == *name,
+        }
     }
 }

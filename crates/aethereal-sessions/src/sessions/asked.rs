@@ -163,8 +163,9 @@ impl Sessions {
         let session = self.held.keys().next_back().map_or(1, |last| last + 1);
         self.held.insert(session, Session::new(name, opening));
         self.indexed = Indexed::Changed;
+        self.start(session);
 
-        self.start(turn, session, 1)
+        Ok(())
     }
 
     /// The entries `read` asks for.
@@ -301,7 +302,7 @@ impl Sessions {
                 }
                 self.type_line(turn, session, &written)?;
             }
-            Taking::Resumed => self.restart(turn, session, vec![written])?,
+            Taking::Resumed => self.restart(session, vec![written]),
             Taking::Refused(_) => {}
         }
 

@@ -1,5 +1,7 @@
 //! A session's record (ADR-0057): what the hub keeps of a session beside its transcript, so a hub that starts again
-//! knows its sessions and resumes each.
+//! knows its sessions and resumes each. A session's container exists only while its record says it may: the record
+//! saying a run starts lands before anything of that run is made, and the record saying the session stopped is written
+//! only once its container is removed.
 
 use crate::ContainerId;
 use aethereal_data::Plain;
@@ -26,14 +28,18 @@ pub enum Conversation {
     Begun(String),
 }
 
-/// Where a session stood when the hub last wrote its record.
+/// Where a session stood when the hub last wrote its record: whether a container of it may exist, and, when one may,
+/// what a hub that starts again finds it by among the containers Docker lists.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.standing")]
 pub enum Standing {
     /// Its container of the run `run` was made, and may run still.
     Running { container: ContainerId, run: u32 },
-    /// No container of it runs: the next line resumes it.
+    /// No container of it exists: the next line resumes it.
     Stopped,
     /// It was archived: its container is gone, and it never runs again.
     Archived,
+    /// Its container of the run `run` may be being made, under the name its number and the run give it, as Docker
+    /// has not yet answered its id. Last of the cases, so a record written before there was one still reads.
+    Starting { run: u32 },
 }

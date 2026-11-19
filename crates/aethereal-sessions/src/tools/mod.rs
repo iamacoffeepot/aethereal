@@ -309,6 +309,7 @@ fn refusal(why: &Refusal) -> String {
         Refusal::NoBearer => String::from("the hub's randomness drew no bearer for the session's route"),
         Refusal::NoDropBox => String::from("the store could not make the session's drop box"),
         Refusal::Docker(error) => format!("Docker: {error:?}"),
+        Refusal::Unrecorded => String::from("the hub could not write the session's record, so it made nothing"),
     }
 }
 

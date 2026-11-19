@@ -187,4 +187,7 @@ pub enum Refusal {
     NoDropBox,
     /// Docker refused, or could not be reached.
     Docker(DockerError),
+    /// The session's record, saying it starts, was not written, so nothing of it was made that a hub starting again
+    /// would not find.
+    Unrecorded,
 }
