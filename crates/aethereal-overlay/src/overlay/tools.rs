@@ -63,7 +63,9 @@ impl Overlay {
     pub(super) fn handle_chat_word(&mut self, word: ChatWord, turn: &mut Turn<'_, Self>) -> Result<Worded, Fault> {
         let chat = match word {
             ChatWord::New { name } => Ok(self.chats.make(name)),
-            ChatWord::Stop(which) => self.chats.stop(&which),
+            ChatWord::Interrupt(which) => self.chats.interrupt(&which),
+            ChatWord::Hibernate(which) => self.chats.hibernate(&which),
+            ChatWord::Wake(which) => self.chats.wake(&which),
             ChatWord::Archive(which) => self.chats.archive(&which),
         };
         let worded = match chat {

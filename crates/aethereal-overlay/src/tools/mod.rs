@@ -34,7 +34,10 @@ use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_b
 use aethereal_tools::{Call, Called, Caller, Done, Output, Tool, ToolSheet, Tooling};
 use std::collections::BTreeMap;
 use theme::{SET_THEME, theme_sheet};
-use words::{ARCHIVE_SESSION, ArchiveSession, NEW_SESSION, STOP_SESSION, StopSession};
+use words::{
+    ARCHIVE_SESSION, ArchiveSession, HIBERNATE_SESSION, HibernateSession, INTERRUPT_SESSION, InterruptSession,
+    NEW_SESSION, WAKE_SESSION, WakeSession,
+};
 
 /// The tool that pins a mark.
 const MARK: &str = "mark";
@@ -157,9 +160,15 @@ impl OverlayTools {
             NEW_SESSION => owned(call.caller)
                 .and_then(|()| read(NEW_SESSION, input))
                 .map(|new: NewSession| Order::Word(ChatWord::New { name: new.name })),
-            STOP_SESSION => owned(call.caller)
-                .and_then(|()| read(STOP_SESSION, input))
-                .map(|stop: StopSession| Order::Word(ChatWord::Stop(stop.which()))),
+            INTERRUPT_SESSION => owned(call.caller)
+                .and_then(|()| read(INTERRUPT_SESSION, input))
+                .map(|interrupt: InterruptSession| Order::Word(ChatWord::Interrupt(interrupt.which()))),
+            HIBERNATE_SESSION => owned(call.caller)
+                .and_then(|()| read(HIBERNATE_SESSION, input))
+                .map(|hibernate: HibernateSession| Order::Word(ChatWord::Hibernate(hibernate.which()))),
+            WAKE_SESSION => owned(call.caller)
+                .and_then(|()| read(WAKE_SESSION, input))
+                .map(|wake: WakeSession| Order::Word(ChatWord::Wake(wake.which()))),
             ARCHIVE_SESSION => owned(call.caller)
                 .and_then(|()| read(ARCHIVE_SESSION, input))
                 .map(|archive: ArchiveSession| Order::Word(ChatWord::Archive(archive.which()))),

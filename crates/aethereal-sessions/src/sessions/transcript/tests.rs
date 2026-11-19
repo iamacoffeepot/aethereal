@@ -1,6 +1,6 @@
-use super::{Entry, Grew, Note, Since, Speaker, Transcript, Turning};
+use super::{Compaction, Ended, Entry, Grew, Note, Numbered, Since, Speaker, Transcript, Turning};
 use aethereal_actor::Time;
-use aethereal_data::{Budget, Json};
+use aethereal_data::{Budget, Json, from_bytes};
 
 /// The time each entry is added at, where the test does not reason about it.
 const AT: Time = Time::ZERO;
@@ -30,7 +30,7 @@ fn file(entries: Vec<Entry>) -> Vec<u8> {
 #[test]
 fn a_transcript_read_back_numbers_on_and_leaves_out_a_frame_cut_short() {
     // Catches a transcript that a crash mid-append leaves unreadable, or one read back whose numbers restart, so a
-    // `session_read` after a hub restart answers entries twice or skips them; and one read back listed as grown at a
+    // `read_session` after a hub restart answers entries twice or skips them; and one read back listed as grown at a
     // time the hub never saw, or one added to listed as not grown.
     let said = Entry::Said { by: Speaker::Caller, text: String::from("hello") };
     let mut bytes = file(vec![Entry::Hub(Note::Started { run: 1, resumed: false }), said.clone(), said]);
@@ -83,4 +83,43 @@ fn a_transcript_knows_whether_a_turn_runs_and_whether_one_ran_since_the_last_com
     assert_eq!(transcript.since(), Since::Compacted);
     transcript.add(claude(r#"{"type":"system","subtype":"init"}"#), AT);
     assert_eq!(transcript.turning(), Turning::Running, "a turn Claude starts by itself is a turn");
+}
+
+#[test]
+fn a_compaction_runs_from_claude_code_s_status_of_compacting_until_it_ends_whoever_asked_for_it() {
+    // Catches a compaction the owner's `/compact` or Claude Code itself began listed as working, as the hub listed only
+    // the compactions its wind-down asked for; and one listed as compacting for good once it ended by its boundary,
+    // by another status, as a compaction that fails may, by its turn's end, or by its container's.
+    let compacting = claude(r#"{"type":"system","subtype":"status","status":"compacting"}"#);
+    let ends = [
+        claude(r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto"}}"#),
+        claude(r#"{"type":"system","subtype":"status","status":null}"#),
+        claude(r#"{"type":"result","subtype":"success"}"#),
+        Entry::Hub(Note::Started { run: 2, resumed: true }),
+    ];
+    for end in ends {
+        let mut transcript = Transcript::new();
+        assert_eq!(transcript.compaction(), Compaction::Idle);
+        transcript.add(compacting.clone(), AT);
+        assert_eq!(transcript.compaction(), Compaction::Running);
+        transcript.add(end.clone(), AT);
+        assert_eq!(transcript.compaction(), Compaction::Idle, "{end:?}");
+    }
+}
+
+#[test]
+fn a_container_s_stop_an_earlier_hub_saved_reads_as_how_it_stopped() {
+    // Tripwire: how a container stopped, as a transcript's file keeps it, read by the place of its case. `Ended`'s
+    // first case, once named for an idle stop and now for any stop to hibernate, keeps its place, so a transcript an
+    // earlier hub saved reads its idle stops as hibernations, and its archives as archives.
+    let read = |why: u8| {
+        from_bytes::<Numbered>(
+            &[3, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, why, 0, 0, 0],
+            &mut Budget::new(1 << 10),
+        )
+    };
+    let stopped = |why| Numbered { number: 3, entry: Entry::Hub(Note::Stopped { run: 1, why }) };
+
+    assert_eq!(read(0), Ok(stopped(Ended::Hibernated)));
+    assert_eq!(read(1), Ok(stopped(Ended::Archived)));
 }

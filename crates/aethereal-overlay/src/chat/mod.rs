@@ -12,8 +12,10 @@
 //!              the last entry held
 //! a line, by the open tab's mode ──> Say in chat mode, or Run here then Ran in `!` mode (`prompt`)
 //! `!` on a session tab's empty line ──> `!` mode;  Backspace or Escape on its empty line ──> chat mode
-//! the chat's words, the engine's tools `new_session`, `stop_session`, and `archive_session` ──> New, Interrupt,
-//!              or Archive (`words`)
+//! the chat's words, the engine's tools `new_session`, `interrupt_session`, `hibernate_session`, `wake_session`, and
+//!              `archive_session` ──> New, Interrupt, Hibernate, Wake, or Archive (`words`)
+//! ShowDeclined ──> printed in the open tab: the console's own scrollback, or the open session's tab after what it
+//!              holds
 //! ```
 //!
 //! Until the hub lists the sessions, which it never does to an untrusted engine, the console is the engine's own, as it
@@ -37,11 +39,11 @@ use crate::colour::{Ink, Palette, Surface};
 use crate::console::Mode;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
-use aethereal_sessions::{Chat, Entry, Numbered, SessionRow, ShowAsk, Speaker, State};
+use aethereal_sessions::{Chat, Entry, Numbered, Refusal, SessionRow, ShowAsk, Speaker, State};
 use aethereal_ui::markdown::Blocks;
 use core::iter;
 use std::collections::BTreeMap;
-use transcript::{Compaction, Transcript};
+use transcript::Transcript;
 
 /// The title of the console's own tab, where every line runs here.
 pub const CONSOLE_TITLE: &str = "console";
@@ -404,8 +406,9 @@ impl Chats {
         Chat::Ran { session, line, printed }
     }
 
-    /// Stops the turn of the session whose tab is open: nothing with the console's own open.
-    pub fn interrupt(&self) -> Vec<Chat> {
+    /// Interrupts the turn of the session whose tab is open, as Escape on its empty line does: nothing with the
+    /// console's own open.
+    pub fn interrupt_open(&self) -> Vec<Chat> {
         match self.open {
             Open::Session(session) => vec![Chat::Interrupt { session }],
             Open::Console => Vec::new(),
@@ -420,9 +423,19 @@ impl Chats {
         Chat::New { name }
     }
 
-    /// Stops the turn of the session `which` names, or says why no session is named.
-    pub fn stop(&self, which: &Which) -> Result<Chat, String> {
+    /// Interrupts the turn of the session `which` names, or says why no session is named.
+    pub fn interrupt(&self, which: &Which) -> Result<Chat, String> {
         self.session(which).map(|session| Chat::Interrupt { session })
+    }
+
+    /// Hibernates the session `which` names, or says why no session is named.
+    pub fn hibernate(&self, which: &Which) -> Result<Chat, String> {
+        self.session(which).map(|session| Chat::Hibernate { session })
+    }
+
+    /// Wakes the session `which` names, or says why no session is named.
+    pub fn wake(&self, which: &Which) -> Result<Chat, String> {
+        self.session(which).map(|session| Chat::Wake { session })
     }
 
     /// Archives the session `which` names, or says why no session is named.
@@ -446,6 +459,50 @@ impl Chats {
         }
     }
 
+    /// Prints `text` in the open session's tab, after the entries it holds: an aside of the engine's own, never sent.
+    /// Nothing with the console's own open, whose scrollback is the console's to print in.
+    pub fn aside(&mut self, text: String) {
+        let Open::Session(session) = self.open else {
+            return;
+        };
+        let mine = self.mine;
+        let transcript = self.transcripts.entry(session).or_default();
+        transcript.aside(text);
+        transcript.build(mine);
+    }
+
+    /// What the hub declining `chat`, for `why`, says to the owner: what it could not do, to the session as the list
+    /// names it, and the refusal its tools would answer.
+    pub fn declined(&self, chat: &Chat, why: &Refusal) -> String {
+        let named = |session: u32| self.name(session);
+        let what = match chat {
+            Chat::Say { session, .. } => format!("take the line said to {}", named(*session)),
+            Chat::Ran { session, line, .. } => format!("take `!{line}` for {}", named(*session)),
+            Chat::Answer { ask, .. } => format!("take the answer to ask {ask}"),
+            Chat::Interrupt { session } => format!("interrupt {}", named(*session)),
+            Chat::Open { session, .. } => format!("open {}", named(*session)),
+            Chat::Close { session } => format!("close {}", named(*session)),
+            Chat::New { name } => format!("make a session `{name}`"),
+            Chat::Archive { session } => format!("archive {}", named(*session)),
+            Chat::Hibernate { session } => format!("hibernate {}", named(*session)),
+            Chat::Wake { session } => format!("wake {}", named(*session)),
+        };
+
+        format!("the hub could not {what}: {why}")
+    }
+
+    /// The session numbered `session` as the console names it: by its name in backticks while the hub lists it, and by
+    /// its number when it does not.
+    fn name(&self, session: u32) -> String {
+        let Listed::Tabs(tabs) = &self.listed else {
+            return format!("session {session}");
+        };
+
+        tabs.iter()
+            .find(|tab| tab.session == session)
+            .map_or_else(|| format!("session {session}"), |tab| format!("`{}`", tab.name))
+    }
+
     /// The owner's answer to the ask numbered `ask`: let go here at once.
     pub fn answer(&mut self, ask: u64, allow: bool) -> Chat {
         self.asks.retain(|held| held.ask != ask);
@@ -466,11 +523,10 @@ impl Chats {
     }
 
     /// Each tab, the console's own first, unmarked, then each session's titled with its name and marked with its
-    /// status: as the hub lists it, and its asks, and a compaction the engine's transcript of it shows running.
+    /// status, as the hub lists it.
     pub fn titles(&self) -> Vec<Title> {
         let sessions = self.live().into_iter().map(|tab| {
-            let compaction = self.transcripts.get(&tab.session).map_or(Compaction::Idle, Transcript::compaction);
-            let status = Status::of(tab.state, tab.container, tab.asking, compaction);
+            let status = Status::of(tab.state, tab.container, tab.asking);
             (tab.name.clone(), Icon::Marked(status))
         });
 

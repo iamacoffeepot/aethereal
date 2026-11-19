@@ -1,12 +1,13 @@
 //! What the capability is asked (ADR-0057): a session opened, a line said, a transcript read, the sessions listed, a
-//! turn interrupted, and a session archived. Any session reads in full from the transcript it holds, with no container,
-//! whether it is awake, hibernating, or archived.
+//! turn interrupted, a session hibernated or woken, and a session archived. Any session reads in full from the
+//! transcript it holds, with no container, whether it is awake, hibernating, or archived.
 
 use super::asks::{
-    Archive, Archived, Interrupt, Interrupted, ListSessions, Listed, NewSession, Opened, ReadTranscript, Refusal,
-    Refuses, Said, Say, Transcribed,
+    Archive, Archived, AwakeSession, Hibernate, Hibernated, Interrupt, Interrupted, ListSessions, Listed, NewSession,
+    Opened, ReadTranscript, Refusal, Refuses, Said, Say, Transcribed, Wake,
 };
 use super::chat::Chat;
+use super::row::State;
 use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
@@ -36,6 +37,14 @@ pub(super) enum Waiting {
     },
     Interrupt {
         held: Held<Interrupted>,
+        session: u32,
+    },
+    Hibernate {
+        held: Held<Hibernated>,
+        session: u32,
+    },
+    Wake {
+        held: Held<Opened>,
         session: u32,
     },
     Archive {
@@ -115,6 +124,28 @@ impl Sessions {
         Ok(later)
     }
 
+    /// The session wound down to hibernate, as an idle one is: answered as it stands once its wind-down has begun.
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_hibernate(
+        &mut self,
+        hibernate: Hibernate,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Later<Hibernated>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Hibernate { held, session: hibernate.session })?;
+
+        Ok(later)
+    }
+
+    /// The session woken in a new container on its home: answered once it runs, or why not.
+    #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
+    pub(super) fn handle_wake(&mut self, wake: Wake, turn: &mut Turn<'_, Self>) -> Result<Later<Opened>, Fault> {
+        let (held, later) = turn.hold();
+        self.take(turn, Waiting::Wake { held, session: wake.session })?;
+
+        Ok(later)
+    }
+
     /// The session archived: its container stopped and removed, its transcript and home kept. Answered once no
     /// container of it is left.
     #[allow(clippy::needless_pass_by_value, reason = "a handler's body, it takes and answers what its handler does")]
@@ -153,6 +184,11 @@ impl Sessions {
                 let interrupted = self.interrupt(turn, session, Speaker::Caller)?;
                 turn.answer(held, &interrupted)?;
             }
+            Waiting::Hibernate { held, session } => {
+                let hibernated = self.hibernate(turn, session)?;
+                turn.answer(held, &hibernated)?;
+            }
+            Waiting::Wake { held, session } => self.wake(turn, Asker::Caller(held), session)?,
             Waiting::Archive { held, session } => self.archive(turn, Asker::Caller(held), session)?,
             Waiting::Chat { engine, chat } => self.chat(turn, engine, chat)?,
         }
@@ -210,6 +246,73 @@ impl Sessions {
         Ok(Interrupted::Sent { number })
     }
 
+    /// Winds `session` down to hibernate, as an idle one is, or says why not: refused while a turn or a background task
+    /// runs in it, one waits on the owner's answer to an ask, or a compaction the hub did not ask for runs, so nothing
+    /// is cut short or left unanswered; one winding down or hibernating already is answered as it stands.
+    pub(super) fn hibernate(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<Hibernated, Fault> {
+        let asking = self.chats.asking(session);
+        let Some(held) = self.held.get(&session) else {
+            return Ok(Hibernated::Refused(Refusal::NoSuchSession));
+        };
+        let hibernating = match &held.life {
+            Life::Archived => Hibernating::Stands(Hibernated::Refused(Refusal::Archived)),
+            Life::Starting { .. } | Life::Stopping { then: Then::Archive { .. }, .. } => {
+                Hibernating::Stands(Hibernated::Refused(Refusal::Busy))
+            }
+            Life::Stopping { then: Then::Hibernate { .. }, .. } => Hibernating::Stands(Hibernated::WindingDown),
+            Life::Hibernating { .. } => Hibernating::Stands(Hibernated::Hibernating),
+            // A running session is refused in the state the list shows it in, so the two never disagree, save that
+            // the hub's own wind-down, its notice listed working and its compaction compacting, stands as it is.
+            Life::Running(running) => match held.state(asking) {
+                State::Waiting => Hibernating::Stands(Hibernated::Refused(Refusal::Waiting)),
+                _ if running.activity.winds_down() => Hibernating::Stands(Hibernated::WindingDown),
+                State::Working => Hibernating::Stands(Hibernated::Refused(Refusal::Working)),
+                State::Compacting => Hibernating::Stands(Hibernated::Refused(Refusal::Compacting)),
+                State::Idle => Hibernating::Begins,
+                State::Hibernating => Hibernating::Stands(Hibernated::Hibernating),
+                State::Archived => Hibernating::Stands(Hibernated::Refused(Refusal::Archived)),
+            },
+        };
+
+        match hibernating {
+            Hibernating::Stands(hibernated) => Ok(hibernated),
+            Hibernating::Begins => {
+                self.wind_down(turn, session)?;
+                Ok(Hibernated::WindingDown)
+            }
+        }
+    }
+
+    /// Wakes `session` in a new container on its home, answering `waker` once it runs, or why not: a hibernating
+    /// session past the most awake is refused, naming the awake ones. One already waking, or being stopped to
+    /// hibernate, wakes as it stands, and one awake is answered at once.
+    pub(super) fn wake(&mut self, turn: &mut Turn<'_, Self>, waker: Asker<Opened>, session: u32) -> Result<(), Fault> {
+        let Some(held) = self.held.get_mut(&session) else {
+            return self.reply(turn, waker, &Opened::Refused(Refusal::NoSuchSession));
+        };
+        match &mut held.life {
+            Life::Archived => self.reply(turn, waker, &Opened::Refused(Refusal::Archived))?,
+            Life::Stopping { then: Then::Archive { .. }, .. } => {
+                self.reply(turn, waker, &Opened::Refused(Refusal::Busy))?;
+            }
+            Life::Starting { opening, .. } | Life::Stopping { then: Then::Hibernate { opening, .. }, .. } => {
+                opening.push(waker);
+            }
+            Life::Running(_) => {
+                let Some(row) = self.row(session) else {
+                    return Ok(());
+                };
+                self.reply(turn, waker, &Opened::Open(row))?;
+            }
+            Life::Hibernating { .. } => match self.may_start() {
+                Ok(()) => self.restart(session, vec![waker], Vec::new()),
+                Err(why) => self.reply(turn, waker, &Opened::Refused(why))?,
+            },
+        }
+
+        Ok(())
+    }
+
     /// Archives `session`, answering `archiver` once no container of it is left.
     pub(super) fn archive(
         &mut self,
@@ -227,7 +330,7 @@ impl Sessions {
                 self.dirty(session);
                 self.reply(turn, archiver, &Archived::Done)?;
             }
-            Life::Starting { .. } | Life::Stopping { then: Then::Rest { .. }, .. } => {
+            Life::Starting { .. } | Life::Stopping { then: Then::Hibernate { .. }, .. } => {
                 self.reply(turn, archiver, &Archived::Refused(Refusal::Busy))?;
             }
             Life::Stopping { then: Then::Archive { archiving }, .. } => archiving.push(archiver),
@@ -300,7 +403,7 @@ impl Sessions {
         let taking = match &held.life {
             Life::Archived => Taking::Refused(Refusal::Archived),
             Life::Stopping { then: Then::Archive { .. }, .. } => Taking::Refused(Refusal::Busy),
-            Life::Stopping { then: Then::Rest { .. }, .. } | Life::Starting { .. } => Taking::Kept,
+            Life::Stopping { then: Then::Hibernate { .. }, .. } | Life::Starting { .. } => Taking::Kept,
             Life::Running(_) => Taking::Typed,
             Life::Hibernating { .. } => match self.may_start() {
                 Ok(()) => Taking::Woken,
@@ -313,7 +416,7 @@ impl Sessions {
         let number = self.note(turn, session, entry);
         match taking {
             Taking::Kept => {
-                if let Some(Life::Stopping { then: Then::Rest { lines, .. }, .. } | Life::Starting { lines, .. }) =
+                if let Some(Life::Stopping { then: Then::Hibernate { lines, .. }, .. } | Life::Starting { lines, .. }) =
                     self.held.get_mut(&session).map(|held| &mut held.life)
                 {
                     lines.push(written);
@@ -326,7 +429,7 @@ impl Sessions {
                 }
                 self.type_line(turn, session, &written)?;
             }
-            Taking::Woken => self.restart(session, vec![written]),
+            Taking::Woken => self.restart(session, Vec::new(), vec![written]),
             Taking::Refused(_) => {}
         }
 
@@ -356,6 +459,14 @@ fn ran(engine: u32, line: &str, printed: &str) -> String {
     written
 }
 
+/// What a hibernate does to a session, as it stands.
+enum Hibernating {
+    /// It is answered as it stands: refused, winding down, or hibernating.
+    Stands(Hibernated),
+    /// It is idle: its wind-down begins now.
+    Begins,
+}
+
 /// What becomes of a line said to a session.
 enum Taking {
     /// It is refused.
@@ -369,14 +480,19 @@ enum Taking {
 }
 
 impl Sessions {
-    /// Whether one more session may wake: fewer than the most are awake.
+    /// Whether one more session may wake: fewer than the most are awake, or else the awake ones, by their numbers and
+    /// names, so the owner chooses one to hibernate.
     fn may_start(&self) -> Result<(), Refusal> {
-        let running: Vec<u32> =
-            self.held.iter().filter(|(_, held)| held.counts()).map(|(&session, _)| session).collect();
+        let awake: Vec<AwakeSession> = self
+            .held
+            .iter()
+            .filter(|(_, held)| held.counts())
+            .map(|(&session, held)| AwakeSession { session, name: held.name.clone() })
+            .collect();
         let most = self.settings.most_running;
-        let is_full = running.len() >= usize::try_from(most).unwrap_or(usize::MAX);
+        let is_full = awake.len() >= usize::try_from(most).unwrap_or(usize::MAX);
         if is_full {
-            return Err(Refusal::Full { most, running });
+            return Err(Refusal::Full { most, awake });
         }
 
         Ok(())

@@ -1,7 +1,8 @@
-//! An idle session wound down (ADR-0057): once it has had no turn and no background task for the idle time, a session
-//! that has had a turn since it was last compacted is told it is about to be compacted, so it writes down its loose
-//! threads, then compacted, and then its container stopped, so it hibernates. A line said meanwhile makes it active
-//! again, and each step that takes past its deadline is noted, and the container stopped anyway.
+//! A session wound down to hibernate (ADR-0057): once it has had no turn and no background task for the idle time, or
+//! when `hibernate_session` asks, a session that has had a turn since it was last compacted is told it is about to be
+//! compacted and hibernated, so it writes down its loose threads, then compacted, and then its container stopped, so it
+//! hibernates; one with nothing new since its last compaction has its container stopped at once. A line said meanwhile
+//! makes it active again, and each step that takes past its deadline is noted, and the container stopped anyway.
 
 use super::session::{Activity, Gone, Life, Then};
 use super::transcript::{Ended, Entry, Note, Since, Speaker, WindDown};
@@ -47,9 +48,24 @@ impl Sessions {
         self.type_line(turn, session, COMPACT)
     }
 
-    /// The compaction's turn ended: the session is stopped, to hibernate.
+    /// The compaction's turn ended: the session's container is stopped, so it hibernates.
     pub(super) fn wound_down(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
-        self.stop(turn, session, Ended::Idle, Then::Rest { lines: Vec::new(), gone: Gone::Removed })
+        let then = Then::Hibernate { opening: Vec::new(), lines: Vec::new(), gone: Gone::Removed };
+
+        self.stop(turn, session, Ended::Hibernated, then)
+    }
+
+    /// Winds `session`, which runs and is idle, down to hibernate: told it is about to be compacted when it has had a
+    /// turn since its last compaction, and its container stopped at once when it has not.
+    pub(super) fn wind_down(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
+        let Some(held) = self.held.get(&session) else {
+            return Ok(());
+        };
+
+        match held.transcript.since() {
+            Since::Turned => self.notice(turn, session),
+            Since::Compacted => self.wound_down(turn, session),
+        }
     }
 
     /// A session's idle time, or a step's deadline, is up: unless it was active since, it is wound down a step.
@@ -67,7 +83,6 @@ impl Sessions {
         let Life::Running(running) = &held.life else {
             return Ok(());
         };
-        let since = held.transcript.since();
         let due = match running.activity {
             Activity::Idle { rest: idle, .. } if idle == rest => Due::Idle,
             Activity::Noticed { rest: noticed, .. } if noticed == rest => Due::Overdue(WindDown::Notice),
@@ -78,14 +93,13 @@ impl Sessions {
             | Activity::Working
             | Activity::Tasked => Due::Passed,
         };
-        match (due, since) {
-            (Due::Idle, Since::Turned) => self.notice(turn, session)?,
-            (Due::Idle, Since::Compacted) => self.wound_down(turn, session)?,
-            (Due::Overdue(step), _) => {
+        match due {
+            Due::Idle => self.wind_down(turn, session)?,
+            Due::Overdue(step) => {
                 self.note(turn, session, Entry::Hub(Note::Overdue { step }));
                 self.wound_down(turn, session)?;
             }
-            (Due::Passed, _) => {}
+            Due::Passed => {}
         }
 
         self.flush(turn)
@@ -93,14 +107,16 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Tells `session`, idle, that it is about to be compacted, and waits for that turn within the deadline.
+    /// Tells `session` that it is about to be compacted and hibernated, and waits for that turn within the deadline:
+    /// the wait on its idle time is let go, as its wind-down may begin before that is up.
     fn notice(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         let rest = self.rest();
         let wind_down_secs = self.settings.wind_down_secs;
-        let notice = self.settings.notice();
+        let notice = self.settings.notice.clone();
         let Some(Life::Running(running)) = self.held.get_mut(&session).map(|held| &mut held.life) else {
             return Ok(());
         };
+        running.activity.cancel(turn);
         let deadline = wait(turn, session, rest, wind_down_secs)?;
         running.activity = Activity::Noticed { deadline, rest };
         self.note(turn, session, Entry::Said { by: Speaker::Hub, text: notice.clone() });

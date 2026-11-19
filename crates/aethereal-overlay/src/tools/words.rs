@@ -1,7 +1,7 @@
-//! The chat's words (ADR-0057: The console is the chat): `new_session`, `stop_session`, and `archive_session`, the
-//! engine's own tools, which the overlay offers with its tools' worker once the hub has shown it the chat, so only an
-//! engine the hub trusts offers them. Being tools, they run from any tab of the console, `help` lists them, and Tab
-//! completes them, as every other command. The worker reads each, refuses one a session calls, and asks the overlay,
+//! The chat's words (ADR-0057: The console is the chat): `new_session`, `interrupt_session`, `hibernate_session`,
+//! `wake_session`, and `archive_session`, the engine's own tools, which the overlay offers with its tools' worker once
+//! the hub has shown it the chat, so only an engine the hub trusts offers them. Being tools, they run from any tab of
+//! the console, `help` lists them, and Tab completes them, as every other command. The worker reads each, refuses one a session calls, and asks the overlay,
 //! whose chat it changes, for the [`ChatWord`] it comes to; the overlay answers whether it told the link ([`Worded`]).
 
 use crate::chat::Which;
@@ -16,8 +16,12 @@ use aethereal_tools::{Done, Output, ToolSheet};
 pub enum ChatWord {
     /// Make a session named `name`.
     New { name: String },
-    /// Stop the turn of the session named.
-    Stop(Which),
+    /// Interrupt the running turn of the session named: the session carries on.
+    Interrupt(Which),
+    /// Hibernate the session named.
+    Hibernate(Which),
+    /// Wake the session named.
+    Wake(Which),
     /// Archive the session named.
     Archive(Which),
 }
@@ -33,8 +37,14 @@ pub enum Worded {
 /// The word that makes a session.
 pub const NEW_SESSION: &str = "new_session";
 
-/// The word that stops a session's turn.
-pub const STOP_SESSION: &str = "stop_session";
+/// The word that interrupts a session's turn.
+pub const INTERRUPT_SESSION: &str = "interrupt_session";
+
+/// The word that hibernates a session.
+pub const HIBERNATE_SESSION: &str = "hibernate_session";
+
+/// The word that wakes a session.
+pub const WAKE_SESSION: &str = "wake_session";
 
 /// The word that archives a session.
 pub const ARCHIVE_SESSION: &str = "archive_session";
@@ -48,17 +58,51 @@ pub struct NewSession {
     pub name: String,
 }
 
-/// Stops the turn of a session, as Escape on an empty line does at its tab.
+/// Interrupts the running turn of a session, as Escape on an empty line does at its tab: the session carries on.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.overlay.stop_session")]
-pub struct StopSession {
+#[kind(name = "aether.overlay.interrupt_session")]
+pub struct InterruptSession {
     /// The session's name, as its tab shows it: the one whose tab is open when left out. An `Option` only because the
     /// command line reads a flag that may be left out as one; it is read once, as [`Which`], by [`Self::which`].
     #[flag(position)]
     session: Option<String>,
 }
 
-impl StopSession {
+impl InterruptSession {
+    /// The session it names.
+    pub fn which(self) -> Which {
+        Which::of(self.session)
+    }
+}
+
+/// Hibernates a session, as one idle a while is: told, compacted, and its container stopped, its conversation kept.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.hibernate_session")]
+pub struct HibernateSession {
+    /// The session's name, as its tab shows it: the one whose tab is open when left out. An `Option` only because the
+    /// command line reads a flag that may be left out as one; it is read once, as [`Which`], by [`Self::which`].
+    #[flag(position)]
+    session: Option<String>,
+}
+
+impl HibernateSession {
+    /// The session it names.
+    pub fn which(self) -> Which {
+        Which::of(self.session)
+    }
+}
+
+/// Wakes a hibernating session, its conversation resumed in a new container.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.overlay.wake_session")]
+pub struct WakeSession {
+    /// The session's name, as its tab shows it: the one whose tab is open when left out. An `Option` only because the
+    /// command line reads a flag that may be left out as one; it is read once, as [`Which`], by [`Self::which`].
+    #[flag(position)]
+    session: Option<String>,
+}
+
+impl WakeSession {
     /// The session it names.
     pub fn which(self) -> Which {
         Which::of(self.session)
@@ -86,15 +130,22 @@ impl ArchiveSession {
 pub fn chat_sheets() -> Vec<ToolSheet> {
     let new = "Makes a Claude session the hub runs, named as given, and opens its tab in this engine's console once the \
                hub lists it. Served only in an engine the hub trusts.";
-    let stop = "Stops the turn of the Claude session named, or of the one whose tab is open in this engine's console. \
-                Served only in an engine the hub trusts.";
+    let interrupt = "Interrupts the running turn of the Claude session named, or of the one whose tab is open in this \
+                     engine's console; the session carries on. Served only in an engine the hub trusts.";
+    let hibernate = "Hibernates the Claude session named, or the one whose tab is open in this engine's console: it is \
+                     told, compacted, and its container stopped, and a line or `wake_session` wakes it. Served only in \
+                     an engine the hub trusts.";
+    let wake = "Wakes the hibernating Claude session named, or the one whose tab is open in this engine's console, its \
+                conversation resumed in a new container. Served only in an engine the hub trusts.";
     let archive = "Archives the Claude session named, or the one whose tab is open in this engine's console: its tab \
                    leaves every engine's console, and the hub keeps its transcript. Served only in an engine the hub \
                    trusts.";
 
     vec![
         sheet::<NewSession>(NEW_SESSION, new),
-        sheet::<StopSession>(STOP_SESSION, stop),
+        sheet::<InterruptSession>(INTERRUPT_SESSION, interrupt),
+        sheet::<HibernateSession>(HIBERNATE_SESSION, hibernate),
+        sheet::<WakeSession>(WAKE_SESSION, wake),
         sheet::<ArchiveSession>(ARCHIVE_SESSION, archive),
     ]
 }

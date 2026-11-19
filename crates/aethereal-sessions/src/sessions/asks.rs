@@ -6,6 +6,7 @@ use super::transcript::Numbered;
 use crate::DockerError;
 use aethereal_actor::Time;
 use aethereal_data::Plain;
+use core::fmt;
 
 /// Asked: open a new session, named `name`. Answered once its container runs, or why it does not.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
@@ -49,6 +50,27 @@ pub struct ReadTranscript {
 #[kind(name = "aether.sessions.list_sessions")]
 pub struct ListSessions;
 
+/// Asked: wind the session down to hibernate now, as an idle one is: told it is about to be compacted and hibernated,
+/// compacted, and its container stopped and removed. Answered as it stands once its wind-down has begun, not once it
+/// hibernates.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.hibernate")]
+pub struct Hibernate {
+    /// The session's number.
+    #[flag(position)]
+    pub session: u32,
+}
+
+/// Asked: wake the hibernating session in a new container on its home, which resumes its conversation. Answered once
+/// it runs, as a new session is, or why not.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.wake")]
+pub struct Wake {
+    /// The session's number.
+    #[flag(position)]
+    pub session: u32,
+}
+
 /// Asked: interrupt the session's running turn.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.interrupt")]
@@ -67,7 +89,7 @@ pub struct Archive {
     pub session: u32,
 }
 
-/// What a new session came to.
+/// What a new session, or a wake, came to.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.opened")]
 pub enum Opened {
@@ -124,6 +146,17 @@ pub enum Interrupted {
     Refused(Refusal),
 }
 
+/// What a hibernate came to.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.hibernated")]
+pub enum Hibernated {
+    /// It is being wound down: told, compacted, and its container stopped. The list shows it hibernating once it is.
+    WindingDown,
+    /// It hibernates already.
+    Hibernating,
+    Refused(Refusal),
+}
+
 /// What an archive came to.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.archived")]
@@ -141,8 +174,8 @@ pub enum Refusal {
     NoSuchSession,
     /// The session is archived.
     Archived,
-    /// As many sessions run as may: `most`, these.
-    Full { most: u32, running: Vec<u32> },
+    /// As many sessions are awake as may: `most`, these, so the owner chooses one to hibernate.
+    Full { most: u32, awake: Vec<AwakeSession> },
     /// The session has no container, so there is no turn to interrupt.
     NotRunning,
     /// The session's container is starting or stopping: ask again once it is not.
@@ -158,6 +191,57 @@ pub enum Refusal {
     /// The session's record, saying it starts, was not written, so nothing of it was made that a hub starting again
     /// would not find.
     Unrecorded,
+    /// A turn, or a background task, runs in the session: a hibernate would cut it short, so it is interrupted first.
+    Working,
+    /// A turn of the session waits on the owner's answer to an ask: a hibernate would leave it unanswered, so it is
+    /// answered first.
+    Waiting,
+    /// The session is being compacted, as its owner or Claude Code asked: a hibernate would cut the compaction short, so
+    /// it is asked again once the compaction ends.
+    Compacting,
+}
+
+/// An awake session, as a refusal past the most awake names it: by its number, and its name as the list shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.awake_session")]
+pub struct AwakeSession {
+    pub session: u32,
+    pub name: String,
+}
+
+/// What a refusal says, for its asker to read: what the hub's tools answer, and what an engine prints of a frame it
+/// declined.
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSuchSession => f.write_str("no session has that number"),
+            Self::Archived => f.write_str("the session is archived"),
+            Self::Full { most, awake } => {
+                write!(f, "at most {most} sessions are awake at once, and these are:")?;
+                for (place, AwakeSession { session, name }) in awake.iter().enumerate() {
+                    let comma = if place == 0 {
+                        ""
+                    } else {
+                        ","
+                    };
+                    write!(f, "{comma} {session} `{name}`")?;
+                }
+                f.write_str("; hibernate one first")
+            }
+            Self::NotRunning => f.write_str("the session has no container, so no turn runs"),
+            Self::Busy => f.write_str("the session's container is starting or stopping: ask again once it is not"),
+            Self::NoCredential => f.write_str("the hub could not read the credential's file as KEY=VALUE lines"),
+            Self::NoBearer => f.write_str("the hub's randomness drew no bearer for the session's route"),
+            Self::NoDropBox => f.write_str("the store could not make the session's drop box"),
+            Self::Docker(error) => write!(f, "Docker: {error:?}"),
+            Self::Unrecorded => f.write_str("the hub could not write the session's record, so it made nothing"),
+            Self::Working => f.write_str("a turn or a background task runs in the session: interrupt it first"),
+            Self::Waiting => {
+                f.write_str("a turn of the session waits on the owner's answer to an ask: answer it first")
+            }
+            Self::Compacting => f.write_str("the session is being compacted: ask again once the compaction ends"),
+        }
+    }
 }
 
 /// An answer that may refuse its ask: what a trusted engine whose chat frame it answers is declined with.
@@ -188,6 +272,15 @@ impl Refuses for Interrupted {
     fn refusal(&self) -> Option<&Refusal> {
         match self {
             Self::Sent { .. } => None,
+            Self::Refused(why) => Some(why),
+        }
+    }
+}
+
+impl Refuses for Hibernated {
+    fn refusal(&self) -> Option<&Refusal> {
+        match self {
+            Self::WindingDown | Self::Hibernating => None,
             Self::Refused(why) => Some(why),
         }
     }

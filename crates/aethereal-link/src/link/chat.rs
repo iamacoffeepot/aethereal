@@ -5,7 +5,8 @@
 //! ```text
 //! Down::Sessions / Show / Ask / Declined ──> kept (the list, the asks that wait)
 //!     ──> ShowSessions, each row's time on this engine's clock / ShowEvents / ShowAsk / ShowDeclined ──> each listener
-//! a listener's Chat ──> Up::Say / Ran / Answer / Interrupt / Open / Close / New / Archive ──> the hub
+//! a listener's Chat ──> Up::Say / Ran / Answer / Interrupt / Open / Close / New / Archive / Hibernate / Wake
+//!     ──> the hub
 //! ```
 //!
 //! An untrusted engine is shown nothing, so its listeners hear nothing, and an engine's console shows no chat until

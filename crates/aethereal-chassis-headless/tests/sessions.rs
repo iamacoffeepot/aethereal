@@ -17,10 +17,11 @@ use aethereal_link::{
 };
 use aethereal_mcp::{Mcp, McpRoutes};
 use aethereal_sessions::{
-    Archive, Archived, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended, Entry, Index,
-    Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal,
-    Said, Say, SessionRow, Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowDeclined,
-    ShowEvents, ShowSessions, Speaker, Standing, State, Transcribed, Transcript, Unfound,
+    Archive, Archived, AwakeSession, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended,
+    Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered,
+    Opened, ReadTranscript, Record, Refusal, Said, Say, SessionRow, Sessions, SessionsListed, SessionsSettings,
+    SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker, Standing, State, Transcribed, Transcript,
+    Unfound, Wake,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -71,6 +72,8 @@ enum Order {
     Read(ReadTranscript),
     List,
     Interrupt(Interrupt),
+    Hibernate(Hibernate),
+    Wake(Wake),
     Archive(Archive),
 }
 
@@ -84,7 +87,8 @@ struct Unset;
 #[kind(name = "aether.test.sessions.asked")]
 struct Asked;
 
-/// A root that asks the sessions what the test orders, and keeps every answer, in order: as the hub's tools do.
+/// A root that asks the sessions what the test orders, and keeps every answer, in order: as the hub's tools do. A new
+/// session and a wake are each answered `Opened`.
 #[derive(Bound)]
 #[kind(name = "aether.test.sessions.caller")]
 struct Caller {
@@ -93,6 +97,7 @@ struct Caller {
     read: Vec<Transcribed>,
     listed: Vec<SessionsListed>,
     interrupted: Vec<Interrupted>,
+    hibernated: Vec<Hibernated>,
     archived: Vec<Archived>,
 }
 
@@ -105,6 +110,7 @@ impl Caller {
             read: Vec::new(),
             listed: Vec::new(),
             interrupted: Vec::new(),
+            hibernated: Vec::new(),
             archived: Vec::new(),
         })
     }
@@ -118,6 +124,8 @@ impl Caller {
             Order::Read(read) => turn.to(sessions).ask(&read, &Asked)?,
             Order::List => turn.to(sessions).ask(&ListSessions, &Asked)?,
             Order::Interrupt(interrupt) => turn.to(sessions).ask(&interrupt, &Asked)?,
+            Order::Hibernate(hibernate) => turn.to(sessions).ask(&hibernate, &Asked)?,
+            Order::Wake(wake) => turn.to(sessions).ask(&wake, &Asked)?,
             Order::Archive(archive) => turn.to(sessions).ask(&archive, &Asked)?,
         };
 
@@ -170,6 +178,16 @@ impl Caller {
             panic!("the sessions answer: {answered:?}");
         };
         self.interrupted.push(answer);
+
+        Ok(())
+    }
+
+    #[answer]
+    fn hibernated(&mut self, (answered, Asked): (Answered<Hibernated>, Asked)) -> Result<(), Fault> {
+        let Answered::Yes(answer) = answered else {
+            panic!("the sessions answer: {answered:?}");
+        };
+        self.hibernated.push(answer);
 
         Ok(())
     }
@@ -699,6 +717,30 @@ fn read(
     Ok(entries)
 }
 
+/// Asks the sessions to hibernate `session`, and answers what it came to.
+fn hibernate(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Hibernated, Unheard> {
+    let before = caller(harness)?.hibernated.len();
+    order(harness, &Order::Hibernate(Hibernate { session }))?;
+    until(harness, daemon, |caller, _| caller.hibernated.len() > before);
+    let Some(hibernated) = caller(harness)?.hibernated.last().cloned() else {
+        panic!("the hibernate is answered");
+    };
+
+    Ok(hibernated)
+}
+
+/// Asks the sessions to wake `session`, and answers what it came to.
+fn wake(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Opened, Unheard> {
+    let before = caller(harness)?.opened.len();
+    order(harness, &Order::Wake(Wake { session }))?;
+    until(harness, daemon, |caller, _| caller.opened.len() > before);
+    let Some(opened) = caller(harness)?.opened.last().cloned() else {
+        panic!("the wake is answered");
+    };
+
+    Ok(opened)
+}
+
 /// The row `session` is listed as.
 fn row(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<SessionRow, Unheard> {
     let before = caller(harness)?.listed.len();
@@ -822,24 +864,111 @@ fn a_transcript_numbers_every_line_in_order_and_keeps_a_turn_the_hub_did_not_sta
 }
 
 #[test]
-fn a_session_past_the_most_running_is_refused_naming_the_limit_and_those_that_run() -> Result<(), Unheard> {
-    // Catches a limit not kept, so sessions take the build host past its share, or a refusal that does not say what
-    // runs, so the caller cannot tell which to archive.
+fn a_session_or_a_wake_past_the_most_awake_is_refused_naming_the_awake_sessions_and_a_hibernating_one_counts_none()
+-> Result<(), Unheard> {
+    // Catches a limit not kept, so sessions take the build host past its share; a refusal that does not name the awake
+    // sessions, so the owner cannot tell which to hibernate; a hibernating session still counted, so hibernating one
+    // makes no room; a wake not held to the limit; and an awake session hibernated to make room.
     let mut daemon = Daemon::new("limit");
     let mut harness = hub(&daemon, daemon.sessions(1, 3600))?;
     let first = open(&mut harness, &mut daemon, "first")?;
     order(&mut harness, &Order::New(NewSession { name: String::from("second") }))?;
     until(&mut harness, &mut daemon, |caller, _| caller.opened.len() == 2);
-
     let refused = caller(&mut harness)?.opened.last().cloned();
-    assert_eq!(refused, Some(Opened::Refused(Refusal::Full { most: 1, running: vec![first] })));
+    let awake = |session: u32, name: &str| vec![AwakeSession { session, name: String::from(name) }];
+    assert_eq!(refused, Some(Opened::Refused(Refusal::Full { most: 1, awake: awake(first, "first") })));
     assert_eq!(daemon.made.len(), 1, "no container is made for a session refused");
+
+    assert_eq!(hibernate(&mut harness, &mut daemon, first)?, Hibernated::WindingDown);
+    until_state(&mut harness, &mut daemon, first, State::Hibernating)?;
+    let second = open(&mut harness, &mut daemon, "second")?;
+    let woken = wake(&mut harness, &mut daemon, first)?;
+
+    assert_eq!(woken, Opened::Refused(Refusal::Full { most: 1, awake: awake(second, "second") }));
+    assert_eq!(state(&mut harness, &mut daemon, second)?, State::Idle, "the awake session is left awake");
+    assert_eq!(daemon.made.len(), 2, "no container is made for a wake refused");
 
     Ok(())
 }
 
 #[test]
-fn an_idle_session_with_no_turn_since_its_compaction_is_stopped_at_once_and_resumed_by_a_line() -> Result<(), Unheard> {
+fn a_hibernate_waits_for_a_turn_and_an_ask_and_winds_the_session_down_as_an_idle_one_and_a_wake_resumes_it()
+-> Result<(), Unheard> {
+    // Catches a hibernate that cuts a running turn or the owner's compaction short or leaves an ask unanswered, or
+    // refuses without saying which as the list shows it;
+    // one that stops a session with something new to compact without its notice and its compaction; one asked again
+    // that does not answer as the session stands; and a wake that does not resume its conversation in a new container.
+    let mut daemon = Daemon::new("hibernate");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "hibernate")?;
+    let id = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "work")?;
+    stdin(&mut harness, &mut daemon, &id, 1);
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Working));
+    daemon.emit(&id, r#"{"type":"system","subtype":"status","status":"compacting"}"#);
+    until_state(&mut harness, &mut daemon, session, State::Compacting)?;
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Compacting));
+
+    answer_turn(&mut daemon, &id, "done");
+    until_state(&mut harness, &mut daemon, session, State::Idle)?;
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::WindingDown);
+    let written = stdin(&mut harness, &mut daemon, &id, 2);
+    assert!(written[1].contains("will be compacted and hibernated next"), "the notice comes first: {written:?}");
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::WindingDown, "it is winding down");
+    answer_turn(&mut daemon, &id, "my loose threads");
+    let written = stdin(&mut harness, &mut daemon, &id, 3);
+    assert_eq!(written[2], r#"{"type":"user","message":{"role":"user","content":"/compact"}}"#);
+    daemon.emit(&id, r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual"}}"#);
+    daemon.emit(&id, r#"{"type":"result","subtype":"success"}"#);
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Hibernating);
+    let entries = read(&mut harness, &mut daemon, session, 0)?;
+    let hibernated = Entry::Hub(Note::Stopped { run: 1, why: Ended::Hibernated });
+    assert!(entries.iter().any(|numbered| numbered.entry == hibernated), "{entries:?}");
+
+    let Opened::Open(woken) = wake(&mut harness, &mut daemon, session)? else {
+        panic!("the session wakes");
+    };
+    assert_eq!((woken.session, woken.container), (session, Housed::Attached));
+    let next = daemon.made(1);
+    let body = daemon.body(&next);
+    assert!(body.contains(&format!(r#""--resume","{CONVERSATION}""#)), "{body}");
+    let request = r#"{"type":"control_request","request_id":"r-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}"#;
+    daemon.emit(&next, request);
+    until_state(&mut harness, &mut daemon, session, State::Waiting)?;
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Waiting));
+
+    Ok(())
+}
+
+#[test]
+fn a_compaction_is_listed_as_compacting_whoever_asked_for_it_until_it_ends() -> Result<(), Unheard> {
+    // Catches a compaction the owner's `/compact` began listed as working, as the hub listed only the compactions its
+    // own wind-down asked for, so an engine had to read the transcript to show it; and one still listed as compacting
+    // once Claude Code wrote its boundary.
+    let mut daemon = Daemon::new("compacting");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "compacting")?;
+    let id = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "/compact")?;
+    stdin(&mut harness, &mut daemon, &id, 1);
+    daemon.emit(&id, &turn_lines("")[0]);
+    daemon.emit(&id, r#"{"type":"system","subtype":"status","status":"compacting"}"#);
+    let compacting = until_state(&mut harness, &mut daemon, session, State::Compacting)?;
+    daemon.emit(&id, r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual"}}"#);
+    daemon.emit(&id, r#"{"type":"system","subtype":"status","status":null}"#);
+    let compacted = until_state(&mut harness, &mut daemon, session, State::Working)?;
+    daemon.emit(&id, r#"{"type":"result","subtype":"success"}"#);
+
+    assert_eq!(compacting, State::Compacting);
+    assert_eq!(compacted, State::Working, "the compaction's turn runs on until its result");
+    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Idle)?, State::Idle);
+
+    Ok(())
+}
+
+#[test]
+fn an_idle_session_with_no_turn_since_its_compaction_hibernates_at_once_and_a_line_wakes_it() -> Result<(), Unheard> {
     // Catches an idle session left running, one told it is about to be compacted when it has nothing new to compact,
     // one the hub hibernated listed as lost, and a line to a hibernating session lost rather than waking it in a new
     // container.
@@ -858,17 +987,17 @@ fn an_idle_session_with_no_turn_since_its_compaction_is_stopped_at_once_and_resu
     let written = stdin(&mut harness, &mut daemon, &second, 1);
     assert_eq!(written, [r#"{"type":"user","message":{"role":"user","content":"back again"}}"#]);
     let entries = read(&mut harness, &mut daemon, session, 0)?;
-    let stopped =
-        entries.iter().any(|numbered| numbered.entry == Entry::Hub(Note::Stopped { run: 1, why: Ended::Idle }));
-    assert!(stopped, "{entries:?}");
+    let hibernated =
+        entries.iter().any(|numbered| numbered.entry == Entry::Hub(Note::Stopped { run: 1, why: Ended::Hibernated }));
+    assert!(hibernated, "{entries:?}");
 
     Ok(())
 }
 
 #[test]
-fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_stopped_and_resumes_its_conversation()
+fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_hibernates_and_resumes_its_conversation()
 -> Result<(), Unheard> {
-    // Catches the notice or `/compact` not written, or written as the caller's; a session stopped before its
+    // Catches the notice or `/compact` not written, or written as the caller's; a session hibernated before its
     // compaction ends; and a resumed session that starts a new conversation rather than resuming Claude's.
     let mut daemon = Daemon::new("compact");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
@@ -881,7 +1010,10 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_stopped_and_
 
     answer_turn(&mut daemon, &id, "done");
     let written = stdin(&mut harness, &mut daemon, &id, 2);
-    assert!(written[1].contains("will be compacted next"), "the notice follows the idle turn: {written:?}");
+    assert!(
+        written[1].contains("will be compacted and hibernated next"),
+        "the notice follows the idle turn: {written:?}"
+    );
     answer_turn(&mut daemon, &id, "my loose threads");
     let written = stdin(&mut harness, &mut daemon, &id, 3);
     assert_eq!(written[2], r#"{"type":"user","message":{"role":"user","content":"/compact"}}"#);
@@ -903,7 +1035,7 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_stopped_and_
 
 #[test]
 fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_compacted() -> Result<(), Unheard> {
-    // Catches a winding-down that goes on to compact and stop a session its owner has spoken to meanwhile.
+    // Catches a winding-down that goes on to compact and hibernate a session its owner has spoken to meanwhile.
     let mut daemon = Daemon::new("notice");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "notice")?;
@@ -922,7 +1054,7 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     answer_turn(&mut daemon, &id, "my loose threads, and the one more thing");
     let written = stdin(&mut harness, &mut daemon, &id, 4);
     assert!(
-        written[3].contains("will be compacted next"),
+        written[3].contains("will be compacted and hibernated next"),
         "the session idles again, and is noticed again: {written:?}"
     );
     assert!(written.iter().all(|line| !line.contains("/compact")), "nothing is compacted: {written:?}");
@@ -1126,9 +1258,9 @@ fn a_session_s_call_reaches_its_tool_as_that_session_s_and_a_session_tool_refuse
     let named = call.request.caller;
     harness.reply(call, &Called::Refused(String::from("heard")))?;
     let called = heard_by(&mut harness, &mut daemon, calling);
-    let fields = r#""name":"session_list","arguments":{},"#;
+    let fields = r#""name":"list_sessions","arguments":{},"#;
     let refused =
-        routed(&mut harness, &mut daemon, rpc("tools/call", Some("session_list"), fields, Some(&authorization)));
+        routed(&mut harness, &mut daemon, rpc("tools/call", Some("list_sessions"), fields, Some(&authorization)));
 
     assert_eq!(named, By::Session { session });
     assert!(called.body.contains("heard"), "{called:?}");
@@ -2072,7 +2204,7 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
     harness.tell(caller_ref, &Order::New(NewSession { name: String::from("live") }))?;
     wait(&mut harness, &mut |caller| !caller.opened.is_empty());
     let opened = caller(&mut harness)?.opened.clone();
-    report("session_new", &format!("{opened:?}"));
+    report("new_session", &format!("{opened:?}"));
     let Some(Opened::Open(session)) = opened.first().cloned() else {
         panic!("the session opens");
     };
@@ -2110,7 +2242,7 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
             _ => None,
         })
         .collect();
-    report("session_say, then session_read", &format!("{} entries; Claude answered {answered:?}", entries.len()));
+    report("message_session, then read_session", &format!("{} entries; Claude answered {answered:?}", entries.len()));
     assert_eq!(holding(&entries, r#""type":"result""#), 1, "the turn ends");
 
     let text = "Run the shell command `sleep 60`, then reply with the word done.";
@@ -2123,7 +2255,7 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
         _ => None,
     });
     report(
-        "session_interrupt",
+        "interrupt_session",
         &format!(
             "{:?}, the turn ended {:?}",
             caller(&mut harness)?.interrupted,
@@ -2134,7 +2266,7 @@ fn a_session_runs_on_the_machines_own_daemon_and_claude() -> Result<(), Unheard>
 
     harness.tell(caller_ref, &Order::Archive(Archive { session }))?;
     wait(&mut harness, &mut |caller| !caller.archived.is_empty());
-    report("session_archive", &format!("{:?}", caller(&mut harness)?.archived));
+    report("archive_session", &format!("{:?}", caller(&mut harness)?.archived));
     let left = raw(&listing("containers/json?all=1&", &label));
     let containers = left.rsplit("\r\n\r\n").next().unwrap_or_default().trim().to_owned();
     report("containers left with the run's label", &containers);
@@ -2533,9 +2665,13 @@ fn a_chat_frame_the_hub_cannot_do_is_declined_to_its_engine_with_the_refusal_the
 
     let said = Chat::Say { session, text: String::from("anyone there?") };
     let archived = Chat::Archive { session: session + 1 };
+    let hibernated = Chat::Hibernate { session };
+    let woken = Chat::Wake { session: session + 1 };
     send_frame(&mut stream, &Up::from(said.clone()));
     send_frame(&mut stream, &Up::from(archived.clone()));
-    let ends = |down: &Down| matches!(down, Down::Declined { chat: Chat::Archive { .. }, .. });
+    send_frame(&mut stream, &Up::from(hibernated.clone()));
+    send_frame(&mut stream, &Up::from(woken.clone()));
+    let ends = |down: &Down| matches!(down, Down::Declined { chat: Chat::Wake { .. }, .. });
     let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, ends);
 
     let declined: Vec<(Chat, Refusal)> = downs
@@ -2545,7 +2681,13 @@ fn a_chat_frame_the_hub_cannot_do_is_declined_to_its_engine_with_the_refusal_the
             _ => None,
         })
         .collect();
-    assert_eq!(declined, [(said, Refusal::Archived), (archived, Refusal::NoSuchSession)]);
+    let expected = [
+        (said, Refusal::Archived),
+        (archived, Refusal::NoSuchSession),
+        (hibernated, Refusal::Archived),
+        (woken, Refusal::NoSuchSession),
+    ];
+    assert_eq!(declined, expected);
 
     Ok(())
 }

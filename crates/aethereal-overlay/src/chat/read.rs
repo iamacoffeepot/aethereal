@@ -64,8 +64,6 @@ pub enum Told {
     Ended { subtype: String, error: bool },
     /// The session is being compacted.
     Compacting,
-    /// Claude Code's status moved past compacting.
-    Status,
     /// The session was compacted: what triggered it, and its tokens before and after, each as Claude Code wrote it or
     /// none when it wrote none.
     Compacted { trigger: String, pre: Option<u64>, post: Option<u64> },
@@ -117,7 +115,7 @@ fn noted(note: &Note) -> Told {
 /// How a container stopped, in words.
 fn ended(why: &Ended) -> String {
     match why {
-        Ended::Idle => String::from("idle"),
+        Ended::Hibernated => String::from("hibernated"),
         Ended::Archived => String::from("archived"),
         Ended::Exited { code } => format!("exited with {code}"),
         Ended::OutOfMemory => String::from("out of memory"),
@@ -135,7 +133,7 @@ fn claude(line: &str) -> Vec<Read> {
     let under = text(&tree, root, "parent_tool_use_id").map_or(Under::Main, |parent| Under::Tool(String::from(parent)));
     let told = match (text(&tree, root, "type"), text(&tree, root, "subtype")) {
         (Some("system"), Some("init")) => vec![Told::Began],
-        (Some("system"), Some("status")) => vec![status(&tree, root)],
+        (Some("system"), Some("status")) => status(&tree, root),
         (Some("system"), Some("compact_boundary")) => vec![compacted(&tree, root)],
         (Some("conversation_reset"), _) => vec![Told::Cleared],
         (Some("assistant"), _) => contents(&tree, root).into_iter().filter_map(|part| said(&tree, part)).collect(),
@@ -149,11 +147,11 @@ fn claude(line: &str) -> Vec<Read> {
     told.into_iter().map(|told| Read { under: under.clone(), told }).collect()
 }
 
-/// A `status` event: compacting, or moved past it.
-fn status(tree: &JsonTree<'_>, root: &JsonValue<'_>) -> Told {
+/// A `status` event: compacting, or nothing for any other, as the hub's list says when a compaction ends.
+fn status(tree: &JsonTree<'_>, root: &JsonValue<'_>) -> Vec<Told> {
     match text(tree, root, "status") {
-        Some("compacting") => Told::Compacting,
-        _ => Told::Status,
+        Some("compacting") => vec![Told::Compacting],
+        _ => Vec::new(),
     }
 }
 

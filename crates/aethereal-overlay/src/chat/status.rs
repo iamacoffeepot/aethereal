@@ -4,16 +4,14 @@
 //!
 //! ```text
 //! an ask waits ──> Waiting, over everything else
-//! a compaction runs, as the hub lists it or its transcript shows it ──> Compacting
 //! the hub's container state: Starting ──> Starting;  Lost ──> Lost
-//! the hub's state: Working, Waiting ──> Working;  Idle ──> Idle;  Hibernating, Archived ──> Stopped
+//! the hub's state: Working, Waiting ──> Working;  Compacting ──> Compacting;  Idle ──> Idle;
+//!                  Hibernating, Archived ──> Hibernating
 //! ```
 //!
-//! Every fact is the hub's but one: a compaction the owner asked for with `/compact`, or one Claude Code began itself,
-//! runs as a turn the hub lists as working, as the hub lists a compaction only of its own asking. Only the
-//! transcript's status of compacting shows it.
+//! Every fact is the hub's: it lists a session compacting for every compaction Claude Code runs, the wind-down's, the
+//! owner's `/compact`, or one Claude Code began by itself, so the engine works out nothing from the transcript.
 
-use super::transcript::Compaction;
 use aethereal_sessions::{Connection, State};
 
 /// What a session's tab marks it as.
@@ -25,27 +23,23 @@ pub enum Status {
     Idle,
     /// A turn runs, or a background task of its.
     Working,
-    /// It is being compacted, or told it is about to be.
+    /// It is being compacted.
     Compacting,
     /// An ask of its waits on the owner.
     Waiting,
-    /// The hub wound it down, as it was idle: the next line resumes it.
-    Stopped,
+    /// It has no container: the hub wound it down, and the next line, or `wake_session`, wakes it.
+    Hibernating,
     /// The hub lists its container lost: it ended without the hub ending it, and the next line wakes it.
     Lost,
 }
 
 impl Status {
-    /// The status of a session the hub lists in `state`, its container `connection`, with `asking` asks waiting,
-    /// whose transcript, as the engine holds it, shows `compaction`. An ask waiting wins over every other, as it is the
-    /// owner's to answer; then a compaction, which runs as a turn does, whichever of the hub and the transcript says so
-    /// first; then a container starting or lost, which the hub's state does not show.
-    pub const fn of(state: State, connection: Connection, asking: u32, compaction: Compaction) -> Self {
+    /// The status of a session the hub lists in `state`, its container `connection`, with `asking` asks waiting. An
+    /// ask waiting wins over every other, as it is the owner's to answer; then a container starting or lost, which the
+    /// hub's state does not show.
+    pub const fn of(state: State, connection: Connection, asking: u32) -> Self {
         if asking > 0 {
             return Self::Waiting;
-        }
-        if matches!(compaction, Compaction::Compacting) {
-            return Self::Compacting;
         }
 
         match (state, connection) {
@@ -54,7 +48,7 @@ impl Status {
             (State::Working | State::Waiting, _) => Self::Working,
             (State::Compacting, _) => Self::Compacting,
             (State::Idle, _) => Self::Idle,
-            (State::Hibernating | State::Archived, Connection::None | Connection::Attached) => Self::Stopped,
+            (State::Hibernating | State::Archived, Connection::None | Connection::Attached) => Self::Hibernating,
         }
     }
 
@@ -63,7 +57,7 @@ impl Status {
     pub const fn pulses(self) -> bool {
         match self {
             Self::Starting | Self::Working => true,
-            Self::Idle | Self::Compacting | Self::Waiting | Self::Stopped | Self::Lost => false,
+            Self::Idle | Self::Compacting | Self::Waiting | Self::Hibernating | Self::Lost => false,
         }
     }
 }

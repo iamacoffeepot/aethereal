@@ -85,7 +85,7 @@ pub enum Chat {
     Ran { session: u32, line: String, printed: String },
     /// An answer to the ask numbered `ask`.
     Answer { ask: u64, allow: bool },
-    /// Stop the session's turn.
+    /// Interrupt the session's running turn: the session carries on.
     Interrupt { session: u32 },
     /// A tab opened, to be shown every event after `after`.
     Open { session: u32, after: u64 },
@@ -93,8 +93,12 @@ pub enum Chat {
     Close { session: u32 },
     /// A session made.
     New { name: String },
-    /// A session ended.
+    /// A session archived: it never wakes again.
     Archive { session: u32 },
+    /// A session wound down to hibernate, as an idle one is.
+    Hibernate { session: u32 },
+    /// A hibernating session woken.
+    Wake { session: u32 },
 }
 
 /// Told by the `Engine` of `engine`, a trusted engine: what its owner did.
@@ -165,7 +169,7 @@ impl Chats {
     }
 
     /// How many asks of `session`'s wait for the owner.
-    fn asking(&self, session: u32) -> u32 {
+    pub(super) fn asking(&self, session: u32) -> u32 {
         let waiting = self.questions.values().filter(|question| question.session == session).count();
 
         u32::try_from(waiting).unwrap_or(u32::MAX)
@@ -288,6 +292,11 @@ impl Sessions {
             }
             Chat::New { name } => self.open(turn, Asker::Engine { engine, chat: asked }, name)?,
             Chat::Archive { session } => self.archive(turn, Asker::Engine { engine, chat: asked }, session)?,
+            Chat::Hibernate { session } => {
+                let hibernated = self.hibernate(turn, session)?;
+                self.decline(turn, engine, asked, &hibernated)?;
+            }
+            Chat::Wake { session } => self.wake(turn, Asker::Engine { engine, chat: asked }, session)?,
         }
 
         Ok(())

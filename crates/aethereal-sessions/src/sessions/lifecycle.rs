@@ -1,8 +1,9 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
-//! credential read, made from the settings, started, attached and followed, and stopped and removed once it is idle,
-//! archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
+//! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
+//! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
 //! lost, and shows so until it wakes.
 
+use super::asked::Asker;
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
 use super::credential::{Crediting, Provisioned};
@@ -131,7 +132,7 @@ impl Sessions {
         gone: Gone,
     ) -> Result<(), Fault> {
         if let Some(held) = self.held.get_mut(&session) {
-            let then = Then::Rest { lines: Vec::new(), gone };
+            let then = Then::Hibernate { opening: Vec::new(), lines: Vec::new(), gone };
             held.life = Life::Stopping { container: container.clone(), run, then };
         }
 
@@ -381,12 +382,15 @@ impl Sessions {
         self.chats.forget(session);
         self.dirty(session);
         match then {
-            Then::Rest { lines, gone: rested } => {
+            Then::Hibernate { opening, lines, gone: rested } => {
                 if let Some(held) = self.held.get_mut(&session) {
                     held.life = Life::Hibernating { gone: rested };
                 }
-                if !lines.is_empty() {
-                    self.restart(session, lines);
+                let is_opened = !opening.is_empty();
+                let has_lines = !lines.is_empty();
+                let is_woken = is_opened || has_lines;
+                if is_woken {
+                    self.restart(session, opening, lines);
                 }
             }
             Then::Archive { archiving } => {
@@ -408,13 +412,14 @@ impl Sessions {
         Ok(())
     }
 
-    /// Wakes `session`, which hibernates, in a new container, writing `lines` to it once it is attached.
-    pub(super) fn restart(&mut self, session: u32, lines: Vec<String>) {
+    /// Wakes `session`, which hibernates, in a new container on its home: `opening` is answered once it runs, and
+    /// `lines` are written to it once it is attached.
+    pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<String>) {
         let Some(held) = self.held.get_mut(&session) else {
             return;
         };
         held.runs += 1;
-        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening: Vec::new(), lines };
+        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening, lines };
 
         self.start(session);
     }

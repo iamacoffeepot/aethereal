@@ -66,17 +66,23 @@ pub struct SessionsSettings {
     pub label: String,
     /// More labels every container carries, each `key=value`.
     pub labels: Vec<String>,
-    /// The most sessions running at once.
+    /// The most sessions awake at once, a hibernating or archived session holding no container: a new session, or a
+    /// wake, past it is refused, naming the awake ones.
     #[flag]
     pub most_running: u32,
-    /// The seconds a running session with no turn and no background task waits before it is wound down and stopped.
+    /// The seconds an awake session with no turn and no background task waits before it is wound down: told, compacted,
+    /// and its container stopped, so it hibernates. 55 minutes by default: Claude's prompt cache keeps a session's
+    /// context for an hour, so a session idle that long reads its whole context afresh on its next turn whatever the
+    /// hub does, and the five minutes left leave the wind-down's own turns, the notice and `/compact`, reading it warm.
     #[flag]
     pub idle_secs: u32,
-    /// What the hub tells an idle session before it compacts it, `{minutes}` standing for its idle minutes.
+    /// What the hub tells a session before it compacts it to hibernate: that it is about to be, and nothing of why, as
+    /// the same notice comes before a wind-down asked for early as before an idle one.
     pub notice: String,
     /// What each session is told of where it is, appended to Claude Code's system prompt.
     pub prompt: String,
-    /// The seconds the notice's turn, and then the compaction, are each given before the session is stopped anyway.
+    /// The seconds the notice's turn, and then the compaction, are each given before the session's container is
+    /// stopped anyway.
     #[flag]
     pub wind_down_secs: u32,
     /// The most CPU time a container takes, in thousandths of one CPU.
@@ -104,11 +110,10 @@ impl Default for SessionsSettings {
             label: String::from("hub"),
             labels: Vec::new(),
             most_running: 4,
-            idle_secs: 30 * 60,
+            idle_secs: 55 * 60,
             notice: String::from(
-                "The hub: this session has been idle for {minutes} minutes, and it will be compacted next. Before \
-                 that, write down your loose threads: unfinished work, open questions, uncommitted changes, and what \
-                 to pick up next.",
+                "The hub: this session will be compacted and hibernated next. Before that, write down your loose \
+                 threads: unfinished work, open questions, uncommitted changes, and what to pick up next.",
             ),
             prompt: String::from(PROMPT.trim_end()),
             wind_down_secs: 10 * 60,
@@ -142,12 +147,6 @@ impl SessionsSettings {
     #[must_use]
     pub fn hub_label(&self) -> Label {
         Label { key: String::from(HUB_LABEL), value: self.label.clone() }
-    }
-
-    /// The notice an idle session is told, its idle minutes written in.
-    #[must_use]
-    pub fn notice(&self) -> String {
-        self.notice.replace("{minutes}", &(self.idle_secs / 60).to_string())
     }
 }
 

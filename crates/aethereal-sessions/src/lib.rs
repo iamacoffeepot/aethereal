@@ -7,8 +7,8 @@
 //! store's stockroom, which each session's container is readied from: the bearer of its route to the hub's tools,
 //! which it holds and checks each request on the sessions' port against as that port's stack's actor layer
 //! (ADR-0035), and its drop box (ADR-0057). Behind the `tools` feature,
-//! `SessionsTools` is the hub's six tools for it: `session_new`, `session_say`, `session_read`, `session_list`,
-//! `session_interrupt`, and `session_archive`.
+//! `SessionsTools` is the hub's eight tools for it: `new_session`, `message_session`, `read_session`, `list_sessions`,
+//! `interrupt_session`, `hibernate_session`, `wake_session`, and `archive_session`.
 //!
 //! [`engine_name`] is what the chat calls an engine: a name made from its id alone, `mellow-snipe:4`, so every engine
 //! that shows the chat calls one engine alike; [`engine_words`] is its words alone, `mellow-snipe`, as a transcript's
@@ -34,12 +34,13 @@ pub use docker::{
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Connection, Conversation, Counted,
-    Credential, Crediting, Ended, Entry, Feed, Grew, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted,
-    Joined, Keeping, ListSessions, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned,
-    ReadTranscript, Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, SessionRow, Sessions,
-    SessionsListed, SessionsSettings, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing, Since, Speaker,
-    Standing, State, TARGET, Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
+    Act, Acting, Archive, Archived, Asking, AwakeSession, Bearer, CARGO, CLAUDE, Chat, Chatted, Compaction, Connection,
+    Conversation, Counted, Credential, Crediting, Ended, Entry, Feed, Grew, HOME, HUB_LABEL, Heard, Hibernate,
+    Hibernated, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions, Loading, NewSession,
+    NoCredential, Note, Numbered, Opened, Provision, Provisioned, ReadTranscript, Reconciling, Record, Refusal,
+    Resting, SESSION_LABEL, Said, Say, SessionRow, Sessions, SessionsListed, SessionsSettings, ShowAsk, ShowDeclined,
+    ShowEvents, ShowSessions, Showing, Since, Speaker, Standing, State, TARGET, Transcribed, Transcript, Turning,
+    Typing, Unfound, Unlabelled, Wake, WindDown,
 };
 #[cfg(feature = "tools")]
-pub use tools::{Asking as ToolsAsking, Entered, Read, SessionsTools, SessionsToolsConfig};
+pub use tools::{Asking as ToolsAsking, Entered, Hibernation, Read, SessionsTools, SessionsToolsConfig};
