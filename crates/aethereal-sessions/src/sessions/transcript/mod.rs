@@ -5,6 +5,8 @@
 mod tests;
 
 use super::heard::{self, Heard};
+use super::row::Grew;
+use aethereal_actor::Time;
 use aethereal_data::{Budget, Json, Plain, from_bytes, to_bytes};
 
 /// The most bytes one entry's frame holds as it is read back: past any line a container writes.
@@ -116,6 +118,7 @@ pub struct Transcript {
     stderr_bytes: u64,
     since: Since,
     turn: Turning,
+    grew: Grew,
 }
 
 /// Which container's output a transcript counts: the latest whose start it notes.
@@ -147,6 +150,7 @@ impl Transcript {
             stderr_bytes: 0,
             since: Since::Compacted,
             turn: Turning::Ended,
+            grew: Grew::Unseen,
         }
     }
 
@@ -171,10 +175,11 @@ impl Transcript {
         transcript
     }
 
-    /// Adds `entry` as the next, and answers it numbered.
-    pub fn add(&mut self, entry: Entry) -> Numbered {
+    /// Adds `entry` as the next, at `at`, and answers it numbered.
+    pub fn add(&mut self, entry: Entry, at: Time) -> Numbered {
         let numbered = Numbered { number: self.last() + 1, entry };
         self.take(numbered.clone());
+        self.grew = Grew::At(at);
 
         numbered
     }
@@ -244,6 +249,12 @@ impl Transcript {
     #[must_use]
     pub const fn since(&self) -> Since {
         self.since
+    }
+
+    /// When it last grew: unseen when nothing was added to it since it was read, or made empty.
+    #[must_use]
+    pub const fn grew(&self) -> Grew {
+        self.grew
     }
 }
 

@@ -4,7 +4,7 @@
 //! tell the link, and what it shows is laid out by the overlay's screen.
 //!
 //! ```text
-//! ShowTabs ──> the tabs: "console", a break, then each session not archived, a light divider between them, each
+//! ShowSessions ──> the tabs: "console", a break, then each session not archived, a light divider between them, each
 //!              session's marked with its status (`status`); a session made here opened once it lists
 //! ShowEvents ──> the session's transcript, its rows built again;  a line of this engine's echoed ──> its own id
 //! ShowAsk ──> kept until answered here, or its session waits on none
@@ -37,7 +37,7 @@ use crate::colour::{Ink, Palette, Surface};
 use crate::console::Mode;
 use aethereal_data::Plain;
 use aethereal_render::text::Colour;
-use aethereal_sessions::{Chat, Entry, Numbered, ShowAsk, Speaker, State, Tab};
+use aethereal_sessions::{Chat, Entry, Numbered, SessionRow, ShowAsk, Speaker, State};
 use aethereal_ui::markdown::Blocks;
 use core::iter;
 use read::Container;
@@ -56,7 +56,7 @@ pub enum Listed {
     /// None: the hub has not listed them, as it never does to an untrusted engine.
     Unlisted,
     /// As the hub last listed them.
-    Tabs(Vec<Tab>),
+    Tabs(Vec<SessionRow>),
 }
 
 /// Which tab of the console is open.
@@ -229,7 +229,7 @@ impl Chats {
     }
 
     /// The sessions the hub listed, as tabs: those not archived, in order.
-    fn live(&self) -> Vec<&Tab> {
+    fn live(&self) -> Vec<&SessionRow> {
         let Listed::Tabs(tabs) = &self.listed else {
             return Vec::new();
         };
@@ -240,7 +240,7 @@ impl Chats {
     /// The sessions as the hub now lists them. The first listing opens the newest session not archived; a session
     /// whose tab is open and that is archived or gone leaves the console's own tab open. An ask of a session that
     /// waits on none is let go, answered at another engine.
-    pub fn listed(&mut self, tabs: Vec<Tab>) -> Vec<Chat> {
+    pub fn listed(&mut self, tabs: Vec<SessionRow>) -> Vec<Chat> {
         let first = !self.is_listed();
         self.listed = Listed::Tabs(tabs);
         let live: Vec<u32> = self.live().iter().map(|tab| tab.session).collect();
@@ -474,7 +474,7 @@ impl Chats {
             let transcript = self.transcripts.get(&tab.session);
             let compaction = transcript.map_or(Compaction::Idle, Transcript::compaction);
             let container = transcript.map_or(Container::Unsaid, Transcript::container);
-            let status = Status::of(tab.state, tab.asking, compaction, container);
+            let status = Status::of(tab.state, tab.container, tab.asking, compaction, container);
             (tab.name.clone(), Icon::Marked(status))
         });
 

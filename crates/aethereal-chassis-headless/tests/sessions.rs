@@ -17,10 +17,10 @@ use aethereal_link::{
 };
 use aethereal_mcp::{Mcp, McpRoutes};
 use aethereal_sessions::{
-    Archive, Archived, Chat, Chatted, Conversation, Docker, DockerSettings, Ended, Entry, Index, Interrupt,
-    Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say,
-    Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowEvents, ShowTabs, Speaker, Standing, State,
-    Transcribed, Transcript, Unfound,
+    Archive, Archived, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended, Entry, Index,
+    Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal,
+    Said, Say, SessionRow, Sessions, SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowDeclined,
+    ShowEvents, ShowSessions, Speaker, Standing, State, Transcribed, Transcript, Unfound,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -699,8 +699,8 @@ fn read(
     Ok(entries)
 }
 
-/// The state `session` is listed in.
-fn state(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<State, Unheard> {
+/// The row `session` is listed as.
+fn row(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<SessionRow, Unheard> {
     let before = caller(harness)?.listed.len();
     order(harness, &Order::List)?;
     until(harness, daemon, |caller, _| caller.listed.len() > before);
@@ -710,7 +710,12 @@ fn state(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> 
         panic!("the session is listed");
     };
 
-    Ok(found.state)
+    Ok(found)
+}
+
+/// The state `session` is listed in.
+fn state(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<State, Unheard> {
+    Ok(row(harness, daemon, session)?.state)
 }
 
 /// Waits until `session` is listed in `wanted`.
@@ -836,12 +841,14 @@ fn a_session_past_the_most_running_is_refused_naming_the_limit_and_those_that_ru
 #[test]
 fn an_idle_session_with_no_turn_since_its_compaction_is_stopped_at_once_and_resumed_by_a_line() -> Result<(), Unheard> {
     // Catches an idle session left running, one told it is about to be compacted when it has nothing new to compact,
-    // and a line to a stopped session lost rather than resuming it in a new container.
+    // one the hub hibernated listed as lost, and a line to a hibernating session lost rather than waking it in a new
+    // container.
     let mut daemon = Daemon::new("idle");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "idle")?;
     let first = daemon.made(0);
-    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Stopped)?, State::Stopped);
+    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Hibernating)?, State::Hibernating);
+    assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::None, "the hub ended its container");
     assert!(daemon.stdin(&first).is_empty(), "nothing is written to a session with nothing to compact");
     assert!(!daemon.containers.contains_key(&first), "its container is removed");
 
@@ -866,7 +873,7 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_stopped_and_
     let mut daemon = Daemon::new("compact");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "compact")?;
-    until_state(&mut harness, &mut daemon, session, State::Stopped)?;
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
     say(&mut harness, &mut daemon, session, "work")?;
     until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
     let id = daemon.made(1);
@@ -880,7 +887,7 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_stopped_and_
     assert_eq!(written[2], r#"{"type":"user","message":{"role":"user","content":"/compact"}}"#);
     daemon.emit(&id, r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual"}}"#);
     daemon.emit(&id, r#"{"type":"result","subtype":"success"}"#);
-    until_state(&mut harness, &mut daemon, session, State::Stopped)?;
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
 
     let entries = read(&mut harness, &mut daemon, session, 0)?;
     let hub_lines =
@@ -900,14 +907,14 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     let mut daemon = Daemon::new("notice");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "notice")?;
-    until_state(&mut harness, &mut daemon, session, State::Stopped)?;
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
     say(&mut harness, &mut daemon, session, "work")?;
     until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
     let id = daemon.made(1);
     stdin(&mut harness, &mut daemon, &id, 1);
     answer_turn(&mut daemon, &id, "done");
     stdin(&mut harness, &mut daemon, &id, 2);
-    assert_eq!(state(&mut harness, &mut daemon, session)?, State::Noticed);
+    assert_eq!(state(&mut harness, &mut daemon, session)?, State::Working, "the notice's turn is work");
 
     say(&mut harness, &mut daemon, session, "wait, one more thing")?;
     assert_eq!(state(&mut harness, &mut daemon, session)?, State::Working);
@@ -1056,6 +1063,29 @@ fn a_session_s_container_bears_a_bearer_its_port_lets_in_until_its_container_is_
 }
 
 #[test]
+fn a_container_that_ends_by_itself_leaves_its_session_hibernating_and_lost_until_it_wakes() -> Result<(), Unheard> {
+    // Catches a container whose process exited listed as one the hub wound down, so the owner is not told its last
+    // turn may have been cut short, and a session woken from it still listed as lost.
+    let mut daemon = Daemon::new("lost");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let session = open(&mut harness, &mut daemon, "lost")?;
+    let first = daemon.made(0);
+    daemon.stop(&first);
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
+
+    assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::Lost);
+    say(&mut harness, &mut daemon, session, "back again")?;
+    let mut container = Housed::Lost;
+    waiting::until(BUDGET, || {
+        container = row(&mut harness, &mut daemon, session).map_or(container, |row| row.container);
+        container == Housed::Attached
+    });
+    assert_eq!(container, Housed::Attached);
+
+    Ok(())
+}
+
+#[test]
 fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unheard> {
     // Catches a session's bearer of a container it no longer runs still let in once its next container's is minted,
     // and the next container's bearer not held, so a session that wakes reaches none of the hub's tools (ADR-0057).
@@ -1063,7 +1093,7 @@ fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unh
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "rebearer")?;
     let older = authorization_of(&daemon, &daemon.made(0));
-    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Stopped)?, State::Stopped);
+    assert_eq!(until_state(&mut harness, &mut daemon, session, State::Hibernating)?, State::Hibernating);
 
     say(&mut harness, &mut daemon, session, "back again")?;
     until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
@@ -1211,9 +1241,7 @@ fn a_hub_that_starts_again_and_cannot_list_its_containers_fails_and_leaves_every
     say(&mut harness, &mut daemon, session, "hello")?;
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
-    until(&mut harness, &mut daemon, |_, daemon| {
-        matches!(kept(daemon, session), Some(Standing::Running { run: 1, .. }))
-    });
+    until(&mut harness, &mut daemon, |_, daemon| matches!(kept(daemon, session), Some(Standing::Awake { run: 1, .. })));
     drop(harness);
     daemon.connections.clear();
 
@@ -1268,7 +1296,8 @@ fn index(daemon: &Daemon) -> Vec<u32> {
 fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_with_the_same_numbers()
 -> Result<(), Unheard> {
     // Catches an index not written as a session is added, or not read back, so a restarted hub loses its sessions or
-    // numbers a new one over an old; a record or transcript read from the wrong file; a container run before a
+    // numbers a new one over an old; an archived session left out as the hub reads its sessions back, so it no longer
+    // reads; a record or transcript read from the wrong file; a container run before a
     // session's own, as the step that gave a home to its user once was; a session's volumes named apart from its
     // session's, which no later container would find; and a cargo home made per session, not shared.
     let mut daemon = Daemon::new("index");
@@ -1297,6 +1326,8 @@ fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_wi
     let names: Vec<(u32, String)> = sessions.iter().map(|(number, name, _)| (*number, name.clone())).collect();
     assert_eq!(names, [(1, String::from("first")), (2, String::from("second"))]);
     assert_eq!(sessions[1].2, State::Archived);
+    let archived = read(&mut harness, &mut daemon, second, 0)?;
+    assert!(!archived.is_empty(), "an archived session reads with no container");
     let number = say(&mut harness, &mut daemon, first, "again")?;
     assert_eq!(number, 3, "the transcript goes on from its last number");
     let third = open(&mut harness, &mut daemon, "third")?;
@@ -1328,8 +1359,12 @@ fn with_no_index_there_are_no_sessions_whatever_else_save_holds() -> Result<(), 
     // Catches a hub that finds its sessions by what lies in `Save` rather than by the index, which `Files` does not
     // list, and one that fails to start when there is no index, as on its first run.
     let mut daemon = Daemon::new("no-index");
-    let record =
-        Record { name: String::from("orphan"), conversation: Conversation::Unbegun, runs: 1, kept: Standing::Stopped };
+    let record = Record {
+        name: String::from("orphan"),
+        conversation: Conversation::Unbegun,
+        runs: 1,
+        kept: Standing::Hibernating,
+    };
     let Ok(bytes) = to_bytes(&record) else {
         panic!("a record encodes");
     };
@@ -1550,7 +1585,7 @@ impl Withhold {
     /// What becomes of `bytes` written whole.
     fn whole(self, bytes: &[u8]) -> Kept {
         let standing = from_bytes::<Record>(bytes, &mut Budget::new(4096)).map(|record| record.kept);
-        let Ok(Standing::Running { run: running, .. }) = standing else {
+        let Ok(Standing::Awake { run: running, .. }) = standing else {
             return Kept::Lands;
         };
 
@@ -1695,7 +1730,7 @@ impl Kill {
             Self::Started => daemon.runs(1),
             Self::Appended => claude_events(&on_disk(daemon, session)) == 6,
             Self::Recorded => {
-                let recorded = matches!(kept(daemon, session), Some(Standing::Running { run: 2, .. }));
+                let recorded = matches!(kept(daemon, session), Some(Standing::Awake { run: 2, .. }));
 
                 recorded && daemon.runs(1)
             }
@@ -1706,7 +1741,7 @@ impl Kill {
     /// `started` times.
     fn left(self, record: Option<&Standing>, started: usize) -> bool {
         let starting = record == Some(&Standing::Starting { run: 2 });
-        let running = matches!(record, Some(Standing::Running { run: 2, .. }));
+        let running = matches!(record, Some(Standing::Awake { run: 2, .. }));
         match self {
             Self::Creating | Self::Launching | Self::Started => starting && started == 0,
             Self::Appended => starting && started == 1,
@@ -1753,7 +1788,7 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
     answer_turn(&mut daemon, &first, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
     daemon.stop(&first);
-    until_state(&mut harness, &mut daemon, session, State::Stopped)?;
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
 
     daemon.hold = kill.hold();
     say(&mut harness, &mut daemon, session, "again")?;
@@ -1782,8 +1817,8 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
 /// Waits until the hub has left `session` stopped, its record saying so, and answers its transcript.
 fn left_stopped(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Vec<Numbered>, Unheard> {
     // The record says the session stopped only once the hub has read its sessions back, before which none is listed.
-    until(harness, daemon, |_, daemon| kept(daemon, session) == Some(Standing::Stopped));
-    until_state(harness, daemon, session, State::Stopped)?;
+    until(harness, daemon, |_, daemon| kept(daemon, session) == Some(Standing::Hibernating));
+    until_state(harness, daemon, session, State::Hibernating)?;
 
     read(harness, daemon, session, 0)
 }
@@ -1797,9 +1832,7 @@ fn adopts(test: &str, kill: Kill, said: &[&str]) -> Result<(), Unheard> {
 
     assert_eq!(messages(&entries), said, "each of Claude's messages once, in order: {entries:?}");
     assert_eq!(noted(&entries, 2), 1, "the second run is noted started once: {entries:?}");
-    until(&mut harness, &mut daemon, |_, daemon| {
-        matches!(kept(daemon, session), Some(Standing::Running { run: 2, .. }))
-    });
+    until(&mut harness, &mut daemon, |_, daemon| matches!(kept(daemon, session), Some(Standing::Awake { run: 2, .. })));
 
     Ok(())
 }
@@ -2164,7 +2197,14 @@ impl Impostor {
     }
 
     #[tell]
-    fn show_tabs(&mut self, _: ShowTabs) -> Result<(), Fault> {
+    fn show_sessions(&mut self, _: ShowSessions) -> Result<(), Fault> {
+        self.shown += 1;
+
+        Ok(())
+    }
+
+    #[tell]
+    fn show_declined(&mut self, _: ShowDeclined) -> Result<(), Fault> {
         self.shown += 1;
 
         Ok(())
@@ -2424,7 +2464,7 @@ fn a_trusted_engine_is_shown_the_sessions_and_its_lines_and_commands_reach_claud
 
     let (downs, mut stream) =
         downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
-    let Some(Down::Sessions { list }) = downs.last() else {
+    let Some(Down::Sessions { list, .. }) = downs.last() else {
         panic!("the engine is shown the sessions");
     };
     let tabs: Vec<(u32, &str)> = list.iter().map(|tab| (tab.session, tab.name.as_str())).collect();
@@ -2462,6 +2502,38 @@ fn a_trusted_engine_is_shown_the_sessions_and_its_lines_and_commands_reach_claud
         matches!(down, Down::Show { events, .. } if events.iter().any(|numbered| matches!(&numbered.entry, Entry::Ran { engine: 0, .. })))
     });
     assert!(ran, "the command is shown where it was run: {downs:?}");
+
+    Ok(())
+}
+
+#[test]
+fn a_chat_frame_the_hub_cannot_do_is_declined_to_its_engine_with_the_refusal_the_tools_answer() -> Result<(), Unheard> {
+    // Catches a refused chat frame only logged, so its owner never learns it went nowhere, whether it is refused as it
+    // comes or once the ask it makes is answered; and a decline whose refusal is not the one the hub's tools answer
+    // the same ask (ADR-0057).
+    let mut daemon = Daemon::new("chat-declined");
+    let mut harness = chat_hub(&daemon)?;
+    let session = open(&mut harness, &mut daemon, "chat")?;
+    order(&mut harness, &Order::Archive(Archive { session }))?;
+    until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
+    let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
+    let (_, mut stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
+
+    let said = Chat::Say { session, text: String::from("anyone there?") };
+    let archived = Chat::Archive { session: session + 1 };
+    send_frame(&mut stream, &Up::from(said.clone()));
+    send_frame(&mut stream, &Up::from(archived.clone()));
+    let ends = |down: &Down| matches!(down, Down::Declined { chat: Chat::Archive { .. }, .. });
+    let (downs, _stream) = downs_until(&mut harness, &mut daemon, stream, ends);
+
+    let declined: Vec<(Chat, Refusal)> = downs
+        .into_iter()
+        .filter_map(|down| match down {
+            Down::Declined { chat, why } => Some((chat, why)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(declined, [(said, Refusal::Archived), (archived, Refusal::NoSuchSession)]);
 
     Ok(())
 }

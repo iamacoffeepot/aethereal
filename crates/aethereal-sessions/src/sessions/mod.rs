@@ -1,6 +1,7 @@
-//! The sessions capability's root (ADR-0057): [`Sessions`], which runs each open Claude session in a Docker container
-//! of its own, writes lines to its stdin, reads its output into a numbered transcript, stops it when it is idle, and
-//! resumes it when it is spoken to.
+//! The sessions capability's root (ADR-0057): [`Sessions`], which keeps each Claude session as a permanent record and
+//! connects it to Claude in a Docker container of its own only while it is awake: it writes lines to its stdin, reads
+//! its output into a numbered transcript, stops its container when it is idle, so it hibernates, and wakes it when it
+//! is spoken to.
 
 mod asked;
 mod asks;
@@ -15,6 +16,7 @@ mod lifecycle;
 mod loading;
 mod output;
 mod record;
+mod row;
 mod saves;
 mod session;
 mod settings;
@@ -24,13 +26,14 @@ mod volumes;
 
 pub use asks::{
     Archive, Archived, Interrupt, Interrupted, ListSessions, Listed as SessionsListed, NewSession, Opened,
-    ReadTranscript, Refusal, Said, Say, Session as ListedSession, State, Transcribed,
+    ReadTranscript, Refusal, Said, Say, Transcribed,
 };
 pub use bearers::Bearer;
-pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowEvents, ShowTabs, Showing, Tab};
+pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing};
 pub use credential::{Credential, Crediting, NoCredential, Provision, Provisioned};
 pub use heard::Heard;
 pub use record::{Conversation, Record, Standing};
+pub use row::{Connection, Grew, SessionRow, State};
 pub use saves::{Index, Keeping, Loading};
 pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
 pub use transcript::{Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown};
@@ -137,10 +140,12 @@ pub enum Unfound {
 /// ([`NewSession`]), write a line to one ([`Say`]), read its transcript ([`ReadTranscript`]), list them
 /// ([`ListSessions`]), interrupt one's turn ([`Interrupt`]), or archive one ([`Archive`]).
 ///
-/// Each session runs in a container of its own, made by [`Docker`] only from the settings and the session's number,
-/// so nothing a caller asks reaches what a container is made of. At most the settings' number run at once. A session
-/// with no turn and no background task for the idle time is told it is about to be compacted, compacted, and stopped,
-/// and the next line resumes it in a new container on the same home, a named volume of its own. Every line its
+/// A session is a record, and its container only its connection to Claude: while it is awake, it runs in a container
+/// of its own, made by [`Docker`] only from the settings and the session's number, so nothing a caller asks reaches
+/// what a container is made of. At most the settings' number are awake at once. A session with no turn and no
+/// background task for the idle time is told it is about to be compacted, compacted, and its container stopped, so it
+/// hibernates, and the next line wakes it in a new container on the same home, a named volume of its own. Any session,
+/// archived ones among them, reads in full from its transcript with no container. Every line its
 /// container writes and every line written to it is numbered in its transcript, kept with its record in `Files`'
 /// `Save` namespace, which it asks as any actor does and needs listed before it, so a hub that starts again knows its
 /// sessions: it follows Docker's events, lists the containers that carry its label, and adopts each a record names that
@@ -236,7 +241,7 @@ impl Sessions {
         self.handle_new_session(new_session, turn)
     }
 
-    /// A line for a session: written to it in order, a turn running or not; a stopped session is resumed first.
+    /// A line for a session: written to it in order, a turn running or not; a hibernating session is woken first.
     #[request]
     fn say(&mut self, say: Say, turn: &mut Turn<'_, Self>) -> Result<Later<Said>, Fault> {
         self.handle_say(say, turn)
@@ -252,8 +257,12 @@ impl Sessions {
     }
 
     #[request]
-    fn list_sessions(&mut self, list_sessions: ListSessions) -> Result<SessionsListed, Fault> {
-        self.handle_list_sessions(list_sessions)
+    fn list_sessions(
+        &mut self,
+        list_sessions: ListSessions,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<SessionsListed, Fault> {
+        self.handle_list_sessions(list_sessions, turn)
     }
 
     /// The session's running turn interrupted, through the control request Claude Code reads on its stdin.
@@ -262,15 +271,15 @@ impl Sessions {
         self.handle_interrupt(interrupt, turn)
     }
 
-    /// The session archived: its container stopped and removed, its transcript and home kept. Answered once no
-    /// container of it is left.
+    /// The session archived: its container stopped and removed, its transcript and home kept, and it stays held, so it
+    /// reads as any other. Answered once no container of it is left.
     #[request]
     fn archive(&mut self, archive: Archive, turn: &mut Turn<'_, Self>) -> Result<Later<Archived>, Fault> {
         self.handle_archive(archive, turn)
     }
 
     /// A file of the sessions read: the index asks for each session's record and transcript, and once every one is
-    /// answered, the sessions are held as stopped until the containers carrying the hub's label are listed.
+    /// answered, the sessions are held as hibernating until the containers carrying the hub's label are listed.
     #[answer]
     fn file_read(&mut self, answered: (Answered<FileRead>, Loading), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.handle_file_read(answered, turn)
@@ -371,7 +380,7 @@ impl Sessions {
         self.handle_logs_done(answered, turn)
     }
 
-    /// An event of a container carrying the hub's label: a session's that died has ended.
+    /// An event of a container carrying the hub's label: a session's that died has ended, and its container is lost.
     #[tell]
     fn part_watching(&mut self, part: Part<Watching>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.handle_part_watching(part, turn)
@@ -393,7 +402,7 @@ impl Sessions {
         self.handle_wrote(answered, turn)
     }
 
-    /// A trusted engine linked: its sender is watched, and shown every session and each ask that waits at once. A
+    /// A trusted engine linked: its sender is watched, and shown the session list and each ask that waits at once. A
     /// sender that takes nothing an engine is shown is refused by its guard; one that names an engine another actor
     /// joined as, and one joined as another engine already, are each refused here, and nothing joined changes.
     #[tell]
@@ -402,7 +411,7 @@ impl Sessions {
     }
 
     /// What a trusted engine's owner did: taken only from the actor that joined as that engine, and done once the
-    /// capability has found its sessions.
+    /// capability has found its sessions, or declined to it.
     #[tell]
     fn chatted(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.handle_chatted(chatted, turn)
@@ -430,12 +439,13 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Adds `entry` to the transcript of `session`, to be written, and answers its number: 0 for no such session.
-    fn note(&mut self, session: u32, entry: Entry) -> u64 {
+    /// Adds `entry` to the transcript of `session` as `turn`'s step's time, to be written, and answers its number: 0
+    /// for no such session.
+    fn note(&mut self, turn: &Turn<'_, Self>, session: u32, entry: Entry) -> u64 {
         let Some(held) = self.held.get_mut(&session) else {
             return 0;
         };
-        let numbered = held.transcript.add(entry);
+        let numbered = held.transcript.add(entry, turn.now());
         let frames = self.unwritten.entry(session).or_default();
         match numbered.frame() {
             Ok(frame) => frames.extend(frame),

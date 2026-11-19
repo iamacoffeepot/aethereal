@@ -5,8 +5,8 @@
 mod tests;
 
 use crate::{
-    Archive, Archived, Interrupt, Interrupted, ListSessions, ListedSession, NewSession, Numbered, Opened,
-    ReadTranscript, Refusal, Said, Say, Sessions, SessionsListed as Listed, Transcribed,
+    Archive, Archived, Interrupt, Interrupted, ListSessions, NewSession, Numbered, Opened, ReadTranscript, Refusal,
+    Said, Say, SessionRow, Sessions, SessionsListed as Listed, Transcribed,
 };
 use aethereal_actor::{ActorRef, Answered, Anywhere, Fault, Held, ProtocolRef, Reply, Turn, actor, path};
 use aethereal_data::{Bound, Budget, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
@@ -192,26 +192,28 @@ impl Tool for SessionsTools {
                 "Opens a new Claude session in a container of its own on the hub's machine, and answers once it runs: \
                  its number, which every other session tool names it by. The name is only shown. Refused when as many \
                  sessions run as may, naming them.",
-                Output::Value(SchemaNodes::of(&ListedSession::SHAPE)),
+                Output::Value(SchemaNodes::of(&SessionRow::SHAPE)),
             ),
             ToolSheet::of::<Say>(
                 SESSION_SAY,
                 "Says a line to a session, as a user's message. A line said while a turn runs is taken after it, in \
-                 order; a session stopped as idle is resumed. Answers the number of the transcript's entry the line \
-                 is.",
+                 order; a hibernating session is woken. Answers the number of the transcript's entry the line is.",
                 Output::Value(SchemaNodes::of(&Entered::SHAPE)),
             ),
             ToolSheet::of::<ReadTranscript>(
                 SESSION_READ,
                 "Reads a session's transcript after the entry numbered `after`, 0 for the start: every event Claude \
-                 wrote, every line said to it and who said it, and what the hub did with its container. Answers the \
-                 entries and the number of the last; read on after the last entry answered.",
+                 wrote, every line said to it and who said it, and what the hub did with its container. Any session \
+                 reads, hibernating and archived ones too. Answers the entries and the number of the last; read on \
+                 after the last entry answered.",
                 Output::Value(SchemaNodes::of(&Read::SHAPE)),
             ),
             ToolSheet::json::<ListSessions>(
                 SESSION_LIST,
-                "Lists every session: its number, name, state, and its transcript's last entry; how many may run at \
-                 once; and any container carrying the hub's label that the hub has no record of.",
+                "Lists every session: its number, name, its conversation's state, its container's state, when its \
+                 transcript last grew on the hub's clock, and how many of its asks wait; the hub's time as it listed \
+                 them; how many may be awake at once; and any container carrying the hub's label that the hub has no \
+                 record of.",
                 Output::Value(SchemaNodes::of(&Listed::SHAPE)),
             ),
             ToolSheet::of::<Interrupt>(
@@ -303,8 +305,8 @@ fn refusal(why: &Refusal) -> String {
         Refusal::Full { most, running } => {
             format!("at most {most} sessions run at once, and these run: {running:?}")
         }
-        Refusal::NotRunning => String::from("the session's container does not run, so no turn runs"),
-        Refusal::Busy => String::from("the session is starting or stopping: ask again once it is not"),
+        Refusal::NotRunning => String::from("the session has no container, so no turn runs"),
+        Refusal::Busy => String::from("the session's container is starting or stopping: ask again once it is not"),
         Refusal::NoCredential => String::from("the hub could not read the credential's file as KEY=VALUE lines"),
         Refusal::NoBearer => String::from("the hub's randomness drew no bearer for the session's route"),
         Refusal::NoDropBox => String::from("the store could not make the session's drop box"),

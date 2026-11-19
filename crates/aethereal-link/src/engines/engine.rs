@@ -8,7 +8,7 @@ use aethereal_actor::{
     Slept, Streams, Subscribers, Taken, Time, Turn, actor, path,
 };
 use aethereal_data::{Bound, Plain, to_bytes};
-use aethereal_sessions::{Chat, Chatted, Joined, Numbered, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, Chatted, Joined, Numbered, ShowAsk, ShowDeclined, ShowEvents, ShowSessions};
 use aethereal_tcp::{Accepted, HungUp, Read, Reading, Shut, Write, Writing, Wrote};
 use aethereal_tools::Called;
 use core::mem;
@@ -114,9 +114,9 @@ const READING_WINDOW: NonZeroU32 = NonZeroU32::MIN.saturating_add(3);
 /// and tells it [`ChatTo`] where its chat goes, and the engine keeps each place it is told. A trusted engine tells
 /// each that it [`Joined`], as it links or as it is told the place, and tells each chat frame it sends to them as
 /// [`Chatted`], with the engine's id added, so a frame names no engine and none can claim to be another; what the
-/// sessions show it is written down as [`Down::Sessions`], [`Down::Show`], and [`Down::Ask`]. A chat frame from an
-/// engine not trusted, or not yet, or with nowhere to go, is dropped and logged, and nothing of the chat is written to
-/// one not trusted.
+/// sessions show it is written down as [`Down::Sessions`], [`Down::Show`], [`Down::Ask`], and [`Down::Declined`]. A
+/// chat frame from an engine not trusted, or not yet, or with nowhere to go, is dropped and logged, and nothing of the
+/// chat is written to one not trusted.
 #[derive(Bound)]
 #[kind(name = "aether.link.engine")]
 pub struct Engine {
@@ -342,15 +342,15 @@ impl Engine {
         self.shut(turn)
     }
 
-    /// Every session, written down as `Sessions`, to a trusted engine alone.
+    /// Every session, written down as `Sessions` with the hub's time, to a trusted engine alone.
     #[tell]
-    fn show_tabs(&mut self, tabs: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    fn show_sessions(&mut self, shown: ShowSessions, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         if !self.is_trusted() {
             turn.log(Level::Warn, format_args!("the sessions were not shown to engine {}, not trusted", self.id));
             return Ok(());
         }
 
-        self.write_down(turn, &Down::Sessions { list: tabs.tabs })
+        self.write_down(turn, &Down::Sessions { list: shown.list, now: turn.now() })
     }
 
     /// Events of a session's transcript, written down as `Show`, to a trusted engine alone: as many to a frame as fit
@@ -391,6 +391,18 @@ impl Engine {
         let ShowAsk { ask, session, what } = ask;
 
         self.write_down(turn, &Down::Ask { ask, session, what })
+    }
+
+    /// A chat frame of the engine's that the hub could not do, written down as `Declined`, to a trusted engine alone.
+    #[tell]
+    fn show_declined(&mut self, declined: ShowDeclined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        if !self.is_trusted() {
+            turn.log(Level::Warn, format_args!("a decline was not shown to engine {}, not trusted", self.id));
+            return Ok(());
+        }
+        let ShowDeclined { chat, why } = declined;
+
+        self.write_down(turn, &Down::Declined { chat, why })
     }
 
     /// Keeps where its chat goes, and joins there at once when the hub trusts the engine already; a place it keeps

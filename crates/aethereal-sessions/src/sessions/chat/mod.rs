@@ -1,11 +1,13 @@
 //! The chat of trusted engines (ADR-0057): what an engine's owner does, forwarded by the hub's `Engine` for that
-//! engine with its id, and what every trusted engine is shown: every session as a tab, the events of each tab it has
-//! open, the backlog first and then each as it comes, and what waits for the owner's answer.
+//! engine with its id, and what every trusted engine is shown: every session as a row of the list, the events of each
+//! tab it has open, the backlog first and then each as it comes, what waits for the owner's answer, and each of its
+//! own chat frames that could not be done.
 //!
 //! ```text
 //! Up::Say ──> Engine(37) ──> Chatted { engine: 37, chat } ──> Sessions: the line, tagged, into the transcript and stdin
 //! Up::Ran ──> likewise: the command and what it printed, tagged and marked `!`, as a line of its own
-//! Sessions: any change ──> ShowTabs / ShowEvents / ShowAsk ──> each joined Engine ──> Down::Sessions / Show / Ask
+//! Sessions: any change ──> ShowSessions / ShowEvents / ShowAsk ──> each joined Engine ──> Down::Sessions / Show / Ask
+//! a frame refused ──> ShowDeclined, with the refusal the tools would answer ──> its Engine alone ──> Down::Declined
 //! ```
 //!
 //! Only an `Engine` whose engine the hub trusts joins, and the capability takes a frame from an engine only from the
@@ -17,10 +19,12 @@
 mod tests;
 
 use super::Sessions;
-use super::asked::Waiting;
-use super::asks::{Archived, Opened, Said, State};
+use super::asked::{Asker, Waiting};
+use super::asks::{Refusal, Refuses};
+use super::row::SessionRow;
+use super::session::Session;
 use super::transcript::{Entry, Numbered, Speaker};
-use aethereal_actor::{Ended, Fault, Held, Level, ProtocolRef, Speaks, Turn};
+use aethereal_actor::{Ended, Fault, Level, ProtocolRef, Speaks, Turn};
 use aethereal_data::{ActorId, Bound, Plain, write_json_string};
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
@@ -33,23 +37,14 @@ const DENIED: &str = "The owner did not allow it.";
 
 /// What a trusted engine's `Engine` is told to show it, each written down the link as a frame of its own: tells
 /// alone, so the kinds themselves, which the sender of a [`Joined`] is cast to.
-pub type Showing = (ShowTabs, ShowEvents, ShowAsk);
+pub type Showing = (ShowSessions, ShowEvents, ShowAsk, ShowDeclined);
 
-/// Every session, as the tabs a trusted engine lists: sent whole on every change, and as the engine joins.
+/// Every session, as the list a trusted engine is shown: sent whole on every change, and as the engine joins. Each
+/// row's time is on the clock of whoever holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.show_tabs")]
-pub struct ShowTabs {
-    pub tabs: Vec<Tab>,
-}
-
-/// One session as a tab: its number, its name, where it is, and how many of its asks wait for the owner.
-#[derive(Debug, Clone, PartialEq, Eq, Plain)]
-#[kind(name = "aether.sessions.tab")]
-pub struct Tab {
-    pub session: u32,
-    pub name: String,
-    pub state: State,
-    pub asking: u32,
+#[kind(name = "aether.sessions.show_sessions")]
+pub struct ShowSessions {
+    pub list: Vec<SessionRow>,
 }
 
 /// Events of `session`'s transcript, in order, for an engine with its tab open: its backlog first, then each as it
@@ -68,6 +63,15 @@ pub struct ShowAsk {
     pub ask: u64,
     pub session: u32,
     pub what: String,
+}
+
+/// A chat frame of the engine shown it that the hub could not do, and why: the refusal the hub's tools would answer the
+/// same ask. Shown only to the engine that sent it; a frame that is done is answered by nothing but the list.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.show_declined")]
+pub struct ShowDeclined {
+    pub chat: Chat,
+    pub why: Refusal,
 }
 
 /// What a trusted engine's owner did, as its link's frame says it (ADR-0057).
@@ -139,12 +143,12 @@ pub(super) struct Question {
     what: String,
 }
 
-/// What the capability keeps of the chat: each trusted engine joined, by its id, the tabs last shown, and each ask that
-/// waits, by its number.
+/// What the capability keeps of the chat: each trusted engine joined, by its id, the list last shown, and each ask
+/// that waits, by its number.
 #[derive(Bound)]
 pub(super) struct Chats {
     engines: BTreeMap<u32, Watcher>,
-    shown: Vec<Tab>,
+    shown: Vec<SessionRow>,
     questions: BTreeMap<u64, Question>,
     next_ask: u64,
 }
@@ -158,6 +162,13 @@ impl Chats {
     /// Lets go of each ask of `session`'s, whose container is gone, and its process with what it asked.
     pub(super) fn forget(&mut self, session: u32) {
         self.questions.retain(|_, question| question.session != session);
+    }
+
+    /// How many asks of `session`'s wait for the owner.
+    fn asking(&self, session: u32) -> u32 {
+        let waiting = self.questions.values().filter(|question| question.session == session).count();
+
+        u32::try_from(waiting).unwrap_or(u32::MAX)
     }
 
     /// Where the actor `by` stands, joining as `engine`.
@@ -202,7 +213,7 @@ impl Sessions {
                 return Ok(());
             }
         }
-        turn.to(shown).send(&ShowTabs { tabs: self.tabs() })?;
+        turn.to(shown).send(&ShowSessions { list: self.rows() })?;
         for (&ask, question) in &self.chats.questions {
             turn.to(shown).send(&ShowAsk { ask, session: question.session, what: question.what.clone() })?;
         }
@@ -243,31 +254,30 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Does what the owner at `engine` did.
+    /// Does what the owner at `engine` did: a frame that cannot be done is declined to it, with the refusal the hub's
+    /// tools would answer.
     pub(super) fn chat(&mut self, turn: &mut Turn<'_, Self>, engine: u32, chat: Chat) -> Result<(), Fault> {
         let by = Speaker::Engine { engine };
+        let asked = chat.clone();
         match chat {
             Chat::Say { session, text } => {
                 let said = self.say(turn, session, by, text)?;
-                if let Said::Refused(why) = said {
-                    turn.log(Level::Warn, format_args!("engine {engine}'s line to session {session}: {why:?}"));
-                }
+                self.decline(turn, engine, asked, &said)?;
             }
             Chat::Ran { session, line, printed } => {
                 let ran = self.ran(turn, session, engine, line, printed)?;
-                if let Said::Refused(why) = ran {
-                    turn.log(Level::Warn, format_args!("engine {engine}'s command to session {session}: {why:?}"));
-                }
+                self.decline(turn, engine, asked, &ran)?;
             }
             Chat::Answer { ask, allow } => self.answer(turn, engine, ask, allow)?,
             Chat::Interrupt { session } => {
                 let interrupted = self.interrupt(turn, session, by)?;
-                turn.log(Level::Info, format_args!("engine {engine} interrupted session {session}: {interrupted:?}"));
+                self.decline(turn, engine, asked, &interrupted)?;
             }
             Chat::Open { session, after } => {
-                let is_held = self.held.contains_key(&session);
-                let watcher = self.chats.engines.get_mut(&engine);
-                if let (true, Some(watcher)) = (is_held, watcher) {
+                if !self.held.contains_key(&session) {
+                    return self.declined(turn, engine, asked, Refusal::NoSuchSession);
+                }
+                if let Some(watcher) = self.chats.engines.get_mut(&engine) {
                     watcher.tabs.insert(session, after);
                 }
             }
@@ -276,35 +286,63 @@ impl Sessions {
                     watcher.tabs.remove(&session);
                 }
             }
-            Chat::New { name } => self.open(turn, Vec::<Held<Opened>>::new(), name)?,
-            Chat::Archive { session } => self.archive(turn, Vec::<Held<Archived>>::new(), session)?,
+            Chat::New { name } => self.open(turn, Asker::Engine { engine, chat: asked }, name)?,
+            Chat::Archive { session } => self.archive(turn, Asker::Engine { engine, chat: asked }, session)?,
         }
 
         Ok(())
     }
 
-    /// Every session, as its tab.
-    fn tabs(&self) -> Vec<Tab> {
-        let questions = &self.chats.questions;
-        self.held
-            .iter()
-            .map(|(&session, held)| {
-                let waiting = questions.values().filter(|question| question.session == session).count();
-                let asking = u32::try_from(waiting).unwrap_or(u32::MAX);
-                Tab { session, name: held.name.clone(), state: held.state(), asking }
-            })
-            .collect()
+    /// Declines `chat`, a frame of `engine`'s, when `answer` refuses it: nothing when it does not.
+    pub(super) fn decline<A: Refuses>(
+        &self,
+        turn: &mut Turn<'_, Self>,
+        engine: u32,
+        chat: Chat,
+        answer: &A,
+    ) -> Result<(), Fault> {
+        let Some(why) = answer.refusal() else {
+            return Ok(());
+        };
+
+        self.declined(turn, engine, chat, why.clone())
     }
 
-    /// Shows each joined engine what changed: every tab, when any changed, and every event after the last shown of
+    /// Shows `engine`, when it is still joined, that its frame `chat` could not be done, for `why`.
+    fn declined(&self, turn: &mut Turn<'_, Self>, engine: u32, chat: Chat, why: Refusal) -> Result<(), Fault> {
+        turn.log(Level::Info, format_args!("engine {engine}'s {chat:?} was declined: {why:?}"));
+        let Some(watcher) = self.chats.engines.get(&engine) else {
+            return Ok(());
+        };
+        turn.to(watcher.shown).send(&ShowDeclined { chat, why })?;
+
+        Ok(())
+    }
+
+    /// Every session, as its row.
+    pub(super) fn rows(&self) -> Vec<SessionRow> {
+        self.held.iter().map(|(&session, held)| self.row_of(session, held)).collect()
+    }
+
+    /// The row of the session numbered `session`, when it is held.
+    pub(super) fn row(&self, session: u32) -> Option<SessionRow> {
+        self.held.get(&session).map(|held| self.row_of(session, held))
+    }
+
+    /// The row of `held`, numbered `session`, with its asks that wait.
+    fn row_of(&self, session: u32, held: &Session) -> SessionRow {
+        held.row(session, self.chats.asking(session))
+    }
+
+    /// Shows each joined engine what changed: the list, when any row changed, and every event after the last shown of
     /// each tab it has open, a few at a time.
     pub(super) fn show(&mut self, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        let tabs = self.tabs();
-        if tabs != self.chats.shown {
+        let rows = self.rows();
+        if rows != self.chats.shown {
             for watcher in self.chats.engines.values() {
-                turn.to(watcher.shown).send(&ShowTabs { tabs: tabs.clone() })?;
+                turn.to(watcher.shown).send(&ShowSessions { list: rows.clone() })?;
             }
-            self.chats.shown = tabs;
+            self.chats.shown = rows;
         }
         for watcher in self.chats.engines.values_mut() {
             for (session, shown) in &mut watcher.tabs {
@@ -355,7 +393,7 @@ impl Sessions {
             return Ok(());
         };
         let Question { session, request, input, .. } = question;
-        self.note(session, Entry::Answered { ask, allow, by: Speaker::Engine { engine } });
+        self.note(turn, session, Entry::Answered { ask, allow, by: Speaker::Engine { engine } });
 
         self.type_raw(turn, session, control_response(&request, allow, &input))
     }

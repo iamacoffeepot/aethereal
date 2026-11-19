@@ -2,16 +2,17 @@
 //! record and transcript, follows Docker's events for its label, and only then lists the containers carrying it, so
 //! nothing that happens to one falls between the two. It reads only those two facts, what each record says and what
 //! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
-//! removed when it does not, the session left stopped once it is gone; a record whose container is not listed leaves
-//! its session stopped; and each container carrying the label that no record names is reported, never removed. A
-//! list Docker does not answer with its containers fails the capability before anything is noted or written: which
-//! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
+//! removed when it does not, the session left hibernating, its container lost, once it is gone; a record whose
+//! container is not listed leaves its session hibernating, its container lost; and each container carrying the label
+//! that no record names is reported, never removed. A list Docker does not answer with its containers fails the
+//! capability before anything is noted or written: which sessions still run is unknown, and every record is left as it
+//! is for a hub that starts again to list them.
 
 use super::asked::Waiting;
 use super::container;
 use super::record::{Record, Standing};
 use super::saves::{Index, Loading, record, transcript};
-use super::session::{Life, Session};
+use super::session::{Gone, Life, Session};
 use super::transcript::{Ended, Entry, Note, Transcript};
 use super::{Named, Phase, Reconciling, Recorded, Sessions, Unfound};
 use crate::{Docker, Events, List, Listed, Listing, Phase as DockerPhase};
@@ -38,7 +39,7 @@ pub(super) struct Reading {
 
 impl Sessions {
     /// A file of the sessions read: the index asks for each session's record and transcript, and once every one is
-    /// answered, the sessions are held as stopped until the containers carrying the hub's label are listed.
+    /// answered, the sessions are held as hibernating until the containers carrying the hub's label are listed.
     pub(super) fn handle_file_read(
         &mut self,
         (answered, loading): (Answered<FileRead>, Loading),
@@ -135,7 +136,9 @@ impl Sessions {
         self.found(turn, reading, waiting)
     }
 
-    /// Every session `reading` found, each held as stopped until the containers carrying the hub's label are listed.
+    /// Every session `reading` found, each held as hibernating until the containers carrying the hub's label are
+    /// listed: one whose record says it was awake as lost, unless its container is found running and adopted. Each is
+    /// held whatever it stood as, archived ones among them, so any reads in full with no container.
     fn found(&mut self, turn: &mut Turn<'_, Self>, reading: Reading, waiting: Vec<Waiting>) -> Result<(), Fault> {
         let Some(docker) = turn.found(&path::<Docker>(())) else {
             turn.log(Level::Error, "no Docker client is listed before the sessions");
@@ -145,18 +148,19 @@ impl Sessions {
         let mut recorded = Vec::new();
         for (session, record) in records {
             match &record.kept {
-                Standing::Running { container, run } => {
+                Standing::Awake { container, run } => {
                     recorded.push(Recorded { session, container: Named::Made(container.clone()), run: *run });
                 }
                 Standing::Starting { run } => {
                     let name = container::name(&self.settings, session, *run);
                     recorded.push(Recorded { session, container: Named::Starting(name), run: *run });
                 }
-                Standing::Stopped | Standing::Archived => {}
+                Standing::Hibernating | Standing::Archived => {}
             }
             let life = match record.kept {
                 Standing::Archived => Life::Archived,
-                Standing::Running { .. } | Standing::Starting { .. } | Standing::Stopped => Life::Stopped,
+                Standing::Hibernating => Life::Hibernating { gone: Gone::Removed },
+                Standing::Awake { .. } | Standing::Starting { .. } => Life::Hibernating { gone: Gone::Lost },
             };
             let transcript = transcripts.remove(&session).unwrap_or_default();
             let Record { name, conversation, runs, .. } = record;
@@ -210,11 +214,11 @@ impl Sessions {
             match found {
                 Some(Listing { id, phase: DockerPhase::Running, .. }) => self.adopt(turn, session, id.clone(), run)?,
                 Some(Listing { id, .. }) => {
-                    self.note(session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
-                    self.retire(turn, session, id.clone(), run)?;
+                    self.note(turn, session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
+                    self.retire(turn, session, id.clone(), run, Gone::Lost)?;
                 }
                 None => {
-                    self.note(session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
+                    self.note(turn, session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
                 }
             }
         }

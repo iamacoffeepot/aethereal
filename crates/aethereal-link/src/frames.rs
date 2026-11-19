@@ -3,15 +3,17 @@
 use crate::Token;
 use aethereal_actor::{Due, Time, Turn};
 use aethereal_data::{Budget, DecodeError, EncodeError, Plain, from_bytes, to_bytes};
-use aethereal_sessions::{Chat, Numbered, Tab};
+use aethereal_sessions::{Chat, Numbered, SessionRow};
 use aethereal_tools::{Called, ToolSheet};
 use core::time::Duration;
 
 /// The revision of the link this crate speaks. A change to [`Up`] or [`Down`] that an older side would misread is the
 /// next. `2` brought [`Down::Call`]'s `within`, the time a call has left (ADR-0041), which a side of `1` misreads. `3`
 /// brought [`Outcome::Image`] and each sheet's `Output` (ADR-0043), which a side of `2` misreads. `4` brought the chat
-/// frames of trusted engines (ADR-0057), which a side of `3` misreads.
-pub const REVISION: u32 = 4;
+/// frames of trusted engines (ADR-0057), which a side of `3` misreads. `5` brought each session's row, its
+/// conversation's state and its container's apart, with the time it was sent, and [`Down::Declined`] (ADR-0057), which
+/// a side of `4` misreads.
+pub const REVISION: u32 = 5;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;
@@ -126,12 +128,16 @@ pub enum Down {
     /// A call of `tool`, numbered by the hub, with `input` bytes of its input schema in the set of `revision`, the one
     /// the hub converted it with, and the time it has left (ADR-0041).
     Call { call: u64, revision: u64, tool: String, input: Vec<u8>, within: Within },
-    /// Every session's name and state, as tabs: sent whole as a trusted engine links, and on every change (ADR-0057).
-    Sessions { list: Vec<Tab> },
+    /// Every session as a row: sent whole as a trusted engine links, and on every change (ADR-0057). Each row's time is
+    /// on the hub's clock, and `now` is the hub's time as it wrote the frame, so the engine reads each on its own, as
+    /// two engines' clocks are their own.
+    Sessions { list: Vec<SessionRow>, now: Time },
     /// Events of `session`'s transcript, for a tab open: the backlog first, then each as it comes.
     Show { session: u32, events: Vec<Numbered> },
     /// Something in `session` waits for the owner's answer, numbered `ask`, and says `what`.
     Ask { ask: u64, session: u32, what: String },
+    /// A chat frame of this engine's that the hub could not do, and why: the refusal its tools would answer.
+    Declined { chat: Chat, why: aethereal_sessions::Refusal },
 }
 
 /// The time a call has left when the hub writes it (ADR-0041). Two engines' clocks are their own, so a deadline

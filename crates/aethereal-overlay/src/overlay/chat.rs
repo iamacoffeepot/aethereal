@@ -10,7 +10,7 @@ use crate::console::Command;
 use crate::relay::Relays;
 use aethereal_actor::{Fault, Level, ProtocolRef, Speaks, Turn};
 use aethereal_data::{Bound, Plain};
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, ShowAsk, ShowDeclined, ShowEvents, ShowSessions};
 
 /// The most bytes of what a command run in `!` mode printed that are sent to the session: what a tool prints can be
 /// large, and the line it is sent as is read by Claude.
@@ -108,9 +108,9 @@ impl Overlay {
 
     /// The sessions the hub lists, as tabs: the first listing opens the newest, which the link is told, and offers the
     /// chat's words, as only an engine the hub trusts is shown the sessions.
-    pub(super) fn handle_show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+    pub(super) fn handle_show_sessions(&mut self, shown: ShowSessions, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let first = !self.chats.is_listed();
-        let chat = self.chats.listed(shown.tabs);
+        let chat = self.chats.listed(shown.list);
         self.tell(turn, chat)?;
         if first {
             self.offer_words(turn)?;
@@ -133,6 +133,15 @@ impl Overlay {
     pub(super) fn handle_show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         turn.log(Level::Info, format_args!("session {} asks: {}", ask.session, ask.what));
         self.chats.asked(ask);
+
+        Ok(())
+    }
+
+    /// A chat frame of this engine's that the hub could not do: logged, as the console does not print it yet.
+    #[allow(clippy::unnecessary_wraps, reason = "its handler's body, which answers a fault as every handler does")]
+    pub(super) fn handle_show_declined(declined: &ShowDeclined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let ShowDeclined { chat, why } = declined;
+        turn.log(Level::Info, format_args!("the hub declined {chat:?}: {why:?}"));
 
         Ok(())
     }

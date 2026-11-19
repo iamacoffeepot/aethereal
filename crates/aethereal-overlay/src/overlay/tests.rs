@@ -18,7 +18,7 @@ use aethereal_render::shape::ColourFormat;
 use aethereal_render::stats::FrameBudget;
 use aethereal_render::surface::{Front, WindowFormat};
 use aethereal_render::{Gpu, Renderer, RendererConfig};
-use aethereal_sessions::{Entry, Numbered, ShowEvents, ShowTabs, Speaker, State, Tab};
+use aethereal_sessions::{Connection, Entry, Grew, Numbered, SessionRow, ShowEvents, ShowSessions, Speaker, State};
 use aethereal_substrate::harness::{Harness, Unheard, desk};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tools::{Call, Called, Caller, Tool, Tools};
@@ -267,8 +267,8 @@ fn with_a_session_listed_a_line_goes_to_it_and_in_bang_mode_runs_here_and_escape
     }
     let overlay = harness.root::<Overlay>();
     let console_sign = harness.state(overlay)?.sign();
-    let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };
-    harness.tell(overlay, &ShowTabs { tabs: vec![tab] })?;
+    let tab = idle(1, "work");
+    harness.tell(overlay, &ShowSessions { list: vec![tab] })?;
     let reply = Json::parse(
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"A **reply**."}]},"parent_tool_use_id":null}"#,
         &mut Budget::new(1 << 12),
@@ -326,6 +326,13 @@ fn with_a_session_listed_a_line_goes_to_it_and_in_bang_mode_runs_here_and_escape
     Ok(())
 }
 
+/// A session's row, `session`, named `name`, idle in its container.
+fn idle(session: u32, name: &str) -> SessionRow {
+    let name = String::from(name);
+
+    SessionRow { session, name, state: State::Idle, container: Connection::Attached, grew: Grew::Unseen, asking: 0 }
+}
+
 /// The key at `code`, meaning `key`, let up.
 fn up(code: &str, key: &str) -> KeyEvent {
     KeyEvent::KeyUp { code: String::from(code), key: String::from(key) }
@@ -363,8 +370,8 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
 
     entered(&mut harness, on, "new_session work")?;
     let untrusted = unknown(&mut harness)?;
-    let old = Tab { session: 1, name: String::from("old"), state: State::Idle, asking: 0 };
-    harness.tell(overlay, &ShowTabs { tabs: vec![old.clone()] })?;
+    let old = idle(1, "old");
+    harness.tell(overlay, &ShowSessions { list: vec![old.clone()] })?;
     run(&mut harness, 3);
     key(&mut harness, on, down("AltLeft", "Alt"))?;
     key(&mut harness, on, down("Digit1", "1"))?;
@@ -374,8 +381,8 @@ fn the_chat_s_words_are_tools_once_the_hub_lists_the_sessions_and_a_session_made
     let line = String::from(harness.state(overlay)?.console.line());
     entered(&mut harness, on, "new_session work")?;
     let trusted = unknown(&mut harness)?;
-    let made = Tab { session: 2, name: String::from("work"), state: State::Starting, asking: 0 };
-    harness.tell(overlay, &ShowTabs { tabs: vec![old, made] })?;
+    let made = SessionRow { container: Connection::Starting, ..idle(2, "work") };
+    harness.tell(overlay, &ShowSessions { list: vec![old, made] })?;
     run(&mut harness, 3);
 
     assert_eq!(untrusted, 1, "an engine the hub shows no chat has no `new_session`");
@@ -455,8 +462,8 @@ fn the_worker_asks_the_overlay_for_a_session_s_theme_and_refuses_it_the_chat_s_w
     let (mut harness, _) = program()?;
     run(&mut harness, 3);
     let overlay = harness.root::<Overlay>();
-    let tab = Tab { session: 1, name: String::from("work"), state: State::Idle, asking: 0 };
-    harness.tell(overlay, &ShowTabs { tabs: vec![tab] })?;
+    let tab = idle(1, "work");
+    harness.tell(overlay, &ShowSessions { list: vec![tab] })?;
     run(&mut harness, 3);
     let session = Caller::Session { session: 1 };
 

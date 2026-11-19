@@ -9,7 +9,8 @@
 //! Prepare ──> view (`view`): the band's primitives and the console's widgets ──> the library lays out and draws
 //! the backtick, Escape, Tab, Up, Down, Page Up, Page Down ──> Controls::key;  the line's edit and submit ──> events
 //! the line submitted ──> CallTool to the tools root ──> Called ──> printed into the scrollback
-//! a relay's Relays ──> kept;  its ShowTabs, ShowEvents, ShowAsk ──> the chat ──> Chat to the relay (ADR-0057)
+//! a relay's Relays ──> kept;  its ShowSessions, ShowEvents, ShowAsk ──> the chat ──> Chat to the relay (ADR-0057);
+//!   its ShowDeclined ──> logged
 //! begun ──> spawn OverlayTools ──> Offer `mark`, `memory`, `set_theme` with it as their worker
 //! first listed ──> Offer the chat's words with the same worker
 //! the worker's Marked ──> a mark kept;  Choice ──> the palette of the theme named, ThemesShown;
@@ -44,7 +45,7 @@ use aethereal_data::Bound;
 use aethereal_render::frame::Frame;
 use aethereal_render::pass::Interface;
 use aethereal_render::stats::{FrameBudget, FrameStats, GpuTimes};
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs};
+use aethereal_sessions::{Chat, ShowAsk, ShowDeclined, ShowEvents, ShowSessions};
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tools::{Called, Offered, Sheets, Tools};
 use aethereal_ui::{Screen, Target, Viewport};
@@ -223,8 +224,8 @@ impl Overlay {
     }
 
     #[tell]
-    fn show_tabs(&mut self, shown: ShowTabs, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        self.handle_show_tabs(shown, turn)
+    fn show_sessions(&mut self, shown: ShowSessions, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.handle_show_sessions(shown, turn)
     }
 
     #[tell]
@@ -235,6 +236,11 @@ impl Overlay {
     #[tell]
     fn show_ask(&mut self, ask: ShowAsk, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.handle_show_ask(ask, turn)
+    }
+
+    #[tell]
+    fn show_declined(&mut self, declined: ShowDeclined, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        Self::handle_show_declined(&declined, turn)
     }
 
     #[tell]

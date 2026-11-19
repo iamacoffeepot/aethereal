@@ -5,14 +5,15 @@
 //! ```text
 //! an ask waits ──> Waiting, over everything else
 //! a compaction runs, as the hub lists it or its transcript shows it ──> Compacting
-//! the hub's state: Starting ──> Starting;  Working, Waiting ──> Working;  Idle ──> Idle;
-//!                  Stopping, Stopped, Archived ──> Lost when the transcript's last word of its container is that it is
+//! the hub's container state: Starting ──> Starting;  Lost ──> Lost
+//! the hub's state: Working, Waiting ──> Working;  Idle ──> Idle;
+//!                  Hibernating, Archived ──> Lost when the transcript's last word of its container is that it is
 //!                  gone, and Stopped otherwise
 //! ```
 
 use super::read::Container;
 use super::transcript::Compaction;
-use aethereal_sessions::State;
+use aethereal_sessions::{Connection, State};
 
 /// What a session's tab marks it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,11 +35,18 @@ pub enum Status {
 }
 
 impl Status {
-    /// The status of a session the hub lists in `state` with `asking` asks waiting, whose transcript, as the engine
-    /// holds it, shows `compaction` and says last of its container `container`. An ask waiting wins over every other,
-    /// as it is the owner's to answer; then a compaction, which runs as a turn does, whichever of the hub and the
-    /// transcript says so first.
-    pub const fn of(state: State, asking: u32, compaction: Compaction, container: Container) -> Self {
+    /// The status of a session the hub lists in `state`, its container `connection`, with `asking` asks waiting,
+    /// whose transcript, as the engine holds it, shows `compaction` and says last of its container `container`. An ask
+    /// waiting wins over every other, as it is the owner's to answer; then a compaction, which runs as a turn does,
+    /// whichever of the hub and the transcript says so first; then a container starting or lost, which the hub's state
+    /// does not show.
+    pub const fn of(
+        state: State,
+        connection: Connection,
+        asking: u32,
+        compaction: Compaction,
+        container: Container,
+    ) -> Self {
         if asking > 0 {
             return Self::Waiting;
         }
@@ -46,14 +54,15 @@ impl Status {
             return Self::Compacting;
         }
 
-        match (state, container) {
-            (State::Starting, _) => Self::Starting,
-            (State::Working | State::Waiting, _) => Self::Working,
-            (State::Noticed | State::Compacting, _) => Self::Compacting,
-            (State::Idle, _) => Self::Idle,
-            (State::Stopping | State::Stopped | State::Archived, Container::Gone) => Self::Lost,
+        match (state, connection, container) {
+            (_, Connection::Starting, _) => Self::Starting,
+            (_, Connection::Lost, _) | (State::Hibernating | State::Archived, _, Container::Gone) => Self::Lost,
+            (State::Working | State::Waiting, ..) => Self::Working,
+            (State::Compacting, ..) => Self::Compacting,
+            (State::Idle, ..) => Self::Idle,
             (
-                State::Stopping | State::Stopped | State::Archived,
+                State::Hibernating | State::Archived,
+                Connection::None | Connection::Attached,
                 Container::Unsaid | Container::Started | Container::WoundDown,
             ) => Self::Stopped,
         }

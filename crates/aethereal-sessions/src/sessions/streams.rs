@@ -34,7 +34,7 @@ impl Sessions {
                 Entry::Claude(json) => heard::read(json.as_str()),
                 _ => (Heard::Other, None),
             };
-            self.note(session, entry);
+            self.note(turn, session, entry);
             if let Some(id) = conversation {
                 self.named(session, id);
             }
@@ -176,7 +176,7 @@ impl Sessions {
         };
         match heard {
             Heard::Init => match running.activity {
-                Activity::Idle { .. } | Activity::Waiting => {
+                Activity::Idle { .. } | Activity::Tasked => {
                     running.activity.cancel(turn);
                     running.activity = Activity::Working;
                 }
@@ -185,18 +185,18 @@ impl Sessions {
             Heard::Result => match running.activity {
                 Activity::Noticed { .. } => return self.compact(turn, session),
                 Activity::Compacting { .. } => return self.wound_down(turn, session),
-                Activity::Working | Activity::Waiting | Activity::Idle { .. } => return self.settle(turn, session),
+                Activity::Working | Activity::Tasked | Activity::Idle { .. } => return self.settle(turn, session),
             },
             Heard::TaskStarted(task) => {
                 running.tasks.insert(task);
                 if let Activity::Idle { .. } = running.activity {
                     running.activity.cancel(turn);
-                    running.activity = Activity::Waiting;
+                    running.activity = Activity::Tasked;
                 }
             }
             Heard::TaskEnded(task) => {
                 running.tasks.remove(&task);
-                if matches!(running.activity, Activity::Waiting) {
+                if matches!(running.activity, Activity::Tasked) {
                     return self.settle(turn, session);
                 }
             }
@@ -236,10 +236,8 @@ impl Sessions {
             }
         };
         let Ok(part) = turn.put(line.into_bytes()) else {
-            self.note(
-                session,
-                Entry::Hub(Note::Unwritten { why: String::from("the engine had no room for the line") }),
-            );
+            let why = String::from("the engine had no room for the line");
+            self.note(turn, session, Entry::Hub(Note::Unwritten { why }));
             return Ok(());
         };
         turn.to(writing).ask(&Write { parts: vec![part] }, &Typing { session })?;
@@ -258,12 +256,12 @@ impl Sessions {
             Answered::Yes(wrote) => format!("{wrote:?}"),
             Answered::No(why) => format!("{why:?}"),
         };
-        self.note(session, Entry::Hub(Note::Unwritten { why }));
+        self.note(turn, session, Entry::Hub(Note::Unwritten { why }));
 
         self.flush(turn)
     }
 
-    /// An event of a container carrying the hub's label: a session's that died has ended.
+    /// An event of a container carrying the hub's label: a session's that died has ended, and its container is lost.
     pub(super) fn handle_part_watching(
         &mut self,
         part: Part<Watching>,

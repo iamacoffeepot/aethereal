@@ -1,9 +1,9 @@
 //! The sessions capability (ADR-0057): Claude sessions the hub runs in containers of their own.
 //!
-//! Its root is [`Sessions`], which holds the hub's sessions: it runs each in a container made by [`Docker`] only from
-//! its settings and the session's number, writes lines to its stdin, reads its output into a numbered transcript kept
-//! through `Files`, winds down and stops a session that is idle, and resumes it when it is spoken to. The host serves it
-//! one thing of its own, the read of the credential's file ([`Credential`]), beside the host's randomness and the
+//! Its root is [`Sessions`], which holds the hub's sessions: it runs each awake one in a container made by [`Docker`]
+//! only from its settings and the session's number, writes lines to its stdin, reads its output into a numbered
+//! transcript kept through `Files`, winds down a session that is idle, so it hibernates, and wakes it when it is spoken
+//! to. The host serves it one thing of its own, the read of the credential's file ([`Credential`]), beside the host's randomness and the
 //! store's stockroom, which each session's container is readied from: the bearer of its route to the hub's tools,
 //! which it holds and checks each request on the sessions' port against as that port's stack's actor layer
 //! (ADR-0035), and its drop box (ADR-0057). Behind the `tools` feature,
@@ -34,12 +34,12 @@ pub use docker::{
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Conversation, Counted, Credential,
-    Crediting, Ended, Entry, Feed, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted, Joined, Keeping,
-    ListSessions, ListedSession, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned,
-    ReadTranscript, Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, Sessions, SessionsListed,
-    SessionsSettings, ShowAsk, ShowEvents, ShowTabs, Showing, Since, Speaker, Standing, State, TARGET, Tab,
-    Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
+    Act, Acting, Archive, Archived, Asking, Bearer, CARGO, CLAUDE, Chat, Chatted, Connection, Conversation, Counted,
+    Credential, Crediting, Ended, Entry, Feed, Grew, HOME, HUB_LABEL, Heard, Homing, Index, Interrupt, Interrupted,
+    Joined, Keeping, ListSessions, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned,
+    ReadTranscript, Reconciling, Record, Refusal, Resting, SESSION_LABEL, Said, Say, SessionRow, Sessions,
+    SessionsListed, SessionsSettings, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing, Since, Speaker,
+    Standing, State, TARGET, Transcribed, Transcript, Turning, Typing, Unfound, Unlabelled, WindDown,
 };
 #[cfg(feature = "tools")]
 pub use tools::{Asking as ToolsAsking, Entered, Read, SessionsTools, SessionsToolsConfig};

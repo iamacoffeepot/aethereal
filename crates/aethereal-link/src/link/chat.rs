@@ -3,7 +3,8 @@
 //! and written up as its frame.
 //!
 //! ```text
-//! Down::Sessions / Show / Ask ──> kept (the tabs, the asks that wait) ──> ShowTabs / ShowEvents / ShowAsk ──> each listener
+//! Down::Sessions / Show / Ask / Declined ──> kept (the list, the asks that wait)
+//!     ──> ShowSessions, each row's time on this engine's clock / ShowEvents / ShowAsk / ShowDeclined ──> each listener
 //! a listener's Chat ──> Up::Say / Ran / Answer / Interrupt / Open / Close / New / Archive ──> the hub
 //! ```
 //!
@@ -13,14 +14,14 @@
 use super::Link;
 use crate::Up;
 use crate::frames::{self, Written};
-use aethereal_actor::{Ended, Fault, Level, Speaks, Turn};
+use aethereal_actor::{Ended, Fault, Level, Speaks, Time, Turn};
 use aethereal_data::Plain;
-use aethereal_sessions::{Chat, ShowAsk, ShowEvents, ShowTabs, Tab};
+use aethereal_sessions::{Chat, SessionRow, ShowAsk, ShowDeclined, ShowEvents, ShowSessions};
 
 /// What a listener is shown: the kinds of the sessions' `Showing`, which the hub's `Engine` is told.
-pub type Listening = (ShowTabs, ShowEvents, ShowAsk);
+pub type Listening = (ShowSessions, ShowEvents, ShowAsk, ShowDeclined);
 
-/// Asks the link to show this actor the chat its hub shows the engine: the tabs and the asks that wait as they stand,
+/// Asks the link to show this actor the chat its hub shows the engine: the list and the asks that wait as they stand,
 /// and from then each change and each event of a tab the engine has open. The sender must handle each kind of
 /// [`Listening`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
@@ -32,20 +33,21 @@ pub struct Listen;
 pub(super) enum Shown {
     /// Nothing: the hub has not shown the sessions, as it never does to an untrusted engine.
     Nothing,
-    /// The sessions as the hub last listed them, and the asks it showed that wait still.
-    Sessions { tabs: Vec<Tab>, asks: Vec<ShowAsk> },
+    /// The sessions as the hub last listed them, each row's time on this engine's clock, and the asks it showed that
+    /// wait still.
+    Sessions { list: Vec<SessionRow>, asks: Vec<ShowAsk> },
 }
 
 impl Shown {
-    /// The tabs the hub listed: every ask of a session that no longer waits on any is let go, as an ask answered at
+    /// The list the hub sent: every ask of a session that no longer waits on any is let go, as an ask answered at
     /// another engine is shown here only by its session's count.
-    fn listed(&mut self, listed: &[Tab]) {
-        let waiting = |ask: &&ShowAsk| listed.iter().any(|tab| tab.session == ask.session && tab.asking > 0);
+    fn listed(&mut self, listed: &[SessionRow]) {
+        let waiting = |ask: &&ShowAsk| listed.iter().any(|row| row.session == ask.session && row.asking > 0);
         let asks = match self {
             Self::Nothing => Vec::new(),
             Self::Sessions { asks, .. } => asks.iter().filter(waiting).cloned().collect(),
         };
-        *self = Self::Sessions { tabs: listed.to_vec(), asks };
+        *self = Self::Sessions { list: listed.to_vec(), asks };
     }
 
     /// An ask the hub showed: kept until its session waits on none.
@@ -57,12 +59,31 @@ impl Shown {
 }
 
 impl Link {
-    /// The sessions the hub listed, kept and shown to each listener.
-    pub(super) fn tabs(&mut self, turn: &mut Turn<'_, Self>, tabs: Vec<Tab>) -> Result<(), Fault> {
-        self.shown.listed(&tabs);
-        let shown = ShowTabs { tabs };
+    /// The sessions the hub listed as it stood at `sent`, its time, each row's time read on this engine's clock, kept
+    /// and shown to each listener.
+    pub(super) fn sessions(
+        &mut self,
+        turn: &mut Turn<'_, Self>,
+        list: Vec<SessionRow>,
+        sent: Time,
+    ) -> Result<(), Fault> {
+        let now = turn.now();
+        let list: Vec<SessionRow> =
+            list.into_iter().map(|row| SessionRow { grew: row.grew.rebased(sent, now), ..row }).collect();
+        self.shown.listed(&list);
+        let shown = ShowSessions { list };
         for listener in self.listeners.references() {
             turn.to(*listener).send(&shown)?;
+        }
+
+        Ok(())
+    }
+
+    /// A chat frame of this engine's that the hub could not do, shown to each listener: it is not kept, as it is about
+    /// a frame already sent.
+    pub(super) fn declined(&self, turn: &mut Turn<'_, Self>, declined: &ShowDeclined) -> Result<(), Fault> {
+        for listener in self.listeners.references() {
+            turn.to(*listener).send(declined)?;
         }
 
         Ok(())
@@ -87,7 +108,7 @@ impl Link {
         Ok(())
     }
 
-    /// Adds the sender, and shows it the tabs and the asks that wait as they stand: nothing, when it listens already or
+    /// Adds the sender, and shows it the list and the asks that wait as they stand: nothing, when it listens already or
     /// the hub has shown nothing.
     pub(super) fn handle_listen(
         &mut self,
@@ -96,13 +117,13 @@ impl Link {
     ) -> Result<(), Fault> {
         let listener = *turn.from();
         let added = self.listeners.subscribe(turn, listener);
-        let Shown::Sessions { tabs, asks } = &self.shown else {
+        let Shown::Sessions { list, asks } = &self.shown else {
             return Ok(());
         };
         if !added {
             return Ok(());
         }
-        turn.to(listener).send(&ShowTabs { tabs: tabs.clone() })?;
+        turn.to(listener).send(&ShowSessions { list: list.clone() })?;
         for ask in asks {
             turn.to(listener).send(ask)?;
         }

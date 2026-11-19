@@ -1,13 +1,14 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
 //! credential read, made from the settings, started, attached and followed, and stopped and removed once it is idle,
-//! archived, or has ended.
+//! archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
+//! lost, and shows so until it wakes.
 
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
 use super::credential::{Crediting, Provisioned};
 use super::output::Reading;
 use super::record::Conversation;
-use super::session::{Activity, Flow, Life, Running, Stdin, Step, Then};
+use super::session::{Activity, Flow, Gone, Life, Running, Stdin, Step, Then};
 use super::streams::user_line;
 use super::transcript::{Counted, Ended, Entry, Note, Turning};
 use super::{Act, Acting, Asking, Feed, Sessions};
@@ -41,9 +42,9 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let lines = match mem::replace(&mut held.life, Life::Stopped) {
+        let lines = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
             Life::Starting { lines, .. } => lines,
-            Life::Running(_) | Life::Stopping { .. } | Life::Stopped | Life::Archived => Vec::new(),
+            Life::Running(_) | Life::Stopping { .. } | Life::Hibernating { .. } | Life::Archived => Vec::new(),
         };
         let feed = Feed { session, run };
         let attach = self.attaching.open(turn, docker.protocol(), Attach { container: container.clone() }, feed)?;
@@ -85,7 +86,7 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Running(running) = mem::replace(&mut held.life, Life::Stopped) else {
+        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) else {
             return Ok(());
         };
         let Running { container, run, activity, .. } = *running;
@@ -93,13 +94,14 @@ impl Sessions {
         let stop = Stop { container: container.clone(), grace_secs };
         turn.to(path::<crate::Docker>(())).within(due).ask(&stop, &Acting { session, run, act: Act::Stop })?;
         held.life = Life::Stopping { container, run, then };
-        self.note(session, Entry::Hub(Note::Stopped { run, why }));
+        self.note(turn, session, Entry::Hub(Note::Stopped { run, why }));
 
         Ok(())
     }
 
-    /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session
-    /// stopped, to be resumed. Nothing is done when the session's container is not that run's, or is being stopped.
+    /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
+    /// hibernating, its container lost. Nothing is done when the session's container is not that run's, or is being
+    /// stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
@@ -108,26 +110,29 @@ impl Sessions {
         if !is_current {
             return Ok(());
         }
-        let Life::Running(running) = mem::replace(&mut held.life, Life::Stopped) else {
+        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Lost }) else {
             return Ok(());
         };
         running.activity.cancel(turn);
-        self.note(session, Entry::Hub(Note::Stopped { run, why }));
+        self.note(turn, session, Entry::Hub(Note::Stopped { run, why }));
 
-        self.retire(turn, session, running.container, run)
+        self.retire(turn, session, running.container, run, Gone::Lost)
     }
 
     /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has
-    /// removed it, so its record names the container until it is gone, and is then left stopped, to be resumed.
+    /// removed it, so its record names the container until it is gone, and is then left hibernating, its container
+    /// gone as `gone` says.
     pub(super) fn retire(
         &mut self,
         turn: &mut Turn<'_, Self>,
         session: u32,
         container: ContainerId,
         run: u32,
+        gone: Gone,
     ) -> Result<(), Fault> {
         if let Some(held) = self.held.get_mut(&session) {
-            held.life = Life::Stopping { container: container.clone(), run, then: Then::Rest { lines: Vec::new() } };
+            let then = Then::Rest { lines: Vec::new(), gone };
+            held.life = Life::Stopping { container: container.clone(), run, then };
         }
 
         self.remove(turn, session, container, run)
@@ -147,7 +152,7 @@ impl Sessions {
             return Ok(());
         };
         if held.transcript.counted() != Counted::Run(run) {
-            self.note_started(session, run);
+            self.note_started(turn, session, run);
         }
 
         self.resume(turn, session, container, run)
@@ -155,12 +160,12 @@ impl Sessions {
 
     /// Notes in `session`'s transcript that its container of `run` started, carrying on Claude's conversation when it
     /// has one.
-    fn note_started(&mut self, session: u32, run: u32) {
+    fn note_started(&mut self, turn: &Turn<'_, Self>, session: u32, run: u32) {
         let Some(held) = self.held.get(&session) else {
             return;
         };
         let resumed = held.resumes();
-        self.note(session, Entry::Hub(Note::Started { run, resumed }));
+        self.note(turn, session, Entry::Hub(Note::Started { run, resumed }));
     }
 
     /// Asks Docker to remove `container`, of `session`'s run `run`.
@@ -179,8 +184,8 @@ impl Sessions {
         Ok(())
     }
 
-    /// The start of `session`'s run `run` failed, as `why` says: the session is stopped, and each who waits on it
-    /// answered.
+    /// The start of `session`'s run `run` failed, as `why` says: the session hibernates, and each who waits on it is
+    /// answered, or declined.
     pub(super) fn unstarted(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -191,13 +196,15 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Starting { opening, .. } = mem::replace(&mut held.life, Life::Stopped) else {
+        let Life::Starting { opening, .. } = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
+        else {
             return Ok(());
         };
+        let refused = Opened::Refused(why.clone());
         for waiting in opening {
-            turn.answer(waiting, &Opened::Refused(why.clone()))?;
+            self.reply(turn, waiting, &refused)?;
         }
-        self.note(session, Entry::Hub(Note::Unstarted { run, why: format!("{why:?}") }));
+        self.note(turn, session, Entry::Hub(Note::Unstarted { run, why: format!("{why:?}") }));
 
         Ok(())
     }
@@ -311,20 +318,20 @@ impl Sessions {
         let container = container.clone();
         if let Acted::Failed(why) = acted {
             self.unstarted(turn, session, run, &Refusal::Docker(why))?;
-            return self.retire(turn, session, container, run);
+            return self.retire(turn, session, container, run, Gone::Removed);
         }
-        self.note_started(session, run);
+        self.note_started(turn, session, run);
         let opening = match self.held.get_mut(&session).map(|held| &mut held.life) {
             Some(Life::Starting { opening, .. }) => mem::take(opening),
             _ => Vec::new(),
         };
         self.resume(turn, session, container, run)?;
-        let Some(held) = self.held.get(&session) else {
+        let Some(row) = self.row(session) else {
             return Ok(());
         };
-        let listed = held.listed(session);
+        let open = Opened::Open(row);
         for waiting in opening {
-            turn.answer(waiting, &Opened::Open(listed.clone()))?;
+            self.reply(turn, waiting, &open)?;
         }
 
         Ok(())
@@ -348,8 +355,9 @@ impl Sessions {
         self.remove(turn, session, container.clone(), run)
     }
 
-    /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said, and
-    /// its bearer is let go of, so nothing calls the hub's tools as the session until its next container.
+    /// Docker removed the container of `session`'s run `run`, or did not: the session is left as its stop said,
+    /// hibernating or archived, and its bearer is let go of, so nothing calls the hub's tools as the session until its
+    /// next container.
     fn removed(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, acted: Acted) -> Result<(), Fault> {
         let gone = match acted {
             Acted::Done | Acted::Unchanged | Acted::Failed(DockerError::NotFound { .. }) => Ok(()),
@@ -365,14 +373,18 @@ impl Sessions {
         if !is_stopping {
             return Ok(());
         }
-        let Life::Stopping { then, .. } = mem::replace(&mut held.life, Life::Stopped) else {
+        let Life::Stopping { then, .. } = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
+        else {
             return Ok(());
         };
         self.bearers.dismiss(session);
         self.chats.forget(session);
         self.dirty(session);
         match then {
-            Then::Rest { lines } => {
+            Then::Rest { lines, gone: rested } => {
+                if let Some(held) = self.held.get_mut(&session) {
+                    held.life = Life::Hibernating { gone: rested };
+                }
                 if !lines.is_empty() {
                     self.restart(session, lines);
                 }
@@ -388,7 +400,7 @@ impl Sessions {
                     Err(why) => Archived::Refused(Refusal::Docker(why)),
                 };
                 for waiting in archiving {
-                    turn.answer(waiting, &archived)?;
+                    self.reply(turn, waiting, &archived)?;
                 }
             }
         }
@@ -396,7 +408,7 @@ impl Sessions {
         Ok(())
     }
 
-    /// Resumes `session`, which is stopped, in a new container, writing `lines` to it once it is attached.
+    /// Wakes `session`, which hibernates, in a new container, writing `lines` to it once it is attached.
     pub(super) fn restart(&mut self, session: u32, lines: Vec<String>) {
         let Some(held) = self.held.get_mut(&session) else {
             return;
@@ -486,7 +498,7 @@ impl Activity {
             | Self::Compacting { deadline: job, .. } => {
                 turn.cancel(*job);
             }
-            Self::Working | Self::Waiting => {}
+            Self::Working | Self::Tasked => {}
         }
     }
 }
