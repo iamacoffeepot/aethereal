@@ -1,5 +1,5 @@
-//! What the engine keeps beside an asker while its requests wait for their answers, and how it hands an answer back
-//! with what the asker kept (ADR-0017).
+//! What the engine keeps beside an asker while its requests and jobs wait for their answers, and how it hands an
+//! answer back with what the asker kept (ADR-0017, ADR-0018).
 
 #[cfg(test)]
 mod tests;
@@ -9,11 +9,11 @@ mod unreadable;
 use super::REQUESTS_KEPT;
 use super::due::Expiring;
 use crate::room::trim_table;
-use aethereal_actor::{Asked, Asking, Due, Fault, Item, Mail, Seated, Tie, Tied, Unanswered};
+use aethereal_actor::{Asked, Asking, Awaited, Due, Fault, Item, JobId, Mail, MailId, Seated, Tie, Tied, Unanswered};
 use rustc_hash::FxHashMap;
 
-/// The contexts an actor's requests keep until they are answered, beside it in its seat, under each request's count
-/// (ADR-0017). Dropped with the actor.
+/// The contexts an actor's requests and jobs keep until they are answered, beside it in its seat, under each one's
+/// count (ADR-0017, ADR-0018). Dropped with the actor, once the host is asked to stop each of its jobs.
 ///
 /// Most actors never ask, and every actor's seat holds one, so one that has never asked holds no more than a
 /// pointer's width.
@@ -32,9 +32,9 @@ enum Asks {
     Waits(Box<Filed>),
 }
 
-/// The requests an actor that has asked waits on now, each with its context, under its count: so an answer finds its
-/// context without a walk over the others, however many the actor waits on.
-type Filed = FxHashMap<u64, Asking>;
+/// The requests and jobs an actor that has asked waits on now, each with its context, under its count: so an answer
+/// finds its context without a walk over the others, however many the actor waits on.
+type Filed = FxHashMap<u64, Awaited>;
 
 /// What an item is to the asker it is handed to.
 #[derive(Clone, Copy)]
@@ -85,7 +85,7 @@ impl Waiting {
     }
 
     /// What the new actor `me` waits on: the requests its `begin` asked, each with a deadline added to `expiring`.
-    pub(super) fn of_begin(me: Seated, asks: impl Iterator<Item = Asking>, expiring: &mut Vec<Expiring>) -> Self {
+    pub(super) fn of_begin(me: Seated, asks: impl Iterator<Item = Awaited>, expiring: &mut Vec<Expiring>) -> Self {
         let mut waiting = Self::default();
         waiting.file(me, asks, expiring);
 
@@ -116,7 +116,7 @@ impl Waiting {
     /// Kept out of line: every actor's birth calls it, through [`Self::of_begin`], and most file nothing. Inlined there,
     /// the map's insert made a spawn dearer, by about 3 percent of a piece of mail in `churn`, measured.
     #[inline(never)]
-    pub(super) fn file(&mut self, me: Seated, asks: impl Iterator<Item = Asking>, expiring: &mut Vec<Expiring>) {
+    pub(super) fn file(&mut self, me: Seated, asks: impl Iterator<Item = Awaited>, expiring: &mut Vec<Expiring>) {
         let mut asks = asks.peekable();
         // Most turns ask nothing.
         if asks.peek().is_none() {
@@ -126,11 +126,12 @@ impl Waiting {
             self.asks = Asks::Waits(Box::default());
         }
         if let Asks::Waits(filed) = &mut self.asks {
-            for asking in asks {
+            for awaited in asks {
+                let asking = awaited.asking();
                 if let Due::Before(at) = asking.due {
                     expiring.push(Expiring::at(at, me, asking.count));
                 }
-                filed.insert(asking.count, asking);
+                filed.insert(asking.count, awaited);
             }
         }
     }
@@ -143,11 +144,11 @@ impl Waiting {
         let Asks::Waits(filed) = &mut self.asks else {
             return false;
         };
-        let Some(mut asking) = filed.remove(&count) else {
+        let Some(mut awaited) = filed.remove(&count) else {
             return false;
         };
-        asking.count = notice;
-        filed.insert(notice, asking);
+        awaited.asking_mut().count = notice;
+        filed.insert(notice, awaited);
 
         true
     }
@@ -159,7 +160,28 @@ impl Waiting {
             return None;
         };
 
-        filed.get(&count).map(|asking| asking.answer)
+        filed.get(&count).map(|awaited| awaited.asking().answer)
+    }
+
+    /// Adds to `cancelled` each job the actor `me` still waits on as it ends, so the host is asked to stop each it was
+    /// handed and the engine drops each still waiting: no turn of the actor is handed their answers, and a job that
+    /// never finishes on its own would otherwise hold what it was lent and given (ADR-0018). One its closing turn
+    /// cancelled, already there, is not added again.
+    pub(super) fn cancel_jobs(&self, me: Seated, cancelled: &mut Vec<JobId>) {
+        let Asks::Waits(filed) = &self.asks else {
+            return;
+        };
+        let closing = cancelled.len();
+        for awaited in filed.values() {
+            let Awaited::Job(asking) = awaited else {
+                continue;
+            };
+            let job = JobId::new(MailId { sender: me.id, count: asking.count });
+            // Most closing turns cancel none, so the walk over what they did is short.
+            if !cancelled[..closing].contains(&job) {
+                cancelled.push(job);
+            }
+        }
     }
 
     /// What mail tied as `tie` is to the actor: when it is an answer, the context it kept for the request it answers,
@@ -185,9 +207,10 @@ impl Waiting {
         let Asks::Waits(filed) = &self.asks else {
             return Answering::Stray;
         };
-        let Some(asking) = filed.get(&count) else {
+        let Some(awaited) = filed.get(&count) else {
             return Answering::Stray;
         };
+        let asking = awaited.asking();
         if is_answer {
             Answering::Kept(asking)
         } else {

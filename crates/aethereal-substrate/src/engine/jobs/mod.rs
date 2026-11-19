@@ -32,8 +32,8 @@ pub trait Jobs: Send + Sync {
     /// keeps the rest waiting, in the order they were run, and hands each out as one in flight finishes.
     fn most(&self) -> usize;
 
-    /// Stops the job `id`, if it can, once the actor that ran it has cancelled it: best effort, as a job may have
-    /// finished, or be past where it can be stopped. Whatever it pushes of the job after is dropped. A job it has
+    /// Stops the job `id`, if it can, once the actor that ran it has cancelled it or ended: best effort, as a job may
+    /// have finished, or be past where it can be stopped. Whatever it pushes of the job after is dropped. A job it has
     /// finished, or never started, it does nothing for.
     fn stop(&self, id: JobId);
 }
@@ -277,10 +277,10 @@ impl Engine {
         }
     }
 
-    /// Stops the job `job` an actor cancelled: one still waiting is dropped, never handed out, the buffers it was lent
-    /// go back to its actor (ADR-0042), and each resource it was given is dropped, as its actor's log records
-    /// (ADR-0018); the host is asked to stop one it was handed, whose buffers and resources go with it. The engine stops
-    /// jobs as it takes in a step, with every part in it.
+    /// Stops the job `job` an actor cancelled, or still waited on as it ended: one still waiting is dropped, never
+    /// handed out, the buffers it was lent go back to its actor (ADR-0042), and each resource it was given is dropped,
+    /// as its actor's log records (ADR-0018); the host is asked to stop one it was handed, whose buffers and resources
+    /// go with it. The engine stops jobs as it takes in a step, with every part in it.
     pub(super) fn stop_job(&mut self, job: JobId) {
         let waiting = self.waiting_jobs.iter().position(|waiting| waiting.id() == job);
         match (waiting, &self.runner) {

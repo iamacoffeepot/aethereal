@@ -139,6 +139,34 @@ pub struct Asking {
     pub due: Due,
 }
 
+/// What an asker waits on, as the engine files it beside the asker: a request it asked, or a job it ran, with what it
+/// keeps of it until it is answered (ADR-0017, ADR-0018).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awaited {
+    /// A request, which its receiver answers, or the engine for it.
+    Request(Asking),
+    /// A job, which the host that runs it answers, and which the engine asks that host to stop once the asker cancels
+    /// it or ends.
+    Job(Asking),
+}
+
+impl Awaited {
+    /// What the asker keeps of it.
+    #[must_use]
+    pub const fn asking(&self) -> &Asking {
+        match self {
+            Self::Request(asking) | Self::Job(asking) => asking,
+        }
+    }
+
+    /// What the asker keeps of it, to change.
+    pub const fn asking_mut(&mut self) -> &mut Asking {
+        match self {
+            Self::Request(asking) | Self::Job(asking) => asking,
+        }
+    }
+}
+
 /// What a turn asks a request of kind `K` of, keeping a context of kind `C`: a reference to a named protocol, or a
 /// typed path or a reference to a type, whose type says what it answers (ADR-0017, ADR-0022).
 ///

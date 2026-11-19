@@ -5,7 +5,8 @@ use super::super::*;
 use super::*;
 use crate::harness::Jobbed;
 use aethereal_actor::{
-    Answered, Bytes, Given, Job, JobType, NotHeld, Resource, Runner, Running, Services, Time, Turn, Unanswered, path,
+    Answered, Bytes, Given, Held, Job, JobType, Later, NotHeld, Resource, Runner, Running, Services, Time, Turn,
+    Unanswered, path,
 };
 use aethereal_actor::{Entry, actor};
 use aethereal_data::{Bound, Plain};
@@ -301,6 +302,16 @@ struct Which {
     at: u64,
 }
 
+/// A request a worker asks a [`Mute`] child, which holds it and never answers.
+#[derive(Plain)]
+#[kind(name = "aether.test.wait")]
+struct Wait;
+
+/// What a [`Wait`] would be answered with.
+#[derive(Plain)]
+#[kind(name = "aether.test.waited")]
+struct Waited;
+
 /// What a job's asker keeps to give up on another job: the job it gives up on.
 #[derive(Bound)]
 #[kind(name = "aether.test.give_up")]
@@ -329,6 +340,8 @@ enum What {
     Shrink,
     /// Puts a blob and runs a [`Shrink`] of it past any budget.
     ShrinkBig,
+    /// Spawns a [`Mute`] child and asks it a [`Wait`].
+    Ask,
     /// Closes the worker.
     Close,
     /// Cancels each job it kept.
@@ -390,7 +403,7 @@ struct Worker {
     refused: Vec<bool>,
 }
 
-#[actor(spawns(Failing, Newborn))]
+#[actor(spawns(Failing, Newborn, Mute))]
 impl Worker {
     fn begin(_: Which, turn: &mut Beginning<'_, Self>) -> Result<Self, Fault> {
         let id = turn.run(&Double { n: 1 }, &Which { at: 0 })?;
@@ -449,6 +462,13 @@ impl Worker {
                 };
                 turn.run(&Shrink { blob, big: go.what == What::ShrinkBig }, &which)?
             }
+            What::Ask => {
+                let Ok(mute) = turn.spawn::<Mute>(&(), which) else {
+                    return Err(Fault::of_parts(KindId::of::<Mute>(), Vec::new()));
+                };
+                turn.to(mute).ask(&Wait, &Which { at: go.at })?;
+                return Ok(());
+            }
             What::Close => {
                 turn.close();
                 return Ok(());
@@ -499,6 +519,11 @@ impl Worker {
         };
         self.ran.push((go.at, id.mail().count));
 
+        Ok(())
+    }
+
+    #[answer]
+    fn waited(&mut self, _: (Answered<Waited>, Which)) -> Result<(), Fault> {
         Ok(())
     }
 
@@ -613,6 +638,28 @@ impl Newborn {
         self.done.push((which.at, done));
 
         Ok(())
+    }
+}
+
+/// A child that holds each [`Wait`] it is asked, and never answers it.
+#[derive(Bound)]
+#[kind(name = "aether.test.mute_child")]
+struct Mute {
+    held: Vec<Held<Waited>>,
+}
+
+#[actor(parent = Worker)]
+impl Mute {
+    fn begin(_: Which) -> Result<Self, Fault> {
+        Ok(Self { held: Vec::new() })
+    }
+
+    #[request]
+    fn wait(&mut self, _: Wait, turn: &mut Turn<'_, Self>) -> Result<Later<Waited>, Fault> {
+        let (held, later) = turn.hold();
+        self.held.push(held);
+
+        Ok(later)
     }
 }
 
@@ -919,6 +966,29 @@ fn a_cancelled_job_is_never_answered_and_its_host_is_asked_to_stop() {
 }
 
 #[test]
+fn an_actor_that_ends_has_its_host_stop_each_job_it_still_waits_on() {
+    // Catches the jobs an actor waits on as it ends left running on its host: their contexts go with the actor, so no
+    // turn is handed their answers, but a job that never finishes on its own, a read of a peer gone silent, would hold
+    // what it was lent and given for as long as the process runs. Catches too a request the actor waits on taken for a
+    // job, and a job already answered asked to stop. The worker holds a job its host keeps and a request its child
+    // holds, its `begin`'s job answered, then closes.
+    let holding = Arc::new(Holding::new());
+    let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
+    poke(&mut engine, 1, What::Hold);
+    poke(&mut engine, 2, What::Ask);
+    engine.bring();
+    settle(&mut engine);
+    assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2)], "the request takes the count 3");
+    assert_eq!(done(&engine, seated), [doubled(0, 2)]);
+    let _ = jobbed(&mut engine);
+
+    poke(&mut engine, 3, What::Close);
+
+    assert!(!engine.table().is_live(seated.id), "the worker closed");
+    assert_eq!(jobbed(&mut engine).1, [2], "the job held alone");
+}
+
+#[test]
 fn a_job_that_finished_before_it_was_cancelled_is_never_answered() {
     // Catches a cancelled job's context kept when its answer was already on the engine's feed as the cancel came: the
     // answer, brought after, would run a turn of the actor that gave up on it.
@@ -956,16 +1026,20 @@ fn a_job_a_child_runs_as_it_begins_is_answered_to_that_child() {
 
 #[test]
 fn a_turn_that_fails_cancels_nothing() {
-    // Catches the cancels of a failed turn sent to the host, as the mail of one is never sent.
+    // Catches the cancels of a failed turn sent to the host, as the mail of one is never sent. The turn that fails
+    // ends the worker, whose ending stops the job it still waits on, so the host is asked to stop it once: a second
+    // time is the failed turn's cancel.
     let holding = Arc::new(Holding::new());
     let (mut engine, seated) = engine(Arc::clone(&holding) as Arc<dyn Jobs>);
     poke(&mut engine, 1, What::Hold);
+    engine.bring();
+    settle(&mut engine);
     // The turn that fails ends the worker, so what it ran is read before.
     assert_eq!(worker(&engine, seated).ran, [(0, 1), (1, 2)]);
     poke(&mut engine, 2, What::LetGoAndFail);
 
     assert!(!engine.table().is_live(seated.id), "the turn failed");
-    assert_eq!(jobbed(&mut engine).1, Vec::<u64>::new());
+    assert_eq!(jobbed(&mut engine).1, [2], "the job held, by its worker's ending alone");
 }
 
 #[test]
@@ -1128,6 +1202,8 @@ fn past_the_jobs_its_host_lets_be_in_flight_a_job_waits_in_order_until_one_finis
 fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
     // Catches a job cancelled while it waits handed out later, or the host asked to stop one it was never handed, and
     // the waiting job of an actor that has ended handed out, to be answered to no one. The host lets one be in flight.
+    // The worker that ends waits on its `begin`'s job too, finished and not yet brought, which its host is asked to
+    // stop as well: a host stops nothing of a job it has finished.
     let mut handed = Vec::new();
     for end in [What::LetGo, What::Close] {
         let holding = Arc::new(Holding { most: 1, ..Holding::new() });
@@ -1140,11 +1216,12 @@ fn a_waiting_job_cancelled_or_of_an_actor_that_ended_is_never_handed_out() {
         holding.let_go();
         engine.bring();
         settle(&mut engine);
-        let (started, stopped) = jobbed(&mut engine);
+        let (started, mut stopped) = jobbed(&mut engine);
+        stopped.sort_unstable();
         handed.push((counts(&started), stopped));
     }
 
-    let expected = [(vec![2], vec![2]), (vec![2], Vec::new())];
+    let expected = [(vec![2], vec![2]), (vec![2], vec![1, 2])];
     assert_eq!(handed, expected, "the first is stopped, and the second never handed out");
 }
 

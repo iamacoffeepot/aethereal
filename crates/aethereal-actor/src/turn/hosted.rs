@@ -4,9 +4,10 @@ use super::{Closing, Owing, Replying, Seat, Stood, Turning, Why};
 use crate::records::Staging;
 use crate::resource::{Reach, Resources};
 use crate::{
-    Above, Asked, Asking, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift, Giver,
-    Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload, Puts, Runs,
-    SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry, take_claimed,
+    Above, Asked, Asking, Awaited, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift,
+    Giver, Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
+    Puts, Runs, SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry,
+    take_claimed,
 };
 use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
@@ -403,7 +404,7 @@ impl<'a> Hosted<'a> {
         if !asks {
             return Err(FalseSend);
         }
-        self.seat.asked.asks.push((by, Asking { count, answer, context, lent: Vec::new(), due }));
+        self.seat.asked.asks.push((by, Awaited::Request(Asking { count, answer, context, lent: Vec::new(), due })));
 
         Ok(Tie::asks(count))
     }
@@ -487,7 +488,7 @@ impl<'a> Hosted<'a> {
         let given = Vec::new();
         self.seat.asked.buffers.jobs.push(Submitted { by, count, code, answer, bytes, refers, buffers, given });
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
-        self.seat.asked.asks.push((by, Asking { count, answer, context, lent, due: Due::Never }));
+        self.seat.asked.asks.push((by, Awaited::Job(Asking { count, answer, context, lent, due: Due::Never })));
 
         Ok(())
     }

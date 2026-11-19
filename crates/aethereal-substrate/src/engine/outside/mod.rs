@@ -4,9 +4,9 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actors, Asking, Chain, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed, Owed,
-    PinSource, Pinning, Preparing, Refused, Runs, Seated, SenderType, StateSchema, Tie, Tied, Turning, Unanswered,
-    Upgrade, Upgraded, Why, Written, actor,
+    Actors, Asking, Awaited, Chain, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId, Mailed,
+    Owed, PinSource, Pinning, Preparing, Refused, Runs, Seated, SenderType, StateSchema, Tie, Tied, Turning,
+    Unanswered, Upgrade, Upgraded, Why, Written, actor,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
@@ -435,7 +435,7 @@ impl Engine {
         let part = self.part(by.seat);
         if let Some(held) = self.actors[part].get_mut(by) {
             let asking = Asking { count, answer, context: Written::default(), lent: Vec::new(), due: Due::Never };
-            held.waiting.file(by, iter::once(asking), &mut Vec::new());
+            held.waiting.file(by, iter::once(Awaited::Request(asking)), &mut Vec::new());
         }
 
         Ok(count)
