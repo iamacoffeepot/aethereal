@@ -16,7 +16,7 @@ use aethereal_library::{
     ReadUpgrades, Upgrading,
 };
 use aethereal_substrate::harness::{Harness, Unheard};
-use aethereal_substrate::{Head, Host, Lifecycle, Program};
+use aethereal_substrate::{Halted, Head, Host, Lifecycle, Program};
 use aethereal_tools::{Call, Called, Caller, Tool, Tooling};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -154,11 +154,11 @@ fn two_modules_in_code_that_make_one_kind_stop_the_program_naming_both() -> Resu
     let defaulted = defaults(&mut harness, &[])?;
     waiting::until(BUDGET, || {
         harness.step();
-        harness.host().engine().lifecycle() == Lifecycle::Stopped
+        harness.host().engine().lifecycle() == Lifecycle::Stopped(Halted::Quit)
     });
 
     assert_eq!(defaulted, Answered::Yes(Defaulted::Stopped));
-    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped, "the program stops");
+    assert_eq!(harness.host().engine().lifecycle(), Lifecycle::Stopped(Halted::Quit), "the program stops");
     let errors = library_lines(&mut harness, Level::Error);
     let names_both = errors.iter().any(|line| line.contains("`a.wasm` and `b.wasm` in `Code` both make"));
     assert!(names_both, "{errors:?}");

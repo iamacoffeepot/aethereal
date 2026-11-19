@@ -41,7 +41,7 @@ pub use layer::{BodyPart, Layer, LayerForm, Leaving, Refused, Step};
 pub use layers::{Entered, FoundLayers, LayerList, Layers, Slot, Unlayered, WalkedBy, layers};
 pub use message::{BodyHandle, Request, Response, ResponseBody, ResponseHead};
 pub use outbound_body::{OutboundBody, ResponseBytes, ResponseLength, SendBody, SourceEnd, StreamedBody};
-pub use serving::{Answering, Binding, Deadline, Listened, Sending, Serving};
+pub use serving::{Answering, Binding, Deadline, Listened, Sending, Serving, Unlistened};
 pub use settings::StackSettings;
 pub use walks::{Ask, Formed, FoundBy, Returned, Taker, Walked, Walks, WalksFor};
 

@@ -36,7 +36,7 @@ mod stacks;
 mod tests;
 
 use aethereal_chassis_headless::Headless;
-use aethereal_chassis_headless::native::NativeLayers;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{ChatToSessions, EngineTools, Engines, EnginesSettings};
@@ -49,6 +49,7 @@ use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox};
 use describe::DescribeHubTool;
 use stacks::{ContainerStack, LocalStack};
+use std::process::ExitCode;
 
 /// The program's name, which prefixes its environment's variables.
 const NAME: &str = "aethereal_hub";
@@ -103,7 +104,15 @@ fn hub() -> Program<Headless, Roots> {
         })
 }
 
-fn main() {
-    let launched = hub().launch(NAME);
-    assert!(launched.is_ok(), "the hub runs: {launched:?}");
+/// Runs the hub, and exits as it ended: failing when a root's failure stopped it, so its service restarts it.
+#[allow(clippy::print_stderr)] // How the hub ended is written for its service's journal.
+fn main() -> ExitCode {
+    match hub().launch(NAME) {
+        Ok(Launched::Ran(exit)) => {
+            eprintln!("exit={exit:?}");
+            exit.status()
+        }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
+        Err(failed) => panic!("the hub runs: {failed:?}"),
+    }
 }

@@ -3656,7 +3656,7 @@ mod tests {
             engine.step(Time::ZERO, &clock);
         }
 
-        assert_eq!(engine.lifecycle(), aethereal_substrate::Lifecycle::Stopped);
+        assert_eq!(engine.lifecycle(), aethereal_substrate::Lifecycle::Stopped(aethereal_substrate::Halted::Quit));
         let said: Vec<&str> = engine
             .log(starter)
             .filter_map(|entry| match entry {

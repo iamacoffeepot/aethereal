@@ -9,7 +9,7 @@ use aethereal_actor::{
     Answered, Beginning, Ended, Enough, Fault, Later, Level, More, Number, Open, Part, Reply, Slept, Turn, actor,
 };
 use aethereal_chassis_headless::Headless;
-use aethereal_chassis_headless::native::NativeLayers;
+use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_data::Bound;
 use aethereal_files::{Files, ReadTool, WriteTool};
 use aethereal_http::stack::{
@@ -20,6 +20,7 @@ use aethereal_mcp::{MarkOwner, Mcp, McpRoutes};
 use aethereal_substrate::{Bootstrap, Bootstrapping, EngineSettings, Host, Unbuilt};
 use aethereal_tcp::{Accepting, HungUp, Interface, Listening, Reading, Shut, Tcp, Unbound, Wrote};
 use aethereal_tools::Toolbox;
+use std::process::ExitCode;
 
 /// The stack's layers: every request is the owner's, and goes to `Mcp` on `POST /mcp`.
 type McpLayers = (MarkOwner, McpRoutes);
@@ -161,7 +162,8 @@ impl McpStack {
 
 impl Stack for McpStack {}
 
-fn main() {
+#[allow(clippy::print_stderr)] // How the server ended is written for whoever started it.
+fn main() -> ExitCode {
     let stack = StackSettings { port: 8890, interface: Interface::Loopback, ..StackSettings::default() };
     let read_limit = u32::try_from(stack.most_read_bytes()).unwrap_or(u32::MAX);
     let engine = EngineSettings { read_limit, mail_bytes: 1 << 24, ..EngineSettings::default() };
@@ -173,5 +175,12 @@ fn main() {
         .root::<Toolbox<(ReadTool, WriteTool), Mcp>>()
         .root_with::<McpStack>(stack)
         .launch("aethereal_mcp");
-    assert!(launched.is_ok(), "the server runs: {launched:?}");
+    match launched {
+        Ok(Launched::Ran(exit)) => {
+            eprintln!("exit={exit:?}");
+            exit.status()
+        }
+        Ok(Launched::Printed) => ExitCode::SUCCESS,
+        Err(failed) => panic!("the server runs: {failed:?}"),
+    }
 }

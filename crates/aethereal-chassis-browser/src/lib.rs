@@ -178,9 +178,11 @@ impl<C: Clock> Browser<C> {
 
         match self.engine.lifecycle() {
             Lifecycle::Unbooted(why) => Err(why),
-            Lifecycle::Waiting | Lifecycle::Booting | Lifecycle::Running | Lifecycle::Stopping | Lifecycle::Stopped => {
-                Ok(())
-            }
+            Lifecycle::Waiting
+            | Lifecycle::Booting
+            | Lifecycle::Running
+            | Lifecycle::Stopping(_)
+            | Lifecycle::Stopped(_) => Ok(()),
         }
     }
 
