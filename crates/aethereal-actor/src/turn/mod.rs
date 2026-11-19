@@ -24,12 +24,12 @@ use crate::job::{WrittenJob, lending_given};
 use crate::resource;
 use crate::resource::Reach;
 use crate::{
-    Actor, ActorRef, Actors, ActorsWriter, Arena, Asking, ChildOf, Children, Claim, Claimed, Code, Declared, DependsOn,
-    Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances, Keeping,
-    Keeps, Kinds, Later, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes, ParentOf,
-    Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs, SeatNumber,
-    Seated, Seats, Seen, SentAs, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable, What,
-    Within, Written,
+    Actor, ActorRef, Actors, ActorsWriter, Arena, Asking, Awaited, ChildOf, Children, Claim, Claimed, Code, Declared,
+    DependsOn, Due, Effect, Ended, EngineStats, ErasedActorRef, Fault, Gift, Given, Giver, Handle, Held, Instances,
+    Keeping, Keeps, Kinds, Later, Level, Line, Listed, Logged, MailId, Mailed, Moves, NotOwed, On, Owed, Owes,
+    ParentOf, Parented, Path, PathTo, Payload, ProtocolRef, Puts, Reachable, Receives, Recent, Resource, Runs,
+    SeatNumber, Seated, Seats, Seen, SentAs, Stage, Table, Tie, Tied, Time, Unanswered, Unreadable, Untaken, Watchable,
+    What, Within, Written,
 };
 use crate::{Answer, Job, JobId, Unrun};
 #[cfg(feature = "std")]
@@ -72,10 +72,10 @@ pub struct Asked {
     /// What a guest's code claimed of its resources, in the order it claimed it, for its host to hold it to: always
     /// empty in native code, whose resources move as it asks (ADR-0015).
     claims: Vec<Claim>,
-    /// The requests the turn running asked, each by the actor that asked it, the turn's own or a child's `begin`, with
-    /// the context each keeps, for the engine to file beside its asker once the turn has run (ADR-0017): empty between
-    /// turns.
-    asks: Vec<(Seated, Asking)>,
+    /// The requests the turn running asked and the jobs it ran, each by the actor that asked it, the turn's own or a
+    /// child's `begin`, with the context each keeps, for the engine to file beside its asker once the turn has run
+    /// (ADR-0017, ADR-0018): empty between turns.
+    asks: Vec<(Seated, Awaited)>,
     /// What the turn running did to the debts its actor holds, in the order it did it, for the engine to file once the
     /// turn has run (ADR-0017): empty between turns.
     owes: Vec<Owes>,
@@ -278,21 +278,21 @@ impl Asked {
     /// they stood up, each by its asker with its context, in the order asked: for its host to file beside the mail that
     /// asks each, or the job (ADR-0015, ADR-0017, ADR-0018).
     #[cfg(feature = "guest")]
-    pub(crate) fn asks(&self) -> &[(Seated, Asking)] {
+    pub(crate) fn asks(&self) -> &[(Seated, Awaited)] {
         &self.asks
     }
 
-    /// Takes every request the turn running asked, and the `begin`s of the children it stood up asked, each with its
-    /// context: for the engine, which drops them when the turn failed (ADR-0017).
-    pub fn take_asks(&mut self) -> impl Iterator<Item = Asking> + '_ {
-        self.asks.drain(..).map(|(_, asking)| asking)
+    /// Takes every request the turn running asked and job it ran, and those of the `begin`s of the children it stood
+    /// up, each with its context: for the engine, which drops them when the turn failed (ADR-0017, ADR-0018).
+    pub fn take_asks(&mut self) -> impl Iterator<Item = Awaited> + '_ {
+        self.asks.drain(..).map(|(_, awaited)| awaited)
     }
 
-    /// Takes the requests the actor `by` asked, each with its context, in the order asked: for the engine, which files
-    /// them beside `by` once the turn has run, the turn's own actor's and each child's it stood up, whose `begin` asked
-    /// them (ADR-0017).
-    pub fn take_asks_by(&mut self, by: Seated) -> impl Iterator<Item = Asking> + '_ {
-        self.asks.extract_if(.., move |(asker, _)| *asker == by).map(|(_, asking)| asking)
+    /// Takes the requests the actor `by` asked and the jobs it ran, each with its context, in the order asked: for the
+    /// engine, which files them beside `by` once the turn has run, the turn's own actor's and each child's it stood
+    /// up, whose `begin` asked them (ADR-0017, ADR-0018).
+    pub fn take_asks_by(&mut self, by: Seated) -> impl Iterator<Item = Awaited> + '_ {
+        self.asks.extract_if(.., move |(asker, _)| *asker == by).map(|(_, awaited)| awaited)
     }
 
     /// What the engine says to `to` of its request of the count `request`, which `by` did not answer, as `why`: mail of
@@ -908,7 +908,7 @@ impl Seat<'_> {
         let context = Written::of(context)?;
         let count = self.sent + 1;
         self.write_after(to, mail, false, Tie::asks(count), due)?;
-        self.asked.asks.push((self.me, Asking { count, answer, context, lent: Vec::new(), due }));
+        self.asked.asks.push((self.me, Awaited::Request(Asking { count, answer, context, lent: Vec::new(), due })));
 
         Ok(())
     }
@@ -933,7 +933,7 @@ impl Seat<'_> {
         let submitted = Submitted { by: self.me, count, code, answer, bytes, refers, buffers, given };
         self.asked.buffers.jobs.push(submitted);
         // A job is cancelled by its asker, and inherits no deadline (ADR-0041).
-        self.asked.asks.push((self.me, Asking { count, answer, context, lent, due: Due::Never }));
+        self.asked.asks.push((self.me, Awaited::Job(Asking { count, answer, context, lent, due: Due::Never })));
 
         Ok(id)
     }

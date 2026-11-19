@@ -1846,6 +1846,7 @@ impl Reading<'_> {
                     asked,
                     instances,
                     keeping,
+                    waiting,
                     debts,
                     lists,
                 );
@@ -2019,7 +2020,7 @@ impl Reading<'_> {
 
     /// The closing turn of the actor `me` names, sitting as `sitting` says, which has sent `sent` pieces of mail and
     /// whose life ended as `ending` says: measured into `tally`, what it asks for added to `asked` and routed into
-    /// `lists`, and the debts it answered taken out of `debts`.
+    /// `lists`, with each job it still waits on in `waiting` cancelled, and the debts it answered taken out of `debts`.
     #[allow(clippy::too_many_arguments, reason = "a worker's own lists, lent one by one so the parcel can be split")]
     fn closing(
         &self,
@@ -2033,6 +2034,7 @@ impl Reading<'_> {
         asked: &mut Asked,
         instances: &mut Instances,
         keeping: &mut Keeping,
+        waiting: &Waiting,
         debts: &mut Debts,
         lists: &mut Lists,
     ) {
@@ -2071,6 +2073,8 @@ impl Reading<'_> {
                 buffers.effects.push(Effect::new(me, What::EndFailed(fault)));
             }
             buffers.effects.push(Effect::new(me, What::Ended(how.clone())));
+            // Its jobs are cancelled whether its closing turn failed or not: their contexts go with it (ADR-0018).
+            waiting.cancel_jobs(me, &mut buffers.cancelled);
             if lists.fusing.may_hop() {
                 let sends = buffers.mailed.iter().filter(|mailed| is_send_by(mailed, me)).count();
                 lists.fusing.hops.closing += u64::try_from(sends).unwrap_or(u64::MAX);

@@ -882,7 +882,8 @@ fn contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<Lying> {
 #[inline(never)]
 fn write_contexts(held: &mut Vec<u8>, asked: &Asked) -> Vec<Lying> {
     let mut lying = Vec::new();
-    for (by, asking) in asked.asks() {
+    for (by, awaited) in asked.asks() {
+        let asking = awaited.asking();
         let at = held.len();
         records::write_carried(held, asking.context.bytes(), asking.context.pins().iter().map(Bytes::id));
         lying.push((*by, asking.count, asking.answer, at, held.len() - at));

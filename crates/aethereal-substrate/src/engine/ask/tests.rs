@@ -5,8 +5,8 @@ use super::super::*;
 use super::{Answering, Asks, Waiting, owed};
 use aethereal_actor::Written;
 use aethereal_actor::{
-    ActorRef, Answered, Anywhere, Asking, Bytes, Due, Ending, Fault, Held, Reply, Tie, Turn, Unanswered, child,
-    protocol,
+    ActorRef, Answered, Anywhere, Asking, Awaited, Bytes, Due, Ending, Fault, Held, Reply, Tie, Turn, Unanswered,
+    child, protocol,
 };
 use aethereal_actor::{Time, actor};
 use aethereal_data::{Bound, Kind, Plain};
@@ -632,7 +632,7 @@ fn a_context_is_let_go_of_once_its_answer_has_been_handled() {
     for answer in [Tie::answers(3), Tie::unanswered(3)] {
         let asking =
             Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
-        waiting.file(me, iter::once(asking), &mut Vec::new());
+        waiting.file(me, iter::once(Awaited::Request(asking)), &mut Vec::new());
         let answering = waiting.answering(answer);
         let kept =
             matches!(answering, Answering::Kept(asking) | Answering::Unanswered(asking) if asking.context == nine());
@@ -654,7 +654,7 @@ fn an_actor_whose_burst_of_requests_was_answered_gives_back_their_room() {
     let asking =
         |count| Asking { count, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
 
-    waiting.file(me, (1..=4_096).map(asking), &mut Vec::new());
+    waiting.file(me, (1..=4_096).map(asking).map(Awaited::Request), &mut Vec::new());
     for count in 1..=4_096 {
         waiting.settle(me, Tie::answers(count), &mut asked, &Ok(()), &mut Vec::new());
     }
@@ -673,7 +673,7 @@ fn what_the_engine_says_of_an_unanswered_request_is_handed_to_the_handler_of_its
     let asking =
         Asking { count: 3, answer: KindId::of::<TileIs>(), context: nine(), lent: Vec::new(), due: Due::Never };
     let me = Seated { id: ActorId::new(1), seat: SeatNumber::new(0) };
-    waiting.file(me, iter::once(asking), &mut Vec::new());
+    waiting.file(me, iter::once(Awaited::Request(asking)), &mut Vec::new());
 
     let answering = waiting.answering(Tie::unanswered(3));
 
