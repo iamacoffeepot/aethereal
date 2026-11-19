@@ -221,7 +221,7 @@ pub(super) fn owed(me: Seated, source: Seated, tie: Tie, outcome: &Result<(), Fa
     let (why, count) = if outcome.is_err() {
         // What a failed turn sent is dropped, its counts with it.
         (Unanswered::Failed, sent + 1)
-    } else if asked.has_answered(me, source, request) {
+    } else if asked.has_answered(me, sent, source, request) {
         return;
     } else if asked.was_unread(me) {
         (Unanswered::Unreadable, sent + 1)

@@ -136,6 +136,15 @@ pub struct Mailed {
     pub due: Due,
 }
 
+impl Mailed {
+    /// Whether it answers the request of the count `request` that `asker` sent. A count names a request only with its
+    /// asker, as each sender counts its own mail, so two askers' requests may share one (ADR-0017).
+    #[must_use]
+    pub fn answers(&self, asker: Seated, request: u64) -> bool {
+        self.to.id == asker.id && self.tie == Tie::answers(request)
+    }
+}
+
 /// What a piece of mail is to a request, in the eight bytes every piece carries (ADR-0017).
 ///
 /// A request names itself by its count, and an answer the request it answers by that request's count: its
