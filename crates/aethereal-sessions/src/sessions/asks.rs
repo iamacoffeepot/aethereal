@@ -196,6 +196,9 @@ pub enum Refusal {
     /// A turn of the session waits on the owner's answer to an ask: a hibernate would leave it unanswered, so it is
     /// answered first.
     Waiting,
+    /// The session is being compacted, as its owner or Claude Code asked: a hibernate would cut the compaction short, so
+    /// it is asked again once the compaction ends.
+    Compacting,
 }
 
 /// An awake session, as a refusal past the most awake names it: by its number, and its name as the list shows it.
@@ -236,6 +239,7 @@ impl fmt::Display for Refusal {
             Self::Waiting => {
                 f.write_str("a turn of the session waits on the owner's answer to an ask: answer it first")
             }
+            Self::Compacting => f.write_str("the session is being compacted: ask again once the compaction ends"),
         }
     }
 }

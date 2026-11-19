@@ -107,12 +107,12 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Tells `session`, idle, that it is about to be compacted and hibernated, and waits for that turn within the
-    /// deadline: the wait on its idle time is let go, as its wind-down may begin before that is up.
+    /// Tells `session` that it is about to be compacted and hibernated, and waits for that turn within the deadline:
+    /// the wait on its idle time is let go, as its wind-down may begin before that is up.
     fn notice(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<(), Fault> {
         let rest = self.rest();
         let wind_down_secs = self.settings.wind_down_secs;
-        let notice = self.settings.notice();
+        let notice = self.settings.notice.clone();
         let Some(Life::Running(running)) = self.held.get_mut(&session).map(|held| &mut held.life) else {
             return Ok(());
         };

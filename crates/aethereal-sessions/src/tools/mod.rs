@@ -257,7 +257,8 @@ impl Tool for SessionsTools {
                  so it writes down its loose threads, then compacted, and its container stopped and removed. Its \
                  conversation, transcript, and home are kept, and a line or `wake_session` wakes it. Refused while a \
                  turn or a background task runs in it, or a turn waits on the owner's answer to an ask: interrupt or \
-                 answer it first. Answers whether it is winding down or hibernates already.",
+                 answer it first; and while it is being compacted, by its owner or Claude Code: ask again once the \
+                 compaction ends. Answers whether it is winding down or hibernates already.",
                 Output::Value(SchemaNodes::of(&Hibernation::SHAPE)),
             ),
             ToolSheet::of::<Wake>(

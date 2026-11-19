@@ -147,6 +147,11 @@ impl Session {
         SessionRow { session, name: self.name.clone(), state, container, grew, asking }
     }
 
+    /// Its conversation's state as it is listed, with `asking` of its asks waiting for the owner.
+    pub fn state(&self, asking: u32) -> State {
+        self.states(asking).0
+    }
+
     /// Its conversation's state and its container's, with `asking` of its asks waiting for the owner. Lines that wait
     /// for its container are a turn to come, so it is working; a compaction Claude Code runs is compacting, whoever
     /// asked for it; a container the hub stops for a session to hibernate leaves it idle until Docker has removed it,
@@ -218,6 +223,11 @@ impl Session {
 }
 
 impl Activity {
+    /// Whether it is the hub's own wind-down: its notice's turn, or the compaction it asked for.
+    pub const fn winds_down(&self) -> bool {
+        matches!(self, Self::Noticed { .. } | Self::Compacting { .. })
+    }
+
     /// The conversation's state while its container runs and no ask waits: the notice's turn, as it is wound down, and
     /// a background task are each work.
     const fn state(&self) -> State {

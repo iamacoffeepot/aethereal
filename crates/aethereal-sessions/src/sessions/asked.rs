@@ -7,6 +7,7 @@ use super::asks::{
     Opened, ReadTranscript, Refusal, Refuses, Said, Say, Transcribed, Wake,
 };
 use super::chat::Chat;
+use super::row::State;
 use super::saves::Indexed;
 use super::session::{Activity, Life, Session, Then};
 use super::transcript::{Ended, Entry, Speaker, is_command};
@@ -246,8 +247,8 @@ impl Sessions {
     }
 
     /// Winds `session` down to hibernate, as an idle one is, or says why not: refused while a turn or a background task
-    /// runs in it or one waits on the owner's answer to an ask, so nothing is cut short or left unanswered; one winding
-    /// down or hibernating already is answered as it stands.
+    /// runs in it, one waits on the owner's answer to an ask, or a compaction the hub did not ask for runs, so nothing
+    /// is cut short or left unanswered; one winding down or hibernating already is answered as it stands.
     pub(super) fn hibernate(&mut self, turn: &mut Turn<'_, Self>, session: u32) -> Result<Hibernated, Fault> {
         let asking = self.chats.asking(session);
         let Some(held) = self.held.get(&session) else {
@@ -260,11 +261,16 @@ impl Sessions {
             }
             Life::Stopping { then: Then::Hibernate { .. }, .. } => Hibernating::Stands(Hibernated::WindingDown),
             Life::Hibernating { .. } => Hibernating::Stands(Hibernated::Hibernating),
-            Life::Running(_) if asking > 0 => Hibernating::Stands(Hibernated::Refused(Refusal::Waiting)),
-            Life::Running(running) => match running.activity {
-                Activity::Working | Activity::Tasked => Hibernating::Stands(Hibernated::Refused(Refusal::Working)),
-                Activity::Noticed { .. } | Activity::Compacting { .. } => Hibernating::Stands(Hibernated::WindingDown),
-                Activity::Idle { .. } => Hibernating::Begins,
+            // A running session is refused in the state the list shows it in, so the two never disagree, save that
+            // the hub's own wind-down, its notice listed working and its compaction compacting, stands as it is.
+            Life::Running(running) => match held.state(asking) {
+                State::Waiting => Hibernating::Stands(Hibernated::Refused(Refusal::Waiting)),
+                _ if running.activity.winds_down() => Hibernating::Stands(Hibernated::WindingDown),
+                State::Working => Hibernating::Stands(Hibernated::Refused(Refusal::Working)),
+                State::Compacting => Hibernating::Stands(Hibernated::Refused(Refusal::Compacting)),
+                State::Idle => Hibernating::Begins,
+                State::Hibernating => Hibernating::Stands(Hibernated::Hibernating),
+                State::Archived => Hibernating::Stands(Hibernated::Refused(Refusal::Archived)),
             },
         };
 

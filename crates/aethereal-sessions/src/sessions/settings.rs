@@ -76,7 +76,8 @@ pub struct SessionsSettings {
     /// hub does, and the five minutes left leave the wind-down's own turns, the notice and `/compact`, reading it warm.
     #[flag]
     pub idle_secs: u32,
-    /// What the hub tells a session before it compacts it to hibernate, `{minutes}` standing for its idle minutes.
+    /// What the hub tells a session before it compacts it to hibernate: that it is about to be, and nothing of why, as
+    /// the same notice comes before a wind-down asked for early as before an idle one.
     pub notice: String,
     /// What each session is told of where it is, appended to Claude Code's system prompt.
     pub prompt: String,
@@ -111,9 +112,8 @@ impl Default for SessionsSettings {
             most_running: 4,
             idle_secs: 55 * 60,
             notice: String::from(
-                "The hub: this session has been idle for {minutes} minutes, and it will be compacted and hibernated \
-                 next. Before that, write down your loose threads: unfinished work, open questions, uncommitted \
-                 changes, and what to pick up next.",
+                "The hub: this session will be compacted and hibernated next. Before that, write down your loose \
+                 threads: unfinished work, open questions, uncommitted changes, and what to pick up next.",
             ),
             prompt: String::from(PROMPT.trim_end()),
             wind_down_secs: 10 * 60,
@@ -147,12 +147,6 @@ impl SessionsSettings {
     #[must_use]
     pub fn hub_label(&self) -> Label {
         Label { key: String::from(HUB_LABEL), value: self.label.clone() }
-    }
-
-    /// The notice a session about to hibernate is told, its idle minutes written in.
-    #[must_use]
-    pub fn notice(&self) -> String {
-        self.notice.replace("{minutes}", &(self.idle_secs / 60).to_string())
     }
 }
 

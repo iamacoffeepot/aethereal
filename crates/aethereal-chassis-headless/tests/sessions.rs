@@ -894,7 +894,8 @@ fn a_session_or_a_wake_past_the_most_awake_is_refused_naming_the_awake_sessions_
 #[test]
 fn a_hibernate_waits_for_a_turn_and_an_ask_and_winds_the_session_down_as_an_idle_one_and_a_wake_resumes_it()
 -> Result<(), Unheard> {
-    // Catches a hibernate that cuts a running turn short or leaves an ask unanswered, or refuses without saying which;
+    // Catches a hibernate that cuts a running turn or the owner's compaction short or leaves an ask unanswered, or
+    // refuses without saying which as the list shows it;
     // one that stops a session with something new to compact without its notice and its compaction; one asked again
     // that does not answer as the session stands; and a wake that does not resume its conversation in a new container.
     let mut daemon = Daemon::new("hibernate");
@@ -904,6 +905,9 @@ fn a_hibernate_waits_for_a_turn_and_an_ask_and_winds_the_session_down_as_an_idle
     say(&mut harness, &mut daemon, session, "work")?;
     stdin(&mut harness, &mut daemon, &id, 1);
     assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Working));
+    daemon.emit(&id, r#"{"type":"system","subtype":"status","status":"compacting"}"#);
+    until_state(&mut harness, &mut daemon, session, State::Compacting)?;
+    assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Compacting));
 
     answer_turn(&mut daemon, &id, "done");
     until_state(&mut harness, &mut daemon, session, State::Idle)?;

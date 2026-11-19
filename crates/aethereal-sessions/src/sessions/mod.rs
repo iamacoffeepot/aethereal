@@ -276,9 +276,9 @@ impl Sessions {
         self.handle_interrupt(interrupt, turn)
     }
 
-    /// The session wound down to hibernate, as an idle one is: refused while a turn or a background task runs in it or
-    /// one waits on the owner's answer, and answered as it stands once its wind-down has begun, or when it is winding
-    /// down or hibernates already.
+    /// The session wound down to hibernate, as an idle one is: refused while a turn or a background task runs in it,
+    /// one waits on the owner's answer, or a compaction the hub did not ask for runs, and answered as it stands once its
+    /// wind-down has begun, or when it is winding down or hibernates already.
     #[request]
     fn hibernate(&mut self, hibernate: Hibernate, turn: &mut Turn<'_, Self>) -> Result<Later<Hibernated>, Fault> {
         self.handle_hibernate(hibernate, turn)
