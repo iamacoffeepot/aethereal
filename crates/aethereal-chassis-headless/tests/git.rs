@@ -17,15 +17,17 @@ use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::{Interface, Tcp};
 use aethereal_tools::Caller;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::{env, fs, process, thread};
 
+mod git_client;
 mod stacks;
 
+use git_client::{git, has_git};
 use stacks::{bound, stack};
 
 /// A stand-in for the sessions' actor layer: a pure layer that reads the password of `Basic` credentials, `<n>`, as
-/// session `n`, and answers any other request with a `Basic` challenge, which git's client answers with the credentials
+/// session `n`, and answers any other request with the sessions' challenge, `Basic` in the realm `aethereal`, which git's client answers with the credentials
 /// its remote's URL holds. A test then pushes as a session without minting its bearer.
 #[derive(Debug, Default, Clone, Plain)]
 struct Badge;
@@ -45,7 +47,7 @@ impl Layer for Badge {
         };
 
         session.map_or_else(
-            || Step::Answer(Response::challenge("Basic", "test")),
+            || Step::Answer(Response::challenge("Basic", "aethereal")),
             |session| Step::Pass(Caller::Session { session }),
         )
     }
@@ -105,37 +107,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
-}
-
-/// Whether this machine has git's client to run: a test that needs it passes, saying so, where it has none.
-#[allow(clippy::print_stderr)] // A test skipped says so, for whoever runs it.
-fn has_git() -> bool {
-    let ran = Command::new("git").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status();
-    let has = ran.is_ok_and(|status| status.success());
-    if !has {
-        eprintln!("skipped: this machine has no `git` to run");
-    }
-
-    has
-}
-
-/// git's client, run in `dir` with `args`: reading no configuration of this machine's or its user's, prompting for
-/// nothing, and committing as the test.
-fn git(dir: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
-    command
-        .args(args)
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.invalid");
-
-    command
 }
 
 /// What `command` came to, run to its end, reaching nothing the host serves.

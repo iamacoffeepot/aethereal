@@ -445,7 +445,8 @@ impl Sessions {
 
     /// A request bearing a bearer it minted and holds, as a `Bearer` token or a `Basic` password, is passed on as that
     /// session's; any other, bearing none, a bearer it does not hold, or credentials of another scheme, is answered
-    /// `401` with a `Bearer` challenge, and goes no further.
+    /// `401` with a `Basic` challenge in the realm `aethereal`, which git's credential helper answers with `Basic`
+    /// credentials, and goes no further.
     #[request]
     fn inbound(&mut self, inbound: Inbound<()>, turn: &mut Turn<'_, Self, FromStack>) -> Result<Inward<Caller>, Fault> {
         self.handle_inbound(inbound, turn)

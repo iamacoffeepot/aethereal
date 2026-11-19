@@ -9,13 +9,14 @@ use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
 use aethereal_data::{Bound, Budget, FilePath, Plain, Schema, SchemaNodes, from_bytes, to_bytes};
 use aethereal_files::{Files, Listing, Namespace, Reading, Storage, Unwritten, Writing};
-use aethereal_http::stack::StackSettings;
-use aethereal_http::{Http, HttpSettings};
+use aethereal_git::{Git, GitSettings, Readiness};
+use aethereal_http::stack::{LayerForm, StackSettings};
+use aethereal_http::{Http, HttpSettings, Method, Route, Router, Routes, Unroutable};
 use aethereal_link::{
     ChatTo, ChatToSessions, Down, Engine, Engines, EnginesSettings, HearTrusted, ListEngines, MintFor, Minted,
     REVISION, TrustedEngine, Up,
 };
-use aethereal_mcp::{Mcp, McpRoutes};
+use aethereal_mcp::Mcp;
 use aethereal_sessions::{
     Archive, Archived, AwakeSession, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended,
     Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered,
@@ -40,25 +41,48 @@ use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path as FsPath, PathBuf};
 use std::pin::Pin;
+use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::{env, fs, process, thread};
 
+mod git_client;
 mod stacks;
 
 use aethereal_process::Processes;
+use git_client::{git, has_git};
 use stacks::{bound, stack};
 
-// The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and `Mcp` is asked
-// it on `POST /mcp`.
+// The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and it goes to `Mcp`
+// on `POST /mcp`, or to `Git` on git's routes.
 stack!(
     ContainerStack,
     "test.sessions.container_stack",
     "container_stack",
-    (Sessions, McpRoutes),
+    (Sessions, ContainerRoutes),
     [By],
-    depends(Sessions, Mcp)
+    depends(Sessions, Mcp, Git)
 );
+
+/// The routes of the sessions' port, as the hub's: `POST /mcp` to `Mcp`, and git's smart HTTP to `Git`.
+struct ContainerRoutes;
+
+impl LayerForm for ContainerRoutes {
+    type Form = Router<Self>;
+}
+
+impl Routes for ContainerRoutes {
+    type Attached = By;
+    type Handlers = (Route<Mcp, ()>, Route<Git, ()>);
+
+    fn routes(router: Router<Self>) -> Result<Router<Self>, Unroutable> {
+        router
+            .route(Method::Post, "/mcp", |()| path::<Mcp>(()))?
+            .route(Method::Get, "/git/info/refs", |()| path::<Git>(()))?
+            .route(Method::Post, "/git/git-upload-pack", |()| path::<Git>(()))?
+            .route(Method::Post, "/git/git-receive-pack", |()| path::<Git>(()))
+    }
+}
 
 /// The session id Claude names its conversation by in these tests.
 const CONVERSATION: &str = "0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b";
@@ -339,6 +363,11 @@ impl Daemon {
         StoreSettings { root: self.dir.join("store").display().to_string(), ..StoreSettings::default() }
     }
 
+    /// The repository's settings: made in the test's directory, with the crate's own hooks.
+    fn git(&self) -> GitSettings {
+        GitSettings { repository: self.dir.join("repository.git").display().to_string(), ..GitSettings::default() }
+    }
+
     /// `Files`' settings: each namespace a directory in the test's.
     fn files(&self) -> FileRoots {
         let directory = |name: &str| self.dir.join(name).display().to_string();
@@ -611,7 +640,8 @@ fn chunk_of(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// A hub of `Tcp`, `Http`, `Mcp`, `Files` in the test's directory, the Docker client on the fake's socket, the sessions
-/// as `sessions` say with their tools, the sessions' port served on the loopback, and the caller.
+/// as `sessions` say with their tools, the repository in the test's directory, the sessions' port served on the
+/// loopback, and the caller.
 fn hub(daemon: &Daemon, sessions: SessionsSettings) -> Result<Harness<Headless>, Unheard> {
     withholding_hub(daemon, sessions, Withhold::Nothing)
 }
@@ -633,6 +663,8 @@ fn withholding_hub(
         .root_with::<Docker>(daemon.docker())
         .root_with::<Sessions>(sessions)
         .root::<Toolbox<(SessionsTools,), Mcp>>()
+        .root::<Processes>()
+        .root_with::<Git>(daemon.git())
         .root_with::<ContainerStack>(StackSettings {
             port: 0,
             interface: Interface::Loopback,
@@ -1144,8 +1176,8 @@ fn routed(harness: &mut Harness<Headless>, daemon: &mut Daemon, request: String)
     heard_by(harness, daemon, client)
 }
 
-/// The `Authorization` header the container `id` was given in its environment, as its MCP config sends it.
-fn authorization_of(daemon: &Daemon, id: &str) -> String {
+/// The bearer the container `id` was given in its environment.
+fn bearer_of(daemon: &Daemon, id: &str) -> String {
     let body = daemon.body(id);
     let bearer = body.split("\"AETHEREAL_HUB_BEARER=").nth(1).and_then(|rest| rest.split('"').next());
     let Some(bearer) = bearer else {
@@ -1153,14 +1185,19 @@ fn authorization_of(daemon: &Daemon, id: &str) -> String {
     };
     assert_eq!(body.matches(bearer).count(), 1, "the bearer is in the environment alone");
 
-    format!("Bearer {bearer}")
+    String::from(bearer)
+}
+
+/// The `Authorization` header the container `id` was given in its environment, as its MCP config sends it.
+fn authorization_of(daemon: &Daemon, id: &str) -> String {
+    format!("Bearer {}", bearer_of(daemon, id))
 }
 
 /// Whether `heard` is the sessions' refusal of a request with no bearer they hold: `401`, with the challenge a client
 /// answers with its bearer, which only `Sessions` writes, as `Mcp` answers no request `401`.
 fn challenged(heard: &Heard) -> bool {
     let is_unauthorized = heard.status == 401;
-    let challenges = heard.head.contains("www-authenticate: Bearer realm=\"aethereal\"");
+    let challenges = heard.head.contains("www-authenticate: Basic realm=\"aethereal\"");
 
     is_unauthorized && challenges
 }
@@ -1236,6 +1273,61 @@ fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unh
     assert_ne!(older, newer, "each container is given a bearer of its own");
     assert!(challenged(&refused), "{refused:?}");
     assert_eq!(held.status, 200, "{held:?}");
+
+    Ok(())
+}
+
+/// What git's client, run as `command` on a thread of its own outside the engine, came to, the hub and the daemon
+/// stepped meanwhile.
+fn git_served(harness: &mut Harness<Headless>, daemon: &mut Daemon, mut command: Command) -> process::Output {
+    #[allow(clippy::disallowed_methods)] // git's client runs on a native thread of its own, outside the engine.
+    let running = thread::spawn(move || command.output());
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+
+        running.is_finished()
+    });
+    assert!(running.is_finished(), "git's client finishes within the wait");
+    let Ok(Ok(output)) = running.join() else {
+        panic!("git's client runs");
+    };
+
+    output
+}
+
+#[test]
+fn git_s_client_answers_the_sessions_challenge_with_a_session_s_bearer_and_a_stranger_s_is_refused()
+-> Result<(), Unheard> {
+    // Catches the sessions challenging in a scheme git's client does not answer, so a session's git, holding its bearer
+    // as the password of its remote, never reaches the repository; and a `Basic` password let in that is no bearer the
+    // sessions hold (ADR-0057).
+    if !has_git() {
+        return Ok(());
+    }
+    let mut daemon = Daemon::new("git");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    open(&mut harness, &mut daemon, "git")?;
+    let bearer = bearer_of(&daemon, &daemon.made(0));
+    let port = bound(&mut harness, |stack: &ContainerStack| stack.serving.port());
+    let repository = harness.root::<Git>();
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+
+        harness.state(repository).is_ok_and(|git| git.readiness() != Readiness::Making)
+    });
+    let remote = |password: &str| format!("http://session:{password}@127.0.0.1:{port}/git");
+    let listing = git(&daemon.dir, &["ls-remote", &remote(&bearer)]);
+    let impostor = git(&daemon.dir, &["ls-remote", &remote(&"5a".repeat(16))]);
+
+    let listed = git_served(&mut harness, &mut daemon, listing);
+    let refused = git_served(&mut harness, &mut daemon, impostor);
+
+    assert!(listed.status.success(), "the session's git is let in: {}", String::from_utf8_lossy(&listed.stderr));
+    assert!(!refused.status.success(), "a password that is no bearer held is refused");
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("Authentication failed"), "git is told its credentials are refused: {why}");
 
     Ok(())
 }
