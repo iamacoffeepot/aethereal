@@ -14,9 +14,11 @@
 //! `http`, are its config.
 //!
 //! What the stack and the client share of HTTP/1.1, the reading of heads and bodies and the methods, headers, and
-//! statuses, is in one module of its own.
+//! statuses, is in one module of its own. A handler that runs a CGI program reads what it writes before its body with
+//! [`cgi`], which parses it the same way.
 
 pub mod base64;
+pub mod cgi;
 mod client;
 mod http1;
 mod router;

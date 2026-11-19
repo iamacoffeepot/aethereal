@@ -44,6 +44,7 @@ libc = "0.2.190"
 aethereal-guest-echo = { path = "guests/echo" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
+aethereal-git = { path = "../aethereal-git" }
 aethereal-http = { path = "../aethereal-http" }
 aethereal-library = { path = "../aethereal-library", features = ["tools"] }
 aethereal-link = { path = "../aethereal-link", features = ["tools"] }

@@ -1,0 +1,23 @@
+[package]
+name = "aethereal-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The git capability: a handler of an HTTP stack that serves one bare repository over git's smart HTTP through `git http-backend`, and the hook that lets a session push only its own branches (ADR-0057)"
+
+[dependencies]
+aethereal-actor = { path = "../aethereal-actor" }
+aethereal-data = { path = "../aethereal-data" }
+# The stack's handler kinds, and the reading of the program's CGI head.
+aethereal-http = { path = "../aethereal-http" }
+# Each request's `git http-backend`, and the repository's `git init --bare`, run as programs of the host's machine.
+aethereal-process = { path = "../aethereal-process" }
+aethereal-substrate = { path = "../aethereal-substrate" }
+# A program's pipe is read and written as a connection is (ADR-0040).
+aethereal-tcp = { path = "../aethereal-tcp" }
+# Who sent a request: the session a route's bearer names (ADR-0057).
+aethereal-tools = { path = "../aethereal-tools" }
+
+[lints]
+workspace = true

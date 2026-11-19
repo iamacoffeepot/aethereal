@@ -104,6 +104,7 @@ dependencies = [
  "aethereal-chassis-headless",
  "aethereal-data",
  "aethereal-files",
+ "aethereal-git",
  "aethereal-guest-echo",
  "aethereal-http",
  "aethereal-library",
@@ -153,6 +154,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aethereal-git"
+version = "0.1.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-http",
+ "aethereal-process",
+ "aethereal-substrate",
+ "aethereal-tcp",
+ "aethereal-tools",
+]
+
+[[package]]
 name = "aethereal-guest-echo"
 version = "0.0.0"
 dependencies = [
@@ -178,6 +192,7 @@ dependencies = [
  "aethereal-chassis-headless",
  "aethereal-data",
  "aethereal-files",
+ "aethereal-git",
  "aethereal-http",
  "aethereal-link",
  "aethereal-mcp",
