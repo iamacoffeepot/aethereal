@@ -1,0 +1,32 @@
+#!/bin/sh
+# The hub's pre-receive hook (ADR-0057): every push a session makes over the hub's git route runs it, as `Git` names
+# this directory as git's `core.hooksPath`. A session pushes only branches under its own name, `sessions/<n>/`, `<n>`
+# the session `REMOTE_USER` names (`session-<n>`): it creates, moves, force-moves, and deletes them. Any other ref, the
+# owner's branches, a tag, or another session's branch, refuses the whole push, and each one it names is said on a line
+# of its own, which git prints to the pusher.
+
+case $REMOTE_USER in
+session-*) session=${REMOTE_USER#session-} ;;
+*) session= ;;
+esac
+
+case $session in
+'' | *[!0-9]*)
+    echo "refused: the push names no session, and only a session pushes here" >&2
+    exit 1
+    ;;
+esac
+
+own="refs/heads/sessions/$session/"
+refused=0
+while read -r old new ref; do
+    case $ref in
+    "$own"?*) ;;
+    *)
+        echo "refused $ref: session $session pushes only branches under ${own#refs/heads/}" >&2
+        refused=1
+        ;;
+    esac
+done
+
+exit $refused

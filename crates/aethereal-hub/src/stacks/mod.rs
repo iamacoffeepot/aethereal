@@ -5,6 +5,7 @@
 mod forward;
 mod container;
 mod local;
+mod routes;
 
 pub use container::{ContainerStack, defaults as container};
 pub use local::{LocalStack, defaults as local};

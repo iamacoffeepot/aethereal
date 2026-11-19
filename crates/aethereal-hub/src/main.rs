@@ -23,6 +23,13 @@
 //! `sessions.hub_url`; `Sessions` checks the bearer each request there bears, one it minted for a session's container
 //! (ADR-0057). Neither `Mcp` nor `Sessions` names the other: the stacks name both.
 //!
+//! The sessions' port also serves the hub's one repository over git's smart HTTP, under `/git`, through `Git`, which
+//! runs `git http-backend` for each request: a session fetches all of it, and pushes only branches under its own
+//! name, `sessions/<n>/`, which the hook `Git` names refuses it otherwise. The repository is `git.repository`, made bare
+//! as the hub starts when nothing is there, and its hooks `git.hooks`; a repository that cannot be made, or a hook not
+//! in place, is logged, and every git request answered `503`, the rest of the hub served without it. The owner moves
+//! `main` over ssh: the owner's port has no git route.
+//!
 //! Build with `cargo build --release -p aethereal-hub`, and run with `aethereal-hub --link-port 8892 --root store`. The
 //! store is kept in the directory `--root` names. Then check an engine's binary in, such as the `link_engine` example's,
 //! and spawn it with `spawn_engine`, or start one by hand with the arguments `mint_token` answers.
@@ -38,6 +45,7 @@ mod tests;
 use aethereal_chassis_headless::Headless;
 use aethereal_chassis_headless::native::{Launched, NativeLayers};
 use aethereal_files::Files;
+use aethereal_git::Git;
 use aethereal_http::{Http, HttpSettings};
 use aethereal_link::{ChatToSessions, EngineTools, Engines, EnginesSettings};
 use aethereal_mcp::{Mcp, McpSettings};
@@ -64,7 +72,10 @@ type Roots = (
         LocalStack,
         (
             HubTools,
-            (ChatToSessions, (Sessions, (Docker, (Files, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ())))))))))),
+            (
+                ChatToSessions,
+                (Sessions, (Docker, (Files, (Git, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ())))))))))),
+            ),
         ),
     ),
 );
@@ -86,6 +97,7 @@ fn hub() -> Program<Headless, Roots> {
         .root_with::<Engines>(engines)
         .root::<Store>()
         .root::<Processes>()
+        .root::<Git>()
         .root::<Files>()
         .root::<Docker>()
         .root::<Sessions>()

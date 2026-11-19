@@ -16,15 +16,21 @@
 #     cp -f aethereal-hub aethereal-hub.prev        # the build to roll back to; skip on the first deploy
 #     cp <checkout>/target/release/aethereal-hub aethereal-hub.new
 #     mv -f aethereal-hub.new aethereal-hub         # a rename: a copy over the running binary fails "Text file busy"
+#     mkdir -p ../git/hooks
+#     cp -f <checkout>/crates/aethereal-git/hooks/* ../git/hooks/   # the hook every session's push runs
 #     cp <checkout>/crates/aethereal-hub/deploy/aethereal-hub.service ~/.config/systemd/user/
 #     systemctl --user daemon-reload
 #     systemctl --user restart aethereal-hub
+#
+# The repository the sessions fetch and push, `git/repository.git` beneath the working directory, is made bare as the
+# hub starts when nothing is there. Without the hook in `git/hooks`, the hub serves the repository to no one, and says
+# so in its journal.
 #
 # Rolling back is the same rename of `aethereal-hub.prev` over `aethereal-hub`, with the unit of that build's commit.
 # Before the hub was a crate of its own, its binary was `link_hub`.
 
 [Unit]
-Description=Aethereal hub (MCP on 127.0.0.1:8895, engine link on 127.0.0.1:8892, sessions on Docker's bridge at 8893)
+Description=Aethereal hub (MCP on 127.0.0.1:8895, engine link on 127.0.0.1:8892, sessions and git on Docker's bridge at 8893)
 
 [Service]
 WorkingDirectory=%h/.local/share/aethereal-hub
@@ -41,7 +47,8 @@ ExecStart=%h/.local/share/aethereal-hub/bin/aethereal-hub \
     --most-unsent-bytes 16777216 \
     --set sessions.image=${SESSION_IMAGE} \
     --set sessions.user=%U:%G \
-    --set sessions.credential=${SESSION_CREDENTIAL}
+    --set sessions.credential=${SESSION_CREDENTIAL} \
+    --set git.hooks=%h/.local/share/aethereal-hub/git/hooks
 Restart=on-failure
 RestartSec=2
 

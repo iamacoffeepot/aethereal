@@ -1,18 +1,20 @@
 //! The sessions' stack (ADR-0035, ADR-0057): where the containers reach the hub, each request let in by the bearer it
-//! bears.
+//! bears, for the hub's tools or its repository.
 
+use super::routes::ContainerRoutes;
 use aethereal_actor::{Answer, Answered, Fault, Level, Receives, Turn};
 use aethereal_data::Bound;
+use aethereal_git::Git;
 use aethereal_http::stack::{Binding, Listened, Serving, StackSettings};
-use aethereal_mcp::{Mcp, McpRoutes};
+use aethereal_mcp::Mcp;
 use aethereal_sessions::Sessions;
 use aethereal_substrate::{Bootstrap, Bootstrapping, Host, Unbuilt};
 use aethereal_tcp::{Interface, Listening};
 use aethereal_tools::Caller;
 
 /// The layers of the sessions' stack: `Sessions` says which session's bearer a request bears, or refuses it, and it
-/// goes to `Mcp` on `POST /mcp`.
-type ContainerLayers = (Sessions, McpRoutes);
+/// goes to `Mcp` on `POST /mcp`, or to `Git` on git's routes.
+type ContainerLayers = (Sessions, ContainerRoutes);
 
 /// The sessions' stack (ADR-0035, ADR-0057): where the containers reach the hub, each request let in by the bearer it
 /// bears. A port it cannot listen on is logged, and it serves nothing: the owner's port is served without it.
@@ -22,7 +24,7 @@ pub struct ContainerStack {
     serving: Serving<Self, ContainerLayers>,
 }
 
-stack!(ContainerStack, ContainerLayers, [Caller], depends(Sessions, Mcp));
+stack!(ContainerStack, ContainerLayers, [Caller], depends(Sessions, Mcp, Git));
 
 impl<H: Host> Bootstrap<H> for ContainerStack {
     const SECTION: &'static str = "container_stack";
@@ -41,7 +43,7 @@ impl<H: Host> Bootstrap<H> for ContainerStack {
 
 impl Receives<Answer<Listening, Binding>> for ContainerStack {
     /// With no port for the sessions, the owner's port is served without it, and the sessions reach none of the hub's
-    /// tools.
+    /// tools and not its repository.
     fn handle(&mut self, listening: (Answered<Listening>, Binding), turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let listened = self.serving.listened(listening, turn)?;
         if let Listened::Refused(_) | Listened::Unanswered(_) = listened {

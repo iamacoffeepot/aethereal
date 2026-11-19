@@ -43,6 +43,41 @@ pub enum Status {
 }
 
 impl Status {
+    /// Every case, in the order declared: what [`of_code`](Self::of_code) finds a code among.
+    const ALL: [Self; 31] = [
+        Self::Ok,
+        Self::Created,
+        Self::Accepted,
+        Self::NoContent,
+        Self::MovedPermanently,
+        Self::Found,
+        Self::SeeOther,
+        Self::NotModified,
+        Self::TemporaryRedirect,
+        Self::PermanentRedirect,
+        Self::BadRequest,
+        Self::Unauthorized,
+        Self::Forbidden,
+        Self::NotFound,
+        Self::MethodNotAllowed,
+        Self::NotAcceptable,
+        Self::RequestTimeout,
+        Self::Conflict,
+        Self::Gone,
+        Self::ContentTooLarge,
+        Self::UnsupportedMediaType,
+        Self::ImATeapot,
+        Self::UnprocessableContent,
+        Self::TooManyRequests,
+        Self::RequestHeaderFieldsTooLarge,
+        Self::InternalServerError,
+        Self::NotImplemented,
+        Self::BadGateway,
+        Self::ServiceUnavailable,
+        Self::GatewayTimeout,
+        Self::HttpVersionNotSupported,
+    ];
+
     /// Its code and reason phrase, as the status line writes them.
     #[must_use]
     pub const fn line(self) -> (u16, &'static str) {
@@ -79,6 +114,12 @@ impl Status {
             Self::GatewayTimeout => (504, "Gateway Timeout"),
             Self::HttpVersionNotSupported => (505, "HTTP Version Not Supported"),
         }
+    }
+
+    /// The status whose code is `code`: none for a code no case here names.
+    #[must_use]
+    pub fn of_code(code: u16) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.line().0 == code)
     }
 
     /// Whether a response of it carries a body, and so a `Content-Length`: every one but `204` and `304` does

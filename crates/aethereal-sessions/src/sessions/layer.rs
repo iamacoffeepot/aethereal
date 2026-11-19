@@ -12,7 +12,8 @@ const REALM: &str = "aethereal";
 impl Sessions {
     /// A request bearing a bearer it minted and holds, as a `Bearer` token or a `Basic` password, is passed on as that
     /// session's; any other, bearing none, a bearer it does not hold, or credentials of another scheme, is answered
-    /// `401` with a `Bearer` challenge, and goes no further.
+    /// `401` with a `Basic` challenge in the realm `aethereal`, which git's credential helper answers with `Basic`
+    /// credentials, and goes no further.
     #[allow(
         clippy::needless_pass_by_value,
         clippy::unnecessary_wraps,
@@ -24,7 +25,7 @@ impl Sessions {
         _: &mut Turn<'_, Self, FromStack>,
     ) -> Result<Inward<Caller>, Fault> {
         let inward = self.bearers.session_of(&inbound.head.credentials).map_or_else(
-            || Inward::Answer(Response::challenge("Bearer", REALM)),
+            || Inward::Answer(Response::challenge("Basic", REALM)),
             |session| Inward::Pass(Caller::Session { session }),
         );
 
