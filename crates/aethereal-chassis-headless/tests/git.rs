@@ -521,11 +521,55 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
 }
 
 #[test]
+fn a_start_script_clones_past_a_clone_cut_short_and_puts_back_an_origin_that_was_removed() -> Result<(), Unheard> {
+    // Catches a clone cut short, as a container killed mid-clone leaves it, left in the way of every clone after it, so
+    // the session never bootstraps again, or taken for the tree; and a tree whose `origin` was removed failing every
+    // start after, or started without a fetch, so it never sees the hub's repository move again.
+    if !has_git() {
+        return Ok(());
+    }
+    let scratch = Scratch::new("recover");
+    let (mut harness, port) = hub(scratch.settings(), on_loopback())?;
+    let seed = seeded(&scratch);
+    let url = format!("http://127.0.0.1:{port}/git");
+    let container = Container { url: &url, bearer: &SESSION.to_string(), secs: 60 };
+    let cut_short = scratch.path("home").join("work.cloning");
+    assert!(fs::create_dir_all(cut_short.join(".git")).is_ok(), "the test leaves a clone cut short");
+    assert!(fs::write(cut_short.join("half"), b"half").is_ok(), "the clone cut short holds a file");
+    let work = scratch.path("home").join("work");
+
+    let cloned = served(&mut harness, container.start(&scratch, "home"));
+
+    assert!(cloned.status.success(), "{}", said(&cloned));
+    assert_eq!(fs::read(work.join("first")).ok().as_deref(), Some(&b"first"[..]), "main is checked out");
+    assert!(!work.join("half").exists(), "nothing of the clone cut short is in the tree");
+    assert!(!cut_short.exists(), "the clone cut short is removed");
+
+    let removed = ran(git(&work, &["remote", "remove", "origin"]));
+    assert!(removed.status.success(), "{}", said(&removed));
+    let later = commit(&seed, "later", b"later");
+    let repository = scratch.path("repository.git").display().to_string();
+    let pushed = ran(git(&seed, &["push", "--quiet", &repository, "HEAD:refs/heads/main"]));
+    assert!(pushed.status.success(), "{}", said(&pushed));
+    assert!(fs::remove_file(scratch.path("home").join("claude-ran")).is_ok(), "the test forgets the first run");
+    let fetched = served(&mut harness, container.start(&scratch, "home"));
+    let origin = ran(git(&work, &["remote", "get-url", "origin"]));
+
+    assert!(fetched.status.success(), "{}", said(&fetched));
+    assert_eq!(String::from_utf8_lossy(&origin.stdout).trim(), url, "origin is put back at the hub's repository");
+    assert_eq!(named(&work, "refs/remotes/origin/main"), later, "main as the owner moved it is fetched");
+    assert_eq!(claude_ran(&scratch, "home").as_deref(), Some("--verbose\n"));
+
+    Ok(())
+}
+
+#[test]
 fn a_start_script_whose_clone_or_fetch_fails_or_runs_past_its_limit_exits_with_its_code_and_never_runs_claude()
 -> Result<(), Unheard> {
     // Catches a bootstrap that fails and carries on, so Claude Code starts half set up; one that ends with git's own
     // code, which the hub reads as a lost container; a step that hangs, as a hub that never answers holds it, with no
-    // limit; and a failure that does not say why on stderr, which the transcript keeps for the owner.
+    // limit; a failure that does not say why on stderr, which the transcript keeps for the owner; and a work tree
+    // that is not a repository taken as one, made one, or cloned over, so its files are changed or lost.
     if !has_git() {
         return Ok(());
     }
@@ -547,20 +591,32 @@ fn a_start_script_whose_clone_or_fetch_fails_or_runs_past_its_limit_exits_with_i
     assert!(cloned.status.success(), "{}", said(&cloned));
     assert!(fs::remove_file(scratch.path("unfetch").join("claude-ran")).is_ok(), "the test forgets the clone's run");
 
+    let unrepository = scratch.path("unrepository").join("work");
+    assert!(fs::create_dir_all(&unrepository).is_ok(), "the test makes a work tree that is not a repository");
+    assert!(fs::write(unrepository.join("notes"), b"notes").is_ok(), "the tree holds a file");
+
     let unclone = served(&mut harness, refused.start(&scratch, "unclone"));
     let unfetch = served(&mut harness, refused.start(&scratch, "unfetch"));
     let unlimited = served(&mut harness, hung.start(&scratch, "unlimited"));
+    let unrepositoried = served(&mut harness, fetched.start(&scratch, "unrepository"));
 
     for (home, output, why) in [
         ("unclone", unclone, "the clone of"),
         ("unfetch", unfetch, "the fetch of origin failed"),
         ("unlimited", unlimited, "ran past its limit of 1 seconds"),
+        ("unrepository", unrepositoried, "is there but is not a git repository"),
     ] {
         let code = output.status.code().map(i64::from);
         assert_eq!(code, Some(BOOTSTRAP_FAILED), "{home}: {}", said(&output));
         assert!(said(&output).contains(why), "{home} says why: {}", said(&output));
         assert_eq!(claude_ran(&scratch, home), None, "{home} never runs Claude Code");
     }
+    let kept: Vec<String> = fs::read_dir(&unrepository)
+        .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    assert_eq!(kept, ["notes"], "nothing is added to a tree that is not a repository");
+    assert_eq!(fs::read(unrepository.join("notes")).ok().as_deref(), Some(&b"notes"[..]), "its file is untouched");
 
     Ok(())
 }

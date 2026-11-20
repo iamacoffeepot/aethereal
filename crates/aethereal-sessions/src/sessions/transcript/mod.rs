@@ -246,6 +246,14 @@ impl Transcript {
         self.entries.last().map_or(0, |numbered| numbered.number)
     }
 
+    /// The entry numbered `number`: none when it holds none of that number.
+    #[must_use]
+    pub fn entry(&self, number: u64) -> Option<&Entry> {
+        let found = self.entries.binary_search_by_key(&number, |numbered| numbered.number).ok()?;
+
+        self.entries.get(found).map(|numbered| &numbered.entry)
+    }
+
     /// At most `most` entries after the number `after`, in order.
     #[must_use]
     pub fn after(&self, after: u64, most: usize) -> Vec<Numbered> {

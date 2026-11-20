@@ -370,7 +370,7 @@ impl Sessions {
     ) -> Result<Said, Fault> {
         let written = said(by, &text);
 
-        self.take_line(turn, session, written, Entry::Said { by, text })
+        self.take_line(turn, session, &written, Entry::Said { by, text })
     }
 
     /// Takes `line`, a command the owner ran in `!` mode at the trusted engine `engine`, and what it `printed`, for
@@ -386,7 +386,7 @@ impl Sessions {
     ) -> Result<Said, Fault> {
         let written = ran(engine, &line, &printed);
 
-        self.take_line(turn, session, written, Entry::Ran { engine, line, printed })
+        self.take_line(turn, session, &written, Entry::Ran { engine, line, printed })
     }
 
     /// Takes the line `entry` notes for `session`, `written` as the session reads it: noted, and written to the
@@ -395,7 +395,7 @@ impl Sessions {
         &mut self,
         turn: &mut Turn<'_, Self>,
         session: u32,
-        written: String,
+        written: &str,
         entry: Entry,
     ) -> Result<Said, Fault> {
         self.wake_lost(turn, session);
@@ -421,17 +421,18 @@ impl Sessions {
                 if let Some(Life::Stopping { then: Then::Hibernate { lines, .. }, .. } | Life::Starting { lines, .. }) =
                     self.held.get_mut(&session).map(|held| &mut held.life)
                 {
-                    lines.push(written);
+                    lines.push(number);
                 }
             }
             Taking::Typed => {
                 if let Some(Life::Running(running)) = self.held.get_mut(&session).map(|held| &mut held.life) {
                     running.activity.cancel(turn);
                     running.activity = Activity::Working;
+                    running.lines.push(number);
                 }
-                self.type_line(turn, session, &written)?;
+                self.type_line(turn, session, written)?;
             }
-            Taking::Woken => self.restart(session, Vec::new(), vec![written]),
+            Taking::Woken => self.restart(session, Vec::new(), vec![number]),
             Taking::Refused(_) => {}
         }
 
@@ -444,7 +445,8 @@ impl Sessions {
     /// wake since: the line, the setting `lost`, is noted as the hub's and held as the first its next container is
     /// written, so it comes before any line of the owner's that wakes it, in the transcript as on its stdin. A session
     /// that hibernates lost is started at once to hold it, unless no more may wake, when nothing is done and the wake
-    /// that asked is refused as it would be.
+    /// that asked is refused as it would be. Should that container's bootstrap fail, the line is held with the others
+    /// it was written, for the next, and the session is no longer lost, so it is written once.
     fn wake_lost(&mut self, turn: &mut Turn<'_, Self>, session: u32) {
         let Some(held) = self.held.get(&session) else {
             return;
@@ -460,11 +462,10 @@ impl Sessions {
             return;
         }
         let text = self.settings.lost.clone();
-        let written = said(Speaker::Hub, &text);
-        self.note(turn, session, Entry::Said { by: Speaker::Hub, text });
+        let number = self.note(turn, session, Entry::Said { by: Speaker::Hub, text });
         match self.held.get_mut(&session).map(|held| &mut held.life) {
-            Some(Life::Stopping { then: Then::Hibernate { lines, .. }, .. }) => lines.push(written),
-            Some(Life::Hibernating { .. }) => self.restart(session, Vec::new(), vec![written]),
+            Some(Life::Stopping { then: Then::Hibernate { lines, .. }, .. }) => lines.push(number),
+            Some(Life::Hibernating { .. }) => self.restart(session, Vec::new(), vec![number]),
             Some(Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. } | Life::Archived) | None => {}
         }
     }
@@ -477,6 +478,21 @@ fn said(by: Speaker, text: &str) -> String {
     match by {
         Speaker::Engine { engine } if !is_command(text) => format!("[{engine}] {text}"),
         Speaker::Engine { .. } | Speaker::Caller | Speaker::Hub => String::from(text),
+    }
+}
+
+/// What is written to a session of `entry`, a line said or run, as [`said`] and [`ran`] write it: none for an entry of
+/// anything else.
+pub(super) fn written(entry: &Entry) -> Option<String> {
+    match entry {
+        Entry::Said { by, text } => Some(said(*by, text)),
+        Entry::Ran { engine, line, printed } => Some(ran(*engine, line, printed)),
+        Entry::Claude(_)
+        | Entry::Stdout { .. }
+        | Entry::Stderr { .. }
+        | Entry::Interrupted { .. }
+        | Entry::Hub(_)
+        | Entry::Answered { .. } => None,
     }
 }
 

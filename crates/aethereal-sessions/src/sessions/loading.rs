@@ -4,7 +4,8 @@
 //! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
 //! removed when it does not, the session left hibernating, its container lost, once it is gone; a record whose
 //! container is not listed leaves its session hibernating, its container lost; and each container carrying the label
-//! that no record names is reported, never removed. A record that says its session hibernates lost reads back so. A
+//! that no record names is reported, never removed. A record that says its session hibernates lost reads back so, and
+//! one that says it holds lines its last container never read, as its bootstrap failed, holds them still. A
 //! list Docker does not answer with its containers fails the capability before anything is noted or written: which
 //! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
 
@@ -156,11 +157,12 @@ impl Sessions {
                     let name = container::name(&self.settings, session, *run);
                     recorded.push(Recorded { session, container: Named::Starting(name), run: *run });
                 }
-                Standing::Hibernating | Standing::Lost | Standing::Archived => {}
+                Standing::Hibernating | Standing::Lost | Standing::Unbootstrapped { .. } | Standing::Archived => {}
             }
             let life = match record.kept {
                 Standing::Archived => Life::Archived,
                 Standing::Hibernating => Life::Hibernating { gone: Gone::Removed },
+                Standing::Unbootstrapped { unread } => Life::Hibernating { gone: Gone::Unbootstrapped { unread } },
                 Standing::Lost | Standing::Awake { .. } | Standing::Starting { .. } => {
                     Life::Hibernating { gone: Gone::Lost }
                 }

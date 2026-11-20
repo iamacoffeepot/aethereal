@@ -1293,18 +1293,45 @@ fn a_container_that_ends_by_itself_leaves_its_session_lost_until_it_wakes_to_the
     Ok(())
 }
 
+/// The line of stream-json the hub writes to a session's stdin to say `text`, which holds nothing JSON escapes.
+fn user_message(text: &str) -> String {
+    format!(r#"{{"type":"user","message":{{"role":"user","content":"{text}"}}}}"#)
+}
+
+/// The lines said to `session`, as its transcript notes them.
+fn said_lines(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> Result<Vec<Entry>, Unheard> {
+    let said = read(harness, daemon, session, 0)?
+        .into_iter()
+        .map(|numbered| numbered.entry)
+        .filter(|entry| matches!(entry, Entry::Said { .. }))
+        .collect();
+
+    Ok(said)
+}
+
+/// What the caller said, `text`, as its session's transcript notes it.
+fn by_caller(text: &str) -> Entry {
+    Entry::Said { by: Speaker::Caller, text: String::from(text) }
+}
+
 #[test]
-fn a_container_whose_bootstrap_failed_is_removed_noted_and_not_lost_and_its_wake_bootstraps_again()
+fn a_container_whose_bootstrap_failed_is_removed_noted_and_not_lost_and_its_next_is_written_its_lines_first()
 -> Result<(), Unheard> {
     // Catches a run whose start script failed its bootstrap, before Claude Code started, listed as lost, so a failed
     // start reads as lost work; its container left, or no note of it, so the owner cannot tell why the session never
-    // answered; its wake told its last container was lost; and a wake that starts no container, where the next one
-    // runs the whole bootstrap again.
+    // answered; its wake told its last container was lost; the lines written to it, which Claude Code never read,
+    // dropped, written after the line that wakes the next container, out of order, or noted again; and an interrupt
+    // written to it written again, to a turn that never ran.
     let mut daemon = Daemon::new("unbootstrapped");
     let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
     let mut harness = hub(&daemon, settings)?;
     let session = open(&mut harness, &mut daemon, "unbootstrapped")?;
     let first = daemon.made(0);
+    say(&mut harness, &mut daemon, session, "one")?;
+    order(&mut harness, &Order::Interrupt(Interrupt { session }))?;
+    until(&mut harness, &mut daemon, |caller, _| !caller.interrupted.is_empty());
+    say(&mut harness, &mut daemon, session, "two")?;
+    stdin(&mut harness, &mut daemon, &first, 3);
     daemon.exit(&first, BOOTSTRAP_FAILED);
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
 
@@ -1323,12 +1350,80 @@ fn a_container_whose_bootstrap_failed_is_removed_noted_and_not_lost_and_its_wake
         [Note::Started { run: 1, resumed: false }, Note::Unbootstrapped { run: 1, code: BOOTSTRAP_FAILED }]
     );
 
-    say(&mut harness, &mut daemon, session, "try again")?;
+    say(&mut harness, &mut daemon, session, "three")?;
     until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
     let second = daemon.made(1);
-    let written = stdin(&mut harness, &mut daemon, &second, 1);
+    let written = stdin(&mut harness, &mut daemon, &second, 3);
 
-    assert_eq!(written, [r#"{"type":"user","message":{"role":"user","content":"try again"}}"#]);
+    assert_eq!(written, [user_message("one"), user_message("two"), user_message("three")]);
+    assert_eq!(
+        said_lines(&mut harness, &mut daemon, session)?,
+        [by_caller("one"), by_caller("two"), by_caller("three")]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_lost_session_whose_wake_fails_its_bootstrap_is_told_once_at_the_next_wake() -> Result<(), Unheard> {
+    // Catches the hub's line to a lost session dropped with a container whose bootstrap failed, so Claude never learns
+    // its last turn may have been cut short; and the line written twice, as the session is still taken as lost and
+    // given another.
+    let mut daemon = Daemon::new("lost-unbootstrapped");
+    let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
+    let mut harness = hub(&daemon, settings)?;
+    let session = open(&mut harness, &mut daemon, "lost-unbootstrapped")?;
+    let first = daemon.made(0);
+    daemon.stop(&first);
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
+    say(&mut harness, &mut daemon, session, "back again")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
+    let second = daemon.made(1);
+    stdin(&mut harness, &mut daemon, &second, 2);
+    daemon.exit(&second, BOOTSTRAP_FAILED);
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
+
+    assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::None, "a failed bootstrap is not lost");
+
+    say(&mut harness, &mut daemon, session, "third time")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 3);
+    let third = daemon.made(2);
+    let written = stdin(&mut harness, &mut daemon, &third, 3);
+    let lost = Entry::Said { by: Speaker::Hub, text: String::from(LOST) };
+
+    assert_eq!(written, [user_message(LOST), user_message("back again"), user_message("third time")]);
+    assert_eq!(
+        said_lines(&mut harness, &mut daemon, session)?,
+        [lost, by_caller("back again"), by_caller("third time")]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn the_lines_a_failed_bootstrap_left_unread_are_kept_while_the_hub_starts_again() -> Result<(), Unheard> {
+    // Catches the lines a container never read, as its bootstrap failed, held only in the hub's memory, so a hub that
+    // starts again while the session hibernates loses them, and its next container is never written them.
+    let mut daemon = Daemon::new("unread");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let session = open(&mut harness, &mut daemon, "unread")?;
+    let first = daemon.made(0);
+    let number = say(&mut harness, &mut daemon, session, "one")?;
+    stdin(&mut harness, &mut daemon, &first, 1);
+    daemon.exit(&first, BOOTSTRAP_FAILED);
+    let unread = Standing::Unbootstrapped { unread: vec![number] };
+    until(&mut harness, &mut daemon, |_, daemon| kept(daemon, session).as_ref() == Some(&unread));
+    drop(harness);
+    daemon.connections.clear();
+
+    let mut harness = hub(&daemon, settings)?;
+    say(&mut harness, &mut daemon, session, "two")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
+    let second = daemon.made(1);
+    let written = stdin(&mut harness, &mut daemon, &second, 2);
+
+    assert_eq!(written, [user_message("one"), user_message("two")]);
 
     Ok(())
 }

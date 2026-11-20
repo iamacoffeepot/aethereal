@@ -2,9 +2,10 @@
 //! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
 //! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
 //! lost, and shows so until it wakes; one whose container's start script failed its bootstrap, before Claude Code
-//! started, did not start, and hibernates with its container removed.
+//! started, did not start, and hibernates holding the lines that container was written, which Claude Code never read,
+//! for its next.
 
-use super::asked::Asker;
+use super::asked::{Asker, written};
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
 use super::credential::{Crediting, Provisioned};
@@ -57,10 +58,17 @@ impl Sessions {
         let turning = held.transcript.turning();
         let has_lines = !lines.is_empty();
         let is_busy = has_lines || turning == Turning::Running;
+        let typed = lines
+            .iter()
+            .filter_map(|&number| held.transcript.entry(number))
+            .filter_map(written)
+            .map(|text| user_line(&text))
+            .collect();
         held.life = Life::Running(Box::new(Running {
             container,
             run,
-            stdin: Stdin::Attaching { lines: lines.iter().map(|text| user_line(text)).collect() },
+            stdin: Stdin::Attaching { lines: typed },
+            lines,
             activity: Activity::Working,
             tasks: BTreeSet::new(),
             reading,
@@ -104,9 +112,9 @@ impl Sessions {
 
     /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
     /// hibernating, its container lost. One that exited with the start script's own code failed its bootstrap before
-    /// Claude Code started, so it lost nothing: it is noted so, and the session left hibernating, its container
-    /// removed, as a start that failed is. Nothing is done when the session's container is not that run's, or is being
-    /// stopped.
+    /// Claude Code started, so it lost nothing and read none of the lines written to it: it is noted so, and the
+    /// session left hibernating, not lost, holding those lines for its next container. Nothing is done when the
+    /// session's container is not that run's, or is being stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
@@ -115,21 +123,22 @@ impl Sessions {
         if !is_current {
             return Ok(());
         }
+        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) else {
+            return Ok(());
+        };
+        let Running { container, lines, activity, .. } = *running;
         let (note, gone) = match why {
             Ended::Exited { code: BOOTSTRAP_FAILED } => {
-                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Removed)
+                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Unbootstrapped { unread: lines })
             }
             Ended::Hibernated | Ended::Archived | Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => {
                 (Note::Stopped { run, why }, Gone::Lost)
             }
         };
-        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone }) else {
-            return Ok(());
-        };
-        running.activity.cancel(turn);
+        activity.cancel(turn);
         self.note(turn, session, Entry::Hub(note));
 
-        self.retire(turn, session, running.container, run, gone)
+        self.retire(turn, session, container, run, gone)
     }
 
     /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has
@@ -425,13 +434,22 @@ impl Sessions {
     }
 
     /// Wakes `session`, which hibernates, in a new container on its home: `opening` is answered once it runs, and
-    /// `lines` are written to it once it is attached.
-    pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<String>) {
+    /// `lines` are written to it once it is attached, after the lines its last container was written and never read,
+    /// as its bootstrap failed.
+    pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<u64>) {
         let Some(held) = self.held.get_mut(&session) else {
             return;
         };
+        let unread = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
+            Life::Hibernating { gone: Gone::Unbootstrapped { unread } } => unread,
+            Life::Hibernating { gone: Gone::Removed | Gone::Lost }
+            | Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Archived => Vec::new(),
+        };
         held.runs += 1;
-        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening, lines };
+        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening, lines: [unread, lines].concat() };
 
         self.start(session);
     }

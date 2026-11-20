@@ -132,7 +132,7 @@ impl Default for SessionsSettings {
             user: String::from("1000:1000"),
             hub_url: String::from("http://172.17.0.1:8893/mcp"),
             git_url: String::from("http://172.17.0.1:8893/git"),
-            bootstrap_secs: 5 * 60,
+            bootstrap_secs: 2 * 60,
             label: String::from("hub"),
             labels: Vec::new(),
             most_running: 4,

@@ -3,9 +3,12 @@
 # Claude Code as the hub names it, in its place, so Claude Code keeps the container's stdin and stdout.
 #
 # The tree is `$HOME/work`, on the session's home volume, which outlives every container. It is cloned from the hub's
-# repository, `$AETHEREAL_GIT_URL`, only when nothing is there; when something is, its `origin` is pointed at that URL
-# and fetched, which moves only its remote-tracking refs, never a file of the tree. With no URL given, the hub serves no
-# repository, and no tree is readied.
+# repository, `$AETHEREAL_GIT_URL`, only when nothing is there: into `$HOME/work.cloning`, which takes the tree's place
+# only once the clone is whole, so a clone cut short, as a container killed mid-clone leaves it, is never taken for the
+# tree, and is removed before the next clone starts. When something is there, it must be a git repository, whose files
+# are never touched: its `origin` is pointed at that URL, or put back at it when it was removed, and fetched, which
+# moves only its remote-tracking refs, never a file of the tree. With no URL given, the hub serves no repository, and no
+# tree is readied.
 #
 # Bootstrap is all or nothing: a step that fails, or runs past its limit of `$AETHEREAL_BOOTSTRAP_SECS` seconds, ends
 # the container with the bootstrap's own code, 78 (sysexits' EX_CONFIG), saying why on stderr, which the hub keeps in the
@@ -54,11 +57,20 @@ url=$AETHEREAL_GIT_URL
 CREDENTIAL
 
 tree=$HOME/work
+cloning=$HOME/work.cloning
+url=$AETHEREAL_GIT_URL
 if [ -e "$tree" ]; then
-    step "pointing origin at $AETHEREAL_GIT_URL" git --git-dir="$tree/.git" remote set-url origin "$AETHEREAL_GIT_URL"
+    git --git-dir="$tree/.git" rev-parse --git-dir >/dev/null || fail "$tree is there but is not a git repository"
+    if git --git-dir="$tree/.git" remote get-url origin >/dev/null 2>&1; then
+        step "pointing origin at $url" git --git-dir="$tree/.git" remote set-url origin "$url"
+    else
+        step "putting origin back at $url" git --git-dir="$tree/.git" remote add origin "$url"
+    fi
     step "the fetch of origin" git --git-dir="$tree/.git" fetch --quiet origin
 else
-    step "the clone of $AETHEREAL_GIT_URL" git clone --quiet "$AETHEREAL_GIT_URL" "$tree"
+    step "the removal of $cloning, a clone cut short" rm -rf "$cloning"
+    step "the clone of $url" git clone --quiet "$url" "$cloning"
+    step "the move of the clone to $tree" mv "$cloning" "$tree"
 fi
 
 exec "$@"
