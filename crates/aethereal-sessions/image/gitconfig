@@ -1,0 +1,4 @@
+# git's system config in a session's container (ADR-0057), its `/etc/gitconfig`: credentials come from the session's
+# bearer, through `git-credential-aethereal` beside the start script, and from nowhere else.
+[credential]
+	helper = aethereal

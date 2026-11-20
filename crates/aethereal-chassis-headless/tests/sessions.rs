@@ -18,11 +18,11 @@ use aethereal_link::{
 };
 use aethereal_mcp::Mcp;
 use aethereal_sessions::{
-    Archive, Archived, AwakeSession, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended,
-    Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered,
-    Opened, ReadTranscript, Record, Refusal, Said, Say, SessionRow, Sessions, SessionsListed, SessionsSettings,
-    SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker, Standing, State, Transcribed, Transcript,
-    Unfound, Wake,
+    Archive, Archived, AwakeSession, BOOTSTRAP_FAILED, Chat, Chatted, Connection as Housed, Conversation, Docker,
+    DockerSettings, Ended, Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions,
+    NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Said, Say, SessionRow, Sessions,
+    SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker,
+    Standing, State, Transcribed, Transcript, Unfound, Wake,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -246,6 +246,8 @@ struct Container {
     /// The body of the create that made it.
     body: String,
     running: bool,
+    /// The code its process exited with, once it has: 0 until then.
+    code: i64,
     /// Everything its process wrote, in Docker's frames.
     output: Vec<u8>,
     /// Everything written to its stdin.
@@ -458,7 +460,8 @@ impl Daemon {
                 let id = format!("{:064x}", self.made.len() + 1);
                 self.made.push(id.clone());
                 self.names.push(name.clone());
-                let container = Container { name, body, running: false, output: Vec::new(), stdin: Vec::new() };
+                let container =
+                    Container { name, body, running: false, code: 0, output: Vec::new(), stdin: Vec::new() };
                 self.containers.insert(id.clone(), container);
                 respond(peer, "201 Created", &format!(r#"{{"Id":"{id}","Warnings":[]}}"#));
             }
@@ -506,9 +509,9 @@ impl Daemon {
                 respond(peer, "200 OK", &format!("[{}]", listed.join(",")));
             }
             ("GET", ["containers", id, "json"]) => {
-                let status = self.containers.get(*id).map(|container| container.running);
+                let status = self.containers.get(*id).map(|container| (container.running, container.code));
                 match status {
-                    Some(running) => {
+                    Some((running, code)) => {
                         let status = if running {
                             "running"
                         } else {
@@ -517,7 +520,7 @@ impl Daemon {
                         respond(
                             peer,
                             "200 OK",
-                            &format!(r#"{{"State":{{"Status":"{status}","ExitCode":0,"OOMKilled":false}}}}"#),
+                            &format!(r#"{{"State":{{"Status":"{status}","ExitCode":{code},"OOMKilled":false}}}}"#),
                         );
                     }
                     None => respond(peer, "404 Not Found", r#"{"message":"No such container"}"#),
@@ -544,12 +547,18 @@ impl Daemon {
 
     /// Stops the container `id`, if it runs: its process dies.
     fn stop(&mut self, id: &str) {
+        self.exit(id, 0);
+    }
+
+    /// Ends the container `id`'s process with `code`, if it runs.
+    fn exit(&mut self, id: &str, code: i64) {
         let Some(container) = self.containers.get_mut(id) else {
             return;
         };
         if container.running {
             container.running = false;
-            self.events.push(event(id, "die", "0"));
+            container.code = code;
+            self.events.push(event(id, "die", &code.to_string()));
         }
     }
 
@@ -1231,12 +1240,19 @@ fn a_session_s_container_bears_a_bearer_its_port_lets_in_until_its_container_is_
     Ok(())
 }
 
+/// What the hub tells a session whose last container was lost as it wakes, in these tests.
+const LOST: &str = "The hub: your last container was lost.";
+
 #[test]
-fn a_container_that_ends_by_itself_leaves_its_session_hibernating_and_lost_until_it_wakes() -> Result<(), Unheard> {
+fn a_container_that_ends_by_itself_leaves_its_session_lost_until_it_wakes_to_the_hub_s_line_before_the_owner_s()
+-> Result<(), Unheard> {
     // Catches a container whose process exited listed as one the hub wound down, so the owner is not told its last
-    // turn may have been cut short, and a session woken from it still listed as lost.
+    // turn may have been cut short; a session woken from it still listed as lost; and the hub's line to it missing, or
+    // written after the line that woke it, on its stdin or in its transcript, so Claude carries on before it is told
+    // its last turn and its tree may have been cut short.
     let mut daemon = Daemon::new("lost");
-    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
+    let mut harness = hub(&daemon, settings)?;
     let session = open(&mut harness, &mut daemon, "lost")?;
     let first = daemon.made(0);
     daemon.stop(&first);
@@ -1250,6 +1266,69 @@ fn a_container_that_ends_by_itself_leaves_its_session_hibernating_and_lost_until
         container == Housed::Attached
     });
     assert_eq!(container, Housed::Attached);
+
+    let second = daemon.made(1);
+    let written = stdin(&mut harness, &mut daemon, &second, 2);
+    let said: Vec<Entry> = read(&mut harness, &mut daemon, session, 0)?
+        .into_iter()
+        .map(|numbered| numbered.entry)
+        .filter(|entry| matches!(entry, Entry::Said { .. }))
+        .collect();
+
+    assert_eq!(
+        written,
+        [
+            r#"{"type":"user","message":{"role":"user","content":"The hub: your last container was lost."}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"back again"}}"#,
+        ]
+    );
+    assert_eq!(
+        said,
+        [
+            Entry::Said { by: Speaker::Hub, text: String::from(LOST) },
+            Entry::Said { by: Speaker::Caller, text: String::from("back again") },
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_container_whose_bootstrap_failed_is_removed_noted_and_not_lost_and_its_wake_bootstraps_again()
+-> Result<(), Unheard> {
+    // Catches a run whose start script failed its bootstrap, before Claude Code started, listed as lost, so a failed
+    // start reads as lost work; its container left, or no note of it, so the owner cannot tell why the session never
+    // answered; its wake told its last container was lost; and a wake that starts no container, where the next one
+    // runs the whole bootstrap again.
+    let mut daemon = Daemon::new("unbootstrapped");
+    let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
+    let mut harness = hub(&daemon, settings)?;
+    let session = open(&mut harness, &mut daemon, "unbootstrapped")?;
+    let first = daemon.made(0);
+    daemon.exit(&first, BOOTSTRAP_FAILED);
+    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
+
+    let noted: Vec<Note> = read(&mut harness, &mut daemon, session, 0)?
+        .into_iter()
+        .filter_map(|numbered| match numbered.entry {
+            Entry::Hub(note) => Some(note),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::None);
+    assert!(!daemon.containers.contains_key(&first), "the container is removed");
+    assert_eq!(
+        noted,
+        [Note::Started { run: 1, resumed: false }, Note::Unbootstrapped { run: 1, code: BOOTSTRAP_FAILED }]
+    );
+
+    say(&mut harness, &mut daemon, session, "try again")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
+    let second = daemon.made(1);
+    let written = stdin(&mut harness, &mut daemon, &second, 1);
+
+    assert_eq!(written, [r#"{"type":"user","message":{"role":"user","content":"try again"}}"#]);
 
     Ok(())
 }
@@ -1419,6 +1498,7 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
         name: String::from("someone-elses"),
         body: String::new(),
         running: true,
+        code: 0,
         output: Vec::new(),
         stdin: Vec::new(),
     };
@@ -2204,6 +2284,7 @@ fn live_hub(root: &FsPath, label: &str) -> Result<Harness<Headless>, Unheard> {
         image: live("IMAGE"),
         model: String::from("haiku"),
         hub_url: String::new(),
+        git_url: String::new(),
         label: String::from(label),
         labels: vec![String::from("aethereal.test=1")],
         ..SessionsSettings::default()

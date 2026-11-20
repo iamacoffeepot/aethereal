@@ -11,6 +11,8 @@ fn settings() -> SessionsSettings {
         label: String::from("hub"),
         labels: vec![String::from("aethereal.test=1")],
         hub_url: String::from("http://172.17.0.1:8893/mcp"),
+        git_url: String::from("http://172.17.0.1:8893/git"),
+        bootstrap_secs: 300,
         ..SessionsSettings::default()
     }
 }
@@ -23,8 +25,11 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
     // unfound, on print mode's own model, untold where it is, or as a new conversation; a home or target volume named
     // apart from its session's is a new one each run, where `--resume` finds no conversation and cargo builds the
     // world again; and a cargo home named for the session is a registry fetched again by every session. The bearer
-    // reaches its MCP config only through the environment, never the command, and the container is on a network of
-    // its own, where the owner's port on the loopback is not.
+    // reaches its MCP config and git only through the environment, never the command, and the container is on a
+    // network of its own, where the owner's port on the loopback is not. The command is the start script's, which runs
+    // Claude Code once the work tree is ready; without the session's number, the repository's URL, or the steps'
+    // limit, the script makes no git author, clones nothing, or fails the bootstrap; and the hub's own variables come
+    // after the credential's, so a line of its file never stands in for one.
     let conversation = Conversation::Begun(String::from("0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b"));
     let env = vec![Variable { name: String::from("TOKEN"), value: String::from("t") }];
     let bearer = Bearer([0xab; 16]);
@@ -36,13 +41,15 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
     let body = spec.body();
     let expected = [
         r#"{"Image":"aethereal-session","User":"1000:1000","WorkingDir":"/session/home","#,
-        r#""Cmd":["/usr/bin/claude","-p","--input-format","stream-json","--output-format","stream-json","#,
+        r#""Cmd":["/usr/local/bin/aethereal-session-start","/usr/bin/claude","-p","#,
+        r#""--input-format","stream-json","--output-format","stream-json","#,
         r#""--verbose","--model","opus","--dangerously-skip-permissions","#,
         r#""--append-system-prompt","You run in a container.","#,
         r#""--resume","0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b","--mcp-config","#,
         r#""{\"mcpServers\":{\"aethereal\":{\"type\":\"http\",\"url\":\"http://172.17.0.1:8893/mcp\","#,
         r#"\"headers\":{\"Authorization\":\"Bearer ${AETHEREAL_HUB_BEARER}\"}}}}"],"#,
         r#""Env":["HOME=/session/home","CARGO_HOME=/session/cargo","CARGO_TARGET_DIR=/session/target","TOKEN=t","#,
+        r#""AETHEREAL_SESSION=7","AETHEREAL_GIT_URL=http://172.17.0.1:8893/git","AETHEREAL_BOOTSTRAP_SECS=300","#,
         &format!(r#""AETHEREAL_HUB_BEARER={}"],"#, bearer.hex()),
         r#""Labels":{"aethereal.sessions":"hub","aethereal.test":"1","aethereal.session":"7"},"#,
         r#""OpenStdin":true,"StdinOnce":false,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":false,"#,

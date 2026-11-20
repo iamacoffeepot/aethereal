@@ -1,7 +1,8 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
 //! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
 //! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
-//! lost, and shows so until it wakes.
+//! lost, and shows so until it wakes; one whose container's start script failed its bootstrap, before Claude Code
+//! started, did not start, and hibernates with its container removed.
 
 use super::asked::Asker;
 use super::asks::{Archived, Opened, Refusal};
@@ -10,6 +11,7 @@ use super::credential::{Crediting, Provisioned};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Gone, Life, Running, Stdin, Step, Then};
+use super::settings::BOOTSTRAP_FAILED;
 use super::streams::user_line;
 use super::transcript::{Counted, Ended, Entry, Note, Turning};
 use super::{Act, Acting, Asking, Feed, Sessions};
@@ -101,7 +103,9 @@ impl Sessions {
     }
 
     /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
-    /// hibernating, its container lost. Nothing is done when the session's container is not that run's, or is being
+    /// hibernating, its container lost. One that exited with the start script's own code failed its bootstrap before
+    /// Claude Code started, so it lost nothing: it is noted so, and the session left hibernating, its container
+    /// removed, as a start that failed is. Nothing is done when the session's container is not that run's, or is being
     /// stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
@@ -111,13 +115,21 @@ impl Sessions {
         if !is_current {
             return Ok(());
         }
-        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Lost }) else {
+        let (note, gone) = match why {
+            Ended::Exited { code: BOOTSTRAP_FAILED } => {
+                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Removed)
+            }
+            Ended::Hibernated | Ended::Archived | Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => {
+                (Note::Stopped { run, why }, Gone::Lost)
+            }
+        };
+        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone }) else {
             return Ok(());
         };
         running.activity.cancel(turn);
-        self.note(turn, session, Entry::Hub(Note::Stopped { run, why }));
+        self.note(turn, session, Entry::Hub(note));
 
-        self.retire(turn, session, running.container, run, Gone::Lost)
+        self.retire(turn, session, running.container, run, gone)
     }
 
     /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has

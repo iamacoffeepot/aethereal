@@ -25,7 +25,8 @@
 //!
 //! The sessions' port also serves the hub's one repository over git's smart HTTP, under `/git`, through `Git`, which
 //! runs `git http-backend` for each request: a session fetches all of it, and pushes only branches under its own
-//! name, `sessions/<n>/`, which the hook `Git` names refuses it otherwise. The repository is `git.repository`, made bare
+//! name, `sessions/<n>/`, which the hook `Git` names refuses it otherwise. Each session's container clones it, or
+//! fetches it, at `sessions.git_url` as it starts. The repository is `git.repository`, made bare
 //! as the hub starts when nothing is there, and its hooks `git.hooks`; a repository that cannot be made, or a hook not
 //! in place, is logged, and every git request answered `503`, the rest of the hub served without it. The owner moves
 //! `main` over ssh: the owner's port has no git route.

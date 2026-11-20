@@ -287,6 +287,7 @@ impl Sessions {
     /// session past the most awake is refused, naming the awake ones. One already waking, or being stopped to
     /// hibernate, wakes as it stands, and one awake is answered at once.
     pub(super) fn wake(&mut self, turn: &mut Turn<'_, Self>, waker: Asker<Opened>, session: u32) -> Result<(), Fault> {
+        self.wake_lost(turn, session);
         let Some(held) = self.held.get_mut(&session) else {
             return self.reply(turn, waker, &Opened::Refused(Refusal::NoSuchSession));
         };
@@ -397,6 +398,7 @@ impl Sessions {
         written: String,
         entry: Entry,
     ) -> Result<Said, Fault> {
+        self.wake_lost(turn, session);
         let Some(held) = self.held.get(&session) else {
             return Ok(Said::Refused(Refusal::NoSuchSession));
         };
@@ -434,6 +436,37 @@ impl Sessions {
         }
 
         Ok(Said::Taken { number })
+    }
+}
+
+impl Sessions {
+    /// Readies `session` to wake to the hub's line first, when its last container was lost and nothing has asked it to
+    /// wake since: the line, the setting `lost`, is noted as the hub's and held as the first its next container is
+    /// written, so it comes before any line of the owner's that wakes it, in the transcript as on its stdin. A session
+    /// that hibernates lost is started at once to hold it, unless no more may wake, when nothing is done and the wake
+    /// that asked is refused as it would be.
+    fn wake_lost(&mut self, turn: &mut Turn<'_, Self>, session: u32) {
+        let Some(held) = self.held.get(&session) else {
+            return;
+        };
+        if !held.lost_unwoken() {
+            return;
+        }
+        let may_wake = match &held.life {
+            Life::Hibernating { .. } => self.may_start().is_ok(),
+            Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. } | Life::Archived => true,
+        };
+        if !may_wake {
+            return;
+        }
+        let text = self.settings.lost.clone();
+        let written = said(Speaker::Hub, &text);
+        self.note(turn, session, Entry::Said { by: Speaker::Hub, text });
+        match self.held.get_mut(&session).map(|held| &mut held.life) {
+            Some(Life::Stopping { then: Then::Hibernate { lines, .. }, .. }) => lines.push(written),
+            Some(Life::Hibernating { .. }) => self.restart(session, Vec::new(), vec![written]),
+            Some(Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. } | Life::Archived) | None => {}
+        }
     }
 }
 

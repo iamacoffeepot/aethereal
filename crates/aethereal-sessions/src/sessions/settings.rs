@@ -30,6 +30,15 @@ const PROMPT: &str = include_str!("../../image/prompt.txt");
 /// Where the Claude Code binary is inside its container: where the session image's package installs it.
 pub const CLAUDE: &str = "/usr/bin/claude";
 
+/// Where the start script is inside its container, the container's command: the session image installs it from
+/// `aethereal-session-start` beside its Dockerfile. It readies the session's work tree from the hub's repository, then
+/// runs the rest of its command, Claude Code, in its place.
+pub const START: &str = "/usr/local/bin/aethereal-session-start";
+
+/// The code a container's process exits with when the start script's bootstrap failed, before Claude Code started:
+/// sysexits' `EX_CONFIG`, as the start script exits. A run that ends with it failed to start; it lost no work.
+pub const BOOTSTRAP_FAILED: i64 = 78;
+
 /// The sessions capability's section, `sessions`: what each session's container is made of, and its limits (ADR-0057).
 /// Every field of a container comes from here or from the session's number, never from what a caller asked. Where the
 /// sessions' records and transcripts are kept is `Files`' setting for its `Save` namespace, and where each home is
@@ -61,6 +70,16 @@ pub struct SessionsSettings {
     /// for none.
     #[flag]
     pub hub_url: String,
+    /// The hub's repository, as a container on Docker's default bridge reaches it: the sessions' port's `/git`, which
+    /// each container's start script clones its work tree from, or fetches, and which it pushes its own branches to.
+    /// Given to the container as a variable, so neither the script nor the prompt spells out an address. Empty for
+    /// none: the start script then readies no work tree.
+    #[flag]
+    pub git_url: String,
+    /// The seconds each step of a container's start script is given, before Claude Code starts: its git config, its
+    /// credential helper, and the clone or the fetch of its work tree. A step that runs past it fails the bootstrap.
+    #[flag]
+    pub bootstrap_secs: u32,
     /// The value of the label every container of this hub carries, [`HUB_LABEL`].
     #[flag]
     pub label: String,
@@ -77,8 +96,13 @@ pub struct SessionsSettings {
     #[flag]
     pub idle_secs: u32,
     /// What the hub tells a session before it compacts it to hibernate: that it is about to be, and nothing of why, as
-    /// the same notice comes before a wind-down asked for early as before an idle one.
+    /// the same notice comes before a wind-down asked for early as before an idle one; and that it commits and pushes
+    /// its work in progress to branches of its own, so the owner and the other sessions see it.
     pub notice: String,
+    /// What the hub tells a session whose last container was lost as it wakes, before any line of the owner's: that
+    /// its last turn may have been cut short, that its work tree is as that container left it, and that it checks the
+    /// tree and pushes what is worth keeping.
+    pub lost: String,
     /// What each session is told of where it is, appended to Claude Code's system prompt.
     pub prompt: String,
     /// The seconds the notice's turn, and then the compaction, are each given before the session's container is
@@ -107,13 +131,23 @@ impl Default for SessionsSettings {
             model: String::from("opus"),
             user: String::from("1000:1000"),
             hub_url: String::from("http://172.17.0.1:8893/mcp"),
+            git_url: String::from("http://172.17.0.1:8893/git"),
+            bootstrap_secs: 5 * 60,
             label: String::from("hub"),
             labels: Vec::new(),
             most_running: 4,
             idle_secs: 55 * 60,
             notice: String::from(
                 "The hub: this session will be compacted and hibernated next. Before that, write down your loose \
-                 threads: unfinished work, open questions, uncommitted changes, and what to pick up next.",
+                 threads: unfinished work, open questions, uncommitted changes, and what to pick up next. Then commit \
+                 your work in progress in /session/home/work, and push it to a branch under \
+                 sessions/$AETHEREAL_SESSION/ named for what it is, not one branch shared by all your work, so the \
+                 owner and the other sessions can see it.",
+            ),
+            lost: String::from(
+                "The hub: your last container ended without warning, so your last turn may have been cut short. Your \
+                 work tree at /session/home/work is as that container left it. Check it, and push what is worth \
+                 keeping to a branch under sessions/$AETHEREAL_SESSION/.",
             ),
             prompt: String::from(PROMPT.trim_end()),
             wind_down_secs: 10 * 60,

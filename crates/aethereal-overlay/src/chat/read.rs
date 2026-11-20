@@ -107,6 +107,9 @@ fn noted(note: &Note) -> Told {
         Note::Unstarted { run, why } => (format!("run {run} did not start: {why}"), true),
         Note::Overdue { step } => (format!("winding down overdue at {step:?}"), true),
         Note::Unwritten { why } => (format!("a line was not written: {why}"), true),
+        Note::Unbootstrapped { run, code } => {
+            (format!("run {run} did not start: its bootstrap exited with {code}"), true)
+        }
     };
 
     Told::Note { text, alert }

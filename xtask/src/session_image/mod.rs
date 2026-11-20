@@ -24,8 +24,9 @@ use site::Site;
 use std::io;
 use std::process::{self, Command, Stdio};
 
-/// The image's directory, from the workspace's root: its Dockerfile, Anthropic's release key it trusts, and the prompt
-/// each session is told.
+/// The image's directory, from the workspace's root: its Dockerfile, Anthropic's release key it trusts, the prompt each
+/// session is told, and the files the image copies in: the start script, git's credential helper, and git's system
+/// config.
 const IMAGE: &str = "crates/aethereal-sessions/image";
 
 /// The repository's toolchain, whose version the image is built on unless `--rust` names another.

@@ -216,6 +216,23 @@ impl Session {
         }
     }
 
+    /// Whether its last container was lost and nothing has asked it to wake since: it hibernates lost, or its lost
+    /// container is being removed with no wake or line waiting on it. The next to wake it is preceded by the hub's
+    /// line.
+    pub fn lost_unwoken(&self) -> bool {
+        match &self.life {
+            Life::Hibernating { gone: Gone::Lost } => true,
+            Life::Stopping { then: Then::Hibernate { gone: Gone::Lost, opening, lines }, .. } => {
+                opening.is_empty() && lines.is_empty()
+            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { gone: Gone::Removed }
+            | Life::Archived => false,
+        }
+    }
+
     /// Whether a container started now carries on Claude's conversation rather than beginning one.
     pub const fn resumes(&self) -> bool {
         matches!(self.conversation, Conversation::Begun(_))

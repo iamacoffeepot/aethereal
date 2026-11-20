@@ -1,0 +1,64 @@
+#!/bin/sh
+# The command of every session's container (ADR-0057): it readies the session's work tree, then runs its arguments,
+# Claude Code as the hub names it, in its place, so Claude Code keeps the container's stdin and stdout.
+#
+# The tree is `$HOME/work`, on the session's home volume, which outlives every container. It is cloned from the hub's
+# repository, `$AETHEREAL_GIT_URL`, only when nothing is there; when something is, its `origin` is pointed at that URL
+# and fetched, which moves only its remote-tracking refs, never a file of the tree. With no URL given, the hub serves no
+# repository, and no tree is readied.
+#
+# Bootstrap is all or nothing: a step that fails, or runs past its limit of `$AETHEREAL_BOOTSTRAP_SECS` seconds, ends
+# the container with the bootstrap's own code, 78 (sysexits' EX_CONFIG), saying why on stderr, which the hub keeps in the
+# transcript. Claude Code never starts, nothing carries on half set up, and nothing is tried again here: the hub leaves
+# the session hibernating, and its next wake runs the whole bootstrap again.
+#
+# The bearer, `$AETHEREAL_HUB_BEARER`, reaches git only through the image's credential helper, read from the
+# environment as git asks, so it is never an argument or a file.
+set -eu
+
+# Ends the container with the bootstrap's code, saying why.
+fail() {
+    printf 'aethereal-session-start: %s\n' "$1" >&2
+    exit 78
+}
+
+# Runs the step named `$1`, the rest of the arguments, within the limit: git never prompts, as no one can answer.
+step() {
+    what=$1
+    shift
+    status=0
+    GIT_TERMINAL_PROMPT=0 timeout --kill-after=10 "$AETHEREAL_BOOTSTRAP_SECS" "$@" || status=$?
+    case $status in
+        0) ;;
+        124 | 137) fail "$what ran past its limit of $AETHEREAL_BOOTSTRAP_SECS seconds" ;;
+        *) fail "$what failed with exit code $status" ;;
+    esac
+}
+
+[ -n "${AETHEREAL_GIT_URL:-}" ] || exec "$@"
+
+[ -n "${AETHEREAL_SESSION:-}" ] || fail "the container names no session in AETHEREAL_SESSION"
+[ -n "${AETHEREAL_HUB_BEARER:-}" ] || fail "the container holds no bearer in AETHEREAL_HUB_BEARER"
+case ${AETHEREAL_BOOTSTRAP_SECS:-} in
+    "" | *[!0-9]*) fail "AETHEREAL_BOOTSTRAP_SECS is not a number of seconds" ;;
+esac
+
+# Every commit says which session made it, at an address that resolves nowhere.
+step "git config of user.name" git config --global user.name "session $AETHEREAL_SESSION"
+step "git config of user.email" git config --global user.email "session-$AETHEREAL_SESSION@aethereal.invalid"
+
+# The credential helper the image's system config names answers for the hub's repository; what it answers is dropped.
+step "the credential helper" git credential fill >/dev/null <<CREDENTIAL
+url=$AETHEREAL_GIT_URL
+
+CREDENTIAL
+
+tree=$HOME/work
+if [ -e "$tree" ]; then
+    step "pointing origin at $AETHEREAL_GIT_URL" git --git-dir="$tree/.git" remote set-url origin "$AETHEREAL_GIT_URL"
+    step "the fetch of origin" git --git-dir="$tree/.git" fetch --quiet origin
+else
+    step "the clone of $AETHEREAL_GIT_URL" git clone --quiet "$AETHEREAL_GIT_URL" "$tree"
+fi
+
+exec "$@"

@@ -50,13 +50,14 @@ pub enum Entry {
 pub enum Speaker {
     /// A caller of the hub's tools.
     Caller,
-    /// The hub itself, as it winds an idle session down.
+    /// The hub itself, as it winds an idle session down, or wakes one whose last container was lost.
     Hub,
     /// The owner, at the trusted engine `engine`, whose line Claude reads tagged `[engine]` (ADR-0057).
     Engine { engine: u32 },
 }
 
-/// Something the hub did with a session's container, or saw become of it.
+/// Something the hub did with a session's container, or saw become of it. Kept in the transcript's file, each case read
+/// by its place: a case is never moved, and a new one goes last.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.note")]
 pub enum Note {
@@ -70,6 +71,10 @@ pub enum Note {
     Overdue { step: WindDown },
     /// A line to the session's stdin was not written, as `why` says.
     Unwritten { why: String },
+    /// The container of `run` ended with `code`, the start script's own, as its bootstrap failed before Claude Code
+    /// started: its stderr, just before, says why. It was removed, and the session hibernates, its work untouched; its
+    /// next wake runs the bootstrap again.
+    Unbootstrapped { run: u32, code: i64 },
 }
 
 /// How a session's container came to stop. Kept in the transcript's file, each case read by its place: a case is never

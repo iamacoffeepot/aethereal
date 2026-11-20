@@ -190,14 +190,23 @@ fn the_repository_s_toolchain_has_a_pinned_base_image() {
 
 #[test]
 fn the_context_holds_the_image_s_directory_and_goes_with_the_build() {
-    // Catches the Dockerfile, the prompt, or the committed release key left out of the context, and a context left
-    // behind under the target directory after a build.
+    // Catches the Dockerfile, the prompt, the committed release key, or a file the image copies in, the start script,
+    // the credential helper, and git's system config, left out of the context, and a context left behind under the
+    // target directory after a build.
     let root = env::temp_dir().join(format!("aethereal-xtask-session-image-{}", process::id()));
     let Ok(scratch) = Scratch::write(root.clone()) else {
         panic!("the context is written");
     };
     let context = scratch.context();
-    for file in ["Dockerfile", "prompt.txt", "claude-code.asc"] {
+    let files = [
+        "Dockerfile",
+        "prompt.txt",
+        "claude-code.asc",
+        "aethereal-session-start",
+        "git-credential-aethereal",
+        "gitconfig",
+    ];
+    for file in files {
         assert!(context.join(file).is_file(), "the context holds {file}");
     }
 
