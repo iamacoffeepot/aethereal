@@ -1,9 +1,9 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
 //! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
 //! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
-//! lost, and shows so until it wakes; one whose container's start script failed its bootstrap, before Claude Code
-//! started, did not start, and hibernates holding the lines that container was written, which Claude Code never read,
-//! for its next.
+//! lost, and shows so until it wakes; one whose start failed, before its container ran, or as its start script failed
+//! its bootstrap before Claude Code printed a line, did not start, and hibernates holding the lines it was to be
+//! written, or was written, which Claude Code never read, for its next.
 
 use super::asked::{Asker, written};
 use super::asks::{Archived, Opened, Refusal};
@@ -111,10 +111,13 @@ impl Sessions {
     }
 
     /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
-    /// hibernating, its container lost. One that exited with the start script's own code failed its bootstrap before
-    /// Claude Code started, so it lost nothing and read none of the lines written to it: it is noted so, and the
-    /// session left hibernating, not lost, holding those lines for its next container. Nothing is done when the
-    /// session's container is not that run's, or is being stopped.
+    /// hibernating, its container lost. One that exited with the start script's own code having printed nothing to its
+    /// stdout failed its bootstrap before Claude Code started, as the start script prints nothing there and Claude Code
+    /// prints as soon as it reads a line, so it lost nothing and read none of the lines written to it: it is noted so,
+    /// and the session left hibernating, not lost, holding those lines for its next container. One that printed, then
+    /// exited with that code, ended as Claude Code's own exit, and is lost as any other. Whether it printed is what the
+    /// transcript counts of its stdout, so it holds as well for a container that a hub that started again adopted.
+    /// Nothing is done when the session's container is not that run's, or is being stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
@@ -123,13 +126,14 @@ impl Sessions {
         if !is_current {
             return Ok(());
         }
+        let claude_ran = held.transcript.printed(run);
         let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) else {
             return Ok(());
         };
         let Running { container, lines, activity, .. } = *running;
         let (note, gone) = match why {
-            Ended::Exited { code: BOOTSTRAP_FAILED } => {
-                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Unbootstrapped { unread: lines })
+            Ended::Exited { code: BOOTSTRAP_FAILED } if !claude_ran => {
+                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Unstarted { unread: lines })
             }
             Ended::Hibernated | Ended::Archived | Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => {
                 (Note::Stopped { run, why }, Gone::Lost)
@@ -206,8 +210,9 @@ impl Sessions {
         Ok(())
     }
 
-    /// The start of `session`'s run `run` failed, as `why` says: the session hibernates, and each who waits on it is
-    /// answered, or declined.
+    /// The start of `session`'s run `run` failed, as `why` says, before its container ran: each who waits on it is
+    /// declined, and the session hibernates holding the lines that wait for its container, which Claude Code never
+    /// read, for its next, as a failed bootstrap holds them. A container already made is removed first.
     pub(super) fn unstarted(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -218,10 +223,19 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Starting { opening, .. } = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
+        let Life::Starting { step, opening, lines, .. } =
+            mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
         else {
             return Ok(());
         };
+        let gone = Gone::Unstarted { unread: lines };
+        match step {
+            Step::Launching { container } => self.retire(turn, session, container, run, gone)?,
+            Step::Recording | Step::Housing { .. } | Step::Crediting | Step::Creating => {
+                held.life = Life::Hibernating { gone };
+            }
+        }
+
         let refused = Opened::Refused(why.clone());
         for waiting in opening {
             self.reply(turn, waiting, &refused)?;
@@ -337,11 +351,10 @@ impl Sessions {
         if *starting != run {
             return Ok(());
         }
-        let container = container.clone();
         if let Acted::Failed(why) = acted {
-            self.unstarted(turn, session, run, &Refusal::Docker(why))?;
-            return self.retire(turn, session, container, run, Gone::Removed);
+            return self.unstarted(turn, session, run, &Refusal::Docker(why));
         }
+        let container = container.clone();
         self.note_started(turn, session, run);
         let opening = match self.held.get_mut(&session).map(|held| &mut held.life) {
             Some(Life::Starting { opening, .. }) => mem::take(opening),
@@ -434,14 +447,14 @@ impl Sessions {
     }
 
     /// Wakes `session`, which hibernates, in a new container on its home: `opening` is answered once it runs, and
-    /// `lines` are written to it once it is attached, after the lines its last container was written and never read,
-    /// as its bootstrap failed.
+    /// `lines` are written to it once it is attached, after the lines its last start was to write, or wrote, which
+    /// Claude Code never read, as that start failed.
     pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<u64>) {
         let Some(held) = self.held.get_mut(&session) else {
             return;
         };
         let unread = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
-            Life::Hibernating { gone: Gone::Unbootstrapped { unread } } => unread,
+            Life::Hibernating { gone: Gone::Unstarted { unread } } => unread,
             Life::Hibernating { gone: Gone::Removed | Gone::Lost }
             | Life::Starting { .. }
             | Life::Running(_)

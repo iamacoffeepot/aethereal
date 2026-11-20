@@ -426,7 +426,7 @@ impl Container<'_> {
     fn start(&self, scratch: &Scratch, home: &str) -> Command {
         assert!(fs::create_dir_all(scratch.path(home)).is_ok(), "the test makes the session's home, as its volume is");
         let claude = scratch.path("claude");
-        let written = fs::write(&claude, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-ran\"\n");
+        let written = fs::write(&claude, CLAUDE);
         assert!(written.is_ok(), "the test writes its fake Claude Code");
         let mut script = Command::new(image().join("aethereal-session-start"));
         script
@@ -445,6 +445,10 @@ impl Container<'_> {
         script
     }
 }
+
+/// The fake Claude Code: it prints `claude` to its stdout, marking where its own output begins, and keeps its arguments
+/// in its home.
+const CLAUDE: &str = "#!/bin/sh\nprintf 'claude\\n'\nprintf '%s\\n' \"$@\" > \"$HOME/claude-ran\"\n";
 
 /// The path a container's programs are found on: the image's directory, where git finds the credential helper, before
 /// this machine's own.
@@ -480,7 +484,8 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
     // Catches a tree cloned anywhere but the session's home, or not cloned, as the credential helper never answers the
     // hub's challenge with the bearer; a second start that clones again, resets, checks out, or merges, so an
     // uncommitted edit is lost, or that does not fetch, so a branch pushed meanwhile is not seen; commits that do not
-    // say which session made them; and Claude Code not run once the tree is ready, or run without its arguments.
+    // say which session made them; Claude Code not run once the tree is ready, or run without its arguments; and the
+    // script printing to its stdout, which is Claude Code's, so the hub takes a failed bootstrap for Claude Code's exit.
     if !has_git() {
         return Ok(());
     }
@@ -494,6 +499,7 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
     let first = served(&mut harness, container.start(&scratch, "home"));
 
     assert!(first.status.success(), "{}", said(&first));
+    assert_eq!(first.stdout, b"claude\n", "the clone prints nothing to stdout, before Claude Code does");
     assert_eq!(fs::read(work.join("first")).ok().as_deref(), Some(&b"first"[..]), "main is checked out");
     assert_eq!(claude_ran(&scratch, "home").as_deref(), Some("--verbose\n"));
     let config = scratch.path("home").join(".gitconfig").display().to_string();
@@ -511,6 +517,7 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
     let second = served(&mut harness, container.start(&scratch, "home"));
 
     assert!(second.status.success(), "{}", said(&second));
+    assert_eq!(second.stdout, b"claude\n", "the fetch prints nothing to stdout, before Claude Code does");
     assert_eq!(named(&work, "refs/remotes/origin/sessions/4/later"), later, "the branch pushed meanwhile is fetched");
     assert_eq!(named(&work, "refs/remotes/origin/main"), later, "main as the owner moved it is fetched");
     assert_eq!(named(&work, "HEAD"), checked_out, "nothing is merged, reset, or checked out");
@@ -609,6 +616,7 @@ fn a_start_script_whose_clone_or_fetch_fails_or_runs_past_its_limit_exits_with_i
         let code = output.status.code().map(i64::from);
         assert_eq!(code, Some(BOOTSTRAP_FAILED), "{home}: {}", said(&output));
         assert!(said(&output).contains(why), "{home} says why: {}", said(&output));
+        assert!(output.stdout.is_empty(), "{home} prints nothing to stdout, which the hub reads as Claude Code's");
         assert_eq!(claude_ran(&scratch, home), None, "{home} never runs Claude Code");
     }
     let kept: Vec<String> = fs::read_dir(&unrepository)

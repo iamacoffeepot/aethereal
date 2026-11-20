@@ -36,7 +36,8 @@ pub const CLAUDE: &str = "/usr/bin/claude";
 pub const START: &str = "/usr/local/bin/aethereal-session-start";
 
 /// The code a container's process exits with when the start script's bootstrap failed, before Claude Code started:
-/// sysexits' `EX_CONFIG`, as the start script exits. A run that ends with it failed to start; it lost no work.
+/// sysexits' `EX_CONFIG`, as the start script exits. A run that ends with it having printed nothing to its stdout
+/// failed to start, and lost no work; one that printed first ended as Claude Code's own exit.
 pub const BOOTSTRAP_FAILED: i64 = 78;
 
 /// The sessions capability's section, `sessions`: what each session's container is made of, and its limits (ADR-0057).

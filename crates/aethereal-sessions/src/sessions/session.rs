@@ -29,7 +29,7 @@ pub(super) struct Session {
 pub(super) enum Life {
     /// Its container of `run` is being made and started: `step` says how far. `opening` waits to be answered once it
     /// runs, and `lines`, each the number of its entry in the transcript, a line said or run, wait to be written to it
-    /// once its stdin is attached.
+    /// once its stdin is attached; should the start fail first, the session holds them for its next container.
     Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<u64> },
     /// Its container runs.
     Running(Box<Running>),
@@ -45,15 +45,16 @@ pub(super) enum Life {
 /// How a hibernating session's last container ended.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub(super) enum Gone {
-    /// The hub stopped and removed it, or it never started, or the hub has made none since it began.
+    /// The hub stopped and removed it, or the hub has made none since it began.
     Removed,
     /// It ended without the hub ending it: its process exited, the kernel killed it for its memory, or it was gone
     /// when the hub came back to it.
     Lost,
-    /// Its start script failed its bootstrap, so Claude Code never started and read none of the lines written to it:
-    /// `unread`, each the number of its entry in the transcript, in order, are written first to its next container,
-    /// before any line that wakes it, and noted nowhere again. Empty when none was written.
-    Unbootstrapped { unread: Vec<u64> },
+    /// Its start failed before Claude Code printed a line: it was never made or started, or its start script failed
+    /// its bootstrap. Claude Code read none of the lines it was written or was to be written: `unread`, each the number
+    /// of its entry in the transcript, in order, are written first to its next container, before any line that wakes
+    /// it, and noted nowhere again. Empty when there were none.
+    Unstarted { unread: Vec<u64> },
 }
 
 /// How far a container being started is.
@@ -90,7 +91,7 @@ pub(super) struct Running {
     pub run: u32,
     pub stdin: Stdin,
     /// The lines said or run that were written to its stdin, each the number of its entry in the transcript, in order:
-    /// should it end with the start script's code, Claude Code read none of them.
+    /// should it end with the start script's code having printed nothing to its stdout, Claude Code read none of them.
     pub lines: Vec<u64>,
     pub activity: Activity,
     /// The background tasks of its that run, by their ids.
@@ -178,11 +179,11 @@ impl Session {
             Life::Stopping { then: Then::Hibernate { gone: Gone::Lost, .. }, .. }
             | Life::Hibernating { gone: Gone::Lost } => (State::Hibernating, Connection::Lost),
             Life::Stopping {
-                then: Then::Hibernate { gone: Gone::Removed | Gone::Unbootstrapped { .. }, lines, .. },
+                then: Then::Hibernate { gone: Gone::Removed | Gone::Unstarted { .. }, lines, .. },
                 ..
             } => (waits(lines), Connection::Attached),
             Life::Stopping { then: Then::Archive { .. }, .. } => (State::Archived, Connection::Attached),
-            Life::Hibernating { gone: Gone::Removed | Gone::Unbootstrapped { .. } } => {
+            Life::Hibernating { gone: Gone::Removed | Gone::Unstarted { .. } } => {
                 (State::Hibernating, Connection::None)
             }
             Life::Archived => (State::Archived, Connection::None),
@@ -197,7 +198,7 @@ impl Session {
 
     /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
     /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
-    /// it lost until it wakes, or holds the lines its last container never read, as its bootstrap failed, for its next.
+    /// it lost until it wakes, or holds the lines Claude Code never read, as its last start failed, for its next.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
@@ -208,9 +209,7 @@ impl Session {
             Life::Starting { run, .. } => Standing::Starting { run: *run },
             Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
             Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
-            Life::Hibernating { gone: Gone::Unbootstrapped { unread } } => {
-                Standing::Unbootstrapped { unread: unread.clone() }
-            }
+            Life::Hibernating { gone: Gone::Unstarted { unread } } => Standing::Unstarted { unread: unread.clone() },
             Life::Archived => Standing::Archived,
         };
 
@@ -242,7 +241,7 @@ impl Session {
             Life::Starting { .. }
             | Life::Running(_)
             | Life::Stopping { .. }
-            | Life::Hibernating { gone: Gone::Removed | Gone::Unbootstrapped { .. } }
+            | Life::Hibernating { gone: Gone::Removed | Gone::Unstarted { .. } }
             | Life::Archived => false,
         }
     }

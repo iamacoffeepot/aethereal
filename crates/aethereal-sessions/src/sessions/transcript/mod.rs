@@ -65,15 +65,16 @@ pub enum Note {
     Started { run: u32, resumed: bool },
     /// The container of `run` was stopped or ended, as `why` says.
     Stopped { run: u32, why: Ended },
-    /// The container of `run` could not be made or started, as `why` says, and a line said meanwhile went nowhere.
+    /// The container of `run` could not be made or started, as `why` says: the lines that waited for it are held for
+    /// the session's next.
     Unstarted { run: u32, why: String },
     /// A step of winding a session down to hibernate took past its deadline: its container is stopped anyway.
     Overdue { step: WindDown },
     /// A line to the session's stdin was not written, as `why` says.
     Unwritten { why: String },
-    /// The container of `run` ended with `code`, the start script's own, as its bootstrap failed before Claude Code
-    /// started: its stderr, just before, says why. It was removed, and the session hibernates, its work untouched; its
-    /// next wake runs the bootstrap again.
+    /// The container of `run` ended with `code`, the start script's own, having printed nothing to its stdout, as its
+    /// bootstrap failed before Claude Code started: its stderr, just before, says why. It was removed, and the session
+    /// hibernates, its work untouched; its next wake runs the bootstrap again.
     Unbootstrapped { run: u32, code: i64 },
 }
 
@@ -266,6 +267,15 @@ impl Transcript {
     #[must_use]
     pub const fn counted(&self) -> Counted {
         self.counted
+    }
+
+    /// Whether the container of `run` has written to its stdout, as far as the transcript holds: none has when it
+    /// counts another container's output, or notes none started.
+    #[must_use]
+    pub const fn printed(&self, run: u32) -> bool {
+        let counts_run = matches!(self.counted, Counted::Run(counted) if counted == run);
+
+        counts_run && self.stdout_bytes > 0
     }
 
     /// The bytes of the latest container's stdout and of its stderr the transcript holds.

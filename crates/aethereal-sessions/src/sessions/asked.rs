@@ -445,8 +445,9 @@ impl Sessions {
     /// wake since: the line, the setting `lost`, is noted as the hub's and held as the first its next container is
     /// written, so it comes before any line of the owner's that wakes it, in the transcript as on its stdin. A session
     /// that hibernates lost is started at once to hold it, unless no more may wake, when nothing is done and the wake
-    /// that asked is refused as it would be. Should that container's bootstrap fail, the line is held with the others
-    /// it was written, for the next, and the session is no longer lost, so it is written once.
+    /// that asked is refused as it would be. Should that start fail, before its container runs or in its bootstrap,
+    /// the line is held with the others it was to be written, for the next, and the session is no longer lost, so it
+    /// is written once.
     fn wake_lost(&mut self, turn: &mut Turn<'_, Self>, session: u32) {
         let Some(held) = self.held.get(&session) else {
             return;
