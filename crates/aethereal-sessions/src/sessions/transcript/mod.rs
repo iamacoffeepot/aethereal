@@ -50,13 +50,14 @@ pub enum Entry {
 pub enum Speaker {
     /// A caller of the hub's tools.
     Caller,
-    /// The hub itself, as it winds an idle session down.
+    /// The hub itself, as it winds an idle session down, or wakes one whose last container was lost.
     Hub,
     /// The owner, at the trusted engine `engine`, whose line Claude reads tagged `[engine]` (ADR-0057).
     Engine { engine: u32 },
 }
 
-/// Something the hub did with a session's container, or saw become of it.
+/// Something the hub did with a session's container, or saw become of it. Kept in the transcript's file, each case read
+/// by its place: a case is never moved, and a new one goes last.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.note")]
 pub enum Note {
@@ -64,12 +65,17 @@ pub enum Note {
     Started { run: u32, resumed: bool },
     /// The container of `run` was stopped or ended, as `why` says.
     Stopped { run: u32, why: Ended },
-    /// The container of `run` could not be made or started, as `why` says, and a line said meanwhile went nowhere.
+    /// The container of `run` could not be made or started, as `why` says: the lines that waited for it are held for
+    /// the session's next.
     Unstarted { run: u32, why: String },
     /// A step of winding a session down to hibernate took past its deadline: its container is stopped anyway.
     Overdue { step: WindDown },
     /// A line to the session's stdin was not written, as `why` says.
     Unwritten { why: String },
+    /// The container of `run` ended with `code`, the start script's own, having printed nothing to its stdout, as its
+    /// bootstrap failed before Claude Code started: its stderr, just before, says why. It was removed, and the session
+    /// hibernates, its work untouched; its next wake runs the bootstrap again.
+    Unbootstrapped { run: u32, code: i64 },
 }
 
 /// How a session's container came to stop. Kept in the transcript's file, each case read by its place: a case is never
@@ -241,6 +247,14 @@ impl Transcript {
         self.entries.last().map_or(0, |numbered| numbered.number)
     }
 
+    /// The entry numbered `number`: none when it holds none of that number.
+    #[must_use]
+    pub fn entry(&self, number: u64) -> Option<&Entry> {
+        let found = self.entries.binary_search_by_key(&number, |numbered| numbered.number).ok()?;
+
+        self.entries.get(found).map(|numbered| &numbered.entry)
+    }
+
     /// At most `most` entries after the number `after`, in order.
     #[must_use]
     pub fn after(&self, after: u64, most: usize) -> Vec<Numbered> {
@@ -253,6 +267,15 @@ impl Transcript {
     #[must_use]
     pub const fn counted(&self) -> Counted {
         self.counted
+    }
+
+    /// Whether the container of `run` has written to its stdout, as far as the transcript holds: none has when it
+    /// counts another container's output, or notes none started.
+    #[must_use]
+    pub const fn printed(&self, run: u32) -> bool {
+        let counts_run = matches!(self.counted, Counted::Run(counted) if counted == run);
+
+        counts_run && self.stdout_bytes > 0
     }
 
     /// The bytes of the latest container's stdout and of its stderr the transcript holds.

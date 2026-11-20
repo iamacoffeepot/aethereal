@@ -7,7 +7,7 @@ mod tests;
 
 use super::Bearer;
 use super::record::Conversation;
-use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
+use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled};
 use crate::{Access, Bind, ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
 use aethereal_data::write_json_string;
 use aethereal_store::DROP_BOX;
@@ -15,6 +15,17 @@ use aethereal_store::DROP_BOX;
 /// The variable that holds the bearer of a session's route in its container's environment, which its MCP config
 /// names, so the bearer is never an argument of its command.
 pub const BEARER_VARIABLE: &str = "AETHEREAL_HUB_BEARER";
+
+/// The variable that names a session's container's session, by its number: the start script makes it git's author,
+/// and the session's own branches are under `sessions/$AETHEREAL_SESSION/`.
+pub const SESSION_VARIABLE: &str = "AETHEREAL_SESSION";
+
+/// The variable that holds the hub's repository's URL, the setting `git_url`, which the start script clones from and
+/// its credential helper answers for. Not given when the setting is empty.
+pub const GIT_URL_VARIABLE: &str = "AETHEREAL_GIT_URL";
+
+/// The variable that holds the seconds each step of the start script is given, the setting `bootstrap_secs`.
+pub const BOOTSTRAP_SECS_VARIABLE: &str = "AETHEREAL_BOOTSTRAP_SECS";
 
 /// What a session's container is made for: the session, its run, the conversation it carries on, the credential's
 /// variables, the bearer of its route to the hub's tools, and the absolute path of its drop box.
@@ -116,7 +127,13 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
     let mut variables: Vec<Variable> =
         places.map(|(name, value)| Variable { name: String::from(name), value: String::from(value) }).to_vec();
     variables.extend(env);
-    variables.push(Variable { name: String::from(BEARER_VARIABLE), value: bearer.hex() });
+    // The hub's own variables go after the credential's, so a line of its file never stands in for one.
+    variables.push(variable(SESSION_VARIABLE, session.to_string()));
+    if !settings.git_url.is_empty() {
+        variables.push(variable(GIT_URL_VARIABLE, settings.git_url.clone()));
+    }
+    variables.push(variable(BOOTSTRAP_SECS_VARIABLE, settings.bootstrap_secs.to_string()));
+    variables.push(variable(BEARER_VARIABLE, bearer.hex()));
     let volumes =
         shelves(settings, session)?.map(|shelf| Volume { name: shelf.name, target: String::from(shelf.target) });
 
@@ -149,11 +166,18 @@ pub fn name(settings: &SessionsSettings, session: u32, run: u32) -> String {
     format!("aethereal-session-{}-{session}-{run}", settings.label)
 }
 
-/// Claude Code in print mode, reading and writing stream-json, on the settings' model, its permissions skipped as the
-/// container is the sandbox, told where it is by the settings' prompt, resuming the conversation Claude named, and
-/// reaching the hub's tools when the settings name them.
+/// The variable `name`, holding `value`.
+fn variable(name: &str, value: String) -> Variable {
+    Variable { name: String::from(name), value }
+}
+
+/// The start script, which readies the session's work tree and then runs, in its place, Claude Code in print mode,
+/// reading and writing stream-json, on the settings' model, its permissions skipped as the container is the sandbox,
+/// told where it is by the settings' prompt, resuming the conversation Claude named, and reaching the hub's tools when
+/// the settings name them.
 fn command(settings: &SessionsSettings, conversation: &Conversation) -> Vec<String> {
     let words = [
+        START,
         CLAUDE,
         "-p",
         "--input-format",

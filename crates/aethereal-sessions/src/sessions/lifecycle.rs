@@ -1,15 +1,18 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
 //! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
 //! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
-//! lost, and shows so until it wakes.
+//! lost, and shows so until it wakes; one whose start failed, before its container ran, or as its start script failed
+//! its bootstrap before Claude Code printed a line, did not start, and hibernates holding the lines it was to be
+//! written, or was written, which Claude Code never read, for its next.
 
-use super::asked::Asker;
+use super::asked::{Asker, written};
 use super::asks::{Archived, Opened, Refusal};
 use super::container::{Made, Unmade, spec};
 use super::credential::{Crediting, Provisioned};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Gone, Life, Running, Stdin, Step, Then};
+use super::settings::BOOTSTRAP_FAILED;
 use super::streams::user_line;
 use super::transcript::{Counted, Ended, Entry, Note, Turning};
 use super::{Act, Acting, Asking, Feed, Sessions};
@@ -55,10 +58,17 @@ impl Sessions {
         let turning = held.transcript.turning();
         let has_lines = !lines.is_empty();
         let is_busy = has_lines || turning == Turning::Running;
+        let typed = lines
+            .iter()
+            .filter_map(|&number| held.transcript.entry(number))
+            .filter_map(written)
+            .map(|text| user_line(&text))
+            .collect();
         held.life = Life::Running(Box::new(Running {
             container,
             run,
-            stdin: Stdin::Attaching { lines: lines.iter().map(|text| user_line(text)).collect() },
+            stdin: Stdin::Attaching { lines: typed },
+            lines,
             activity: Activity::Working,
             tasks: BTreeSet::new(),
             reading,
@@ -101,8 +111,13 @@ impl Sessions {
     }
 
     /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
-    /// hibernating, its container lost. Nothing is done when the session's container is not that run's, or is being
-    /// stopped.
+    /// hibernating, its container lost. One that exited with the start script's own code having printed nothing to its
+    /// stdout failed its bootstrap before Claude Code started, as the start script prints nothing there and Claude Code
+    /// prints as soon as it reads a line, so it lost nothing and read none of the lines written to it: it is noted so,
+    /// and the session left hibernating, not lost, holding those lines for its next container. One that printed, then
+    /// exited with that code, ended as Claude Code's own exit, and is lost as any other. Whether it printed is what the
+    /// transcript counts of its stdout, so it holds as well for a container that a hub that started again adopted.
+    /// Nothing is done when the session's container is not that run's, or is being stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
@@ -111,13 +126,23 @@ impl Sessions {
         if !is_current {
             return Ok(());
         }
-        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Lost }) else {
+        let claude_ran = held.transcript.printed(run);
+        let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) else {
             return Ok(());
         };
-        running.activity.cancel(turn);
-        self.note(turn, session, Entry::Hub(Note::Stopped { run, why }));
+        let Running { container, lines, activity, .. } = *running;
+        let (note, gone) = match why {
+            Ended::Exited { code: BOOTSTRAP_FAILED } if !claude_ran => {
+                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Unstarted { unread: lines })
+            }
+            Ended::Hibernated | Ended::Archived | Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => {
+                (Note::Stopped { run, why }, Gone::Lost)
+            }
+        };
+        activity.cancel(turn);
+        self.note(turn, session, Entry::Hub(note));
 
-        self.retire(turn, session, running.container, run, Gone::Lost)
+        self.retire(turn, session, container, run, gone)
     }
 
     /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has
@@ -185,8 +210,9 @@ impl Sessions {
         Ok(())
     }
 
-    /// The start of `session`'s run `run` failed, as `why` says: the session hibernates, and each who waits on it is
-    /// answered, or declined.
+    /// The start of `session`'s run `run` failed, as `why` says, before its container ran: each who waits on it is
+    /// declined, and the session hibernates holding the lines that wait for its container, which Claude Code never
+    /// read, for its next, as a failed bootstrap holds them. A container already made is removed first.
     pub(super) fn unstarted(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -197,10 +223,19 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Starting { opening, .. } = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
+        let Life::Starting { step, opening, lines, .. } =
+            mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
         else {
             return Ok(());
         };
+        let gone = Gone::Unstarted { unread: lines };
+        match step {
+            Step::Launching { container } => self.retire(turn, session, container, run, gone)?,
+            Step::Recording | Step::Housing { .. } | Step::Crediting | Step::Creating => {
+                held.life = Life::Hibernating { gone };
+            }
+        }
+
         let refused = Opened::Refused(why.clone());
         for waiting in opening {
             self.reply(turn, waiting, &refused)?;
@@ -316,11 +351,10 @@ impl Sessions {
         if *starting != run {
             return Ok(());
         }
-        let container = container.clone();
         if let Acted::Failed(why) = acted {
-            self.unstarted(turn, session, run, &Refusal::Docker(why))?;
-            return self.retire(turn, session, container, run, Gone::Removed);
+            return self.unstarted(turn, session, run, &Refusal::Docker(why));
         }
+        let container = container.clone();
         self.note_started(turn, session, run);
         let opening = match self.held.get_mut(&session).map(|held| &mut held.life) {
             Some(Life::Starting { opening, .. }) => mem::take(opening),
@@ -413,13 +447,22 @@ impl Sessions {
     }
 
     /// Wakes `session`, which hibernates, in a new container on its home: `opening` is answered once it runs, and
-    /// `lines` are written to it once it is attached.
-    pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<String>) {
+    /// `lines` are written to it once it is attached, after the lines its last start was to write, or wrote, which
+    /// Claude Code never read, as that start failed.
+    pub(super) fn restart(&mut self, session: u32, opening: Vec<Asker<Opened>>, lines: Vec<u64>) {
         let Some(held) = self.held.get_mut(&session) else {
             return;
         };
+        let unread = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
+            Life::Hibernating { gone: Gone::Unstarted { unread } } => unread,
+            Life::Hibernating { gone: Gone::Removed | Gone::Lost }
+            | Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Archived => Vec::new(),
+        };
         held.runs += 1;
-        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening, lines };
+        held.life = Life::Starting { run: held.runs, step: Step::Recording, opening, lines: [unread, lines].concat() };
 
         self.start(session);
     }

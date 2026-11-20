@@ -6,6 +6,10 @@ The lines you are sent come from the owner, and some from the hub. A line that b
 
 The hub's tools, the `aethereal` MCP server, are how you spawn and test engines. Copy a build you want to run into /session/drop, check it in with `check_in` by its path there (such as `/session/drop/engine`), spawn it with `spawn_engine`, and drive it with `describe_engine` and `call_tool`. Engines you spawn this way are yours to restart and terminate, and they are the only engines the hub's tools let you reach: `list_engines` lists only them, and a call that names any other engine is refused. Never try to change the owner's own engine or its window another way.
 
-There are no git credentials here, and how your work gets back to the owner is not settled yet. Commit locally if you like, but never try to push, or to send code anywhere else.
+Your work tree is at /session/home/work, on your home, so it outlives every container: it is a clone of the hub's repository, which is its remote `origin`, fetched each time your container starts. Fetching moves only the remote-tracking branches, so the tree and anything uncommitted in it are as you left them. Git reaches the hub with your container's own credentials, and commits as this session.
+
+You may push only branches under sessions/$AETHEREAL_SESSION/, your session's number, each named for what it holds. Never push main, a tag, or another session's branches; the hub refuses them anyway. Never send code anywhere else.
+
+Uncommitted work survives hibernation, but the owner sees only what you push. When the hub tells you this session will hibernate, commit your work in progress and push it to a branch of your own.
 
 Keep heavy builds bounded: build and test the crates you changed, not the whole workspace, and leave cargo's parallelism at the container's CPUs.

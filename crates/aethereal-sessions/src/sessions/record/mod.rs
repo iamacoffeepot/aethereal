@@ -33,8 +33,8 @@ pub enum Conversation {
 
 /// Where a session stood when the hub last wrote its record: awake, with a container of it that may exist and what a
 /// hub that starts again finds it by among the containers Docker lists; hibernating, its last container removed by the
-/// hub or lost; or archived. Each case keeps its place, as a record is read by the place of its case, so a record
-/// written before a case was renamed or added still reads.
+/// hub, lost, or after a failed start, with the lines Claude Code never read; or archived. Each case keeps its place,
+/// as a record is read by the place of its case, so a record written before a case was renamed or added still reads.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.standing")]
 pub enum Standing {
@@ -49,6 +49,11 @@ pub enum Standing {
     /// Docker has not yet answered its id. After `Archived`, so a record written before there was one still reads.
     Starting { run: u32 },
     /// No container of it exists, as its last ended without the hub ending it: it hibernates, shown as lost until the
-    /// next line wakes it. Last of the cases, after `Starting`, so a record written before there was one still reads.
+    /// next line wakes it. After `Starting`, so a record written before there was one still reads.
     Lost,
+    /// No container of it exists, as its last start failed before Claude Code printed a line: its container was never
+    /// made or started, or its start script failed its bootstrap. It hibernates, and `unread`, the lines that start was
+    /// to write, or wrote, each the number of its entry in the transcript, in order, are written first to its next.
+    /// Last of the cases, after `Lost`, so a record written before there was one still reads.
+    Unstarted { unread: Vec<u64> },
 }

@@ -28,8 +28,9 @@ pub(super) struct Session {
 #[derive(Bound)]
 pub(super) enum Life {
     /// Its container of `run` is being made and started: `step` says how far. `opening` waits to be answered once it
-    /// runs, and `lines` wait to be written to it once its stdin is attached.
-    Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<String> },
+    /// runs, and `lines`, each the number of its entry in the transcript, a line said or run, wait to be written to it
+    /// once its stdin is attached; should the start fail first, the session holds them for its next container.
+    Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<u64> },
     /// Its container runs.
     Running(Box<Running>),
     /// Its container of `run` is being stopped, then removed, and then the session is left as `then` says.
@@ -42,13 +43,18 @@ pub(super) enum Life {
 }
 
 /// How a hibernating session's last container ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub(super) enum Gone {
-    /// The hub stopped and removed it, or it never started, or the hub has made none since it began.
+    /// The hub stopped and removed it, or the hub has made none since it began.
     Removed,
     /// It ended without the hub ending it: its process exited, the kernel killed it for its memory, or it was gone
     /// when the hub came back to it.
     Lost,
+    /// Its start failed before Claude Code printed a line: it was never made or started, or its start script failed
+    /// its bootstrap. Claude Code read none of the lines it was written or was to be written: `unread`, each the number
+    /// of its entry in the transcript, in order, are written first to its next container, before any line that wakes
+    /// it, and noted nowhere again. Empty when there were none.
+    Unstarted { unread: Vec<u64> },
 }
 
 /// How far a container being started is.
@@ -72,8 +78,8 @@ pub(super) enum Step {
 pub(super) enum Then {
     /// Hibernating, its container gone as `gone` says: it was idle, asked to hibernate, or its container ended by
     /// itself. A wake or a line meanwhile wakes it again once its container is removed: `opening` waits to be answered
-    /// once its next container runs, and `lines` to be written to it.
-    Hibernate { opening: Vec<Asker<Opened>>, lines: Vec<String>, gone: Gone },
+    /// once its next container runs, and `lines`, each the number of its entry in the transcript, to be written to it.
+    Hibernate { opening: Vec<Asker<Opened>>, lines: Vec<u64>, gone: Gone },
     /// Archived, `archiving` answered once it is.
     Archive { archiving: Vec<Asker<Archived>> },
 }
@@ -84,6 +90,9 @@ pub(super) struct Running {
     pub container: ContainerId,
     pub run: u32,
     pub stdin: Stdin,
+    /// The lines said or run that were written to its stdin, each the number of its entry in the transcript, in order:
+    /// should it end with the start script's code having printed nothing to its stdout, Claude Code read none of them.
+    pub lines: Vec<u64>,
     pub activity: Activity,
     /// The background tasks of its that run, by their ids.
     pub tasks: BTreeSet<String>,
@@ -169,11 +178,14 @@ impl Session {
             }
             Life::Stopping { then: Then::Hibernate { gone: Gone::Lost, .. }, .. }
             | Life::Hibernating { gone: Gone::Lost } => (State::Hibernating, Connection::Lost),
-            Life::Stopping { then: Then::Hibernate { gone: Gone::Removed, lines, .. }, .. } => {
-                (waits(lines), Connection::Attached)
-            }
+            Life::Stopping {
+                then: Then::Hibernate { gone: Gone::Removed | Gone::Unstarted { .. }, lines, .. },
+                ..
+            } => (waits(lines), Connection::Attached),
             Life::Stopping { then: Then::Archive { .. }, .. } => (State::Archived, Connection::Attached),
-            Life::Hibernating { gone: Gone::Removed } => (State::Hibernating, Connection::None),
+            Life::Hibernating { gone: Gone::Removed | Gone::Unstarted { .. } } => {
+                (State::Hibernating, Connection::None)
+            }
             Life::Archived => (State::Archived, Connection::None),
         }
     }
@@ -186,7 +198,7 @@ impl Session {
 
     /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
     /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
-    /// it lost until it wakes.
+    /// it lost until it wakes, or holds the lines Claude Code never read, as its last start failed, for its next.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
@@ -197,6 +209,7 @@ impl Session {
             Life::Starting { run, .. } => Standing::Starting { run: *run },
             Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
             Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
+            Life::Hibernating { gone: Gone::Unstarted { unread } } => Standing::Unstarted { unread: unread.clone() },
             Life::Archived => Standing::Archived,
         };
 
@@ -213,6 +226,23 @@ impl Session {
             | Life::Stopping { .. }
             | Life::Hibernating { .. }
             | Life::Archived => Landing::Nothing,
+        }
+    }
+
+    /// Whether its last container was lost and nothing has asked it to wake since: it hibernates lost, or its lost
+    /// container is being removed with no wake or line waiting on it. The next to wake it is preceded by the hub's
+    /// line.
+    pub fn lost_unwoken(&self) -> bool {
+        match &self.life {
+            Life::Hibernating { gone: Gone::Lost } => true,
+            Life::Stopping { then: Then::Hibernate { gone: Gone::Lost, opening, lines }, .. } => {
+                opening.is_empty() && lines.is_empty()
+            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { gone: Gone::Removed | Gone::Unstarted { .. } }
+            | Life::Archived => false,
         }
     }
 
@@ -241,7 +271,7 @@ impl Activity {
 
 /// The state of a session no turn runs in, with `lines` waiting for its container: working, as each is a turn to come,
 /// or idle when none waits.
-const fn waits(lines: &[String]) -> State {
+const fn waits(lines: &[u64]) -> State {
     if lines.is_empty() {
         State::Idle
     } else {

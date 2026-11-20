@@ -35,7 +35,9 @@ pub use heard::Heard;
 pub use record::{Conversation, Record, Standing};
 pub use row::{Connection, Grew, SessionRow, State};
 pub use saves::{Index, Keeping, Loading};
-pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, SessionsSettings, TARGET, Unlabelled};
+pub use settings::{
+    BOOTSTRAP_FAILED, CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled,
+};
 pub use transcript::{
     Compaction, Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown,
 };

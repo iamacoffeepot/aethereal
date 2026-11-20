@@ -60,7 +60,7 @@ ARG SESSION_GID
 RUN rustup component add clippy rustfmt rust-src \
     && rustup target add wasm32-unknown-unknown
 
-# git: Claude Code reads a repository's state, and a session commits its work locally.
+# git: a session's work tree is a clone of the hub's repository, which it commits in and pushes its own branches from.
 # ca-certificates: cargo and Claude Code reach crates.io, GitHub, and Anthropic over TLS, as apt does Anthropic's
 # repository below.
 # ripgrep: the fast search Claude Code reaches for in a large tree.
@@ -78,6 +78,12 @@ RUN echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.cl
     && apt-get update \
     && apt-get install --yes --no-install-recommends "claude-code=${CLAUDE_VERSION}-1" \
     && rm -rf /var/lib/apt/lists/*
+
+# The container's command, which readies the session's work tree from the hub's repository and then runs Claude Code;
+# the credential helper that answers git with the session's bearer, read from the container's environment; and the
+# system config that names it (ADR-0057). Each is beside this file.
+COPY --chmod=0755 aethereal-session-start git-credential-aethereal /usr/local/bin/
+COPY --chmod=0644 gitconfig /etc/gitconfig
 
 # Claude Code refuses to skip its permission checks as root, so the session runs as a user of its own.
 RUN groupadd --gid "${SESSION_GID}" session \
