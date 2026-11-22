@@ -1,4 +1,4 @@
-use super::{Made, spec, volumes};
+use super::{Made, bootstrap, spec, volumes};
 use crate::Bearer;
 use crate::sessions::record::Conversation;
 use crate::sessions::settings::SessionsSettings;
@@ -26,10 +26,10 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
     // apart from its session's is a new one each run, where `--resume` finds no conversation and cargo builds the
     // world again; and a cargo home named for the session is a registry fetched again by every session. The bearer
     // reaches its MCP config and git only through the environment, never the command, and the container is on a
-    // network of its own, where the owner's port on the loopback is not. The command is the start script's, which runs
-    // Claude Code once the work tree is ready; without the session's number, the repository's URL, or the steps'
-    // limit, the script makes no git author, clones nothing, or fails the bootstrap; and the hub's own variables come
-    // after the credential's, so a line of its file never stands in for one.
+    // network of its own, where the owner's port on the loopback is not. The command is Claude Code's alone, its tree
+    // readied by the run's bootstrap container before; without the session's number or the repository's URL, it
+    // cannot name its branches, and git's credential helper answers nothing when it pushes; and the hub's own
+    // variables come after the credential's, so a line of its file never stands in for one.
     let conversation = Conversation::Begun(String::from("0f4c2a9e-5b1d-4e3f-8a7b-6c5d4e3f2a1b"));
     let env = vec![Variable { name: String::from("TOKEN"), value: String::from("t") }];
     let bearer = Bearer([0xab; 16]);
@@ -41,7 +41,7 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
     let body = spec.body();
     let expected = [
         r#"{"Image":"aethereal-session","User":"1000:1000","WorkingDir":"/session/home","#,
-        r#""Cmd":["/usr/local/bin/aethereal-session-start","/usr/bin/claude","-p","#,
+        r#""Cmd":["/usr/bin/claude","-p","#,
         r#""--input-format","stream-json","--output-format","stream-json","#,
         r#""--verbose","--model","opus","--dangerously-skip-permissions","#,
         r#""--append-system-prompt","You run in a container.","#,
@@ -49,7 +49,7 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
         r#""{\"mcpServers\":{\"aethereal\":{\"type\":\"http\",\"url\":\"http://172.17.0.1:8893/mcp\","#,
         r#"\"headers\":{\"Authorization\":\"Bearer ${AETHEREAL_HUB_BEARER}\"}}}}"],"#,
         r#""Env":["HOME=/session/home","CARGO_HOME=/session/cargo","CARGO_TARGET_DIR=/session/target","TOKEN=t","#,
-        r#""AETHEREAL_SESSION=7","AETHEREAL_GIT_URL=http://172.17.0.1:8893/git","AETHEREAL_BOOTSTRAP_SECS=300","#,
+        r#""AETHEREAL_SESSION=7","AETHEREAL_GIT_URL=http://172.17.0.1:8893/git","#,
         &format!(r#""AETHEREAL_HUB_BEARER={}"],"#, bearer.hex()),
         r#""Labels":{"aethereal.sessions":"hub","aethereal.test":"1","aethereal.session":"7"},"#,
         r#""OpenStdin":true,"StdinOnce":false,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":false,"#,
@@ -62,6 +62,36 @@ fn a_session_s_container_is_written_from_the_settings_and_the_session_alone() {
     .concat();
     assert_eq!(body.as_deref(), Ok(expected.as_str()));
     assert_eq!(spec.name, "aethereal-session-hub-7-2");
+}
+
+#[test]
+fn a_session_s_bootstrap_container_is_given_only_what_its_start_script_needs() {
+    // Tripwire: the create body of session 7's second run's bootstrap container. Its command is the start script
+    // alone, which exits, so nothing of Claude Code runs in it; it is given the session's number, the repository's URL,
+    // the steps' limit, and its bearer, which its git presents, in its environment, never the command, and never the
+    // credential, which nothing in it needs, nor the drop box or a volume but the home, the one place it readies. Its
+    // stdin is closed, as nothing is written to it; it runs as the session's user, on its network of its own, within
+    // the limits; and it carries the bootstrap label, its run, beside every container's, by which a hub that starts
+    // again tells it from the session's Claude Code container, which its name never is.
+    let bearer = Bearer([0xcd; 16]);
+    let Ok(spec) = bootstrap(&settings(), 7, 2, bearer) else {
+        panic!("the settings' labels are labels");
+    };
+    let body = spec.body();
+    let expected = [
+        r#"{"Image":"aethereal-session","User":"1000:1000","WorkingDir":"/session/home","#,
+        r#""Cmd":["/usr/local/bin/aethereal-session-start"],"#,
+        r#""Env":["HOME=/session/home","AETHEREAL_SESSION=7","AETHEREAL_GIT_URL=http://172.17.0.1:8893/git","#,
+        r#""AETHEREAL_BOOTSTRAP_SECS=300","#,
+        &format!(r#""AETHEREAL_HUB_BEARER={}"],"#, bearer.hex()),
+        r#""Labels":{"aethereal.sessions":"hub","aethereal.test":"1","aethereal.session":"7","aethereal.bootstrap":"2"},"#,
+        r#""OpenStdin":false,"StdinOnce":false,"AttachStdin":false,"AttachStdout":true,"AttachStderr":true,"Tty":false,"#,
+        r#""HostConfig":{"NetworkMode":"bridge","NanoCpus":4000000000,"Memory":8589934592,"Mounts":["#,
+        r#"{"Type":"volume","Source":"aethereal-session-hub-7","Target":"/session/home","ReadOnly":false}]}}"#,
+    ]
+    .concat();
+    assert_eq!(body.as_deref(), Ok(expected.as_str()));
+    assert_eq!(spec.name, "aethereal-session-hub-7-2-bootstrap");
 }
 
 #[test]

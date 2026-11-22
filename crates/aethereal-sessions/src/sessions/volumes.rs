@@ -8,8 +8,7 @@
 use super::Sessions;
 use super::asks::Refusal;
 use super::container;
-use super::credential::{Crediting, Provision};
-use super::session::{Life, Step};
+use super::session::{Life, Stage, Step};
 use crate::{Docker, DockerError, Unwritable, VolumeCreated};
 use aethereal_actor::{Answered, Fault, Turn, path};
 use aethereal_data::Plain;
@@ -24,17 +23,15 @@ pub struct Homing {
 }
 
 impl Sessions {
-    /// Asks Docker to make the volume numbered `made`, from 0, of those `session`'s container mounts, for its run
-    /// `run`; once each is made, the credential is read.
+    /// Asks Docker to make the volume numbered `made`, from 0, of those `session`'s containers mount, for its run
+    /// `run`; once each is made, the credential is read for its bootstrap container.
     pub(super) fn house(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, made: u32) -> Result<(), Fault> {
         let Ok(volumes) = container::volumes(&self.settings, session) else {
             return self.unmade(turn, session, run);
         };
         let at = usize::try_from(made).unwrap_or(usize::MAX);
         let Some(create) = volumes.into_iter().nth(at) else {
-            turn.run(&Provision { session }, &Crediting { session, run })?;
-            self.step_to(session, Step::Crediting);
-            return Ok(());
+            return self.credit(turn, session, run, Stage::Bootstrap);
         };
         let due = self.due(turn, 0);
         turn.to(path::<Docker>(())).within(due).ask(&create, &Homing { session, run })?;

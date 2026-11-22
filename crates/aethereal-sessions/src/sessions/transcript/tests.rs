@@ -1,4 +1,4 @@
-use super::{Compaction, Ended, Entry, Grew, Note, Numbered, Since, Speaker, Transcript, Turning};
+use super::{Compaction, Counted, Ended, Entry, Grew, Note, Numbered, Since, Speaker, Transcript, Turning};
 use aethereal_actor::Time;
 use aethereal_data::{Budget, Json, from_bytes};
 
@@ -57,16 +57,22 @@ fn a_transcript_read_back_numbers_on_and_leaves_out_a_frame_cut_short() {
 #[test]
 fn the_output_a_transcript_holds_is_counted_from_the_latest_container_s_start() {
     // Catches a re-attach that skips the wrong number of bytes of the logs, so lines are recorded twice or lost: each
-    // line counts its newline, and a new container's logs begin again from nothing.
+    // line counts its newline, and a new container's logs begin again from nothing, a run's Claude Code container's
+    // after its bootstrap container's, so the start of Claude Code's output is never skipped for what the bootstrap
+    // wrote; and a container counted as another's, so a hub that starts again notes it started twice, or never.
     let mut transcript = Transcript::new();
     transcript.add(Entry::Hub(Note::Started { run: 1, resumed: false }), AT);
     transcript.add(claude(r#"{"type":"system","subtype":"init"}"#), AT);
     transcript.add(Entry::Stderr { text: String::from("warn"), bytes: 4 }, AT);
     assert_eq!(transcript.output_bytes(), (35, 5));
 
+    transcript.add(Entry::Hub(Note::Bootstrapping { run: 2 }), AT);
+    transcript.add(Entry::Stderr { text: String::from("removed"), bytes: 7 }, AT);
+    assert_eq!((transcript.counted(), transcript.output_bytes()), (Counted::Bootstrap(2), (0, 8)));
+
     transcript.add(Entry::Hub(Note::Started { run: 2, resumed: true }), AT);
     transcript.add(Entry::Stdout { text: String::from("plain"), bytes: 5 }, AT);
-    assert_eq!(transcript.output_bytes(), (6, 0));
+    assert_eq!((transcript.counted(), transcript.output_bytes()), (Counted::Run(2), (6, 0)));
 }
 
 #[test]
@@ -122,4 +128,31 @@ fn a_container_s_stop_an_earlier_hub_saved_reads_as_how_it_stopped() {
 
     assert_eq!(read(0), Ok(stopped(Ended::Hibernated)));
     assert_eq!(read(1), Ok(stopped(Ended::Archived)));
+}
+
+/// A line of the container's stderr.
+fn stderr(text: &str) -> Entry {
+    Entry::Stderr { text: String::from(text), bytes: u64::try_from(text.len()).unwrap_or(u64::MAX) }
+}
+
+#[test]
+fn what_a_bootstrap_container_said_last_is_its_own_last_lines_in_the_order_written() {
+    // Catches a failed start's refusal showing what an earlier container wrote, so the owner reads another run's
+    // reason; its lines shown last first; and more of them than asked, or fewer when it wrote fewer.
+    let mut transcript = Transcript::new();
+    transcript.add(Entry::Hub(Note::Started { run: 1, resumed: false }), AT);
+    transcript.add(stderr("Claude Code's own warning"), AT);
+    transcript.add(Entry::Hub(Note::Bootstrapping { run: 2 }), AT);
+    assert_eq!(transcript.stderr_tail(3), Vec::<String>::new(), "the run before's lines are not the bootstrap's");
+
+    transcript.add(stderr("aethereal-session-start: removed /session/home/.gitconfig.lock, a lock no git holds"), AT);
+    transcript.add(Entry::Said { by: Speaker::Caller, text: String::from("early") }, AT);
+    transcript.add(stderr("fatal: unable to access the repository"), AT);
+    transcript.add(stderr("aethereal-session-start: the fetch of origin failed with exit code 128"), AT);
+    let said = [
+        "fatal: unable to access the repository",
+        "aethereal-session-start: the fetch of origin failed with exit code 128",
+    ];
+    assert_eq!(transcript.stderr_tail(2), said);
+    assert_eq!(transcript.stderr_tail(9).len(), 3, "every line it wrote, when it wrote fewer");
 }

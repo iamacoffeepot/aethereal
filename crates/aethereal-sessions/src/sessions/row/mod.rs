@@ -43,12 +43,13 @@ pub enum State {
 
 /// Where a session's container is: a detail beneath its conversation's state. A session is awake from its container's
 /// `Starting` until Docker has removed it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
 #[kind(name = "aether.sessions.connection")]
 pub enum Connection {
     /// It has no container.
     None,
-    /// Its record saying so is written, then its volumes, credential, and container are made and started.
+    /// Its record saying so is written, then its volumes are made, then its bootstrap container is made and runs until
+    /// it ends, and, once it exited 0, its Claude Code container is made and started.
     Starting,
     /// Its container is there, and runs until the hub has stopped and removed it.
     Attached,
@@ -56,6 +57,10 @@ pub enum Connection {
     /// it was gone when the hub came back to it. It shows so until it wakes, so the owner knows its last turn may have
     /// been cut short.
     Lost,
+    /// It has no container, as its last start failed before Claude Code ran, as `why` says, and it holds `holding`
+    /// lines that waited for that start, which its next is written first. It starts again only as the owner asks, as a
+    /// line or a wake does.
+    Unstarted { why: String, holding: u32 },
 }
 
 /// When a session's transcript last grew, on the clock of whoever holds the row.

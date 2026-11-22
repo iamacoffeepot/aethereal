@@ -1,13 +1,16 @@
-//! A session's container, made only from the capability's settings and the session's own facts (ADR-0057): its
-//! number, its run, the conversation Claude named, the credential, the bearer of its route, and its drop box; and the
-//! named volumes it mounts, built from the settings and the number. Nothing a caller asked reaches either.
+//! A session's containers, made only from the capability's settings and the session's own facts (ADR-0057): each run's
+//! bootstrap container, from its number, its run, and the bearer of its route; each run's Claude Code container, from
+//! those, the conversation Claude named, the credential, and its drop box; and the named volumes they mount, built from
+//! the settings and the number. Nothing a caller asked reaches any of them.
 
 #[cfg(test)]
 mod tests;
 
 use super::Bearer;
 use super::record::Conversation;
-use super::settings::{CARGO, CLAUDE, HOME, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled};
+use super::settings::{
+    BOOTSTRAP_LABEL, CARGO, CLAUDE, HOME, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled,
+};
 use crate::{Access, Bind, ContainerSpec, CreateVolume, Label, Network, Stdin, Variable, Volume, VolumeName};
 use aethereal_data::write_json_string;
 use aethereal_store::DROP_BOX;
@@ -21,14 +24,15 @@ pub const BEARER_VARIABLE: &str = "AETHEREAL_HUB_BEARER";
 pub const SESSION_VARIABLE: &str = "AETHEREAL_SESSION";
 
 /// The variable that holds the hub's repository's URL, the setting `git_url`, which the start script clones from and
-/// its credential helper answers for. Not given when the setting is empty.
+/// the credential helper answers for, in both of a run's containers. Not given when the setting is empty.
 pub const GIT_URL_VARIABLE: &str = "AETHEREAL_GIT_URL";
 
-/// The variable that holds the seconds each step of the start script is given, the setting `bootstrap_secs`.
+/// The variable that holds the seconds each step of the start script is given, the setting `bootstrap_secs`: given to
+/// the bootstrap container alone.
 pub const BOOTSTRAP_SECS_VARIABLE: &str = "AETHEREAL_BOOTSTRAP_SECS";
 
-/// What a session's container is made for: the session, its run, the conversation it carries on, the credential's
-/// variables, the bearer of its route to the hub's tools, and the absolute path of its drop box.
+/// What a session's Claude Code container is made for: the session, its run, the conversation it carries on, the
+/// credential's variables, the bearer of its route to the hub's tools, and the absolute path of its drop box.
 pub struct Made<'a> {
     pub session: u32,
     pub run: u32,
@@ -116,7 +120,45 @@ pub fn labels(settings: &SessionsSettings, session: u32) -> Result<Vec<Label>, U
     Ok(labels)
 }
 
-/// The spec of the container `made` describes, as `settings` say every session's is made.
+/// The spec of the bootstrap container of the session numbered `session`'s run `run`, as `settings` say every
+/// session's is made: the session image, as the session's user, on its home volume alone, its command the start script
+/// alone, which readies the work tree and exits. It is given only what the script needs, the session's number, the
+/// repository's URL, each step's limit, and `bearer`, which its git presents to the hub's repository, in its
+/// environment, never its command; never the credential, as Claude Code does not run in it, nor the drop box. Its
+/// stdin is closed, and it carries the label [`BOOTSTRAP_LABEL`], its run, beside every container's.
+///
+/// # Errors
+///
+/// As [`Unmade`] says.
+pub fn bootstrap(settings: &SessionsSettings, session: u32, run: u32, bearer: Bearer) -> Result<ContainerSpec, Unmade> {
+    let mut variables = vec![variable("HOME", String::from(HOME)), variable(SESSION_VARIABLE, session.to_string())];
+    if !settings.git_url.is_empty() {
+        variables.push(variable(GIT_URL_VARIABLE, settings.git_url.clone()));
+    }
+    variables.push(variable(BOOTSTRAP_SECS_VARIABLE, settings.bootstrap_secs.to_string()));
+    variables.push(variable(BEARER_VARIABLE, bearer.hex()));
+    let [home, _, _] = shelves(settings, session)?;
+    let mut labelled = labels(settings, session)?;
+    labelled.push(Label { key: String::from(BOOTSTRAP_LABEL), value: run.to_string() });
+
+    Ok(ContainerSpec {
+        name: bootstrap_name(settings, session, run),
+        image: settings.image.clone(),
+        user: settings.user.clone(),
+        working_dir: String::from(HOME),
+        command: vec![String::from(START)],
+        env: variables,
+        binds: Vec::new(),
+        volumes: vec![Volume { name: home.name, target: String::from(home.target) }],
+        network: Network::Bridge,
+        millicpus: settings.millicpus,
+        memory_bytes: settings.memory_bytes,
+        labels: labelled,
+        stdin: Stdin::Closed,
+    })
+}
+
+/// The spec of the Claude Code container `made` describes, as `settings` say every session's is made.
 ///
 /// # Errors
 ///
@@ -132,7 +174,6 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
     if !settings.git_url.is_empty() {
         variables.push(variable(GIT_URL_VARIABLE, settings.git_url.clone()));
     }
-    variables.push(variable(BOOTSTRAP_SECS_VARIABLE, settings.bootstrap_secs.to_string()));
     variables.push(variable(BEARER_VARIABLE, bearer.hex()));
     let volumes =
         shelves(settings, session)?.map(|shelf| Volume { name: shelf.name, target: String::from(shelf.target) });
@@ -158,12 +199,20 @@ pub fn spec(settings: &SessionsSettings, made: Made<'_>) -> Result<ContainerSpec
     })
 }
 
-/// The name of the container of the session numbered `session` for its run `run`, `aethereal-session-<label>-<n>-<run>`:
-/// named for the hub's label, so two hubs on one daemon never share one, and known before Docker makes it, so a record
-/// written before names it.
+/// The name of the Claude Code container of the session numbered `session` for its run `run`,
+/// `aethereal-session-<label>-<n>-<run>`: named for the hub's label, so two hubs on one daemon never share one, and
+/// known before Docker makes it, so a record written before names it.
 #[must_use]
 pub fn name(settings: &SessionsSettings, session: u32, run: u32) -> String {
     format!("aethereal-session-{}-{session}-{run}", settings.label)
+}
+
+/// The name of the bootstrap container of the session numbered `session` for its run `run`,
+/// `aethereal-session-<label>-<n>-<run>-bootstrap`: its Claude Code container's, which ends in the run's number, so
+/// never one of them, with `-bootstrap` after it, and known before Docker makes it, as that one is.
+#[must_use]
+pub fn bootstrap_name(settings: &SessionsSettings, session: u32, run: u32) -> String {
+    format!("{}-bootstrap", name(settings, session, run))
 }
 
 /// The variable `name`, holding `value`.
@@ -171,13 +220,11 @@ fn variable(name: &str, value: String) -> Variable {
     Variable { name: String::from(name), value }
 }
 
-/// The start script, which readies the session's work tree and then runs, in its place, Claude Code in print mode,
-/// reading and writing stream-json, on the settings' model, its permissions skipped as the container is the sandbox,
-/// told where it is by the settings' prompt, resuming the conversation Claude named, and reaching the hub's tools when
-/// the settings name them.
+/// Claude Code in print mode, reading and writing stream-json, on the settings' model, its permissions skipped as the
+/// container is the sandbox, told where it is by the settings' prompt, resuming the conversation Claude named, and
+/// reaching the hub's tools when the settings name them. Its work tree was readied by the run's bootstrap container.
 fn command(settings: &SessionsSettings, conversation: &Conversation) -> Vec<String> {
     let words = [
-        START,
         CLAUDE,
         "-p",
         "--input-format",

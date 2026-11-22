@@ -77,8 +77,7 @@ impl Git {
         };
         let &Answered::Yes(Started::Running { process, .. }) = answered else {
             turn.log(Level::Error, format_args!("the repository's {step:?} did not start, so it is not served"));
-            self.repository = Repository::Unmade;
-            return Ok(());
+            return self.stand(Repository::Unmade, turn);
         };
         self.repository = Repository::Running { step, process };
         let Some(exited) = self.unclaimed.remove(&process.id().bits()) else {
@@ -101,8 +100,7 @@ impl Git {
                 Step::Check => format!("has no hook git can run at `{}/pre-receive`", self.settings.hooks),
             };
             turn.log(Level::Error, format_args!("the repository {why}, so it is not served: {status:?} {stderr}"));
-            self.repository = Repository::Unmade;
-            return Ok(());
+            return self.stand(Repository::Unmade, turn);
         }
 
         match step {
@@ -113,9 +111,18 @@ impl Git {
             }
             Step::Check => {
                 turn.log(Level::Info, format_args!("the repository `{}` is served", self.settings.repository));
-                self.repository = Repository::Ready;
+                return self.stand(Repository::Ready, turn);
             }
         }
+
+        Ok(())
+    }
+
+    /// Leaves the repository standing as `repository`, served or never to be, and tells each actor that hears where it
+    /// stands.
+    fn stand(&mut self, repository: Repository, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.repository = repository;
+        turn.to(&self.hearers).send(&self.repository.readiness())?;
 
         Ok(())
     }

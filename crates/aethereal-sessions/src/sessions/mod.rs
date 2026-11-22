@@ -6,6 +6,7 @@
 mod asked;
 mod asks;
 mod bearers;
+mod bootstrap;
 mod chat;
 mod container;
 mod credential;
@@ -16,6 +17,7 @@ mod lifecycle;
 mod loading;
 mod output;
 mod record;
+mod repository;
 mod row;
 mod saves;
 mod session;
@@ -26,17 +28,20 @@ mod volumes;
 
 pub use asks::{
     Archive, Archived, AwakeSession, Hibernate, Hibernated, Interrupt, Interrupted, ListSessions,
-    Listed as SessionsListed, NewSession, Opened, ReadTranscript, Refusal, Said, Say, Transcribed, Wake,
+    Listed as SessionsListed, NewSession, Opened, ReadTranscript, Refusal, Said, Say, Transcribed, Unbootstrapped,
+    Wake,
 };
 pub use bearers::Bearer;
 pub use chat::{Chat, Chatted, Joined, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing};
 pub use credential::{Credential, Crediting, NoCredential, Provision, Provisioned};
 pub use heard::Heard;
 pub use record::{Conversation, Record, Standing};
+pub use repository::Repository;
 pub use row::{Connection, Grew, SessionRow, State};
 pub use saves::{Index, Keeping, Loading};
 pub use settings::{
-    BOOTSTRAP_FAILED, CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled,
+    BOOTSTRAP_FAILED, BOOTSTRAP_LABEL, BOOTSTRAP_OVERDUE, CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, START,
+    SessionsSettings, TARGET, Unlabelled,
 };
 pub use transcript::{
     Compaction, Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown,
@@ -58,6 +63,7 @@ use bearers::Bearers;
 use chat::Chats;
 use core::time::Duration;
 use loading::Reading;
+use repository::Served;
 use saves::{Indexed, Lane};
 use session::Session;
 use std::collections::BTreeMap;
@@ -185,6 +191,8 @@ pub struct Sessions {
     chats: Chats,
     /// The bearer of each running session's container, which the container stack's requests are checked against.
     bearers: Bearers,
+    /// Where the hub's repository stands, as the actor that hears it last said: a start it cannot serve is refused.
+    served: Served,
 }
 
 /// Where the capability is in beginning. In each phase before it runs, `waiting` asks are answered once it does.
@@ -212,10 +220,13 @@ struct Recorded {
 /// What a record names a container by, to find it among those Docker lists.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 enum Named {
-    /// The id Docker answered as it made it.
+    /// Its Claude Code container, by the id Docker answered as it made it.
     Made(ContainerId),
-    /// The name it is made under, as Docker had not answered its id when the record was written.
-    Starting(String),
+    /// Its bootstrap container, by the id Docker answered as it made it.
+    Bootstrap(ContainerId),
+    /// A container of the run being made, by the names its Claude Code container and its bootstrap container are made
+    /// under, as Docker had not answered an id when the record was written.
+    Starting { claude: String, bootstrap: String },
 }
 
 #[actor(depends(Docker, Files))]
@@ -239,6 +250,7 @@ impl Sessions {
             next_rest: 0,
             chats: Chats::new(),
             bearers: Bearers::default(),
+            served: Served::Unheard,
         })
     }
 
@@ -437,6 +449,15 @@ impl Sessions {
     #[tell]
     fn chatted(&mut self, chatted: Chatted, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         self.handle_chatted(chatted, turn)
+    }
+
+    /// Where the hub's repository stands, as the hub's actor that hears it from what serves it says: from then, a
+    /// start is refused while `git_url` names a repository that is not served.
+    #[tell]
+    fn repository(&mut self, repository: Repository) -> Result<(), Fault> {
+        self.handle_repository(repository);
+
+        Ok(())
     }
 
     /// An engine that joined has ended: its tabs end with it. A turn running carries on, and an ask waits on.

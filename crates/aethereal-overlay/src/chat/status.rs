@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! an ask waits ──> Waiting, over everything else
-//! the hub's container state: Starting ──> Starting;  Lost ──> Lost
+//! the hub's container state: Starting ──> Starting;  Lost ──> Lost;  Unstarted ──> Unstarted
 //! the hub's state: Working, Waiting ──> Working;  Compacting ──> Compacting;  Idle ──> Idle;
 //!                  Hibernating, Archived ──> Hibernating
 //! ```
@@ -31,13 +31,15 @@ pub enum Status {
     Hibernating,
     /// The hub lists its container lost: it ended without the hub ending it, and the next line wakes it.
     Lost,
+    /// The hub lists its last start failed: it hibernates, and the next line, or `wake_session`, starts it again.
+    Unstarted,
 }
 
 impl Status {
     /// The status of a session the hub lists in `state`, its container `connection`, with `asking` asks waiting. An
-    /// ask waiting wins over every other, as it is the owner's to answer; then a container starting or lost, which the
-    /// hub's state does not show.
-    pub const fn of(state: State, connection: Connection, asking: u32) -> Self {
+    /// ask waiting wins over every other, as it is the owner's to answer; then a container starting, lost, or whose
+    /// start failed, which the hub's state does not show.
+    pub const fn of(state: State, connection: &Connection, asking: u32) -> Self {
         if asking > 0 {
             return Self::Waiting;
         }
@@ -45,6 +47,7 @@ impl Status {
         match (state, connection) {
             (_, Connection::Starting) => Self::Starting,
             (_, Connection::Lost) => Self::Lost,
+            (_, Connection::Unstarted { .. }) => Self::Unstarted,
             (State::Working | State::Waiting, _) => Self::Working,
             (State::Compacting, _) => Self::Compacting,
             (State::Idle, _) => Self::Idle,
@@ -57,7 +60,7 @@ impl Status {
     pub const fn pulses(self) -> bool {
         match self {
             Self::Starting | Self::Working => true,
-            Self::Idle | Self::Compacting | Self::Waiting | Self::Hibernating | Self::Lost => false,
+            Self::Idle | Self::Compacting | Self::Waiting | Self::Hibernating | Self::Lost | Self::Unstarted => false,
         }
     }
 }

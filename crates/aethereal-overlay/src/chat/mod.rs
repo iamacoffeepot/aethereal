@@ -526,7 +526,7 @@ impl Chats {
     /// status, as the hub lists it.
     pub fn titles(&self) -> Vec<Title> {
         let sessions = self.live().into_iter().map(|tab| {
-            let status = Status::of(tab.state, tab.container, tab.asking);
+            let status = Status::of(tab.state, &tab.container, tab.asking);
             (tab.name.clone(), Icon::Marked(status))
         });
 

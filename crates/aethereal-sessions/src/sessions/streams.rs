@@ -1,9 +1,10 @@
-//! A running session's streams (ADR-0057): its logs read into its transcript, what each event of Claude's says of its
-//! turns and tasks, its stdin written through its attach, and Docker's events of its containers.
+//! A session's streams (ADR-0057): its containers' logs read into its transcript, its bootstrap container's for people
+//! to read and its Claude Code container's for what each event of Claude's says of its turns and tasks; its stdin
+//! written through its attach; and Docker's events of its containers.
 
 use super::heard::{self, Heard};
 use super::record::Conversation;
-use super::session::{Activity, Flow, Life, Stdin};
+use super::session::{Activity, Flow, Life, Stdin, Step};
 use super::transcript::{Ended, Entry, Note};
 use super::{Feed, Sessions, Typing};
 use crate::{Attached, Attaching, Detached, Event, EventsDone, Logging, LogsDone, Output, Watching};
@@ -12,8 +13,9 @@ use aethereal_tcp::{Write, Wrote};
 use core::mem;
 
 impl Sessions {
-    /// A piece of a container's output: each line it ends goes into the session's transcript, and says what it says
-    /// of the session's turns.
+    /// A piece of a container's output: each line it ends goes into the session's transcript. A line of Claude Code's
+    /// says what it says of the session's turns; a bootstrap container's is kept for people to read, and nothing is
+    /// read from it.
     pub(super) fn handle_part_logging(&mut self, part: Part<Logging>, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
         let Some(Taken { value: Output { stream, bytes }, kept, .. }) = self.logging.part(turn, part)? else {
             return Ok(());
@@ -22,13 +24,26 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Running(running) = &mut held.life else {
-            return Ok(());
+        let (reading, is_bootstrap) = match &mut held.life {
+            Life::Running(running) if running.run == run => (&mut running.reading, false),
+            Life::Starting { run: starting, step: Step::Bootstrapping { reading, .. }, .. } if *starting == run => {
+                (reading, true)
+            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { .. }
+            | Life::Archived => {
+                return Ok(());
+            }
         };
-        if running.run != run {
-            return Ok(());
+        let entries = reading.read(stream, turn.read(&bytes));
+        if is_bootstrap {
+            for entry in entries {
+                self.note(turn, session, entry);
+            }
+            return self.flush(turn);
         }
-        let entries = running.reading.read(stream, turn.read(&bytes));
         for entry in entries {
             let (heard, conversation) = match &entry {
                 Entry::Claude(json) => heard::read(json.as_str()),
@@ -107,7 +122,7 @@ impl Sessions {
     }
 }
 
-/// Which of a running container's streams ended.
+/// Which of a container's streams ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Closing {
     Logs,
@@ -115,8 +130,10 @@ enum Closing {
 }
 
 impl Sessions {
-    /// The stream `number`, `closing`, of `session`'s run `run` ended: when it was the running container's, it is
-    /// marked closed and the container's state asked for.
+    /// The stream `number`, `closing`, of `session`'s run `run` ended: when it was the running Claude Code container's,
+    /// or the logs of the run's bootstrap container, it is marked closed and the container's state asked for. A
+    /// bootstrap container is judged only so, by the state Docker answers, once its logs have ended, as Docker ends
+    /// them only once it has stopped and all it wrote is read, so the transcript holds what it said by then.
     fn closed(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -128,8 +145,22 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Running(running) = &mut held.life else {
-            return Ok(());
+        let running = match &mut held.life {
+            Life::Running(running) => running,
+            Life::Starting { run: starting, step: Step::Bootstrapping { container, logs, .. }, .. } => {
+                let is_run = *starting == run;
+                let is_open = *logs == Flow::Open(number);
+                let is_current = is_run && is_open && closing == Closing::Logs;
+                if !is_current {
+                    return Ok(());
+                }
+                *logs = Flow::Closed;
+                let container = container.clone();
+                return self.inspect(turn, session, container, run);
+            }
+            Life::Starting { .. } | Life::Stopping { .. } | Life::Hibernating { .. } | Life::Archived => {
+                return Ok(());
+            }
         };
         let is_run = running.run == run;
         let flow = match closing {
@@ -261,7 +292,9 @@ impl Sessions {
         self.flush(turn)
     }
 
-    /// An event of a container carrying the hub's label: a session's that died has ended, and its container is lost.
+    /// An event of a container carrying the hub's label: a session's Claude Code container that died has ended, and is
+    /// lost. A bootstrap container that dies is judged once its logs end, which follows, from Docker's state of it, so
+    /// what it wrote is in the transcript first.
     pub(super) fn handle_part_watching(
         &mut self,
         part: Part<Watching>,

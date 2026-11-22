@@ -2,7 +2,8 @@
 //! ask as their input and answer what it answers.
 
 use super::row::SessionRow;
-use super::transcript::Numbered;
+use super::settings::{BOOTSTRAP_FAILED, BOOTSTRAP_OVERDUE};
+use super::transcript::{Ended, Numbered};
 use crate::DockerError;
 use aethereal_actor::Time;
 use aethereal_data::Plain;
@@ -199,6 +200,26 @@ pub enum Refusal {
     /// The session is being compacted, as its owner or Claude Code asked: a hibernate would cut the compaction short, so
     /// it is asked again once the compaction ends.
     Compacting,
+    /// The hub's repository, which each bootstrap container's start script clones or fetches, is still being made: a
+    /// bootstrap would fail, so no container is made yet.
+    RepositoryMaking,
+    /// The hub's repository could not be made, or its hook is not in place, so it is never served: a bootstrap would
+    /// fail, so no container is made.
+    RepositoryUnmade,
+    /// The session's bootstrap container did not exit 0, so Claude Code's container was never made, as this says.
+    Unbootstrapped(Unbootstrapped),
+}
+
+/// How a session's bootstrap container ended without readying its work tree, as Docker said: the hub judges it by that
+/// alone. `said` is the last lines it wrote to stderr, at most a few, oldest first, carried for its asker to read, which
+/// the hub reads nothing from; empty when it wrote none.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.unbootstrapped")]
+pub struct Unbootstrapped {
+    /// How it ended: its process exited with a code other than 0, the kernel killed it for its memory, or it was gone,
+    /// or had never run, when the hub came to it.
+    pub ended: Ended,
+    pub said: Vec<String>,
 }
 
 /// An awake session, as a refusal past the most awake names it: by its number, and its name as the list shows it.
@@ -240,7 +261,43 @@ impl fmt::Display for Refusal {
                 f.write_str("a turn of the session waits on the owner's answer to an ask: answer it first")
             }
             Self::Compacting => f.write_str("the session is being compacted: ask again once the compaction ends"),
+            Self::RepositoryMaking => {
+                f.write_str("the hub's repository is still being made, so no session can start yet: ask again soon")
+            }
+            Self::RepositoryUnmade => f.write_str(
+                "the hub's repository could not be made, or its hook is not in place, so no session can start: the \
+                 hub's log says why",
+            ),
+            Self::Unbootstrapped(unbootstrapped) => unbootstrapped.fmt(f),
         }
+    }
+}
+
+/// How the bootstrap ended, then what it said last, for its asker to read.
+impl fmt::Display for Unbootstrapped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the session's bootstrap container ")?;
+        match self.ended {
+            Ended::Exited { code: BOOTSTRAP_FAILED } => {
+                write!(f, "exited with code {BOOTSTRAP_FAILED}, as a step failed")?;
+            }
+            Ended::Exited { code: BOOTSTRAP_OVERDUE } => {
+                write!(f, "exited with code {BOOTSTRAP_OVERDUE}, as a step ran past its limit")?;
+            }
+            Ended::Exited { code } => write!(f, "exited with code {code}")?,
+            Ended::OutOfMemory => f.write_str("was killed for its memory")?,
+            Ended::Lost => f.write_str("was gone, or had never run, when the hub came to it")?,
+            Ended::Hibernated | Ended::Archived => f.write_str("was stopped by the hub")?,
+        }
+        if self.said.is_empty() {
+            return f.write_str(", saying nothing on stderr");
+        }
+        f.write_str("; it said last:")?;
+        for line in &self.said {
+            write!(f, "\n{line}")?;
+        }
+
+        Ok(())
     }
 }
 

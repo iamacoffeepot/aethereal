@@ -2,8 +2,9 @@
 //! for an engine started by hand, spawn an engine from its store, and terminate one (ADR-0037, ADR-0038, ADR-0040),
 //! and check binaries into its store, list them, and pin them (ADR-0039). It lists `Processes`, which starts each
 //! engine it spawns, and `actor_logs`, which reads what its own actors logged (ADR-0044). It runs the Claude sessions
-//! its caller opens, each in a Docker container of its own, and offers them as the `session_*` tools (ADR-0057), and
-//! puts each trusted engine's chat through to them with `ChatToSessions`. Its own tool `describe_hub` answers the
+//! its caller opens, each in a Docker container of its own, and offers them as the `session_*` tools (ADR-0057), puts
+//! each trusted engine's chat through to them with `ChatToSessions`, and tells them where its repository stands with
+//! `GitToSessions`, so a start the repository cannot serve is refused. Its own tool `describe_hub` answers the
 //! commit it was built from and the link revision it speaks (ADR-0038). It runs no cycle: its sockets wake it as they
 //! are ready (ADR-0033).
 //!
@@ -29,7 +30,8 @@
 //! fetches it, at `sessions.git_url` as it starts. The repository is `git.repository`, made bare
 //! as the hub starts when nothing is there, and its hooks `git.hooks`; a repository that cannot be made, or a hook not
 //! in place, is logged, and every git request answered `503`, the rest of the hub served without it. The owner moves
-//! `main` over ssh: the owner's port has no git route.
+//! `main` over ssh: the owner's port has no git route. While the repository is being made, or once it cannot be, a
+//! session's start is refused before its container is made, saying so.
 //!
 //! Build with `cargo build --release -p aethereal-hub`, and run with `aethereal-hub --link-port 8892 --root store`. The
 //! store is kept in the directory `--root` names. Then check an engine's binary in, such as the `link_engine` example's,
@@ -39,6 +41,7 @@
 //! how; a test reads its command line as the hub does, so a change that moves a flag or key updates it.
 
 mod describe;
+mod git_to_sessions;
 mod stacks;
 #[cfg(test)]
 mod tests;
@@ -57,6 +60,7 @@ use aethereal_substrate::{EngineSettings, Host, Program};
 use aethereal_tcp::Tcp;
 use aethereal_tools::{LogsTool, Toolbox};
 use describe::DescribeHubTool;
+use git_to_sessions::GitToSessions;
 use stacks::{ContainerStack, LocalStack};
 use std::process::ExitCode;
 
@@ -74,8 +78,11 @@ type Roots = (
         (
             HubTools,
             (
-                ChatToSessions,
-                (Sessions, (Docker, (Files, (Git, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ())))))))))),
+                GitToSessions,
+                (
+                    ChatToSessions,
+                    (Sessions, (Docker, (Files, (Git, (Processes, (Store, (Engines, (Mcp, (Http, (Tcp, ())))))))))),
+                ),
             ),
         ),
     ),
@@ -103,6 +110,7 @@ fn hub() -> Program<Headless, Roots> {
         .root::<Docker>()
         .root::<Sessions>()
         .root::<ChatToSessions>()
+        .root::<GitToSessions>()
         .root::<HubTools>()
         .root_with::<LocalStack>(local)
         .root_with::<ContainerStack>(container)
