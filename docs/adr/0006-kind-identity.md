@@ -38,7 +38,7 @@ impl Kind for NoteOn {
 
 For a type with no parameters, the derive also writes the kind's **node**, a static holding its name and its schema, which its id is computed from, and `KIND` points at it. It bounds neither the schema nor the kind on its fields' types: a field whose type is not `Schema` is refused at that field's shape, and a bound would leave a kind that reaches itself through a reference unprovable. A type with parameters keeps its bounds, and its node is made in a constant.
 
-The attribute holds the name and nothing else. A second `kind`, any other key, a name that is not a string literal, and a `kind` with no name are each a compile error, and so is a `kind` on a field or a variant. Whether the name conforms is decided by `KindName::new` and not by the derive, and for a type with no parameters the derive also reads the name in a constant of its own, so a name that does not conform stops the build even where nothing uses the kind.
+The attribute holds the name and nothing else. A second `kind`, any other key, a name that is not a string literal, and a `kind` with no name are each a compile error, and so is a `kind` on a field or a variant. Whether the name conforms is decided by `KindName::new` and not by the derive, and for a type with no parameters the derive also computes the kind's id in a constant of its own, so a name that does not conform, or a cycle this ADR refuses (below), stops the build where the kind is defined, even where nothing uses the kind.
 
 A type whose `Schema` is written by hand writes its `impl Kind` by hand too, as a type whose schema is written by hand writes its codec by hand. The longhand stands where the derive does not, and is not a second way to declare a kind.
 
@@ -80,11 +80,11 @@ pub struct KindId(u64);
 
 impl KindId {
     pub const fn of<K: Kind>() -> Self { .. }
-    pub fn from_description(name: &KindName, schema: &SchemaNodes) -> Self { .. }
+    pub fn from_description(name: &KindName, schema: &SchemaNodes) -> Result<Self, DescriptionFault> { .. }
 }
 ```
 
-`KindId::of::<K>()` is evaluated at compile time. `from_description` computes the same id from a name and a schema that arrived as bytes; a member of a cycle arrives with its whole cycle (below). Both go through one function that turns a name and a layout hash into an id, and nothing else computes one, so an id cannot be written by hand. A `KindId` is plain data, and one that was decoded is a claim like any other.
+`KindId::of::<K>()` is evaluated at compile time. `from_description` computes the same id from a name and a schema that arrived as bytes, and refuses a schema that names a member of a cycle by its place: a member of a cycle arrives with its whole cycle (below). Both go through one function that turns a name and a layout hash into an id, and nothing else computes one, so an id cannot be written by hand. A `KindId` is plain data, and one that was decoded is a claim like any other.
 
 **The hash is FNV-1a, 64 bits,** over bytes this ADR states, so that a codec in any language computes the same id. Its offset basis is `0xcbf29ce484222325` and its prime is `0x100000001b3`.
 
@@ -107,7 +107,7 @@ A shape's **layout hash** is the hash of one tag byte followed by the shape's pa
 
 `Json` was added by ADR-0038 with the tag `12` and nothing after it, so it never hashes as String does.
 
-A reference that names its protocol (ADR-0016) has the tag `13`, then the layout hash of the sixteen bytes it is written as, then one byte: `0` for a tuple of tells, `1` for a named protocol. Then come the kinds the protocol names, as a set: the count of those outside the hashed kind's cycle, and their ids ascending, each followed, for a named protocol, by its answers as a count and their ids ascending. A reference inside a cycle then names the members of the cycle it reaches (below).
+A reference that names its protocol (ADR-0016) has the tag `13`, then the layout hash of the sixteen bytes it is written as, then one byte: `0` for a tuple of tells, `1` for a named protocol. Then come the kinds the protocol names, as a **set**: the count of those outside the hashed kind's cycle, and their ids ascending, each followed, for a named protocol, by its answers, themselves written as a set. A kind a named protocol lists twice is written once, with the answers of its first entry. In the layout of a member of a cycle, every set then names the members of the cycle it reaches, a count of zero included, and a named protocol then names the members it takes (below).
 
 Whether a struct's or a variant's fields are named or unnamed is a matter of names, and does not appear.
 
@@ -119,8 +119,8 @@ A layout hash is built from its children's hashes for one reason: it costs one s
 
 1. The graph is found from the kind's node and broken into its strongly connected components. Each component is hashed after every component it reaches, so every kind outside it already has its id.
 2. A component of one kind with no reference to itself is hashed as the table says, each kind its references name written as its id.
-3. Any other component is a **cycle**. Its members are ordered by their names' bytes, then by their layouts with the members each one names counted but not told apart. Two members this order does not tell apart stop the build.
-4. Each member's layout is hashed with the members its references name written as their positions in that order: after a reference's kinds outside the cycle, the count of the members it names, and their positions ascending, each followed, for a named protocol, by the hash of its answers.
+3. Any other component is a **cycle**. Its members are ordered by their names' bytes, a name before every longer name it begins, then by their **blank layouts**, the smaller number first. A member's blank layout is its layout hashed as step 4 says, with the members it names counted but not told apart: a set writes, after its kinds outside the cycle, the count of the members it names and nothing more, and a named protocol writes, after its kinds outside the cycle and their answers, the count of the members it takes, then the hash of each one's answers, those hashes ascending. Two members this order does not tell apart stop the build.
+4. Each member's layout is hashed with the members its references name written as their positions in that order. A set writes, after its kinds outside the cycle, the count of the members it names, and their positions ascending. A named protocol writes, after its kinds outside the cycle and their answers, the count of the members it takes, and their positions ascending, each followed by the hash of its answers: the hash of its answers written as a set, eight bytes little-endian. A position is an unsigned 32-bit integer, little-endian.
 5. The cycle is hashed once: the tag `14`, the member count, and for each member in order the length and bytes of its name and its layout hash.
 6. Each member's id is made as every id is, from its name and a layout hash: here the hash of the tag `14`, the cycle's hash, and its position.
 

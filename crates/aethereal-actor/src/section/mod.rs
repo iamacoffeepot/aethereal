@@ -337,7 +337,7 @@ impl Made {
     /// Whether its state's schema, with its name, makes the id it states: two types of one name and layout are one
     /// kind (ADR-0006).
     fn states_its_layout(&self) -> bool {
-        KindId::from_description(&self.name, &self.state) == self.id
+        KindId::from_description(&self.name, &self.state) == Ok(self.id)
     }
 
     /// What the type declares, as the engine reads it, kept for as long as the process runs: a host keeps it for as

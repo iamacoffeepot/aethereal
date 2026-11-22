@@ -181,7 +181,8 @@ impl NumberForm {
             | SchemaNode::Map { .. }
             | SchemaNode::Struct { .. }
             | SchemaNode::Tuple { .. }
-            | SchemaNode::Enum { .. } => None,
+            | SchemaNode::Enum { .. }
+            | SchemaNode::Reference { .. } => None,
         }
     }
 
@@ -376,7 +377,8 @@ impl Form {
             | SchemaNode::Float(_)
             | SchemaNode::Json
             | SchemaNode::Option(_)
-            | SchemaNode::Map { .. } => Self::Json,
+            | SchemaNode::Map { .. }
+            | SchemaNode::Reference { .. } => Self::Json,
         }
     }
 

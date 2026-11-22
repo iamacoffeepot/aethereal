@@ -100,6 +100,7 @@ impl<'a> Extents<'a> {
                 let left = read_count(&mut self.input)?;
                 steps.push(Step::Pairs { key: *key, value: *value, left });
             }
+            SchemaNode::Reference { written, .. } => steps.push(Step::One(*written)),
             SchemaNode::Struct { fields, .. } => steps.extend(fields.iter().rev().map(|field| Step::One(field.shape))),
             SchemaNode::Tuple { elements } => steps.extend(elements.iter().rev().map(|element| Step::One(*element))),
             SchemaNode::Enum { variants, .. } => {
@@ -200,6 +201,7 @@ fn size_of(node: &SchemaNode, earlier: &[Size]) -> Size {
         | SchemaNode::Sequence(_)
         | SchemaNode::Map { .. }
         | SchemaNode::Enum { .. } => Size::Varies,
+        SchemaNode::Reference { written, .. } => size_at(earlier, *written),
         SchemaNode::Array { element, length } => match size_at(earlier, *element) {
             Size::Fixed(each) => Size::Fixed(each.saturating_mul(u64::from(*length))),
             Size::Varies if *length == 0 => Size::Fixed(0),

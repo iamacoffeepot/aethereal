@@ -2,10 +2,13 @@
 
 mod named_fields;
 mod nodes;
+mod protocol;
 mod same_layout;
 
 pub use named_fields::{FieldBytes, NamedFields};
 pub use nodes::{FieldNode, FieldsNode, SchemaFault, SchemaNode, SchemaNodes, VariantNode};
+pub use protocol::MOST_LISTED;
+pub use protocol::{Answered, AnsweredIds, AnsweredNode, KindIds, ProtocolNode, ProtocolShape, Referent};
 
 use crate::Plain;
 
@@ -90,6 +93,15 @@ pub enum Shape {
         name: &'static str,
         /// Each variant with its declared selector.
         variants: &'static [Variant],
+    },
+    /// A reference to an actor, proven to take a protocol: written as `written` is, whatever the protocol, and laid out
+    /// with the protocol it names, so a value that holds one has another layout when the protocol's kinds change
+    /// (ADR-0016).
+    Reference {
+        /// The shape its bytes are written as.
+        written: &'static Self,
+        /// The protocol it was proven to take.
+        protocol: ProtocolShape,
     },
 }
 

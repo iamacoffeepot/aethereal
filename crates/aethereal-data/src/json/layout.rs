@@ -53,6 +53,9 @@ impl<'schema> At<'schema> {
                 SchemaNode::Option(_) | SchemaNode::Json => {
                     return Ok(true);
                 }
+                SchemaNode::Reference { written, .. } => {
+                    current = current.child(*written)?;
+                }
                 SchemaNode::Struct { fields, .. } => {
                     let layout = Layout::of_struct(fields);
                     match layout {

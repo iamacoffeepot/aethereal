@@ -355,9 +355,11 @@ impl<P> From<ProtocolRef<P>> for ErasedActorRef {
     }
 }
 
-/// Written and read as an [`ErasedActorRef`] is: its protocol is the type of the field it is read into.
-impl<P> Schema for ProtocolRef<P> {
-    const SHAPE: Shape = ErasedActorRef::SHAPE;
+/// Written and read as an [`ErasedActorRef`] is, and laid out with the protocol it names: its kinds, as a set, and for a
+/// named protocol what each is answered with, so a kind or a state that holds one has another layout when `P`'s kinds
+/// change (ADR-0016). Decoding one proves nothing new: it carries the proof its sender made.
+impl<P: Listed> Schema for ProtocolRef<P> {
+    const SHAPE: Shape = Shape::Reference { written: &ErasedActorRef::SHAPE, protocol: P::PROTOCOL };
 }
 
 impl<B: Boundary, P> Encode<B> for ProtocolRef<P>

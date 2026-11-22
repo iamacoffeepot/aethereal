@@ -90,6 +90,7 @@ impl Walk<'_> {
             SchemaNode::Tuple { elements } => self.positional(at, elements)?,
             SchemaNode::Struct { fields, .. } => self.fields(at, Layout::of_struct(fields))?,
             SchemaNode::Enum { variants, .. } => self.variants(at, variants)?,
+            SchemaNode::Reference { written, .. } => self.value(at.child(*written)?)?,
         }
 
         Ok(())

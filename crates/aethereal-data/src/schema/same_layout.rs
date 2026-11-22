@@ -2,7 +2,7 @@
 
 use crate::kind::layout::{float_code, integer_code};
 use crate::schema::nodes::node_index;
-use crate::{FieldsNode, SchemaNode, SchemaNodes};
+use crate::{FieldsNode, ProtocolNode, SchemaNode, SchemaNodes};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
@@ -63,11 +63,22 @@ enum Nameless {
     Json,
     Option(u32),
     Sequence(u32),
-    Array { element: u32, length: u32 },
-    Map { key: u32, value: u32 },
+    Array {
+        element: u32,
+        length: u32,
+    },
+    Map {
+        key: u32,
+        value: u32,
+    },
     Struct(Vec<u32>),
     Tuple(Vec<u32>),
     Enum(Vec<NamelessVariant>),
+    /// A reference: the class of what it is written as, and the protocol it names, which holds no names (ADR-0016).
+    Reference {
+        written: u32,
+        protocol: ProtocolNode,
+    },
 }
 
 /// A variant with its name removed: its selector, then each field's layout class.
@@ -144,6 +155,9 @@ fn nameless(node: &SchemaNode, earlier: &[u32]) -> Nameless {
                 })
                 .collect(),
         ),
+        SchemaNode::Reference { written, protocol } => {
+            Nameless::Reference { written: class_at(earlier, *written), protocol: protocol.clone() }
+        }
     }
 }
 

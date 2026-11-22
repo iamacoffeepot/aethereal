@@ -9,7 +9,7 @@
 //! [`SchemaNodes::of`]: aethereal_data::SchemaNodes::of
 
 use super::{count, put, text};
-use aethereal_data::{Field, Fields, Float, Integer, Shape, Variant};
+use aethereal_data::{AnsweredIds, Field, Fields, Float, Integer, KindId, KindIds, ProtocolShape, Shape, Variant};
 
 // The selector of each case of `SchemaNode`, in the order it declares them (ADR-0003).
 const BOOLEAN: usize = 0;
@@ -25,6 +25,14 @@ const STRUCT: usize = 9;
 const TUPLE: usize = 10;
 const ENUM: usize = 11;
 const JSON: usize = 12;
+const REFERENCE: usize = 13;
+
+// The selector of `Referent::Kind`: a state names kinds by their ids alone.
+const REFERENT_KIND: usize = 0;
+
+// The selector of each case of `ProtocolNode`.
+const TOLD: usize = 0;
+const NAMED_PROTOCOL: usize = 1;
 
 // The selector of each case of `FieldsNode`.
 const NAMED: usize = 0;
@@ -35,7 +43,10 @@ const UNNAMED: usize = 1;
 pub(super) const fn shapes(shape: &Shape) -> usize {
     let within = match *shape {
         Shape::Boolean | Shape::Integer(_) | Shape::Float(_) | Shape::String | Shape::Bytes | Shape::Json => 0,
-        Shape::Option(inner) | Shape::Sequence(inner) | Shape::Array { element: inner, .. } => shapes(inner),
+        Shape::Option(inner)
+        | Shape::Sequence(inner)
+        | Shape::Array { element: inner, .. }
+        | Shape::Reference { written: inner, .. } => shapes(inner),
         Shape::Map { key, value } => shapes(key) + shapes(value),
         Shape::Struct { fields, .. } => field_shapes(fields),
         Shape::Tuple { elements } => element_shapes(elements),
@@ -157,9 +168,10 @@ const fn children<const ROOM: usize>(
 ) -> usize {
     match *shape {
         Shape::Boolean | Shape::Integer(_) | Shape::Float(_) | Shape::String | Shape::Bytes | Shape::Json => at,
-        Shape::Option(inner) | Shape::Sequence(inner) | Shape::Array { element: inner, .. } => {
-            intern(out, at, inner, nodes)
-        }
+        Shape::Option(inner)
+        | Shape::Sequence(inner)
+        | Shape::Array { element: inner, .. }
+        | Shape::Reference { written: inner, .. } => intern(out, at, inner, nodes),
         Shape::Map { key, value } => {
             let at = intern(out, at, key, nodes);
 
@@ -290,7 +302,53 @@ const fn node<const ROOM: usize>(out: &mut [u8], at: usize, shape: &Shape, nodes
 
             at
         }
+        Shape::Reference { written, protocol } => {
+            let at = count(out, at, REFERENCE);
+            let at = count(out, at, nodes.index(written));
+
+            protocol_node(out, at, protocol)
+        }
     }
+}
+
+/// Writes a reference's protocol: whether it is told or named, then its kinds in ascending order of their ids, each
+/// once, and for a named protocol each one's answers, as `ProtocolNode` holds them (ADR-0016).
+const fn protocol_node(out: &mut [u8], at: usize, protocol: ProtocolShape) -> usize {
+    match protocol {
+        ProtocolShape::Told(kinds) => {
+            let at = count(out, at, TOLD);
+
+            kind_set(out, at, KindIds::of(kinds).ids())
+        }
+        ProtocolShape::Named(entries) => {
+            let at = count(out, at, NAMED_PROTOCOL);
+            let ordered = AnsweredIds::of(entries);
+            let mut at = count(out, at, ordered.count());
+            let mut place = 0;
+            while place < ordered.count() {
+                let (kind, answers) = ordered.entry(place);
+                at = count(out, at, REFERENT_KIND);
+                at = put(out, at, &kind.plain_bytes());
+                at = kind_set(out, at, answers);
+                place += 1;
+            }
+
+            at
+        }
+    }
+}
+
+/// Writes a set of kinds, their `ids` ascending: their count, then each id as a `Referent::Kind`.
+const fn kind_set(out: &mut [u8], at: usize, ids: &[KindId]) -> usize {
+    let mut at = count(out, at, ids.len());
+    let mut index = 0;
+    while index < ids.len() {
+        at = count(out, at, REFERENT_KIND);
+        at = put(out, at, &ids[index].plain_bytes());
+        index += 1;
+    }
+
+    at
 }
 
 /// Writes named fields: their count, then each one's name and the index of its shape's node.
@@ -371,6 +429,10 @@ const fn same(one: &Shape, other: &Shape) -> bool {
         (Shape::Enum { name, variants }, Shape::Enum { name: other_name, variants: other_variants }) => {
             same_text(name, other_name) && same_variants(variants, other_variants)
         }
+        (
+            Shape::Reference { written, protocol },
+            Shape::Reference { written: other_written, protocol: other_protocol },
+        ) => same(written, other_written) && protocol.same(other_protocol),
         _ => false,
     }
 }

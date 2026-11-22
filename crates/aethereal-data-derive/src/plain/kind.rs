@@ -29,8 +29,10 @@ impl Declaration {
         Ok(declaration)
     }
 
-    /// `impl Kind` for a named type, bounded as its `Schema` is, and for a type with no parameters a constant that
-    /// reads the name so a name that does not conform stops the build though nothing uses the kind.
+    /// `impl Kind` for a named type. A type with parameters is bounded as its `Schema` is, and its node is made in a
+    /// constant. A type with no parameters gets a static node, and a constant that computes its id, so a name that does
+    /// not conform, a cycle through a generic kind, two members that tie, or a graph past a cap stops the build where
+    /// the kind is defined, though nothing uses it (ADR-0006).
     pub fn implementation(&self, input: &DeriveInput, schema_generics: &Generics) -> TokenStream2 {
         let Self::Named(literal) = self else {
             return TokenStream2::new();
@@ -40,21 +42,46 @@ impl Declaration {
         let (kind_impl, _, kind_where) = schema_generics.split_for_impl();
         let kind_name = quote_spanned! { literal.span() => ::aethereal_data::KindName::new(#literal) };
         let has_parameters = !input.generics.params.is_empty();
-        let checked = if has_parameters {
-            TokenStream2::new()
-        } else {
-            quote_spanned! { literal.span() =>
-                const _: ::aethereal_data::KindName = <#name as ::aethereal_data::Kind>::NAME;
-            }
+        if has_parameters {
+            return quote! {
+                #[automatically_derived]
+                impl #kind_impl ::aethereal_data::Kind for #name #ty_generics #kind_where {
+                    const NAME: ::aethereal_data::KindName = #kind_name;
+                }
+            };
+        }
+
+        // A non-generic kind's node is a static, so a cycle of kinds reaches it before it is evaluated: its site, the
+        // place it is defined, tells it from every other kind's node, as a constant cannot compare pointers.
+        let site = quote_spanned! { name.span() =>
+            ::core::concat!(
+                ::core::module_path!(), "::", ::core::stringify!(#name), "@",
+                ::core::file!(), ":", ::core::line!(), ":", ::core::column!()
+            )
+        };
+        let id = quote_spanned! { name.span() =>
+            const _: ::aethereal_data::KindId = <#name as ::aethereal_data::Kind>::KIND.id();
         };
 
+        // `KindPtr::defined` is sound here: `NODE` is an immutable static, which lives for the whole program and is
+        // never written, and `&raw const` takes its address without reading it, so a cycle of kinds may point at it
+        // before it is evaluated. Nothing else names `NODE`.
         quote! {
-            #[automatically_derived]
-            impl #kind_impl ::aethereal_data::Kind for #name #ty_generics #kind_where {
-                const NAME: ::aethereal_data::KindName = #kind_name;
-            }
+            const _: () = {
+                static NODE: ::aethereal_data::KindShape = ::aethereal_data::KindShape {
+                    name: <#name as ::aethereal_data::Kind>::NAME,
+                    site: ::aethereal_data::Site::Defined { at: #site },
+                    shape: &<#name as ::aethereal_data::Schema>::SHAPE,
+                };
 
-            #checked
+                #[automatically_derived]
+                impl ::aethereal_data::Kind for #name {
+                    const NAME: ::aethereal_data::KindName = #kind_name;
+                    const KIND: ::aethereal_data::KindPtr = unsafe { ::aethereal_data::KindPtr::defined(&raw const NODE) };
+                }
+            };
+
+            #id
         }
     }
 }
