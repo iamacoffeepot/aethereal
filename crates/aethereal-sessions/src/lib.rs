@@ -18,9 +18,14 @@
 //! and removes containers from typed requests, makes named volumes, attaches to a container's stdin and output, reads
 //! its logs, and follows the events of the containers that carry a label, each as a typed stream. No request reaches
 //! Docker that its asker wrote: a container is made only from a [`ContainerSpec`].
+//!
+//! [`reconcile`] is the session lifecycle's reconcile: one pure function from a session's record, its transcript,
+//! Docker's state of its container, and the hub's memory of that container's stdin to the one next effect. The hub
+//! does not call it yet.
 
 mod docker;
 mod names;
+pub mod reconcile;
 mod sessions;
 #[cfg(feature = "tools")]
 mod tools;
