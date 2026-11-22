@@ -22,6 +22,8 @@ pub const NAME: &str = "aethereal.declared";
 pub struct Made {
     pub name: KindName,
     pub id: KindId,
+    /// The kind an actor of it is configured by (ADR-0059).
+    pub config: KindId,
     pub keyed: Key,
     pub spawner: Spawned,
     /// The typed path to each type it depends on (ADR-0059).
@@ -66,10 +68,11 @@ pub struct Segment {
     pub keyed: Key,
 }
 
-/// What a handler handles, as a section holds it.
+/// What a handler handles, as a section holds it, and for mail of a kind, the kinds it answers with, one or none
+/// (ADR-0059).
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 pub enum Handled {
-    Kind { kind: KindId },
+    Kind { kind: KindId, answers: Vec<KindId> },
     Ended,
     Others,
     Answer { kind: KindId },
@@ -173,6 +176,7 @@ const fn write<const ROOM: usize>(types: &[&Declared], out: &mut [u8]) -> usize 
 const fn declared_type(out: &mut [u8], at: usize, declared: &Declared) -> usize {
     let mut at = name(out, at, declared.name());
     at = id(out, at, declared.id());
+    at = id(out, at, declared.config());
     at = match declared.keyed() {
         Keyed::Singleton => count(out, at, 0),
         Keyed::Instanced => count(out, at, 1),
@@ -273,7 +277,8 @@ const fn depth(segment: &TypeSegment) -> usize {
     depth
 }
 
-/// Writes the kind of each type a type spawns, as [`Made::spawns`] reads them.
+/// Writes each of `kinds`: the kind of each type a type spawns, as [`Made::spawns`] reads them, or of each answer a
+/// handler answers with, as [`Handled::Kind`] reads them.
 const fn kinds(out: &mut [u8], at: usize, kinds: &[KindId]) -> usize {
     let mut at = count(out, at, kinds.len());
     let mut index = 0;
@@ -305,8 +310,9 @@ const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
         at = match handler.role() {
             Role::Kind(kind) => {
                 let at = count(out, at, 0);
+                let at = id(out, at, kind);
 
-                id(out, at, kind)
+                kinds(out, at, handler.answers())
             }
             Role::Ended => count(out, at, 1),
             Role::Others => count(out, at, 2),
@@ -339,16 +345,16 @@ impl Made {
     #[must_use]
     pub fn leak(&self) -> &'static Declared {
         let name: &'static KindName = Box::leak(Box::new(self.name.clone()));
-        let handlers = self.handlers.iter().map(|handled| {
-            let role = match *handled {
-                Handled::Kind { kind } => Role::Kind(kind),
-                Handled::Ended => Role::Ended,
-                Handled::Others => Role::Others,
-                Handled::Answer { kind } => Role::Answer(kind),
-                Handled::Stage { kind } => Role::Stage(kind),
-            };
+        let handlers = self.handlers.iter().map(|handled| match handled {
+            Handled::Kind { kind, answers } => {
+                let answers: &'static [KindId] = Box::leak(answers.clone().into_boxed_slice());
 
-            Handler::new(role)
+                Handler::answering(*kind, answers)
+            }
+            Handled::Ended => Handler::new(Role::Ended),
+            Handled::Others => Handler::new(Role::Others),
+            Handled::Answer { kind } => Handler::new(Role::Answer(*kind)),
+            Handled::Stage { kind } => Handler::new(Role::Stage(*kind)),
         });
         let handlers: &'static [Handler] = Box::leak(handlers.collect::<Box<[Handler]>>());
         let keyed = match self.keyed {
@@ -365,7 +371,8 @@ impl Made {
         let depends: &'static [&'static TypeSegment] = Box::leak(depends.collect::<Box<[&'static TypeSegment]>>());
         let spawns: &'static [KindId] = Box::leak(self.spawns.clone().into_boxed_slice());
         let state = StateSchema::Read(Box::leak(Box::new(self.state.clone())));
-        let declared = Declared::new(name.clone(), self.id, state, keyed, spawner, depends, spawns, handlers);
+        let declared =
+            Declared::new(name.clone(), self.id, state, self.config, keyed, spawner, depends, spawns, handlers);
 
         Box::leak(Box::new(declared))
     }

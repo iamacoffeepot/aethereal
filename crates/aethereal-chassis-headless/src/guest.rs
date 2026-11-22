@@ -2780,8 +2780,8 @@ mod tests {
     use super::*;
     use crate::Monotonic;
     use aethereal_actor::{
-        ActorRef, Answered, Beginning, Bytes, Forged, Given, Handle, Links, Origin, ProtocolRef, Publisher, Seated,
-        Services, Trapped, Turn, Unanswered,
+        ActorRef, Answered, Beginning, Bytes, Forged, Given, Handle, Handler, Links, Origin, ProtocolRef, Publisher,
+        Seated, Services, Trapped, Turn, Unanswered,
     };
     use aethereal_actor::{Anywhere, Level, Tick, Time};
     use aethereal_actor::{JobId, JobType, actor, protocol};
@@ -5613,6 +5613,42 @@ mod tests {
         engine.step(Time::ZERO, &Monotonic::new());
 
         assert_eq!((was_made, runtime.made(id, echo).is_some()), (true, false));
+    }
+
+    #[test]
+    fn a_guest_types_config_kind_and_answers_read_back_as_its_native_build_declares_them() {
+        // Catches a host that reads a guest type's config kind or a handler's answers from its section as other kinds,
+        // or not at all, and a type built for wasm32 that declares them under other ids than its native build, so a
+        // spawn by name would check a config against another kind, and a cast to a named protocol read other answers
+        // (ADR-0016, ADR-0059). The echo makes requests answered now, the steward requests answered later, and the
+        // brood is configured by a kind of its own.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let runtime = Arc::new(Runtime::default());
+        let mut engine =
+            Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
+        let native = [Declared::of::<echo::Echo>(), Declared::of::<echo::Steward>(), Declared::of::<echo::Brood>()];
+        let declares = |declared: &Declared| {
+            let answers: Vec<&[KindId]> = declared.handlers().iter().map(Handler::answers).collect();
+
+            (declared.config(), answers)
+        };
+        let Ok(codes) = runtime.codes.read() else {
+            panic!("the codes are not poisoned");
+        };
+        let held = codes.get(&code.id());
+
+        let read: Vec<_> = native
+            .iter()
+            .map(|native| held.and_then(|held| held.of_kind(native.name())).map(|made| declares(made.declared)))
+            .collect();
+        let expected: Vec<_> = native.iter().map(|native| Some(declares(native))).collect();
+
+        assert_eq!(read, expected);
     }
 
     #[test]

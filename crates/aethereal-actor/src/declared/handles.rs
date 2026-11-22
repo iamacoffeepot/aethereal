@@ -1,6 +1,6 @@
 //! What an actor handles: one handler for each thing it lists, and the engine's call to the right one (ADR-0013).
 
-use super::{Declared, Handler, Role};
+use super::{Carries, Declared, Handler, Kinds, Role};
 use crate::answering::{Answering, Refusal, Token};
 use crate::guard::{Anyone, Checks, SenderType};
 use crate::{
@@ -132,12 +132,17 @@ impl<A: Kind + Decode<Actors> + 'static, C: Kind + Decode<Within> + 'static> Rec
 /// What an actor of type `A` handles, reached through the trait for its role: [`Handles`] for mail of a kind,
 /// [`Receives`] for the rest (ADR-0058).
 pub trait Reached<A: Actor>: Handled {
+    /// The handler of `A` for it, as the engine reads it: what it handles, and the kinds it answers with (ADR-0059).
+    const HANDLER: Handler;
+
     /// Hands `item` to the handler of `A` for it, in a turn of an actor whose type declares `declared`: or, when it is
     /// not to be handed, ends the turn as why says (ADR-0017).
     fn hand(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault>;
 }
 
 impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
+    const HANDLER: Handler = Handler::answering(KindId::of::<K>(), <<A as Carries<K>>::Answers as Kinds>::KINDS);
+
     #[allow(clippy::inline_always, reason = "once for every turn, in place of the call to the handler it wraps")]
     #[inline(always)]
     fn hand(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault> {
@@ -190,6 +195,8 @@ fn refuse<A: Handles<K>, K: Kind>(
 macro_rules! received {
     ($( [$($generics:tt)*] $handled:ty; )*) => {$(
         impl<A: Receives<$handled>, $($generics)*> Reached<A> for $handled {
+            const HANDLER: Handler = Handler::new(<$handled as Handled>::ROLE);
+
             #[allow(
                 clippy::inline_always,
                 reason = "once for every turn, in place of the call to the handler it wraps"
@@ -334,8 +341,7 @@ fn unhandled<A: Actor>(role: Role) -> ! {
 macro_rules! tuples {
     ($( [$($name:ident)*] )*) => {$(
         impl<A: Actor, $($name: Reached<A>),*> HandledList<A> for ($($name,)*) {
-            const HANDLERS: &'static [Handler] =
-                &[$(Handler::new($name::ROLE)),*];
+            const HANDLERS: &'static [Handler] = &[$(<$name as Reached<A>>::HANDLER),*];
 
             fn dispatch(
                 actor: &mut A,

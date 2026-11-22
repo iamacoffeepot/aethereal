@@ -68,6 +68,7 @@ fn section_of_a_point(state: SchemaNodes) -> Vec<u8> {
     let point = Made {
         name: Point::NAME,
         id: KindId::of::<Point>(),
+        config: KindId::of::<Point>(),
         keyed: Key::Singleton,
         spawner: Spawned::Anyone,
         depends: vec![],
