@@ -87,7 +87,8 @@ pub(super) fn shape(mut at: At<'_>) -> Result<KeyShape, JsonError> {
             | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. }
             | SchemaNode::Tuple { .. }
-            | SchemaNode::Enum { .. } => {
+            | SchemaNode::Enum { .. }
+            | SchemaNode::Reference { .. } => {
                 let fault = SchemaFault::KeyShape;
                 return Err(DecodeError::InvalidSchema { node: 0, fault }.into());
             }

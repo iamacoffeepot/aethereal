@@ -3,7 +3,7 @@
 
 use super::{Handled, Handles, Lists};
 use crate::answering::{Answering, Answers};
-use aethereal_data::{Kind, KindId};
+use aethereal_data::{Answered, Kind, KindId, ProtocolShape};
 
 /// A named protocol: a list of the kinds it takes, and what each is answered with, one [`Carries`] for each, as an
 /// actor lists what it handles and writes one handler for each (ADR-0016).
@@ -68,24 +68,34 @@ impl<T: Handles<K>, K: Kind> Carries<K> for T {
 }
 
 /// The protocol `P` has a [`Carries`] for each kind of this tuple: what makes a named protocol's list its own.
-pub trait CarriedBy<P> {}
+pub trait CarriedBy<P> {
+    /// Each kind, in order, with the kinds `P` carries it as answered with.
+    const ANSWERED: &'static [Answered];
+}
 
 /// A protocol a [`ProtocolRef`](crate::ProtocolRef) reaches an actor by: a tuple of kinds, which are all tells, or a
 /// named [`Protocol`] (ADR-0016).
 pub trait Listed {
     /// Its kinds, as a tuple.
     type Kinds: Kinds;
+    /// What the layout of a reference to it names: its kinds, and for a named protocol what each is answered with
+    /// (ADR-0016).
+    const PROTOCOL: ProtocolShape;
 }
 
 impl<P: Protocol> Listed for P {
     type Kinds = P::Kinds;
+    const PROTOCOL: ProtocolShape = ProtocolShape::Named(<P::Kinds as CarriedBy<P>>::ANSWERED);
 }
 
 impl Listed for () {
     type Kinds = ();
+    const PROTOCOL: ProtocolShape = ProtocolShape::Told(&[]);
 }
 
-impl<P> CarriedBy<P> for () {}
+impl<P> CarriedBy<P> for () {
+    const ANSWERED: &'static [Answered] = &[];
+}
 
 /// A tuple of up to 64 kinds, as a protocol lists them, `()` for none: what a [`Listed`] protocol names its kinds by,
 /// and the engine checks a cast against.
@@ -231,9 +241,15 @@ macro_rules! protocols {
 
         impl<$($kind: Kind),*> Listed for ($($kind,)*) {
             type Kinds = Self;
+            const PROTOCOL: ProtocolShape = ProtocolShape::Told(<Self as Kinds>::KINDS);
         }
 
-        impl<P: $(Carries<$kind> +)*, $($kind: Kind),*> CarriedBy<P> for ($($kind,)*) {}
+        impl<P: $(Carries<$kind> +)*, $($kind: Kind),*> CarriedBy<P> for ($($kind,)*) {
+            const ANSWERED: &'static [Answered] = &[$(Answered {
+                kind: KindId::of::<$kind>(),
+                answers: <<P as Carries<$kind>>::Answers as Kinds>::KINDS,
+            }),*];
+        }
     )*};
 }
 

@@ -58,7 +58,8 @@ impl<'schema> Place<'schema> {
             | SchemaNode::Sequence(_)
             | SchemaNode::Array { .. }
             | SchemaNode::Tuple { .. }
-            | SchemaNode::Enum { .. } => return Self::Opaque,
+            | SchemaNode::Enum { .. }
+            | SchemaNode::Reference { .. } => return Self::Opaque,
         };
 
         Self::child(at, child)
@@ -86,7 +87,8 @@ impl<'schema> Place<'schema> {
             | SchemaNode::Json
             | SchemaNode::Option(_)
             | SchemaNode::Map { .. }
-            | SchemaNode::Enum { .. } => return Self::Opaque,
+            | SchemaNode::Enum { .. }
+            | SchemaNode::Reference { .. } => return Self::Opaque,
         };
         let Some(child) = child else {
             return Self::Opaque;
@@ -150,7 +152,8 @@ impl<'schema> Place<'schema> {
                 | SchemaNode::Array { .. }
                 | SchemaNode::Map { .. }
                 | SchemaNode::Tuple { .. }
-                | SchemaNode::Enum { .. } => return place,
+                | SchemaNode::Enum { .. }
+                | SchemaNode::Reference { .. } => return place,
             };
             place = inner.map_or(Self::Opaque, Self::Schema);
         }

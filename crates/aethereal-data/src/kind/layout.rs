@@ -1,6 +1,9 @@
 //! The layout hash over both forms of a schema (ADR-0006).
 
-use crate::{Field, FieldNode, Fields, FieldsNode, Float, Fnv, Integer, SchemaNode, SchemaNodes, Shape, Variant};
+use crate::{
+    Ascending, Field, FieldNode, Fields, FieldsNode, Float, Fnv, Integer, KindId, ProtocolNode, ProtocolShape,
+    SchemaNode, SchemaNodes, Shape, Variant,
+};
 use alloc::vec::Vec;
 
 // The tag bytes of ADR-0006's table: the first byte each shape hashes.
@@ -17,6 +20,11 @@ const STRUCT: u8 = 9;
 const TUPLE: u8 = 10;
 const ENUM: u8 = 11;
 const JSON: u8 = 12;
+const REFERENCE: u8 = 13;
+
+// The byte after a reference's written shape: whether its protocol is a tuple of told kinds or a named protocol.
+const TOLD: u8 = 0;
+const NAMED: u8 = 1;
 
 /// The tag byte of an integer width: `0` to `7` for `U8`, `U16`, `U32`, `U64`, `I8`, `I16`, `I32`, `I64`.
 pub const fn integer_code(kind: Integer) -> u8 {
@@ -56,7 +64,38 @@ pub(super) const fn shape_layout(shape: &Shape) -> u64 {
         Shape::Struct { fields, .. } => fold_fields(Fnv::new().byte(STRUCT), fields).finish(),
         Shape::Tuple { elements } => fold_shapes(Fnv::new().byte(TUPLE), elements).finish(),
         Shape::Enum { variants, .. } => fold_variants(Fnv::new().byte(ENUM), variants).finish(),
+        Shape::Reference { written, protocol } => {
+            fold_protocol(Fnv::new().byte(REFERENCE).hash(shape_layout(written)), protocol).finish()
+        }
     }
+}
+
+/// A protocol's tag, then its kinds in ascending order, each once, and for a named protocol each one's answers in
+/// ascending order, folded onto `start` (ADR-0016).
+const fn fold_protocol(start: Fnv, protocol: ProtocolShape) -> Fnv {
+    match protocol {
+        ProtocolShape::Told(kinds) => fold_kind_set(start.byte(TOLD), kinds),
+        ProtocolShape::Named(entries) => {
+            let mut order = Ascending::answered(entries);
+            let mut hash = start.byte(NAMED).count(order.count());
+            while let Some(entry) = order.next_entry() {
+                hash = fold_kind_set(hash.hash(entry.kind.bits()), entry.answers);
+            }
+
+            hash
+        }
+    }
+}
+
+/// The count of distinct `kinds`, then each one's id in ascending order, folded onto `start`.
+const fn fold_kind_set(start: Fnv, kinds: &'static [KindId]) -> Fnv {
+    let mut order = Ascending::kinds(kinds);
+    let mut hash = start.count(order.count());
+    while let Some(kind) = order.next_kind() {
+        hash = hash.hash(kind.bits());
+    }
+
+    hash
 }
 
 /// The count, then each field's layout hash in declared order, folded onto `start`.
@@ -138,7 +177,26 @@ fn node_layout(node: &SchemaNode, earlier: &[u64]) -> u64 {
 
             folded.finish()
         }
+        SchemaNode::Reference { written, protocol } => {
+            fold_protocol_node(Fnv::new().byte(REFERENCE).hash(hash_at(earlier, *written)), protocol).finish()
+        }
     }
+}
+
+/// A flat protocol folded onto `start` as [`fold_protocol`] folds a constant one: a flat schema holds its kinds in
+/// ascending order, each once, so they are folded in the order they are stored.
+fn fold_protocol_node(start: Fnv, protocol: &ProtocolNode) -> Fnv {
+    match protocol {
+        ProtocolNode::Told(kinds) => fold_kind_ids(start.byte(TOLD), kinds),
+        ProtocolNode::Named(entries) => entries.iter().fold(start.byte(NAMED).count(entries.len()), |hash, entry| {
+            fold_kind_ids(hash.hash(entry.kind.bits()), &entry.answers)
+        }),
+    }
+}
+
+/// The count of `kinds`, then each one's id in order, folded onto `start`.
+fn fold_kind_ids(start: Fnv, kinds: &[KindId]) -> Fnv {
+    kinds.iter().fold(start.count(kinds.len()), |hash, kind| hash.hash(kind.bits()))
 }
 
 /// The count, then each flat field's layout hash in order, folded onto `start`.
