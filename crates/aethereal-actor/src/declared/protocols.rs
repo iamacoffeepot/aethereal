@@ -324,3 +324,48 @@ protocols! {
     [A IA B IB C IC D ID E IE F IF G IG H IH I II J IJ K IK L IL M IM N IN O IO Q IQ T17 IT17 T18 IT18 T19 IT19 T20 IT20 T21 IT21 T22 IT22 T23 IT23 T24 IT24 T25 IT25 T26 IT26 T27 IT27 T28 IT28 T29 IT29 T30 IT30 T31 IT31 T32 IT32 T33 IT33 T34 IT34 T35 IT35 T36 IT36 T37 IT37 T38 IT38 T39 IT39 T40 IT40 T41 IT41 T42 IT42 T43 IT43 T44 IT44 T45 IT45 T46 IT46 T47 IT47 T48 IT48 T49 IT49 T50 IT50 T51 IT51 T52 IT52 T53 IT53 T54 IT54 T55 IT55 T56 IT56 T57 IT57 T58 IT58 T59 IT59 T60 IT60 T61 IT61 T62 IT62 T63 IT63]
     [A IA B IB C IC D ID E IE F IF G IG H IH I II J IJ K IK L IL M IM N IN O IO Q IQ T17 IT17 T18 IT18 T19 IT19 T20 IT20 T21 IT21 T22 IT22 T23 IT23 T24 IT24 T25 IT25 T26 IT26 T27 IT27 T28 IT28 T29 IT29 T30 IT30 T31 IT31 T32 IT32 T33 IT33 T34 IT34 T35 IT35 T36 IT36 T37 IT37 T38 IT38 T39 IT39 T40 IT40 T41 IT41 T42 IT42 T43 IT43 T44 IT44 T45 IT45 T46 IT46 T47 IT47 T48 IT48 T49 IT49 T50 IT50 T51 IT51 T52 IT52 T53 IT53 T54 IT54 T55 IT55 T56 IT56 T57 IT57 T58 IT58 T59 IT59 T60 IT60 T61 IT61 T62 IT62 T63 IT63 T64 IT64]
 }
+
+#[cfg(test)]
+mod cycle_tests {
+    use crate::{ProtocolRef, protocol};
+    use aethereal_data::{Bound, Kind, KindDescription, KindId};
+
+    /// A request whose sender is reached through the protocol that takes it, answered with a reply that names the same
+    /// protocol: the two kinds are one cycle through a named protocol's entry and its answer.
+    #[derive(Bound)]
+    #[kind(name = "test.ask")]
+    struct Ask {
+        back: ProtocolRef<Asking>,
+    }
+
+    #[derive(Bound)]
+    #[kind(name = "test.reply")]
+    struct Reply {
+        to: ProtocolRef<Asking>,
+        value: u32,
+    }
+
+    #[protocol(Ask(answers = Reply))]
+    struct Asking;
+
+    /// Outside the cycle: names the protocol.
+    #[derive(Bound)]
+    #[kind(name = "test.hold")]
+    struct Hold {
+        asking: ProtocolRef<Asking>,
+    }
+
+    #[test]
+    fn a_cycle_through_a_named_protocol_and_its_answer_has_constant_ids() {
+        // Catches an answer's kind left out of the graph, or a named entry folded otherwise by the description.
+        const ASK: KindId = KindId::of::<Ask>();
+        const REPLY: KindId = KindId::of::<Reply>();
+        const HOLD: KindId = KindId::of::<Hold>();
+        let ask = KindDescription::of(Ask::KIND);
+
+        assert!(matches!(ask, KindDescription::Cycle { ref members, .. } if members.len() == 2));
+        assert_eq!(ask.id(), Ok(ASK));
+        assert_eq!(KindDescription::of(Reply::KIND).id(), Ok(REPLY));
+        assert_eq!(KindDescription::of(Hold::KIND).id(), Ok(HOLD));
+    }
+}
