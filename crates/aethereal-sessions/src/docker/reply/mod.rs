@@ -6,7 +6,8 @@ mod tests;
 
 use super::json::{boolean, elements, field, integer, members, text, tree};
 use super::{
-    Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase, VolumeCreated,
+    Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase, Variable,
+    VariableRead, VolumeCreated,
 };
 use aethereal_data::{JsonTree, JsonValue};
 use core::str;
@@ -58,6 +59,35 @@ pub(super) fn inspected(status: u16, body: &[u8]) -> Inspected {
     let state = read(body, |tree| field(tree, tree.root(), "State").and_then(|state| container_state(tree, state)));
 
     state.map_or(Inspected::Failed(DockerError::Malformed), Inspected::State)
+}
+
+/// What a read of the variable `name` came to: `200` with the container's `Config.Env`, each `NAME=value`, which sets
+/// it when one of them is named `name`. An environment Docker writes as `null` sets nothing. No other variable is
+/// read, so nothing else of the environment, which holds secrets, is kept.
+pub(super) fn variable_read(status: u16, body: &[u8], name: &str) -> VariableRead {
+    if status != 200 {
+        return VariableRead::Failed(error(status, body));
+    }
+    let read = read(body, |tree| {
+        let env = field(tree, tree.root(), "Config").and_then(|config| field(tree, config, "Env"))?;
+        let variables = match env {
+            JsonValue::Null => Vec::new(),
+            _ => elements(tree, env)?.iter().map(text).collect::<Option<Vec<_>>>()?,
+        };
+        let value = variables.into_iter().find_map(|variable| value_of(variable, name));
+        let set = value.map(|value| Variable { name: String::from(name), value: String::from(value) });
+
+        Some(set.map_or(VariableRead::Unset, VariableRead::Set))
+    });
+
+    read.unwrap_or(VariableRead::Failed(DockerError::Malformed))
+}
+
+/// The value `variable`, a `NAME=value` of an environment, sets `name` to: none when it names another.
+fn value_of<'v>(variable: &'v str, name: &str) -> Option<&'v str> {
+    let (named, value) = variable.split_once('=')?;
+
+    (named == name).then_some(value)
 }
 
 /// What a volume's create came to: `201`, whether Docker made it or had it already.

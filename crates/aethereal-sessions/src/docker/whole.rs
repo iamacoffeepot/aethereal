@@ -4,7 +4,7 @@
 use super::request::{Body, Call};
 use super::{
     Acted, Calling, Create, CreateVolume, Created, Docker, DockerError, Fetches, Inspect, Inspected, Kill, List,
-    Listed, Remove, Start, Stop, Unwritable, VolumeCreated, reply,
+    Listed, ReadVariable, Remove, Start, Stop, Unwritable, VariableRead, VolumeCreated, reply,
 };
 use aethereal_actor::{ActorRef, Answered, Bytes, Due, Fault, Held, Refused, Reply, Turn};
 use aethereal_data::Bound;
@@ -25,6 +25,11 @@ enum Answering {
     Created(Held<Created>),
     Acted(Held<Acted>),
     Inspected(Held<Inspected>),
+    /// A variable's read, of the variable it names.
+    VariableRead {
+        held: Held<VariableRead>,
+        name: String,
+    },
     Listed(Held<Listed>),
     VolumeCreated(Held<VolumeCreated>),
 }
@@ -86,6 +91,22 @@ impl Docker {
                 Ok(Reply::Later(later))
             }
             Err(why) => Ok(Reply::Now(Inspected::Failed(DockerError::Unwritable(why)))),
+        }
+    }
+
+    pub(super) fn handle_read_variable(
+        &mut self,
+        read_variable: ReadVariable,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<VariableRead>, Fault> {
+        match read_variable.call() {
+            Ok(call) => {
+                let (held, later) = turn.hold();
+                self.ask(turn, call, Answering::VariableRead { held, name: read_variable.name })?;
+
+                Ok(Reply::Later(later))
+            }
+            Err(why) => Ok(Reply::Now(VariableRead::Failed(DockerError::Unwritable(why)))),
         }
     }
 
@@ -198,6 +219,7 @@ impl Answering {
             Self::Created(held) => held.due(),
             Self::Acted(held) => held.due(),
             Self::Inspected(held) => held.due(),
+            Self::VariableRead { held, .. } => held.due(),
             Self::Listed(held) => held.due(),
             Self::VolumeCreated(held) => held.due(),
         }
@@ -218,6 +240,10 @@ impl Answering {
                 let inspected = reply::inspected(status, turn.read(body));
                 turn.answer(held, &inspected)?;
             }
+            Self::VariableRead { held, name } => {
+                let read = reply::variable_read(status, turn.read(body), &name);
+                turn.answer(held, &read)?;
+            }
             Self::Listed(held) => {
                 let listed = reply::listed(status, turn.read(body));
                 turn.answer(held, &listed)?;
@@ -237,6 +263,7 @@ impl Answering {
             Self::Created(held) => turn.answer(held, &Created::Failed(error))?,
             Self::Acted(held) => turn.answer(held, &Acted::Failed(error))?,
             Self::Inspected(held) => turn.answer(held, &Inspected::Failed(error))?,
+            Self::VariableRead { held, .. } => turn.answer(held, &VariableRead::Failed(error))?,
             Self::Listed(held) => turn.answer(held, &Listed::Failed(error))?,
             Self::VolumeCreated(held) => turn.answer(held, &VolumeCreated::Failed(error))?,
         }

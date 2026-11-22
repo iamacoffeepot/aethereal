@@ -9,24 +9,30 @@
 //! list leaves it hibernating, its container lost; a record that says its run starts, of which Docker lists no
 //! container, leaves it hibernating after a failed start, as only the hub removes a container, so the hub before
 //! stopped before Claude Code ran in that run; and each container carrying the label that no record names is reported,
-//! never removed. A record that says its session hibernates lost reads back so, and one that says its last start
-//! failed reads back saying why, holding the lines that waited for it still. A list Docker does not answer with its
-//! containers fails the capability before anything is noted or written: which sessions still run is unknown, and every
-//! record is left as it is for a hub that starts again to list them.
+//! never removed. A container it adopts has its bearer read back first, from the environment the hub before gave it,
+//! as Docker inspects it, and held for the session whose record names it, never one its environment names, so it
+//! reaches the hub as it did; one whose environment holds none is adopted with none, and its calls refused. Asks wait
+//! until every container it adopts is. A record that says its session hibernates lost reads back so, and one that says
+//! its last start failed reads back saying why, holding the lines that waited for it still. A list Docker does not
+//! answer with its containers fails the capability before anything is noted or written: which sessions still run is
+//! unknown, and every record is left as it is for a hub that starts again to list them.
 
 use super::asked::Waiting;
-use super::container;
+use super::bearers::Bearer;
+use super::container::{self, BEARER_VARIABLE};
 use super::record::{Record, Standing};
 use super::saves::{Index, Loading, record, transcript};
-use super::session::{Gone, Life, Session};
+use super::session::{Gone, Life, Session, Stage};
 use super::settings::BOOTSTRAP_LABEL;
 use super::transcript::{Ended, Entry, Note, Transcript};
-use super::{Named, Phase, Reconciling, Recorded, Sessions, Unfound};
-use crate::{Docker, Events, List, Listed, Listing, Phase as DockerPhase};
-use aethereal_actor::{Answered, Fault, Level, Turn, path};
+use super::{Adoption, Asking, Named, Phase, Reconciling, Recorded, Sessions, Unfound};
+use crate::{
+    Docker, DockerError, Events, List, Listed, Listing, Phase as DockerPhase, ReadVariable, Variable, VariableRead,
+};
+use aethereal_actor::{ActorRef, Answered, Fault, Level, Turn, path};
 use aethereal_data::{Budget, Plain, from_bytes};
 use aethereal_files::{FileRead, Files, Namespace, ReadFile};
-use core::mem;
+use core::{fmt, mem};
 use std::collections::BTreeMap;
 
 /// The most bytes the index holds as it is read back: past a million sessions' numbers.
@@ -196,11 +202,12 @@ impl Sessions {
         Ok(())
     }
 
-    /// The containers carrying the hub's label: a bootstrap container a record names, by its label, is followed and
-    /// judged in whatever state it is, and one a record names that is not listed is a failed start; a Claude Code
-    /// container a record says may exist is adopted when it runs, and noted lost and removed when it does not; a record
-    /// whose Claude Code container is named by its id and not listed is noted lost; a record whose run starts, of which
-    /// no container is listed, is a failed start, as Claude Code never ran in it; and each no record names is reported.
+    /// The containers carrying the hub's label: a bootstrap container a record names, by its label, is adopted, to be
+    /// followed and judged in whatever state it is, and one a record names that is not listed is a failed start; a
+    /// Claude Code container a record says may exist is adopted when it runs, and noted lost and removed when it does
+    /// not; a record whose Claude Code container is named by its id and not listed is noted lost; a record whose run
+    /// starts, of which no container is listed, is a failed start, as Claude Code never ran in it; and each no record
+    /// names is reported. Each container adopted has its bearer read back first, and asks wait until each is adopted.
     /// A list that fails fails the capability, [`Unfound::Unlisted`], before any session is noted or any record
     /// written, as which containers exist is unknown and none may be taken as gone.
     pub(super) fn handle_listed(
@@ -224,7 +231,6 @@ impl Sessions {
                 return Err(Fault::new(&Unfound::Unlisted)?);
             }
         };
-        self.phase = Phase::Ready { docker };
         for listing in &listings {
             let is_named = recorded.iter().any(|recorded| recorded.names(listing));
             if !is_named {
@@ -233,13 +239,17 @@ impl Sessions {
                 self.strays.push(name.clone());
             }
         }
+        let mut adopting = Vec::new();
         for Recorded { session, container, run } in recorded {
             let found = listings.iter().find(|listing| container.names(listing));
             match found {
                 Some(listing) if listing.carries(BOOTSTRAP_LABEL) => {
-                    self.adopt_bootstrap(turn, session, listing.id.clone(), run)?;
+                    let container = listing.id.clone();
+                    adopting.push(Adoption { session, container, run, stage: Stage::Bootstrap });
                 }
-                Some(Listing { id, phase: DockerPhase::Running, .. }) => self.adopt(turn, session, id.clone(), run)?,
+                Some(Listing { id, phase: DockerPhase::Running, .. }) => {
+                    adopting.push(Adoption { session, container: id.clone(), run, stage: Stage::Claude });
+                }
                 Some(Listing { id, .. }) => {
                     self.note(turn, session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
                     self.retire(turn, session, id.clone(), run, Gone::Lost)?;
@@ -253,7 +263,72 @@ impl Sessions {
                 },
             }
         }
+        if adopting.is_empty() {
+            return self.ready(turn, docker, waiting);
+        }
+        let due = self.due(turn, 0);
+        for Adoption { session, container, run, .. } in &adopting {
+            let read = ReadVariable { container: container.clone(), name: String::from(BEARER_VARIABLE) };
+            let asking = Asking { session: *session, run: *run };
+            turn.to(path::<Docker>(())).within(due).ask(&read, &asking)?;
+        }
+        self.phase = Phase::Admitting { docker, adopting, waiting };
 
+        self.flush(turn)
+    }
+
+    /// The bearer of the container of `session`'s run `run` that the capability adopts, read back from its
+    /// environment: it is held for `session`, whose record names the container, whatever the environment says of
+    /// itself, and the container adopted; one that reads no bearer is adopted with none, so its calls are refused, and
+    /// logged without what Docker answered. Once every container is adopted, the capability runs, and the asks that
+    /// waited are answered. A read of no container being adopted is let go.
+    pub(super) fn handle_variable_read(
+        &mut self,
+        (answered, Asking { session, run }): (Answered<VariableRead>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        let Phase::Admitting { adopting, .. } = &mut self.phase else {
+            return Ok(());
+        };
+        let Some(at) = adopting.iter().position(|adoption| adoption.is_of(session, run)) else {
+            return Ok(());
+        };
+        let Adoption { container, stage, .. } = adopting.swap_remove(at);
+        match bearer(answered) {
+            Ok(bearer) => self.bearers.admit(bearer, session),
+            Err(unborne) => turn.log(
+                Level::Warn,
+                format_args!(
+                    "session {session}'s container is adopted with no bearer, so its calls are refused: {unborne}"
+                ),
+            ),
+        }
+        match stage {
+            Stage::Bootstrap => self.adopt_bootstrap(turn, session, container, run)?,
+            Stage::Claude => self.adopt(turn, session, container, run)?,
+        }
+
+        let is_admitted = matches!(&self.phase, Phase::Admitting { adopting, .. } if adopting.is_empty());
+        if !is_admitted {
+            return self.flush(turn);
+        }
+        let Phase::Admitting { docker, waiting, .. } =
+            mem::replace(&mut self.phase, Phase::Indexing { waiting: Vec::new() })
+        else {
+            return self.flush(turn);
+        };
+
+        self.ready(turn, docker, waiting)
+    }
+
+    /// The capability has found its sessions and their containers: it runs, and answers each ask that waited.
+    fn ready(
+        &mut self,
+        turn: &mut Turn<'_, Self>,
+        docker: ActorRef<Docker>,
+        waiting: Vec<Waiting>,
+    ) -> Result<(), Fault> {
+        self.phase = Phase::Ready { docker };
         for asked in waiting {
             self.take(turn, asked)?;
         }
@@ -270,6 +345,45 @@ impl Sessions {
         };
         held.life = Life::Hibernating { gone: Gone::Unstarted { unread: Vec::new(), why: why.clone() } };
         self.note(turn, session, Entry::Hub(Note::Unstarted { run, why }));
+    }
+}
+
+/// Why a container the capability adopts reads no bearer: its environment sets none, or one that is no bearer, or
+/// Docker did not read it. It writes nothing Docker answered of the environment.
+enum Unborne {
+    Unset,
+    Unreadable,
+    Unread(DockerError),
+}
+
+impl fmt::Display for Unborne {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unset => write!(f, "its environment sets no {BEARER_VARIABLE}"),
+            Self::Unreadable => write!(f, "its environment's {BEARER_VARIABLE} is no bearer"),
+            Self::Unread(why) => write!(f, "Docker did not read its environment: {why:?}"),
+        }
+    }
+}
+
+/// The bearer a read of a container's environment answered.
+///
+/// # Errors
+///
+/// It sets none, or one that is no bearer, or the read failed.
+fn bearer(answered: Answered<VariableRead>) -> Result<Bearer, Unborne> {
+    match answered {
+        Answered::Yes(VariableRead::Set(Variable { value, .. })) => Bearer::of_token(&value).ok_or(Unborne::Unreadable),
+        Answered::Yes(VariableRead::Unset) => Err(Unborne::Unset),
+        Answered::Yes(VariableRead::Failed(why)) => Err(Unborne::Unread(why)),
+        Answered::No(why) => Err(Unborne::Unread(DockerError::Unanswered(why))),
+    }
+}
+
+impl Adoption {
+    /// Whether it is the container of `session`'s run `run`.
+    const fn is_of(&self, session: u32, run: u32) -> bool {
+        self.session == session && self.run == run
     }
 }
 
