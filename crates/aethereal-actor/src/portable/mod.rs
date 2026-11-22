@@ -55,8 +55,9 @@ pub trait Portability {
     ///
     /// # Errors
     ///
-    /// [`TakeOverError::Mismatch`] for a field `old` holds with another layout, and [`TakeOverError::Unreadable`]
-    /// when `old` is not a struct of its schema, or a field does not read as its type within the read limit.
+    /// [`TakeOverError::Mismatch`] for a field `old` holds with another layout than in the protocols its references
+    /// name, and [`TakeOverError::Unreadable`] when `old` is not a struct of its schema, or a field does not read as
+    /// its type within the read limit.
     fn read(old: &OldState<'_>) -> Result<Self::Form, TakeOverError>;
 }
 
@@ -109,10 +110,16 @@ impl OldFields<'_> {
     /// never read: its references go with the old state's bytes, and its handles stay with their actor, as a dropped
     /// handle does (ADR-0010, ADR-0014).
     ///
+    /// A field whose layout differs only in the protocols its references name, at any depth, is read as a `T`: the
+    /// protocol a reference names changes with the code that declares its kinds, and its bytes do not. Nothing about
+    /// such a reference is checked here; each reference the new state holds is checked against its target's code when
+    /// its group moves (ADR-0054).
+    ///
     /// # Errors
     ///
-    /// [`TakeOverError::Mismatch`] when the old state holds the field with another layout, and
-    /// [`TakeOverError::Unreadable`] when its bytes do not read as a `T` within what is left of the read limit.
+    /// [`TakeOverError::Mismatch`] when the old state holds the field with another layout than in the protocols its
+    /// references name, and [`TakeOverError::Unreadable`] when its bytes do not read as a `T` within what is left of
+    /// the read limit.
     pub fn read<T: Decode<Within> + Schema>(&mut self, name: &'static str) -> Result<Option<T>, TakeOverError> {
         match self.found.field(name, &T::SHAPE) {
             FieldBytes::Absent => Ok(None),
@@ -128,8 +135,9 @@ impl OldFields<'_> {
 /// Why an actor's state does not move onto a version of its code (ADR-0054).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeOverError {
-    /// The old state holds the field `field` with another layout. A default would quietly throw its value away, so
-    /// the move is refused; a version that changes a field's type names the field anew.
+    /// The old state holds the field `field` with another layout, and not only in the protocols its references name. A
+    /// default would quietly throw its value away, so the move is refused; a version that changes a field's type names
+    /// the field anew.
     Mismatch {
         /// The field's name.
         field: &'static str,

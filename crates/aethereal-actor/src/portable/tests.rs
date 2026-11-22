@@ -1,6 +1,6 @@
 use super::*;
-use crate::{BlobId, Bytes, Portability, pins};
-use aethereal_data::{Bound, Encode, Plain};
+use crate::{BlobId, Bytes, ErasedActorRef, Portability, ProtocolRef, SeatNumber, Seated, pins};
+use aethereal_data::{ActorId, Bound, Encode, Plain};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -58,6 +58,76 @@ struct Pictured {
 #[derive(Bound, Portability)]
 struct Iconed {
     icon: Bytes,
+}
+
+/// Mail a screen's model is poked with.
+#[derive(Plain)]
+#[kind(name = "aether.test.poke")]
+struct Poke;
+
+/// Mail its model is shut with, which the model's next version takes as well.
+#[derive(Plain)]
+#[kind(name = "aether.test.shut")]
+struct Shut;
+
+/// The model a screen's first version refers to, which takes pokes.
+type ModelOne = (Poke,);
+
+/// The model its next version refers to, whose kinds changed: it takes shuts too.
+type Model = (Poke, Shut);
+
+/// A watch held inside a screen's first version.
+#[derive(Bound)]
+struct WatchOne {
+    target: ProtocolRef<ModelOne>,
+    since: u32,
+}
+
+/// The watch as the next version holds it.
+#[derive(Bound, Debug, PartialEq)]
+struct Watch {
+    target: ProtocolRef<Model>,
+    since: u32,
+}
+
+/// The watch as a version that also widened `since` holds it.
+#[derive(Bound)]
+struct WatchWide {
+    target: ProtocolRef<ModelOne>,
+    since: u64,
+}
+
+/// A screen's state as its first version wrote it: references to its model, bare and nested.
+#[derive(Bound)]
+struct ScreenOne {
+    model: ProtocolRef<ModelOne>,
+    watchers: Vec<ProtocolRef<ModelOne>>,
+    watch: WatchOne,
+}
+
+/// Its next version, which keeps every field while the model's kinds change.
+#[derive(Bound, Portability)]
+struct Screen {
+    model: ProtocolRef<Model>,
+    watchers: Vec<ProtocolRef<Model>>,
+    watch: Watch,
+}
+
+/// Its watch, as a version that changed `since` beside the model's kinds wrote it.
+#[derive(Bound)]
+struct WidenedScreen {
+    watch: WatchWide,
+}
+
+/// Its model, as a version that held it with no protocol wrote it.
+#[derive(Bound)]
+struct ErasedScreen {
+    model: ErasedActorRef,
+}
+
+/// The actor at `id`, in a seat of the same number.
+const fn seated(id: u64) -> Seated {
+    Seated { id: ActorId::new(id), seat: SeatNumber::new(id) }
 }
 
 /// `T`'s portable form of `old`, as `old`'s own type wrote it, read within `read_limit` bytes.
@@ -136,4 +206,39 @@ fn a_reference_kept_is_a_pin_of_its_own_and_one_left_behind_goes_with_the_old_st
     assert_eq!(read_icon, Some(icon));
     assert_eq!((net(&kept, icon), net(&kept, banner)), (1, 0));
     assert_eq!(net(&released, icon), -1);
+}
+
+#[test]
+fn a_field_that_differs_only_in_its_references_protocols_is_read() {
+    // Catches a field refused because the protocol its reference names changed with its kinds, though its bytes did
+    // not: bare, inside a sequence, and inside a struct, so a comparison that forgets the protocol only at the top
+    // still refuses the nested ones.
+    let old = ScreenOne {
+        model: ProtocolRef::found(seated(1)),
+        watchers: Vec::from([ProtocolRef::found(seated(2)), ProtocolRef::found(seated(3))]),
+        watch: WatchOne { target: ProtocolRef::found(seated(4)), since: 9 },
+    };
+
+    let Ok(screen) = moved::<Screen, _>(&old, 1024) else {
+        panic!("the state moves");
+    };
+
+    assert_eq!(screen.model, Some(ProtocolRef::found(seated(1))));
+    assert_eq!(screen.watchers, Some(Vec::from([ProtocolRef::found(seated(2)), ProtocolRef::found(seated(3))])));
+    assert_eq!(screen.watch, Some(Watch { target: ProtocolRef::found(seated(4)), since: 9 }));
+}
+
+#[test]
+fn a_field_that_differs_in_more_than_its_references_protocols_refuses_the_move() {
+    // Catches a comparison that stops looking once it meets a reference, so a field whose protocol and another part
+    // both changed is read as the new type; and one that sees through the reference to the bytes it is written as, so
+    // a reference no protocol was proven for is read as one proven for the model.
+    let widened = moved::<Screen, _>(
+        &WidenedScreen { watch: WatchWide { target: ProtocolRef::found(seated(4)), since: 9 } },
+        1024,
+    );
+    let erased = moved::<Screen, _>(&ErasedScreen { model: ProtocolRef::<ModelOne>::found(seated(1)).erase() }, 1024);
+
+    assert_eq!(widened.err(), Some(TakeOverError::Mismatch { field: "watch" }));
+    assert_eq!(erased.err(), Some(TakeOverError::Mismatch { field: "model" }));
 }

@@ -14,7 +14,7 @@ impl SchemaNodes {
     /// Nothing recurses and shared nodes are never unfolded.
     #[must_use]
     pub fn same_layout(&self, other: &Self) -> bool {
-        let mut classes = Classes::new();
+        let mut classes = Classes::new(Protocols::Compared);
         let ours = classes.root_class(self);
         let theirs = classes.root_class(other);
 
@@ -22,7 +22,11 @@ impl SchemaNodes {
     }
 }
 
-/// The layout of each node of one schema, against which other schemas are matched (ADR-0054).
+/// The layout of each node of one schema but for the protocols its references name, against which other schemas are
+/// matched (ADR-0054).
+///
+/// A field whose layout differs only in the protocols of the references it holds, at any depth, is read as the field
+/// it is: its bytes are the same, and the protocol each reference names changes with the code that declares it.
 ///
 /// Its nodes are classed once, as it is made, so matching a schema against one of them costs that schema's size alone.
 pub(super) struct NodeLayouts {
@@ -31,17 +35,18 @@ pub(super) struct NodeLayouts {
 }
 
 impl NodeLayouts {
-    /// The layout of each node of `schema`.
+    /// The layout of each node of `schema`, but for its references' protocols.
     pub(super) fn of(schema: &SchemaNodes) -> Self {
-        let mut classes = Classes::new();
+        let mut classes = Classes::new(Protocols::Ignored);
         let mut nodes = classes.earlier_classes(schema);
-        let root = classes.class_of(nameless(schema.root(), &nodes));
+        let root = classes.class_of(nameless(schema.root(), &nodes, classes.protocols));
         nodes.push(root);
 
         Self { classes, nodes }
     }
 
-    /// Whether the node at `index` has the layout of `other`'s root: false for an index past the schema's nodes.
+    /// Whether the node at `index` has the layout of `other`'s root but for its references' protocols: false for an
+    /// index past the schema's nodes.
     pub(super) fn matches(&mut self, index: u32, other: &SchemaNodes) -> bool {
         let theirs = self.classes.root_class(other);
         let ours = self.nodes.get(index as usize).copied();
@@ -77,8 +82,26 @@ enum Nameless {
     /// A reference: the class of what it is written as, and the protocol it names, which holds no names (ADR-0016).
     Reference {
         written: u32,
-        protocol: ProtocolNode,
+        protocol: NamelessProtocol,
     },
+}
+
+/// A reference's protocol as a layout holds it: what its node names, or nothing where protocols are ignored.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum NamelessProtocol {
+    /// Classed where protocols are ignored: every reference written alike is one layout.
+    Ignored,
+    /// The protocol the node names.
+    Named(ProtocolNode),
+}
+
+/// Whether a class's references are told apart by the protocols they name.
+#[derive(Clone, Copy)]
+enum Protocols {
+    /// They are: two references naming different protocols are different layouts (ADR-0006, ADR-0016).
+    Compared,
+    /// They are not: a field read across a move is read whatever protocols its references name (ADR-0054).
+    Ignored,
 }
 
 /// A variant with its name removed: its selector, then each field's layout class.
@@ -91,26 +114,27 @@ struct NamelessVariant {
 /// The layout classes met so far: one number for each distinct nameless form, shared by every schema classed.
 struct Classes {
     numbers: BTreeMap<Nameless, u32>,
+    protocols: Protocols,
 }
 
 impl Classes {
-    /// No classes yet.
-    const fn new() -> Self {
-        Self { numbers: BTreeMap::new() }
+    /// No classes yet, telling references apart by their protocols or not as `protocols` says.
+    const fn new(protocols: Protocols) -> Self {
+        Self { numbers: BTreeMap::new(), protocols }
     }
 
     /// The class of `schema`'s root, classing every node once in stored order.
     fn root_class(&mut self, schema: &SchemaNodes) -> u32 {
         let earlier = self.earlier_classes(schema);
 
-        self.class_of(nameless(schema.root(), &earlier))
+        self.class_of(nameless(schema.root(), &earlier, self.protocols))
     }
 
     /// The class of every node of `schema` but the root, classing each once in stored order.
     fn earlier_classes(&mut self, schema: &SchemaNodes) -> Vec<u32> {
         let mut earlier = Vec::new();
         for node in schema.earlier() {
-            let class = self.class_of(nameless(node, &earlier));
+            let class = self.class_of(nameless(node, &earlier, self.protocols));
             earlier.push(class);
         }
 
@@ -125,8 +149,9 @@ impl Classes {
     }
 }
 
-/// The nameless form of `node`, given the class of every node before it.
-fn nameless(node: &SchemaNode, earlier: &[u32]) -> Nameless {
+/// The nameless form of `node`, given the class of every node before it, a reference's protocol kept or ignored as
+/// `protocols` says.
+fn nameless(node: &SchemaNode, earlier: &[u32], protocols: Protocols) -> Nameless {
     match node {
         SchemaNode::Boolean => Nameless::Boolean,
         SchemaNode::Integer(kind) => Nameless::Integer(integer_code(*kind)),
@@ -156,7 +181,12 @@ fn nameless(node: &SchemaNode, earlier: &[u32]) -> Nameless {
                 .collect(),
         ),
         SchemaNode::Reference { written, protocol } => {
-            Nameless::Reference { written: class_at(earlier, *written), protocol: protocol.clone() }
+            let protocol = match protocols {
+                Protocols::Compared => NamelessProtocol::Named(protocol.clone()),
+                Protocols::Ignored => NamelessProtocol::Ignored,
+            };
+
+            Nameless::Reference { written: class_at(earlier, *written), protocol }
         }
     }
 }

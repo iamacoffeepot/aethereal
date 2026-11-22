@@ -14,8 +14,10 @@ use extents::Extents;
 ///
 /// The bytes are walked once, as it is made, by the schema alone (ADR-0007): each field's bytes begin where the
 /// fields the schema lists before it end, whatever type later reads them. A field is then found by its name and
-/// matched by its layout, the names inside it ignored (ADR-0006), and whoever asked for it reads its bytes whole as
-/// the type it asked with. Only the top-level fields are found by name; a value nested inside one is read by layout.
+/// matched by its layout, the names inside it ignored (ADR-0006), and the protocols its references name ignored too,
+/// at any depth: those change with the code that declares them, never the bytes (ADR-0054). Whoever asked for it reads
+/// its bytes whole as the type it asked with. Only the top-level fields are found by name; a value nested inside one is
+/// read by layout.
 pub struct NamedFields<'a> {
     fields: Vec<Located<'a>>,
     layouts: NodeLayouts,
@@ -33,10 +35,11 @@ struct Located<'a> {
 pub enum FieldBytes<'a> {
     /// The struct has no field of that name.
     Absent,
-    /// The struct has a field of that name, of another layout: reading its bytes as the layout asked for would read
-    /// something else.
+    /// The struct has a field of that name, of another layout than in the protocols its references name: reading its
+    /// bytes as the layout asked for would read something else.
     OtherLayout,
-    /// The struct has a field of that name and of that layout: its bytes.
+    /// The struct has a field of that name and of that layout but for the protocols its references name, which do not
+    /// change its bytes: its bytes.
     Same(&'a [u8]),
 }
 
