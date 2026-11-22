@@ -54,6 +54,7 @@ pub const fn float_code(kind: Float) -> u8 {
 
 /// The layout hash of a constant shape whose references name kinds by their ids, each computed from its own graph:
 /// the layout of a shape that is no member of a cycle, such as a state's.
+#[cfg(test)]
 #[must_use]
 pub const fn shape_layout(shape: &Shape) -> u64 {
     layout(&mut Walk::direct(), shape)
@@ -78,6 +79,7 @@ pub(super) struct Walk<'g> {
 /// Where a walk finds its references' kinds.
 enum Targets<'g> {
     /// Each kind's id, computed from its own graph.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only the tests' layouts of a lone shape walk directly"))]
     Direct,
     /// The graph's edges of the kind being written, from `cursor` on, in the order the walk meets them.
     Graph { graph: &'g Graph, cursor: usize },
@@ -96,6 +98,7 @@ pub(crate) enum Mode {
 
 impl<'g> Walk<'g> {
     /// A walk that computes each kind's id from its own graph.
+    #[cfg(test)]
     const fn direct() -> Self {
         Self { targets: Targets::Direct, mode: Mode::Acyclic }
     }
