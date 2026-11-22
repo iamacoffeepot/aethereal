@@ -106,17 +106,20 @@ dependencies = [
  "aethereal-files",
  "aethereal-git",
  "aethereal-guest-echo",
+ "aethereal-guest-screen",
  "aethereal-http",
  "aethereal-library",
  "aethereal-link",
  "aethereal-mcp",
  "aethereal-pace",
  "aethereal-process",
+ "aethereal-render",
  "aethereal-sessions",
  "aethereal-store",
  "aethereal-substrate",
  "aethereal-tcp",
  "aethereal-tools",
+ "aethereal-window",
  "blake3",
  "clap",
  "core_affinity",
@@ -172,6 +175,16 @@ version = "0.0.0"
 dependencies = [
  "aethereal-actor",
  "aethereal-data",
+]
+
+[[package]]
+name = "aethereal-guest-screen"
+version = "0.0.0"
+dependencies = [
+ "aethereal-actor",
+ "aethereal-data",
+ "aethereal-render",
+ "aethereal-ui",
 ]
 
 [[package]]

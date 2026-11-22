@@ -1,0 +1,19 @@
+[package]
+name = "aethereal-guest-screen"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Spike: a guest that is one screen written with view! (ADR-0056), run by the headless chassis's tests"
+
+# Built by the chassis's build script for wasm32, apart from the workspace, which excludes it.
+
+[lib]
+# A cdylib for the blob, and an rlib so the host's tests can name its types.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aethereal-actor = { path = "../../../aethereal-actor", features = ["guest"] }
+aethereal-data = { path = "../../../aethereal-data" }
+aethereal-render = { path = "../../../aethereal-render" }
+aethereal-ui = { path = "../../../aethereal-ui" }

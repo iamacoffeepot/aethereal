@@ -42,8 +42,10 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"
 openh264 = { version = "=0.9.9", default-features = false, features = ["source"], optional = true }
 
 # A browser's GPU is WebGPU, used on the page's one thread, so what it makes is never shared between threads: that is
-# what lets the GPU be a resource, which is `Send` (ADR-0010).
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# what lets the GPU be a resource, which is `Send` (ADR-0010). Spike (docs/spikes/screen-guest.md): a guest is wasm32 too,
+# and this backend gives its module wasm-bindgen's imports, which no guest host defines, so a guest's build, with the
+# `aethereal_guest` cfg, leaves it out.
+[target.'cfg(all(target_arch = "wasm32", not(aethereal_guest)))'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
 
 # The build script packages the shared shader pieces in `shaders/` for dependents' build scripts (ADR-0030). It is

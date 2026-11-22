@@ -42,6 +42,10 @@ libc = "0.2.190"
 [dev-dependencies]
 # The guest the tests run, for its types: its blob is built for wasm32 by the build script.
 aethereal-guest-echo = { path = "guests/echo" }
+# Spike: the screen guest, for its types.
+aethereal-guest-screen = { path = "guests/screen" }
+aethereal-render = { path = "../aethereal-render" }
+aethereal-window = { path = "../aethereal-window" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-git = { path = "../aethereal-git" }

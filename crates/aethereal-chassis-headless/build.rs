@@ -18,11 +18,26 @@ fn main() {
     // selects it, as a feature would be turned on by a build of every feature, the first's types among them.
     let second = build(&manifest, &out.join("guests-v2"), "--cfg echo_v2");
     println!("cargo::rustc-env=AETHEREAL_GUEST_ECHO_V2={}", second.display());
+
+    // Spike: the screen guest, written with `view!` (ADR-0056). `aethereal_guest` keeps the renderer's browser backend,
+    // and with it wasm-bindgen's imports, out of a guest, which is wasm32 as a browser host is.
+    let screen = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guests/screen/Cargo.toml");
+    println!("cargo::rerun-if-changed=guests/screen");
+    println!("cargo::rerun-if-changed=../aethereal-ui/src");
+    println!("cargo::rerun-if-changed=../aethereal-render/src");
+    println!("cargo::rerun-if-changed=../aethereal-window/src");
+    let built = build_named(&screen, &out.join("guest-screen"), "--cfg aethereal_guest", "aethereal_guest_screen");
+    println!("cargo::rustc-env=AETHEREAL_GUEST_SCREEN={}", built.display());
 }
 
 /// Builds the guest whose manifest is `manifest` for wasm32 into `target`, with `flags` for the compiler, and answers
 /// with where its module is.
 fn build(manifest: &Path, target: &Path, flags: &str) -> PathBuf {
+    build_named(manifest, target, flags, "aethereal_guest_echo")
+}
+
+/// Builds the guest whose manifest is `manifest`, whose module is `name`, as [`build`] does.
+fn build_named(manifest: &Path, target: &Path, flags: &str, name: &str) -> PathBuf {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // The nested build gets an environment of its own: what the outer build set for this script is not for it.
     let status = Command::new(cargo)
@@ -37,5 +52,5 @@ fn build(manifest: &Path, target: &Path, flags: &str) -> PathBuf {
     let built = status.is_ok_and(|status| status.success());
     assert!(built, "the guests the tests run are built for wasm32");
 
-    target.join("wasm32-unknown-unknown/release/aethereal_guest_echo.wasm")
+    target.join(format!("wasm32-unknown-unknown/release/{name}.wasm"))
 }
