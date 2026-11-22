@@ -41,14 +41,18 @@ pub struct Tiles;
 pub struct ProtocolRef<P> { .. }    // an ActorId and a seat, as every reference is
 ```
 
-It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a reference crosses (in mail and in an actor's own state, never between engines). It erases to an `ErasedActorRef`. Like an `ActorRef`, it is proven when it is made, and nothing checks it again. There are three ways to make one:
+It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a reference crosses (in mail and in an actor's own state, never between engines). It erases to an `ErasedActorRef`. Like an `ActorRef`, it is proven when it is made, and nothing checks it again.
+
+**Its layout names its protocol.** A `ProtocolRef<P>`'s schema is a reference with `P`'s kind ids, as a set, and for a named `P` each kind's answers, so a kind or a state that holds one has another layout, and another id, when `P`'s kinds change (ADR-0006). Its bytes are the same sixteen, whatever `P` is. A reference read from mail was therefore proven for the protocol its field names: a build that reads `P`'s kinds differently reads a different kind, and never this one's mail. Decoding one proves nothing new; it carries the proof its sender made.
+
+There are three ways to make one:
 
 1. **From a typed reference, at build time.** `reference.protocol()` turns an `ActorRef<T>` into a `ProtocolRef<P>` when `T` conforms to `P`:
    - `T` handles every kind of `P`;
    - for a named `P`, the answer `T`'s handler for a kind `K` returns, `T`'s own `Carries<K>` (ADR-0059), is a kind of `P`'s `Carries<K>::Answers`.
 
    The compiler checks this, as a trait bound, and nothing is read at runtime. Each answer's place among the protocol's answers is inferred, as a narrowing's places are, which a `From` impl cannot do, so the conversion is a method, the one way to make a protocol reference from a typed one, for a tuple as for a named protocol. A handler need not answer with every kind the protocol lists: what a sender through the protocol must handle is the answers, and what keeps an answer from reaching a sender that does not take it is that the receiver answers with nothing else.
-2. **From an erased reference, at runtime, once.** `turn.cast::<P>(reference)` answers with a `ProtocolRef<P>` when the declaration of the actor's type lists every kind of `P`, and with nothing otherwise. It is a lookup in the table, as a send's check is today. Answers are not read, because the engine's declaration holds what a type handles but not what a protocol promises. So a cast is to a tuple, a protocol of tells; a named protocol is reached by conversion.
+2. **From an erased reference, at runtime, once.** `turn.cast::<P>(reference)` answers with a `ProtocolRef<P>` when the declaration of the actor's type lists every kind of `P`, and, for a named `P`, its handler for each kind `K` answers only with kinds of `P`'s `Carries<K>::Answers`; it answers with nothing otherwise. It is a lookup in the table, as a send's check is today. The declaration holds each handler's answers (ADR-0059: `Declared`), the same answers a conversion reads at build time (`AnsweredBy`), so a cast reaches a named protocol as a conversion does. A cast to a guest also writes what the guest is relied on for, which every version of its code that it moves onto must still take (ADR-0054: `What::Relied`).
 3. **By narrowing.** `reference.narrow::<Q>()` turns a `ProtocolRef<P>` into a `ProtocolRef<Q>` when every kind of `Q` is one of `P`'s, in any order, each found at its place, which the compiler infers (`Covers`). Narrowing a named protocol to a tuple drops what it answers.
 
 **`ProtocolRef<(A, B)>` and `ProtocolRef<(B, A)>` are two types to the compiler, and one protocol to the engine.** Stable Rust cannot sort types. The engine reads a protocol as a set of kind ids (`Target::Handling`), and a guest's section holds the same set (`section::To::Handling`). The two spellings narrow into each other at no cost. A list holds one spelling, so its owner chooses it, and what is added to the list is narrowed to fit.
@@ -79,6 +83,8 @@ Neither is checked when it is sent: the reference is the proof. **The target com
 - A send through a `ProtocolRef<P>` of a `K` outside `P` does not build.
 - A named protocol gives a set of kinds an identity of its own: a guest's section, or a wire, could later name it. Nothing here gives it one beyond its kind ids.
 - A reference that names a protocol reaches every type that handles its kinds (ADR-0013).
+- A reference read from mail or from a state was proven for the protocol its field names, so a change to a protocol's kinds changes the id of every kind and the layout of every state that holds a reference to it.
+- A cast reaches a named protocol, reading each handler's answers from the declaration.
 
 ## Alternatives considered
 
@@ -86,4 +92,5 @@ Neither is checked when it is sent: the reference is the proof. **The target com
 - **Named protocols only.** One spelling, and no narrowing. Every ad hoc set of kinds then needs a declaration, and the 39 `send_to_any` sites in the code each name one.
 - **Kinds and answers in one list of entries,** `(Ask<WhichTile, TileIs>, Tell<Highlight>)`. Each kind appears once. It is unlike how an actor's handlers are written, where each kind's meaning is a trait implementation of its own.
 - **The answer on the request kind,** `impl Request for WhichTile { type Answer = TileIs; }`. One answer per kind everywhere, and every typed send checked. Two protocols could not answer one kind differently, and it puts a protocol's meaning on the kind.
-- **A protocol reference cast at runtime to a named protocol,** reading answers from the receiver's handlers. The engine's declaration could hold each handler's answer, so this could be read. It would make a cast's success depend on reply declarations the receiver's author need not have meant as a promise. A conversion at build time says the same thing where the compiler can check it.
+- **A cast to tuples only, with a named protocol reached by conversion alone.** A conversion needs the actor's type, and a parent that spawns a guest by its kind's name has none (ADR-0059: `turn.spawn_named`). A handler's answer is its signature, which is what a conversion reads at build time, so a cast that reads it from the declaration reads the same promise.
+- **A protocol's schema left out of its reference's layout,** a `ProtocolRef<P>` read as an `ErasedActorRef` is. Two builds that read `P`'s kinds differently would read each other's mail, and a reference decoded from it would claim a protocol nothing proved.

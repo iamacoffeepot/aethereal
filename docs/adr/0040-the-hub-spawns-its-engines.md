@@ -19,17 +19,20 @@ Nothing in the engine starts a process yet. The earlier engine's hub started its
 
 ## Decision
 
-**Every engine links with a token the hub minted for it, and every engine ends when its link ends. The hub mints one as it spawns an engine from the store, through a new capability, `Processes`, and mints one on request for an engine started outside it.**
+**Every engine links with a token the hub minted for it, and every engine ends when its link ends. The hub mints one as it spawns an engine from the store, through a new capability, `Processes`, and mints one on request for an engine started outside it. Each engine the hub spawns reads guest modules from a `Code` of its own, where the hub places modules checked into its store.**
 
 ```
 agent ── spawn_engine { binary, args } ──> Engines ── spawns Spawned:n, mints its token
-  Spawned ── Launch { binary } ──> Store              a launch copy to run; the build held while Spawned lives
-  Spawned ── Start { program, args } ──> Processes ── Process:m          the engine's process
+  Spawned ── Launch { binary } ──> Store              a launch copy to run, and an empty code/<n>; the build held while Spawned lives
+  Spawned ── Start { program, args } ──> Processes ── Process:m          the engine's process, its --code at code/<n>
   engine  ══ Hello { revision, name, token } ══> Engines ── tells Spawned:n it linked, as engine id k
   Spawned answers spawn_engine: Linked { engine: k }, or how it failed
 
 agent ── mint_token {} ──> Engines ── answers a token, and the arguments to start an engine with
   the agent starts the engine itself; its Hello brings the token, and it is listed as external
+
+agent ── place_modules { engine, modules } ──> Engines ── Spawned:n ── Place { modules } ──> Store ── copies into code/<n>
+  the agent then calls the engine's own publish { paths } (ADR-0054)
 ```
 
 ### Tokens
@@ -106,6 +109,22 @@ pub enum Launched { Ready { program: String, hash: StoreHash }, NotStored, Faile
 - **`Launch` holds the build for its asker,** as `Hold` does (ADR-0039), and the store removes the launch copy when the asker ends, and clears `running/` as it begins. Each spawn has its own copy, so a rebuild checked in under the same name changes nothing that is running.
 - **A name that spells a hash is refused at check-in,** 64 lowercase hexadecimal digits, so the agent's `binary`, which is one string, is a hash when it spells one, and a name otherwise.
 
+### Placing guest modules in an engine's `Code`
+
+A guest is built where its agent works, in a session's container (ADR-0057), and checked into the store as any file is (ADR-0039: `check_in`). An engine reads the modules it runs from `Code`, through `Files` (ADR-0054: `Namespace::Code`), on its own host, which for an engine the hub spawns is the hub's.
+
+```rust
+impl Carries<Place> for Store { type Answers = (Placed,); }
+
+pub struct Place { pub launch: u32, pub modules: Vec<Binary> }   // `launch`: the `<n>` of the asker's launch
+pub enum Placed { Ready { paths: Vec<String> }, NotStored { modules: Vec<Binary> }, Failed }
+```
+
+- **A `Launch` also makes the engine's `Code`,** `code/<n>` beneath the store's root, empty, under the launch's number, and the `Spawned` starts the engine with `--code` naming it, beside the link's arguments: the setting `code` of `Files` (ADR-0054). The store removes it when the asker ends, as it removes the launch copy, and clears `code/` as it begins. A `spawn_engine` whose `args` name `--code` is answered `Refused`, so every engine the hub spawns reads the `Code` the hub fills.
+- **`Place` copies stored entries into a launch's `Code`,** each as `<name>.wasm`, named as a launch copy is, replacing a file of that name, and answers the paths, relative to `Code`, that a publish names. It copies all or none: a module the store does not hold is answered `NotStored`, naming each, and nothing is copied. The store copies a file, as it does for a launch, and answers no bytes (ADR-0039). The copy is the engine's, so a later check-in under the same name changes nothing placed.
+- **The agent publishes what it placed with the engine's own tool,** `publish { paths }`, which `Library` serves (ADR-0054), and reads how its guests moved with `upgrades`. The hub places a file where the engine reads it, and the engine's library decides what runs.
+- **An engine started outside the hub has no `Code` the hub knows,** so `place_modules` refuses it, as `terminate_engine` refuses an engine of no id.
+
 ### `Engines` spawns
 
 ```
@@ -143,12 +162,13 @@ pub enum Terminated { Stopping, NotLinked }                      // `NotLinked`:
 
 ### What the agent sees
 
-`EngineTools` (ADR-0038) gains three tools, and `list_engines` says where each engine came from:
+`EngineTools` (ADR-0038) gains four tools, and `list_engines` says where each engine came from:
 
 ```
 spawn_engine { binary: String, args: [String] }   -> { engine }        // refused with how it failed
 mint_token {}                                     -> { token, args }   // to start an engine by hand
 terminate_engine { engine }                       -> {}                // refused if no engine of that id is linked
+place_modules { engine, modules: [String] }       -> { paths }         // refused for an engine the hub did not spawn, or a module not stored
 list_engines {}                                   -> { engines: [{ engine, name, tools, origin }], exited: [{ binary, status, stderr }] }
                                                   // origin: { Spawned: { binary, hash } } | "External"
 ```
@@ -164,6 +184,7 @@ list_engines {}                                   -> { engines: [{ engine, name,
 - **The store keeps builds,** so an engine checked in before a change can meet a hub built after it, and a change an older side would misread takes the next revision (ADR-0038).
 - **No name spells 64 hexadecimal digits** (ADR-0039).
 - **Each spawn copies its binary.** Copies go as each engine ends, and a crash leaves them in `running/`, which the store clears as it begins.
+- **A guest an agent builds reaches a running engine through the hub:** checked in, placed in that engine's `Code`, and published there. Each engine the hub spawns has a `Code` of its own, which goes as the engine ends.
 
 ## Alternatives considered
 
@@ -173,3 +194,6 @@ list_engines {}                                   -> { engines: [{ engine, name,
 - **Run the store's entry in place.** No copy, but the entry must be executable, and the process is named by its hash wherever it is shown.
 - **Spawning inside `Engines`, with no `Processes`.** Starting and watching a process is not the link's, and would be written again by the next thing that starts one.
 - **Answer `spawn_engine` as soon as the process starts.** The agent would then poll `list_engines` to learn when it can call the engine's tools, or that it never could.
+- **`place_modules` that also publishes,** the hub calling the engine's `publish` itself. The hub would make tool calls of its own over a link it otherwise only relays, and what a publish answers and refuses is the engine's library's to say.
+- **The hub sending a module's bytes to the engine over its link.** The store answers no bytes (ADR-0039), how a blob crosses between engines is not decided (ADR-0014), and an engine reads `Code` through `Files`, natively and in a browser, so a file where `Files` reads is all it needs.
+- **One `Code` shared by every engine the hub spawns.** A module placed for one engine would be published by any other that lists `Code`, as each does when it starts.
