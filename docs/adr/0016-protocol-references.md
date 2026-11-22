@@ -43,7 +43,7 @@ pub struct ProtocolRef<P> { .. }    // an ActorId and a seat, as every reference
 
 It has the shape of an `ActorRef`: sixteen bytes, `Copy`, crossing what a reference crosses (in mail and in an actor's own state, never between engines). It erases to an `ErasedActorRef`. Like an `ActorRef`, it is proven when it is made, and nothing checks it again.
 
-**Its layout names its protocol.** A `ProtocolRef<P>`'s schema is a reference with `P`'s kind ids, as a set, and for a named `P` each kind's answers, so a kind or a state that holds one has another layout, and another id, when `P`'s kinds change (ADR-0006). Its bytes are the same sixteen, whatever `P` is. A reference read from mail was therefore proven for the protocol its field names: a build that reads `P`'s kinds differently reads a different kind, and never this one's mail. Decoding one proves nothing new; it carries the proof its sender made.
+**Its layout names its protocol.** A `ProtocolRef<P>`'s schema is a reference with `P`'s kind ids, as a set, and for a named `P` each kind's answers, so a kind or a state that holds one has another layout, and another id, when `P`'s kinds change (ADR-0006). Its bytes are the same sixteen, whatever `P` is. A reference read from mail was therefore proven for the protocol its field names: a build that reads `P`'s kinds differently reads a different kind, and never this one's mail. Decoding one proves nothing new; it carries the proof its sender made. A kind of `P` may itself hold a `ProtocolRef<P>`, directly or through other kinds, as `aether.window.pointed` holds a reference to an actor that hears it: its id is computed with its cycle (ADR-0006).
 
 There are three ways to make one:
 
