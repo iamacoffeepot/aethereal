@@ -2,8 +2,8 @@
 
 use crate::plain::write_count;
 use crate::{
-    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Float, Integer, Plain, Reader, Schema, Shape,
-    Writer,
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Float, Integer, Plain, ProtocolNode, Reader,
+    Schema, Shape, Writer,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -47,6 +47,12 @@ pub enum SchemaNode {
     },
     /// Last, so the variants before it keep their selectors (ADR-0038).
     Json,
+    /// A reference: the node its bytes are written as, and the protocol it names (ADR-0016). After `Json`, so the
+    /// variants before it keep their selectors.
+    Reference {
+        written: u32,
+        protocol: ProtocolNode,
+    },
 }
 
 impl SchemaNode {
@@ -54,7 +60,7 @@ impl SchemaNode {
     fn children(&self) -> Vec<u32> {
         match self {
             Self::Boolean | Self::Integer(_) | Self::Float(_) | Self::String | Self::Bytes | Self::Json => Vec::new(),
-            Self::Option(child) | Self::Sequence(child) => Vec::from([*child]),
+            Self::Option(child) | Self::Sequence(child) | Self::Reference { written: child, .. } => Vec::from([*child]),
             Self::Array { element, .. } => Vec::from([*element]),
             Self::Map { key, value } => Vec::from([*key, *value]),
             Self::Struct { fields, .. } => fields.iter().map(|field| field.shape).collect(),
@@ -123,6 +129,8 @@ pub enum SchemaFault {
     RepeatedVariant,
     /// An enum has two variants of one selector.
     RepeatedSelector,
+    /// A reference's protocol lists its kinds, or a kind's answers, out of ascending order or one twice (ADR-0016).
+    UnorderedKinds,
 }
 
 impl fmt::Display for SchemaFault {
@@ -136,6 +144,7 @@ impl fmt::Display for SchemaFault {
             Self::RepeatedField => f.write_str("a struct or a variant has two fields of one name"),
             Self::RepeatedVariant => f.write_str("an enum has two variants of one name"),
             Self::RepeatedSelector => f.write_str("an enum has two variants of one selector"),
+            Self::UnorderedKinds => f.write_str("a reference's protocol lists its kinds out of ascending order"),
         }
     }
 }
@@ -221,6 +230,7 @@ impl<B: Boundary> Decode<B> for SchemaNodes {
         reject_repeated_field(&nodes)?;
         reject_repeated_variant(&nodes)?;
         reject_repeated_selector(&nodes)?;
+        reject_unordered_kinds(&nodes)?;
 
         let Some(root) = nodes.pop() else {
             return Err(DecodeError::InvalidSchema { node: 0, fault: SchemaFault::Empty });
@@ -296,6 +306,10 @@ fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
                 flat.push(entry);
             }
             SchemaNode::Enum { name: String::from(name), variants: flat }
+        }
+        Shape::Reference { written, protocol } => {
+            let child = intern(written, earlier);
+            SchemaNode::Reference { written: child, protocol: protocol.node() }
         }
     }
 }
@@ -421,7 +435,8 @@ fn is_key_shape(nodes: &[SchemaNode], mut index: u32) -> bool {
             | SchemaNode::Sequence(_)
             | SchemaNode::Map { .. }
             | SchemaNode::Tuple { .. }
-            | SchemaNode::Enum { .. } => {
+            | SchemaNode::Enum { .. }
+            | SchemaNode::Reference { .. } => {
                 return false;
             }
         }
@@ -592,6 +607,22 @@ fn reject_repeated_selector(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
         if repeated {
             let index = node_index(position);
             let fault = SchemaFault::RepeatedSelector;
+
+            return Err(DecodeError::InvalidSchema { node: index, fault });
+        }
+    }
+
+    Ok(())
+}
+
+/// Refuses the first reference whose protocol is not in ascending order, each kind once.
+fn reject_unordered_kinds(nodes: &[SchemaNode]) -> Result<(), DecodeError> {
+    for (position, node) in nodes.iter().enumerate() {
+        if let SchemaNode::Reference { protocol, .. } = node
+            && !protocol.is_ascending()
+        {
+            let index = node_index(position);
+            let fault = SchemaFault::UnorderedKinds;
 
             return Err(DecodeError::InvalidSchema { node: index, fault });
         }

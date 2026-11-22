@@ -1,7 +1,7 @@
 //! The actors one actor sends to as they come and go: a list it holds, which it watches so the ended leave it
 //! (ADR-0016).
 
-use crate::{Ended, ErasedActorRef, Guard, ProtocolRef, Reachable, Receives, Turn, Vantage};
+use crate::{Ended, ErasedActorRef, Guard, Listed, ProtocolRef, Reachable, Receives, Turn, Vantage};
 use aethereal_data::{
     ActorId, Boundary, Decode, DecodeError, Element, Encode, EncodeError, Reader, Schema, Shape, Writer,
 };
@@ -101,8 +101,8 @@ impl<P> Default for Subscribers<P> {
     }
 }
 
-/// Written as the list of references it holds.
-impl<P> Schema for Subscribers<P> {
+/// Written as the list of references it holds, each laid out with the protocol it names (ADR-0016).
+impl<P: Listed> Schema for Subscribers<P> {
     const SHAPE: Shape = <Vec<ProtocolRef<P>>>::SHAPE;
 }
 

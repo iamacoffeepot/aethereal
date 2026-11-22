@@ -48,6 +48,11 @@ impl KindId {
         self.0 == other.0
     }
 
+    /// Its 64 bits, for the order a set of kinds is read in (ADR-0016): never handed out of this crate.
+    pub(crate) const fn bits(self) -> u64 {
+        self.0
+    }
+
     /// The id of a name and the layout hash of its schema; the only place an id is made.
     const fn from_layout(name: &KindName, layout: u64) -> Self {
         Self(Fnv::new().bytes(name.bytes()).hash(layout).finish())

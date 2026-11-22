@@ -49,8 +49,8 @@ pub use path::{
 };
 pub use plain::{Plain, from_bytes, to_bytes};
 pub use schema::{
-    Field, FieldBytes, FieldNode, Fields, FieldsNode, Float, Integer, NamedFields, Schema, SchemaFault, SchemaNode,
-    SchemaNodes, Shape, Variant, VariantNode,
+    Answered, AnsweredNode, Ascending, Field, FieldBytes, FieldNode, Fields, FieldsNode, Float, Integer, NamedFields,
+    ProtocolNode, ProtocolShape, Schema, SchemaFault, SchemaNode, SchemaNodes, Shape, Variant, VariantNode,
 };
 
 /// Derives `Schema`, the codec over every boundary, and `Plain` from one field list (ADR-0004).

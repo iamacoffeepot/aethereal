@@ -96,6 +96,7 @@ impl Walk<'_, '_> {
             SchemaNode::Tuple { elements } => self.tuple(at, elements),
             SchemaNode::Struct { fields, .. } => self.struct_value(at, fields),
             SchemaNode::Enum { variants, .. } => self.enum_value(at, variants),
+            SchemaNode::Reference { written, .. } => self.value(at.child(*written)?),
         }
     }
 
