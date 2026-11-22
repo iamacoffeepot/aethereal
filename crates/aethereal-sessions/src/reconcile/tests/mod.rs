@@ -62,9 +62,9 @@ fn two_sessions_never_wake_past_the_most_awake() {
 }
 
 #[test]
-#[ignore = "explores ten million states and more: run by hand, in release"]
+#[ignore = "explores eleven million states, in minutes in release and some 6 GB: run by hand"]
 fn the_slices_together() {
-    let explored = holds(&Bounds { lines: 2, faults: 1, sleeps: true, ..Bounds::LINE });
+    let explored = holds(&Bounds { lines: 2, faults: 1, ..Bounds::LINE });
 
     #[allow(clippy::print_stderr, reason = "the larger bound reports how far it went, which --nocapture shows")]
     {
