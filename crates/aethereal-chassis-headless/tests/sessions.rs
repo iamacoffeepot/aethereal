@@ -2767,26 +2767,38 @@ fn adopts(test: &str, kill: Kill, said: &[&str]) -> Result<(), Unheard> {
 }
 
 #[test]
-fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_its_session_lost_through_the_next_restart()
+fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_a_failed_start_that_wakes_with_no_lost_line()
 -> Result<(), Unheard> {
-    // Catches a container asked for before the record naming it lands, a hub that starts again and leaves a session
-    // whose record says it starts as it found it, when no container of it is listed, and a session so lost shown as
-    // one the hub wound down once the hub starts yet again.
+    // Catches a container asked for before the record naming it lands; a hub that starts again and leaves a session
+    // whose record says its run starts, of which no container is listed, as it found it, or takes it for lost, so it
+    // is shown lost and its next wake tells Claude a turn was cut short in a run where Claude Code never ran; and a
+    // session so left that does not wake again.
     let (mut harness, mut daemon, session) = killed_at("kill-creating", Kill::Creating)?;
-    let entries = left_lost(&mut harness, &mut daemon, session)?;
+    // The record says why the start failed only once the hub has read its sessions back and listed their containers.
+    let unstarted = |daemon: &Daemon| matches!(kept(daemon, session), Some(Standing::Unstarted { .. }));
+    until(&mut harness, &mut daemon, |_, daemon| unstarted(daemon));
+    let Some(Standing::Unstarted { unread, why }) = kept(&daemon, session) else {
+        panic!("the record says the start failed: {:?}", kept(&daemon, session));
+    };
 
+    assert!(unread.is_empty(), "it holds no line, as what waited for the run went with the hub before: {unread:?}");
     assert_eq!(daemon.claudes(), 1, "no Claude Code container of the run is made");
-    let last = entries.last().map(|numbered| &numbered.entry);
-    assert_eq!(last, Some(&Entry::Hub(Note::Stopped { run: 2, why: Ended::Lost })));
-
-    drop(harness);
-    daemon.connections.clear();
-    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
-    // A list is answered at once, before the sessions are read back: it is asked again until they are.
-    waiting::until(BUDGET, || listed(&mut harness, &mut daemon).is_ok_and(|sessions| !sessions.is_empty()));
     let listed = row(&mut harness, &mut daemon, session)?;
+    let failed = Housed::Unstarted { why: why.clone(), holding: 0 };
+    assert_eq!((listed.state, listed.container), (State::Hibernating, failed), "a failed start, not lost");
+    let last = notes(&mut harness, &mut daemon, session)?.pop();
+    assert_eq!(last, Some(Note::Unstarted { run: 2, why }), "the transcript says the start did not finish");
 
-    assert_eq!((listed.state, listed.container), (State::Hibernating, Housed::Lost), "lost through the next restart");
+    let before = said_lines(&mut harness, &mut daemon, session)?;
+    say(&mut harness, &mut daemon, session, "next")?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let third = daemon.claude(1);
+    let written = stdin(&mut harness, &mut daemon, &third, 1);
+
+    assert_eq!(written, [user_message("next")], "no lost line is written before the owner's");
+    assert_eq!(said_lines(&mut harness, &mut daemon, session)?, [before, vec![by_caller("next")]].concat());
+    let attached = until_housed(&mut harness, &mut daemon, session, &Housed::Attached)?;
+    assert_eq!(attached, Housed::Attached, "it wakes as any hibernating session");
 
     Ok(())
 }

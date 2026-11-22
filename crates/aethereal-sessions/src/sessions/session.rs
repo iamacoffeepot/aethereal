@@ -52,9 +52,10 @@ pub(super) enum Gone {
     /// when the hub came back to it.
     Lost,
     /// Its start failed before Claude Code ran, as `why` says: a container of it was never made or started, the hub's
-    /// repository was not served, or its bootstrap container did not exit 0. None of the lines that waited for it were
-    /// written: `unread`, each the number of its entry in the transcript, in order, are written first to its next
-    /// container, before any line that wakes it, and noted nowhere again. Empty when there were none.
+    /// repository was not served, its bootstrap container did not exit 0, or the hub stopped before the start finished
+    /// and a hub that started again found no container of it. None of the lines that waited for it were written:
+    /// `unread`, each the number of its entry in the transcript, in order, are written first to its next container,
+    /// before any line that wakes it, and noted nowhere again. Empty when there were none.
     Unstarted { unread: Vec<u64>, why: String },
 }
 

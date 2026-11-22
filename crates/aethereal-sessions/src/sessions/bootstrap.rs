@@ -8,7 +8,7 @@
 
 use super::asks::{Refusal, Unbootstrapped};
 use super::output::Reading;
-use super::session::{Flow, Gone, Life, Stage, Step};
+use super::session::{Flow, Life, Stage, Step};
 use super::transcript::{Counted, Ended, Entry, Note};
 use super::{Feed, Sessions};
 use crate::{ContainerId, Logs, Until};
@@ -106,11 +106,7 @@ impl Sessions {
     pub(super) fn bootstrap_gone(&mut self, turn: &Turn<'_, Self>, session: u32, run: u32) {
         let said = self.bootstrap_said(session, run);
         let why = Refusal::Unbootstrapped(Unbootstrapped { ended: Ended::Lost, said }).to_string();
-        let Some(held) = self.held.get_mut(&session) else {
-            return;
-        };
-        held.life = Life::Hibernating { gone: Gone::Unstarted { unread: Vec::new(), why: why.clone() } };
-        self.note(turn, session, Entry::Hub(Note::Unstarted { run, why }));
+        self.left_unstarted(turn, session, run, why);
     }
 
     /// The last lines the bootstrap container of `session`'s run `run` wrote to stderr, as the transcript holds them,
