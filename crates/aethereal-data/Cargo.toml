@@ -11,6 +11,8 @@ description = "Plain data: the byte layout, the schema vocabulary, and the codec
 std = []
 # Plain data as JSON text, from a schema and bytes (ADR-0007).
 json = []
+# Spike: each kind writes its id into the module's `aethereal.kinds` section, built for a guest (ADR-0054).
+guest = []
 
 [dependencies]
 aethereal-data-derive = { path = "../aethereal-data-derive" }

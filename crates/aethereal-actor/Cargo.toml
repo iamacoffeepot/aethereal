@@ -11,7 +11,7 @@ default = ["std"]
 # References that pin blobs (ADR-0014), whose pins are noted in a buffer each thread keeps, and their content's hash.
 std = ["dep:blake3", "blake3/std", "dep:crossbeam-queue"]
 # What a guest's code runs on inside its instance: the calls its host makes (ADR-0015).
-guest = ["std"]
+guest = ["std", "aethereal-data/guest"]
 
 [dependencies]
 # The macros an actor is written with, #[actor] and #[protocol], and the derives of an enum guard (ADR-0058, ADR-0059).

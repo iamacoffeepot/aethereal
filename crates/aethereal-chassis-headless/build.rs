@@ -26,7 +26,10 @@ fn build(manifest: &Path, target: &Path, flags: &str) -> PathBuf {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // The nested build gets an environment of its own: what the outer build set for this script is not for it.
     let status = Command::new(cargo)
-        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "--manifest-path"])
+        // Spike (ADR-0054): `rustc` with the module's crate type alone, so the profile's LTO applies (Cargo does not
+        // apply it to a crate that is also an rlib) and every kind of every crate the guest names lands in its
+        // `aethereal.kinds`, whether or not its code is reached.
+        .args(["rustc", "--release", "--crate-type", "cdylib", "--target", "wasm32-unknown-unknown", "--manifest-path"])
         .arg(manifest)
         .arg("--target-dir")
         .arg(target)

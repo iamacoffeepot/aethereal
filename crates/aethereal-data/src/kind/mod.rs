@@ -2,11 +2,14 @@
 
 mod id;
 pub mod layout;
+mod module;
 mod name;
 #[cfg(test)]
 pub mod samples;
 
 pub use id::KindId;
+#[doc(hidden)]
+pub use module::kind_name_bytes as __kind_name_bytes;
 pub use name::KindName;
 
 use crate::Schema;

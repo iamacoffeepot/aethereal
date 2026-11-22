@@ -2764,9 +2764,14 @@ fn absent(old: &SchemaNodes, new: &SchemaNodes) -> Vec<String> {
 
 /// The bytes of the `aethereal.declared` section of the module `bytes`, when it has one.
 fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
+    custom_section(bytes, section::NAME)
+}
+
+/// The bytes of the first custom section named `name` of the module `bytes`, when it has one.
+fn custom_section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         if let Ok(wasmparser::Payload::CustomSection(custom)) = payload
-            && custom.name() == section::NAME
+            && custom.name() == name
         {
             return Some(custom.data());
         }
@@ -2794,6 +2799,27 @@ mod tests {
 
     /// The echo guest the build script built.
     const ECHO: &[u8] = include_bytes!(env!("AETHEREAL_GUEST_ECHO"));
+
+    #[test]
+    fn the_echo_module_names_every_kind_of_the_crates_it_links() {
+        // Spike (ADR-0054): each kind built for a guest writes its id into `aethereal.kinds`: its own crate's, those of
+        // a crate whose kind it sends though it calls none of its code, and those of modules of it nothing names; a
+        // crate it never names is not linked, and writes nothing.
+        use aethereal_guest_kinds_probe::{apart::Apart, typed::Typed};
+        use aethereal_guest_kinds_unnamed::Alone;
+
+        let Some(section) = custom_section(ECHO, section::kinds::NAME) else {
+            panic!("the echo guest has a kinds section");
+        };
+        let Ok(kinds) = section::kinds::read(section) else {
+            panic!("the echo guest's kinds section reads");
+        };
+        assert!(kinds.contains(&KindId::of::<echo::Ping>()));
+        assert!(kinds.contains(&KindId::of::<Tick>()));
+        assert!(kinds.contains(&KindId::of::<Typed>()));
+        assert!(kinds.contains(&KindId::of::<Apart>()));
+        assert!(!kinds.contains(&KindId::of::<Alone>()));
+    }
 
     /// `engine`, running guests with wasmtime, and the echo guest put into it as code.
     fn with_echo(setup: Setup<()>) -> (Engine, Bytes) {

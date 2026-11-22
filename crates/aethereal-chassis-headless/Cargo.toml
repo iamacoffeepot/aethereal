@@ -42,6 +42,9 @@ libc = "0.2.190"
 [dev-dependencies]
 # The guest the tests run, for its types: its blob is built for wasm32 by the build script.
 aethereal-guest-echo = { path = "guests/echo" }
+# Spike (ADR-0054): kinds of crates the echo guest links, named by the test of its kinds section.
+aethereal-guest-kinds-probe = { path = "guests/kinds-probe" }
+aethereal-guest-kinds-unnamed = { path = "guests/kinds-unnamed" }
 aethereal-chassis-headless = { path = ".", features = ["harness"] }
 aethereal-files = { path = "../aethereal-files", features = ["tools"] }
 aethereal-git = { path = "../aethereal-git" }

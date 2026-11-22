@@ -15,6 +15,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 aethereal-actor = { path = "../../../aethereal-actor", features = ["guest"] }
 aethereal-data = { path = "../../../aethereal-data" }
+# Spike (ADR-0054): kinds in linked crates.
+aethereal-guest-kinds-probe = { path = "../kinds-probe" }
+aethereal-guest-kinds-unnamed = { path = "../kinds-unnamed" }
 
 
 [lints.rust]

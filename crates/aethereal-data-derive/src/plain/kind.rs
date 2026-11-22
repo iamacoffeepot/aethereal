@@ -45,6 +45,8 @@ impl Declaration {
         } else {
             quote_spanned! { literal.span() =>
                 const _: ::aethereal_data::KindName = <#name as ::aethereal_data::Kind>::NAME;
+
+                ::aethereal_data::__kind_in_module!(#name);
             }
         };
 

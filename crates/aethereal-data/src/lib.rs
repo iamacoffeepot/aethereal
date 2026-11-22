@@ -43,6 +43,8 @@ pub use json::{
     to_json,
 };
 pub use key::Key;
+#[doc(hidden)]
+pub use kind::__kind_name_bytes;
 pub use kind::{IntoKinds, Kind, KindId, KindName};
 pub use path::{
     ActorId, ActorKey, ActorPath, Instanced, KeyName, Keyed, PathSegment, PathTooDeep, Singleton, Then, TypedKey,

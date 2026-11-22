@@ -1,0 +1,10 @@
+[package]
+name = "aethereal-guest-kinds-probe"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Spike: kinds in a crate the echo guest links, some its code reaches and some it never names (ADR-0054)"
+
+[dependencies]
+aethereal-data = { path = "../../../aethereal-data" }

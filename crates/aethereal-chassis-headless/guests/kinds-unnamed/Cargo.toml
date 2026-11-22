@@ -1,0 +1,10 @@
+[package]
+name = "aethereal-guest-kinds-unnamed"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Spike: a crate the echo guest depends on and never names (ADR-0054)"
+
+[dependencies]
+aethereal-data = { path = "../../../aethereal-data" }

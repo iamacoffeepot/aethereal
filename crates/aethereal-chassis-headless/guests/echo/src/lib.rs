@@ -2,6 +2,9 @@
 
 mod moving;
 
+/// Spike (ADR-0054): a kind of a linked crate named only in a constant.
+pub const TYPED: KindId = KindId::of::<aethereal_guest_kinds_probe::typed::Typed>();
+
 pub use moving::{Breaker, Keep, Keeper, LetGo, Mover, MoverConfig, Probe, Report, Stubborn};
 
 use aethereal_actor::{
@@ -76,6 +79,10 @@ impl Echo {
     #[request]
     fn ping(&mut self, ping: Ping) -> Result<Pong, Fault> {
         self.answered += 1;
+        // Spike (ADR-0054): encodes a kind of a linked crate whose code it never calls, so without LTO the crate's
+        // object is not linked and none of its kinds land in the module.
+        let sent = aethereal_data::to_bytes(&aethereal_guest_kinds_probe::typed::Typed { n: ping.n });
+        core::hint::black_box(sent.map(|bytes| bytes.len()).unwrap_or(0));
 
         Ok(Pong { n: ping.n })
     }

@@ -106,6 +106,8 @@ dependencies = [
  "aethereal-files",
  "aethereal-git",
  "aethereal-guest-echo",
+ "aethereal-guest-kinds-probe",
+ "aethereal-guest-kinds-unnamed",
  "aethereal-http",
  "aethereal-library",
  "aethereal-link",
@@ -171,6 +173,22 @@ name = "aethereal-guest-echo"
 version = "0.0.0"
 dependencies = [
  "aethereal-actor",
+ "aethereal-data",
+ "aethereal-guest-kinds-probe",
+ "aethereal-guest-kinds-unnamed",
+]
+
+[[package]]
+name = "aethereal-guest-kinds-probe"
+version = "0.0.0"
+dependencies = [
+ "aethereal-data",
+]
+
+[[package]]
+name = "aethereal-guest-kinds-unnamed"
+version = "0.0.0"
+dependencies = [
  "aethereal-data",
 ]
 

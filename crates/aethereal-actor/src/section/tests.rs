@@ -121,3 +121,20 @@ fn a_section_whose_state_does_not_read_back_is_refused() {
 
     assert_eq!(read(&unread, &mut Budget::new(1 << 16)).err(), Some(Unfit::Undeclared));
 }
+
+#[test]
+fn a_kinds_section_reads_as_a_set_of_whole_ids() {
+    // Catches a reader that keeps a kind two types write twice, or takes a torn last id.
+    #[derive(Plain)]
+    #[kind(name = "aether.test.other")]
+    struct Other;
+
+    let point = KindId::of::<Point>().plain_bytes();
+    let other = KindId::of::<Other>().plain_bytes();
+    let section: Vec<u8> = [point, other, point].concat();
+    let Ok(read) = kinds::read(&section) else {
+        panic!("a section of whole ids reads");
+    };
+    assert_eq!(read.len(), 2);
+    assert_eq!(kinds::read(&section[..section.len() - 1]), Err(Unfit::Undeclared));
+}

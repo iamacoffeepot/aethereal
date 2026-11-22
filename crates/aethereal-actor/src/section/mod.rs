@@ -5,6 +5,7 @@
 //! program reads, by a writer that runs in a constant. A host reads it back as
 //! the plain types here, without making an instance, and checks it there.
 
+pub mod kinds;
 mod state;
 #[cfg(test)]
 mod tests;
