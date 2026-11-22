@@ -6,7 +6,7 @@
 //! container is never made that the record on disk does not name.
 
 use super::asks::Refusal;
-use super::session::Step;
+use super::session::{Stage, Step};
 use super::{Sessions, Unfound};
 use aethereal_actor::{Answered, Fault, Level, Turn, path};
 use aethereal_data::{DecodeError, FilePath, Plain, to_bytes};
@@ -108,10 +108,11 @@ impl Sessions {
         self.send(turn, next)
     }
 
-    /// The write of `session`'s record, saying it starts its run `run`, is `answered`: once it has landed, the run's
-    /// volumes are made, unless the hub's repository is not served, when the start is refused before anything of it
-    /// is made, as its container's bootstrap would fail; a record that did not land says nothing of the run, so
-    /// nothing of it is made.
+    /// The write of `session`'s record, saying it starts its run `run`, is `answered`. Before its bootstrap container,
+    /// once it has landed, the run's volumes are made, unless the hub's repository is not served, when the start is
+    /// refused before anything of it is made, as its bootstrap would fail; before its Claude Code container, once it
+    /// has landed, the credential is read for it. A record that did not land says nothing of what is to be made, so
+    /// nothing is.
     fn recorded(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -119,15 +120,17 @@ impl Sessions {
         run: u32,
         answered: &Answered<FileWritten>,
     ) -> Result<(), Fault> {
-        let is_recording = self.is_at(session, run, |step| matches!(step, Step::Recording));
-        if !is_recording {
+        let Some(&Step::Recording { stage }) = self.step_of(session, run) else {
             return Ok(());
+        };
+        if *answered != Answered::Yes(FileWritten::Written) {
+            return self.unstarted(turn, session, run, &Refusal::Unrecorded);
         }
 
-        match (answered, self.may_serve()) {
-            (Answered::Yes(FileWritten::Written), Ok(())) => self.house(turn, session, run, 0),
-            (Answered::Yes(FileWritten::Written), Err(why)) => self.unstarted(turn, session, run, &why),
-            (Answered::Yes(_) | Answered::No(_), _) => self.unstarted(turn, session, run, &Refusal::Unrecorded),
+        match (stage, self.may_serve()) {
+            (Stage::Bootstrap, Ok(())) => self.house(turn, session, run, 0),
+            (Stage::Bootstrap, Err(why)) => self.unstarted(turn, session, run, &why),
+            (Stage::Claude, _) => self.credit(turn, session, run, Stage::Claude),
         }
     }
 }

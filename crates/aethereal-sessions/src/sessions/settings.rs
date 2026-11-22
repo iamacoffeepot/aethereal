@@ -14,6 +14,10 @@ pub const HUB_LABEL: &str = "aethereal.sessions";
 /// The label key that names a session's container's session, by its number.
 pub const SESSION_LABEL: &str = "aethereal.session";
 
+/// The label key a session's bootstrap container alone carries, whose value is its run: a hub that starts again tells
+/// it from the session's Claude Code container by it, whatever its record names.
+pub const BOOTSTRAP_LABEL: &str = "aethereal.bootstrap";
+
 /// Where the session's home is inside its container, its working directory and its `HOME`.
 pub const HOME: &str = "/session/home";
 
@@ -30,19 +34,16 @@ const PROMPT: &str = include_str!("../../image/prompt.txt");
 /// Where the Claude Code binary is inside its container: where the session image's package installs it.
 pub const CLAUDE: &str = "/usr/bin/claude";
 
-/// Where the start script is inside its container, the container's command: the session image installs it from
-/// `aethereal-session-start` beside its Dockerfile. It readies the session's work tree from the hub's repository, then
-/// runs the rest of its command, Claude Code, in its place.
+/// Where the start script is inside a session's image, the whole command of its bootstrap container: the session image
+/// installs it from `aethereal-session-start` beside its Dockerfile. It readies the session's work tree from the hub's
+/// repository and exits, 0 once the tree is ready.
 pub const START: &str = "/usr/local/bin/aethereal-session-start";
 
-/// What the start script begins each line it says on stderr with: the last such line before a failed start says why.
-pub(super) const START_SAYS: &str = "aethereal-session-start: ";
+/// The code the start script exits with when a step of its bootstrap fails: sysexits' `EX_CONFIG`.
+pub const BOOTSTRAP_FAILED: i64 = 78;
 
-/// The line the start script writes to stderr once every step of its bootstrap has succeeded, just before Claude Code
-/// takes its place: a session's container is started only once it is read, so a run that ends before it failed its
-/// start, and Claude Code read none of its lines, and one that ends after it is Claude Code's own exit, whatever its
-/// code.
-pub const READY: &str = "aethereal-session-start: ready";
+/// The code the start script exits with when a step of its bootstrap runs past its limit: sysexits' `EX_TEMPFAIL`.
+pub const BOOTSTRAP_OVERDUE: i64 = 75;
 
 /// The sessions capability's section, `sessions`: what each session's container is made of, and its limits (ADR-0057).
 /// Every field of a container comes from here or from the session's number, never from what a caller asked. Where the
@@ -76,13 +77,14 @@ pub struct SessionsSettings {
     #[flag]
     pub hub_url: String,
     /// The hub's repository, as a container on Docker's default bridge reaches it: the sessions' port's `/git`, which
-    /// each container's start script clones its work tree from, or fetches, and which it pushes its own branches to.
-    /// Given to the container as a variable, so neither the script nor the prompt spells out an address. Empty for
-    /// none: the start script then readies no work tree.
+    /// each bootstrap container's start script clones its work tree from, or fetches, and which a session pushes its
+    /// own branches to. Given to both of a run's containers as a variable, so neither the script nor the prompt spells
+    /// out an address. Empty for none: the start script then readies no work tree.
     #[flag]
     pub git_url: String,
-    /// The seconds each step of a container's start script is given, before Claude Code starts: its git config, its
-    /// credential helper, and the clone or the fetch of its work tree. A step that runs past it fails the bootstrap.
+    /// The seconds each step of a bootstrap container's start script is given, before Claude Code's container is
+    /// made: its git config, its credential helper, and the clone or the fetch of its work tree. A step that runs past
+    /// it fails the bootstrap.
     #[flag]
     pub bootstrap_secs: u32,
     /// The value of the label every container of this hub carries, [`HUB_LABEL`].

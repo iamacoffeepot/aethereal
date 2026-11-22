@@ -48,8 +48,8 @@ pub enum State {
 pub enum Connection {
     /// It has no container.
     None,
-    /// Its record saying so is written, then its volumes, credential, and container are made and started, and its
-    /// start script readies its work tree, until Claude Code runs in it.
+    /// Its record saying so is written, then its volumes are made, then its bootstrap container is made and runs until
+    /// it ends, and, once it exited 0, its Claude Code container is made and started.
     Starting,
     /// Its container is there, and runs until the hub has stopped and removed it.
     Attached,

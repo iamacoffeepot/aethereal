@@ -27,12 +27,12 @@ pub(super) struct Session {
 /// Where a session's container is in its life.
 #[derive(Bound)]
 pub(super) enum Life {
-    /// Its container of `run` is being made and started, and its start script bootstraps: `step` says how far.
-    /// `opening` waits to be answered once Claude Code runs in it, and `lines`, each the number of its entry in the
-    /// transcript, a line said or run, wait to be written to it then; should the start fail first, the session holds
-    /// them for its next container.
+    /// Its run `run` starts: its bootstrap container is made and runs, and once it has exited 0, its Claude Code
+    /// container is made and started, as `step` says. `opening` waits to be answered once Claude Code's container is
+    /// attached, and `lines`, each the number of its entry in the transcript, a line said or run, wait to be written to
+    /// it then; should the start fail first, the session holds them for its next run.
     Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<u64> },
-    /// Its container runs.
+    /// Its Claude Code container runs.
     Running(Box<Running>),
     /// Its container of `run` is being stopped, then removed, and then the session is left as `then` says.
     Stopping { container: ContainerId, run: u32, then: Then },
@@ -51,31 +51,44 @@ pub(super) enum Gone {
     /// It ended without the hub ending it: its process exited, the kernel killed it for its memory, or it was gone
     /// when the hub came back to it.
     Lost,
-    /// Its start failed before Claude Code ran, as `why` says: it was never made or started, the hub's repository was
-    /// not served, or its start script failed its bootstrap. None of the lines that waited for it were written:
-    /// `unread`, each the number of its entry in the transcript, in order, are written first to its next container,
-    /// before any line that wakes it, and noted nowhere again. Empty when there were none.
+    /// Its start failed before Claude Code ran, as `why` says: a container of it was never made or started, the hub's
+    /// repository was not served, or its bootstrap container did not exit 0. None of the lines that waited for it were
+    /// written: `unread`, each the number of its entry in the transcript, in order, are written first to its next
+    /// container, before any line that wakes it, and noted nowhere again. Empty when there were none.
     Unstarted { unread: Vec<u64>, why: String },
 }
 
-/// How far a container being started is.
+/// Which of a run's two containers a step of its start makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub(super) enum Stage {
+    /// The bootstrap container, whose command is the start script alone: it readies the session's work tree and
+    /// exits, and its exit code is its outcome.
+    Bootstrap,
+    /// Claude Code's container, made only once the bootstrap container exited 0 and was removed.
+    Claude,
+}
+
+/// How far a run being started is.
 #[derive(Bound)]
 pub(super) enum Step {
-    /// The session's record, saying it starts this run, is written: nothing of the run is made until it lands, so a
-    /// hub that starts again finds whatever is.
-    Recording,
-    /// Docker makes the next of the volumes it mounts, `made` of them made already.
+    /// The session's record, saying it starts this run, is written before `stage`'s container is made: nothing of it
+    /// is made until the record lands, so a hub that starts again finds whatever is.
+    Recording { stage: Stage },
+    /// Docker makes the next of the volumes the run's containers mount, `made` of them made already.
     Housing { made: u32 },
-    /// The credential is read.
-    Crediting,
-    /// Docker makes it.
-    Creating,
-    /// Docker starts it.
-    Launching { container: ContainerId },
-    /// It runs, and its start script readies its work tree: its logs are followed from its start into the transcript,
-    /// as `reading` reads them, until the script says it is ready, when Claude Code runs in its place. Its stdin is
-    /// attached only then.
+    /// The credential is read, and a bearer drawn, for `stage`'s container.
+    Crediting { stage: Stage },
+    /// Docker makes `stage`'s container.
+    Creating { stage: Stage },
+    /// Docker starts `stage`'s container.
+    Launching { stage: Stage, container: ContainerId },
+    /// The bootstrap container runs: its logs are followed from its start into the transcript, as `reading` reads
+    /// them, for people to read. Once they end, as they do only once it has stopped, Docker's state of it says how it
+    /// ended, and the start is judged by that alone.
     Bootstrapping { container: ContainerId, reading: Reading, logs: Flow },
+    /// The bootstrap container exited 0, and Docker removes it: its bearer is let go of once it is, and Claude Code's
+    /// container is made.
+    Clearing { container: ContainerId },
 }
 
 /// What a session is left as once its container is stopped and removed.
@@ -89,7 +102,7 @@ pub(super) enum Then {
     Archive { archiving: Vec<Asker<Archived>> },
 }
 
-/// A session whose container runs.
+/// A session whose Claude Code container runs.
 #[derive(Bound)]
 pub(super) struct Running {
     pub container: ContainerId,
@@ -146,7 +159,12 @@ impl Session {
             conversation: Conversation::Unbegun,
             runs: 1,
             transcript: Transcript::new(),
-            life: Life::Starting { run: 1, step: Step::Recording, opening: vec![opener], lines: Vec::new() },
+            life: Life::Starting {
+                run: 1,
+                step: Step::Recording { stage: Stage::Bootstrap },
+                opening: vec![opener],
+                lines: Vec::new(),
+            },
         }
     }
 
@@ -200,16 +218,25 @@ impl Session {
         matches!(self.life, Life::Starting { .. } | Life::Running(_) | Life::Stopping { .. })
     }
 
-    /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
-    /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
-    /// it lost until it wakes, or why its last start failed and the lines that start never wrote, for its next.
+    /// Its record, as it stands: from the start of a run until its last container is removed, it says a container may
+    /// exist, and names it, its bootstrap container apart from its Claude Code container; once it is removed, whether
+    /// its last container was lost, so a hub that starts again shows it lost until it wakes, or why its last start
+    /// failed and the lines that start never wrote, for its next.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
             Life::Stopping { container, run, .. }
-            | Life::Starting {
-                step: Step::Launching { container } | Step::Bootstrapping { container, .. }, run, ..
-            } => Standing::Awake { container: container.clone(), run: *run },
+            | Life::Starting { step: Step::Launching { stage: Stage::Claude, container }, run, .. } => {
+                Standing::Awake { container: container.clone(), run: *run }
+            }
+            Life::Starting {
+                step:
+                    Step::Launching { stage: Stage::Bootstrap, container }
+                    | Step::Bootstrapping { container, .. }
+                    | Step::Clearing { container },
+                run,
+                ..
+            } => Standing::Bootstrapping { container: container.clone(), run: *run },
             Life::Starting { run, .. } => Standing::Starting { run: *run },
             Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
             Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
@@ -226,7 +253,7 @@ impl Session {
     /// start of its run, while that waits on its record.
     pub const fn landing(&self, session: u32) -> Landing {
         match &self.life {
-            Life::Starting { run, step: Step::Recording, .. } => Landing::Starting { session, run: *run },
+            Life::Starting { run, step: Step::Recording { .. }, .. } => Landing::Starting { session, run: *run },
             Life::Starting { .. }
             | Life::Running(_)
             | Life::Stopping { .. }

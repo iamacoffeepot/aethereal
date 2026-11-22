@@ -300,6 +300,14 @@ impl ContainerId {
     }
 }
 
+impl Listing {
+    /// Whether it carries a label of `key`, whatever its value.
+    #[must_use]
+    pub fn carries(&self, key: &str) -> bool {
+        self.labels.iter().any(|label| label.key == key)
+    }
+}
+
 impl Label {
     /// The label as a filter names it, `key=value`.
     ///

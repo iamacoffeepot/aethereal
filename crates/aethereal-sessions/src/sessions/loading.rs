@@ -1,11 +1,14 @@
 //! How the capability begins (ADR-0057): it reads its sessions through `Files`, the index and then each session's
 //! record and transcript, follows Docker's events for its label, and only then lists the containers carrying it, so
 //! nothing that happens to one falls between the two. It reads only those two facts, what each record says and what
-//! Docker lists, never when anything was written: a container a record says may exist is adopted when it runs, and
-//! removed when it does not, the session left hibernating, its container lost, once it is gone; a record whose
-//! container is not listed leaves its session hibernating, its container lost; and each container carrying the label
-//! that no record names is reported, never removed. A record that says its session hibernates lost reads back so, and
-//! one that says its last start failed reads back saying why, holding the lines that waited for it still. A
+//! Docker lists, never when anything was written. A container a record names that carries the bootstrap label is a
+//! run's bootstrap container, in whatever state Docker lists it: it is followed and judged from Docker, as the hub
+//! before would have judged it, and one the record names that is not listed is a failed start. A Claude Code container
+//! a record says may exist is adopted when it runs, and removed when it does not, the session left hibernating, its
+//! container lost, once it is gone; a record whose container is not listed leaves its session hibernating, its
+//! container lost; and each container carrying the label that no record names is reported, never removed. A record
+//! that says its session hibernates lost reads back so, and one that says its last start failed reads back saying why,
+//! holding the lines that waited for it still. A
 //! list Docker does not answer with its containers fails the capability before anything is noted or written: which
 //! sessions still run is unknown, and every record is left as it is for a hub that starts again to list them.
 
@@ -14,6 +17,7 @@ use super::container;
 use super::record::{Record, Standing};
 use super::saves::{Index, Loading, record, transcript};
 use super::session::{Gone, Life, Session};
+use super::settings::BOOTSTRAP_LABEL;
 use super::transcript::{Ended, Entry, Note, Transcript};
 use super::{Named, Phase, Reconciling, Recorded, Sessions, Unfound};
 use crate::{Docker, Events, List, Listed, Listing, Phase as DockerPhase};
@@ -139,8 +143,8 @@ impl Sessions {
 
     /// Every session `reading` found, each held as hibernating until the containers carrying the hub's label are
     /// listed: one whose record says it was lost as lost, and one whose record says it was awake as lost too, unless
-    /// its container is found running and adopted. Each is held whatever it stood as, archived ones among them, so any
-    /// reads in full with no container.
+    /// its container is found and adopted or judged. Each is held whatever it stood as, archived ones among them, so
+    /// any reads in full with no container.
     fn found(&mut self, turn: &mut Turn<'_, Self>, reading: Reading, waiting: Vec<Waiting>) -> Result<(), Fault> {
         let Some(docker) = turn.found(&path::<Docker>(())) else {
             turn.log(Level::Error, "no Docker client is listed before the sessions");
@@ -153,9 +157,13 @@ impl Sessions {
                 Standing::Awake { container, run } => {
                     recorded.push(Recorded { session, container: Named::Made(container.clone()), run: *run });
                 }
+                Standing::Bootstrapping { container, run } => {
+                    recorded.push(Recorded { session, container: Named::Bootstrap(container.clone()), run: *run });
+                }
                 Standing::Starting { run } => {
-                    let name = container::name(&self.settings, session, *run);
-                    recorded.push(Recorded { session, container: Named::Starting(name), run: *run });
+                    let claude = container::name(&self.settings, session, *run);
+                    let bootstrap = container::bootstrap_name(&self.settings, session, *run);
+                    recorded.push(Recorded { session, container: Named::Starting { claude, bootstrap }, run: *run });
                 }
                 Standing::Hibernating | Standing::Lost | Standing::Unstarted { .. } | Standing::Archived => {}
             }
@@ -163,9 +171,10 @@ impl Sessions {
                 Standing::Archived => Life::Archived,
                 Standing::Hibernating => Life::Hibernating { gone: Gone::Removed },
                 Standing::Unstarted { unread, why } => Life::Hibernating { gone: Gone::Unstarted { unread, why } },
-                Standing::Lost | Standing::Awake { .. } | Standing::Starting { .. } => {
-                    Life::Hibernating { gone: Gone::Lost }
-                }
+                Standing::Lost
+                | Standing::Awake { .. }
+                | Standing::Starting { .. }
+                | Standing::Bootstrapping { .. } => Life::Hibernating { gone: Gone::Lost },
             };
             let transcript = transcripts.remove(&session).unwrap_or_default();
             let Record { name, conversation, runs, .. } = record;
@@ -180,10 +189,12 @@ impl Sessions {
         Ok(())
     }
 
-    /// The containers carrying the hub's label: each a record says may exist is adopted when it runs, and noted lost
-    /// and removed when it does not; a record whose container is not listed is noted lost; and each no record names is
-    /// reported. A list that fails fails the capability, [`Unfound::Unlisted`], before any session is noted or any
-    /// record written, as which containers exist is unknown and none may be taken as gone.
+    /// The containers carrying the hub's label: a bootstrap container a record names, by its label, is followed and
+    /// judged in whatever state it is, and one a record names that is not listed is a failed start; a Claude Code
+    /// container a record says may exist is adopted when it runs, and noted lost and removed when it does not; a record
+    /// whose container is not listed is noted lost; and each no record names is reported. A list that fails fails the
+    /// capability, [`Unfound::Unlisted`], before any session is noted or any record written, as which containers exist
+    /// is unknown and none may be taken as gone.
     pub(super) fn handle_listed(
         &mut self,
         (answered, Reconciling): (Answered<Listed>, Reconciling),
@@ -217,11 +228,15 @@ impl Sessions {
         for Recorded { session, container, run } in recorded {
             let found = listings.iter().find(|listing| container.names(listing));
             match found {
+                Some(listing) if listing.carries(BOOTSTRAP_LABEL) => {
+                    self.adopt_bootstrap(turn, session, listing.id.clone(), run)?;
+                }
                 Some(Listing { id, phase: DockerPhase::Running, .. }) => self.adopt(turn, session, id.clone(), run)?,
                 Some(Listing { id, .. }) => {
                     self.note(turn, session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
                     self.retire(turn, session, id.clone(), run, Gone::Lost)?;
                 }
+                None if container.is_bootstrap() => self.bootstrap_gone(turn, session, run),
                 None => {
                     self.note(turn, session, Entry::Hub(Note::Stopped { run, why: Ended::Lost }));
                 }
@@ -244,11 +259,16 @@ impl Recorded {
 }
 
 impl Named {
-    /// Whether `listing` is the container this names: by its id, or by its name.
+    /// Whether `listing` is the container this names: by its id, or by either of its run's names.
     fn names(&self, listing: &Listing) -> bool {
         match self {
-            Self::Made(id) => listing.id == *id,
-            Self::Starting(name) => listing.name == *name,
+            Self::Made(id) | Self::Bootstrap(id) => listing.id == *id,
+            Self::Starting { claude, bootstrap } => listing.name == *claude || listing.name == *bootstrap,
         }
+    }
+
+    /// Whether it names a bootstrap container by its id, which is a failed start when Docker lists none such.
+    const fn is_bootstrap(&self) -> bool {
+        matches!(self, Self::Bootstrap(_))
     }
 }

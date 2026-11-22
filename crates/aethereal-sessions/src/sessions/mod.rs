@@ -6,6 +6,7 @@
 mod asked;
 mod asks;
 mod bearers;
+mod bootstrap;
 mod chat;
 mod container;
 mod credential;
@@ -38,9 +39,12 @@ pub use record::{Conversation, Record, Standing};
 pub use repository::Repository;
 pub use row::{Connection, Grew, SessionRow, State};
 pub use saves::{Index, Keeping, Loading};
-pub use settings::{CARGO, CLAUDE, HOME, HUB_LABEL, READY, SESSION_LABEL, START, SessionsSettings, TARGET, Unlabelled};
+pub use settings::{
+    BOOTSTRAP_FAILED, BOOTSTRAP_LABEL, BOOTSTRAP_OVERDUE, CARGO, CLAUDE, HOME, HUB_LABEL, SESSION_LABEL, START,
+    SessionsSettings, TARGET, Unlabelled,
+};
 pub use transcript::{
-    Compaction, Counted, Ended, Entry, Note, Numbered, Readied, Since, Speaker, Transcript, Turning, WindDown,
+    Compaction, Counted, Ended, Entry, Note, Numbered, Since, Speaker, Transcript, Turning, WindDown,
 };
 pub use volumes::Homing;
 
@@ -216,10 +220,13 @@ struct Recorded {
 /// What a record names a container by, to find it among those Docker lists.
 #[derive(Debug, Clone, PartialEq, Eq, Plain)]
 enum Named {
-    /// The id Docker answered as it made it.
+    /// Its Claude Code container, by the id Docker answered as it made it.
     Made(ContainerId),
-    /// The name it is made under, as Docker had not answered its id when the record was written.
-    Starting(String),
+    /// Its bootstrap container, by the id Docker answered as it made it.
+    Bootstrap(ContainerId),
+    /// A container of the run being made, by the names its Claude Code container and its bootstrap container are made
+    /// under, as Docker had not answered an id when the record was written.
+    Starting { claude: String, bootstrap: String },
 }
 
 #[actor(depends(Docker, Files))]

@@ -1,54 +1,51 @@
 #!/bin/sh
-# The command of every session's container (ADR-0057): it readies the session's work tree, then runs its arguments,
-# Claude Code as the hub names it, in its place, so Claude Code keeps the container's stdin and stdout.
+# The command of every session's bootstrap container (ADR-0057), the container the hub runs before Claude Code's, on
+# the same home: it readies the session's work tree and exits, and its exit code is its outcome. 0 says the tree is
+# ready, and the hub then makes Claude Code's container; any other code says it is not, and Claude Code never starts.
 #
 # The tree is `$HOME/work`, on the session's home volume, which outlives every container. It is cloned from the hub's
 # repository, `$AETHEREAL_GIT_URL`, only when nothing is there: into `$HOME/work.cloning`, which takes the tree's place
 # only once the clone is whole, so a clone cut short, as a container killed mid-clone leaves it, is never taken for the
 # tree, and is removed before the next clone starts. When something is there, it must be a git repository, whose files
 # are never touched: its `origin` is pointed at that URL, or put back at it when it was removed, and fetched, which
-# moves only its remote-tracking refs, never a file of the tree. With no URL given, the hub serves no repository, and no
-# tree is readied.
+# moves only its remote-tracking refs, never a file of the tree. With no URL given, the hub serves no repository, no
+# tree is readied, and the script exits 0 at once.
 #
 # What only a crash leaves is cleared first, so it never fails every start after it. A git killed before it cleaned up,
 # by this script's own limit, Docker's stop, the kernel for its memory, or a container lost while Claude ran it, leaves
 # its lock files, which git then refuses to take again: every `*.lock` under the tree's `.git`, and git's lock of the
 # home's own config, is removed, each named on stderr. No git holds one: while the script bootstraps, nothing else runs
-# in the container, and no other container of the session runs. A tree that is not a git repository at all, as a home
+# in its container, and no other container of the session runs. A tree that is not a git repository at all, as a home
 # made before trees were cloned may hold, is moved aside, never deleted, to `$HOME/work.unrecognised.<k>`, the lowest
 # `<k>` not taken, named on stderr, and the tree cloned afresh, so nothing of it is lost. A repository that is there but
 # does not read, a full disk, or a URL that serves nothing still fails, and says why.
 #
-# Bootstrap is all or nothing: a step that fails, or runs past its limit of `$AETHEREAL_BOOTSTRAP_SECS` seconds, ends
-# the container with the bootstrap's own code, 78 (sysexits' EX_CONFIG), saying why on stderr, which the hub keeps in the
-# transcript and answers its waker with. Claude Code never starts, nothing carries on half set up, and nothing is tried
-# again here: the hub leaves the session hibernating, and its next wake runs the whole bootstrap again.
-#
-# Once every step has succeeded, and only then, it writes one line to stderr, `aethereal-session-start: ready`, just
-# before Claude Code takes its place: the hub starts the session only once it reads it, so a run that ends before it
-# failed its start, and one that ends after it is Claude Code's own exit.
+# Bootstrap is all or nothing: a step that fails exits with the bootstrap's own code, 78 (sysexits' EX_CONFIG), and one
+# that runs past its limit of `$AETHEREAL_BOOTSTRAP_SECS` seconds with 75 (EX_TEMPFAIL), each saying why on stderr,
+# which the hub keeps in the transcript for people to read and judges nothing by. Nothing is tried again here: the hub
+# leaves the session hibernating, and its next wake runs the whole bootstrap again.
 #
 # The bearer, `$AETHEREAL_HUB_BEARER`, reaches git only through the image's credential helper, read from the
 # environment as git asks, so it is never an argument or a file.
 #
-# The script prints nothing to its stdout, which is Claude Code's alone: while it bootstraps, its stdout is its stderr.
+# The script prints nothing to its stdout: everything it and git print goes to its stderr.
 set -eu
 
-# What the script says on stderr each starts so, and the hub reads the last before a failed start as why.
+# Everything printed goes to stderr.
+exec 1>&2
+
+# What the script says on stderr each starts so.
 says() {
-    printf 'aethereal-session-start: %s\n' "$1" >&2
+    printf 'aethereal-session-start: %s\n' "$1"
 }
 
-# Ends the container with the bootstrap's code, saying why.
+# Exits with the bootstrap's code for a step that failed, saying why.
 fail() {
     says "$1"
     exit 78
 }
 
-if [ -z "${AETHEREAL_GIT_URL:-}" ]; then
-    says ready
-    exec "$@"
-fi
+[ -n "${AETHEREAL_GIT_URL:-}" ] || exit 0
 
 # Runs the step named `$1`, the rest of the arguments, within the limit: git never prompts, as no one can answer.
 step() {
@@ -58,13 +55,13 @@ step() {
     GIT_TERMINAL_PROMPT=0 timeout --kill-after=10 "$AETHEREAL_BOOTSTRAP_SECS" "$@" || status=$?
     case $status in
         0) ;;
-        124 | 137) fail "$what ran past its limit of $AETHEREAL_BOOTSTRAP_SECS seconds" ;;
+        124 | 137)
+            says "$what ran past its limit of $AETHEREAL_BOOTSTRAP_SECS seconds"
+            exit 75
+            ;;
         *) fail "$what failed with exit code $status" ;;
     esac
 }
-
-# Until Claude Code runs, stdout is stderr; the container's stdout is kept on 3 for Claude Code.
-exec 3>&1 1>&2
 
 [ -n "${AETHEREAL_SESSION:-}" ] || fail "the container names no session in AETHEREAL_SESSION"
 [ -n "${AETHEREAL_HUB_BEARER:-}" ] || fail "the container holds no bearer in AETHEREAL_HUB_BEARER"
@@ -96,7 +93,7 @@ if [ -d "$tree/.git" ]; then
     step "the removal of the locks under $tree/.git" find "$tree/.git" -type f -name '*.lock' -exec sh -c '
         for lock; do
             rm -f "$lock"
-            printf "aethereal-session-start: removed %s, a lock no git holds\n" "$lock" >&2
+            printf "aethereal-session-start: removed %s, a lock no git holds\n" "$lock"
         done
     ' sh {} +
 fi
@@ -124,6 +121,3 @@ else
     step "the clone of $url" git clone --quiet "$url" "$cloning"
     step "the move of the clone to $tree" mv "$cloning" "$tree"
 fi
-
-says ready
-exec "$@" 1>&3 3>&-

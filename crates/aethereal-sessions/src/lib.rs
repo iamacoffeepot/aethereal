@@ -34,13 +34,14 @@ pub use docker::{
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
-    Act, Acting, Archive, Archived, Asking, AwakeSession, Bearer, CARGO, CLAUDE, Chat, Chatted, Compaction, Connection,
-    Conversation, Counted, Credential, Crediting, Ended, Entry, Feed, Grew, HOME, HUB_LABEL, Heard, Hibernate,
-    Hibernated, Homing, Index, Interrupt, Interrupted, Joined, Keeping, ListSessions, Loading, NewSession,
-    NoCredential, Note, Numbered, Opened, Provision, Provisioned, READY, ReadTranscript, Readied, Reconciling, Record,
-    Refusal, Repository, Resting, SESSION_LABEL, START, Said, Say, SessionRow, Sessions, SessionsListed,
-    SessionsSettings, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing, Since, Speaker, Standing, State,
-    TARGET, Transcribed, Transcript, Turning, Typing, Unbootstrapped, Unfound, Unlabelled, Wake, WindDown,
+    Act, Acting, Archive, Archived, Asking, AwakeSession, BOOTSTRAP_FAILED, BOOTSTRAP_LABEL, BOOTSTRAP_OVERDUE, Bearer,
+    CARGO, CLAUDE, Chat, Chatted, Compaction, Connection, Conversation, Counted, Credential, Crediting, Ended, Entry,
+    Feed, Grew, HOME, HUB_LABEL, Heard, Hibernate, Hibernated, Homing, Index, Interrupt, Interrupted, Joined, Keeping,
+    ListSessions, Loading, NewSession, NoCredential, Note, Numbered, Opened, Provision, Provisioned, ReadTranscript,
+    Reconciling, Record, Refusal, Repository, Resting, SESSION_LABEL, START, Said, Say, SessionRow, Sessions,
+    SessionsListed, SessionsSettings, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Showing, Since, Speaker,
+    Standing, State, TARGET, Transcribed, Transcript, Turning, Typing, Unbootstrapped, Unfound, Unlabelled, Wake,
+    WindDown,
 };
 #[cfg(feature = "tools")]
 pub use tools::{Asking as ToolsAsking, Entered, Hibernation, Read, SessionsTools, SessionsToolsConfig};

@@ -18,11 +18,11 @@ use aethereal_link::{
 };
 use aethereal_mcp::Mcp;
 use aethereal_sessions::{
-    Archive, Archived, AwakeSession, Chat, Chatted, Connection as Housed, Conversation, Docker, DockerSettings, Ended,
-    Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions, NewSession, Note, Numbered,
-    Opened, READY, ReadTranscript, Record, Refusal, Repository, Said, Say, SessionRow, Sessions, SessionsListed,
-    SessionsSettings, SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker, Standing, State,
-    Transcribed, Transcript, Unbootstrapped, Unfound, Wake,
+    Archive, Archived, AwakeSession, BOOTSTRAP_FAILED, Chat, Chatted, Connection as Housed, Conversation, Docker,
+    DockerSettings, Ended, Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions,
+    NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Repository, Said, Say, SessionRow, Sessions,
+    SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker,
+    Standing, State, Transcribed, Transcript, Unbootstrapped, Unfound, Wake,
 };
 use aethereal_store::{Store, StoreSettings};
 use aethereal_substrate::harness::{Harness, Unheard};
@@ -248,6 +248,8 @@ struct Container {
     name: String,
     /// The body of the create that made it.
     body: String,
+    /// Whether it was ever started: one made and never started is `created`, as Docker lists and inspects it.
+    started: bool,
     running: bool,
     /// The code its process exited with, once it has: 0 until then.
     code: i64,
@@ -273,7 +275,8 @@ enum Role {
     Done,
 }
 
-/// Which of the hub's requests the fake daemon takes and never answers, as a daemon a killed hub left mid-request.
+/// Which of the hub's requests about a Claude Code container the fake daemon takes and never answers, as a daemon a
+/// killed hub left mid-request. A bootstrap container's are each answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold {
     /// None: it answers each.
@@ -284,23 +287,24 @@ enum Hold {
     Start,
 }
 
-/// Which of the hub's requests the fake daemon refuses with a daemon's error.
+/// Which of the hub's requests the fake daemon refuses with a daemon's error, a bootstrap container's among them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refuse {
     /// None: it does each.
     Nothing,
+    /// Each create: no container is made.
+    Create,
     /// Each start: a container made is never started.
     Start,
 }
 
-/// Whether a container the fake daemon starts says its start script is ready, as the session image's does once its
-/// bootstrap succeeds.
+/// What a bootstrap container the fake daemon starts does, as the session image's start script would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Readies {
-    /// As it starts: the line is the first it writes to stderr.
-    AtStart,
-    /// Never: its start script bootstraps until the test writes what it says, and ends it.
-    Never,
+enum Bootstraps {
+    /// It exits 0 as it starts, having said nothing, as the script does once the tree is ready.
+    Readying,
+    /// It runs until the test writes what it says and ends it.
+    Running,
 }
 
 /// How the fake daemon answers a list of the containers.
@@ -330,6 +334,8 @@ struct Daemon {
     made: Vec<String>,
     /// The names of the containers made, in the order made.
     names: Vec<String>,
+    /// The body of the create that made each container, by its id, kept once it is removed.
+    bodies: BTreeMap<String, String>,
     /// The bodies of the volumes made, by name.
     volumes: BTreeMap<String, String>,
     /// Every event, a JSON line each.
@@ -340,8 +346,8 @@ struct Daemon {
     refuses: Refuse,
     /// How it answers a list of the containers.
     lists: Lists,
-    /// Whether each container it starts says its start script is ready.
-    readies: Readies,
+    /// What each bootstrap container it starts does.
+    bootstraps: Bootstraps,
 }
 
 impl Daemon {
@@ -362,12 +368,13 @@ impl Daemon {
             containers: BTreeMap::new(),
             made: Vec::new(),
             names: Vec::new(),
+            bodies: BTreeMap::new(),
             volumes: BTreeMap::new(),
             events: Vec::new(),
             hold: Hold::Nothing,
             refuses: Refuse::Nothing,
             lists: Lists::Containers,
-            readies: Readies::AtStart,
+            bootstraps: Bootstraps::Readying,
         }
     }
 
@@ -479,23 +486,20 @@ impl Daemon {
         let target = target.strip_prefix("/v1.44").unwrap_or(target);
         let (route, query) = target.split_once('?').unwrap_or((target, ""));
         let parts: Vec<&str> = route.trim_start_matches('/').split('/').collect();
+        let name = query.strip_prefix("name=").unwrap_or_default();
+        let starts_claude = parts.get(1).is_some_and(|id| self.containers.get(*id).is_some_and(Container::is_claude));
+        let holds_create = !is_bootstrap(name) && self.hold == Hold::Create;
+        let holds_start = starts_claude && self.hold == Hold::Start;
         match (method, parts.as_slice()) {
-            ("POST", ["containers", "create"]) if self.hold == Hold::Create => return Role::Held,
-            ("POST", ["containers", _, "start"]) if self.hold == Hold::Start => return Role::Held,
+            ("POST", ["containers", "create"]) if holds_create => return Role::Held,
+            ("POST", ["containers", _, "start"]) if holds_start => return Role::Held,
+            ("POST", ["containers", "create"]) if self.refuses == Refuse::Create => {
+                respond(peer, "500 Internal Server Error", r#"{"message":"the daemon could not make it"}"#);
+            }
             ("POST", ["containers", _, "start"]) if self.refuses == Refuse::Start => {
                 respond(peer, "500 Internal Server Error", r#"{"message":"the daemon could not start it"}"#);
             }
-            ("POST", ["containers", "create"]) => {
-                let name = query.strip_prefix("name=").unwrap_or_default().to_owned();
-                let body = String::from_utf8_lossy(body).into_owned();
-                let id = format!("{:064x}", self.made.len() + 1);
-                self.made.push(id.clone());
-                self.names.push(name.clone());
-                let container =
-                    Container { name, body, running: false, code: 0, output: Vec::new(), stdin: Vec::new() };
-                self.containers.insert(id.clone(), container);
-                respond(peer, "201 Created", &format!(r#"{{"Id":"{id}","Warnings":[]}}"#));
-            }
+            ("POST", ["containers", "create"]) => self.create(peer, name, body),
             ("POST", ["volumes", "create"]) => {
                 let body = String::from_utf8_lossy(body).into_owned();
                 let name = body.split(r#""Name":""#).nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_default();
@@ -526,25 +530,16 @@ impl Daemon {
                     .containers
                     .iter()
                     .map(|(id, container)| {
-                        let state = if container.running {
-                            "running"
-                        } else {
-                            "exited"
-                        };
-                        format!(r#"{{"Id":"{id}","Names":["/{}"],"State":"{state}","Labels":{{}}}}"#, container.name)
+                        let (name, state, labels) = (&container.name, container.state(), container.labels());
+                        format!(r#"{{"Id":"{id}","Names":["/{name}"],"State":"{state}","Labels":{labels}}}"#)
                     })
                     .collect();
                 respond(peer, "200 OK", &format!("[{}]", listed.join(",")));
             }
             ("GET", ["containers", id, "json"]) => {
-                let status = self.containers.get(*id).map(|container| (container.running, container.code));
+                let status = self.containers.get(*id).map(|container| (container.state(), container.code));
                 match status {
-                    Some((running, code)) => {
-                        let status = if running {
-                            "running"
-                        } else {
-                            "exited"
-                        };
+                    Some((status, code)) => {
                         respond(
                             peer,
                             "200 OK",
@@ -573,15 +568,38 @@ impl Daemon {
         Role::Done
     }
 
-    /// Starts the container `id`: its process runs, and says its start script is ready as `readies` says.
+    /// Makes a container named `name` from the create's `body`, never started, and answers its id.
+    fn create(&mut self, peer: &mut UnixStream, name: &str, body: &[u8]) {
+        let body = String::from_utf8_lossy(body).into_owned();
+        let id = format!("{:064x}", self.made.len() + 1);
+        self.made.push(id.clone());
+        self.names.push(name.to_owned());
+        self.bodies.insert(id.clone(), body.clone());
+        let container = Container {
+            name: name.to_owned(),
+            body,
+            started: false,
+            running: false,
+            code: 0,
+            output: Vec::new(),
+            stdin: Vec::new(),
+        };
+        self.containers.insert(id.clone(), container);
+        respond(peer, "201 Created", &format!(r#"{{"Id":"{id}","Warnings":[]}}"#));
+    }
+
+    /// Starts the container `id`: its process runs, and a bootstrap container's does as `bootstraps` says.
     fn start(&mut self, id: &str) {
-        if let Some(container) = self.containers.get_mut(id) {
-            container.running = true;
-        }
-        if self.readies == Readies::AtStart {
-            self.warn(id, READY);
-        }
+        let Some(container) = self.containers.get_mut(id) else {
+            return;
+        };
+        container.started = true;
+        container.running = true;
+        let readies = !container.is_claude() && self.bootstraps == Bootstraps::Readying;
         self.events.push(event(id, "start", ""));
+        if readies {
+            self.exit(id, 0);
+        }
     }
 
     /// Stops the container `id`, if it runs: its process dies.
@@ -633,21 +651,47 @@ impl Daemon {
         self.connections.iter().any(|connection| matches!(connection.role, Role::Held))
     }
 
-    /// Whether the `nth` container made, from 0, runs.
-    fn runs(&self, nth: usize) -> bool {
-        let container = self.made.get(nth).and_then(|id| self.containers.get(id));
-
-        container.is_some_and(|container| container.running)
+    /// Whether the container `id` runs.
+    fn running(&self, id: &str) -> bool {
+        self.containers.get(id).is_some_and(|container| container.running)
     }
 
-    /// The id of the `nth` container made, from 0.
-    fn made(&self, nth: usize) -> String {
-        self.made.get(nth).cloned().unwrap_or_else(|| panic!("a container {nth} was made"))
+    /// The ids of the Claude Code containers made, or of the bootstrap containers made when `bootstrap`, in the order
+    /// made.
+    fn made_of(&self, bootstrap: bool) -> Vec<String> {
+        let made = self.made.iter().zip(&self.names);
+
+        made.filter(|(_, name)| is_bootstrap(name) == bootstrap).map(|(id, _)| id.clone()).collect()
     }
 
-    /// The create body of the container `id`.
+    /// The id of the `nth` Claude Code container made, from 0.
+    fn claude(&self, nth: usize) -> String {
+        self.made_of(false).get(nth).cloned().unwrap_or_else(|| panic!("a Claude Code container {nth} was made"))
+    }
+
+    /// How many Claude Code containers were made.
+    fn claudes(&self) -> usize {
+        self.made_of(false).len()
+    }
+
+    /// The id of the `nth` bootstrap container made, from 0.
+    fn bootstrap(&self, nth: usize) -> String {
+        self.made_of(true).get(nth).cloned().unwrap_or_else(|| panic!("a bootstrap container {nth} was made"))
+    }
+
+    /// Whether the `nth` bootstrap container made, from 0, runs: not when none was made.
+    fn bootstrap_runs(&self, nth: usize) -> bool {
+        self.made_of(true).get(nth).is_some_and(|id| self.running(id))
+    }
+
+    /// Whether the `nth` Claude Code container made, from 0, runs: not when none was made.
+    fn claude_runs(&self, nth: usize) -> bool {
+        self.made_of(false).get(nth).is_some_and(|id| self.running(id))
+    }
+
+    /// The create body of the container `id`, removed or not.
     fn body(&self, id: &str) -> String {
-        self.containers.get(id).map(|container| container.body.clone()).unwrap_or_default()
+        self.bodies.get(id).cloned().unwrap_or_default()
     }
 }
 
@@ -655,6 +699,36 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
+}
+
+impl Container {
+    /// Whether it is a Claude Code container, not a bootstrap container, by its name.
+    fn is_claude(&self) -> bool {
+        !is_bootstrap(&self.name)
+    }
+
+    /// Its state, as Docker lists and inspects it.
+    const fn state(&self) -> &'static str {
+        if self.running {
+            "running"
+        } else if self.started {
+            "exited"
+        } else {
+            "created"
+        }
+    }
+
+    /// Its labels, as its create's body wrote them, a JSON object.
+    fn labels(&self) -> &str {
+        let labels = self.body.split(r#""Labels":"#).nth(1).and_then(|rest| rest.split_inclusive('}').next());
+
+        labels.unwrap_or("{}")
+    }
+}
+
+/// Whether the container named `name` is a session's bootstrap container, as the hub names one.
+fn is_bootstrap(name: &str) -> bool {
+    name.ends_with("-bootstrap")
 }
 
 /// A docker event line of `action` for the container `id`.
@@ -923,10 +997,13 @@ fn a_transcript_numbers_every_line_in_order_and_keeps_a_turn_the_hub_did_not_sta
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let hostile = "evil\",\"Binds\":[\"/:/host\"],\"x\":\"";
     let session = open(&mut harness, &mut daemon, hostile)?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
+    for made in [daemon.bootstrap(0), id.clone()] {
+        let body = daemon.body(&made);
+        assert!(!body.contains("evil") && !body.contains("/host"), "nothing of the name reaches a container: {body}");
+        assert!(body.contains(r#""aethereal.session":"1""#), "{body}");
+    }
     let body = daemon.body(&id);
-    assert!(!body.contains("evil") && !body.contains("/host"), "nothing of the name reaches the container: {body}");
-    assert!(body.contains(r#""aethereal.session":"1""#), "{body}");
     let prompt = format!(r#""--append-system-prompt","{}""#, SessionsSettings::default().prompt.replace('\n', "\\n"));
     assert!(body.contains(&prompt), "the settings' prompt is appended: {body}");
     let volumes: Vec<&String> = daemon.volumes.keys().collect();
@@ -942,8 +1019,8 @@ fn a_transcript_numbers_every_line_in_order_and_keeps_a_turn_the_hub_did_not_sta
 
     let numbers: Vec<u64> = entries.iter().map(|numbered| numbered.number).collect();
     assert_eq!(numbers, (1..=9).collect::<Vec<u64>>(), "every entry is numbered in order");
-    assert!(matches!(entries[0].entry, Entry::Hub(Note::Started { run: 1, resumed: false })), "{entries:?}");
-    assert_eq!(entries[1].entry, Entry::Stderr { text: String::from(READY), bytes: 30 });
+    assert_eq!(entries[0].entry, Entry::Hub(Note::Bootstrapping { run: 1 }), "{entries:?}");
+    assert_eq!(entries[1].entry, Entry::Hub(Note::Started { run: 1, resumed: false }), "{entries:?}");
     assert_eq!(entries[2].entry, Entry::Said { by: Speaker::Caller, text: String::from("hello") });
     assert_eq!(number, 3);
     assert_eq!(claude_events(&entries), 6, "the turn nobody started is kept as any other");
@@ -968,7 +1045,7 @@ fn a_session_or_a_wake_past_the_most_awake_is_refused_naming_the_awake_sessions_
     let refused = caller(&mut harness)?.opened.last().cloned();
     let awake = |session: u32, name: &str| vec![AwakeSession { session, name: String::from(name) }];
     assert_eq!(refused, Some(Opened::Refused(Refusal::Full { most: 1, awake: awake(first, "first") })));
-    assert_eq!(daemon.made.len(), 1, "no container is made for a session refused");
+    assert_eq!(daemon.made.len(), 2, "no container is made for a session refused");
 
     assert_eq!(hibernate(&mut harness, &mut daemon, first)?, Hibernated::WindingDown);
     until_state(&mut harness, &mut daemon, first, State::Hibernating)?;
@@ -977,7 +1054,7 @@ fn a_session_or_a_wake_past_the_most_awake_is_refused_naming_the_awake_sessions_
 
     assert_eq!(woken, Opened::Refused(Refusal::Full { most: 1, awake: awake(second, "second") }));
     assert_eq!(state(&mut harness, &mut daemon, second)?, State::Idle, "the awake session is left awake");
-    assert_eq!(daemon.made.len(), 2, "no container is made for a wake refused");
+    assert_eq!(daemon.made.len(), 4, "no container is made for a wake refused");
 
     Ok(())
 }
@@ -992,7 +1069,7 @@ fn a_hibernate_waits_for_a_turn_and_an_ask_and_winds_the_session_down_as_an_idle
     let mut daemon = Daemon::new("hibernate");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "hibernate")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "work")?;
     stdin(&mut harness, &mut daemon, &id, 1);
     assert_eq!(hibernate(&mut harness, &mut daemon, session)?, Hibernated::Refused(Refusal::Working));
@@ -1021,7 +1098,7 @@ fn a_hibernate_waits_for_a_turn_and_an_ask_and_winds_the_session_down_as_an_idle
         panic!("the session wakes");
     };
     assert_eq!((woken.session, woken.container), (session, Housed::Attached));
-    let next = daemon.made(1);
+    let next = daemon.claude(1);
     let body = daemon.body(&next);
     assert!(body.contains(&format!(r#""--resume","{CONVERSATION}""#)), "{body}");
     let request = r#"{"type":"control_request","request_id":"r-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}"#;
@@ -1040,7 +1117,7 @@ fn a_compaction_is_listed_as_compacting_whoever_asked_for_it_until_it_ends() -> 
     let mut daemon = Daemon::new("compacting");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "compacting")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "/compact")?;
     stdin(&mut harness, &mut daemon, &id, 1);
     daemon.emit(&id, &turn_lines("")[0]);
@@ -1066,15 +1143,15 @@ fn an_idle_session_with_no_turn_since_its_compaction_hibernates_at_once_and_a_li
     let mut daemon = Daemon::new("idle");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "idle")?;
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     assert_eq!(until_state(&mut harness, &mut daemon, session, State::Hibernating)?, State::Hibernating);
     assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::None, "the hub ended its container");
     assert!(daemon.stdin(&first).is_empty(), "nothing is written to a session with nothing to compact");
     assert!(!daemon.containers.contains_key(&first), "its container is removed");
 
     say(&mut harness, &mut daemon, session, "back again")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let second = daemon.made(1);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let second = daemon.claude(1);
     let written = stdin(&mut harness, &mut daemon, &second, 1);
     assert_eq!(written, [r#"{"type":"user","message":{"role":"user","content":"back again"}}"#]);
     let entries = read(&mut harness, &mut daemon, session, 0)?;
@@ -1095,8 +1172,8 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_hibernates_a
     let session = open(&mut harness, &mut daemon, "compact")?;
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
     say(&mut harness, &mut daemon, session, "work")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let id = daemon.made(1);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let id = daemon.claude(1);
     stdin(&mut harness, &mut daemon, &id, 1);
 
     answer_turn(&mut daemon, &id, "done");
@@ -1117,8 +1194,8 @@ fn an_idle_session_is_told_it_will_be_compacted_then_compacted_then_hibernates_a
         entries.iter().filter(|numbered| matches!(numbered.entry, Entry::Said { by: Speaker::Hub, .. })).count();
     assert_eq!(hub_lines, 2, "the notice and the compaction are the hub's lines");
     say(&mut harness, &mut daemon, session, "again")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 3);
-    let body = daemon.body(&daemon.made(2));
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 3);
+    let body = daemon.body(&daemon.claude(2));
     assert!(body.contains(&format!(r#""--resume","{CONVERSATION}""#)), "{body}");
 
     Ok(())
@@ -1132,8 +1209,8 @@ fn a_line_said_while_the_notice_runs_makes_the_session_active_and_nothing_is_com
     let session = open(&mut harness, &mut daemon, "notice")?;
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
     say(&mut harness, &mut daemon, session, "work")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let id = daemon.made(1);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let id = daemon.claude(1);
     stdin(&mut harness, &mut daemon, &id, 1);
     answer_turn(&mut daemon, &id, "done");
     stdin(&mut harness, &mut daemon, &id, 2);
@@ -1265,21 +1342,26 @@ fn challenged(heard: &Heard) -> bool {
 fn a_session_s_container_bears_a_bearer_its_port_lets_in_until_its_container_is_removed() -> Result<(), Unheard> {
     // Catches a container given a bearer `Sessions` does not hold, so the session reaches none of the hub's tools; the
     // bearer written into the container's command, where every process list and `docker inspect` show it; a request
-    // bearing no bearer, or one never minted, let on to `Mcp`, or refused without the challenge a client answers; and
-    // a bearer still let in once its container is gone (ADR-0057).
+    // bearing no bearer, or one never minted, let on to `Mcp`, or refused without the challenge a client answers; a
+    // bearer still let in once its container is gone, the run's bootstrap container's among them; and one bearer
+    // given to both of a run's containers, so the bootstrap's reaches the hub's tools as Claude Code's (ADR-0057).
     let mut daemon = Daemon::new("bearer");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "bearer")?;
-    let authorization = authorization_of(&daemon, &daemon.made(0));
+    let authorization = authorization_of(&daemon, &daemon.claude(0));
+    let bootstrapped = authorization_of(&daemon, &daemon.bootstrap(0));
     let stranger = format!("Bearer {}", "5a".repeat(16));
 
     let held = routed(&mut harness, &mut daemon, list_tools(Some(&authorization)));
     let unborne = routed(&mut harness, &mut daemon, list_tools(None));
     let unminted = routed(&mut harness, &mut daemon, list_tools(Some(&stranger)));
+    let removed = routed(&mut harness, &mut daemon, list_tools(Some(&bootstrapped)));
 
     assert_eq!(held.status, 200, "{held:?}");
     assert!(challenged(&unborne), "{unborne:?}");
     assert!(challenged(&unminted), "{unminted:?}");
+    assert_ne!(bootstrapped, authorization, "each of a run's containers is given a bearer of its own");
+    assert!(challenged(&removed), "the bootstrap container's bearer is let go of once it is removed: {removed:?}");
 
     order(&mut harness, &Order::Archive(Archive { session }))?;
     until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
@@ -1304,7 +1386,7 @@ fn a_container_that_ends_by_itself_leaves_its_session_lost_until_it_wakes_to_the
     let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
     let mut harness = hub(&daemon, settings)?;
     let session = open(&mut harness, &mut daemon, "lost")?;
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     daemon.stop(&first);
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
 
@@ -1319,7 +1401,7 @@ fn a_container_that_ends_by_itself_leaves_its_session_lost_until_it_wakes_to_the
     });
     assert_eq!(container, Housed::Attached);
 
-    let second = daemon.made(1);
+    let second = daemon.claude(1);
     let written = stdin(&mut harness, &mut daemon, &second, 2);
     let said: Vec<Entry> = read(&mut harness, &mut daemon, session, 0)?
         .into_iter()
@@ -1382,18 +1464,21 @@ fn notes(harness: &mut Harness<Headless>, daemon: &mut Daemon, session: u32) -> 
 /// What a start script that failed says as the last thing before it ends, in these tests.
 const FAILED: &str = "aethereal-session-start: the fetch of origin failed with exit code 128";
 
-/// The refusal a start whose script said [`FAILED`] is answered with.
+/// What a start script says, in these tests, of a lock it removed.
+const UNLOCKED: &str = "aethereal-session-start: removed /session/home/work/.git/index.lock, a lock no git holds";
+
+/// The refusal a start whose bootstrap container [`fail_bootstrap`] ended is answered with: its code, and the lines it
+/// said, for the owner to read.
 fn failed() -> Refusal {
-    Refusal::Unbootstrapped(Unbootstrapped::Said(String::from("the fetch of origin failed with exit code 128")))
+    let said = vec![String::from(UNLOCKED), String::from(FAILED)];
+
+    Refusal::Unbootstrapped(Unbootstrapped { ended: Ended::Exited { code: BOOTSTRAP_FAILED }, said })
 }
 
-/// The code the start script ends its container with when its bootstrap fails: sysexits' `EX_CONFIG`.
-const BOOTSTRAP_FAILED: i64 = 78;
-
-/// Ends the container `id` as a start script whose bootstrap failed ends it: saying [`FAILED`], then exiting with its
-/// code.
+/// Ends the bootstrap container `id` as a start script whose bootstrap failed ends it: saying it removed a lock, then
+/// [`FAILED`], then exiting with its code.
 fn fail_bootstrap(daemon: &mut Daemon, id: &str) {
-    daemon.warn(id, "aethereal-session-start: removed /session/home/work/.git/index.lock, a lock no git holds");
+    daemon.warn(id, UNLOCKED);
     daemon.warn(id, FAILED);
     daemon.exit(id, BOOTSTRAP_FAILED);
 }
@@ -1403,54 +1488,88 @@ fn opened(harness: &mut Harness<Headless>) -> Result<Vec<Opened>, Unheard> {
     Ok(caller(harness)?.opened.clone())
 }
 
-#[test]
-fn a_waker_is_answered_and_the_lines_written_only_once_the_start_script_says_it_is_ready() -> Result<(), Unheard> {
-    // Catches a waker answered that its session runs while its start script still bootstraps, so a start that then
-    // fails reads as one that ran; a line written to a container before Claude Code runs in it, which a bootstrap that
-    // fails never reads; and a session that bootstraps shown as anything but starting.
-    let mut daemon = Daemon::new("ready");
-    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
-    daemon.readies = Readies::Never;
-    order(&mut harness, &Order::New(NewSession { name: String::from("ready") }))?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.runs(0));
-    let id = daemon.made(0);
-    let number = say(&mut harness, &mut daemon, 1, "early")?;
-    daemon.warn(&id, "aethereal-session-start: removed /session/home/.gitconfig.lock, a lock no git holds");
-    let bootstrapping = read(&mut harness, &mut daemon, 1, 0)?;
+/// Waits until `session` is listed with its container as `wanted`, once the hub lists its sessions at all, and answers
+/// how it was last listed.
+fn until_housed(
+    harness: &mut Harness<Headless>,
+    daemon: &mut Daemon,
+    session: u32,
+    wanted: &Housed,
+) -> Result<Housed, Unheard> {
+    // A list is answered at once, before the sessions are read back: it is asked again until they are.
+    waiting::until(BUDGET, || listed(harness, daemon).is_ok_and(|sessions| !sessions.is_empty()));
+    let mut seen = row(harness, daemon, session)?.container;
+    waiting::until(BUDGET, || {
+        if let Ok(row) = row(harness, daemon, session) {
+            seen = row.container;
+        }
+        seen == *wanted
+    });
 
-    assert_eq!(opened(&mut harness)?, [], "no one is answered while the start script bootstraps");
-    assert_eq!(daemon.stdin(&id), Vec::<String>::new(), "no line is written while it bootstraps");
+    Ok(seen)
+}
+
+#[test]
+fn a_wake_runs_its_bootstrap_container_first_and_claude_code_s_only_once_that_one_exits_0() -> Result<(), Unheard> {
+    // Catches Claude Code's container made before its run's bootstrap container has ended, or beside one that has not
+    // exited 0, so Claude Code works on a tree half set up; a waker answered that its session runs while its bootstrap
+    // runs, so a start that then fails reads as one that ran; a line written before Claude Code's container is
+    // attached, or lost; a bootstrap container given the credential, a stdin, or a command beyond the start script,
+    // which would start Claude Code in it; one left once Claude Code runs; and a session that bootstraps shown as
+    // anything but starting.
+    let mut daemon = Daemon::new("bootstrap");
+    let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+    daemon.bootstraps = Bootstraps::Running;
+    order(&mut harness, &Order::New(NewSession { name: String::from("bootstrap") }))?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(0));
+    let bootstrap = daemon.bootstrap(0);
+    let number = say(&mut harness, &mut daemon, 1, "early")?;
+    let bootstrapping = read(&mut harness, &mut daemon, 1, 0)?;
     let listed = row(&mut harness, &mut daemon, 1)?;
+    let body = daemon.body(&bootstrap);
+
+    assert_eq!(opened(&mut harness)?, [], "no one is answered while the bootstrap container runs");
+    assert_eq!(daemon.claudes(), 0, "no Claude Code container is made while it runs");
     assert_eq!((listed.state, listed.container), (State::Working, Housed::Starting), "it starts, a line waiting");
     assert!(bootstrapping.iter().any(|numbered| numbered.number == number), "{bootstrapping:?}");
+    assert!(body.contains(r#""Cmd":["/usr/local/bin/aethereal-session-start"],"#), "the script alone: {body}");
+    assert!(body.contains(r#""OpenStdin":false"#), "nothing is written to it: {body}");
+    assert!(!body.contains("CLAUDE_CODE_OAUTH_TOKEN"), "the credential is not given to it: {body}");
+    assert!(body.contains(r#""aethereal.bootstrap":"1""#), "it carries the bootstrap label: {body}");
 
-    daemon.warn(&id, READY);
+    daemon.exit(&bootstrap, 0);
     until(&mut harness, &mut daemon, |caller, _| !caller.opened.is_empty());
-    let written = stdin(&mut harness, &mut daemon, &id, 1);
-
+    let claude = daemon.claude(0);
+    let written = stdin(&mut harness, &mut daemon, &claude, 1);
     let Some(Opened::Open(open)) = opened(&mut harness)?.first().cloned() else {
-        panic!("the session opens once its start script is ready: {:?}", opened(&mut harness)?);
+        panic!("the session opens once its bootstrap container exited 0: {:?}", opened(&mut harness)?);
     };
+
     assert_eq!((open.session, open.container), (1, Housed::Attached));
     assert_eq!(written, [user_message("early")]);
+    assert!(!daemon.containers.contains_key(&bootstrap), "the bootstrap container is removed");
+    let body = daemon.body(&claude);
+    assert!(body.contains(r#""Cmd":["/usr/bin/claude","-p","#), "Claude Code is its command alone: {body}");
+    assert!(!body.contains("aethereal.bootstrap"), "it carries no bootstrap label: {body}");
 
     Ok(())
 }
 
 #[test]
-fn a_start_whose_script_fails_is_refused_with_its_reason_and_its_session_hibernates_holding_its_lines()
--> Result<(), Unheard> {
-    // Catches a start whose script failed its bootstrap listed as lost, so a failed start reads as lost work, or as an
-    // ordinary hibernation, so the owner cannot tell it failed, why, or that it holds lines; its waker not answered, or
-    // answered without the script's reason; its container left; its lines dropped, written after the line that starts
-    // the next container, out of order, or noted again; and a start that is tried again by itself.
+fn a_bootstrap_container_that_exits_with_any_other_code_is_a_failed_start_holding_its_lines() -> Result<(), Unheard> {
+    // Catches a start whose bootstrap container did not exit 0 taken as one that ran, so Claude Code's container is
+    // made on a tree half set up; one listed as lost, so a failed start reads as lost work, or as an ordinary
+    // hibernation, so the owner cannot tell it failed, why, or that it holds lines; its waker not answered, or
+    // answered without its code and what it said last; what it wrote not kept in the transcript; its container left;
+    // its lines dropped, written after the line that starts the next run, out of order, or noted again; and a start
+    // that is tried again by itself.
     let mut daemon = Daemon::new("unbootstrapped");
     let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
     let mut harness = hub(&daemon, settings)?;
-    daemon.readies = Readies::Never;
+    daemon.bootstraps = Bootstraps::Running;
     order(&mut harness, &Order::New(NewSession { name: String::from("unbootstrapped") }))?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.runs(0));
-    let first = daemon.made(0);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(0));
+    let first = daemon.bootstrap(0);
     say(&mut harness, &mut daemon, 1, "one")?;
     say(&mut harness, &mut daemon, 1, "two")?;
     fail_bootstrap(&mut daemon, &first);
@@ -1459,24 +1578,54 @@ fn a_start_whose_script_fails_is_refused_with_its_reason_and_its_session_hiberna
 
     let why = failed().to_string();
     assert_eq!(opened(&mut harness)?, [Opened::Refused(failed())]);
+    assert!(why.contains("code 78") && why.contains(FAILED), "the refusal shows the code and the reason: {why}");
     assert_eq!(row(&mut harness, &mut daemon, 1)?.container, Housed::Unstarted { why: why.clone(), holding: 2 });
-    assert!(!daemon.containers.contains_key(&first), "the container is removed");
-    assert_eq!(daemon.stdin(&first), Vec::<String>::new(), "no line was written to it");
-    assert_eq!(
-        notes(&mut harness, &mut daemon, 1)?,
-        [Note::Started { run: 1, resumed: false }, Note::Unstarted { run: 1, why }]
-    );
+    assert!(!daemon.containers.contains_key(&first), "the bootstrap container is removed");
+    assert_eq!(daemon.claudes(), 0, "no Claude Code container is made");
+    let entries = read(&mut harness, &mut daemon, 1, 0)?;
+    let kept = entries.iter().any(|numbered| matches!(&numbered.entry, Entry::Stderr { text, .. } if text == FAILED));
+    assert!(kept, "what the bootstrap container wrote is in the transcript: {entries:?}");
+    assert_eq!(notes(&mut harness, &mut daemon, 1)?, [Note::Bootstrapping { run: 1 }, Note::Unstarted { run: 1, why }]);
     assert_eq!(daemon.made.len(), 1, "nothing starts it again by itself");
 
-    daemon.readies = Readies::AtStart;
+    daemon.bootstraps = Bootstraps::Readying;
     say(&mut harness, &mut daemon, 1, "three")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let second = daemon.made(1);
-    let written = stdin(&mut harness, &mut daemon, &second, 3);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 1);
+    let claude = daemon.claude(0);
+    let written = stdin(&mut harness, &mut daemon, &claude, 3);
 
     assert_eq!(written, [user_message("one"), user_message("two"), user_message("three")]);
     assert_eq!(said_lines(&mut harness, &mut daemon, 1)?, [by_caller("one"), by_caller("two"), by_caller("three")]);
     assert_eq!(row(&mut harness, &mut daemon, 1)?.container, Housed::Attached);
+
+    Ok(())
+}
+
+#[test]
+fn a_bootstrap_container_docker_cannot_make_or_start_is_a_failed_start_and_makes_no_claude_code_container()
+-> Result<(), Unheard> {
+    // Catches a bootstrap container Docker refused to make, or made and refused to start, taken as one that ran, so
+    // Claude Code's container is made on a tree never readied; its waker not answered, or answered without Docker's
+    // error; the session listed as anything but a failed start; and the container that never started left behind.
+    for (test, refuse) in [("bootstrap-unmade", Refuse::Create), ("bootstrap-unstarted", Refuse::Start)] {
+        let mut daemon = Daemon::new(test);
+        daemon.refuses = refuse;
+        let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
+        order(&mut harness, &Order::New(NewSession { name: String::from(test) }))?;
+        until(&mut harness, &mut daemon, |caller, _| !caller.opened.is_empty());
+        until_state(&mut harness, &mut daemon, 1, State::Hibernating)?;
+
+        let refused = opened(&mut harness)?;
+        assert!(matches!(refused.as_slice(), [Opened::Refused(Refusal::Docker(_))]), "{test}: {refused:?}");
+        let Housed::Unstarted { why, holding } = row(&mut harness, &mut daemon, 1)?.container else {
+            panic!("{test}: the session is listed as a failed start");
+        };
+        assert!(why.starts_with("Docker"), "{test}: {why}");
+        assert_eq!(holding, 0, "{test}");
+        assert_eq!(daemon.claudes(), 0, "{test}: no Claude Code container is made");
+        until(&mut harness, &mut daemon, |_, daemon| daemon.containers.is_empty());
+        assert!(daemon.containers.is_empty(), "{test}: no container is left");
+    }
 
     Ok(())
 }
@@ -1490,23 +1639,23 @@ fn a_lost_session_whose_wake_fails_its_bootstrap_is_told_once_at_the_next_wake()
     let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
     let mut harness = hub(&daemon, settings)?;
     let session = open(&mut harness, &mut daemon, "lost-unbootstrapped")?;
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     daemon.stop(&first);
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
-    daemon.readies = Readies::Never;
+    daemon.bootstraps = Bootstraps::Running;
     say(&mut harness, &mut daemon, session, "back again")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.runs(1));
-    let second = daemon.made(1);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(1));
+    let second = daemon.bootstrap(1);
     fail_bootstrap(&mut daemon, &second);
-    until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
-
     let unstarted = Housed::Unstarted { why: failed().to_string(), holding: 2 };
-    assert_eq!(row(&mut harness, &mut daemon, session)?.container, unstarted, "a failed start is not lost");
+    let shown = until_housed(&mut harness, &mut daemon, session, &unstarted)?;
 
-    daemon.readies = Readies::AtStart;
+    assert_eq!(shown, unstarted, "a failed start is not lost");
+
+    daemon.bootstraps = Bootstraps::Readying;
     say(&mut harness, &mut daemon, session, "third time")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 3);
-    let third = daemon.made(2);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let third = daemon.claude(1);
     let written = stdin(&mut harness, &mut daemon, &third, 3);
     let lost = Entry::Said { by: Speaker::Hub, text: String::from(LOST) };
 
@@ -1526,10 +1675,10 @@ fn a_failed_start_and_the_lines_it_held_are_kept_and_shown_while_the_hub_starts_
     let mut daemon = Daemon::new("unread");
     let settings = daemon.sessions(4, 3600);
     let mut harness = hub(&daemon, settings.clone())?;
-    daemon.readies = Readies::Never;
+    daemon.bootstraps = Bootstraps::Running;
     order(&mut harness, &Order::New(NewSession { name: String::from("unread") }))?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.runs(0));
-    let first = daemon.made(0);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(0));
+    let first = daemon.bootstrap(0);
     let number = say(&mut harness, &mut daemon, 1, "one")?;
     fail_bootstrap(&mut daemon, &first);
     let why = failed().to_string();
@@ -1538,18 +1687,18 @@ fn a_failed_start_and_the_lines_it_held_are_kept_and_shown_while_the_hub_starts_
     drop(harness);
     daemon.connections.clear();
 
-    daemon.readies = Readies::AtStart;
+    daemon.bootstraps = Bootstraps::Readying;
     let mut harness = hub(&daemon, settings)?;
-    // A list is answered at once, before the sessions are read back: it is asked again until they are.
-    waiting::until(BUDGET, || listed(&mut harness, &mut daemon).is_ok_and(|sessions| !sessions.is_empty()));
-    let shown = row(&mut harness, &mut daemon, 1)?;
+    let holding = Housed::Unstarted { why, holding: 1 };
+    let shown = until_housed(&mut harness, &mut daemon, 1, &holding)?;
 
-    assert_eq!((shown.state, shown.container), (State::Hibernating, Housed::Unstarted { why, holding: 1 }));
+    assert_eq!(shown, holding);
+    assert_eq!(state(&mut harness, &mut daemon, 1)?, State::Hibernating);
 
     say(&mut harness, &mut daemon, 1, "two")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let second = daemon.made(1);
-    let written = stdin(&mut harness, &mut daemon, &second, 2);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 1);
+    let claude = daemon.claude(0);
+    let written = stdin(&mut harness, &mut daemon, &claude, 2);
 
     assert_eq!(written, [user_message("one"), user_message("two")]);
 
@@ -1559,21 +1708,21 @@ fn a_failed_start_and_the_lines_it_held_are_kept_and_shown_while_the_hub_starts_
 #[test]
 fn a_session_holding_unread_lines_whose_next_start_fails_before_it_runs_holds_them_for_the_start_after()
 -> Result<(), Unheard> {
-    // Catches a start that fails before its container runs, as Docker refuses to start it, dropping the lines that
-    // waited for it, among them the lines held from a failed bootstrap, so Claude never reads them; why it failed kept
-    // as the earlier start's; its container left behind; and the start after it never written them, or written them
-    // after the line that wakes it.
+    // Catches a start that fails before its container runs, as Docker refuses to start its bootstrap container,
+    // dropping the lines that waited for it, among them the lines held from a failed bootstrap, so Claude never reads
+    // them; why it failed kept as the earlier start's; its container left behind; and the start after it never written
+    // them, or written them after the line that wakes it.
     let mut daemon = Daemon::new("unstarted");
     let settings = daemon.sessions(4, 3600);
     let mut harness = hub(&daemon, settings)?;
-    daemon.readies = Readies::Never;
+    daemon.bootstraps = Bootstraps::Running;
     order(&mut harness, &Order::New(NewSession { name: String::from("unstarted") }))?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.runs(0));
-    let first = daemon.made(0);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(0));
+    let first = daemon.bootstrap(0);
     let one = say(&mut harness, &mut daemon, 1, "one")?;
     fail_bootstrap(&mut daemon, &first);
     until_state(&mut harness, &mut daemon, 1, State::Hibernating)?;
-    daemon.readies = Readies::AtStart;
+    daemon.bootstraps = Bootstraps::Readying;
     daemon.refuses = Refuse::Start;
     let two = say(&mut harness, &mut daemon, 1, "two")?;
     let held = |kept: Option<&Standing>| {
@@ -1588,14 +1737,14 @@ fn a_session_holding_unread_lines_whose_next_start_fails_before_it_runs_holds_th
     until(&mut harness, &mut daemon, |_, daemon| held(kept(daemon, 1).as_ref()));
 
     assert!(held(kept(&daemon, 1).as_ref()), "{:?}", kept(&daemon, 1));
-    assert_eq!(daemon.made.len(), 2, "the refused start made a container");
-    assert!(!daemon.containers.contains_key(&daemon.made(1)), "the container that never started is removed");
+    assert_eq!(daemon.made.len(), 2, "the refused start made a bootstrap container");
+    assert!(!daemon.containers.contains_key(&daemon.bootstrap(1)), "the container that never started is removed");
 
     daemon.refuses = Refuse::Nothing;
     say(&mut harness, &mut daemon, 1, "three")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 3);
-    let third = daemon.made(2);
-    let written = stdin(&mut harness, &mut daemon, &third, 3);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 1);
+    let claude = daemon.claude(0);
+    let written = stdin(&mut harness, &mut daemon, &claude, 3);
 
     assert_eq!(written, [user_message("one"), user_message("two"), user_message("three")]);
 
@@ -1603,7 +1752,7 @@ fn a_session_holding_unread_lines_whose_next_start_fails_before_it_runs_holds_th
 }
 
 #[test]
-fn a_run_that_ends_after_its_start_script_said_it_was_ready_is_lost_whatever_its_code() -> Result<(), Unheard> {
+fn a_claude_code_container_that_ends_by_itself_is_lost_whatever_its_code() -> Result<(), Unheard> {
     // Catches Claude Code's own exit with the bootstrap's code taken for a failed start: its session not listed as
     // lost, so the owner is not told its last turn may have been cut short; the hub's line to it never written; and
     // the lines it read written again to its next container, so Claude answers them twice.
@@ -1611,23 +1760,141 @@ fn a_run_that_ends_after_its_start_script_said_it_was_ready_is_lost_whatever_its
     let settings = SessionsSettings { lost: String::from(LOST), ..daemon.sessions(4, 3600) };
     let mut harness = hub(&daemon, settings)?;
     let session = open(&mut harness, &mut daemon, "printed")?;
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "one")?;
     stdin(&mut harness, &mut daemon, &first, 1);
     daemon.exit(&first, BOOTSTRAP_FAILED);
     until_state(&mut harness, &mut daemon, session, State::Hibernating)?;
 
     let stopped = Note::Stopped { run: 1, why: Ended::Exited { code: BOOTSTRAP_FAILED } };
+    let started = Note::Started { run: 1, resumed: false };
 
     assert_eq!(row(&mut harness, &mut daemon, session)?.container, Housed::Lost);
-    assert_eq!(notes(&mut harness, &mut daemon, session)?, [Note::Started { run: 1, resumed: false }, stopped]);
+    assert_eq!(notes(&mut harness, &mut daemon, session)?, [Note::Bootstrapping { run: 1 }, started, stopped]);
 
     say(&mut harness, &mut daemon, session, "two")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let second = daemon.made(1);
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let second = daemon.claude(1);
     let written = stdin(&mut harness, &mut daemon, &second, 2);
 
     assert_eq!(written, [user_message(LOST), user_message("two")]);
+
+    Ok(())
+}
+
+/// What becomes of a bootstrap container while no hub runs, after the hub that made it was killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Away {
+    /// It runs on.
+    Runs,
+    /// It exits 0, its tree readied.
+    Readies,
+    /// It fails its bootstrap, as [`fail_bootstrap`] ends it.
+    Fails,
+    /// It is removed, by someone other than the hub.
+    Goes,
+}
+
+/// Kills a hub while the bootstrap container of a new session's first run runs, once its record names it on disk, and
+/// does with that container what `away` says while no hub runs: answers a hub started again on what the killed one
+/// left, the fake daemon, and the bootstrap container's id.
+fn killed_bootstrapping(test: &str, away: Away) -> Result<(Harness<Headless>, Daemon, String), Unheard> {
+    let mut daemon = Daemon::new(test);
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    daemon.bootstraps = Bootstraps::Running;
+    order(&mut harness, &Order::New(NewSession { name: String::from("killed") }))?;
+    until(&mut harness, &mut daemon, |_, daemon| daemon.bootstrap_runs(0));
+    let bootstrap = daemon.bootstrap(0);
+    let recorded = |daemon: &Daemon| matches!(kept(daemon, 1), Some(Standing::Bootstrapping { run: 1, .. }));
+    until(&mut harness, &mut daemon, |_, daemon| recorded(daemon));
+    assert!(recorded(&daemon), "the record names the bootstrap container: {:?}", kept(&daemon, 1));
+    drop(harness);
+    daemon.connections.clear();
+
+    match away {
+        Away::Runs => {}
+        Away::Readies => daemon.exit(&bootstrap, 0),
+        Away::Fails => fail_bootstrap(&mut daemon, &bootstrap),
+        Away::Goes => {
+            daemon.containers.remove(&bootstrap);
+        }
+    }
+    let harness = hub(&daemon, settings)?;
+
+    Ok((harness, daemon, bootstrap))
+}
+
+#[test]
+fn a_hub_that_starts_again_follows_a_bootstrap_container_that_runs_to_its_end_and_then_runs_claude_code()
+-> Result<(), Unheard> {
+    // Catches a running bootstrap container a restarted hub takes for Claude Code's container, attaching to it and
+    // writing to it, or for a stray, so it is never judged and the session never starts; one judged before it ends,
+    // so Claude Code's container is made beside a bootstrap still readying the tree; and one that then exits 0 left
+    // with no Claude Code container made after it.
+    let (mut harness, mut daemon, bootstrap) = killed_bootstrapping("restart-bootstrapping", Away::Runs)?;
+    let starting = until_housed(&mut harness, &mut daemon, 1, &Housed::Starting)?;
+
+    assert_eq!(starting, Housed::Starting, "it is followed, still starting");
+    assert_eq!(daemon.claudes(), 0, "no Claude Code container is made while it runs");
+    assert_eq!(caller(&mut harness)?.listed.last().map(|listed| listed.strays.len()), Some(0), "no stray");
+
+    daemon.exit(&bootstrap, 0);
+    let attached = until_housed(&mut harness, &mut daemon, 1, &Housed::Attached)?;
+
+    assert_eq!(attached, Housed::Attached);
+    assert_eq!(daemon.claudes(), 1);
+    assert!(!daemon.containers.contains_key(&bootstrap), "the bootstrap container is removed");
+    until(&mut harness, &mut daemon, |_, daemon| matches!(kept(daemon, 1), Some(Standing::Awake { run: 1, .. })));
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_that_starts_again_judges_a_bootstrap_container_that_ended_by_its_code_alone() -> Result<(), Unheard> {
+    // Catches a bootstrap container that ended while no hub ran taken as lost, or left as it is, so its session never
+    // starts or never says why; one that exited 0 taken as a failed start, or one that did not taken as ready, so
+    // Claude Code works on a tree half set up; its refusal without its code or what it wrote while the hub was away;
+    // and its container left behind.
+    let (mut harness, mut daemon, readied) = killed_bootstrapping("restart-readied", Away::Readies)?;
+    let attached = until_housed(&mut harness, &mut daemon, 1, &Housed::Attached)?;
+
+    assert_eq!(attached, Housed::Attached, "exit 0 runs Claude Code");
+    assert_eq!(daemon.claudes(), 1);
+    assert!(!daemon.containers.contains_key(&readied), "the bootstrap container is removed");
+    drop(harness);
+    drop(daemon);
+
+    let (mut harness, mut daemon, failed_bootstrap) = killed_bootstrapping("restart-failed", Away::Fails)?;
+    let unstarted = Housed::Unstarted { why: failed().to_string(), holding: 0 };
+    let shown = until_housed(&mut harness, &mut daemon, 1, &unstarted)?;
+
+    assert_eq!(shown, unstarted, "any other code is a failed start, saying it and what the script said");
+    assert_eq!(daemon.claudes(), 0, "no Claude Code container is made");
+    until(&mut harness, &mut daemon, |_, daemon| daemon.containers.is_empty());
+    assert!(!daemon.containers.contains_key(&failed_bootstrap), "the bootstrap container is removed");
+    let unread = Standing::Unstarted { unread: Vec::new(), why: failed().to_string() };
+    until(&mut harness, &mut daemon, |_, daemon| kept(daemon, 1).as_ref() == Some(&unread));
+    assert_eq!(kept(&daemon, 1), Some(unread));
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_that_starts_again_takes_a_bootstrap_container_that_is_gone_for_a_failed_start() -> Result<(), Unheard> {
+    // Catches a bootstrap container its record names that Docker no longer lists taken as Claude Code's, so the
+    // session is told its last turn was cut short when Claude Code never ran, or as running, so the session never
+    // starts again; and a Claude Code container made after it.
+    let (mut harness, mut daemon, _) = killed_bootstrapping("restart-gone", Away::Goes)?;
+    let why = Refusal::Unbootstrapped(Unbootstrapped { ended: Ended::Lost, said: Vec::new() }).to_string();
+    let unstarted = Housed::Unstarted { why: why.clone(), holding: 0 };
+    let shown = until_housed(&mut harness, &mut daemon, 1, &unstarted)?;
+
+    assert_eq!(shown, unstarted);
+    assert_eq!(daemon.claudes(), 0, "no Claude Code container is made");
+    let unread = Standing::Unstarted { unread: Vec::new(), why };
+    until(&mut harness, &mut daemon, |_, daemon| kept(daemon, 1).as_ref() == Some(&unread));
+    assert_eq!(kept(&daemon, 1), Some(unread));
 
     Ok(())
 }
@@ -1668,7 +1935,7 @@ fn a_start_the_hub_s_repository_cannot_serve_is_refused_before_any_container_is_
     let Opened::Open(woken) = wake(&mut harness, &mut daemon, 1)? else {
         panic!("the session starts once the repository is served");
     };
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     let written = stdin(&mut harness, &mut daemon, &first, 1);
 
     assert_eq!(woken.container, Housed::Attached);
@@ -1684,12 +1951,12 @@ fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unh
     let mut daemon = Daemon::new("rebearer");
     let mut harness = hub(&daemon, daemon.sessions(4, 0))?;
     let session = open(&mut harness, &mut daemon, "rebearer")?;
-    let older = authorization_of(&daemon, &daemon.made(0));
+    let older = authorization_of(&daemon, &daemon.claude(0));
     assert_eq!(until_state(&mut harness, &mut daemon, session, State::Hibernating)?, State::Hibernating);
 
     say(&mut harness, &mut daemon, session, "back again")?;
-    until(&mut harness, &mut daemon, |_, daemon| daemon.made.len() == 2);
-    let newer = authorization_of(&daemon, &daemon.made(1));
+    until(&mut harness, &mut daemon, |_, daemon| daemon.claudes() == 2);
+    let newer = authorization_of(&daemon, &daemon.claude(1));
     let refused = routed(&mut harness, &mut daemon, list_tools(Some(&older)));
     let held = routed(&mut harness, &mut daemon, list_tools(Some(&newer)));
 
@@ -1731,7 +1998,7 @@ fn git_s_client_answers_the_sessions_challenge_with_a_session_s_bearer_and_a_str
     let mut daemon = Daemon::new("git");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     open(&mut harness, &mut daemon, "git")?;
-    let bearer = bearer_of(&daemon, &daemon.made(0));
+    let bearer = bearer_of(&daemon, &daemon.claude(0));
     let port = bound(&mut harness, |stack: &ContainerStack| stack.serving.port());
     let repository = harness.root::<Git>();
     waiting::until(BUDGET, || {
@@ -1763,7 +2030,7 @@ fn a_session_s_call_reaches_its_tool_as_that_session_s_and_a_session_tool_refuse
     let mut daemon = Daemon::new("caller");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "caller")?;
-    let authorization = authorization_of(&daemon, &daemon.made(0));
+    let authorization = authorization_of(&daemon, &daemon.claude(0));
     let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
     let offering = harness.ask(mcp, &Offer { tools: vec![sheet()], worker })?;
     assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
@@ -1792,7 +2059,7 @@ fn an_interrupt_is_written_as_claude_s_control_request_and_an_archive_leaves_no_
     let mut daemon = Daemon::new("interrupt");
     let mut harness = hub(&daemon, daemon.sessions(4, 3600))?;
     let session = open(&mut harness, &mut daemon, "interrupt")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "count to a million")?;
     daemon.emit(&id, &turn_lines("")[0]);
     order(&mut harness, &Order::Interrupt(Interrupt { session }))?;
@@ -1827,15 +2094,16 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     let settings = daemon.sessions(4, 3600);
     let mut harness = hub(&daemon, settings.clone())?;
     let session = open(&mut harness, &mut daemon, "kept")?;
-    let id = daemon.made(0);
-    say(&mut harness, &mut daemon, session, "hello")?;
+    let id = daemon.claude(0);
+    let hello = say(&mut harness, &mut daemon, session, "hello")?;
     // A line is taken before its container's stdin is attached, and written once it is: Claude reads it first.
     stdin(&mut harness, &mut daemon, &id, 1);
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
     let file = daemon.saved("sessions/1/transcript");
-    // Whether the record after these entries has landed or not, it names the container, so the next hub finds it.
-    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 6);
+    // Whether the record after these entries has landed or not, it names the container, so the next hub finds it. The
+    // last entry is the last of the three lines of Claude's turn, which follow the line that began it.
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == hello + 3);
     drop(harness);
     daemon.connections.clear();
 
@@ -1843,6 +2111,7 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     let stray = Container {
         name: String::from("someone-elses"),
         body: String::new(),
+        started: true,
         running: true,
         code: 0,
         output: Vec::new(),
@@ -1887,7 +2156,7 @@ fn a_hub_that_starts_again_and_cannot_list_its_containers_fails_and_leaves_every
     let settings = daemon.sessions(4, 3600);
     let mut harness = hub(&daemon, settings.clone())?;
     let session = open(&mut harness, &mut daemon, "kept")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "hello")?;
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
@@ -1913,7 +2182,7 @@ fn a_hub_that_starts_again_and_cannot_list_its_containers_fails_and_leaves_every
     drop(harness);
 
     assert_eq!(saved_bytes(&daemon, session), before, "every record and transcript is as it was");
-    assert!(daemon.runs(0), "the session's container still runs");
+    assert!(daemon.running(&id), "the session's container still runs");
 
     Ok(())
 }
@@ -1996,9 +2265,16 @@ fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_wi
         "aethereal-session-test-3-target",
     ];
     assert_eq!(volumes, expected, "each session's own volumes, and one cargo home they share");
-    let names = ["aethereal-session-test-1-1", "aethereal-session-test-2-1", "aethereal-session-test-3-1"];
-    assert_eq!(daemon.names, names, "every container made is a session's: no step runs as root before it");
-    let body = daemon.body(&daemon.made(0));
+    let names = [
+        "aethereal-session-test-1-1-bootstrap",
+        "aethereal-session-test-1-1",
+        "aethereal-session-test-2-1-bootstrap",
+        "aethereal-session-test-2-1",
+        "aethereal-session-test-3-1-bootstrap",
+        "aethereal-session-test-3-1",
+    ];
+    assert_eq!(daemon.names, names, "every container made is a session's, its bootstrap's first: none runs as root");
+    let body = daemon.body(&daemon.claude(0));
     assert!(body.contains(r#""Type":"volume","Source":"aethereal-session-test-1""#), "{body}");
     assert!(daemon.volumes.values().all(|body| body.contains(r#""aethereal.test":"1""#)));
 
@@ -2174,7 +2450,7 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
         .root::<Caller>();
     let mut harness = Harness::of(program)?;
     let session = open(&mut harness, &mut daemon, "ordered")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     let log = daemon.dir.join("writes.log");
     say(&mut harness, &mut daemon, session, "one")?;
     // The first append finishes before the next line is said, so that line is a second append rather than one batched
@@ -2379,12 +2655,12 @@ impl Kill {
     fn reached(self, daemon: &Daemon, session: u32) -> bool {
         match self {
             Self::Creating | Self::Launching => daemon.holds(),
-            Self::Started => daemon.runs(1),
+            Self::Started => daemon.claude_runs(1),
             Self::Appended => claude_events(&on_disk(daemon, session)) == 6,
             Self::Recorded => {
                 let recorded = matches!(kept(daemon, session), Some(Standing::Awake { run: 2, .. }));
 
-                recorded && daemon.runs(1)
+                recorded && daemon.claude_runs(1)
             }
         }
     }
@@ -2435,7 +2711,7 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
     let settings = daemon.sessions(4, 3600);
     let mut harness = withholding_hub(&daemon, settings.clone(), kill.withhold())?;
     let session = open(&mut harness, &mut daemon, "killed")?;
-    let first = daemon.made(0);
+    let first = daemon.claude(0);
     say(&mut harness, &mut daemon, session, "hello")?;
     answer_turn(&mut daemon, &first, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
@@ -2445,8 +2721,8 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
     daemon.hold = kill.hold();
     say(&mut harness, &mut daemon, session, "again")?;
     if kill == Kill::Appended {
-        until(&mut harness, &mut daemon, |_, daemon| daemon.runs(1));
-        let second = daemon.made(1);
+        until(&mut harness, &mut daemon, |_, daemon| daemon.claude_runs(1));
+        let second = daemon.claude(1);
         answer_turn(&mut daemon, &second, "during");
     }
     until(&mut harness, &mut daemon, |_, daemon| kill.reached(daemon, session));
@@ -2457,8 +2733,8 @@ fn killed_at(test: &str, kill: Kill) -> Result<(Harness<Headless>, Daemon, u32),
     let record = kept(&daemon, session);
     let started = noted(&on_disk(&daemon, session), 2);
     assert!(kill.left(record.as_ref(), started), "killed at {kill:?}: {record:?}, run 2 noted started {started} times");
-    if daemon.runs(1) {
-        let second = daemon.made(1);
+    if daemon.claude_runs(1) {
+        let second = daemon.claude(1);
         answer_turn(&mut daemon, &second, "while the hub was away");
     }
     let harness = hub(&daemon, settings)?;
@@ -2499,7 +2775,7 @@ fn a_hub_killed_before_docker_makes_a_run_s_container_leaves_its_session_lost_th
     let (mut harness, mut daemon, session) = killed_at("kill-creating", Kill::Creating)?;
     let entries = left_lost(&mut harness, &mut daemon, session)?;
 
-    assert_eq!(daemon.made.len(), 1, "no container of the run is made");
+    assert_eq!(daemon.claudes(), 1, "no Claude Code container of the run is made");
     let last = entries.last().map(|numbered| &numbered.entry);
     assert_eq!(last, Some(&Entry::Hub(Note::Stopped { run: 2, why: Ended::Lost })));
 
@@ -2520,7 +2796,7 @@ fn a_hub_killed_before_a_run_s_container_starts_removes_it_and_leaves_its_sessio
     // Catches a container that does not run, found by the name a record of a starting run gives it, left in place, or
     // the session's record saying it stopped while the container is still there.
     let (mut harness, mut daemon, session) = killed_at("kill-launching", Kill::Launching)?;
-    let second = daemon.made(1);
+    let second = daemon.claude(1);
     let entries = left_lost(&mut harness, &mut daemon, session)?;
 
     assert!(!daemon.containers.contains_key(&second), "the run's container is removed");
@@ -3083,7 +3359,7 @@ fn an_untrusted_engine_s_chat_is_dropped_and_it_is_shown_none_of_it() -> Result<
     let mut daemon = Daemon::new("chat-untrusted");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "chat")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     let _trusted = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
     let mut untrusted = linked_as(&mut harness, &mut daemon, By::Session { session }, "session's", 2)?;
     pose(&mut harness, &Pose::Point { engine: 1 })?;
@@ -3124,7 +3400,7 @@ fn a_trusted_engine_is_shown_the_sessions_and_its_lines_and_commands_reach_claud
     let mut daemon = Daemon::new("chat-trusted");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "chat")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
 
     let (downs, mut stream) =
@@ -3221,7 +3497,7 @@ fn an_ask_of_claude_s_is_shown_to_trusted_engines_and_their_answer_is_written_as
     let mut daemon = Daemon::new("chat-ask");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "ask")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
     let (_, stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
 
@@ -3280,7 +3556,7 @@ fn an_actor_that_joins_as_a_joined_engine_takes_nothing_of_its_place() -> Result
     let mut daemon = Daemon::new("chat-impostor");
     let mut harness = chat_hub(&daemon)?;
     let session = open(&mut harness, &mut daemon, "chat")?;
-    let id = daemon.made(0);
+    let id = daemon.claude(0);
     let stream = linked_as(&mut harness, &mut daemon, By::Owner, "owner's", 1)?;
     let (_, stream) = downs_until(&mut harness, &mut daemon, stream, |down| matches!(down, Down::Sessions { .. }));
 
