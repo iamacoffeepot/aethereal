@@ -1,4 +1,4 @@
-use super::{Compaction, Ended, Entry, Grew, Note, Numbered, Since, Speaker, Transcript, Turning};
+use super::{Compaction, Ended, Entry, Grew, Note, Numbered, READY, Since, Speaker, Transcript, Turning};
 use aethereal_actor::Time;
 use aethereal_data::{Budget, Json, from_bytes};
 
@@ -122,4 +122,35 @@ fn a_container_s_stop_an_earlier_hub_saved_reads_as_how_it_stopped() {
 
     assert_eq!(read(0), Ok(stopped(Ended::Hibernated)));
     assert_eq!(read(1), Ok(stopped(Ended::Archived)));
+}
+
+/// A line of the container's stderr.
+fn stderr(text: &str) -> Entry {
+    Entry::Stderr { text: String::from(text), bytes: u64::try_from(text.len()).unwrap_or(u64::MAX) }
+}
+
+#[test]
+fn a_run_is_ready_once_its_start_script_says_so_and_its_last_word_before_is_why_it_failed() {
+    // Catches a run taken as ready from an earlier run's line, or from a line that only looks like it, so the hub
+    // writes lines to a container that then fails its bootstrap and answers its waker as if it ran; a run that is
+    // never taken as ready; and a failed start answered with an earlier run's reason, with a line its start script
+    // did not write, or with the script's mark left on.
+    let mut transcript = Transcript::new();
+    transcript.add(Entry::Hub(Note::Started { run: 1, resumed: false }), AT);
+    transcript.add(stderr("aethereal-session-start: the fetch of origin failed with exit code 128"), AT);
+    assert!(!transcript.ready(1));
+    assert_eq!(transcript.start_said(), Some("the fetch of origin failed with exit code 128"));
+
+    transcript.add(Entry::Hub(Note::Started { run: 2, resumed: false }), AT);
+    transcript.add(stderr("warning: not quite aethereal-session-start: ready"), AT);
+    assert_eq!(transcript.start_said(), None, "the first run's reason is not the second's");
+    assert!(!transcript.ready(2));
+    transcript
+        .add(stderr("aethereal-session-start: removed /session/home/work/.git/index.lock, a lock no git holds"), AT);
+    transcript.add(stderr(READY), AT);
+    assert!(transcript.ready(2));
+    assert!(!transcript.ready(1), "only the run counted is ready");
+
+    transcript.add(Entry::Hub(Note::Started { run: 3, resumed: true }), AT);
+    assert!(!transcript.ready(3), "a new run bootstraps afresh");
 }

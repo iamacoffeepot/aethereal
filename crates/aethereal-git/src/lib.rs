@@ -26,5 +26,5 @@ mod programs;
 mod settings;
 
 pub use call::{Call, Service};
-pub use git::{Git, Launch, Readiness, Unopened, Writing};
+pub use git::{Git, HearReadiness, Hearing, Launch, Readiness, Unopened, Writing};
 pub use settings::GitSettings;

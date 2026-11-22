@@ -1,18 +1,17 @@
 //! A session's container through its life (ADR-0057): its record saying it starts written, its volumes made and the
-//! credential read, made from the settings, started, attached and followed, and stopped and removed once it hibernates,
-//! is archived, or has ended. A session whose container ended without the hub ending it hibernates with its container
-//! lost, and shows so until it wakes; one whose start failed, before its container ran, or as its start script failed
-//! its bootstrap before Claude Code printed a line, did not start, and hibernates holding the lines it was to be
-//! written, or was written, which Claude Code never read, for its next.
+//! credential read, made from the settings, started, its logs followed while its start script bootstraps, attached
+//! once the script says it is ready, and stopped and removed once it hibernates, is archived, or has ended. A session
+//! whose container ended without the hub ending it hibernates with its container lost, and shows so until it wakes;
+//! one whose start failed, before its container ran or before its start script said it was ready, did not start, and
+//! hibernates saying why, holding the lines that waited for it, none of which was written, for its next.
 
 use super::asked::{Asker, written};
-use super::asks::{Archived, Opened, Refusal};
+use super::asks::{Archived, Opened, Refusal, Unbootstrapped};
 use super::container::{Made, Unmade, spec};
 use super::credential::{Crediting, Provisioned};
 use super::output::Reading;
 use super::record::Conversation;
 use super::session::{Activity, Flow, Gone, Life, Running, Stdin, Step, Then};
-use super::settings::BOOTSTRAP_FAILED;
 use super::streams::user_line;
 use super::transcript::{Counted, Ended, Entry, Note, Turning};
 use super::{Act, Acting, Asking, Feed, Sessions};
@@ -31,9 +30,10 @@ impl Sessions {
         self.dirty(session);
     }
 
-    /// Attaches to and follows `container`, of `session`'s run `run`, which runs: its logs from the start, skipping
-    /// what the transcript holds.
-    pub(super) fn resume(
+    /// Follows the logs of `container`, of `session`'s run `run`, which runs and whose start script bootstraps, from
+    /// its start, skipping what the transcript holds of them: the session starts until the script says it is ready.
+    /// Its stdin is not attached yet, so nothing is written to it.
+    fn bootstrap(
         &mut self,
         turn: &mut Turn<'_, Self>,
         session: u32,
@@ -43,18 +43,61 @@ impl Sessions {
         let Some(docker) = self.docker() else {
             return Ok(());
         };
+        let Some(held) = self.held.get(&session) else {
+            return Ok(());
+        };
+        let reading = Reading::skipping(held.transcript.output_bytes());
+        let logs = Logs { container: container.clone(), since_nanos: 0, until: Until::Stopped };
+        let logs = Flow::Open(self.logging.open(turn, docker.protocol(), logs, Feed { session, run })?);
+        self.step_to(session, Step::Bootstrapping { container, reading, logs });
+        self.dirty(session);
+
+        Ok(())
+    }
+
+    /// The start script of `session`'s run `run` said it is ready: Claude Code runs in its container, so its stdin is
+    /// attached, the lines that waited for it are written once it is, and each who waited on it is answered.
+    pub(super) fn readied(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let lines = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
-            Life::Starting { lines, .. } => lines,
-            Life::Running(_) | Life::Stopping { .. } | Life::Hibernating { .. } | Life::Archived => Vec::new(),
+        let is_bootstrapping = matches!(
+            &held.life,
+            Life::Starting { run: starting, step: Step::Bootstrapping { .. }, .. } if *starting == run
+        );
+        if !is_bootstrapping {
+            return Ok(());
+        }
+        let Life::Starting { step: Step::Bootstrapping { container, reading, logs }, opening, lines, .. } =
+            mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed })
+        else {
+            return Ok(());
         };
+        self.run_claude(turn, session, Bootstrapped { container, run, reading, logs, lines })?;
+        let Some(row) = self.row(session) else {
+            return Ok(());
+        };
+        let open = Opened::Open(row);
+        for waiting in opening {
+            self.reply(turn, waiting, &open)?;
+        }
+
+        Ok(())
+    }
+
+    /// Attaches to the container of `session` that `bootstrapped` says is ready, so Claude Code runs in it, and goes
+    /// on following its logs as they are followed: the lines that waited for it are written once its stdin is
+    /// attached.
+    fn run_claude(&mut self, turn: &mut Turn<'_, Self>, session: u32, bootstrapped: Bootstrapped) -> Result<(), Fault> {
+        let Some(docker) = self.docker() else {
+            return Ok(());
+        };
+        let Some(held) = self.held.get_mut(&session) else {
+            return Ok(());
+        };
+        let Bootstrapped { container, run, reading, logs, lines } = bootstrapped;
         let feed = Feed { session, run };
         let attach = self.attaching.open(turn, docker.protocol(), Attach { container: container.clone() }, feed)?;
-        let logs = Logs { container: container.clone(), since_nanos: 0, until: Until::Stopped };
-        let logs = self.logging.open(turn, docker.protocol(), logs, feed)?;
-        let reading = Reading::skipping(held.transcript.output_bytes());
         let turning = held.transcript.turning();
         let has_lines = !lines.is_empty();
         let is_busy = has_lines || turning == Turning::Running;
@@ -68,11 +111,10 @@ impl Sessions {
             container,
             run,
             stdin: Stdin::Attaching { lines: typed },
-            lines,
             activity: Activity::Working,
             tasks: BTreeSet::new(),
             reading,
-            logs: Flow::Open(logs),
+            logs,
             attach: Flow::Open(attach),
         }));
         if !is_busy {
@@ -110,39 +152,41 @@ impl Sessions {
         Ok(())
     }
 
-    /// The container of `session`'s run `run` has ended by itself, as `why` says: it is removed, and the session left
-    /// hibernating, its container lost. One that exited with the start script's own code having printed nothing to its
-    /// stdout failed its bootstrap before Claude Code started, as the start script prints nothing there and Claude Code
-    /// prints as soon as it reads a line, so it lost nothing and read none of the lines written to it: it is noted so,
-    /// and the session left hibernating, not lost, holding those lines for its next container. One that printed, then
-    /// exited with that code, ended as Claude Code's own exit, and is lost as any other. Whether it printed is what the
-    /// transcript counts of its stdout, so it holds as well for a container that a hub that started again adopted.
-    /// Nothing is done when the session's container is not that run's, or is being stopped.
+    /// The container of `session`'s run `run` has ended by itself, as `why` says. One whose start script had not said
+    /// it was ready failed its start, before Claude Code ran and before any line was written to it: it is refused as
+    /// any start that fails is, with the last thing the script said, which says why, and the session hibernates, not
+    /// lost, holding its lines for its next container. One that ended after, whatever its code, was Claude Code's own
+    /// exit, which may have read its lines and done work: it is removed, and the session left hibernating, its
+    /// container lost. Nothing is done when the session's container is not that run's, or is being stopped.
     pub(super) fn ended(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, why: Ended) -> Result<(), Fault> {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let is_current = matches!(&held.life, Life::Running(running) if running.run == run);
-        if !is_current {
-            return Ok(());
+        match &held.life {
+            Life::Running(running) if running.run == run => {}
+            Life::Starting { run: starting, step: Step::Bootstrapping { .. }, .. } if *starting == run => {
+                let unbootstrapped = held
+                    .transcript
+                    .start_said()
+                    .map_or(Unbootstrapped::Ended(why), |said| Unbootstrapped::Said(String::from(said)));
+                return self.unstarted(turn, session, run, &Refusal::Unbootstrapped(unbootstrapped));
+            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { .. }
+            | Life::Archived => {
+                return Ok(());
+            }
         }
-        let claude_ran = held.transcript.printed(run);
         let Life::Running(running) = mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) else {
             return Ok(());
         };
-        let Running { container, lines, activity, .. } = *running;
-        let (note, gone) = match why {
-            Ended::Exited { code: BOOTSTRAP_FAILED } if !claude_ran => {
-                (Note::Unbootstrapped { run, code: BOOTSTRAP_FAILED }, Gone::Unstarted { unread: lines })
-            }
-            Ended::Hibernated | Ended::Archived | Ended::Exited { .. } | Ended::OutOfMemory | Ended::Lost => {
-                (Note::Stopped { run, why }, Gone::Lost)
-            }
-        };
+        let Running { container, activity, .. } = *running;
         activity.cancel(turn);
-        self.note(turn, session, Entry::Hub(note));
+        self.note(turn, session, Entry::Hub(Note::Stopped { run, why }));
 
-        self.retire(turn, session, container, run, gone)
+        self.retire(turn, session, container, run, Gone::Lost)
     }
 
     /// Removes `container`, of `session`'s run `run`, which does not run: the session is stopping until Docker has
@@ -166,7 +210,10 @@ impl Sessions {
 
     /// Adopts `container`, of `session`'s run `run`, which a hub before this one started and which runs: the
     /// transcript notes the run started unless it does already, so it counts the run's output from its start, and the
-    /// container is attached to and followed from its logs, skipping what the transcript holds of them.
+    /// container's logs are followed from its start, skipping what the transcript holds of them. One whose start
+    /// script the transcript holds saying it was ready runs Claude Code, and is attached to at once; any other
+    /// bootstraps still, as far as the hub knows, until its logs say it is ready. Nothing waits on it: what waited on
+    /// it went with the hub before.
     pub(super) fn adopt(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -180,8 +227,18 @@ impl Sessions {
         if held.transcript.counted() != Counted::Run(run) {
             self.note_started(turn, session, run);
         }
+        let Some(held) = self.held.get_mut(&session) else {
+            return Ok(());
+        };
+        let launching = Step::Launching { container: container.clone() };
+        held.life = Life::Starting { run, step: launching, opening: Vec::new(), lines: Vec::new() };
+        self.bootstrap(turn, session, container, run)?;
+        let is_ready = self.held.get(&session).is_some_and(|held| held.transcript.ready(run));
+        if is_ready {
+            self.readied(turn, session, run)?;
+        }
 
-        self.resume(turn, session, container, run)
+        Ok(())
     }
 
     /// Notes in `session`'s transcript that its container of `run` started, carrying on Claude's conversation when it
@@ -210,9 +267,9 @@ impl Sessions {
         Ok(())
     }
 
-    /// The start of `session`'s run `run` failed, as `why` says, before its container ran: each who waits on it is
-    /// declined, and the session hibernates holding the lines that wait for its container, which Claude Code never
-    /// read, for its next, as a failed bootstrap holds them. A container already made is removed first.
+    /// The start of `session`'s run `run` failed, as `why` says, before Claude Code ran in its container: each who
+    /// waits on it is declined, and the session hibernates saying why, holding the lines that wait for its container,
+    /// none of which was written, for its next. A container already made is removed first.
     pub(super) fn unstarted(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -228,9 +285,11 @@ impl Sessions {
         else {
             return Ok(());
         };
-        let gone = Gone::Unstarted { unread: lines };
+        let gone = Gone::Unstarted { unread: lines, why: why.to_string() };
         match step {
-            Step::Launching { container } => self.retire(turn, session, container, run, gone)?,
+            Step::Launching { container } | Step::Bootstrapping { container, .. } => {
+                self.retire(turn, session, container, run, gone)?;
+            }
             Step::Recording | Step::Housing { .. } | Step::Crediting | Step::Creating => {
                 held.life = Life::Hibernating { gone };
             }
@@ -240,7 +299,7 @@ impl Sessions {
         for waiting in opening {
             self.reply(turn, waiting, &refused)?;
         }
-        self.note(turn, session, Entry::Hub(Note::Unstarted { run, why: format!("{why:?}") }));
+        self.note(turn, session, Entry::Hub(Note::Unstarted { run, why: why.to_string() }));
 
         Ok(())
     }
@@ -340,7 +399,8 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Docker started, or did not start, the container of `session`'s run `run`.
+    /// Docker started, or did not start, the container of `session`'s run `run`: one started bootstraps, and is
+    /// followed until its start script says it is ready.
     fn started(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32, acted: Acted) -> Result<(), Fault> {
         let Some(held) = self.held.get(&session) else {
             return Ok(());
@@ -356,20 +416,8 @@ impl Sessions {
         }
         let container = container.clone();
         self.note_started(turn, session, run);
-        let opening = match self.held.get_mut(&session).map(|held| &mut held.life) {
-            Some(Life::Starting { opening, .. }) => mem::take(opening),
-            _ => Vec::new(),
-        };
-        self.resume(turn, session, container, run)?;
-        let Some(row) = self.row(session) else {
-            return Ok(());
-        };
-        let open = Opened::Open(row);
-        for waiting in opening {
-            self.reply(turn, waiting, &open)?;
-        }
 
-        Ok(())
+        self.bootstrap(turn, session, container, run)
     }
 
     /// Docker stopped the container of `session`'s run `run`, or did not: it is removed either way.
@@ -454,7 +502,7 @@ impl Sessions {
             return;
         };
         let unread = match mem::replace(&mut held.life, Life::Hibernating { gone: Gone::Removed }) {
-            Life::Hibernating { gone: Gone::Unstarted { unread } } => unread,
+            Life::Hibernating { gone: Gone::Unstarted { unread, .. } } => unread,
             Life::Hibernating { gone: Gone::Removed | Gone::Lost }
             | Life::Starting { .. }
             | Life::Running(_)
@@ -494,7 +542,8 @@ impl Sessions {
 }
 
 impl Sessions {
-    /// Opens again the streams of `session`'s run `run` that ended while its container still runs.
+    /// Opens again the streams of `session`'s run `run` that ended while its container still runs: its logs alone
+    /// while it bootstraps.
     fn reopen(&mut self, turn: &mut Turn<'_, Self>, session: u32, run: u32) -> Result<(), Fault> {
         let Some(docker) = self.docker() else {
             return Ok(());
@@ -502,13 +551,27 @@ impl Sessions {
         let Some(held) = self.held.get_mut(&session) else {
             return Ok(());
         };
-        let Life::Running(running) = &mut held.life else {
-            return Ok(());
-        };
-        if running.run != run {
-            return Ok(());
-        }
         let feed = Feed { session, run };
+        let running = match &mut held.life {
+            Life::Running(running) if running.run == run => running,
+            Life::Starting { run: starting, step: Step::Bootstrapping { container, reading, logs }, .. }
+                if *starting == run =>
+            {
+                if *logs == Flow::Closed {
+                    let follow = Logs { container: container.clone(), since_nanos: 0, until: Until::Stopped };
+                    *reading = Reading::skipping(held.transcript.output_bytes());
+                    *logs = Flow::Open(self.logging.open(turn, docker.protocol(), follow, feed)?);
+                }
+                return Ok(());
+            }
+            Life::Starting { .. }
+            | Life::Running(_)
+            | Life::Stopping { .. }
+            | Life::Hibernating { .. }
+            | Life::Archived => {
+                return Ok(());
+            }
+        };
         if running.attach == Flow::Closed {
             let attach = Attach { container: running.container.clone() };
             running.attach = Flow::Open(self.attaching.open(turn, docker.protocol(), attach, feed)?);
@@ -535,6 +598,16 @@ impl Sessions {
 
         Ok(())
     }
+}
+
+/// A container whose start script said it is ready, as Claude Code is to run in it: its run, its logs as they are
+/// followed and read, and the lines that wait for it, each the number of its entry in the transcript.
+struct Bootstrapped {
+    container: ContainerId,
+    run: u32,
+    reading: Reading,
+    logs: Flow,
+    lines: Vec<u64>,
 }
 
 impl Activity {

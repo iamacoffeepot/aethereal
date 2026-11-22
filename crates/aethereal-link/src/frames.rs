@@ -13,8 +13,10 @@ use core::time::Duration;
 /// frames of trusted engines (ADR-0057), which a side of `3` misreads. `5` brought each session's row, its
 /// conversation's state and its container's apart, with the time it was sent, and [`Down::Declined`] (ADR-0057), which
 /// a side of `4` misreads. `6` brought [`Up::Hibernate`] and [`Up::Wake`], and a refusal past the most awake naming the
-/// awake sessions (ADR-0057), which a side of `5` misreads.
-pub const REVISION: u32 = 6;
+/// awake sessions (ADR-0057), which a side of `5` misreads. `7` brought a row's container whose last start failed,
+/// saying why and how many lines it holds, the refusals of a start the hub's repository cannot serve and of a start
+/// script that failed, and a transcript's notes without the bootstrap's exit (ADR-0057), which a side of `6` misreads.
+pub const REVISION: u32 = 7;
 
 /// The port a hub listens for engines on, and an engine dials, unless set otherwise.
 pub const PORT: u16 = 8892;

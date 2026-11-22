@@ -218,9 +218,11 @@ impl Tool for SessionsTools {
         vec![
             ToolSheet::of::<NewSession>(
                 NEW_SESSION,
-                "Opens a new Claude session in a container of its own on the hub's machine, and answers once it runs: \
-                 its number, which every other session tool names it by. The name is only shown. Refused when as many \
-                 sessions are awake as may, naming the awake ones: hibernate one first.",
+                "Opens a new Claude session in a container of its own on the hub's machine, and answers once Claude \
+                 Code runs in it, its start script having readied its work tree: its number, which every other session \
+                 tool names it by. The name is only shown. Refused when as many sessions are awake as may, naming the \
+                 awake ones: hibernate one first; and when its start fails, saying why, the session then hibernating \
+                 and listed so, holding any line said to it meanwhile, until a line or `wake_session` starts it again.",
                 Output::Value(SchemaNodes::of(&SessionRow::SHAPE)),
             ),
             ToolSheet::of::<Say>(
@@ -264,8 +266,9 @@ impl Tool for SessionsTools {
             ToolSheet::of::<Wake>(
                 WAKE_SESSION,
                 "Wakes a hibernating session in a new container on its home, which resumes its conversation, and \
-                 answers once it runs, as `new_session` does. Refused when as many sessions are awake as may, naming \
-                 the awake ones: hibernate one first.",
+                 answers once Claude Code runs in it, as `new_session` does. Refused when as many sessions are awake as \
+                 may, naming the awake ones: hibernate one first; and when its start fails, saying why, the session \
+                 then hibernating and listed so, holding the lines said to it, until it is started again.",
                 Output::Value(SchemaNodes::of(&SessionRow::SHAPE)),
             ),
             ToolSheet::of::<Archive>(

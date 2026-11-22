@@ -6,6 +6,7 @@ mod tests;
 
 use super::heard::{self, Heard};
 use super::row::Grew;
+use super::settings::{READY, START_SAYS};
 use aethereal_actor::Time;
 use aethereal_data::{Budget, Json, Plain, from_bytes, to_bytes};
 
@@ -65,17 +66,13 @@ pub enum Note {
     Started { run: u32, resumed: bool },
     /// The container of `run` was stopped or ended, as `why` says.
     Stopped { run: u32, why: Ended },
-    /// The container of `run` could not be made or started, as `why` says: the lines that waited for it are held for
-    /// the session's next.
+    /// The container of `run` could not be made or started, or its start script failed its bootstrap, as `why` says:
+    /// the lines that waited for it are held for the session's next.
     Unstarted { run: u32, why: String },
     /// A step of winding a session down to hibernate took past its deadline: its container is stopped anyway.
     Overdue { step: WindDown },
     /// A line to the session's stdin was not written, as `why` says.
     Unwritten { why: String },
-    /// The container of `run` ended with `code`, the start script's own, having printed nothing to its stdout, as its
-    /// bootstrap failed before Claude Code started: its stderr, just before, says why. It was removed, and the session
-    /// hibernates, its work untouched; its next wake runs the bootstrap again.
-    Unbootstrapped { run: u32, code: i64 },
 }
 
 /// How a session's container came to stop. Kept in the transcript's file, each case read by its place: a case is never
@@ -125,6 +122,7 @@ pub struct Transcript {
     /// The bytes of the latest container's stdout and stderr the transcript holds, which a re-attach skips.
     stdout_bytes: u64,
     stderr_bytes: u64,
+    readied: Readied,
     since: Since,
     turn: Turning,
     compaction: Compaction,
@@ -138,6 +136,15 @@ pub enum Counted {
     Unstarted,
     /// The container of the run `run`'s.
     Run(u32),
+}
+
+/// Whether the latest container's start script has said its bootstrap is done, as far as the transcript shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Readied {
+    /// It has not: it still bootstraps, or it failed, or no container started.
+    Bootstrapping,
+    /// Its stderr holds the line the start script writes once every step has succeeded: Claude Code runs in it.
+    Ready,
 }
 
 /// Whether the latest container's session has a turn running, as far as the transcript shows.
@@ -168,6 +175,7 @@ impl Transcript {
             counted: Counted::Unstarted,
             stdout_bytes: 0,
             stderr_bytes: 0,
+            readied: Readied::Bootstrapping,
             since: Since::Compacted,
             turn: Turning::Ended,
             compaction: Compaction::Idle,
@@ -227,11 +235,17 @@ impl Transcript {
                 }
             }
             Entry::Stdout { bytes, .. } => self.stdout_bytes += bytes + 1,
-            Entry::Stderr { bytes, .. } => self.stderr_bytes += bytes + 1,
+            Entry::Stderr { text, bytes } => {
+                self.stderr_bytes += bytes + 1;
+                if text == READY {
+                    self.readied = Readied::Ready;
+                }
+            }
             Entry::Hub(Note::Started { run, .. }) => {
                 self.counted = Counted::Run(*run);
                 self.stdout_bytes = 0;
                 self.stderr_bytes = 0;
+                self.readied = Readied::Bootstrapping;
                 self.turn = Turning::Ended;
                 self.compaction = Compaction::Idle;
             }
@@ -269,13 +283,28 @@ impl Transcript {
         self.counted
     }
 
-    /// Whether the container of `run` has written to its stdout, as far as the transcript holds: none has when it
-    /// counts another container's output, or notes none started.
+    /// Whether the start script of the container of `run` has said its bootstrap is done, as far as the transcript
+    /// holds: none has when it counts another container's output, or notes none started.
     #[must_use]
-    pub const fn printed(&self, run: u32) -> bool {
+    pub const fn ready(&self, run: u32) -> bool {
         let counts_run = matches!(self.counted, Counted::Run(counted) if counted == run);
+        let is_ready = matches!(self.readied, Readied::Ready);
 
-        counts_run && self.stdout_bytes > 0
+        counts_run && is_ready
+    }
+
+    /// What the start script of the latest container last said on stderr, without its mark: why its bootstrap failed,
+    /// when it did. None when it said nothing since that container's start.
+    #[must_use]
+    pub fn start_said(&self) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .take_while(|numbered| !matches!(numbered.entry, Entry::Hub(Note::Started { .. })))
+            .find_map(|numbered| match &numbered.entry {
+                Entry::Stderr { text, .. } => text.strip_prefix(START_SAYS),
+                _ => None,
+            })
     }
 
     /// The bytes of the latest container's stdout and of its stderr the transcript holds.

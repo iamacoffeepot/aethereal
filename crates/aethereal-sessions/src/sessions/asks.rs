@@ -2,7 +2,7 @@
 //! ask as their input and answer what it answers.
 
 use super::row::SessionRow;
-use super::transcript::Numbered;
+use super::transcript::{Ended, Numbered};
 use crate::DockerError;
 use aethereal_actor::Time;
 use aethereal_data::Plain;
@@ -199,6 +199,24 @@ pub enum Refusal {
     /// The session is being compacted, as its owner or Claude Code asked: a hibernate would cut the compaction short, so
     /// it is asked again once the compaction ends.
     Compacting,
+    /// The hub's repository, which each container's start script clones or fetches, is still being made: a container
+    /// would fail its bootstrap, so none is made yet.
+    RepositoryMaking,
+    /// The hub's repository could not be made, or its hook is not in place, so it is never served: a container would
+    /// fail its bootstrap, so none is made.
+    RepositoryUnmade,
+    /// The session's start script failed its bootstrap, before Claude Code started, as this says.
+    Unbootstrapped(Unbootstrapped),
+}
+
+/// Why a session's start script failed its bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.sessions.unbootstrapped")]
+pub enum Unbootstrapped {
+    /// It said why, as the last line it wrote to stderr says, without its mark.
+    Said(String),
+    /// It said nothing of why, and its container ended as this says.
+    Ended(Ended),
 }
 
 /// An awake session, as a refusal past the most awake names it: by its number, and its name as the list shows it.
@@ -240,6 +258,17 @@ impl fmt::Display for Refusal {
                 f.write_str("a turn of the session waits on the owner's answer to an ask: answer it first")
             }
             Self::Compacting => f.write_str("the session is being compacted: ask again once the compaction ends"),
+            Self::RepositoryMaking => {
+                f.write_str("the hub's repository is still being made, so no session can start yet: ask again soon")
+            }
+            Self::RepositoryUnmade => f.write_str(
+                "the hub's repository could not be made, or its hook is not in place, so no session can start: the \
+                 hub's log says why",
+            ),
+            Self::Unbootstrapped(Unbootstrapped::Said(why)) => write!(f, "the session's start script failed: {why}"),
+            Self::Unbootstrapped(Unbootstrapped::Ended(how)) => {
+                write!(f, "the session's start script ended before it was ready, saying nothing of why: {how:?}")
+            }
         }
     }
 }

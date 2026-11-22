@@ -13,7 +13,7 @@ use aethereal_git::{Git, GitSettings, Readiness};
 use aethereal_http::stack::{Credentials, Head, Layer, LayerForm, Response, StackSettings, Step};
 use aethereal_http::{Method, Route, Router, Routes, Unroutable};
 use aethereal_process::Processes;
-use aethereal_sessions::BOOTSTRAP_FAILED;
+use aethereal_sessions::READY;
 use aethereal_substrate::harness::{Harness, Unheard};
 use aethereal_substrate::{EngineSettings, Host};
 use aethereal_tcp::{Interface, Tcp};
@@ -450,6 +450,15 @@ impl Container<'_> {
 /// in its home.
 const CLAUDE: &str = "#!/bin/sh\nprintf 'claude\\n'\nprintf '%s\\n' \"$@\" > \"$HOME/claude-ran\"\n";
 
+/// The code the start script ends its container with when its bootstrap fails: sysexits' `EX_CONFIG`.
+const BOOTSTRAP_FAILED: i64 = 78;
+
+/// Whether the start script said it is ready as the last thing it wrote to stderr, before the fake Claude Code, which
+/// writes nothing there, took its place.
+fn said_ready(output: &Output) -> bool {
+    said(output).lines().last() == Some(READY)
+}
+
 /// The path a container's programs are found on: the image's directory, where git finds the credential helper, before
 /// this machine's own.
 fn searched() -> String {
@@ -499,6 +508,7 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
     let first = served(&mut harness, container.start(&scratch, "home"));
 
     assert!(first.status.success(), "{}", said(&first));
+    assert!(said_ready(&first), "the script says it is ready once the tree is: {}", said(&first));
     assert_eq!(first.stdout, b"claude\n", "the clone prints nothing to stdout, before Claude Code does");
     assert_eq!(fs::read(work.join("first")).ok().as_deref(), Some(&b"first"[..]), "main is checked out");
     assert_eq!(claude_ran(&scratch, "home").as_deref(), Some("--verbose\n"));
@@ -517,6 +527,7 @@ fn the_start_script_clones_an_empty_home_then_fetches_and_leaves_the_tree_as_it_
     let second = served(&mut harness, container.start(&scratch, "home"));
 
     assert!(second.status.success(), "{}", said(&second));
+    assert!(said_ready(&second), "{}", said(&second));
     assert_eq!(second.stdout, b"claude\n", "the fetch prints nothing to stdout, before Claude Code does");
     assert_eq!(named(&work, "refs/remotes/origin/sessions/4/later"), later, "the branch pushed meanwhile is fetched");
     assert_eq!(named(&work, "refs/remotes/origin/main"), later, "main as the owner moved it is fetched");
@@ -573,10 +584,11 @@ fn a_start_script_clones_past_a_clone_cut_short_and_puts_back_an_origin_that_was
 #[test]
 fn a_start_script_whose_clone_or_fetch_fails_or_runs_past_its_limit_exits_with_its_code_and_never_runs_claude()
 -> Result<(), Unheard> {
-    // Catches a bootstrap that fails and carries on, so Claude Code starts half set up; one that ends with git's own
-    // code, which the hub reads as a lost container; a step that hangs, as a hub that never answers holds it, with no
-    // limit; a failure that does not say why on stderr, which the transcript keeps for the owner; and a work tree
-    // that is not a repository taken as one, made one, or cloned over, so its files are changed or lost.
+    // Catches a bootstrap that fails and carries on, so Claude Code starts half set up; one that says it is ready all
+    // the same, so the hub answers its waker and writes its lines as if Claude Code ran; a step that hangs, as a hub
+    // that never answers holds it, with no limit; a failure that does not say why on stderr, the last line it says
+    // there, which the hub answers its waker with; and a tree whose repository does not read cloned over, moved aside,
+    // or taken as one, so its files are changed or lost.
     if !has_git() {
         return Ok(());
     }
@@ -598,33 +610,135 @@ fn a_start_script_whose_clone_or_fetch_fails_or_runs_past_its_limit_exits_with_i
     assert!(cloned.status.success(), "{}", said(&cloned));
     assert!(fs::remove_file(scratch.path("unfetch").join("claude-ran")).is_ok(), "the test forgets the clone's run");
 
-    let unrepository = scratch.path("unrepository").join("work");
-    assert!(fs::create_dir_all(&unrepository).is_ok(), "the test makes a work tree that is not a repository");
-    assert!(fs::write(unrepository.join("notes"), b"notes").is_ok(), "the tree holds a file");
+    let corrupt = scratch.path("corrupt").join("work");
+    assert!(fs::create_dir_all(corrupt.join(".git")).is_ok(), "the test makes a tree whose repository does not read");
+    assert!(fs::write(corrupt.join("notes"), b"notes").is_ok(), "the tree holds a file");
 
     let unclone = served(&mut harness, refused.start(&scratch, "unclone"));
     let unfetch = served(&mut harness, refused.start(&scratch, "unfetch"));
     let unlimited = served(&mut harness, hung.start(&scratch, "unlimited"));
-    let unrepositoried = served(&mut harness, fetched.start(&scratch, "unrepository"));
+    let uncorrupted = served(&mut harness, fetched.start(&scratch, "corrupt"));
 
     for (home, output, why) in [
         ("unclone", unclone, "the clone of"),
         ("unfetch", unfetch, "the fetch of origin failed"),
         ("unlimited", unlimited, "ran past its limit of 1 seconds"),
-        ("unrepository", unrepositoried, "is there but is not a git repository"),
+        ("corrupt", uncorrupted, "is there but does not read as a repository"),
     ] {
         let code = output.status.code().map(i64::from);
+        let last = said(&output).lines().last().map(String::from).unwrap_or_default();
         assert_eq!(code, Some(BOOTSTRAP_FAILED), "{home}: {}", said(&output));
-        assert!(said(&output).contains(why), "{home} says why: {}", said(&output));
-        assert!(output.stdout.is_empty(), "{home} prints nothing to stdout, which the hub reads as Claude Code's");
+        assert!(last.starts_with("aethereal-session-start: "), "{home} says why last: {}", said(&output));
+        assert!(last.contains(why), "{home} says why: {}", said(&output));
+        assert!(!said(&output).contains(READY), "{home} never says it is ready: {}", said(&output));
+        assert!(output.stdout.is_empty(), "{home} prints nothing to stdout, which is Claude Code's");
         assert_eq!(claude_ran(&scratch, home), None, "{home} never runs Claude Code");
     }
-    let kept: Vec<String> = fs::read_dir(&unrepository)
+    let mut kept: Vec<String> = fs::read_dir(&corrupt)
         .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().into_owned()))
         .map(Iterator::collect)
         .unwrap_or_default();
-    assert_eq!(kept, ["notes"], "nothing is added to a tree that is not a repository");
-    assert_eq!(fs::read(unrepository.join("notes")).ok().as_deref(), Some(&b"notes"[..]), "its file is untouched");
+    kept.sort();
+    assert_eq!(kept, [".git", "notes"], "nothing is added to a tree whose repository does not read");
+    assert_eq!(fs::read(corrupt.join("notes")).ok().as_deref(), Some(&b"notes"[..]), "its file is untouched");
+    assert!(!scratch.path("corrupt").join("work.unrecognised.0").exists(), "it is not moved aside");
 
     Ok(())
+}
+
+#[test]
+fn a_start_script_clears_the_locks_a_git_killed_mid_step_left_and_leaves_the_tree_as_it_was() -> Result<(), Unheard> {
+    // Catches a lock a git killed mid-step left, by the script's own limit, Docker's stop, or the kernel, that fails
+    // every start after it, so the session never runs again until someone opens its home by hand: a ref's lock, on
+    // which every fetch fails, and the config's, on which pointing `origin` fails; a lock removed without being named,
+    // so the owner cannot tell what the start found; and a clearing that touches the tree's own files.
+    if !has_git() {
+        return Ok(());
+    }
+    let scratch = Scratch::new("locks");
+    let (mut harness, port) = hub(scratch.settings(), on_loopback())?;
+    seeded(&scratch);
+    let url = format!("http://127.0.0.1:{port}/git");
+    let container = Container { url: &url, bearer: &SESSION.to_string(), secs: 60 };
+    let work = scratch.path("home").join("work");
+    let cloned = served(&mut harness, container.start(&scratch, "home"));
+    assert!(cloned.status.success(), "{}", said(&cloned));
+    assert!(fs::remove_file(scratch.path("home").join("claude-ran")).is_ok(), "the test forgets the first run");
+
+    let locks = [work.join(".git/refs/remotes/origin/main.lock"), work.join(".git/config.lock")];
+    for lock in &locks {
+        assert!(fs::write(lock, b"").is_ok(), "the test leaves {} as a killed git leaves it", lock.display());
+    }
+    assert!(fs::write(work.join("first"), b"edited").is_ok(), "the session edits its tree");
+
+    let started = served(&mut harness, container.start(&scratch, "home"));
+
+    assert!(started.status.success(), "{}", said(&started));
+    assert!(said_ready(&started), "{}", said(&started));
+    for lock in &locks {
+        assert!(!lock.exists(), "{} is removed", lock.display());
+        let named = format!("aethereal-session-start: removed {}, a lock no git holds", lock.display());
+        assert!(said(&started).lines().any(|line| line == named), "the lock is named: {}", said(&started));
+    }
+    assert_eq!(fs::read(work.join("first")).ok().as_deref(), Some(&b"edited"[..]), "the edit is left as it was");
+    assert_eq!(claude_ran(&scratch, "home").as_deref(), Some("--verbose\n"));
+
+    Ok(())
+}
+
+#[test]
+fn a_start_script_moves_a_tree_that_is_not_a_repository_aside_whole_and_clones_one_in_its_place() -> Result<(), Unheard>
+{
+    // Catches a tree that is not a git repository, as a home made before trees were cloned holds, failing every start
+    // after it; one deleted, emptied, or cloned over, so its files are lost; one moved over an earlier one moved aside,
+    // so the earlier is lost; and a move not named, so the owner cannot tell where it went.
+    if !has_git() {
+        return Ok(());
+    }
+    let scratch = Scratch::new("unrecognised");
+    let (mut harness, port) = hub(scratch.settings(), on_loopback())?;
+    seeded(&scratch);
+    let url = format!("http://127.0.0.1:{port}/git");
+    let container = Container { url: &url, bearer: &SESSION.to_string(), secs: 60 };
+    let home = scratch.path("home");
+    let work = home.join("work");
+
+    for (k, notes) in [(0, &b"first notes"[..]), (1, b"second notes")] {
+        if work.exists() {
+            assert!(fs::remove_dir_all(&work).is_ok(), "the test takes the clone away");
+        }
+        assert!(fs::create_dir_all(work.join("plans")).is_ok(), "the test makes a tree that is not a repository");
+        assert!(fs::write(work.join("plans").join("notes"), notes).is_ok(), "the tree holds a file");
+
+        let started = served(&mut harness, container.start(&scratch, "home"));
+
+        let aside = home.join(format!("work.unrecognised.{k}"));
+        let named = format!("moved {} aside to {}", work.display(), aside.display());
+        assert!(started.status.success(), "{}", said(&started));
+        assert!(said_ready(&started), "{}", said(&started));
+        assert!(said(&started).contains(&named), "the move is named: {}", said(&started));
+        assert_eq!(fs::read(aside.join("plans").join("notes")).ok().as_deref(), Some(notes), "its files are whole");
+        assert_eq!(fs::read(work.join("first")).ok().as_deref(), Some(&b"first"[..]), "the tree is cloned");
+    }
+    assert_eq!(
+        fs::read(home.join("work.unrecognised.0").join("plans").join("notes")).ok().as_deref(),
+        Some(&b"first notes"[..]),
+        "the first moved aside is kept"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_start_script_with_no_repository_to_ready_says_it_is_ready_and_runs_claude() {
+    // Catches a script given no repository, as a hub with no `git_url` starts it, that runs Claude Code without saying
+    // it is ready, so the hub waits on its container for good and never answers its waker.
+    let scratch = Scratch::new("unrepositoried");
+    let container = Container { url: "", bearer: "", secs: 60 };
+
+    let started = ran(container.start(&scratch, "home"));
+
+    assert!(started.status.success(), "{}", said(&started));
+    assert!(said_ready(&started), "{}", said(&started));
+    assert_eq!(started.stdout, b"claude\n");
 }

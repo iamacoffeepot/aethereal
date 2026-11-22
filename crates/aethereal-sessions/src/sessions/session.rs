@@ -27,9 +27,10 @@ pub(super) struct Session {
 /// Where a session's container is in its life.
 #[derive(Bound)]
 pub(super) enum Life {
-    /// Its container of `run` is being made and started: `step` says how far. `opening` waits to be answered once it
-    /// runs, and `lines`, each the number of its entry in the transcript, a line said or run, wait to be written to it
-    /// once its stdin is attached; should the start fail first, the session holds them for its next container.
+    /// Its container of `run` is being made and started, and its start script bootstraps: `step` says how far.
+    /// `opening` waits to be answered once Claude Code runs in it, and `lines`, each the number of its entry in the
+    /// transcript, a line said or run, wait to be written to it then; should the start fail first, the session holds
+    /// them for its next container.
     Starting { run: u32, step: Step, opening: Vec<Asker<Opened>>, lines: Vec<u64> },
     /// Its container runs.
     Running(Box<Running>),
@@ -50,11 +51,11 @@ pub(super) enum Gone {
     /// It ended without the hub ending it: its process exited, the kernel killed it for its memory, or it was gone
     /// when the hub came back to it.
     Lost,
-    /// Its start failed before Claude Code printed a line: it was never made or started, or its start script failed
-    /// its bootstrap. Claude Code read none of the lines it was written or was to be written: `unread`, each the number
-    /// of its entry in the transcript, in order, are written first to its next container, before any line that wakes
-    /// it, and noted nowhere again. Empty when there were none.
-    Unstarted { unread: Vec<u64> },
+    /// Its start failed before Claude Code ran, as `why` says: it was never made or started, the hub's repository was
+    /// not served, or its start script failed its bootstrap. None of the lines that waited for it were written:
+    /// `unread`, each the number of its entry in the transcript, in order, are written first to its next container,
+    /// before any line that wakes it, and noted nowhere again. Empty when there were none.
+    Unstarted { unread: Vec<u64>, why: String },
 }
 
 /// How far a container being started is.
@@ -71,6 +72,10 @@ pub(super) enum Step {
     Creating,
     /// Docker starts it.
     Launching { container: ContainerId },
+    /// It runs, and its start script readies its work tree: its logs are followed from its start into the transcript,
+    /// as `reading` reads them, until the script says it is ready, when Claude Code runs in its place. Its stdin is
+    /// attached only then.
+    Bootstrapping { container: ContainerId, reading: Reading, logs: Flow },
 }
 
 /// What a session is left as once its container is stopped and removed.
@@ -90,9 +95,6 @@ pub(super) struct Running {
     pub container: ContainerId,
     pub run: u32,
     pub stdin: Stdin,
-    /// The lines said or run that were written to its stdin, each the number of its entry in the transcript, in order:
-    /// should it end with the start script's code having printed nothing to its stdout, Claude Code read none of them.
-    pub lines: Vec<u64>,
     pub activity: Activity,
     /// The background tasks of its that run, by their ids.
     pub tasks: BTreeSet<String>,
@@ -183,8 +185,10 @@ impl Session {
                 ..
             } => (waits(lines), Connection::Attached),
             Life::Stopping { then: Then::Archive { .. }, .. } => (State::Archived, Connection::Attached),
-            Life::Hibernating { gone: Gone::Removed | Gone::Unstarted { .. } } => {
-                (State::Hibernating, Connection::None)
+            Life::Hibernating { gone: Gone::Removed } => (State::Hibernating, Connection::None),
+            Life::Hibernating { gone: Gone::Unstarted { unread, why } } => {
+                let holding = u32::try_from(unread.len()).unwrap_or(u32::MAX);
+                (State::Hibernating, Connection::Unstarted { why: why.clone(), holding })
             }
             Life::Archived => (State::Archived, Connection::None),
         }
@@ -198,18 +202,20 @@ impl Session {
 
     /// Its record, as it stands: from the start of a run until its container is removed, it says a container may
     /// exist, and names it; once it is removed, whether its last container was lost, so a hub that starts again shows
-    /// it lost until it wakes, or holds the lines Claude Code never read, as its last start failed, for its next.
+    /// it lost until it wakes, or why its last start failed and the lines that start never wrote, for its next.
     pub fn record(&self) -> Record {
         let kept = match &self.life {
             Life::Running(running) => Standing::Awake { container: running.container.clone(), run: running.run },
-            Life::Stopping { container, run, .. } => Standing::Awake { container: container.clone(), run: *run },
-            Life::Starting { step: Step::Launching { container }, run, .. } => {
-                Standing::Awake { container: container.clone(), run: *run }
-            }
+            Life::Stopping { container, run, .. }
+            | Life::Starting {
+                step: Step::Launching { container } | Step::Bootstrapping { container, .. }, run, ..
+            } => Standing::Awake { container: container.clone(), run: *run },
             Life::Starting { run, .. } => Standing::Starting { run: *run },
             Life::Hibernating { gone: Gone::Removed } => Standing::Hibernating,
             Life::Hibernating { gone: Gone::Lost } => Standing::Lost,
-            Life::Hibernating { gone: Gone::Unstarted { unread } } => Standing::Unstarted { unread: unread.clone() },
+            Life::Hibernating { gone: Gone::Unstarted { unread, why } } => {
+                Standing::Unstarted { unread: unread.clone(), why: why.clone() }
+            }
             Life::Archived => Standing::Archived,
         };
 

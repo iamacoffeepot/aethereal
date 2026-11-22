@@ -109,7 +109,9 @@ impl Sessions {
     }
 
     /// The write of `session`'s record, saying it starts its run `run`, is `answered`: once it has landed, the run's
-    /// volumes are made; a record that did not land says nothing of the run, so nothing of it is made.
+    /// volumes are made, unless the hub's repository is not served, when the start is refused before anything of it
+    /// is made, as its container's bootstrap would fail; a record that did not land says nothing of the run, so
+    /// nothing of it is made.
     fn recorded(
         &mut self,
         turn: &mut Turn<'_, Self>,
@@ -122,9 +124,10 @@ impl Sessions {
             return Ok(());
         }
 
-        match answered {
-            Answered::Yes(FileWritten::Written) => self.house(turn, session, run, 0),
-            Answered::Yes(_) | Answered::No(_) => self.unstarted(turn, session, run, &Refusal::Unrecorded),
+        match (answered, self.may_serve()) {
+            (Answered::Yes(FileWritten::Written), Ok(())) => self.house(turn, session, run, 0),
+            (Answered::Yes(FileWritten::Written), Err(why)) => self.unstarted(turn, session, run, &why),
+            (Answered::Yes(_) | Answered::No(_), _) => self.unstarted(turn, session, run, &Refusal::Unrecorded),
         }
     }
 }

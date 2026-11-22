@@ -320,17 +320,19 @@ fn an_ask_waits_until_answered_here_or_its_session_waits_on_none() {
 
 #[test]
 fn a_session_s_status_is_its_ask_first_then_its_container_then_its_state() {
-    // Catches an ask hidden behind a running turn or a compaction, a container starting or lost hidden behind the
-    // conversation's state, a compaction the hub lists shown as anything else, and a session the hub wound down, or is
-    // archiving, shown lost.
+    // Catches an ask hidden behind a running turn or a compaction, a container starting or lost, or a start that
+    // failed, hidden behind the conversation's state, so a failed start reads as an ordinary hibernation; a compaction
+    // the hub lists shown as anything else; and a session the hub wound down, or is archiving, shown lost.
     let status = Status::of;
-    let (none, attached, lost) = (Connection::None, Connection::Attached, Connection::Lost);
+    let (none, attached, lost) = (&Connection::None, &Connection::Attached, &Connection::Lost);
+    let unstarted = &Connection::Unstarted { why: String::from("the start script failed"), holding: 2 };
 
     assert_eq!(status(State::Compacting, attached, 1), Status::Waiting);
     assert_eq!(status(State::Hibernating, lost, 2), Status::Waiting);
     assert_eq!(status(State::Compacting, attached, 0), Status::Compacting);
-    assert_eq!(status(State::Idle, Connection::Starting, 0), Status::Starting);
+    assert_eq!(status(State::Idle, &Connection::Starting, 0), Status::Starting);
     assert_eq!(status(State::Hibernating, lost, 0), Status::Lost);
+    assert_eq!(status(State::Hibernating, unstarted, 0), Status::Unstarted);
     assert_eq!(status(State::Waiting, attached, 0), Status::Working);
     assert_eq!(status(State::Idle, attached, 0), Status::Idle);
     assert_eq!(status(State::Hibernating, none, 0), Status::Hibernating);

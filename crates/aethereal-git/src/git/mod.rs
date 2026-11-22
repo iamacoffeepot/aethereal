@@ -2,12 +2,15 @@
 //! through a run of `git http-backend` (ADR-0040).
 
 mod exchange;
+mod hearing;
 mod repository;
+
+pub use hearing::{HearReadiness, Hearing};
 
 use crate::{Call, GitSettings, programs};
 use aethereal_actor::{
-    Answered, Beginning, Ended, Enough, Fault, More, Number, Open, Part, Reply, Serving, Slept, Speaks, Streams, Turn,
-    actor, path,
+    Answered, Beginning, Ended, Enough, Fault, More, Number, Open, Part, Reply, Serving, Slept, Speaks, Streams,
+    Subscribers, Turn, actor, path,
 };
 use aethereal_data::{Bound, Plain};
 use aethereal_http::Status;
@@ -50,8 +53,9 @@ pub struct Unopened {
     exchange: u64,
 }
 
-/// Where the repository stands, as the root says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where the repository stands, as the root says it, and tells each actor that asked to [`HearReadiness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+#[kind(name = "aether.git.readiness")]
 pub enum Readiness {
     /// It is being made, or its hook checked: requests are answered `503` until it is served.
     Making,
@@ -64,7 +68,8 @@ pub enum Readiness {
 /// The git capability: serves one bare repository over git's smart HTTP (ADR-0057). It is a handler of a stack
 /// (ADR-0035), asked each of git's requests a route passes it, with who sent it attached as a [`Caller`].
 ///
-/// As it begins it makes the repository, `git init --bare`, and checks its hook is in place. Each request it then
+/// As it begins it makes the repository, `git init --bare`, and checks its hook is in place. An actor that asks it to
+/// [`HearReadiness`] is told where the repository stands, at once and as it changes. Each request it then
 /// serves is an exchange of its own, with a run of `git http-backend` of its own, numbered by its count: the request's
 /// body is written to the program's stdin as the stack reads it, and the program's stdout, once its CGI head is read,
 /// is the body of the response it answers, streamed from here. Exchanges run side by side, `most_running` at most, and
@@ -88,6 +93,8 @@ pub struct Git {
     /// `Processes` and from a process it started has no order between them, and each is claimed as its start is
     /// answered.
     unclaimed: BTreeMap<u64, Exited>,
+    /// The actors told where the repository stands as it changes.
+    hearers: Subscribers<Hearing>,
 }
 
 #[actor(depends(Processes))]
@@ -105,6 +112,7 @@ impl Git {
             bodies: Streams::new(WINDOW),
             responses: Serving::new(),
             unclaimed: BTreeMap::new(),
+            hearers: Subscribers::new(),
         })
     }
 
@@ -267,9 +275,17 @@ impl Git {
         self.stop(exchange, Status::BadGateway, turn)
     }
 
-    /// A stack that read responses' bodies from here has ended: their programs are stopped.
+    /// Holds the sender, and tells it where the repository stands, then each time that changes.
+    #[tell]
+    fn hear_readiness(&mut self, _: HearReadiness, turn: &mut Turn<'_, Self, Speaks<Hearing>>) -> Result<(), Fault> {
+        self.handle_hear_readiness(turn)
+    }
+
+    /// A stack that read responses' bodies from here has ended: their programs are stopped. An actor that heard where
+    /// the repository stands and has ended is let go.
     #[ended]
     fn ended(&mut self, ended: Ended, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        self.hearers.ended(&ended);
         let streams: Vec<_> = self.responses.ended(&ended).iter().map(aethereal_actor::Streaming::key).collect();
         for stream in streams {
             if let Some(exchange) = self.exchange_streaming(stream) {

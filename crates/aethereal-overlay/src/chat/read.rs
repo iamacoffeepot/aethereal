@@ -12,7 +12,7 @@
 //! ```
 
 use aethereal_data::{Budget, JsonTree, JsonValue, Plain, read_json};
-use aethereal_sessions::{Ended, Entry, Note, Speaker};
+use aethereal_sessions::{Ended, Entry, Note, READY, Speaker};
 use aethereal_ui::markdown::Document;
 
 /// The bytes of budget each byte of an event may cost as it is read.
@@ -86,7 +86,8 @@ pub fn read(entry: &Entry) -> Vec<Read> {
             vec![Read::main(Told::Note { text: text.clone(), alert: false })]
         }
         Entry::Stderr { text, .. } => {
-            vec![Read::main(Told::Note { text: text.clone(), alert: true })]
+            let alert = text != READY;
+            vec![Read::main(Told::Note { text: text.clone(), alert })]
         }
         Entry::Said { by, text } => vec![Read::main(Told::Said { by: *by, text: text.clone() })],
         Entry::Interrupted { by } => vec![Read::main(Told::Interrupted { by: *by })],
@@ -107,9 +108,6 @@ fn noted(note: &Note) -> Told {
         Note::Unstarted { run, why } => (format!("run {run} did not start: {why}"), true),
         Note::Overdue { step } => (format!("winding down overdue at {step:?}"), true),
         Note::Unwritten { why } => (format!("a line was not written: {why}"), true),
-        Note::Unbootstrapped { run, code } => {
-            (format!("run {run} did not start: its bootstrap exited with {code}"), true)
-        }
     };
 
     Told::Note { text, alert }
