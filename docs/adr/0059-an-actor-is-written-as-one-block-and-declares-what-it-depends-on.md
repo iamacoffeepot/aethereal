@@ -257,9 +257,22 @@ impl<L: ToolList, R: Holder> Toolbox<L, R> {
 
 - **`#[actor(spawns(…))]` lists the types an actor spawns.** A type parameter that is a list counts as the types it lists, as in `depends`.
 - **`turn.spawn::<C>` builds only when `C` is in the spawner's `spawns`**, found with `Lists`, beside the check that `C` may stand beneath the spawner's type (ADR-0022). A spawn is a method of the trait `Spawn<Me, I>`, which the turn and the `begin` implement: `C` is named at the call and its place `I` in the list inferred, which a method's own type parameters cannot do while one of them is named, so `Spawn` is brought into scope where an actor spawns. The block brings it into scope at the top of every method it holds, `use aethereal_actor::Spawn as _;`, so a spawn written in the block needs no import; a helper outside it imports `Spawn`.
+- **`spawns(…)` may list a protocol, for children no type of the program names.** A parent that spawns guests published after it was built lists the protocol it holds them by, and names each by its kind's name when it spawns it:
+
+  ```rust
+  #[actor(spawns(Pinned))]
+  impl CorkBoard { .. }
+
+  // in a turn of CorkBoard
+  let screen: ProtocolRef<Pinned> = turn.spawn_named::<Pinned>(&kind, key, &config)?;
+  ```
+
+  `turn.spawn_named::<P>` builds only when `P` is in the spawner's `spawns`, found with `Lists` as a type is. It spawns from the head the view shows for the kind named `kind` (ADR-0054: `Origin::Head`), and answers a `ProtocolRef<P>`, or why there is none: `Refused::NoHead` when the kind has no head; `Refused::Nonconforming` when the head's type does not take every kind of `P` with its answers, as a cast reads them (ADR-0016); and `Refused::Config` when `config` is not of the kind the child's type is configured by. The spawn proves the reference, and writes what the child is relied on for (ADR-0054: `What::Relied`).
+- **`Declared` gains each type's config kind and each handler's answers,** written by `#[actor]` for a native type and read from the section for a guest's: what a spawn by name checks a config against, and what a cast to a named protocol reads (ADR-0016).
 - **The program's build check starts at each root and follows `spawns`, recursively**, checking that every type's `depends` lead to roots the program has. It is a recursive trait check of the same kind as `Ordered`, its index inferred. So a child's reach is checked when the program is built, however deep it is spawned: a tool's `depends` is checked through its toolbox's `spawns` (ADR-0037).
 - **A parent repeats nothing from its children.** Its `depends` is what it reaches itself. The engine this repository succeeds declares spawned children the same way, `#[actor(spawns(..))]`.
 - **The walk does not follow a `Recursive` type from a list, nor one that stands at the `Top`.** Only its own type spawns a `Recursive` type (ADR-0022: `Admits`), so every actor of one stands beneath a root of its type, where the walk starts and checks its `depends`; its own type in its own list is already checked, and following it would lead the walk back into itself, a trait check that does not end. A `Top` type is spawned by nothing. The walk follows every other type, its children among them, so a `Recursive` type's other children are checked too. Where a type stands says which (`Placement::Walk`: `Follow` or `Skip`), so no step compares two types. A type that stands `Anywhere` and lists its own type, or two such types that list each other, would still lead the walk round: the compiler refuses that program, as a check past its recursion limit.
+- **The walk does not follow a protocol.** It names no type, so a child spawned by name is checked as a guest is, when it is spawned: a child whose `depends` names a root the program does not hold is refused with `Refused::Missing` (ADR-0009).
 - **It costs one recursive trait check per root at build,** and its compile time grows with the tree's depth.
 
 ### A guard is checked at the call
@@ -304,8 +317,8 @@ impl Inventory {
 
 ### What the guest host checks
 
-- **A guest's section carries its `depends` in place of each handler's sends, and its `spawns`, as the kind of each type it lists** (ADR-0015).
-- **The guest host checks each spawn a guest's turn makes against its spawner's `spawns`,** beside where the child's type stands (ADR-0022), as a native spawn is checked where it is built: a spawn of a type the list leaves out fails the turn, as a send past the declaration does.
+- **A guest's section carries its `depends` in place of each handler's sends, and its `spawns`, as the kind of each type it lists and the kinds and answers of each protocol** (ADR-0015). It carries each type's config kind and each handler's answers, which `Declared` reads.
+- **The guest host checks each spawn a guest's turn makes against its spawner's `spawns`,** beside where the child's type stands (ADR-0022), as a native spawn is checked where it is built: a spawn of a type the list leaves out, or by name under a protocol it leaves out, fails the turn, as a send past the declaration does.
 - **With no declared sends, the guest host checks three things of each send a guest makes:** that its receiver lists the kind, or the guest's turn fails; the receiver's guard, at delivery, as for any sender (ADR-0058); and that a send at a typed path reaches a root of the guest's own `depends`. A guest reaches a typed path through its host's lookup of it, which names no sender, so the host checks the path there, against the `depends` of the types the guest's code makes, and the call fails where none holds its root.
 - **These are the checks a native actor's build makes, repeated at run time,** as a guest may not have been compiled with the library. They are not a security boundary: access control between actors is out of scope for this ADR.
 
@@ -402,6 +415,7 @@ fn gathered(
 - A request always answers, now or later, as its return type says: a native handler cannot leave a request unreplied except by letting a `Held` go (ADR-0017). A refused request answers too, with the default or its `#[refused]`.
 - What an actor needs of the program is one list of types, whose roots are checked when the program is built, for every type the walk through `spawns` reaches: a program that lacks a root an actor reaches does not build, which saves a run that would only find it missing. The order check covers `found` in `begin`.
 - A parent names the types it spawns and nothing of what they reach, so a generic parent, `Toolbox<L, R>` or `TuningTool<L>`, declares its children by its list.
+- A parent can spawn children published after it was built, by their kind's name under a protocol it lists, and holds each as a reference proven for that protocol.
 - The engine reads no declared sends: the guest host repeats a native build's checks of a guest's sends, the setup and the spawn check read `depends` (ADR-0022), and the root list checks only that each of its entries is a root (ADR-0055).
 - Placement learns nothing from a declaration about who talks to whom (ADR-0013); that is left to traffic (Later).
 - Every actor is rewritten into its block, and every handler that replied returns its answer. The change is mechanical, and a site missed does not build.
@@ -411,6 +425,9 @@ fn gathered(
 - **Keep the per-handler sends.** They cannot be derived from the body: a macro sees only tokens, about a thousand calls outside tests hand the turn to a helper, and stable Rust cannot collect facts from function bodies. So they stay written by hand, restating each call.
 - **Rename the markers** (`Replies`, `Tells`, `Asks`). The markers go.
 - **One `sends_to(…)` list for each actor.** It catches no bug that a check at the call and `depends` do not.
+- **A spawn by name under no protocol, answering an `ErasedActorRef`.** The parent would cast what it spawned, a second step that can fail after the child already stands, and its `spawns` would say nothing of what it makes.
+- **A spawn by a module's hash.** A hash names one build, so the parent would have to be told each new one; a name follows its kind's head.
+- **One actor that spawns any published kind for whoever asks.** A child would stand beneath an actor that does not use it, and nothing would say which actor owns it. Each parent declares what it spawns.
 - **Declare nothing at all.** It loses the check, as the program is built, that it holds the roots an actor needs, which saves a run.
 - **Derive the sends with a nightly `rustc_private` driver.** It ties every build to nightly and to the compiler's internals.
 - **`depends` naming only root types.** A type in it says where in the tree the actor reaches, and its root is derived from its chain, so a root type is one case of it.
