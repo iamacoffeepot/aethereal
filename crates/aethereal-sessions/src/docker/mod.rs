@@ -2,7 +2,8 @@
 //! containers the hub's sessions run in.
 //!
 //! An actor asks it at its typed path, `path::<Docker>(())`, to [`Create`] a container from a [`ContainerSpec`], to
-//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, to [`List`] the
+//! [`Start`], [`Stop`], [`Kill`], or [`Remove`] one, to [`Inspect`] its state, to [`ReadVariable`] its environment
+//! sets, to [`List`] the
 //! containers that carry a label, or to [`CreateVolume`] a named volume, and is answered once Docker has.
 //! It opens an [`Attaching`] stream to a container's stdin and output, a [`Logging`] stream of what a container wrote
 //! from a time on, or a [`Watching`] stream of the events of the containers that carry a label. Each request goes on a connection of its own, which `Http` dials to the socket and
@@ -39,7 +40,8 @@ mod whole;
 
 pub use asks::{
     Acted, ContainerId, ContainerState, Create, CreateVolume, Created, DockerError, Inspect, Inspected, Kill, Label,
-    List, Listed, Listing, Phase, Remove, Start, Stop, Unwritable, VolumeCreated, VolumeName,
+    List, Listed, Listing, Phase, ReadVariable, Remove, Start, Stop, Unwritable, VariableRead, VolumeCreated,
+    VolumeName,
 };
 pub use request::API_VERSION;
 pub use settings::{DockerConfig, DockerSettings, SocketUnaddressable};
@@ -161,6 +163,15 @@ impl Docker {
     #[request]
     fn inspect(&mut self, inspect: Inspect, turn: &mut Turn<'_, Self>) -> Result<Reply<Inspected>, Fault> {
         self.handle_inspect(inspect, turn)
+    }
+
+    #[request]
+    fn read_variable(
+        &mut self,
+        read_variable: ReadVariable,
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<Reply<VariableRead>, Fault> {
+        self.handle_read_variable(read_variable, turn)
     }
 
     #[request]

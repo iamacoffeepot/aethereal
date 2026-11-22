@@ -3,7 +3,7 @@
 //! the build host's own daemon and Claude Code.
 #![cfg(unix)]
 
-use aethereal_actor::{ActorRef, Answered, Fault, Turn, path};
+use aethereal_actor::{ActorRef, Answered, Entry as Logged, Fault, Level, Turn, path};
 use aethereal_actor::{Service, Spares, actor};
 use aethereal_chassis_headless::waiting::{self, BUDGET};
 use aethereal_chassis_headless::{Directories, FileRoots, Headless};
@@ -18,8 +18,8 @@ use aethereal_link::{
 };
 use aethereal_mcp::Mcp;
 use aethereal_sessions::{
-    Archive, Archived, AwakeSession, BOOTSTRAP_FAILED, Chat, Chatted, Connection as Housed, Conversation, Docker,
-    DockerSettings, Ended, Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions,
+    Archive, Archived, AwakeSession, BOOTSTRAP_FAILED, Bearer, Chat, Chatted, Connection as Housed, Conversation,
+    Docker, DockerSettings, Ended, Entry, Hibernate, Hibernated, Index, Interrupt, Interrupted, Joined, ListSessions,
     NewSession, Note, Numbered, Opened, ReadTranscript, Record, Refusal, Repository, Said, Say, SessionRow, Sessions,
     SessionsListed, SessionsSettings, SessionsTools, ShowAsk, ShowDeclined, ShowEvents, ShowSessions, Speaker,
     Standing, State, Transcribed, Transcript, Unbootstrapped, Unfound, Wake,
@@ -50,7 +50,7 @@ mod git_client;
 mod stacks;
 
 use aethereal_process::Processes;
-use git_client::{git, has_git};
+use git_client::{git, has_git, image, searched};
 use stacks::{bound, stack};
 
 // The sessions' port's stack, as the hub's: `Sessions` lets in each request by the bearer it bears, and it goes to `Mcp`
@@ -537,14 +537,12 @@ impl Daemon {
                 respond(peer, "200 OK", &format!("[{}]", listed.join(",")));
             }
             ("GET", ["containers", id, "json"]) => {
-                let status = self.containers.get(*id).map(|container| (container.state(), container.code));
-                match status {
-                    Some((status, code)) => {
-                        respond(
-                            peer,
-                            "200 OK",
-                            &format!(r#"{{"State":{{"Status":"{status}","ExitCode":{code},"OOMKilled":false}}}}"#),
-                        );
+                let inspected =
+                    self.containers.get(*id).map(|container| (container.state(), container.code, container.env()));
+                match inspected {
+                    Some((status, code, env)) => {
+                        let state = format!(r#"{{"Status":"{status}","ExitCode":{code},"OOMKilled":false}}"#);
+                        respond(peer, "200 OK", &format!(r#"{{"State":{state},"Config":{{"Env":{env}}}}}"#));
                     }
                     None => respond(peer, "404 Not Found", r#"{"message":"No such container"}"#),
                 }
@@ -693,6 +691,25 @@ impl Daemon {
     fn body(&self, id: &str) -> String {
         self.bodies.get(id).cloned().unwrap_or_default()
     }
+
+    /// Rewrites the environment of the container `id`, as Docker inspects it, to say it is `session`'s.
+    fn claims(&mut self, id: &str, session: u32) {
+        let Some(container) = self.containers.get_mut(id) else {
+            panic!("the container {id} is there to rewrite");
+        };
+        let said = container.variable("AETHEREAL_SESSION");
+        container.body = container.body.replace(&said, &format!(r#""AETHEREAL_SESSION={session}""#));
+    }
+
+    /// Takes the bearer out of the environment of the container `id`, as Docker inspects it, as though it were made
+    /// with none.
+    fn unbears(&mut self, id: &str) {
+        let Some(container) = self.containers.get_mut(id) else {
+            panic!("the container {id} is there to rewrite");
+        };
+        let said = container.variable("AETHEREAL_HUB_BEARER");
+        container.body = container.body.replace(&format!(",{said}"), "");
+    }
 }
 
 impl Drop for Daemon {
@@ -723,6 +740,24 @@ impl Container {
         let labels = self.body.split(r#""Labels":"#).nth(1).and_then(|rest| rest.split_inclusive('}').next());
 
         labels.unwrap_or("{}")
+    }
+
+    /// Its environment, as its create's body wrote it, a JSON array of `NAME=value`: `null`, as Docker writes it, when
+    /// it was made with none.
+    fn env(&self) -> &str {
+        let env = self.body.split(r#""Env":"#).nth(1).and_then(|rest| rest.split_inclusive(']').next());
+
+        env.unwrap_or("null")
+    }
+
+    /// The variable `name` its environment sets, as its create's body wrote it: `"NAME=value"`, quoted.
+    fn variable(&self, name: &str) -> String {
+        let named = format!(r#""{name}="#);
+        let Some(value) = self.body.split(&named).nth(1).and_then(|rest| rest.split('"').next()) else {
+            panic!("the container's environment sets {name}");
+        };
+
+        format!(r#"{named}{value}""#)
     }
 }
 
@@ -1963,6 +1998,227 @@ fn a_session_s_calls_bear_only_its_latest_container_s_bearer() -> Result<(), Unh
     assert_ne!(older, newer, "each container is given a bearer of its own");
     assert!(challenged(&refused), "{refused:?}");
     assert_eq!(held.status, 200, "{held:?}");
+
+    Ok(())
+}
+
+/// Kills `harness` once the record of each of `sessions` says it is awake in a container, as a hub is killed: what it
+/// held in memory, its bearers among it, goes with it, and the containers run on.
+fn kill_awake(mut harness: Harness<Headless>, daemon: &mut Daemon, sessions: &[u32]) {
+    let is_awake = |daemon: &Daemon, session: u32| matches!(kept(daemon, session), Some(Standing::Awake { .. }));
+    until(&mut harness, daemon, |_, daemon| sessions.iter().all(|&session| is_awake(daemon, session)));
+    assert!(sessions.iter().all(|&session| is_awake(daemon, session)), "each record says its session is awake");
+    drop(harness);
+    daemon.connections.clear();
+}
+
+/// git's client as a session's container runs it, in `dir`: the image's system config, whose credential helper answers
+/// the hub's challenge for the repository at `url` with `bearer`, read from the environment as git asks, never an
+/// argument.
+fn container_git(dir: &FsPath, url: &str, bearer: &str, args: &[&str]) -> Command {
+    let mut command = git(dir, args);
+    command
+        .env_remove("GIT_CONFIG_NOSYSTEM")
+        .env("GIT_CONFIG_SYSTEM", image().join("gitconfig"))
+        .env("PATH", searched())
+        .env("AETHEREAL_GIT_URL", url)
+        .env("AETHEREAL_HUB_BEARER", bearer);
+
+    command
+}
+
+/// What git's client, run as a container bearing `bearer` runs it, came to as it lists the hub's repository's refs,
+/// once the repository is made: git asks for them as a fetch first does.
+fn listed_as(harness: &mut Harness<Headless>, daemon: &mut Daemon, bearer: &str) -> process::Output {
+    let repository = harness.root::<Git>();
+    waiting::until(BUDGET, || {
+        harness.step();
+        daemon.pump();
+
+        harness.state(repository).is_ok_and(|git| git.readiness() != Readiness::Making)
+    });
+    let port = bound(harness, |stack: &ContainerStack| stack.serving.port());
+    let url = format!("http://127.0.0.1:{port}/git");
+    let listing = container_git(&daemon.dir, &url, bearer, &["ls-remote", &url]);
+
+    git_served(harness, daemon, listing)
+}
+
+/// The lines the sessions logged at `level`.
+fn sessions_logged(harness: &mut Harness<Headless>, level: Level) -> Vec<String> {
+    let sessions = harness.root::<Sessions>().seated();
+    let logged = harness.host().engine().log(sessions);
+    let lines = logged.filter_map(|entry| match entry {
+        Logged::Line { level: at, text } if *at == level => Some(text.clone()),
+        _ => None,
+    });
+
+    lines.collect()
+}
+
+/// Whether anything the hub's roots a bearer passes through logged holds `text`: the sessions, the Docker client,
+/// `Tcp`, `Http`, `Mcp`, `Git`, and the sessions' port's stack, each line and each fault.
+fn logs_hold(harness: &mut Harness<Headless>, text: &str) -> bool {
+    let seats = [
+        harness.root::<Sessions>().seated(),
+        harness.root::<Docker>().seated(),
+        harness.root::<Tcp>().seated(),
+        harness.root::<Http>().seated(),
+        harness.root::<Mcp>().seated(),
+        harness.root::<Git>().seated(),
+        harness.root::<ContainerStack>().seated(),
+    ];
+    let engine = harness.host().engine();
+
+    seats.into_iter().flat_map(|seat| engine.log(seat)).any(|entry| format!("{entry:?}").contains(text))
+}
+
+/// Whether any file `Files` keeps in `Save`, the sessions' index, records, and transcripts, holds `bytes`.
+fn saves_hold(daemon: &Daemon, bytes: &[u8]) -> bool {
+    let mut directories = vec![daemon.dir.join("save")];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    let read = files.into_iter().map(|file| fs::read(file).unwrap_or_default());
+
+    read.into_iter().any(|read| read.windows(bytes.len()).any(|window| window == bytes))
+}
+
+/// Whether `bearer`, as its hex digits or its bytes, is anywhere the hub writes or logs.
+fn written_anywhere(harness: &mut Harness<Headless>, daemon: &Daemon, bearer: &str) -> bool {
+    let Some(Bearer(bytes)) = Bearer::of_token(bearer) else {
+        panic!("a container's bearer is 32 hex digits");
+    };
+    let logged = logs_hold(harness, bearer);
+    let saved = saves_hold(daemon, bearer.as_bytes()) || saves_hold(daemon, &bytes);
+
+    logged || saved
+}
+
+#[test]
+fn a_hub_that_starts_again_lets_in_the_bearer_of_each_container_it_adopts_as_the_session_its_record_names()
+-> Result<(), Unheard> {
+    // Catches a restarted hub that holds no bearer of a Claude Code container it adopts, so the session's every call
+    // and its git's every fetch is refused until it hibernates; the bearer held for the session the container's
+    // environment names rather than the one its record names; a bearer held of a container removed while no hub ran,
+    // of a run's bootstrap container long gone, or one never minted; and the bearer written to a log, a record, or a
+    // transcript as it is read back (ADR-0057).
+    let mut daemon = Daemon::new("adopted-bearer");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let session = open(&mut harness, &mut daemon, "adopted")?;
+    let other = open(&mut harness, &mut daemon, "removed")?;
+    let (adopted, removed) = (daemon.claude(0), daemon.claude(1));
+    let bearer = bearer_of(&daemon, &adopted);
+    let unlisted = authorization_of(&daemon, &removed);
+    let bootstrapped = authorization_of(&daemon, &daemon.bootstrap(0));
+    let stranger = format!("Bearer {}", "5a".repeat(16));
+    kill_awake(harness, &mut daemon, &[session, other]);
+
+    daemon.containers.remove(&removed);
+    daemon.claims(&adopted, other);
+    let mut harness = hub(&daemon, settings)?;
+    // The container is attached only once its bearer is held, in the same step.
+    let attached = until_housed(&mut harness, &mut daemon, session, &Housed::Attached)?;
+
+    assert_eq!(attached, Housed::Attached);
+    let held = routed(&mut harness, &mut daemon, list_tools(Some(&format!("Bearer {bearer}"))));
+    assert_eq!(held.status, 200, "{held:?}");
+    for refused in [unlisted, bootstrapped, stranger] {
+        let heard = routed(&mut harness, &mut daemon, list_tools(Some(&refused)));
+        assert!(challenged(&heard), "{heard:?}");
+    }
+
+    let (mcp, worker) = (harness.root::<Mcp>(), harness.protocol::<Tooling>());
+    let offering = harness.ask(mcp, &Offer { tools: vec![sheet()], worker })?;
+    assert_eq!(harness.answer(offering)?, Answered::Yes(Offered::Yes));
+    let call = rpc("tools/call", Some("nothing"), r#""name":"nothing","#, Some(&format!("Bearer {bearer}")));
+    let calling = sent(&mut harness, call);
+    let call = harness.asked::<Call>()?;
+    let named = call.request.caller;
+    harness.reply(call, &Called::Refused(String::from("heard")))?;
+    let called = heard_by(&mut harness, &mut daemon, calling);
+
+    assert_eq!(named, By::Session { session }, "the session its record names, not the one its environment says");
+    assert!(called.body.contains("heard"), "{called:?}");
+
+    if has_git() {
+        let listed = listed_as(&mut harness, &mut daemon, &bearer);
+        assert!(listed.status.success(), "its git is let in: {}", String::from_utf8_lossy(&listed.stderr));
+    }
+    assert!(!written_anywhere(&mut harness, &daemon, &bearer), "the bearer is logged, recorded, or transcribed");
+
+    Ok(())
+}
+
+#[test]
+fn a_hub_that_starts_again_mid_bootstrap_lets_in_the_bootstrap_container_s_bearer_until_it_is_removed()
+-> Result<(), Unheard> {
+    // Catches a restarted hub that holds no bearer of the bootstrap container it adopts, so its git's fetch is refused
+    // and the session's start fails; that bearer still let in once the container is removed and Claude Code's made;
+    // and Claude Code's container then made with a bearer the hub does not hold (ADR-0057).
+    let (mut harness, mut daemon, bootstrap) = killed_bootstrapping("adopted-bootstrap-bearer", Away::Runs)?;
+    let bearer = bearer_of(&daemon, &bootstrap);
+    // The container is followed only once its bearer is held, in the same step.
+    let starting = until_housed(&mut harness, &mut daemon, 1, &Housed::Starting)?;
+
+    assert_eq!(starting, Housed::Starting);
+    let held = routed(&mut harness, &mut daemon, list_tools(Some(&format!("Bearer {bearer}"))));
+    assert_eq!(held.status, 200, "{held:?}");
+    if has_git() {
+        let listed = listed_as(&mut harness, &mut daemon, &bearer);
+        assert!(listed.status.success(), "its git is let in: {}", String::from_utf8_lossy(&listed.stderr));
+    }
+
+    daemon.exit(&bootstrap, 0);
+    let attached = until_housed(&mut harness, &mut daemon, 1, &Housed::Attached)?;
+    let authorization = authorization_of(&daemon, &daemon.claude(0));
+    let dismissed = routed(&mut harness, &mut daemon, list_tools(Some(&format!("Bearer {bearer}"))));
+    let claude = routed(&mut harness, &mut daemon, list_tools(Some(&authorization)));
+
+    assert_eq!(attached, Housed::Attached);
+    assert!(challenged(&dismissed), "the bootstrap container's bearer is let go of once it is removed: {dismissed:?}");
+    assert_eq!(claude.status, 200, "{claude:?}");
+    assert!(!written_anywhere(&mut harness, &daemon, &bearer), "the bearer is logged, recorded, or transcribed");
+
+    Ok(())
+}
+
+#[test]
+fn a_container_adopted_with_no_bearer_in_its_environment_runs_on_and_its_calls_are_refused() -> Result<(), Unheard> {
+    // Catches a restarted hub that leaves a container whose environment holds no bearer unadopted, or holds up every
+    // ask waiting for its bearer; one that lets in a bearer that container was never given in its environment; and
+    // the missing bearer not logged, or logged with what Docker answered of the environment, the credential in it.
+    let mut daemon = Daemon::new("unborne");
+    let settings = daemon.sessions(4, 3600);
+    let mut harness = hub(&daemon, settings.clone())?;
+    let session = open(&mut harness, &mut daemon, "unborne")?;
+    let id = daemon.claude(0);
+    let bearer = bearer_of(&daemon, &id);
+    kill_awake(harness, &mut daemon, &[session]);
+
+    daemon.unbears(&id);
+    let mut harness = hub(&daemon, settings)?;
+    let attached = until_housed(&mut harness, &mut daemon, session, &Housed::Attached)?;
+    let refused = routed(&mut harness, &mut daemon, list_tools(Some(&format!("Bearer {bearer}"))));
+    say(&mut harness, &mut daemon, session, "still there?")?;
+    let written = stdin(&mut harness, &mut daemon, &id, 1);
+
+    assert_eq!(attached, Housed::Attached, "it is adopted");
+    assert!(challenged(&refused), "{refused:?}");
+    assert_eq!(written, [user_message("still there?")], "it runs on");
+    let unborne = sessions_logged(&mut harness, Level::Warn);
+    let said = unborne.iter().filter(|line| line.contains("adopted with no bearer")).count();
+    assert_eq!(said, 1, "{unborne:?}");
+    assert!(!logs_hold(&mut harness, "not-a-token"), "nothing Docker answered of the environment is logged");
 
     Ok(())
 }

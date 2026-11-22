@@ -1,5 +1,8 @@
-use super::{acted, created, inspected, listed};
-use crate::{Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase};
+use super::{acted, created, inspected, listed, variable_read};
+use crate::{
+    Acted, ContainerId, ContainerState, Created, DockerError, Inspected, Label, Listed, Listing, Phase, Variable,
+    VariableRead,
+};
 
 /// An id as Docker writes one.
 const ID: &str = "4f9a0c1e2b3d4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90";
@@ -50,6 +53,26 @@ fn an_inspect_is_read_as_the_state_its_container_is_in() {
     assert_eq!(inspected(200, killed), Inspected::State(ContainerState::Exited { code: 137, oom_killed: true }));
     let partial = br#"{"State":{"Status":"exited","Running":false}}"#;
     assert_eq!(inspected(200, partial), Inspected::Failed(DockerError::Malformed));
+}
+
+#[test]
+fn a_variable_s_read_answers_only_the_variable_named_whole_and_writes_no_byte_of_it() {
+    // Catches a variable whose name only begins with the one asked taken for it, a value holding `=` cut at it, an
+    // environment Docker writes as `null` read as malformed, one that is not a list of text taken as unset, and the
+    // read's `Debug` writing the value, which may be a secret.
+    let env = br#"{"Config":{"Env":["AETHEREAL_HUB_BEARER_OLD=stale","PATH=/bin","AETHEREAL_HUB_BEARER=ab=cd"]}}"#;
+    let set = variable_read(200, env, "AETHEREAL_HUB_BEARER");
+
+    let value = String::from("ab=cd");
+    assert_eq!(set, VariableRead::Set(Variable { name: String::from("AETHEREAL_HUB_BEARER"), value }));
+    assert!(!format!("{set:?}").contains("ab=cd"), "{set:?}");
+    assert_eq!(variable_read(200, env, "HOME"), VariableRead::Unset);
+    assert_eq!(variable_read(200, br#"{"Config":{"Env":null}}"#, "HOME"), VariableRead::Unset);
+    assert_eq!(variable_read(200, br#"{"Config":{"Env":[7]}}"#, "HOME"), VariableRead::Failed(DockerError::Malformed));
+    assert_eq!(
+        variable_read(404, br#"{"message":"No such container"}"#, "HOME"),
+        VariableRead::Failed(DockerError::NotFound { message: String::from("No such container") })
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@ use std::{env, fs, process, thread};
 mod git_client;
 mod stacks;
 
-use git_client::{git, has_git};
+use git_client::{git, has_git, image, searched};
 use stacks::{bound, stack};
 
 /// A stand-in for the sessions' actor layer: a pure layer that reads the password of `Basic` credentials, `<n>`, as
@@ -405,12 +405,6 @@ fn a_repository_that_cannot_be_made_or_whose_hook_is_not_in_place_is_never_serve
     Ok(())
 }
 
-/// The session image's directory, beside the sessions' crate: the start script, the credential helper, and the system
-/// config that names it.
-fn image() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../aethereal-sessions/image")
-}
-
 /// A session's bootstrap container, as its start script sees it: the repository at `url`, reached as `bearer`, each
 /// step given `secs`.
 struct Container<'a> {
@@ -457,14 +451,6 @@ fn readied(output: &Output) -> bool {
     let printed = !output.stdout.is_empty();
 
     exited_well && !printed
-}
-
-/// The path a container's programs are found on: the image's directory, where git finds the credential helper, before
-/// this machine's own.
-fn searched() -> String {
-    let machine = env::var("PATH").unwrap_or_default();
-
-    format!("{}:{machine}", image().display())
 }
 
 /// What the fake Claude Code was given, once the start script ran it in the home `home`: nothing when it never ran.

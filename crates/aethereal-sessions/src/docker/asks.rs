@@ -1,6 +1,6 @@
 //! What the Docker client is asked, and what it answers with, a request each (ADR-0057).
 
-use super::ContainerSpec;
+use super::{ContainerSpec, Variable};
 use aethereal_actor::Unanswered;
 use aethereal_data::Plain;
 use aethereal_http::{Failure, Unreached};
@@ -89,6 +89,27 @@ pub struct Inspect {
 #[kind(name = "aether.docker.inspected")]
 pub enum Inspected {
     State(ContainerState),
+    Failed(DockerError),
+}
+
+/// Asked of the client: what the container's environment sets the variable `name` to, as its inspect writes it. Its
+/// value may be a secret, as a session's bearer is, so it is answered as a [`Variable`], whose `Debug` writes no byte of
+/// it, and the rest of the environment is never answered.
+#[derive(Debug, Plain)]
+#[kind(name = "aether.docker.read_variable")]
+pub struct ReadVariable {
+    pub container: ContainerId,
+    pub name: String,
+}
+
+/// What a variable's read came to.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+#[kind(name = "aether.docker.variable_read")]
+pub enum VariableRead {
+    /// The container's environment sets it.
+    Set(Variable),
+    /// The container's environment does not set it.
+    Unset,
     Failed(DockerError),
 }
 

@@ -167,7 +167,8 @@ impl Sessions {
         match &mut self.phase {
             Phase::Indexing { waiting: held }
             | Phase::Reading { waiting: held, .. }
-            | Phase::Listing { waiting: held, .. } => {
+            | Phase::Listing { waiting: held, .. }
+            | Phase::Admitting { waiting: held, .. } => {
                 held.push(waiting);
                 return Ok(());
             }

@@ -49,8 +49,8 @@ pub use transcript::{
 pub use volumes::Homing;
 
 use crate::{
-    Acted, Attaching, ContainerId, Created, Detached, Docker, EventsDone, Inspected, Logging, LogsDone, VolumeCreated,
-    Watching,
+    Acted, Attaching, ContainerId, Created, Detached, Docker, EventsDone, Inspected, Logging, LogsDone, VariableRead,
+    VolumeCreated, Watching,
 };
 use aethereal_actor::{ActorRef, Answered, Beginning, Fault, Later, Number, Part, Slept, Speaks, Streams, Turn, actor};
 use aethereal_data::{Bound, Plain};
@@ -65,7 +65,7 @@ use core::time::Duration;
 use loading::Reading;
 use repository::Served;
 use saves::{Indexed, Lane};
-use session::Session;
+use session::{Session, Stage};
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
@@ -169,7 +169,9 @@ pub enum Unfound {
 /// It is the actor layer of the stack that serves the sessions' port (ADR-0035): each container is given a bearer it
 /// mints and holds, and a request on that port bearing one it holds passes on as that session's
 /// ([`Inbound`](aethereal_http::stack::Inbound)); any other is answered `401`. It holds only each session's latest
-/// container's bearer, and lets go of it as the container is removed.
+/// container's bearer, and lets go of it as the container is removed. A hub that starts again holds no bearer: it reads
+/// back the bearer of each container it adopts from that container's environment, as Docker inspects it, and holds it
+/// for the session whose record names the container.
 #[derive(Bound)]
 #[kind(name = "aether.sessions")]
 pub struct Sessions {
@@ -205,6 +207,10 @@ enum Phase {
     /// Docker lists the containers carrying its label, to be matched with `recorded`, the containers its records say
     /// may still run.
     Listing { docker: ActorRef<Docker>, recorded: Vec<Recorded>, waiting: Vec<Waiting> },
+    /// Docker reads back the bearer of each container in `adopting`, which a record names and Docker lists, from the
+    /// environment the hub before gave it; each is adopted as its read is answered, its bearer held for its session
+    /// first, so no ask reaches a session before its container reaches the hub again.
+    Admitting { docker: ActorRef<Docker>, adopting: Vec<Adoption>, waiting: Vec<Waiting> },
     /// It runs.
     Ready { docker: ActorRef<Docker> },
 }
@@ -215,6 +221,16 @@ struct Recorded {
     session: u32,
     container: Named,
     run: u32,
+}
+
+/// A container of `session`'s run `run`, which its record names and Docker lists, that a hub that starts again adopts
+/// once Docker has read back its bearer: the run's bootstrap container, or its Claude Code container, as `stage` says.
+#[derive(Debug, Clone, PartialEq, Eq, Plain)]
+struct Adoption {
+    session: u32,
+    container: ContainerId,
+    run: u32,
+    stage: Stage,
 }
 
 /// What a record names a container by, to find it among those Docker lists.
@@ -376,9 +392,9 @@ impl Sessions {
         self.handle_inspected(answered, turn)
     }
 
-    /// The containers carrying the hub's label: each a record says may exist is adopted when it runs, and noted lost
-    /// and removed when it does not; a record whose container is not listed is noted lost; and each no record names is
-    /// reported.
+    /// The containers carrying the hub's label: each a record says may exist has its bearer read back to be adopted
+    /// when it runs, and is noted lost and removed when it does not; a record whose container is not listed is noted
+    /// lost; and each no record names is reported.
     #[answer]
     fn listed(
         &mut self,
@@ -386,6 +402,18 @@ impl Sessions {
         turn: &mut Turn<'_, Self>,
     ) -> Result<(), Fault> {
         self.handle_listed(answered, turn)
+    }
+
+    /// The bearer of a container the record of the session `Asking` names, which the capability adopts as it begins,
+    /// read back from its environment: held for that session, and the container adopted, with no bearer when it has
+    /// none.
+    #[answer]
+    fn variable_read(
+        &mut self,
+        answered: (Answered<VariableRead>, Asking),
+        turn: &mut Turn<'_, Self>,
+    ) -> Result<(), Fault> {
+        self.handle_variable_read(answered, turn)
     }
 
     /// The container's stdin, attached: each line waiting is written. Its output is read from its logs instead, so
@@ -508,7 +536,7 @@ impl Sessions {
     const fn docker(&self) -> Option<ActorRef<Docker>> {
         match &self.phase {
             Phase::Indexing { .. } | Phase::Reading { .. } => None,
-            Phase::Listing { docker, .. } | Phase::Ready { docker } => Some(*docker),
+            Phase::Listing { docker, .. } | Phase::Admitting { docker, .. } | Phase::Ready { docker } => Some(*docker),
         }
     }
 

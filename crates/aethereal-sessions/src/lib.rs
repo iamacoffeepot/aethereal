@@ -29,8 +29,8 @@ pub use docker::{
     API_VERSION, Access, Acted, Attach, Attached, Attaching, Bind, Calling, ContainerId, ContainerSpec, ContainerState,
     Create, CreateVolume, Created, Detached, Dialing, Docker, DockerConfig, DockerError, DockerSettings, Event, Events,
     EventsDone, Fetches, Inspect, Inspected, Kill, Label, List, Listed, Listing, Logging, Logs, LogsDone, Network,
-    Output, Phase, Remove, SocketUnaddressable, Start, Std, Stdin, Stop, Until, Unwritable, Variable, Volume,
-    VolumeCreated, VolumeName, Watching,
+    Output, Phase, ReadVariable, Remove, SocketUnaddressable, Start, Std, Stdin, Stop, Until, Unwritable, Variable,
+    VariableRead, Volume, VolumeCreated, VolumeName, Watching,
 };
 pub use names::{engine_name, engine_words};
 pub use sessions::{
