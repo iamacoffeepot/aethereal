@@ -1,5 +1,5 @@
-//! What an actor type declares: what it handles, what it reaches by typed path, and what it spawns (ADR-0013,
-//! ADR-0059).
+//! What an actor type declares: what it is configured by, what it handles and answers, what it reaches by typed path,
+//! and what it spawns (ADR-0013, ADR-0059).
 //!
 //! An author writes the declaration as types: one [`Handles`] impl for each
 //! kind an actor handles, the handled kinds as a tuple on the
@@ -31,8 +31,8 @@ use crate::{ChildOf, Placement, Spawner, TypeSegment};
 use aethereal_data::{ActorKey, ActorPath, Keyed, KindId, KindName};
 use core::marker::PhantomData;
 
-/// What an actor type declares, as the engine reads it: its name, its state's schema, what it reaches by typed path,
-/// what it spawns, and what it handles (ADR-0013, ADR-0054, ADR-0059).
+/// What an actor type declares, as the engine reads it: its name, its state's schema, the kind it is configured by,
+/// what it reaches by typed path, what it spawns, and what it handles and answers (ADR-0013, ADR-0054, ADR-0059).
 #[derive(Debug)]
 pub struct Declared {
     name: KindName,
@@ -41,6 +41,9 @@ pub struct Declared {
     /// The schema of an actor's state, its names included, of the layout `id` is made from: what its state is read by
     /// when it moves onto new code (ADR-0054).
     state: StateSchema,
+    /// The kind an actor of it is configured by: what a spawn by name checks the config it is handed against
+    /// (ADR-0059).
+    config: KindId,
     /// Whether it has one actor or many, each under its own key.
     keyed: Keyed,
     /// Who may spawn an actor of it, as its parent says (ADR-0022).
@@ -66,31 +69,33 @@ enum Takes {
 }
 
 impl Declared {
-    /// The declaration of the type named `name`, of id `id`, whose state is of the schema `state`, keyed as `keyed`,
-    /// that `spawner` may spawn, which depends on the types whose typed paths end in `depends`, spawns the types of
-    /// the kinds `spawns`, and handles `handlers`.
+    /// The declaration of the type named `name`, of id `id`, whose state is of the schema `state`, configured by the
+    /// kind `config`, keyed as `keyed`, that `spawner` may spawn, which depends on the types whose typed paths end in
+    /// `depends`, spawns the types of the kinds `spawns`, and handles `handlers`.
     #[must_use]
     #[allow(clippy::too_many_arguments, reason = "each is one part of what a type declares, as the engine reads it")]
     pub const fn new(
         name: KindName,
         id: KindId,
         state: StateSchema,
+        config: KindId,
         keyed: Keyed,
         spawner: Spawner,
         depends: &'static [&'static TypeSegment],
         spawns: &'static [KindId],
         handlers: &'static [Handler],
     ) -> Self {
-        Self { name, id, state, keyed, spawner, depends, spawns, handlers, takes: Takes::Listed }
+        Self { name, id, state, config, keyed, spawner, depends, spawns, handlers, takes: Takes::Listed }
     }
 
-    /// The declaration of the root type named `name`, of id `id`, whose state is of the schema `state`, that handles
-    /// nothing and depends on nothing, and that every kind may be cast to: for the engine's outside (ADR-0036).
+    /// The declaration of the root type named `name`, of id `id`, whose state is of the schema `state`, configured by
+    /// the kind `config`, that handles nothing and depends on nothing, and that every kind may be cast to: for the
+    /// engine's outside (ADR-0036).
     #[must_use]
-    pub const fn taking_every_kind(name: KindName, id: KindId, state: StateSchema) -> Self {
+    pub const fn taking_every_kind(name: KindName, id: KindId, state: StateSchema, config: KindId) -> Self {
         let (keyed, spawner, takes) = (Keyed::Singleton, Spawner::Nobody, Takes::Every);
 
-        Self { name, id, state, keyed, spawner, depends: &[], spawns: &[], handlers: &[], takes }
+        Self { name, id, state, config, keyed, spawner, depends: &[], spawns: &[], handlers: &[], takes }
     }
 
     /// The declaration of the actor type `A`, made when the program is built.
@@ -116,6 +121,13 @@ impl Declared {
     #[must_use]
     pub const fn state(&self) -> StateSchema {
         self.state
+    }
+
+    /// The kind an actor of it is configured by: what a spawn by name checks the config it is handed against
+    /// (ADR-0059).
+    #[must_use]
+    pub const fn config(&self) -> KindId {
+        self.config
     }
 
     /// Whether it has one actor or many, each under its own key.
@@ -244,10 +256,11 @@ impl PartialEq for Declared {
     /// Whether the two declare the same: all but the names in their states' schemas, which a spawn does not read, as
     /// each id holds its state's layout (ADR-0006).
     fn eq(&self, other: &Self) -> bool {
-        let Self { name, id, state: _, keyed, spawner, depends, spawns, handlers, takes } = self;
+        let Self { name, id, state: _, config, keyed, spawner, depends, spawns, handlers, takes } = self;
 
         *name == other.name
             && *id == other.id
+            && *config == other.config
             && *keyed == other.keyed
             && *spawner == other.spawner
             && *depends == other.depends
@@ -267,6 +280,7 @@ impl<A: ChildOf> Of<A> {
         A::NAME,
         KindId::of::<A>(),
         StateSchema::of::<A>(),
+        KindId::of::<A::Config>(),
         <A::Key as ActorKey>::KEYED,
         <A::Parent as Placement>::SPAWNER,
         <A::Depends as Depends>::CHAINS,
@@ -361,23 +375,40 @@ const fn handled_after(handlers: &[Handler], index: usize) -> bool {
     false
 }
 
-/// A handler an actor type has: what it handles (ADR-0013).
+/// A handler an actor type has: what it handles, and the kinds it answers with (ADR-0013, ADR-0059).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Handler {
     role: Role,
+    /// The kind it answers its mail with, one or none, as its handler returns it (ADR-0059): none for anything but
+    /// mail of a kind, which no sender asks.
+    answers: &'static [KindId],
 }
 
 impl Handler {
-    /// The handler for `role`.
+    /// The handler for `role`, which answers with nothing: a tell's, or one for what is not mail of a kind.
     #[must_use]
     pub const fn new(role: Role) -> Self {
-        Self { role }
+        Self { role, answers: &[] }
+    }
+
+    /// The handler for mail of `kind`, which answers it with the kinds `answers`, one or none, as its handler returns
+    /// it (ADR-0059).
+    #[must_use]
+    pub const fn answering(kind: KindId, answers: &'static [KindId]) -> Self {
+        Self { role: Role::Kind(kind), answers }
     }
 
     /// What it handles.
     #[must_use]
     pub const fn role(&self) -> Role {
         self.role
+    }
+
+    /// The kinds it answers with, one or none: what a cast to a named protocol reads, as the actor's answer to the
+    /// kind it handles (ADR-0016, ADR-0059).
+    #[must_use]
+    pub const fn answers(&self) -> &'static [KindId] {
+        self.answers
     }
 }
 

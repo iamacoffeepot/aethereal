@@ -89,13 +89,23 @@ impl Table for Typed {
 #[kind(name = "aether.test.kept")]
 struct Kept;
 
+/// A request a keeper answers with a weight.
+#[derive(Plain)]
+#[kind(name = "aether.test.weigh")]
+struct Weigh;
+
+/// A keeper's answer to a weighing.
+#[derive(Plain)]
+#[kind(name = "aether.test.weight")]
+struct Weight;
+
 /// Mail no actor here lists.
 #[derive(Plain)]
 #[kind(name = "aether.test.stray")]
 struct Stray;
 
-/// An actor that handles kept mail and falls back on the rest, logging which handler it reached, and depends on the
-/// shelf.
+/// An actor that handles kept mail, answers a weighing, and falls back on the rest, logging which handler it reached,
+/// and depends on the shelf.
 #[derive(Plain)]
 #[kind(name = "aether.test.keeper")]
 struct Keeper;
@@ -111,6 +121,11 @@ impl Keeper {
         turn.log(Level::Info, "kept");
 
         Ok(())
+    }
+
+    #[request]
+    fn weigh(&mut self, _: Weigh) -> Result<Weight, Fault> {
+        Ok(Weight)
     }
 
     #[others]
@@ -278,6 +293,7 @@ fn a_declaration_that_depends_on_two_types_of_one_root_does_not_hold() {
         Keeper::NAME,
         KindId::of::<Keeper>(),
         StateSchema::of::<Keeper>(),
+        KindId::of::<Kept>(),
         Keyed::Singleton,
         Spawner::Anyone,
         DEPENDS,
@@ -289,14 +305,18 @@ fn a_declaration_that_depends_on_two_types_of_one_root_does_not_hold() {
 }
 
 #[test]
-fn declaration_lists_each_handler_and_the_path_to_each_type_it_depends_on() {
-    // Catches a handler dropped from the tuple the engine reads, and a type's depends read as another's or not at all,
-    // which the spawn check and a guest's host read (ADR-0022, ADR-0059).
+fn declaration_lists_each_handler_its_answers_its_config_and_the_path_to_each_type_it_depends_on() {
+    // Catches a handler dropped from the tuple the engine reads, a request's answer left out or a tell given one, the
+    // type read as its own config, and a type's depends read as another's or not at all, which the spawn check, a spawn
+    // by name, a cast to a named protocol, and a guest's host read (ADR-0016, ADR-0022, ADR-0059).
     const KEPT: KindId = KindId::of::<Kept>();
+    const WEIGHT: &[KindId] = &[KindId::of::<Weight>()];
     let keeper = Declared::of::<Keeper>();
-    let handlers = [Handler::new(Role::Kind(KEPT)), Handler::new(Role::Others)];
+    let weigh = Handler::answering(KindId::of::<Weigh>(), WEIGHT);
+    let handlers = [Handler::new(Role::Kind(KEPT)), weigh, Handler::new(Role::Others)];
 
     assert_eq!(keeper.name(), &Keeper::NAME);
+    assert_eq!(keeper.config(), KEPT);
     assert_eq!(keeper.handlers(), handlers);
     assert_eq!(keeper.depends(), [Last::<Shelf>::SEGMENT]);
     assert!(keeper.takes(KindId::of::<Stray>()));
@@ -313,6 +333,7 @@ fn the_spawn_check_finds_a_dependency_of_singletons_not_live_and_passes_a_keyed_
         Keeper::NAME,
         KindId::of::<Keeper>(),
         StateSchema::of::<Keeper>(),
+        KindId::of::<Kept>(),
         Keyed::Singleton,
         Spawner::Anyone,
         SLOTTED,
@@ -331,7 +352,8 @@ fn a_section_written_in_a_constant_reads_back_as_what_its_types_declare() {
     // Catches the constant writer of a guest's section and the plain types a host reads it as drifting apart: a field
     // written in another order, or a selector numbered otherwise than the enum it stands for (a singleton read as keyed,
     // or one type's spawner read as another's), so a host reads a declaration other than the one the guest was built
-    // with (ADR-0015, ADR-0022); or a state's schema read as another type's, or not kept (ADR-0054).
+    // with (ADR-0015, ADR-0022); a type's config kind or a handler's answer dropped or read as another field (ADR-0059);
+    // or a state's schema read as another type's, or not kept (ADR-0054).
     const TYPES: &[&Declared] =
         &[Declared::of::<Keeper>(), Declared::of::<Strict>(), Declared::of::<Sink>(), Declared::of::<Slot>()];
     const ROOM: usize = section::room(TYPES);
