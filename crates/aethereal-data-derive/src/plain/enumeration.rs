@@ -1,7 +1,8 @@
 //! An enum's shape and codec bodies, with selectors (ADR-0004).
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
+use syn::spanned::Spanned;
 
 use super::{Codec, Declaration, Derive, decode_binding, encode_call, impls, shape_field};
 use syn::{Attribute, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, LitInt, Token, Type, Variant};
@@ -228,7 +229,7 @@ fn build_unnamed(variant: &Variant, selector: u32, fields: &FieldsUnnamed) -> Bu
         let field_type = &field.ty;
         let encode_ident = format_ident!("__field{position}");
         let decode_ident = format_ident!("__field{position}");
-        let shape = quote! { <#field_type as ::aethereal_data::Schema>::SHAPE };
+        let shape = quote_spanned! { field_type.span() => <#field_type as ::aethereal_data::Schema>::SHAPE };
         let access = quote! { #encode_ident };
         let encode = encode_call(&access, field_type);
         let binding = decode_binding(&decode_ident, field_type);

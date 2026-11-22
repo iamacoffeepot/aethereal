@@ -3,7 +3,7 @@
 
 use super::{Handled, Handles, Lists};
 use crate::answering::{Answering, Answers};
-use aethereal_data::{Answered, Kind, KindId, ProtocolShape};
+use aethereal_data::{Answered, Kind, KindId, KindPtr, ProtocolShape};
 
 /// A named protocol: a list of the kinds it takes, and what each is answered with, one [`Carries`] for each, as an
 /// actor lists what it handles and writes one handler for each (ADR-0016).
@@ -102,10 +102,14 @@ impl<P> CarriedBy<P> for () {
 pub trait Kinds {
     /// The ids of the kinds, in order.
     const KINDS: &'static [KindId];
+    /// The nodes of the kinds, in order: what a reference's layout reaches them by, so a kind may hold a reference to a
+    /// protocol that takes it (ADR-0006, ADR-0016).
+    const NODES: &'static [KindPtr];
 }
 
 impl Kinds for () {
     const KINDS: &'static [KindId] = &[];
+    const NODES: &'static [KindPtr] = &[];
 }
 
 /// An actor of this type takes every kind of the protocol `P`: an [`ActorRef`](crate::ActorRef) to one is made a
@@ -237,17 +241,18 @@ macro_rules! protocols {
 
         impl<$($kind: Kind),*> Kinds for ($($kind,)*) {
             const KINDS: &'static [KindId] = &[$(KindId::of::<$kind>()),*];
+            const NODES: &'static [KindPtr] = &[$($kind::KIND),*];
         }
 
         impl<$($kind: Kind),*> Listed for ($($kind,)*) {
             type Kinds = Self;
-            const PROTOCOL: ProtocolShape = ProtocolShape::Told(<Self as Kinds>::KINDS);
+            const PROTOCOL: ProtocolShape = ProtocolShape::Told(<Self as Kinds>::NODES);
         }
 
         impl<P: $(Carries<$kind> +)*, $($kind: Kind),*> CarriedBy<P> for ($($kind,)*) {
             const ANSWERED: &'static [Answered] = &[$(Answered {
-                kind: KindId::of::<$kind>(),
-                answers: <<P as Carries<$kind>>::Answers as Kinds>::KINDS,
+                kind: $kind::KIND,
+                answers: <<P as Carries<$kind>>::Answers as Kinds>::NODES,
             }),*];
         }
     )*};

@@ -1,18 +1,22 @@
 //! The protocol a reference's layout names: its kinds as a set, and for a named protocol what each is answered with
 //! (ADR-0016).
 
-use crate::{KindId, Plain};
+use crate::kind::graph::kind_id;
+use crate::{KindId, KindPtr, Plain};
 use alloc::vec::Vec;
+
+/// The most kinds a protocol lists: a tuple of kinds holds at most 64.
+pub const MOST_LISTED: usize = 64;
 
 /// The protocol a reference's layout names: its kinds, as a set, and for a named protocol what each is answered with
 /// (ADR-0016).
 ///
-/// Its kinds are a set, so two protocols listing the same kinds in another order, or one kind twice, are one layout:
-/// whatever reads it reads its kinds in [`Ascending`] order.
+/// Its kinds are reached by their nodes, not their ids, so a kind may hold a reference to a protocol that takes it: the
+/// ids are computed from the graph the nodes make (ADR-0006).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolShape {
-    /// A tuple of kinds, each told: their ids.
-    Told(&'static [KindId]),
+    /// A tuple of kinds, each told.
+    Told(&'static [KindPtr]),
     /// A named protocol: each kind it takes, with what it is answered with.
     Named(&'static [Answered]),
 }
@@ -21,18 +25,29 @@ pub enum ProtocolShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Answered {
     /// The kind taken.
-    pub kind: KindId,
+    pub kind: KindPtr,
     /// The kinds it is answered with, as a set.
-    pub answers: &'static [KindId],
+    pub answers: &'static [KindPtr],
 }
 
-/// The protocol of a flat reference node: its kinds in ascending order of their ids, each once (ADR-0016).
+/// A kind a flat reference names: by its id, or, inside the description of a cycle, by the member it is (ADR-0006).
+///
+/// Its order is the order a flat protocol holds them in: ids ascending, then members ascending.
+#[derive(Plain, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Referent {
+    /// A kind outside the cycle described, or any kind where no cycle is: its id.
+    Kind(KindId),
+    /// The member at this place in the list of a cycle's members.
+    Member(u32),
+}
+
+/// The protocol of a flat reference node: its kinds in ascending order, each once (ADR-0016).
 ///
 /// A decoded schema whose kinds are out of that order is refused, so two nodes of one protocol are equal.
 #[derive(Plain, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProtocolNode {
-    /// A tuple of kinds, each told: their ids.
-    Told(Vec<KindId>),
+    /// A tuple of kinds, each told.
+    Told(Vec<Referent>),
     /// A named protocol: each kind it takes, with what it is answered with.
     Named(Vec<AnsweredNode>),
 }
@@ -41,9 +56,120 @@ pub enum ProtocolNode {
 #[derive(Plain, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AnsweredNode {
     /// The kind taken.
-    pub kind: KindId,
-    /// The kinds it is answered with, in ascending order of their ids, each once.
-    pub answers: Vec<KindId>,
+    pub kind: Referent,
+    /// The kinds it is answered with, in ascending order, each once.
+    pub answers: Vec<Referent>,
+}
+
+/// A set of kinds by their ids, ascending, each once: what a constant writes a protocol's kinds as when no cycle is
+/// being hashed.
+#[derive(Clone, Copy)]
+pub struct KindIds {
+    ids: [KindId; MOST_LISTED],
+    len: usize,
+}
+
+impl KindIds {
+    /// The ids of `kinds`, ascending, each once. Each id is computed from its kind's graph.
+    #[must_use]
+    pub const fn of(kinds: &[KindPtr]) -> Self {
+        let mut set = Self { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+        let mut index = 0;
+        while index < kinds.len() {
+            set.insert(kind_id(kinds[index]));
+            index += 1;
+        }
+
+        set
+    }
+
+    /// Adds `id` in its place, unless it is held.
+    const fn insert(&mut self, id: KindId) {
+        let mut at = 0;
+        while at < self.len && self.ids[at].bits() < id.bits() {
+            at += 1;
+        }
+        let held = at < self.len && self.ids[at].bits() == id.bits();
+        if held {
+            return;
+        }
+        assert!(self.len < MOST_LISTED, "a protocol lists at most 64 kinds");
+        let mut index = self.len;
+        while index > at {
+            self.ids[index] = self.ids[index - 1];
+            index -= 1;
+        }
+        self.ids[at] = id;
+        self.len += 1;
+    }
+
+    /// The ids, ascending.
+    #[must_use]
+    pub const fn ids(&self) -> &[KindId] {
+        self.ids.split_at(self.len).0
+    }
+
+    /// Whether `other` holds the same ids.
+    #[must_use]
+    pub const fn same(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        let mut index = 0;
+        while index < self.len {
+            if self.ids[index].bits() != other.ids[index].bits() {
+                return false;
+            }
+            index += 1;
+        }
+
+        true
+    }
+}
+
+/// A named protocol's entries by their kinds' ids, ascending, each kind once with the answers of its first entry.
+#[derive(Clone, Copy)]
+pub struct AnsweredIds {
+    kinds: KindIds,
+    answers: [KindIds; MOST_LISTED],
+}
+
+impl AnsweredIds {
+    /// The entries of `entries`, ordered by their kinds' ids.
+    #[must_use]
+    pub const fn of(entries: &[Answered]) -> Self {
+        let mut kinds = KindIds { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+        let mut index = 0;
+        while index < entries.len() {
+            kinds.insert(kind_id(entries[index].kind));
+            index += 1;
+        }
+        let empty = KindIds { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+        let mut answers = [empty; MOST_LISTED];
+        let mut place = 0;
+        while place < kinds.len {
+            let mut entry = 0;
+            while kind_id(entries[entry].kind).bits() != kinds.ids[place].bits() {
+                entry += 1;
+            }
+            answers[place] = KindIds::of(entries[entry].answers);
+            place += 1;
+        }
+
+        Self { kinds, answers }
+    }
+
+    /// How many distinct kinds it holds.
+    #[must_use]
+    pub const fn count(&self) -> usize {
+        self.kinds.len
+    }
+
+    /// The kind at `place`, and what it is answered with.
+    #[must_use]
+    pub const fn entry(&self, place: usize) -> (KindId, &KindIds) {
+        (self.kinds.ids[place], &self.answers[place])
+    }
 }
 
 impl ProtocolShape {
@@ -52,39 +178,55 @@ impl ProtocolShape {
     #[must_use]
     pub const fn same(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Told(kinds), Self::Told(other_kinds)) => same_kind_set(kinds, other_kinds),
+            (Self::Told(kinds), Self::Told(other_kinds)) => KindIds::of(kinds).same(&KindIds::of(other_kinds)),
             (Self::Named(entries), Self::Named(other_entries)) => {
-                let mut ours = Ascending::answered(entries);
-                let mut theirs = Ascending::answered(other_entries);
-                loop {
-                    match (ours.next_entry(), theirs.next_entry()) {
-                        (None, None) => return true,
-                        (Some(entry), Some(other_entry)) => {
-                            let same_kind = entry.kind.bits() == other_entry.kind.bits();
-                            let same_answers = same_kind_set(entry.answers, other_entry.answers);
-                            let alike = same_kind && same_answers;
-                            if !alike {
-                                return false;
-                            }
-                        }
-                        _ => return false,
-                    }
+                let ours = AnsweredIds::of(entries);
+                let theirs = AnsweredIds::of(other_entries);
+                if ours.count() != theirs.count() {
+                    return false;
                 }
+                let mut place = 0;
+                while place < ours.count() {
+                    let (kind, answers) = ours.entry(place);
+                    let (other_kind, other_answers) = theirs.entry(place);
+                    let alike = kind.bits() == other_kind.bits() && answers.same(other_answers);
+                    if !alike {
+                        return false;
+                    }
+                    place += 1;
+                }
+
+                true
             }
             _ => false,
         }
     }
 
-    /// Its flat form: its kinds, and each one's answers, in ascending order, each once.
-    pub(super) fn node(self) -> ProtocolNode {
+    /// Its flat form, each kind named as [`Referent::Member`] when it is one of `members`, by its place there, and by
+    /// its id otherwise; ascending, each once.
+    pub(super) fn node_in(self, members: &[KindPtr]) -> ProtocolNode {
+        let referent = |kind: KindPtr| match members.iter().position(|member| member.is(kind)) {
+            Some(listed) => Referent::Member(listed as u32),
+            None => Referent::Kind(kind_id(kind)),
+        };
+        let set = |kinds: &[KindPtr]| {
+            let mut flat: Vec<Referent> = kinds.iter().map(|kind| referent(*kind)).collect();
+            flat.sort_unstable();
+            flat.dedup();
+            flat
+        };
         match self {
-            Self::Told(kinds) => ProtocolNode::Told(ascending_ids(kinds)),
+            Self::Told(kinds) => ProtocolNode::Told(set(kinds)),
             Self::Named(entries) => {
-                let mut order = Ascending::answered(entries);
-                let mut flat = Vec::with_capacity(order.count());
-                while let Some(entry) = order.next_entry() {
-                    flat.push(AnsweredNode { kind: entry.kind, answers: ascending_ids(entry.answers) });
+                let mut flat: Vec<AnsweredNode> = Vec::new();
+                for entry in entries {
+                    let kind = referent(entry.kind);
+                    // A kind listed twice keeps the answers of its first entry.
+                    if flat.iter().all(|held| held.kind != kind) {
+                        flat.push(AnsweredNode { kind, answers: set(entry.answers) });
+                    }
                 }
+                flat.sort_unstable();
 
                 ProtocolNode::Named(flat)
             }
@@ -109,149 +251,7 @@ impl ProtocolNode {
     }
 }
 
-/// Whether `kinds` and `other` hold the same kinds, in whatever order.
-const fn same_kind_set(kinds: &'static [KindId], other: &'static [KindId]) -> bool {
-    let mut ours = Ascending::kinds(kinds);
-    let mut theirs = Ascending::kinds(other);
-    loop {
-        match (ours.next_kind(), theirs.next_kind()) {
-            (None, None) => return true,
-            (Some(kind), Some(other_kind)) => {
-                if kind.bits() != other_kind.bits() {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
-}
-
-/// `kinds` in ascending order, each once.
-fn ascending_ids(kinds: &'static [KindId]) -> Vec<KindId> {
-    let mut order = Ascending::kinds(kinds);
-    let mut flat = Vec::with_capacity(order.count());
-    while let Some(kind) = order.next_kind() {
-        flat.push(kind);
-    }
-
-    flat
-}
-
 /// Whether each of `kinds` is above the one before it.
-fn strictly_ascending(kinds: &[KindId]) -> bool {
+fn strictly_ascending(kinds: &[Referent]) -> bool {
     kinds.windows(2).all(|pair| matches!(pair, [first, second] if first < second))
-}
-
-/// A set of kinds read in ascending order of their ids, each once: the order a reference's layout names its
-/// protocol's kinds in, whatever order they are listed in (ADR-0016).
-///
-/// A constant cannot sort, so each next kind is found by a pass over the list: the work is the square of its length,
-/// and a protocol lists at most 64 kinds.
-#[derive(Debug, Clone, Copy)]
-pub struct Ascending {
-    listed: Listed,
-    passed: Passed,
-}
-
-/// What an [`Ascending`] reads in order.
-#[derive(Debug, Clone, Copy)]
-enum Listed {
-    /// Kinds.
-    Kinds(&'static [KindId]),
-    /// A named protocol's entries, by the kind of each.
-    Answered(&'static [Answered]),
-}
-
-/// How far an [`Ascending`] has read.
-#[derive(Debug, Clone, Copy)]
-enum Passed {
-    /// Nothing yet: the next kind is the least.
-    Nothing,
-    /// Every kind up to this one: the next is the least above it.
-    Through(KindId),
-}
-
-impl Ascending {
-    /// `kinds`, in ascending order, each once.
-    #[must_use]
-    pub const fn kinds(kinds: &'static [KindId]) -> Self {
-        Self { listed: Listed::Kinds(kinds), passed: Passed::Nothing }
-    }
-
-    /// A named protocol's `entries`, in ascending order of their kinds, each kind once.
-    #[must_use]
-    pub const fn answered(entries: &'static [Answered]) -> Self {
-        Self { listed: Listed::Answered(entries), passed: Passed::Nothing }
-    }
-
-    /// How many distinct kinds it reads, from where it stands.
-    #[must_use]
-    pub const fn count(self) -> usize {
-        let mut rest = self;
-        let mut count = 0;
-        while rest.step().is_some() {
-            count += 1;
-        }
-
-        count
-    }
-
-    /// The next kind of a list of kinds, or none when every kind was read or it reads a named protocol's entries.
-    pub const fn next_kind(&mut self) -> Option<KindId> {
-        match (self.listed, self.step()) {
-            (Listed::Kinds(kinds), Some(index)) => Some(kinds[index]),
-            _ => None,
-        }
-    }
-
-    /// The next entry of a named protocol, or none when every kind was read or it reads a list of kinds.
-    pub const fn next_entry(&mut self) -> Option<Answered> {
-        match (self.listed, self.step()) {
-            (Listed::Answered(entries), Some(index)) => Some(entries[index]),
-            _ => None,
-        }
-    }
-
-    /// The place of the least kind above every kind read so far, which it reads: none when there is none.
-    const fn step(&mut self) -> Option<usize> {
-        let mut least: Option<usize> = None;
-        let mut index = 0;
-        while index < self.len() {
-            let kind = self.kind_at(index);
-            let above = match self.passed {
-                Passed::Nothing => true,
-                Passed::Through(passed) => kind.bits() > passed.bits(),
-            };
-            let lower = match least {
-                Some(found) => kind.bits() < self.kind_at(found).bits(),
-                None => true,
-            };
-            if above && lower {
-                least = Some(index);
-            }
-            index += 1;
-        }
-
-        if let Some(found) = least {
-            self.passed = Passed::Through(self.kind_at(found));
-        }
-
-        least
-    }
-
-    /// How many entries the list holds, repeats included.
-    const fn len(&self) -> usize {
-        match self.listed {
-            Listed::Kinds(kinds) => kinds.len(),
-            Listed::Answered(entries) => entries.len(),
-        }
-    }
-
-    /// The kind of the entry at `index`, which is below [`Self::len`].
-    const fn kind_at(&self, index: usize) -> KindId {
-        match self.listed {
-            Listed::Kinds(kinds) => kinds[index],
-            Listed::Answered(entries) => entries[index].kind,
-        }
-    }
 }

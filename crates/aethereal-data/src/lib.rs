@@ -43,14 +43,18 @@ pub use json::{
     to_json,
 };
 pub use key::Key;
-pub use kind::{IntoKinds, Kind, KindId, KindName};
+pub use kind::{
+    CycleFault, CycleMember, IntoKinds, Kind, KindDescription, KindId, KindName, KindPtr, KindShape, MOST_EDGES,
+    MOST_KINDS, Site, kind_id,
+};
 pub use path::{
     ActorId, ActorKey, ActorPath, Instanced, KeyName, Keyed, PathSegment, PathTooDeep, Singleton, Then, TypedKey,
 };
 pub use plain::{Plain, from_bytes, to_bytes};
 pub use schema::{
-    Answered, AnsweredNode, Ascending, Field, FieldBytes, FieldNode, Fields, FieldsNode, Float, Integer, NamedFields,
-    ProtocolNode, ProtocolShape, Schema, SchemaFault, SchemaNode, SchemaNodes, Shape, Variant, VariantNode,
+    Answered, AnsweredIds, AnsweredNode, Field, FieldBytes, FieldNode, Fields, FieldsNode, Float, Integer, KindIds,
+    NamedFields, ProtocolNode, ProtocolShape, Referent, Schema, SchemaFault, SchemaNode, SchemaNodes, Shape, Variant,
+    VariantNode,
 };
 
 /// Derives `Schema`, the codec over every boundary, and `Plain` from one field list (ADR-0004).

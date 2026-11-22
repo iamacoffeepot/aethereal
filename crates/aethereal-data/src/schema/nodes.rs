@@ -2,8 +2,8 @@
 
 use crate::plain::write_count;
 use crate::{
-    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Float, Integer, Plain, ProtocolNode, Reader,
-    Schema, Shape, Writer,
+    Boundary, Decode, DecodeError, Element, Encode, EncodeError, Field, Float, Integer, KindPtr, Plain, ProtocolNode,
+    Reader, Schema, Shape, Writer,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -153,8 +153,15 @@ impl SchemaNodes {
     /// The flat form of `shape`: children before parents, equal shapes sharing one node, the root last.
     #[must_use]
     pub fn of(shape: &Shape) -> Self {
+        Self::of_in(shape, &[])
+    }
+
+    /// The flat form of `shape` as a member of the cycle of `members`: a reference names each of them by its place in
+    /// the list, and every other kind by its id.
+    #[must_use]
+    pub fn of_in(shape: &Shape, members: &[KindPtr]) -> Self {
         let mut earlier = Vec::new();
-        let root = node_of(shape, &mut earlier);
+        let root = node_of(shape, &mut earlier, members);
 
         Self { earlier, root }
     }
@@ -165,7 +172,7 @@ impl SchemaNodes {
         let mut earlier = Vec::new();
         let mut flat = Vec::new();
         for (field, shape) in fields {
-            let child = intern(shape, &mut earlier);
+            let child = intern(shape, &mut earlier, &[]);
             flat.push(FieldNode { name: String::from(*field), shape: child });
         }
         let root = SchemaNode::Struct { name: String::from(name), fields: flat };
@@ -256,7 +263,7 @@ pub(super) fn node_index(position: usize) -> u32 {
 /// Returns the shape's own node, interning its children first without pushing it.
 ///
 /// A `Shape` is a finite tree, so the recursion below is bounded by the type.
-fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
+fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>, members: &[KindPtr]) -> SchemaNode {
     match *shape {
         Shape::Boolean => SchemaNode::Boolean,
         Shape::Integer(kind) => SchemaNode::Integer(kind),
@@ -265,26 +272,26 @@ fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
         Shape::Bytes => SchemaNode::Bytes,
         Shape::Json => SchemaNode::Json,
         Shape::Option(inner) => {
-            let child = intern(inner, earlier);
+            let child = intern(inner, earlier, members);
             SchemaNode::Option(child)
         }
         Shape::Sequence(inner) => {
-            let child = intern(inner, earlier);
+            let child = intern(inner, earlier, members);
             SchemaNode::Sequence(child)
         }
         Shape::Array { element, length } => {
-            let child = intern(element, earlier);
+            let child = intern(element, earlier, members);
             SchemaNode::Array { element: child, length }
         }
         Shape::Map { key, value } => {
-            let key_child = intern(key, earlier);
-            let value_child = intern(value, earlier);
+            let key_child = intern(key, earlier, members);
+            let value_child = intern(value, earlier, members);
             SchemaNode::Map { key: key_child, value: value_child }
         }
         Shape::Struct { name, fields } => {
             let mut flat = Vec::new();
             for field in fields {
-                let child = intern(&field.shape, earlier);
+                let child = intern(&field.shape, earlier, members);
                 let entry = FieldNode { name: String::from(field.name), shape: child };
                 flat.push(entry);
             }
@@ -293,7 +300,7 @@ fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
         Shape::Tuple { elements } => {
             let mut flat = Vec::new();
             for element in elements {
-                let child = intern(element, earlier);
+                let child = intern(element, earlier, members);
                 flat.push(child);
             }
             SchemaNode::Tuple { elements: flat }
@@ -301,32 +308,32 @@ fn node_of(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> SchemaNode {
         Shape::Enum { name, variants } => {
             let mut flat = Vec::new();
             for variant in variants {
-                let fields = intern_fields(&variant.fields, earlier);
+                let fields = intern_fields(&variant.fields, earlier, members);
                 let entry = VariantNode { name: String::from(variant.name), selector: variant.selector, fields };
                 flat.push(entry);
             }
             SchemaNode::Enum { name: String::from(name), variants: flat }
         }
         Shape::Reference { written, protocol } => {
-            let child = intern(written, earlier);
-            SchemaNode::Reference { written: child, protocol: protocol.node() }
+            let child = intern(written, earlier, members);
+            SchemaNode::Reference { written: child, protocol: protocol.node_in(members) }
         }
     }
 }
 
 /// Returns the index for `shape`, pushing its node when no equal node is present.
-fn intern(shape: &Shape, earlier: &mut Vec<SchemaNode>) -> u32 {
-    let node = node_of(shape, earlier);
+fn intern(shape: &Shape, earlier: &mut Vec<SchemaNode>, members: &[KindPtr]) -> u32 {
+    let node = node_of(shape, earlier, members);
     find_or_push(node, earlier)
 }
 
 /// Interns one variant's fields.
-fn intern_fields(fields: &crate::Fields, earlier: &mut Vec<SchemaNode>) -> FieldsNode {
+fn intern_fields(fields: &crate::Fields, earlier: &mut Vec<SchemaNode>, members: &[KindPtr]) -> FieldsNode {
     match fields {
         crate::Fields::Named(named) => {
             let mut flat = Vec::new();
             for field in *named {
-                let child = intern(&field.shape, earlier);
+                let child = intern(&field.shape, earlier, members);
                 let entry = FieldNode { name: String::from(field.name), shape: child };
                 flat.push(entry);
             }
@@ -335,7 +342,7 @@ fn intern_fields(fields: &crate::Fields, earlier: &mut Vec<SchemaNode>) -> Field
         crate::Fields::Unnamed(shapes) => {
             let mut flat = Vec::new();
             for shape in *shapes {
-                let child = intern(shape, earlier);
+                let child = intern(shape, earlier, members);
                 flat.push(child);
             }
             FieldsNode::Unnamed(flat)
