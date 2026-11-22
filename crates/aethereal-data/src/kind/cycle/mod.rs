@@ -142,8 +142,8 @@ fn cycle_id(members: &[CycleMember], this: u32) -> Result<KindId, DescriptionFau
         let by_name = members[*one].name.as_str().as_bytes().cmp(members[*other].name.as_str().as_bytes());
         by_name.then(blanks[*one].cmp(&blanks[*other]))
     });
-    let ties = |one: usize, other: usize| members[one].name == members[other].name && blanks[one] == blanks[other];
-    let tied = order.windows(2).any(|pair| ties(pair[0], pair[1]));
+    let alike = |one: usize, other: usize| members[one].name == members[other].name && blanks[one] == blanks[other];
+    let tied = order.windows(2).any(|pair| alike(pair[0], pair[1]));
     if tied {
         return Err(DescriptionFault::Tied);
     }
