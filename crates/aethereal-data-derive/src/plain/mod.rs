@@ -86,7 +86,14 @@ pub fn impls(
     let name = &input.ident;
     let (_, ty_generics, _) = input.generics.split_for_impl();
     let over_boundary = over_boundary(&input.generics);
-    let schema_generics = with_field_bounds(&input.generics, field_types, &quote! { ::aethereal_data::Schema });
+    // A non-generic type states its schema unbounded: a bound on a field's type would be proven where the impl is
+    // selected, and a kind whose field reaches a reference to a protocol that takes the kind would need its own `Kind`
+    // to prove its own `Schema`. A field that is not `Schema` still fails, where its shape is read.
+    let schema_generics = if input.generics.params.is_empty() {
+        input.generics.clone()
+    } else {
+        with_field_bounds(&input.generics, field_types, &quote! { ::aethereal_data::Schema })
+    };
     let encode_generics = with_field_bounds(&over_boundary, field_types, &quote! { ::aethereal_data::Encode<__B> });
     let decode_generics = with_field_bounds(&over_boundary, field_types, &quote! { ::aethereal_data::Decode<__B> });
     let plain_generics = with_field_bounds(&input.generics, field_types, &quote! { ::aethereal_data::Plain });
@@ -177,10 +184,11 @@ fn respan(mut token: TokenTree, span: Span) -> TokenTree {
 
 /// One `Field` entry naming `field_type`'s shape.
 pub fn shape_field(name: &str, field_type: &Type) -> TokenStream2 {
+    let shape = quote_spanned! { field_type.span() => <#field_type as ::aethereal_data::Schema>::SHAPE };
     quote! {
         ::aethereal_data::Field {
             name: #name,
-            shape: <#field_type as ::aethereal_data::Schema>::SHAPE,
+            shape: #shape,
         }
     }
 }

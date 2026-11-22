@@ -644,3 +644,18 @@ fn an_entry_that_hears_presses_alone_never_chooses_the_cursor_and_a_drag_beneath
     assert_eq!(dragging.cursor(), &Cursor::Grabbing, "the child's drag began beneath the parent's hit");
     assert_eq!(alone.cursor(), &Cursor::Default);
 }
+
+#[test]
+fn pointed_is_a_cycle_of_one_with_a_constant_id() {
+    // Catches `Pointed`, which holds a reference to a protocol that takes it, losing its id as the program is built, or
+    // a host computing another from its description; and `Reach`, which refers into the cycle, described with it.
+    const POINTED: KindId = KindId::of::<Pointed>();
+    const REACH: KindId = KindId::of::<Reach>();
+    let pointed = aethereal_data::KindDescription::of(Pointed::KIND);
+    let reach = aethereal_data::KindDescription::of(Reach::KIND);
+
+    assert!(matches!(pointed, aethereal_data::KindDescription::Cycle { ref members, .. } if members.len() == 1));
+    assert!(matches!(reach, aethereal_data::KindDescription::Alone { .. }));
+    assert_eq!(pointed.id(), Ok(POINTED));
+    assert_eq!(reach.id(), Ok(REACH));
+}

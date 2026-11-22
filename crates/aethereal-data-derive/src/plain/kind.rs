@@ -40,21 +40,41 @@ impl Declaration {
         let (kind_impl, _, kind_where) = schema_generics.split_for_impl();
         let kind_name = quote_spanned! { literal.span() => ::aethereal_data::KindName::new(#literal) };
         let has_parameters = !input.generics.params.is_empty();
-        let checked = if has_parameters {
-            TokenStream2::new()
-        } else {
-            quote_spanned! { literal.span() =>
-                const _: ::aethereal_data::KindName = <#name as ::aethereal_data::Kind>::NAME;
-            }
+        if has_parameters {
+            return quote! {
+                #[automatically_derived]
+                impl #kind_impl ::aethereal_data::Kind for #name #ty_generics #kind_where {
+                    const NAME: ::aethereal_data::KindName = #kind_name;
+                }
+            };
+        }
+
+        // A non-generic kind's node is a static, so a cycle of kinds reaches it before it is evaluated: its site, the
+        // place it is defined, tells it from every other kind's node, as a constant cannot compare pointers.
+        let site = quote_spanned! { name.span() =>
+            ::core::concat!(
+                ::core::module_path!(), "::", ::core::stringify!(#name), "@",
+                ::core::file!(), ":", ::core::line!(), ":", ::core::column!()
+            )
         };
 
         quote! {
-            #[automatically_derived]
-            impl #kind_impl ::aethereal_data::Kind for #name #ty_generics #kind_where {
-                const NAME: ::aethereal_data::KindName = #kind_name;
-            }
+            const _: () = {
+                static NODE: ::aethereal_data::KindShape = ::aethereal_data::KindShape {
+                    name: <#name as ::aethereal_data::Kind>::NAME,
+                    site: ::aethereal_data::Site::Defined { at: #site },
+                    shape: &<#name as ::aethereal_data::Schema>::SHAPE,
+                };
 
-            #checked
+                #[automatically_derived]
+                impl ::aethereal_data::Kind for #name {
+                    const NAME: ::aethereal_data::KindName = #kind_name;
+                    // SAFETY: `NODE` is an immutable static.
+                    const KIND: ::aethereal_data::KindPtr = unsafe { ::aethereal_data::KindPtr::defined(&raw const NODE) };
+                }
+            };
+
+            const _: ::aethereal_data::KindName = <#name as ::aethereal_data::Kind>::NAME;
         }
     }
 }

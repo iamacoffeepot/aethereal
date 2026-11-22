@@ -1,15 +1,18 @@
 //! What a piece of mail is (ADR-0006).
 
-use super::layout::{nodes_layout, shape_layout};
+use super::graph::kind_id;
+use super::layout::nodes_layout;
 use super::{Kind, KindName};
 use crate::{Fnv, Key, Plain, SchemaNodes};
-use core::marker::PhantomData;
 
 /// What a piece of mail is: 64 bits computed from a kind's name and layout (ADR-0006).
 #[derive(Debug, Clone, Copy, Hash, Plain, Key)]
 pub struct KindId(u64);
 
 impl KindId {
+    /// A filler for an array of ids not yet written; never an id handed out.
+    pub(crate) const NONE: Self = Self(0);
+
     /// The id of `K`, computed when the program is built.
     ///
     /// ```rust
@@ -26,7 +29,7 @@ impl KindId {
     /// ```
     #[must_use]
     pub const fn of<K: Kind>() -> Self {
-        const { Self::from_layout(Constant::<K>::NAME, shape_layout(&K::SHAPE)) }
+        const { kind_id(K::KIND) }
     }
 
     /// The id of the kind a received name and schema describe.
@@ -53,17 +56,11 @@ impl KindId {
         self.0
     }
 
-    /// The id of a name and the layout hash of its schema; the only place an id is made.
-    const fn from_layout(name: &KindName, layout: u64) -> Self {
+    /// The id of a name and the layout hash of its schema, or of a cycle member's place in its cycle; the only place an
+    /// id is made.
+    pub(super) const fn from_layout(name: &KindName, layout: u64) -> Self {
         Self(Fnv::new().bytes(name.bytes()).hash(layout).finish())
     }
-}
-
-/// `K`'s name held by reference, so a constant can read it without dropping it.
-struct Constant<K>(PhantomData<K>);
-
-impl<K: Kind> Constant<K> {
-    const NAME: &'static KindName = &K::NAME;
 }
 
 #[cfg(test)]

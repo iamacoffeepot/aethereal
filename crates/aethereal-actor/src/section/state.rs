@@ -9,7 +9,7 @@
 //! [`SchemaNodes::of`]: aethereal_data::SchemaNodes::of
 
 use super::{count, put, text};
-use aethereal_data::{Ascending, Field, Fields, Float, Integer, KindId, ProtocolShape, Shape, Variant};
+use aethereal_data::{AnsweredIds, Field, Fields, Float, Integer, KindIds, ProtocolShape, Shape, Variant};
 
 // The selector of each case of `SchemaNode`, in the order it declares them (ADR-0003).
 const BOOLEAN: usize = 0;
@@ -26,6 +26,9 @@ const TUPLE: usize = 10;
 const ENUM: usize = 11;
 const JSON: usize = 12;
 const REFERENCE: usize = 13;
+
+// The selector of `Referent::Kind`: a state names kinds by their ids alone.
+const REFERENT_KIND: usize = 0;
 
 // The selector of each case of `ProtocolNode`.
 const TOLD: usize = 0;
@@ -308,22 +311,26 @@ const fn node<const ROOM: usize>(out: &mut [u8], at: usize, shape: &Shape, nodes
     }
 }
 
-/// Writes a reference's protocol: whether it is told or named, then its kinds in ascending order, each once, and for a
-/// named protocol each one's answers, as `ProtocolNode` holds them (ADR-0016).
+/// Writes a reference's protocol: whether it is told or named, then its kinds in ascending order of their ids, each
+/// once, and for a named protocol each one's answers, as `ProtocolNode` holds them (ADR-0016).
 const fn protocol_node(out: &mut [u8], at: usize, protocol: ProtocolShape) -> usize {
     match protocol {
         ProtocolShape::Told(kinds) => {
             let at = count(out, at, TOLD);
 
-            kind_set(out, at, kinds)
+            kind_set(out, at, &KindIds::of(kinds))
         }
         ProtocolShape::Named(entries) => {
             let at = count(out, at, NAMED_PROTOCOL);
-            let mut order = Ascending::answered(entries);
-            let mut at = count(out, at, order.count());
-            while let Some(entry) = order.next_entry() {
-                at = put(out, at, &entry.kind.plain_bytes());
-                at = kind_set(out, at, entry.answers);
+            let ordered = AnsweredIds::of(entries);
+            let mut at = count(out, at, ordered.count());
+            let mut place = 0;
+            while place < ordered.count() {
+                let (kind, answers) = ordered.entry(place);
+                at = count(out, at, REFERENT_KIND);
+                at = put(out, at, &kind.plain_bytes());
+                at = kind_set(out, at, answers);
+                place += 1;
             }
 
             at
@@ -331,12 +338,15 @@ const fn protocol_node(out: &mut [u8], at: usize, protocol: ProtocolShape) -> us
     }
 }
 
-/// Writes a set of kinds: their count, then each one's id in ascending order, each once.
-const fn kind_set(out: &mut [u8], at: usize, kinds: &'static [KindId]) -> usize {
-    let mut order = Ascending::kinds(kinds);
-    let mut at = count(out, at, order.count());
-    while let Some(kind) = order.next_kind() {
-        at = put(out, at, &kind.plain_bytes());
+/// Writes a set of kinds: their count, then each one's id in ascending order, each as a `Referent::Kind`.
+const fn kind_set(out: &mut [u8], at: usize, kinds: &KindIds) -> usize {
+    let ids = kinds.ids();
+    let mut at = count(out, at, ids.len());
+    let mut index = 0;
+    while index < ids.len() {
+        at = count(out, at, REFERENT_KIND);
+        at = put(out, at, &ids[index].plain_bytes());
+        index += 1;
     }
 
     at
