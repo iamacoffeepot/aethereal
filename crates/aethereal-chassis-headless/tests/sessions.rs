@@ -1829,6 +1829,8 @@ fn a_hub_that_starts_again_reattaches_to_a_running_session_reads_only_what_it_mi
     let session = open(&mut harness, &mut daemon, "kept")?;
     let id = daemon.made(0);
     say(&mut harness, &mut daemon, session, "hello")?;
+    // A line is taken before its container's stdin is attached, and written once it is: Claude reads it first.
+    stdin(&mut harness, &mut daemon, &id, 1);
     answer_turn(&mut daemon, &id, "before");
     transcript_with(&mut harness, &mut daemon, session, 3)?;
     let file = daemon.saved("sessions/1/transcript");
@@ -1955,11 +1957,12 @@ fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_wi
     let second = open(&mut harness, &mut daemon, "second")?;
     order(&mut harness, &Order::Archive(Archive { session: second }))?;
     until(&mut harness, &mut daemon, |caller, _| !caller.archived.is_empty());
-    say(&mut harness, &mut daemon, first, "hello")?;
+    let hello = say(&mut harness, &mut daemon, first, "hello")?;
     until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1, 2]);
     until(&mut harness, &mut daemon, |_, daemon| kept(daemon, second) == Some(Standing::Archived));
     let file = daemon.saved("sessions/1/transcript");
-    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 2);
+    // A line is taken once noted and lands later: the hub stops only once the transcript on disk holds it.
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == hello);
     drop(harness);
     daemon.connections.clear();
 
@@ -1977,7 +1980,7 @@ fn a_hub_that_starts_again_reads_its_sessions_back_through_files_by_the_index_wi
     let archived = read(&mut harness, &mut daemon, second, 0)?;
     assert!(!archived.is_empty(), "an archived session reads with no container");
     let number = say(&mut harness, &mut daemon, first, "again")?;
-    assert_eq!(number, 3, "the transcript goes on from its last number");
+    assert_eq!(number, hello + 1, "the transcript goes on from its last number");
     let third = open(&mut harness, &mut daemon, "third")?;
     assert_eq!(third, 3, "a new session is numbered after every one read back");
     until(&mut harness, &mut daemon, |_, daemon| index(daemon) == [1, 2, 3]);
@@ -2179,10 +2182,11 @@ fn a_transcript_s_append_is_answered_before_its_record_is_written_and_one_write_
     until(&mut harness, &mut daemon, |_, _| {
         fs::read_to_string(&log).unwrap_or_default().contains("done sessions/1/transcript\n")
     });
-    say(&mut harness, &mut daemon, session, "two")?;
+    let two = say(&mut harness, &mut daemon, session, "two")?;
     answer_turn(&mut daemon, &id, "three");
     let file = daemon.saved("sessions/1/transcript");
-    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == 6);
+    // The last entry is the last of the three lines of Claude's turn, which follow the line that began it.
+    until(&mut harness, &mut daemon, |_, _| Transcript::read(&fs::read(&file).unwrap_or_default()).last() == two + 3);
     let record = daemon.saved("sessions/1/record");
     until(&mut harness, &mut daemon, |_, _| fs::read_to_string(&log).unwrap_or_default().ends_with("record\n"));
 
