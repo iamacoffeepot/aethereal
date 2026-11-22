@@ -257,8 +257,11 @@ Before merging, also:
    - The cycle hash folds each member's name and positioned layout in order.
    - A member's id is the cycle hash with its position.
    - A change to any member changes every member's id and every id that reaches the cycle.
-4. Two members of one name and one blanked layout stop the build. Bisimilar members always tie, so an accepted cycle
-   holds no duplicate member. Colour refinement could accept the rest later.
+4. Two members of one name and one blanked layout stop the build: no order tells them apart. This catches the plain
+   duplicate, two types that are one kind by structure, but not every one. A set may count two such members where
+   another set counts one, so a contrived cycle can be accepted, and its ids then differ from those of its minimal
+   form. Both sides compute the same ids, so nothing mismatches. Colour refinement, with bisimilar members merged,
+   would make ids canonical and accept the false ties; neither is built here.
 5. A cycle's members are non-generic derived kinds. A generic or hand-written kind may hold references but may not be a
    member of a cycle. Both are enforced when the program is built.
 6. A kind's graph reaches at most 128 kinds and 1,024 edges; beyond that the build stops.
