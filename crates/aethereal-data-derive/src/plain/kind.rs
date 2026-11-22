@@ -29,8 +29,10 @@ impl Declaration {
         Ok(declaration)
     }
 
-    /// `impl Kind` for a named type, bounded as its `Schema` is, and for a type with no parameters a constant that
-    /// reads the name so a name that does not conform stops the build though nothing uses the kind.
+    /// `impl Kind` for a named type. A type with parameters is bounded as its `Schema` is, and its node is made in a
+    /// constant. A type with no parameters gets a static node, and a constant that computes its id, so a name that does
+    /// not conform, a cycle through a generic kind, two members that tie, or a graph past a cap stops the build where
+    /// the kind is defined, though nothing uses it (ADR-0006).
     pub fn implementation(&self, input: &DeriveInput, schema_generics: &Generics) -> TokenStream2 {
         let Self::Named(literal) = self else {
             return TokenStream2::new();
@@ -57,7 +59,13 @@ impl Declaration {
                 ::core::file!(), ":", ::core::line!(), ":", ::core::column!()
             )
         };
+        let id = quote_spanned! { name.span() =>
+            const _: ::aethereal_data::KindId = <#name as ::aethereal_data::Kind>::KIND.id();
+        };
 
+        // `KindPtr::defined` is sound here: `NODE` is an immutable static, which lives for the whole program and is
+        // never written, and `&raw const` takes its address without reading it, so a cycle of kinds may point at it
+        // before it is evaluated. Nothing else names `NODE`.
         quote! {
             const _: () = {
                 static NODE: ::aethereal_data::KindShape = ::aethereal_data::KindShape {
@@ -69,12 +77,11 @@ impl Declaration {
                 #[automatically_derived]
                 impl ::aethereal_data::Kind for #name {
                     const NAME: ::aethereal_data::KindName = #kind_name;
-                    // SAFETY: `NODE` is an immutable static.
                     const KIND: ::aethereal_data::KindPtr = unsafe { ::aethereal_data::KindPtr::defined(&raw const NODE) };
                 }
             };
 
-            const _: ::aethereal_data::KindName = <#name as ::aethereal_data::Kind>::NAME;
+            #id
         }
     }
 }

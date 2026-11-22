@@ -1,8 +1,8 @@
 //! What a piece of mail is (ADR-0006).
 
-use super::graph::kind_id;
+use super::cycle::named_members;
 use super::layout::nodes_layout;
-use super::{Kind, KindName};
+use super::{DescriptionFault, Kind, KindName};
 use crate::{Fnv, Key, Plain, SchemaNodes};
 
 /// What a piece of mail is: 64 bits computed from a kind's name and layout (ADR-0006).
@@ -29,13 +29,22 @@ impl KindId {
     /// ```
     #[must_use]
     pub const fn of<K: Kind>() -> Self {
-        const { kind_id(K::KIND) }
+        const { K::KIND.id() }
     }
 
-    /// The id of the kind a received name and schema describe.
-    #[must_use]
-    pub fn from_description(name: &KindName, schema: &SchemaNodes) -> Self {
-        Self::from_layout(name, nodes_layout(schema))
+    /// The id of the kind a received name and schema describe: a kind in no cycle, each kind its references name
+    /// written as its id. A member of a cycle is described with its whole cycle, by a
+    /// [`KindDescription`](super::KindDescription).
+    ///
+    /// # Errors
+    ///
+    /// [`DescriptionFault::MemberAlone`] when `schema` names a member of a cycle by its place.
+    pub fn from_description(name: &KindName, schema: &SchemaNodes) -> Result<Self, DescriptionFault> {
+        if !named_members(schema).is_empty() {
+            return Err(DescriptionFault::MemberAlone);
+        }
+
+        Ok(Self::from_layout(name, nodes_layout(schema)))
     }
 
     /// The id's bytes as plain data writes them (ADR-0002), for a writer that runs in a constant: a guest's section of
@@ -97,19 +106,25 @@ mod tests {
         // Catches a flat walk that unfolds sharing: 64 levels unfold to 2^64 leaves and never return.
         // Tripwire: the id of a shared 64-level description, computed separately.
         let deep = KindId::from_description(&KindName::new("test.deep"), &doubling(64, "level", SchemaNode::Boolean));
-        assert_eq!(bits(deep), 0x4309_90cc_9c7c_f8cb);
+        assert_eq!(deep.map(bits), Ok(0x4309_90cc_9c7c_f8cb));
     }
 
     #[test]
     fn description_ids_equal_const_ids() {
         // Catches `of` and `from_description` disagreeing on one id.
-        assert_eq!(KindId::from_description(&NoteOn::NAME, &SchemaNodes::of(&NoteOn::SHAPE)), KindId::of::<NoteOn>());
-        assert_eq!(KindId::from_description(&Path::NAME, &SchemaNodes::of(&Path::SHAPE)), KindId::of::<Path>());
+        assert_eq!(
+            KindId::from_description(&NoteOn::NAME, &SchemaNodes::of(&NoteOn::SHAPE)),
+            Ok(KindId::of::<NoteOn>())
+        );
+        assert_eq!(KindId::from_description(&Path::NAME, &SchemaNodes::of(&Path::SHAPE)), Ok(KindId::of::<Path>()));
         assert_eq!(
             KindId::from_description(&Command::NAME, &SchemaNodes::of(&Command::SHAPE)),
-            KindId::of::<Command>()
+            Ok(KindId::of::<Command>())
         );
-        assert_eq!(KindId::from_description(&Ledger::NAME, &SchemaNodes::of(&Ledger::SHAPE)), KindId::of::<Ledger>());
+        assert_eq!(
+            KindId::from_description(&Ledger::NAME, &SchemaNodes::of(&Ledger::SHAPE)),
+            Ok(KindId::of::<Ledger>())
+        );
     }
 
     #[test]

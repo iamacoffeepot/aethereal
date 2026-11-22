@@ -5,11 +5,16 @@
 //! place in the list, and which member it is. The list may be in any order: the id is computed as a constant computes
 //! it, from the members' names and layouts alone.
 
+#[cfg(test)]
+mod tests;
+
 use super::graph::{Graph, Membership};
 use super::layout::{CYCLE, Members, nodes_layout_in};
 use super::{KindId, KindName, KindPtr};
 use crate::{Fnv, Plain, ProtocolNode, Referent, SchemaNode, SchemaNodes};
 use alloc::vec::Vec;
+use core::error::Error;
+use core::{fmt, iter};
 
 /// A kind described as plain data: what a guest says of a kind for a host to compute its id from (ADR-0006).
 #[derive(Plain, Debug, Clone, PartialEq, Eq)]
@@ -39,10 +44,12 @@ pub struct CycleMember {
     pub schema: SchemaNodes,
 }
 
-/// Why a described cycle is refused.
+/// Why a description of a kind is refused (ADR-0006).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CycleFault {
-    /// It has no members, or `this` is past them.
+pub enum DescriptionFault {
+    /// A kind described alone names a member of a cycle by its place: a member arrives with its whole cycle.
+    MemberAlone,
+    /// A cycle has no members, or `this` is past them.
     NoSuchMember,
     /// A reference names a member past the list.
     MemberPastList,
@@ -52,6 +59,20 @@ pub enum CycleFault {
     /// Two members have one name and one layout with members blanked, so no order tells them apart.
     Tied,
 }
+
+impl fmt::Display for DescriptionFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemberAlone => f.write_str("a kind described alone names a member of a cycle"),
+            Self::NoSuchMember => f.write_str("a described cycle has no member at the place it describes"),
+            Self::MemberPastList => f.write_str("a reference names a member past the described cycle's list"),
+            Self::NotOneCycle => f.write_str("a described cycle's members are not one cycle"),
+            Self::Tied => f.write_str("two members of a described cycle have one name and one layout"),
+        }
+    }
+}
+
+impl Error for DescriptionFault {}
 
 impl KindDescription {
     /// The description of `kind`: alone, or with its cycle, its members in position order.
@@ -63,7 +84,7 @@ impl KindDescription {
             return Self::Alone { name: node.name.clone(), schema: SchemaNodes::of(node.shape) };
         };
 
-        let mut ordered: Vec<(u32, KindPtr)> = (0..graph.len())
+        let mut ordered: Vec<(usize, KindPtr)> = (0..graph.len())
             .filter_map(|index| match graph.membership(index) {
                 Membership::Member { component: other, position } if other == component => {
                     Some((position, graph.kind(index)))
@@ -80,54 +101,56 @@ impl KindDescription {
                 schema: SchemaNodes::of_in(kind.get().shape, &kinds),
             })
             .collect();
+        #[expect(clippy::cast_possible_truncation, reason = "a graph holds at most 128 kinds, so a position fits")]
+        let this = position as u32;
 
-        Self::Cycle { members, this: position }
+        Self::Cycle { members, this }
     }
 
     /// The id it describes.
     ///
     /// # Errors
     ///
-    /// A [`CycleFault`] when it describes a cycle that is not one, or whose members tie.
-    pub fn id(&self) -> Result<KindId, CycleFault> {
+    /// A [`DescriptionFault`] when it describes a kind alone that names a member of a cycle, or a cycle that is not
+    /// one or whose members tie.
+    pub fn id(&self) -> Result<KindId, DescriptionFault> {
         match self {
-            Self::Alone { name, schema } => Ok(KindId::from_description(name, schema)),
+            Self::Alone { name, schema } => KindId::from_description(name, schema),
             Self::Cycle { members, this } => cycle_id(members, *this),
         }
     }
 }
 
 /// The id of the member at `this` of `members`, computed as a constant computes it.
-fn cycle_id(members: &[CycleMember], this: u32) -> Result<KindId, CycleFault> {
+fn cycle_id(members: &[CycleMember], this: u32) -> Result<KindId, DescriptionFault> {
     let count = members.len();
     if this as usize >= count {
-        return Err(CycleFault::NoSuchMember);
+        return Err(DescriptionFault::NoSuchMember);
     }
     let named: Vec<Vec<u32>> = members.iter().map(|member| named_members(&member.schema)).collect();
     let past = named.iter().flatten().any(|listed| *listed as usize >= count);
     if past {
-        return Err(CycleFault::MemberPastList);
+        return Err(DescriptionFault::MemberPastList);
     }
     if !one_cycle(&named) {
-        return Err(CycleFault::NotOneCycle);
+        return Err(DescriptionFault::NotOneCycle);
     }
 
     let blanks: Vec<u64> = members.iter().map(|member| nodes_layout_in(&member.schema, Members::Blank)).collect();
     let mut order: Vec<usize> = (0..count).collect();
     order.sort_by(|one, other| {
-        let names = members[*one].name.as_str().as_bytes().cmp(members[*other].name.as_str().as_bytes());
-        names.then(blanks[*one].cmp(&blanks[*other]))
+        let by_name = members[*one].name.as_str().as_bytes().cmp(members[*other].name.as_str().as_bytes());
+        by_name.then(blanks[*one].cmp(&blanks[*other]))
     });
-    let tied = order.windows(2).any(|pair| {
-        matches!(pair, [one, other] if members[*one].name == members[*other].name && blanks[*one] == blanks[*other])
-    });
+    let ties = |one: usize, other: usize| members[one].name == members[other].name && blanks[one] == blanks[other];
+    let tied = order.windows(2).any(|pair| ties(pair[0], pair[1]));
     if tied {
-        return Err(CycleFault::Tied);
+        return Err(DescriptionFault::Tied);
     }
 
-    let mut positions = alloc::vec![0u32; count];
+    let mut positions = alloc::vec![0; count];
     for (position, listed) in order.iter().enumerate() {
-        positions[*listed] = position as u32;
+        positions[*listed] = position;
     }
     let cycle = order
         .iter()
@@ -138,26 +161,24 @@ fn cycle_id(members: &[CycleMember], this: u32) -> Result<KindId, CycleFault> {
             hash.count(name.len()).bytes(name).hash(layout)
         })
         .finish();
-    let position = positions[this as usize];
-    let layout = Fnv::new().byte(CYCLE).hash(cycle).count(position as usize).finish();
+    let layout = Fnv::new().byte(CYCLE).hash(cycle).count(positions[this as usize]).finish();
 
     Ok(KindId::from_layout(&members[this as usize].name, layout))
 }
 
 /// The places of the members `schema`'s references name.
-fn named_members(schema: &SchemaNodes) -> Vec<u32> {
+pub(super) fn named_members(schema: &SchemaNodes) -> Vec<u32> {
     let mut named = Vec::new();
-    let nodes = schema.earlier().iter().chain(core::iter::once(schema.root()));
+    let nodes = schema.earlier().iter().chain(iter::once(schema.root()));
     for node in nodes {
         let SchemaNode::Reference { protocol, .. } = node else {
             continue;
         };
         let referents: Vec<Referent> = match protocol {
             ProtocolNode::Told(kinds) => kinds.clone(),
-            ProtocolNode::Named(entries) => entries
-                .iter()
-                .flat_map(|entry| core::iter::once(entry.kind).chain(entry.answers.iter().copied()))
-                .collect(),
+            ProtocolNode::Named(entries) => {
+                entries.iter().flat_map(|entry| iter::once(entry.kind).chain(entry.answers.iter().copied())).collect()
+            }
         };
         named.extend(referents.iter().filter_map(|referent| match referent {
             Referent::Member(listed) => Some(*listed),

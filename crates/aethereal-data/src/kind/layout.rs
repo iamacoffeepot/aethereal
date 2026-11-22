@@ -1,10 +1,11 @@
 //! The layout hash over both forms of a schema (ADR-0006).
 
-use super::graph::{Graph, Slot, kind_id};
+use super::graph::{Graph, Slot};
+use super::kind_id;
 use crate::schema::MOST_LISTED;
 use crate::{
-    Answered, Field, FieldNode, Fields, FieldsNode, Float, Fnv, Integer, KindId, KindPtr, ProtocolNode, ProtocolShape,
-    Referent, SchemaNode, SchemaNodes, Shape, Variant,
+    Answered, AnsweredNode, Field, FieldNode, Fields, FieldsNode, Float, Fnv, Integer, KindPtr, ProtocolNode,
+    ProtocolShape, Referent, SchemaNode, SchemaNodes, Shape, Variant,
 };
 use alloc::vec::Vec;
 
@@ -53,7 +54,7 @@ pub const fn float_code(kind: Float) -> u8 {
 }
 
 /// The layout hash of a constant shape whose references name kinds by their ids, each computed from its own graph:
-/// the layout of a shape that is no member of a cycle, such as a state's.
+/// the layout of a shape that is no member of a cycle.
 #[cfg(test)]
 #[must_use]
 pub const fn shape_layout(shape: &Shape) -> u64 {
@@ -63,11 +64,11 @@ pub const fn shape_layout(shape: &Shape) -> u64 {
 /// What a reference's kind is written as in a layout.
 #[derive(Clone, Copy)]
 enum Target {
-    /// Its id: a kind outside the cycle being hashed, or any kind where no cycle is.
-    Known(KindId),
-    /// A member of the cycle being hashed: its key, its place in the graph while members are blank and its position
-    /// once they are given positions.
-    Inner(u32),
+    /// Its id's 64 bits: a kind outside the cycle being hashed, or any kind where no cycle is.
+    Known(u64),
+    /// A member of the cycle being hashed, by its key: its place in the graph while members are blank, and its
+    /// position once they are ordered.
+    Member(usize),
 }
 
 /// Where a layout being written finds what each reference's kinds are, and how it writes them.
@@ -87,12 +88,13 @@ enum Targets<'g> {
 
 /// How a layout writes the kinds its references name (ADR-0006).
 #[derive(Clone, Copy)]
-pub(crate) enum Mode {
-    /// No kind is a member of the layout's own cycle: each is its id, as for a kind in no cycle.
+pub(super) enum Mode {
+    /// The kind is in no cycle: each kind is its id.
     Acyclic,
-    /// A member of a cycle, before positions are given: a member it names is counted but not told apart.
+    /// The kind is a member of a cycle whose members are not yet ordered: a member it names is counted but not told
+    /// apart.
     Blank,
-    /// A member of a cycle, once positions are given: a member it names is its position.
+    /// The kind is a member of an ordered cycle: a member it names is its position.
     Positioned,
 }
 
@@ -111,14 +113,14 @@ impl<'g> Walk<'g> {
     /// What the next kind a reference names is written as.
     const fn next(&mut self, kind: KindPtr) -> Target {
         match &mut self.targets {
-            Targets::Direct => Target::Known(kind_id(kind)),
+            Targets::Direct => Target::Known(kind_id(kind).bits()),
             Targets::Graph { graph, cursor } => {
                 let to = graph.edge(*cursor);
                 *cursor += 1;
                 match graph.slot(to) {
-                    Slot::Known(id) => Target::Known(id),
-                    Slot::Blank => Target::Inner(to as u32),
-                    Slot::Member(position) => Target::Inner(position),
+                    Slot::Known(id) => Target::Known(id.bits()),
+                    Slot::Blank => Target::Member(to),
+                    Slot::Member(position) => Target::Member(position),
                     Slot::Unresolved => panic!("a kind's layout names a kind whose id is not yet computed"),
                 }
             }
@@ -158,157 +160,199 @@ pub(super) const fn layout(walk: &mut Walk<'_>, shape: &Shape) -> u64 {
         Shape::Enum { variants, .. } => fold_variants(walk, Fnv::new().byte(ENUM), variants).finish(),
         Shape::Reference { written, protocol } => {
             let written = layout(walk, written);
-            fold_protocol(walk, Fnv::new().byte(REFERENCE).hash(written), protocol).finish()
+            let start = Fnv::new().byte(REFERENCE).hash(written);
+            match protocol {
+                ProtocolShape::Told(kinds) => fold_told(walk, start.byte(TOLD), kinds),
+                ProtocolShape::Named(entries) => fold_named(walk, start.byte(NAMED), entries),
+            }
+            .finish()
         }
     }
 }
 
-/// The most kinds one entry of a named protocol is answered with: a handler answers with one kind or none.
-const MOST_ANSWERS: usize = 4;
+/// A set of kinds folded onto `start` as ADR-0006 writes one: the count of those outside the cycle and their ids
+/// ascending, then, in a member of a cycle, the count of the members it names and, once they are ordered, their
+/// positions ascending. `ids` and `members` are each ascending, each kind once.
+const fn fold_set(start: Fnv, ids: &[u64], members: &[usize], mode: Mode) -> Fnv {
+    let mut hash = start.count(ids.len());
+    let mut index = 0;
+    while index < ids.len() {
+        hash = hash.hash(ids[index]);
+        index += 1;
+    }
 
-/// A set of the kinds a reference names, as a walk finds them: ids ascending, then inner keys ascending, each once.
-#[derive(Clone, Copy)]
+    match mode {
+        Mode::Acyclic => {
+            assert!(members.is_empty(), "a kind in no cycle names a member of a cycle");
+            hash
+        }
+        Mode::Blank => hash.count(members.len()),
+        Mode::Positioned => {
+            hash = hash.count(members.len());
+            let mut index = 0;
+            while index < members.len() {
+                hash = hash.count(members[index]);
+                index += 1;
+            }
+            hash
+        }
+    }
+}
+
+/// The kinds a reference names, as a walk finds them: ids ascending, then members' keys ascending, each once.
 struct KindSet {
-    known: [u64; MOST_LISTED],
-    known_len: usize,
-    inner: [u32; MOST_LISTED],
-    inner_len: usize,
+    ids: [u64; MOST_LISTED],
+    id_count: usize,
+    members: [usize; MOST_LISTED],
+    member_count: usize,
 }
 
 impl KindSet {
-    const EMPTY: Self = Self { known: [0; MOST_LISTED], known_len: 0, inner: [0; MOST_LISTED], inner_len: 0 };
-
-    /// The next `count` kinds of `kinds`, found by `walk`.
-    const fn take(walk: &mut Walk<'_>, kinds: &[KindPtr]) -> Self {
-        let mut set = Self::EMPTY;
-        let mut index = 0;
-        while index < kinds.len() {
-            set.add(walk.next(kinds[index]));
-            index += 1;
-        }
-
-        set
-    }
-
-    /// Adds `target` in its place, unless it is held.
-    const fn add(&mut self, target: Target) {
-        match target {
-            Target::Known(id) => self.known_len = insert_u64(&mut self.known, self.known_len, id.bits()),
-            Target::Inner(key) => self.inner_len = insert_u32(&mut self.inner, self.inner_len, key),
-        }
-    }
+    /// No kinds.
+    const EMPTY: Self = Self { ids: [0; MOST_LISTED], id_count: 0, members: [0; MOST_LISTED], member_count: 0 };
 
     /// Whether it holds `target`.
     const fn holds(&self, target: Target) -> bool {
         match target {
-            Target::Known(id) => holds_u64(&self.known, self.known_len, id.bits()),
-            Target::Inner(key) => holds_u32(&self.inner, self.inner_len, key),
+            Target::Known(id) => {
+                let at = place_of(self.ids.split_at(self.id_count).0, id);
+                at < self.id_count && self.ids[at] == id
+            }
+            Target::Member(key) => {
+                let at = place_of_key(self.members.split_at(self.member_count).0, key);
+                at < self.member_count && self.members[at] == key
+            }
         }
     }
 
-    /// The set folded onto `start` as `mode` writes it: the count and ids, as for a kind in no cycle, then in a cycle
-    /// the count of members, and once they are given positions each one's position.
+    /// Adds `target`, which it does not hold, in its place, answering with that place among the ids or the members.
+    const fn add(&mut self, target: Target) -> usize {
+        assert!(self.id_count + self.member_count < MOST_LISTED, "a protocol lists at most 64 kinds");
+        match target {
+            Target::Known(id) => {
+                let at = place_of(self.ids.split_at(self.id_count).0, id);
+                shift_up(&mut self.ids, self.id_count, at);
+                self.ids[at] = id;
+                self.id_count += 1;
+                at
+            }
+            Target::Member(key) => {
+                let at = place_of_key(self.members.split_at(self.member_count).0, key);
+                shift_up(&mut self.members, self.member_count, at);
+                self.members[at] = key;
+                self.member_count += 1;
+                at
+            }
+        }
+    }
+
+    /// The set folded onto `start`, as [`fold_set`] writes one.
     const fn fold(&self, start: Fnv, mode: Mode) -> Fnv {
-        let mut hash = start.count(self.known_len);
-        let mut index = 0;
-        while index < self.known_len {
-            hash = hash.hash(self.known[index]);
-            index += 1;
+        fold_set(start, self.ids.split_at(self.id_count).0, self.members.split_at(self.member_count).0, mode)
+    }
+}
+
+/// A told list's kinds folded onto `start`, as a set (ADR-0016).
+const fn fold_told(walk: &mut Walk<'_>, start: Fnv, kinds: &[KindPtr]) -> Fnv {
+    let mut set = KindSet::EMPTY;
+    let mut index = 0;
+    while index < kinds.len() {
+        let target = walk.next(kinds[index]);
+        if !set.holds(target) {
+            set.add(target);
         }
-        match mode {
-            Mode::Acyclic => {
-                assert!(self.inner_len == 0, "a kind in no cycle names a member of a cycle by position");
-                hash
-            }
-            Mode::Blank => hash.count(self.inner_len),
-            Mode::Positioned => {
-                hash = hash.count(self.inner_len);
-                let mut index = 0;
-                while index < self.inner_len {
-                    hash = hash.number(self.inner[index]);
-                    index += 1;
-                }
-                hash
-            }
+        index += 1;
+    }
+
+    set.fold(start, walk.mode)
+}
+
+/// What one entry of a named protocol is answered with, as a walk finds it: a handler answers with one kind or none.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// It is a tell.
+    Nothing,
+    /// It is answered with this kind.
+    One(Target),
+}
+
+impl Answer {
+    /// The answer of `entry`, its kind found by `walk` after the entry's own.
+    const fn of(walk: &mut Walk<'_>, entry: &Answered) -> Self {
+        match entry.answer() {
+            Some(answer) => Self::One(walk.next(answer)),
+            None => Self::Nothing,
+        }
+    }
+
+    /// The answer folded onto `start` as a set of kinds is: one kind or none.
+    const fn fold(self, start: Fnv, mode: Mode) -> Fnv {
+        match self {
+            Self::Nothing => fold_set(start, &[], &[], mode),
+            Self::One(Target::Known(id)) => fold_set(start, &[id], &[], mode),
+            Self::One(Target::Member(key)) => fold_set(start, &[], &[key], mode),
         }
     }
 }
 
-/// A reference's protocol folded onto `start`: its tag, then its kinds as a set, and for a named protocol each kind's
-/// answers (ADR-0016). Where no cycle is, this is the fold of a protocol whose kinds are ids.
-const fn fold_protocol(walk: &mut Walk<'_>, start: Fnv, protocol: ProtocolShape) -> Fnv {
-    match protocol {
-        ProtocolShape::Told(kinds) => {
-            let mode = walk.mode;
-            KindSet::take(walk, kinds).fold(start.byte(TOLD), mode)
-        }
-        ProtocolShape::Named(entries) => fold_named(walk, start.byte(NAMED), entries),
-    }
-}
-
-/// A named protocol's entries folded onto `start`: the kinds outside the cycle ascending, each with its answers, then
-/// in a cycle the members, by position once they have one, or by their answers while they are blank.
+/// A named protocol's entries folded onto `start` (ADR-0006, ADR-0016): the count of the kinds outside the cycle, and
+/// each one's id ascending followed by its answers as a set. Then, in a member of a cycle, the count of the members it
+/// takes, and once they are ordered each one's position ascending followed by the hash of its answers; while they are
+/// not, the hashes of their answers ascending. A kind listed twice keeps the answer of its first entry.
 const fn fold_named(walk: &mut Walk<'_>, start: Fnv, entries: &[Answered]) -> Fnv {
     let mode = walk.mode;
     let mut kinds = KindSet::EMPTY;
-    let mut known_answers = [KindSet::EMPTY; MOST_LISTED];
-    let mut inner_answers = [0u64; MOST_LISTED];
+    let mut answers = [Answer::Nothing; MOST_LISTED];
+    let mut member_answers = [0; MOST_LISTED];
     let mut index = 0;
     while index < entries.len() {
         let kind = walk.next(entries[index].kind);
-        let answers = KindSet::take(walk, entries[index].answers);
-        assert!(entries[index].answers.len() <= MOST_ANSWERS, "a kind is answered with one kind or none");
-        // A kind listed twice keeps the answers of its first entry.
+        let answer = Answer::of(walk, &entries[index]);
         if !kinds.holds(kind) {
-            kinds.add(kind);
+            let at = kinds.add(kind);
             match kind {
-                Target::Known(id) => {
-                    let at = place_u64(&kinds.known, kinds.known_len, id.bits());
-                    shift_targets(&mut known_answers, kinds.known_len, at);
-                    known_answers[at] = answers;
+                Target::Known(_) => {
+                    shift_up(&mut answers, kinds.id_count - 1, at);
+                    answers[at] = answer;
                 }
-                Target::Inner(key) => {
-                    let at = place_u32(&kinds.inner, kinds.inner_len, key);
-                    shift_u64(&mut inner_answers, kinds.inner_len, at);
-                    inner_answers[at] = answers.fold(Fnv::new(), mode).finish();
+                Target::Member(_) => {
+                    shift_up(&mut member_answers, kinds.member_count - 1, at);
+                    member_answers[at] = answer.fold(Fnv::new(), mode).finish();
                 }
             }
         }
         index += 1;
     }
 
-    let mut hash = start.count(kinds.known_len);
+    let mut hash = start.count(kinds.id_count);
     let mut index = 0;
-    while index < kinds.known_len {
-        hash = hash.hash(kinds.known[index]);
-        hash = match mode {
-            Mode::Acyclic => known_answers[index].fold(hash, mode),
-            Mode::Blank | Mode::Positioned => hash.hash(known_answers[index].fold(Fnv::new(), mode).finish()),
-        };
+    while index < kinds.id_count {
+        hash = answers[index].fold(hash.hash(kinds.ids[index]), mode);
         index += 1;
     }
+
+    let member_count = kinds.member_count;
     match mode {
         Mode::Acyclic => {
-            assert!(kinds.inner_len == 0, "a kind in no cycle names a member of a cycle by position");
+            assert!(member_count == 0, "a kind in no cycle names a member of a cycle");
             hash
         }
         Mode::Positioned => {
-            hash = hash.count(kinds.inner_len);
+            hash = hash.count(member_count);
             let mut index = 0;
-            while index < kinds.inner_len {
-                hash = hash.number(kinds.inner[index]).hash(inner_answers[index]);
+            while index < member_count {
+                hash = hash.count(kinds.members[index]).hash(member_answers[index]);
                 index += 1;
             }
             hash
         }
         Mode::Blank => {
-            // Blank members are not told apart, so their entries are folded in the order of their answers.
-            let mut answers = inner_answers;
-            sort_u64(&mut answers, kinds.inner_len);
-            hash = hash.count(kinds.inner_len);
+            // Members not yet ordered are not told apart, so their entries are written in the order of their answers.
+            sort_ascending(member_answers.split_at_mut(member_count).0);
+            hash = hash.count(member_count);
             let mut index = 0;
-            while index < kinds.inner_len {
-                hash = hash.hash(answers[index]);
+            while index < member_count {
+                hash = hash.hash(member_answers[index]);
                 index += 1;
             }
             hash
@@ -356,92 +400,39 @@ const fn fold_variants(walk: &mut Walk<'_>, start: Fnv, variants: &[Variant]) ->
     hash
 }
 
-/// The place `value` goes in the ascending `held[..len]`.
-const fn place_u64(held: &[u64], len: usize, value: u64) -> usize {
+/// The place `value` goes in the ascending `held`.
+const fn place_of(held: &[u64], value: u64) -> usize {
     let mut at = 0;
-    while at < len && held[at] < value {
+    while at < held.len() && held[at] < value {
         at += 1;
     }
 
     at
 }
 
-/// The place `value` goes in the ascending `held[..len]`.
-const fn place_u32(held: &[u32], len: usize, value: u32) -> usize {
+/// The place `key` goes in the ascending `held`.
+const fn place_of_key(held: &[usize], key: usize) -> usize {
     let mut at = 0;
-    while at < len && held[at] < value {
+    while at < held.len() && held[at] < key {
         at += 1;
     }
 
     at
 }
 
-/// Whether the ascending `held[..len]` holds `value`.
-const fn holds_u64(held: &[u64], len: usize, value: u64) -> bool {
-    let at = place_u64(held, len, value);
-    at < len && held[at] == value
-}
-
-/// Whether the ascending `held[..len]` holds `value`.
-const fn holds_u32(held: &[u32], len: usize, value: u32) -> bool {
-    let at = place_u32(held, len, value);
-    at < len && held[at] == value
-}
-
-/// Inserts `value` into the ascending `held[..len]` unless held, answering with the new length.
-const fn insert_u64(held: &mut [u64; MOST_LISTED], len: usize, value: u64) -> usize {
-    let at = place_u64(held, len, value);
-    if at < len && held[at] == value {
-        return len;
-    }
-    assert!(len < MOST_LISTED, "a protocol lists at most 64 kinds");
-    shift_u64(held, len, at);
-    held[at] = value;
-
-    len + 1
-}
-
-/// Inserts `value` into the ascending `held[..len]` unless held, answering with the new length.
-const fn insert_u32(held: &mut [u32; MOST_LISTED], len: usize, value: u32) -> usize {
-    let at = place_u32(held, len, value);
-    if at < len && held[at] == value {
-        return len;
-    }
-    assert!(len < MOST_LISTED, "a protocol lists at most 64 kinds");
+/// Moves `values[at..len]` one place up, making room at `at` for the value that will make them `len + 1`.
+const fn shift_up<T: Copy>(values: &mut [T; MOST_LISTED], len: usize, at: usize) {
     let mut index = len;
     while index > at {
-        held[index] = held[index - 1];
-        index -= 1;
-    }
-    held[at] = value;
-
-    len + 1
-}
-
-/// Moves `held[at..len]` one place up, the one at `len - 1` written past it. `len` is the length after an insert.
-const fn shift_u64(held: &mut [u64; MOST_LISTED], len: usize, at: usize) {
-    let mut index = len;
-    while index > at {
-        if index < MOST_LISTED {
-            held[index] = held[index - 1];
-        }
+        values[index] = values[index - 1];
         index -= 1;
     }
 }
 
-/// Moves `held[at..len - 1]` one place up, making room at `at`: `len` is the length after the insert.
-const fn shift_targets(held: &mut [KindSet; MOST_LISTED], len: usize, at: usize) {
-    let mut index = len - 1;
-    while index > at {
-        held[index] = held[index - 1];
-        index -= 1;
-    }
-}
-
-/// Sorts `values[..len]` ascending.
-const fn sort_u64(values: &mut [u64; MOST_LISTED], len: usize) {
+/// Sorts `values` ascending.
+const fn sort_ascending(values: &mut [u64]) {
     let mut index = 1;
-    while index < len {
+    while index < values.len() {
         let mut at = index;
         while at > 0 && values[at - 1] > values[at] {
             let lower = values[at - 1];
@@ -454,6 +445,9 @@ const fn sort_u64(values: &mut [u64; MOST_LISTED], len: usize) {
 }
 
 /// The layout hash of a flat schema in no cycle: one step per node, in stored order.
+///
+/// A schema in no cycle names no member of one; [`KindId::from_description`](super::KindId::from_description) refuses
+/// a schema that does before it is hashed.
 pub(super) fn nodes_layout(schema: &SchemaNodes) -> u64 {
     nodes_layout_in(schema, Members::Acyclic)
 }
@@ -461,29 +455,34 @@ pub(super) fn nodes_layout(schema: &SchemaNodes) -> u64 {
 /// How a flat layout writes the members of a cycle its references name, as [`Mode`] says for a constant one.
 #[derive(Clone, Copy)]
 pub(super) enum Members<'m> {
-    /// It names none.
+    /// It is in no cycle, and names no member of one.
     Acyclic,
     /// Counted, not told apart.
     Blank,
-    /// By position: the position of the member at each place of the list the description gives.
-    Positioned(&'m [u32]),
+    /// By position: the position of the member at each place of the list a description gives.
+    Positioned(&'m [usize]),
 }
 
 impl Members<'_> {
-    /// The mode a constant layout is written in to fold as this one does.
-    const fn mode(self) -> Mode {
+    /// The key of the member at `listed`: its position, or, while members are blank, its place in the list.
+    ///
+    /// A described cycle's places are checked to be in the list before it is hashed, so the fallback below is never
+    /// reached; it keeps the lookup total without a panic.
+    fn key(self, listed: u32) -> usize {
+        let listed = listed as usize;
         match self {
-            Self::Acyclic => Mode::Acyclic,
-            Self::Blank => Mode::Blank,
-            Self::Positioned(_) => Mode::Positioned,
+            Self::Positioned(positions) => positions.get(listed).copied().unwrap_or(usize::MAX),
+            Self::Acyclic | Self::Blank => listed,
         }
     }
 
-    /// The key of the member at `listed`: its position, or, while members are blank, its place in the list.
-    fn key(self, listed: u32) -> u32 {
+    /// The members part of a set folded onto `start`, as [`fold_set`] writes it: nothing in no cycle, the count while
+    /// members are blank, and the count and the positions ascending once they are ordered. `keys` are ascending.
+    fn fold(self, start: Fnv, keys: &[usize]) -> Fnv {
         match self {
-            Self::Positioned(positions) => positions.get(listed as usize).copied().unwrap_or(u32::MAX),
-            Self::Acyclic | Self::Blank => listed,
+            Self::Acyclic => start,
+            Self::Blank => start.count(keys.len()),
+            Self::Positioned(_) => keys.iter().fold(start.count(keys.len()), |hash, key| hash.count(*key)),
         }
     }
 }
@@ -528,66 +527,67 @@ fn node_layout(node: &SchemaNode, earlier: &[u64], members: Members<'_>) -> u64 
             folded.finish()
         }
         SchemaNode::Reference { written, protocol } => {
-            fold_protocol_node(Fnv::new().byte(REFERENCE).hash(hash_at(earlier, *written)), protocol, members).finish()
+            let start = Fnv::new().byte(REFERENCE).hash(hash_at(earlier, *written));
+            match protocol {
+                ProtocolNode::Told(kinds) => fold_referents(start.byte(TOLD), kinds, members),
+                ProtocolNode::Named(entries) => fold_named_nodes(start.byte(NAMED), entries, members),
+            }
+            .finish()
         }
     }
 }
 
-/// A flat protocol folded onto `start` as [`fold_protocol`] folds a constant one.
-fn fold_protocol_node(start: Fnv, protocol: &ProtocolNode, members: Members<'_>) -> Fnv {
-    let mode = members.mode();
-    match protocol {
-        ProtocolNode::Told(kinds) => KindSet::of_referents(kinds, members).fold(start.byte(TOLD), mode),
-        ProtocolNode::Named(entries) => {
-            let mut known = Vec::new();
-            let mut inner = Vec::new();
-            for entry in entries {
-                let answers = KindSet::of_referents(&entry.answers, members);
-                match entry.kind {
-                    Referent::Kind(id) => known.push((id.bits(), answers)),
-                    Referent::Member(listed) => {
-                        inner.push((members.key(listed), answers.fold(Fnv::new(), mode).finish()))
-                    }
-                }
-            }
-            known.sort_by_key(|(id, _)| *id);
-            inner.sort_unstable();
-            let mut hash = start.byte(NAMED).count(known.len());
-            for (id, answers) in &known {
-                hash = hash.hash(*id);
-                hash = match mode {
-                    Mode::Acyclic => answers.fold(hash, mode),
-                    Mode::Blank | Mode::Positioned => hash.hash(answers.fold(Fnv::new(), mode).finish()),
-                };
-            }
-            match members {
-                Members::Acyclic => hash,
-                Members::Positioned(_) => inner
-                    .iter()
-                    .fold(hash.count(inner.len()), |hash, (position, answers)| hash.number(*position).hash(*answers)),
-                Members::Blank => {
-                    let mut answers: Vec<u64> = inner.iter().map(|(_, answers)| *answers).collect();
-                    answers.sort_unstable();
-                    answers.iter().fold(hash.count(inner.len()), |hash, answer| hash.hash(*answer))
-                }
+/// Flat `referents` folded onto `start` as [`fold_set`] folds a constant set, each member keyed as `members` says.
+fn fold_referents(start: Fnv, referents: &[Referent], members: Members<'_>) -> Fnv {
+    let mut ids = Vec::new();
+    let mut keys = Vec::new();
+    for referent in referents {
+        match *referent {
+            Referent::Kind(id) => ids.push(id.bits()),
+            Referent::Member(listed) => keys.push(members.key(listed)),
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    keys.sort_unstable();
+    keys.dedup();
+
+    let hash = ids.iter().fold(start.count(ids.len()), |hash, id| hash.hash(*id));
+    members.fold(hash, &keys)
+}
+
+/// A flat named protocol's entries folded onto `start` as [`fold_named`] folds a constant one.
+fn fold_named_nodes(start: Fnv, entries: &[AnsweredNode], members: Members<'_>) -> Fnv {
+    let mut outside = Vec::new();
+    let mut inside = Vec::new();
+    for entry in entries {
+        match entry.kind {
+            Referent::Kind(id) => outside.push((id.bits(), entry.answers.as_slice())),
+            Referent::Member(listed) => {
+                let answers = fold_referents(Fnv::new(), &entry.answers, members).finish();
+                inside.push((members.key(listed), answers));
             }
         }
     }
-}
+    // Stable sorts, so a kind listed twice keeps the answers of its first entry.
+    outside.sort_by_key(|(id, _)| *id);
+    outside.dedup_by_key(|(id, _)| *id);
+    inside.sort_by_key(|(key, _)| *key);
+    inside.dedup_by_key(|(key, _)| *key);
 
-impl KindSet {
-    /// The set flat `referents` name, members keyed as `members` says.
-    fn of_referents(referents: &[Referent], members: Members<'_>) -> Self {
-        let mut set = Self::EMPTY;
-        for referent in referents {
-            let target = match *referent {
-                Referent::Kind(id) => Target::Known(id),
-                Referent::Member(listed) => Target::Inner(members.key(listed)),
-            };
-            set.add(target);
+    let hash = outside
+        .iter()
+        .fold(start.count(outside.len()), |hash, (id, answers)| fold_referents(hash.hash(*id), answers, members));
+    match members {
+        Members::Acyclic => hash,
+        Members::Positioned(_) => inside
+            .iter()
+            .fold(hash.count(inside.len()), |hash, (position, answers)| hash.count(*position).hash(*answers)),
+        Members::Blank => {
+            let mut answers: Vec<u64> = inside.iter().map(|(_, answers)| *answers).collect();
+            answers.sort_unstable();
+            answers.iter().fold(hash.count(answers.len()), |hash, answers| hash.hash(*answers))
         }
-
-        set
     }
 }
 

@@ -44,8 +44,7 @@ pub use json::{
 };
 pub use key::Key;
 pub use kind::{
-    CycleFault, CycleMember, IntoKinds, Kind, KindDescription, KindId, KindName, KindPtr, KindShape, MOST_EDGES,
-    MOST_KINDS, Site, kind_id,
+    CycleMember, DescriptionFault, IntoKinds, Kind, KindDescription, KindId, KindName, KindPtr, KindShape, Site,
 };
 pub use path::{
     ActorId, ActorKey, ActorPath, Instanced, KeyName, Keyed, PathSegment, PathTooDeep, Singleton, Then, TypedKey,

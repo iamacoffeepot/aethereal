@@ -7,7 +7,7 @@ mod same_layout;
 
 pub use named_fields::{FieldBytes, NamedFields};
 pub use nodes::{FieldNode, FieldsNode, SchemaFault, SchemaNode, SchemaNodes, VariantNode};
-pub(crate) use protocol::MOST_LISTED;
+pub use protocol::MOST_LISTED;
 pub use protocol::{Answered, AnsweredIds, AnsweredNode, KindIds, ProtocolNode, ProtocolShape, Referent};
 
 use crate::Plain;

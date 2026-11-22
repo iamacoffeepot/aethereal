@@ -9,7 +9,7 @@
 //! [`SchemaNodes::of`]: aethereal_data::SchemaNodes::of
 
 use super::{count, put, text};
-use aethereal_data::{AnsweredIds, Field, Fields, Float, Integer, KindIds, ProtocolShape, Shape, Variant};
+use aethereal_data::{AnsweredIds, Field, Fields, Float, Integer, KindId, KindIds, ProtocolShape, Shape, Variant};
 
 // The selector of each case of `SchemaNode`, in the order it declares them (ADR-0003).
 const BOOLEAN: usize = 0;
@@ -318,7 +318,7 @@ const fn protocol_node(out: &mut [u8], at: usize, protocol: ProtocolShape) -> us
         ProtocolShape::Told(kinds) => {
             let at = count(out, at, TOLD);
 
-            kind_set(out, at, &KindIds::of(kinds))
+            kind_set(out, at, KindIds::of(kinds).ids())
         }
         ProtocolShape::Named(entries) => {
             let at = count(out, at, NAMED_PROTOCOL);
@@ -338,9 +338,8 @@ const fn protocol_node(out: &mut [u8], at: usize, protocol: ProtocolShape) -> us
     }
 }
 
-/// Writes a set of kinds: their count, then each one's id in ascending order, each as a `Referent::Kind`.
-const fn kind_set(out: &mut [u8], at: usize, kinds: &KindIds) -> usize {
-    let ids = kinds.ids();
+/// Writes a set of kinds, their `ids` ascending: their count, then each id as a `Referent::Kind`.
+const fn kind_set(out: &mut [u8], at: usize, ids: &[KindId]) -> usize {
     let mut at = count(out, at, ids.len());
     let mut index = 0;
     while index < ids.len() {

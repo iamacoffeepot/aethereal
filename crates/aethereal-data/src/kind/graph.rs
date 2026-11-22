@@ -3,11 +3,11 @@
 //!
 //! The kinds a kind's references reach, and theirs in turn, are a graph. A kind's id is computed from the whole graph
 //! it reaches: the graph is found from its node, broken into its strongly connected components, and each component
-//! hashed after every component it reaches. A component of one kind with no edge to itself is hashed as a kind always
-//! was, each kind its references name written as its id. A component of more kinds, or of one that names itself, is a
-//! cycle, hashed as one unit: each member's layout written with the members it names as positions, the members in the
-//! order of their names, then their layouts with members blanked; the cycle hashed once; and each member's id the
-//! cycle's hash with its position.
+//! hashed after every component it reaches. A component of one kind with no edge to itself is hashed as the table of
+//! ADR-0006 says, each kind its references name written as its id. Any other component is a cycle, hashed as one unit:
+//! its members ordered by their names, then by their layouts with members counted but not told apart; each member's
+//! layout written with the members it names as their positions in that order; the cycle hashed once; and each member's
+//! id made from the cycle's hash and its position.
 //!
 //! Nothing here recurses over the graph: it is walked with explicit stacks, and a graph past [`MOST_KINDS`] kinds or
 //! [`MOST_EDGES`] edges stops the build.
@@ -16,53 +16,58 @@ use super::layout::{CYCLE, Mode, Walk, layout};
 use super::shape::{KindPtr, Site};
 use super::{KindId, KindName};
 use crate::{Fields, Fnv, ProtocolShape, Shape};
+use core::cmp::Ordering;
 
-/// The most kinds one kind's graph may reach, itself included.
+/// The most kinds one kind's graph may reach, itself included (ADR-0006).
 pub const MOST_KINDS: usize = 128;
 
-/// The most edges one kind's graph may hold: one for each kind a reference lists, repeats included.
+/// The most edges one kind's graph may hold: one for each kind a reference lists, repeats included (ADR-0006).
 pub const MOST_EDGES: usize = 1024;
 
 /// What the hash knows of one kind of the graph.
 #[derive(Clone, Copy)]
-pub(crate) enum Slot {
-    /// Its id is not yet computed: its component is not yet reached.
+pub(super) enum Slot {
+    /// Its component is not yet reached, so its id is not yet computed.
     Unresolved,
     /// Its id.
     Known(KindId),
-    /// A member of the cycle being hashed, before positions are given.
+    /// A member of the cycle being hashed, before the members are ordered.
     Blank,
-    /// A member of the cycle being hashed, at its position.
-    Member(u32),
+    /// A member of the cycle being hashed, at its position in the cycle's order.
+    Member(usize),
 }
 
 /// Whether a kind of the graph is a member of a cycle, and where.
 #[derive(Clone, Copy)]
-pub(crate) enum Membership {
-    /// It is a component of its own.
+pub(super) enum Membership {
+    /// It is a component of its own, with no edge to itself.
     Alone,
-    /// It is a member of the cycle numbered `component`, at `position`.
-    Member { component: u32, position: u32 },
+    /// It is a member of the cycle numbered `component`, at `position` in its order.
+    Member { component: usize, position: usize },
 }
 
 /// The kinds one kind reaches, the edges between them, and what is known of each.
-pub(crate) struct Graph {
+///
+/// Its kinds' edges are contiguous, in the order a layout's walk meets them: a told list in order, a named entry's kind
+/// then its answer. The arrays are sized by the caps ADR-0006 states.
+pub(super) struct Graph {
     kinds: [KindPtr; MOST_KINDS],
     sites: [u64; MOST_KINDS],
     len: usize,
-    edges: [u16; MOST_EDGES],
+    edges: [usize; MOST_EDGES],
     edge_len: usize,
-    first_edge: [u16; MOST_KINDS],
-    end_edge: [u16; MOST_KINDS],
+    first_edge: [usize; MOST_KINDS],
+    end_edge: [usize; MOST_KINDS],
     slots: [Slot; MOST_KINDS],
     membership: [Membership; MOST_KINDS],
 }
 
 impl Graph {
     /// The graph `root` reaches, root first, with every id computed.
-    pub(crate) const fn of(root: KindPtr) -> Self {
+    pub(super) const fn of(root: KindPtr) -> Self {
+        // Every place past `len` holds the root, a node that exists, and is never read as a kind of the graph.
         let mut graph = Self {
-            kinds: [KindPtr::UNSET; MOST_KINDS],
+            kinds: [root; MOST_KINDS],
             sites: [0; MOST_KINDS],
             len: 0,
             edges: [0; MOST_EDGES],
@@ -81,27 +86,27 @@ impl Graph {
     }
 
     /// The kind at `index`.
-    pub(crate) const fn kind(&self, index: usize) -> KindPtr {
+    pub(super) const fn kind(&self, index: usize) -> KindPtr {
         self.kinds[index]
     }
 
     /// How many kinds it holds.
-    pub(crate) const fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         self.len
     }
 
     /// The kind edge number `edge` reaches.
-    pub(crate) const fn edge(&self, edge: usize) -> usize {
-        self.edges[edge] as usize
+    pub(super) const fn edge(&self, edge: usize) -> usize {
+        self.edges[edge]
     }
 
     /// What is known of the kind at `index`.
-    pub(crate) const fn slot(&self, index: usize) -> Slot {
+    pub(super) const fn slot(&self, index: usize) -> Slot {
         self.slots[index]
     }
 
     /// Whether the kind at `index` is a member of a cycle.
-    pub(crate) const fn membership(&self, index: usize) -> Membership {
+    pub(super) const fn membership(&self, index: usize) -> Membership {
         self.membership[index]
     }
 
@@ -109,10 +114,9 @@ impl Graph {
     const fn discover(&mut self) {
         let mut next = 0;
         while next < self.len {
-            self.first_edge[next] = self.edge_len as u16;
-            let shape = self.kinds[next].get().shape;
-            self.expand(shape);
-            self.end_edge[next] = self.edge_len as u16;
+            self.first_edge[next] = self.edge_len;
+            self.expand(self.kinds[next].get().shape);
+            self.end_edge[next] = self.edge_len;
             next += 1;
         }
     }
@@ -154,12 +158,20 @@ impl Graph {
             Shape::Reference { written, protocol } => {
                 self.expand(written);
                 match protocol {
-                    ProtocolShape::Told(kinds) => self.edges_to(kinds),
+                    ProtocolShape::Told(kinds) => {
+                        let mut index = 0;
+                        while index < kinds.len() {
+                            self.edge_to(kinds[index]);
+                            index += 1;
+                        }
+                    }
                     ProtocolShape::Named(entries) => {
                         let mut index = 0;
                         while index < entries.len() {
                             self.edge_to(entries[index].kind);
-                            self.edges_to(entries[index].answers);
+                            if let Some(answer) = entries[index].answer() {
+                                self.edge_to(answer);
+                            }
                             index += 1;
                         }
                     }
@@ -177,32 +189,24 @@ impl Graph {
         }
     }
 
-    /// Adds an edge to each of `kinds`.
-    const fn edges_to(&mut self, kinds: &[KindPtr]) {
-        let mut index = 0;
-        while index < kinds.len() {
-            self.edge_to(kinds[index]);
-            index += 1;
-        }
-    }
-
-    /// Adds an edge to `kind`, adding it first unless it is held.
+    /// Adds an edge to `kind`, adding the kind first unless it is held.
     const fn edge_to(&mut self, kind: KindPtr) {
         assert!(self.edge_len < MOST_EDGES, "a kind's graph of references holds more than 1024 edges");
         let to = match self.find(kind) {
             Some(index) => index,
             None => self.add(kind),
         };
-        self.edges[self.edge_len] = to as u16;
+        self.edges[self.edge_len] = to;
         self.edge_len += 1;
     }
 
-    /// The place of `kind`, when it is held: a non-generic kind is found by its site, a generic one never is.
+    /// The place of `kind`, when it is held: a non-generic kind is found by its site, and a generic one never is.
     const fn find(&self, kind: KindPtr) -> Option<usize> {
         let Site::Defined { at } = kind.get().site else {
             return None;
         };
-        let hash = Fnv::new().bytes(at.as_bytes()).finish();
+
+        let hash = site_hash(at);
         let mut index = 0;
         while index < self.len {
             let found = match self.kinds[index].get().site {
@@ -224,7 +228,7 @@ impl Graph {
         let index = self.len;
         self.kinds[index] = kind;
         self.sites[index] = match kind.get().site {
-            Site::Defined { at } => Fnv::new().bytes(at.as_bytes()).finish(),
+            Site::Defined { at } => site_hash(at),
             Site::Unsited => 0,
         };
         self.len += 1;
@@ -236,23 +240,25 @@ impl Graph {
     const fn resolve(&mut self, components: &Components) {
         let mut component = 0;
         while component < components.count {
-            let mut members = [0u16; MOST_KINDS];
+            let mut members = [0; MOST_KINDS];
             let mut count = 0;
             let mut index = 0;
             while index < self.len {
-                if components.of[index] as usize == component {
-                    members[count] = index as u16;
+                if components.of[index] == component {
+                    members[count] = index;
                     count += 1;
                 }
                 index += 1;
             }
-            let cyclic = count > 1 || self.names_itself(members[0] as usize);
-            if cyclic {
-                self.resolve_cycle(component as u32, &members, count);
+
+            // A component of more than one kind, or of one kind that names itself, is a cycle.
+            let only = members[0];
+            let several = count > 1;
+            let names_itself = self.names_itself(only);
+            if several || names_itself {
+                self.resolve_cycle(component, members.split_at(count).0);
             } else {
-                let only = members[0] as usize;
-                let shape = self.kinds[only].get().shape;
-                let layout = layout(&mut Walk::over(self, self.first_edge[only] as usize, Mode::Acyclic), shape);
+                let layout = self.layout_of(only, Mode::Acyclic);
                 self.slots[only] = Slot::Known(KindId::from_layout(&self.kinds[only].get().name, layout));
             }
             component += 1;
@@ -261,9 +267,9 @@ impl Graph {
 
     /// Whether the kind at `index` has an edge to itself.
     const fn names_itself(&self, index: usize) -> bool {
-        let mut edge = self.first_edge[index] as usize;
-        while edge < self.end_edge[index] as usize {
-            if self.edges[edge] as usize == index {
+        let mut edge = self.first_edge[index];
+        while edge < self.end_edge[index] {
+            if self.edges[edge] == index {
                 return true;
             }
             edge += 1;
@@ -272,45 +278,46 @@ impl Graph {
         false
     }
 
-    /// Hashes the cycle of the `count` kinds `members` as one unit.
-    const fn resolve_cycle(&mut self, component: u32, members: &[u16; MOST_KINDS], count: usize) {
+    /// Hashes the cycle numbered `component`, of the kinds at `members`, as one unit (ADR-0006).
+    const fn resolve_cycle(&mut self, component: usize, members: &[usize]) {
+        let count = members.len();
         let mut index = 0;
         while index < count {
-            let member = members[index] as usize;
+            let member = members[index];
             assert!(
                 matches!(self.kinds[member].get().site, Site::Defined { .. }),
                 "a cycle of kinds passes through a generic kind or one whose `Kind` is written by hand, which has no \
-                 static node: a cycle's members are non-generic derived kinds"
+                 static node: a cycle's members are kinds with no parameters, whose `Kind` the derive wrote"
             );
             self.slots[member] = Slot::Blank;
             index += 1;
         }
 
-        // Each member's layout with the members it names blanked: what orders members of one name.
-        let mut blanks = [0u64; MOST_KINDS];
+        // Each member's layout with the members it names counted but not told apart: what orders members of one name.
+        let mut blanks = [0; MOST_KINDS];
         let mut index = 0;
         while index < count {
-            blanks[index] = self.layout_of(members[index] as usize, Mode::Blank);
+            blanks[index] = self.layout_of(members[index], Mode::Blank);
             index += 1;
         }
 
-        // The members in order of name, then of blank layout: insertion sort over places in `members`.
-        let mut order = [0u16; MOST_KINDS];
+        // The members in order of name, then of blank layout: an insertion sort over places in `members`.
+        let mut order = [0; MOST_KINDS];
         let mut index = 0;
         while index < count {
-            order[index] = index as u16;
+            order[index] = index;
             index += 1;
         }
         let mut index = 1;
         while index < count {
             let mut at = index;
             while at > 0 {
-                let before = self.member_order(members, &blanks, order[at - 1] as usize, order[at] as usize);
+                let before = self.member_order(members, &blanks, order[at - 1], order[at]);
                 assert!(
-                    !matches!(before, core::cmp::Ordering::Equal),
+                    !matches!(before, Ordering::Equal),
                     "two kinds of one name and one layout are members of one cycle: no order tells them apart"
                 );
-                if matches!(before, core::cmp::Ordering::Less) {
+                if matches!(before, Ordering::Less) {
                     break;
                 }
                 let lower = order[at - 1];
@@ -323,26 +330,27 @@ impl Graph {
 
         let mut position = 0;
         while position < count {
-            let member = members[order[position] as usize] as usize;
-            self.slots[member] = Slot::Member(position as u32);
-            self.membership[member] = Membership::Member { component, position: position as u32 };
+            let member = members[order[position]];
+            self.slots[member] = Slot::Member(position);
+            self.membership[member] = Membership::Member { component, position };
             position += 1;
         }
 
-        // The cycle's hash: its count, then each member in position order, its name and its layout.
+        // The cycle's hash: the tag, the member count, then each member in order, its name and its positioned layout.
         let mut cycle = Fnv::new().byte(CYCLE).count(count);
         let mut position = 0;
         while position < count {
-            let member = members[order[position] as usize] as usize;
+            let member = members[order[position]];
             let name = self.kinds[member].get().name.as_str().as_bytes();
             cycle = cycle.count(name.len()).bytes(name).hash(self.layout_of(member, Mode::Positioned));
             position += 1;
         }
         let cycle = cycle.finish();
 
+        // Each member's id, from its name and the layout hash of the tag, the cycle's hash, and its position.
         let mut position = 0;
         while position < count {
-            let member = members[order[position] as usize] as usize;
+            let member = members[order[position]];
             let layout = Fnv::new().byte(CYCLE).hash(cycle).count(position).finish();
             self.slots[member] = Slot::Known(KindId::from_layout(&self.kinds[member].get().name, layout));
             position += 1;
@@ -351,52 +359,39 @@ impl Graph {
 
     /// The layout of the kind at `index`, written as `mode` says.
     const fn layout_of(&self, index: usize, mode: Mode) -> u64 {
-        layout(&mut Walk::over(self, self.first_edge[index] as usize, mode), self.kinds[index].get().shape)
+        layout(&mut Walk::over(self, self.first_edge[index], mode), self.kinds[index].get().shape)
     }
 
     /// The order of the members at places `one` and `other` of `members`: by name, then by blank layout.
-    const fn member_order(
-        &self,
-        members: &[u16; MOST_KINDS],
-        blanks: &[u64; MOST_KINDS],
-        one: usize,
-        other: usize,
-    ) -> core::cmp::Ordering {
-        let name = &self.kinds[members[one] as usize].get().name;
-        let other_name = &self.kinds[members[other] as usize].get().name;
+    const fn member_order(&self, members: &[usize], blanks: &[u64; MOST_KINDS], one: usize, other: usize) -> Ordering {
+        let name = &self.kinds[members[one]].get().name;
+        let other_name = &self.kinds[members[other]].get().name;
         match compare_names(name, other_name) {
-            core::cmp::Ordering::Equal => {
-                if blanks[one] < blanks[other] {
-                    core::cmp::Ordering::Less
-                } else if blanks[one] > blanks[other] {
-                    core::cmp::Ordering::Greater
-                } else {
-                    core::cmp::Ordering::Equal
-                }
-            }
+            Ordering::Equal => compare_numbers(blanks[one], blanks[other]),
             order => order,
         }
     }
 }
 
-/// The strongly connected components of a graph, found by Tarjan's algorithm over an explicit stack, each numbered in
+/// The strongly connected components of a graph, found by Tarjan's algorithm over explicit stacks, each numbered in
 /// the order it completes: a component after every component it reaches.
 struct Components {
-    of: [u16; MOST_KINDS],
+    of: [usize; MOST_KINDS],
     count: usize,
 }
 
 impl Components {
     /// The components of `graph`, every kind of which its root reaches.
     const fn of(graph: &Graph) -> Self {
-        const UNVISITED: u16 = u16::MAX;
+        const UNVISITED: usize = usize::MAX;
         let mut found = Self { of: [0; MOST_KINDS], count: 0 };
         let mut number = [UNVISITED; MOST_KINDS];
-        let mut low = [0u16; MOST_KINDS];
+        let mut low = [0; MOST_KINDS];
         let mut on_stack = [false; MOST_KINDS];
-        let mut stack = [0u16; MOST_KINDS];
-        let mut frames = [(0u16, 0u16); MOST_KINDS];
-        let mut next_number = 1u16;
+        let mut stack = [0; MOST_KINDS];
+        // Each frame is a kind being visited and the next of its edges to follow.
+        let mut frames = [(0, 0); MOST_KINDS];
+        let mut next_number = 1;
 
         // The root first, as every kind is reached from it.
         number[0] = 0;
@@ -408,30 +403,34 @@ impl Components {
 
         while frames_len > 0 {
             let (kind, edge) = frames[frames_len - 1];
-            let kind = kind as usize;
             if edge < graph.end_edge[kind] {
                 frames[frames_len - 1].1 = edge + 1;
-                let to = graph.edges[edge as usize] as usize;
+                let to = graph.edges[edge];
                 if number[to] == UNVISITED {
                     number[to] = next_number;
                     low[to] = next_number;
                     next_number += 1;
-                    stack[stack_len] = to as u16;
+                    stack[stack_len] = to;
                     stack_len += 1;
                     on_stack[to] = true;
-                    frames[frames_len] = (to as u16, graph.first_edge[to]);
+                    frames[frames_len] = (to, graph.first_edge[to]);
                     frames_len += 1;
-                } else if on_stack[to] && number[to] < low[kind] {
-                    low[kind] = number[to];
+                } else {
+                    // An edge back to a kind still on the stack: `kind` is in its component.
+                    let back = on_stack[to];
+                    let lower = number[to] < low[kind];
+                    if back && lower {
+                        low[kind] = number[to];
+                    }
                 }
             } else {
                 frames_len -= 1;
                 if low[kind] == number[kind] {
                     loop {
                         stack_len -= 1;
-                        let member = stack[stack_len] as usize;
+                        let member = stack[stack_len];
                         on_stack[member] = false;
-                        found.of[member] = found.count as u16;
+                        found.of[member] = found.count;
                         if member == kind {
                             break;
                         }
@@ -439,7 +438,7 @@ impl Components {
                     found.count += 1;
                 }
                 if frames_len > 0 {
-                    let parent = frames[frames_len - 1].0 as usize;
+                    let parent = frames[frames_len - 1].0;
                     if low[kind] < low[parent] {
                         low[parent] = low[kind];
                     }
@@ -452,7 +451,6 @@ impl Components {
 }
 
 /// The id of `kind`, computed from the graph it reaches (ADR-0006).
-#[must_use]
 pub const fn kind_id(kind: KindPtr) -> KindId {
     match Graph::of(kind).slots[0] {
         Slot::Known(id) => id,
@@ -460,25 +458,33 @@ pub const fn kind_id(kind: KindPtr) -> KindId {
     }
 }
 
-/// The order of two names, byte by byte.
-const fn compare_names(one: &KindName, other: &KindName) -> core::cmp::Ordering {
+/// The hash a site is first compared by.
+const fn site_hash(at: &str) -> u64 {
+    Fnv::new().bytes(at.as_bytes()).finish()
+}
+
+/// The order of two names, byte by byte, a name before every longer name it begins.
+const fn compare_names(one: &KindName, other: &KindName) -> Ordering {
     let (one, other) = (one.as_str().as_bytes(), other.as_str().as_bytes());
     let mut index = 0;
     while index < one.len() && index < other.len() {
-        if one[index] < other[index] {
-            return core::cmp::Ordering::Less;
-        }
-        if one[index] > other[index] {
-            return core::cmp::Ordering::Greater;
+        if one[index] != other[index] {
+            return compare_numbers(one[index] as u64, other[index] as u64);
         }
         index += 1;
     }
-    if one.len() < other.len() {
-        core::cmp::Ordering::Less
-    } else if one.len() > other.len() {
-        core::cmp::Ordering::Greater
+
+    compare_numbers(one.len() as u64, other.len() as u64)
+}
+
+/// The order of two numbers.
+const fn compare_numbers(one: u64, other: u64) -> Ordering {
+    if one < other {
+        Ordering::Less
+    } else if one > other {
+        Ordering::Greater
     } else {
-        core::cmp::Ordering::Equal
+        Ordering::Equal
     }
 }
 
@@ -488,6 +494,7 @@ const fn same_text(one: &str, other: &str) -> bool {
     if one.len() != other.len() {
         return false;
     }
+
     let mut index = 0;
     while index < one.len() {
         if one[index] != other[index] {

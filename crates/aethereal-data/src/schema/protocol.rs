@@ -1,9 +1,10 @@
 //! The protocol a reference's layout names: its kinds as a set, and for a named protocol what each is answered with
 //! (ADR-0016).
 
-use crate::kind::graph::kind_id;
+use crate::kind::kind_id;
 use crate::{KindId, KindPtr, Plain};
 use alloc::vec::Vec;
+use core::slice;
 
 /// The most kinds a protocol lists: a tuple of kinds holds at most 64.
 pub const MOST_LISTED: usize = 64;
@@ -61,8 +62,8 @@ pub struct AnsweredNode {
     pub answers: Vec<Referent>,
 }
 
-/// A set of kinds by their ids, ascending, each once: what a constant writes a protocol's kinds as when no cycle is
-/// being hashed.
+/// A set of kinds by their ids, ascending, each once: what a constant writes a protocol's kinds as where no cycle is
+/// being hashed, as a state's section does.
 #[derive(Clone, Copy)]
 pub struct KindIds {
     ids: [KindId; MOST_LISTED],
@@ -70,10 +71,13 @@ pub struct KindIds {
 }
 
 impl KindIds {
+    /// No kinds.
+    const EMPTY: Self = Self { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+
     /// The ids of `kinds`, ascending, each once. Each id is computed from its kind's graph.
     #[must_use]
     pub const fn of(kinds: &[KindPtr]) -> Self {
-        let mut set = Self { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+        let mut set = Self::EMPTY;
         let mut index = 0;
         while index < kinds.len() {
             set.insert(kind_id(kinds[index]));
@@ -93,6 +97,7 @@ impl KindIds {
         if held {
             return;
         }
+
         assert!(self.len < MOST_LISTED, "a protocol lists at most 64 kinds");
         let mut index = self.len;
         while index > at {
@@ -112,47 +117,56 @@ impl KindIds {
     /// Whether `other` holds the same ids.
     #[must_use]
     pub const fn same(&self, other: &Self) -> bool {
-        if self.len != other.len {
-            return false;
-        }
-        let mut index = 0;
-        while index < self.len {
-            if self.ids[index].bits() != other.ids[index].bits() {
-                return false;
-            }
-            index += 1;
-        }
-
-        true
+        same_ids(self.ids(), other.ids())
     }
 }
 
-/// A named protocol's entries by their kinds' ids, ascending, each kind once with the answers of its first entry.
+/// A named protocol's entries by their kinds' ids, ascending, each kind once with the answer of its first entry.
 #[derive(Clone, Copy)]
 pub struct AnsweredIds {
     kinds: KindIds,
-    answers: [KindIds; MOST_LISTED],
+    answers: [AnswerId; MOST_LISTED],
+}
+
+/// What one kind of a named protocol is answered with, by id: a handler answers with one kind or none (ADR-0059).
+#[derive(Clone, Copy)]
+enum AnswerId {
+    /// It is a tell.
+    Nothing,
+    /// It is answered with this kind.
+    One(KindId),
 }
 
 impl AnsweredIds {
     /// The entries of `entries`, ordered by their kinds' ids.
+    ///
+    /// # Panics
+    ///
+    /// When `entries` lists more than 64 kinds, or answers one with more than one kind: in a constant, the build stops.
     #[must_use]
     pub const fn of(entries: &[Answered]) -> Self {
-        let mut kinds = KindIds { ids: [KindId::NONE; MOST_LISTED], len: 0 };
+        assert!(entries.len() <= MOST_LISTED, "a protocol lists at most 64 kinds");
+        let mut ids = [KindId::NONE; MOST_LISTED];
+        let mut kinds = KindIds::EMPTY;
         let mut index = 0;
         while index < entries.len() {
-            kinds.insert(kind_id(entries[index].kind));
+            ids[index] = kind_id(entries[index].kind);
+            kinds.insert(ids[index]);
             index += 1;
         }
-        let empty = KindIds { ids: [KindId::NONE; MOST_LISTED], len: 0 };
-        let mut answers = [empty; MOST_LISTED];
+
+        let mut answers = [AnswerId::Nothing; MOST_LISTED];
         let mut place = 0;
         while place < kinds.len {
+            // The first entry of the kind at `place`: a kind listed twice keeps the answer of its first entry.
             let mut entry = 0;
-            while kind_id(entries[entry].kind).bits() != kinds.ids[place].bits() {
+            while ids[entry].bits() != kinds.ids[place].bits() {
                 entry += 1;
             }
-            answers[place] = KindIds::of(entries[entry].answers);
+            answers[place] = match entries[entry].answer() {
+                Some(answer) => AnswerId::One(kind_id(answer)),
+                None => AnswerId::Nothing,
+            };
             place += 1;
         }
 
@@ -165,11 +179,52 @@ impl AnsweredIds {
         self.kinds.len
     }
 
-    /// The kind at `place`, and what it is answered with.
+    /// The kind at `place`, and the kinds it is answered with, as a set: one kind or none.
     #[must_use]
-    pub const fn entry(&self, place: usize) -> (KindId, &KindIds) {
-        (self.kinds.ids[place], &self.answers[place])
+    pub const fn entry(&self, place: usize) -> (KindId, &[KindId]) {
+        let answers = match &self.answers[place] {
+            AnswerId::Nothing => &[],
+            AnswerId::One(id) => slice::from_ref(id),
+        };
+
+        (self.kinds.ids[place], answers)
     }
+}
+
+impl Answered {
+    /// The kind it is answered with, if it is answered: a handler answers with one kind or none (ADR-0059), so a shape
+    /// that lists more stops the build where it is read.
+    #[must_use]
+    pub(crate) const fn answer(&self) -> Option<KindPtr> {
+        match self.answers {
+            [] => None,
+            [answer] => Some(*answer),
+            [..] => panic!("a kind of a named protocol is answered with one kind or none"),
+        }
+    }
+}
+
+/// A member's place in a cycle's list, which holds at most as many members as a graph holds kinds.
+#[expect(clippy::cast_possible_truncation, reason = "a graph holds at most 128 kinds, so a place fits")]
+const fn place(listed: usize) -> u32 {
+    listed as u32
+}
+
+/// Whether two ascending sets of ids are one.
+const fn same_ids(one: &[KindId], other: &[KindId]) -> bool {
+    if one.len() != other.len() {
+        return false;
+    }
+
+    let mut index = 0;
+    while index < one.len() {
+        if one[index].bits() != other[index].bits() {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
 }
 
 impl ProtocolShape {
@@ -189,7 +244,7 @@ impl ProtocolShape {
                 while place < ours.count() {
                     let (kind, answers) = ours.entry(place);
                     let (other_kind, other_answers) = theirs.entry(place);
-                    let alike = kind.bits() == other_kind.bits() && answers.same(other_answers);
+                    let alike = kind.bits() == other_kind.bits() && same_ids(answers, other_answers);
                     if !alike {
                         return false;
                     }
@@ -205,9 +260,9 @@ impl ProtocolShape {
     /// Its flat form, each kind named as [`Referent::Member`] when it is one of `members`, by its place there, and by
     /// its id otherwise; ascending, each once.
     pub(super) fn node_in(self, members: &[KindPtr]) -> ProtocolNode {
-        let referent = |kind: KindPtr| match members.iter().position(|member| member.is(kind)) {
-            Some(listed) => Referent::Member(listed as u32),
-            None => Referent::Kind(kind_id(kind)),
+        let referent = |kind: KindPtr| {
+            let listed = members.iter().position(|member| member.is(kind));
+            listed.map_or_else(|| Referent::Kind(kind_id(kind)), |listed| Referent::Member(place(listed)))
         };
         let set = |kinds: &[KindPtr]| {
             let mut flat: Vec<Referent> = kinds.iter().map(|kind| referent(*kind)).collect();
@@ -222,7 +277,8 @@ impl ProtocolShape {
                 for entry in entries {
                     let kind = referent(entry.kind);
                     // A kind listed twice keeps the answers of its first entry.
-                    if flat.iter().all(|held| held.kind != kind) {
+                    let first = flat.iter().all(|held| held.kind != kind);
+                    if first {
                         flat.push(AnsweredNode { kind, answers: set(entry.answers) });
                     }
                 }
