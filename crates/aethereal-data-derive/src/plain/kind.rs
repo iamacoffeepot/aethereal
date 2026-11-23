@@ -30,9 +30,9 @@ impl Declaration {
     }
 
     /// `impl Kind` for a named type. A type with parameters is bounded as its `Schema` is, and its node is made in a
-    /// constant. A type with no parameters gets a static node, and a constant that computes its id, so a name that does
-    /// not conform, a cycle through a generic kind, two members that tie, or a graph past a cap stops the build where
-    /// the kind is defined, though nothing uses it (ADR-0006).
+    /// constant. A type with no parameters gets a static node, and its id computed where it is defined, so a name that
+    /// does not conform, a cycle through a generic kind, two members that tie, or a graph past a cap stops the build
+    /// there, though nothing uses it (ADR-0006); built for a guest, the id is written into its module (ADR-0054).
     pub fn implementation(&self, input: &DeriveInput, schema_generics: &Generics) -> TokenStream2 {
         let Self::Named(literal) = self else {
             return TokenStream2::new();
@@ -59,8 +59,9 @@ impl Declaration {
                 ::core::file!(), ":", ::core::line!(), ":", ::core::column!()
             )
         };
+        // Its id, computed here, and written into its module's `aethereal.kinds` when built for a guest (ADR-0054).
         let id = quote_spanned! { name.span() =>
-            const _: ::aethereal_data::KindId = <#name as ::aethereal_data::Kind>::KIND.id();
+            ::aethereal_data::__kind_id!(#name);
         };
 
         // `KindPtr::defined` is sound here: `NODE` is an immutable static, which lives for the whole program and is

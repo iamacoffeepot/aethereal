@@ -6,7 +6,7 @@ use crate::{
     Above, Actors, ActorsReader, Asked, Beginning, BlobId, BlobType, ChildOf, Declared, Fault, Instances, Keeping,
     Refused, Runs, Seated, Table,
 };
-use aethereal_data::{ActorPath, Budget, Decode, KindName, Reader};
+use aethereal_data::{ActorPath, Budget, Decode, KindId, KindName, Reader};
 #[cfg(feature = "std")]
 use aethereal_data::{Encode, EncodeError, Writer};
 use alloc::boxed::Box;
@@ -42,6 +42,14 @@ pub trait Guests: Send + Sync {
     /// head of (ADR-0054). None when the blob is not code, as for a host that runs no guests.
     fn kinds(&self, _code: BlobId) -> Vec<KindName> {
         Vec::new()
+    }
+
+    /// Whether the blob `code` was built with the kind `kind`, as its module's `aethereal.kinds` section lists it or
+    /// what it makes names it: what a publish's group is checked against, as a module outside the group built with a
+    /// kind the group drops keeps its guests from moving (ADR-0054). False when the blob is not code, as for a host
+    /// that runs no guests.
+    fn built_with(&self, _code: BlobId, _kind: KindId) -> bool {
+        false
     }
 
     /// Begins `birth`'s child, of the type `made`, from its config's bytes `config`, in its part's instance of the
@@ -202,6 +210,8 @@ pub enum Unfit {
     Uncompiled(String),
     /// It has no section that declares what it makes, or one that does not read back.
     Undeclared,
+    /// It has no section that lists the kinds it was built with, or one that is not a whole number of ids (ADR-0054).
+    Unlisted,
     /// Its section states the type of this name with a state of another layout than the one its id is made from
     /// (ADR-0006, ADR-0054).
     Misstated(KindName),

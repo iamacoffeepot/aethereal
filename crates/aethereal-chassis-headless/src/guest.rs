@@ -31,7 +31,7 @@ use aethereal_actor::{
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
 };
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::iter;
 use std::mem;
 use std::ptr::NonNull;
@@ -69,7 +69,19 @@ struct Compiled {
     key: u64,
     module: InstancePre<Lending>,
     made: Arc<[&'static Declared]>,
+    kinds: BuiltWith,
 }
+
+/// Code just compiled: the module, with the calls out it imports linked in, what it makes, and the kinds it was built
+/// with.
+struct Built {
+    module: InstancePre<Lending>,
+    made: Arc<[&'static Declared]>,
+    kinds: BuiltWith,
+}
+
+/// Every kind a module was built with, as its section lists them and what it makes names them, each once (ADR-0054).
+type BuiltWith = Arc<BTreeSet<KindId>>;
 
 /// A blob of guest code, compiled, and what each actor type it makes declares: what every part makes its instance
 /// of the blob from. Cloning it shares the compiled code.
@@ -85,6 +97,7 @@ struct Code {
     /// The module, with the calls out it imports linked in.
     module: InstancePre<Lending>,
     made: Arc<[&'static Declared]>,
+    kinds: BuiltWith,
 }
 
 /// Code an actor runs on, and the pin on its blob that keeps the blob while the actor runs (ADR-0009): a clone of
@@ -286,25 +299,28 @@ impl Runtime {
     fn code(&self, blob: BlobId, bytes: &[u8]) -> Result<Code, Unfit> {
         let hash = BlobHash::of(bytes);
         let known = self.compiled.read().ok().and_then(|compiled| compiled.by_hash.get(&hash).cloned());
-        let Compiled { key, module, made } = if let Some(compiled) = known {
+        let Compiled { key, module, made, kinds } = if let Some(compiled) = known {
             compiled
         } else {
-            let (module, made) = self.compile(bytes)?;
+            let built = self.compile(bytes)?;
             // Nothing done under the lock panics, so one poisoned holds what it held.
-            self.compiled.write().unwrap_or_else(PoisonError::into_inner).keep(hash, module, made)
+            self.compiled.write().unwrap_or_else(PoisonError::into_inner).keep(hash, built)
         };
 
         let types = made.iter().map(|&declared| &*Box::leak(Box::new(BlobType { blob, declared }))).collect();
 
-        Ok(Code { types, codes: Arc::downgrade(&self.codes), key, module, made })
+        Ok(Code { types, codes: Arc::downgrade(&self.codes), key, module, made, kinds })
     }
 
-    /// Compiles `bytes` as guest code, and reads what it makes: refused when it is not fit to run.
-    fn compile(&self, bytes: &[u8]) -> Result<(InstancePre<Lending>, Arc<[&'static Declared]>), Unfit> {
+    /// Compiles `bytes` as guest code, and reads what it makes and every kind it was built with: refused when it is
+    /// not fit to run.
+    fn compile(&self, bytes: &[u8]) -> Result<Built, Unfit> {
         let module = Module::new(&self.engine, bytes).map_err(|error| Unfit::Uncompiled(error.to_string()))?;
-        let section = declared_section(bytes).ok_or(Unfit::Undeclared)?;
+        let section = custom_section(bytes, section::NAME).ok_or(Unfit::Undeclared)?;
         let mut budget = Budget::new(1 << 20);
         let made = section::read(section, &mut budget)?;
+        let listed = custom_section(bytes, section::kinds::NAME).ok_or(Unfit::Unlisted)?;
+        let kinds = Arc::new(section::kinds::read(listed, &made)?);
         let exports = ["memory", "aethereal_inbox", "aethereal_out", "aethereal_begin", "aethereal_take_in"];
         let more = ["aethereal_take_out", "aethereal_turns", "aethereal_pins", "aethereal_end", "aethereal_drop"];
         let more = more.into_iter().chain(["aethereal_read_limit", "aethereal_holders", "aethereal_upgrade"]);
@@ -319,15 +335,15 @@ impl Runtime {
             .and_then(|linker| linker.instantiate_pre(&module))
             .map_err(|error| Unfit::Unlinked(error.to_string()))?;
 
-        Ok((module, made.iter().map(Made::leak).collect()))
+        Ok(Built { module, made: made.iter().map(Made::leak).collect(), kinds })
     }
 }
 
 impl Compiles {
-    /// Keeps `module`, the code of the bytes whose hash is `hash`, which makes `made`, under a key no code compiled
-    /// before took.
-    fn keep(&mut self, hash: BlobHash, module: InstancePre<Lending>, made: Arc<[&'static Declared]>) -> Compiled {
-        let compiled = Compiled { key: self.count, module, made };
+    /// Keeps `built`, the code of the bytes whose hash is `hash`, under a key no code compiled before took.
+    fn keep(&mut self, hash: BlobHash, built: Built) -> Compiled {
+        let Built { module, made, kinds } = built;
+        let compiled = Compiled { key: self.count, module, made, kinds };
         self.count += 1;
         self.by_hash.insert(hash, compiled.clone());
 
@@ -1018,6 +1034,11 @@ impl Code {
         self.types.iter().copied().find(|made| made.declared.name() == kind)
     }
 
+    /// Whether its module was built with the kind `kind` (ADR-0054).
+    fn built_with(&self, kind: KindId) -> bool {
+        self.kinds.contains(&kind)
+    }
+
     /// Which of the types it makes is the one of id `kind`, and what it declares.
     fn made_of(&self, kind: KindId) -> Option<(u32, &'static Declared)> {
         let of = self.made.iter().position(|declared| declared.id() == kind)?;
@@ -1166,6 +1187,14 @@ impl Guests for Runtime {
         };
 
         codes.get(&code).is_some_and(|code| code.of_kind(kind).is_some())
+    }
+
+    fn built_with(&self, code: BlobId, kind: KindId) -> bool {
+        let Ok(codes) = self.codes.read() else {
+            return false;
+        };
+
+        codes.get(&code).is_some_and(|code| code.built_with(kind))
     }
 
     fn kinds(&self, code: BlobId) -> Vec<KindName> {
@@ -2762,11 +2791,11 @@ fn absent(old: &SchemaNodes, new: &SchemaNodes) -> Vec<String> {
     now.iter().filter(|field| was.iter().all(|had| had.name != field.name)).map(|field| field.name.clone()).collect()
 }
 
-/// The bytes of the `aethereal.declared` section of the module `bytes`, when it has one.
-fn declared_section(bytes: &[u8]) -> Option<&[u8]> {
+/// The bytes of the first custom section named `name` of the module `bytes`, when it has one.
+fn custom_section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         if let Ok(wasmparser::Payload::CustomSection(custom)) = payload
-            && custom.name() == section::NAME
+            && custom.name() == name
         {
             return Some(custom.data());
         }
@@ -5659,7 +5688,7 @@ mod tests {
             panic!("one is not zero");
         };
         let mut engine = Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::new(Runtime::default())).ready();
-        let Some(declared) = declared_section(ECHO) else {
+        let Some(declared) = custom_section(ECHO, section::NAME) else {
             panic!("the echo guest declares what it makes");
         };
         let Ok(mut made) = section::read(declared, &mut Budget::new(1 << 20)) else {
@@ -5674,14 +5703,64 @@ mod tests {
             panic!("a section encodes");
         };
 
-        let refused = engine.put_code(redeclared(ECHO, &section)).err();
+        let refused = engine.put_code(with_section(ECHO, section::NAME, &section)).err();
 
         assert_eq!(refused, Some(CodeRefused::Unfit(Unfit::Misstated(misstated))));
     }
 
-    /// `code`, with a section `aethereal.declared` of `section` before its own, which its host reads in its place.
-    fn redeclared(code: &[u8], section: &[u8]) -> Vec<u8> {
-        let name = section::NAME.as_bytes();
+    #[test]
+    fn a_module_is_built_with_the_kinds_it_sends_and_links_and_every_kind_it_declares() {
+        // Catches a host that keeps only the kinds what a module makes names, or loses some of them, and a kind built
+        // for a guest that writes no id, so a publish would go ahead while a module that sends or holds a kind the
+        // group drops has guests running (ADR-0054). The echo fails a turn with an untold, which it never handles, and
+        // tells its parent why a request went unanswered, a kind of the crate it is written against.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let runtime = Arc::new(Runtime::default());
+        let mut engine =
+            Engine::new(parts, 1024, 0, 1 << 20, 0).with_guests(Arc::clone(&runtime) as Arc<dyn Guests>).ready();
+        let Ok(code) = engine.put_code(ECHO.to_vec()) else {
+            panic!("the echo guest is fit to run");
+        };
+        let Some(declared) = custom_section(ECHO, section::NAME) else {
+            panic!("the echo guest declares what it makes");
+        };
+        let Ok(made) = section::read(declared, &mut Budget::new(1 << 20)) else {
+            panic!("the echo guest's section reads back");
+        };
+        let named: BTreeSet<KindId> = made.iter().flat_map(Made::kinds).collect();
+        let undeclared = [KindId::of::<echo::Untold>(), KindId::of::<Unanswered>()];
+
+        let unnamed = undeclared.iter().all(|kind| !named.contains(kind));
+        let built_with = undeclared.iter().chain(&named).all(|&kind| runtime.built_with(code.id(), kind));
+
+        assert_eq!((unnamed, built_with), (true, true));
+    }
+
+    #[test]
+    fn code_whose_kinds_section_is_torn_or_missing_is_refused_where_it_is_put() {
+        // Catches a host that takes a module in whose list of the kinds it was built with is cut or gone, so a publish
+        // would read it as built with fewer kinds than it was (ADR-0054). The blobs have room for both modules.
+        let Some(parts) = NonZeroUsize::new(1) else {
+            panic!("one is not zero");
+        };
+        let mut engine = Engine::new(parts, 1024, 0, 4 << 20, 0).with_guests(Arc::new(Runtime::default())).ready();
+        let Some(listed) = custom_section(ECHO, section::kinds::NAME) else {
+            panic!("the echo guest lists the kinds it was built with");
+        };
+        let torn = with_section(ECHO, section::kinds::NAME, &listed[..listed.len() - 1]);
+
+        let torn = engine.put_code(torn).err();
+        let missing = engine.put_code(without_section(ECHO, section::kinds::NAME)).err();
+
+        let unlisted = || Some(CodeRefused::Unfit(Unfit::Unlisted));
+        assert_eq!((torn, missing), (unlisted(), unlisted()));
+    }
+
+    /// `code`, with a custom section named `name` of `section` before its own, which its host reads in its place.
+    fn with_section(code: &[u8], name: &str, section: &[u8]) -> Vec<u8> {
+        let name = name.as_bytes();
         let payload: Vec<u8> =
             leb(name.len()).into_iter().chain(name.iter().copied()).chain(section.iter().copied()).collect();
         let (header, sections) = code.split_at(8);
@@ -5694,6 +5773,21 @@ mod tests {
             .chain(payload)
             .chain(sections.iter().copied())
             .collect()
+    }
+
+    /// `code`, with each custom section named `name` named otherwise, so its host finds none of that name.
+    fn without_section(code: &[u8], name: &str) -> Vec<u8> {
+        let mut renamed = code.to_vec();
+        for payload in wasmparser::Parser::new(0).parse_all(code) {
+            if let Ok(wasmparser::Payload::CustomSection(custom)) = payload
+                && custom.name() == name
+            {
+                // The name's last byte, which its data follows.
+                renamed[custom.data_offset() - 1] ^= 1;
+            }
+        }
+
+        renamed
     }
 
     /// `value` as a module writes a size: seven bits a byte, low first, the high bit set on every byte but the last.

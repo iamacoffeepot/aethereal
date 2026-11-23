@@ -122,3 +122,44 @@ fn a_section_whose_state_does_not_read_back_is_refused() {
 
     assert_eq!(read(&unread, &mut Budget::new(1 << 16)).err(), Some(Unfit::Undeclared));
 }
+
+/// The id of the bytes of `n`, which no kind here has, for a section written by hand.
+fn kind(n: u64) -> KindId {
+    let Ok(kind) = from_bytes::<KindId>(&n.to_le_bytes(), &mut Budget::new(8)) else {
+        panic!("any eight bytes are an id");
+    };
+
+    kind
+}
+
+#[test]
+fn a_modules_kinds_are_its_whole_listed_ids_with_every_kind_its_declarations_name() {
+    // Catches a host that keeps a torn last id, or only the ids the section lists, which no generic kind writes, so a
+    // module handling one would not count as built with it, or that leaves out a place a declaration names a kind in
+    // (ADR-0054).
+    let segment = |kind| Segment { name: Point::NAME, kind, keyed: Key::Singleton };
+    let made = [Made {
+        name: Point::NAME,
+        id: kind(1),
+        config: kind(2),
+        keyed: Key::Singleton,
+        spawner: Spawned::Type { id: kind(3) },
+        depends: vec![Depended { last: segment(kind(4)), above: vec![segment(kind(5))] }],
+        spawns: vec![kind(6)],
+        handlers: vec![
+            Handled::Kind { kind: kind(7), answers: vec![kind(8)] },
+            Handled::Answer { kind: kind(9) },
+            Handled::Stage { kind: kind(10) },
+            Handled::Ended,
+            Handled::Others,
+        ],
+        state: SchemaNodes::of(&Point::SHAPE),
+    }];
+    let listed: Vec<u8> = [kind(11), kind(12), kind(11), kind(1)].into_iter().flat_map(KindId::plain_bytes).collect();
+    let torn = &listed[..listed.len() - 1];
+
+    let read = kinds::read(&listed, &made);
+    let expected = (1..=12).map(kind).collect();
+
+    assert_eq!((read, kinds::read(torn, &made)), (Ok(expected), Err(Unfit::Unlisted)));
+}
