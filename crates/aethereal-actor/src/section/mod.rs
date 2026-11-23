@@ -5,6 +5,7 @@
 //! program reads, by a writer that runs in a constant. A host reads it back as
 //! the plain types here, without making an instance, and checks it there.
 
+pub mod kinds;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,7 @@ use crate::{Beneath, Declared, Handler, Role, Spawner, StateSchema, TypeSegment,
 use aethereal_data::{Budget, Keyed, KindId, KindName, Plain, SchemaNodes, Shape, from_bytes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::iter;
 
 /// The name of the section.
 pub const NAME: &str = "aethereal.declared";
@@ -334,6 +336,22 @@ const fn handlers(out: &mut [u8], at: usize, handlers: &[Handler]) -> usize {
 }
 
 impl Made {
+    /// Every kind it names: its own, its config's, its spawner's, each on the typed path to a type it depends on, each
+    /// it spawns, and each its handlers handle and answer with. A kind may be named more than once.
+    pub fn kinds(&self) -> impl Iterator<Item = KindId> + '_ {
+        let spawner = match self.spawner {
+            Spawned::Type { id } => Some(id),
+            Spawned::Nobody | Spawned::Anyone | Spawned::Own => None,
+        };
+
+        [self.id, self.config]
+            .into_iter()
+            .chain(spawner)
+            .chain(self.depends.iter().flat_map(Depended::kinds))
+            .chain(self.spawns.iter().copied())
+            .chain(self.handlers.iter().flat_map(Handled::kinds))
+    }
+
     /// Whether its state's schema, with its name, makes the id it states: two types of one name and layout are one
     /// kind (ADR-0006).
     fn states_its_layout(&self) -> bool {
@@ -375,6 +393,27 @@ impl Made {
             Declared::new(name.clone(), self.id, state, self.config, keyed, spawner, depends, spawns, handlers);
 
         Box::leak(Box::new(declared))
+    }
+}
+
+impl Depended {
+    /// The kind of each segment of the path, from its last to its root.
+    fn kinds(&self) -> impl Iterator<Item = KindId> + '_ {
+        iter::once(&self.last).chain(&self.above).map(|segment| segment.kind)
+    }
+}
+
+impl Handled {
+    /// The kind it handles and each it answers with, or none, for a handler of the end of an actor it watches, or of
+    /// every other kind.
+    fn kinds(&self) -> impl Iterator<Item = KindId> + '_ {
+        let (kind, answers): (Option<KindId>, &[KindId]) = match self {
+            Self::Kind { kind, answers } => (Some(*kind), answers),
+            Self::Answer { kind } | Self::Stage { kind } => (Some(*kind), &[]),
+            Self::Ended | Self::Others => (None, &[]),
+        };
+
+        kind.into_iter().chain(answers.iter().copied())
     }
 }
 

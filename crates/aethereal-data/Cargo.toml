@@ -11,6 +11,9 @@ description = "Plain data: the byte layout, the schema vocabulary, and the codec
 std = []
 # Plain data as JSON text, from a schema and bytes (ADR-0007).
 json = []
+# Built for a guest: each kind writes its id into its module's `aethereal.kinds` section (ADR-0054). Turned on by
+# `aethereal-actor/guest`, and inert for any target but WebAssembly.
+guest = []
 
 [dependencies]
 aethereal-data-derive = { path = "../aethereal-data-derive" }

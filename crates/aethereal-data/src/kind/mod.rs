@@ -4,6 +4,7 @@ mod cycle;
 mod graph;
 mod id;
 pub mod layout;
+mod module;
 mod name;
 #[cfg(test)]
 pub mod samples;

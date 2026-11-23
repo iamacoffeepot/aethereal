@@ -25,8 +25,16 @@ fn main() {
 fn build(manifest: &Path, target: &Path, flags: &str) -> PathBuf {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // The nested build gets an environment of its own: what the outer build set for this script is not for it.
+    //
+    // A guest is linked with fat LTO, or its module's `aethereal.kinds` section misses kinds it sends (ADR-0054):
+    // without it, a crate's object is linked only for a symbol the guest calls, and a kind whose encoding is compiled
+    // into the guest's own object, as one of a crate of kinds alone is, leaves its crate's object, and the static of
+    // its id, out. The guest is a workspace of its own, so its profile is set here, and Cargo does not apply a
+    // profile's `lto` to a crate that is also an rlib, as the guest is so the tests can name its types: it is built
+    // with `rustc` as a cdylib alone.
     let status = Command::new(cargo)
-        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "--manifest-path"])
+        .args(["rustc", "--release", "--config", "profile.release.lto=\"fat\"", "--crate-type", "cdylib"])
+        .args(["--target", "wasm32-unknown-unknown", "--manifest-path"])
         .arg(manifest)
         .arg("--target-dir")
         .arg(target)
