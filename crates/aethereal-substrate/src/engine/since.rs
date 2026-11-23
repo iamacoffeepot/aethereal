@@ -10,8 +10,8 @@ use crate::stats::Stats;
 use crate::table::reach;
 use crate::{ActorTable, Blobs, ByActor, Folded, Log};
 use aethereal_actor::{
-    ActorName, BlobHash, BlobId, Bytes, Cycling, Declared, EngineStats, Logged, Moves, Recent, SeatNumber, Seated,
-    Table, Time,
+    ActorName, BlobHash, BlobId, Bytes, Cycling, Declared, EngineStats, Logged, Moves, Recent, Relied, SeatNumber,
+    Seated, Table, Time,
 };
 use aethereal_data::{ActorId, ActorPath, KindId, KindName, PathSegment};
 
@@ -130,6 +130,19 @@ impl Table for Since<'_> {
 
     fn path_of(&self, id: ActorId) -> Option<ActorPath> {
         self.table.path(id)
+    }
+
+    /// As the table held it when the step began: a child stood up since has no entry there yet, and is unheld.
+    fn reliances(&self, id: ActorId) -> Relied<'_> {
+        self.table.reliances(id)
+    }
+
+    /// A child stood up in the part since the step began is unheld; any other actor is read from its entry in the
+    /// table, in one lookup.
+    fn proving(&self, id: ActorId) -> Option<(&'static Declared, Relied<'_>)> {
+        let stood = self.stood.get(&id.bits()).map(|(_, _, declared)| (*declared, Relied::Unheld));
+
+        stood.or_else(|| self.table.proving(id))
     }
 
     fn blob(&self, id: BlobId) -> Option<&[u8]> {

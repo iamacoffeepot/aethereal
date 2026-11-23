@@ -48,6 +48,7 @@ mod publisher;
 mod randomness;
 pub mod records;
 mod reference;
+mod relied;
 mod resource;
 mod seat;
 pub mod section;
@@ -116,6 +117,7 @@ pub use publisher::Publisher;
 #[cfg(feature = "std")]
 pub use randomness::{Randomness, Unfilled};
 pub use reference::{ActorRef, ErasedActorRef, ProtocolRef, Proven, Reachable, Reaches, Watchable};
+pub use relied::{AnsweredWith, Prover, Reliance, Reliances, Relied, Relying};
 pub use resource::{
     Carried, Claim, Claimed, Gift, Given, Giver, Handle, Holds, Keeping, Keeps, KeepsNothing, Kept, NotHeld, Resource,
     Resources, Was, carry, is_loose_claim, take_claimed, take_loose_ticket,

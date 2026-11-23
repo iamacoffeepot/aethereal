@@ -24,9 +24,9 @@ use aethereal_actor::section::{self, Made};
 use aethereal_actor::{
     Above, Arena, Asked, Batch, Birth, BlobHash, BlobId, BlobType, Broke, Bytes, Children, Claimed, Declared, Due,
     FalseSend, FalseStage, FalseWatch, Fault, Gift, Guests, Holds, Hosted, How, Instances, Item, Keeping, Loadable,
-    Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Puts, Reads, Refused,
-    Request, Runs, SeatNumber, Seated, Seats, SenderType, SentAs, Table, Tie, Tied, Turning, Unfit, Unspawned, Upgrade,
-    Upgraded, Was, Why, Written, holders, take_loose_ticket,
+    Maker, Memory as InstanceMemory, Moving, NotHeld, NotOwed, Peeked, Pinning, Preparing, Prover, Puts, Reads,
+    Refused, Reliance, Relied, Relying, Request, Runs, SeatNumber, Seated, Seats, SenderType, SentAs, Table, Tie, Tied,
+    Turning, Unfit, Unspawned, Upgrade, Upgraded, Was, Why, Written, holders, take_loose_ticket,
 };
 use aethereal_data::{
     ActorId, ActorPath, Budget, KeyName, KindId, KindName, SchemaNode, SchemaNodes, from_bytes, to_bytes,
@@ -177,6 +177,9 @@ struct Answering<'a> {
     holds: Holds<'a>,
     /// The actor whose turns or `begin` the call runs, which makes the blobs the call puts (ADR-0042).
     me: Seated,
+    /// Whose code the call runs: the module, by its blob, that every proof its guest makes relies on actors as
+    /// (ADR-0054).
+    prover: Prover,
     /// The most bytes of buffers each actor keeps, which a child of other code begun for the call keeps its buffers
     /// under (ADR-0042).
     most_kept_bytes: usize,
@@ -195,6 +198,17 @@ struct Given {
     /// The tickets of the resources the host handed to children of other code in their configs as it began them,
     /// before the call's claims of them are held to: what the guest claims of them is already done (ADR-0010).
     handed: Vec<u64>,
+    /// What the proofs the call's turns made rely on, where their actors were not relied on for it as the step began,
+    /// in the order the guest asked: each handed to the engine with the records of the turn that asked (ADR-0054).
+    relied: Vec<ReliedIn>,
+}
+
+/// A reliance a turn of a call into a guest asked for: the guest `on` stands for is relied on for `reliance`, as the
+/// call's `turn`th turn asks (ADR-0054).
+struct ReliedIn {
+    turn: u32,
+    on: ActorId,
+    reliance: Reliance,
 }
 
 /// A child of other code its host was asked to begin for a guest, apart from the guest's turn, which takes in what
@@ -339,6 +353,7 @@ impl Compiles {
 fn calls_out(engine: &wasmtime::Engine) -> wasmtime::Result<Linker<Lending>> {
     let mut linker = Linker::new(engine);
     reads_out(&mut linker)?;
+    relies_out(&mut linker)?;
     spawns_out(&mut linker)?;
     blobs_out(&mut linker)?;
 
@@ -458,6 +473,38 @@ fn reads_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     Ok(())
 }
 
+/// Links the calls out by which a guest's proof relies on the actor it proves into `linker` (ADR-0054).
+fn relies_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_proves",
+        |mut caller: Caller<'_, Lending>, turn: u32, id: u64, at: u32, len: u32| {
+            let on = ActorId::new(id);
+            // What lies outside the guest's memory, or does not read back, is listed by no type.
+            answer_reading(&mut caller, Span { at, len }, |answering, written| {
+                let proves = written.is_some_and(|written| answering.proves(turn, on, written));
+
+                u32::from(proves)
+            })
+        },
+    )?;
+    linker.func_wrap(
+        "aethereal",
+        "aethereal_rely",
+        |mut caller: Caller<'_, Lending>, turn: u32, id: u64, at: u32, len: u32| {
+            let on = ActorId::new(id);
+            // What lies outside the guest's memory relies on nothing.
+            answer_reading(&mut caller, Span { at, len }, |answering, written| {
+                if let Some(written) = written {
+                    answering.rely(turn, on, written);
+                }
+            })
+        },
+    )?;
+
+    Ok(())
+}
+
 /// Writes `seated`, its id and seat, as 16 bytes into the guest's memory at `at`.
 fn write_seated(caller: &mut Caller<'_, Lending>, seated: Seated, at: u32) -> wasmtime::Result<()> {
     let mut bytes = [0u8; 16];
@@ -515,18 +562,15 @@ fn spawns_out(linker: &mut Linker<Lending>) -> wasmtime::Result<()> {
     )?;
     linker.func_wrap(
         "aethereal",
-        "aethereal_sent_lists",
-        |mut caller: Caller<'_, Lending>, item: u32, at: u32, len: u32| {
-            let kinds = guest_bytes(&mut caller, Span { at, len });
-            let kinds = kinds.and_then(|kinds| from_bytes::<Vec<KindId>>(&kinds, &mut Budget::new(1 << 10)).ok());
-            // Ids that do not read back, or an item past the batch, are listed by no type.
-            answer(&mut caller, |answering| {
-                let Some(kinds) = kinds else {
-                    return 0;
-                };
-                let lists = answering.sender_type(item).is_some_and(|sender_type| sender_type.lists_all(&kinds));
+        "aethereal_sent_proves",
+        |mut caller: Caller<'_, Lending>, item: u32, source: u64, at: u32, len: u32| {
+            let source = ActorId::new(source);
+            // What lies outside the guest's memory, or does not read back, or an item past the batch, is listed by no
+            // type.
+            answer_reading(&mut caller, Span { at, len }, |answering, written| {
+                let proves = written.is_some_and(|written| answering.sent_proves(item, source, written));
 
-                u32::from(lists)
+                u32::from(proves)
             })
         },
     )?;
@@ -647,6 +691,29 @@ fn answer<R>(caller: &mut Caller<'_, Lending>, answer: impl FnOnce(&mut Answerin
     Ok(answer(answering))
 }
 
+/// Answers a call out with `answer`, from what the call under way was lent and the bytes `span` says lie in the
+/// memory of the guest that makes it, read where they lie, as [`answer`] does: none when they lie outside it. Nothing
+/// is copied out, so a call out that is answered this way allocates nothing.
+fn answer_reading<R>(
+    caller: &mut Caller<'_, Lending>,
+    span: Span,
+    answer: impl FnOnce(&mut Answering<'_>, Option<&[u8]>) -> R,
+) -> wasmtime::Result<R> {
+    let Some(memory) = caller.get_export("memory").and_then(Extern::into_memory) else {
+        return Err(wasmtime::Error::msg("a guest that makes a call out has no memory"));
+    };
+    let (data, lending) = memory.data_and_store_mut(caller);
+    let Lending::During(mut answering) = *lending else {
+        return Err(wasmtime::Error::msg("a call out made outside a call that answers one"));
+    };
+    // SAFETY: as in `answer`: `During` holds a pointer to the `Answering` its call lent, which lives on the stack of
+    // `Instance::lending` for the call, on this thread, and nothing else reaches it while the guest's call out runs.
+    // The guest's memory is the store's, apart from what it lends.
+    let answering = unsafe { answering.as_mut() };
+
+    Ok(answer(answering, lying(data, span)))
+}
+
 /// Writes `bytes` at `at` in the memory of the guest that makes a call out.
 fn write_guest(caller: &mut Caller<'_, Lending>, at: u32, bytes: &[u8]) -> wasmtime::Result<()> {
     let memory = caller.get_export("memory").and_then(Extern::into_memory);
@@ -683,19 +750,35 @@ fn guest_bytes_kept(caller: &mut Caller<'_, Lending>, span: Span) -> wasmtime::R
 }
 
 impl<'a> Answering<'a> {
-    /// What answers the calls out of a call that runs the turns or `begin` of the actor `me`, from what its batch was
-    /// lent, the instances of its part, and the code its runtime holds.
+    /// What answers the calls out of a call that runs the turns or `begin` of the actor `me`, on `running`, from what
+    /// its batch was lent, the instances of its part, and the code its runtime holds.
     fn of(
         Reads { table, made, seats, puts, holds, most_kept_bytes }: Reads<'a>,
         instances: &'a mut Instances,
-        code: &'a Code,
+        running: &'a Running,
         given: &'a mut Given,
         (holdings, sent_as): (&'a Holdings, &'a [SenderType]),
         me: Seated,
     ) -> Self {
-        let (codes, types) = (&code.codes, &*code.types);
+        let (codes, types) = (&running.code.codes, &*running.code.types);
+        let prover = Prover::module(running.pin.id());
 
-        Self { table, made, seats, puts, instances, codes, types, given, holdings, sent_as, holds, me, most_kept_bytes }
+        Self {
+            table,
+            made,
+            seats,
+            puts,
+            instances,
+            codes,
+            types,
+            given,
+            holdings,
+            sent_as,
+            holds,
+            me,
+            prover,
+            most_kept_bytes,
+        }
     }
 
     /// The type the sender of the `item`th item of the batch the call runs sent it as: none past the batch's last
@@ -704,6 +787,62 @@ impl<'a> Answering<'a> {
         let index = usize::try_from(item).ok()?;
 
         self.sent_as.get(index).copied()
+    }
+
+    /// Whether the type of the actor `on` stands for lists the kind of each [`Relying`] `written` holds, one after
+    /// another as [`Relying::to_bytes`] writes them, as the table stood when the step began: what a cast the call's
+    /// `turn`th turn made reads (ADR-0016). When it does, relies on it for them, as [`Self::rely`] does. Bytes that do
+    /// not read back are listed by no type.
+    fn proves(&mut self, turn: u32, on: ActorId, written: &[u8]) -> bool {
+        let table = self.table;
+        let proven = Relying::read_all(written).zip(table.proving(on));
+        let Some((relying, (declared, relied))) = proven else {
+            return false;
+        };
+        let lists = relying.clone().all(|relying| declared.lists(relying.kind));
+        if lists {
+            self.rely_on(turn, on, relied, relying);
+        }
+
+        lists
+    }
+
+    /// Whether the type the sender of the batch's `item`th item, the actor `source` stands for, sent it as lists the
+    /// kind of each [`Relying`] `written` holds, as the engine stamped it at the send: what a guard the turn of that
+    /// item ran reads (ADR-0058). When it does, relies on the sender for them, for that turn, as [`Self::rely`] does.
+    /// Bytes that do not read back, and an item past the batch, are listed by no type.
+    fn sent_proves(&mut self, item: u32, source: ActorId, written: &[u8]) -> bool {
+        let stamped = self.sender_type(item).and_then(SenderType::stamped);
+        let proven = Relying::read_all(written).zip(stamped);
+        let Some((relying, sent_as)) = proven else {
+            return false;
+        };
+        let lists = sent_as.lists_each(relying.clone().map(|relying| relying.kind));
+        if lists {
+            let relied = self.table.reliances(source);
+            self.rely_on(item, source, relied, relying);
+        }
+
+        lists
+    }
+
+    /// Relies, as the call's module, on the actor `on` stands for for each [`Relying`] `written` holds, which the
+    /// call's `turn`th turn proved of it itself (ADR-0054). Bytes that do not read back rely on nothing.
+    fn rely(&mut self, turn: u32, on: ActorId, written: &[u8]) {
+        let Some(relying) = Relying::read_all(written) else {
+            return;
+        };
+        let relied = self.table.reliances(on);
+
+        self.rely_on(turn, on, relied, relying);
+    }
+
+    /// Notes each of `relying` the actor `on` stands for was not relied on for by the call's module as the step began,
+    /// as `relied` holds, to hand the engine with the records of the call's `turn`th turn (ADR-0054).
+    fn rely_on(&mut self, turn: u32, on: ActorId, relied: Relied<'_>, relying: impl Iterator<Item = Relying>) {
+        let lacks = relied.lacks(self.prover, relying);
+
+        self.given.relied.extend(lacks.map(|reliance| ReliedIn { turn, on, reliance }));
     }
 
     /// Whether the actor at `path` stands beneath a root of a type one of the call's code's types depends on: what a
@@ -895,8 +1034,9 @@ impl Given {
         let no_births = self.births.is_empty();
         let no_offers = self.offered.is_empty();
         let none_handed = self.handed.is_empty();
+        let none_relied = self.relied.is_empty();
 
-        no_seats && no_births && no_offers && none_handed
+        no_seats && no_births && no_offers && none_handed && none_relied
     }
 
     /// A pin on the blob `blob`, when one was offered to the call.
@@ -932,6 +1072,7 @@ impl Given {
         }
         self.offered.clear();
         self.handed.clear();
+        self.relied.clear();
     }
 }
 
@@ -1218,7 +1359,7 @@ impl Guests for Runtime {
         let mut given = Given { offered, ..Given::default() };
         let mut holdings = mem::take(&mut held.holdings);
         // A `begin` runs no batch, so no sender's type is asked of it.
-        let mut answering = Answering::of(reads, instances, code, &mut given, (&holdings, &[]), me);
+        let mut answering = Answering::of(reads, instances, &running, &mut given, (&holdings, &[]), me);
         let began = held.begin(of, me, &handed, &mut answering);
         let began = began.and_then(|began| held.take_pins(&began.1, &mut holdings, &given).map(|()| began));
         let began = began.and_then(|began| held.take_holders(&began.1, &[me]).map(|()| began));
@@ -1521,9 +1662,9 @@ impl Runs for Guest {
         let sent_as = mem::take(&mut held.sent_as);
         let Reads { table, made, seats, puts, holds, most_kept_bytes } = reads;
         let lent = Reads { table, made, seats: &mut *seats, puts, holds, most_kept_bytes };
-        let code = &self.running.code;
         let lending_with = (&holdings, &sent_as[..]);
-        let mut answering = Answering::of(lent, &mut *instances, code, &mut self.given, lending_with, self.me);
+        let running = &self.running;
+        let mut answering = Answering::of(lent, &mut *instances, running, &mut self.given, lending_with, self.me);
         let Instance { store, turns, .. } = &mut *held;
         let called = lending(store, &mut answering, |store| turns.call(store, (handle, items, len, sent)));
         let wrote = called.map_err(|_| Broke::Trapped).and_then(|out| held.out_head(out));
@@ -1631,7 +1772,7 @@ impl Runs for Guest {
         let reads = Reads { table, made: &(), seats, puts, holds, most_kept_bytes };
         // A closing turn runs no batch, so no sender's type is asked of it.
         let lent = (&holdings, &[][..]);
-        let mut answering = Answering::of(reads, instances, &self.running.code, &mut given, lent, self.me);
+        let mut answering = Answering::of(reads, instances, &self.running, &mut given, lent, self.me);
         let wrote = held.end(handle, why, &mut answering);
         let wrote = wrote.and_then(|wrote| held.take_pins(&wrote, &mut holdings, &given).map(|()| wrote));
         let wrote = wrote.and_then(|wrote| held.take_holders(&wrote, &[]).map(|()| wrote));
@@ -2196,6 +2337,7 @@ fn replay_records(
     if stands {
         stand(data, running, head, before, ends, given, holdings, living, hosted)?;
     }
+    hand_reliances(given, next, hosted);
     for index in before.watches..ends.watches {
         let watch = record(data, head.watches_at, index, WatchRecord::BYTES)
             .and_then(WatchRecord::read)
@@ -2304,6 +2446,26 @@ fn hold_to_claims(
     }
 
     Ok(Ok(()))
+}
+
+/// As [`hand_relied`], for a turn that may have asked for no reliance.
+#[inline]
+fn hand_reliances(given: &mut Given, turn: u32, hosted: &mut Hosted<'_>) {
+    // Most turns prove nothing of a guest that it was not relied on for already.
+    let relies = !given.relied.is_empty();
+    if relies {
+        hand_relied(given, turn, hosted);
+    }
+}
+
+/// Hands `hosted` the reliances `given` holds that the call's `turn`th turn asked for (ADR-0054): kept out of line, as
+/// most turns ask for none.
+#[cold]
+#[inline(never)]
+fn hand_relied(given: &mut Given, turn: u32, hosted: &mut Hosted<'_>) {
+    for ReliedIn { on, reliance, .. } in given.relied.extract_if(.., |relied| relied.turn == turn) {
+        hosted.rely(on, reliance);
+    }
 }
 
 /// Hands `hosted` the children of other code `given` holds that the call's `turn`th turn spawned, the first it holds:

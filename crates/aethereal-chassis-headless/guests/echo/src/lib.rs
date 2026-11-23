@@ -1094,7 +1094,7 @@ pub struct Porter {
 
 impl Porter {
     /// The actor it passes lamps on to, as one that handles hands of them.
-    fn to(&self, turn: &impl Resolves) -> Result<ProtocolRef<(Hand,)>, Fault> {
+    fn to(&self, turn: &mut impl Resolves) -> Result<ProtocolRef<(Hand,)>, Fault> {
         let to = turn.resolve_cast(&self.to);
 
         to.ok_or_else(|| Fault::new(&Shut).unwrap_or_else(|why| why.into()))
@@ -1104,11 +1104,11 @@ impl Porter {
 /// What a porter's turns read to find who they pass lamps on to.
 trait Resolves {
     /// The actor `path` names, when it is live and handles hands of lamps.
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>>;
+    fn resolve_cast(&mut self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>>;
 }
 
 impl<A> Resolves for Beginning<'_, A> {
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
+    fn resolve_cast(&mut self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
         let found = self.resolve(path)?;
 
         self.cast(found)
@@ -1116,7 +1116,7 @@ impl<A> Resolves for Beginning<'_, A> {
 }
 
 impl<A> Resolves for Turn<'_, A> {
-    fn resolve_cast(&self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
+    fn resolve_cast(&mut self, path: &ActorPath) -> Option<ProtocolRef<(Hand,)>> {
         let found = self.resolve(path)?;
 
         self.cast(found)
@@ -1860,6 +1860,65 @@ impl Homebody {
     }
 }
 
+/// What a relier is made from: the path of the actor it proves.
+#[derive(Plain)]
+#[kind(name = "aether.guest.relying_on")]
+pub struct RelyingOn {
+    pub at: ActorPath,
+}
+
+/// A word to a relier to prove the actor it is made for, by the proof it names, and to tell it a ping.
+#[derive(Plain)]
+#[kind(name = "aether.guest.prove")]
+pub struct Prove {
+    pub by: Proof,
+}
+
+/// How a relier proves an actor: by a cast to the tuple `(Ping,)`, whose ping is told, or to the named protocol
+/// [`Pings`], whose ping is answered with a pong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Plain)]
+pub enum Proof {
+    Told,
+    Asked,
+}
+
+/// An actor that, on each word to, proves the actor at its path by the proof the word names and tells it a ping, and
+/// takes the pongs it is told back, so a guard that admits only an actor that speaks pongs proves it in turn: each
+/// proof relies on a guest it proves (ADR-0054).
+#[derive(Bound, Portability)]
+#[kind(name = "aether.guest.relier")]
+pub struct Relier {
+    at: ActorPath,
+}
+
+#[actor]
+impl Relier {
+    fn begin(relying: RelyingOn) -> Result<Self, Fault> {
+        Ok(Self { at: relying.at })
+    }
+
+    #[tell]
+    fn prove(&mut self, prove: Prove, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
+        let Some(found) = turn.resolve(&self.at) else {
+            return Ok(());
+        };
+        let proven: Option<ProtocolRef<(Ping,)>> = match prove.by {
+            Proof::Told => turn.cast(found),
+            Proof::Asked => turn.cast::<Pings>(found).map(ProtocolRef::narrow),
+        };
+        if let Some(proven) = proven {
+            turn.to(proven).send(&Ping { n: 0 })?;
+        }
+
+        Ok(())
+    }
+
+    #[tell]
+    fn pong(&mut self, _: Pong) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
 /// Says of each type that it moves onto its kind's head as soon as it is asked, and writes no `take_over`: the tests
 /// publish no new code for it (ADR-0054).
 macro_rules! moves_when_asked {
@@ -1917,6 +1976,7 @@ moves_when_asked!(
     Usher,
     Litter,
     Homebody,
+    Relier,
 );
 
 aethereal_actor::guest!(
@@ -1965,5 +2025,6 @@ aethereal_actor::guest!(
     Stubborn,
     Breaker,
     Litter,
-    Homebody
+    Homebody,
+    Relier
 );

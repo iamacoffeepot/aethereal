@@ -2,11 +2,13 @@
 
 #[cfg(feature = "std")]
 use crate::blob::handed_index;
-use crate::{BlobHash, BlobId, Declared, EngineStats, Logged, Moves, Recent, SeatNumber, Seated, Time};
+use crate::{
+    BlobHash, BlobId, Declared, Effect, EngineStats, Logged, Moves, Prover, Recent, Relied, Relying, SeatNumber,
+    Seated, Time,
+};
 #[cfg(feature = "std")]
 use aethereal_data::KindName;
 use aethereal_data::{ActorId, ActorPath, Boundary, Element, EncodeError, KindId, PathSegment};
-#[cfg(feature = "std")]
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use core::marker::PhantomData;
@@ -119,6 +121,44 @@ pub trait Table {
     /// reads [`Moves::Unread`].
     fn moves(&self) -> Moves {
         Moves::Unread
+    }
+
+    /// What the actor `id` stands for is relied on for, as the table stood when the step began: nothing of a native
+    /// actor, a live guest's reliances, and unheld for an actor the table did not hold, stood up since or ended
+    /// (ADR-0054). A table that reads no reliances, as a test's does, finds every actor native.
+    fn reliances(&self, _id: ActorId) -> Relied<'_> {
+        Relied::Native
+    }
+
+    /// What the type of the actor `id` stands for declares, and what it is relied on for, as [`Self::declared`] and
+    /// [`Self::reliances`] find them, read at once: what a proof of it reads (ADR-0016, ADR-0054). None when the table
+    /// finds no such actor. A table that keeps both in one place reads them in one lookup.
+    fn proving(&self, id: ActorId) -> Option<(&'static Declared, Relied<'_>)> {
+        self.declared(id).map(|declared| (declared, self.reliances(id)))
+    }
+
+    /// Whether the type of the actor `on` lists every one of `kinds`, the kinds of `relying`, as a cast reads it
+    /// (ADR-0016); when it does, relies on it for `relying`, as [`Self::rely`] does. The proof a cast makes of an
+    /// actor its turn does not hold the type of, in one lookup; a guest's table asks its host, in one call.
+    fn proves(&self, by: Seated, on: Seated, kinds: &[KindId], relying: &[Relying], effects: &mut Vec<Effect>) -> bool {
+        let Some((declared, relied)) = self.proving(on.id) else {
+            return false;
+        };
+        let lists = declared.lists_all(kinds);
+        if lists {
+            relied.ask((by, Prover::Program), on.id, relying.iter().copied(), effects);
+        }
+
+        lists
+    }
+
+    /// Relies on the actor `on` for each of `relying`, which the turn of `by` proved of it: asks, into `effects`, for
+    /// each reliance `on` was not relied on for by the turn's code as the step began (ADR-0054). The engine's table
+    /// relies as the program, whose code every turn it answers runs; a guest's asks its host, which relies as the
+    /// guest's module and asks for each itself. Every proof made at run time relies through here or [`Self::proves`]:
+    /// a cast, a guard that proves a sender, and a spawn by name, once there is one (ADR-0059: `turn.spawn_named`).
+    fn rely(&self, by: Seated, on: Seated, relying: &[Relying], effects: &mut Vec<Effect>) {
+        self.reliances(on.id).ask((by, Prover::Program), on.id, relying.iter().copied(), effects);
     }
 }
 

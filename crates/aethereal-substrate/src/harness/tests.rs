@@ -426,7 +426,8 @@ impl Caster {
 
     #[tell]
     fn note(&mut self, note: Note, turn: &mut Turn<'_, Self>) -> Result<(), Fault> {
-        if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+        let sender = turn.sender();
+        if let Some(sender) = turn.cast::<(Note,)>(sender) {
             turn.to(sender).send(&note)?;
         }
 

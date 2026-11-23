@@ -580,7 +580,7 @@ fn a_reference_casts_to_a_protocol_only_when_its_type_lists_every_kind() {
     let leaf = seated(7, 3);
     let table = Listed(vec![(leaf, ROOT.clone())]);
     let mut asked = Asked::new();
-    let turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
+    let mut turn = opened::<Leaf>(ME, &ROOT, Above::Chassis, &table, &mut asked, ME);
     let held = ErasedActorRef::new(leaf);
 
     let cast = turn.cast::<(Shut, Poke)>(held);
