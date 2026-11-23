@@ -1975,7 +1975,13 @@ impl Reading<'_> {
                             tied(me, (source, tie, context, stepped.sent), filed, asked, &mut outcome);
                         }
                         #[cfg(any(test, feature = "harness"))]
-                        noted.finish(me, &seat.path, outside::Ran::Waiting, &outcome, &mut lists.turned);
+                        noted.finish(
+                            me,
+                            &seat.path,
+                            outside::Ran::Waiting,
+                            (&outcome, asked.effects()),
+                            &mut lists.turned,
+                        );
                         lists.drop_untaken(me, keeping, handed);
                         let ran = Ran::of(me, outcome, asked, context);
 
@@ -2063,7 +2069,13 @@ impl Reading<'_> {
                 debts.settle_closing(me, *context, asked, &mut ended);
             }
             #[cfg(any(test, feature = "harness"))]
-            self.recording.closing(me, (&sitting.path, context.depth), why, &ended, &mut lists.turned);
+            self.recording.closing(
+                me,
+                (&sitting.path, context.depth),
+                why,
+                (&ended, asked.effects()),
+                &mut lists.turned,
+            );
             let buffers = asked.buffers_mut();
             // A closing turn that fails asks for nothing: only its log lines are kept, and the engine adds
             // its fault to them (ADR-0009). Either way the engine adds that the actor's life is over, after
@@ -2213,7 +2225,7 @@ impl Reading<'_> {
                     tied(me, (hop.from, hop.tie, chain, sent_before), filed, asked, &mut outcome);
                 }
                 #[cfg(any(test, feature = "harness"))]
-                noted.finish(me, &seat.path, outside::Ran::Hop, &outcome, &mut lists.turned);
+                noted.finish(me, &seat.path, outside::Ran::Hop, (&outcome, asked.effects()), &mut lists.turned);
 
                 outcome
             };

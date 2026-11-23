@@ -3,7 +3,7 @@
 use crate::id::spawned;
 use crate::log::{MOST_RECENT, share};
 use crate::{ByActor, Context, Part, View};
-use aethereal_actor::{Arena, Declared, Effect, SeatNumber, What};
+use aethereal_actor::{Arena, Code, Declared, Effect, Reliance, Reliances, Relied, SeatNumber, What};
 use aethereal_data::{ActorId, PathSegment};
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -90,17 +90,29 @@ pub struct Entry {
     seat: SeatNumber,
     /// What the actor's type declares (ADR-0013).
     declared: &'static Declared,
+    /// What the actor is relied on for: written as it is made, by its code, and grown by each proof of it (ADR-0054).
+    relies: Relies,
+}
+
+/// What a live actor is relied on for (ADR-0054).
+enum Relies {
+    /// Nothing: a native actor, whose code is the program's own and never moves, so no proof of it relies on it.
+    Never,
+    /// What a guest is relied on for, which only grows while it runs: empty as it is made, and let go of once it ends,
+    /// when its entry is kept only to name it.
+    On(Reliances),
 }
 
 /// What the view keeps of an effect.
 pub enum Record {
-    /// An actor of the type `declared` describes was made at `segment`, beneath `above` where it is not a root, in
-    /// `seat`.
-    Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber, declared: &'static Declared },
+    /// An actor made from the code `from` was made at `segment`, beneath `above` where it is not a root, in `seat`.
+    Made { above: Option<ActorId>, segment: PathSegment, seat: SeatNumber, from: Code },
     /// The actor ended.
     Ended,
     /// The actor runs code whose type `declared` declares from now on, as it moved onto its kind's head (ADR-0054).
     Moved { declared: &'static Declared },
+    /// The actor, a guest, is relied on for this from now on (ADR-0054).
+    Relied(Reliance),
 }
 
 impl Entry {
@@ -123,6 +135,42 @@ impl Entry {
     pub(super) const fn declared(&self) -> &'static Declared {
         self.declared
     }
+
+    /// What the actor is relied on for (ADR-0054).
+    pub(super) const fn relied(&self) -> Relied<'_> {
+        match &self.relies {
+            Relies::Never => Relied::Native,
+            Relies::On(reliances) => Relied::Guest(reliances),
+        }
+    }
+
+    /// The entry as it is kept once its actor has ended, only to name it: what it was relied on for is let go of.
+    fn ended(self) -> Self {
+        let relies = match self.relies {
+            Relies::Never => Relies::Never,
+            Relies::On(_) => Relies::On(Reliances::default()),
+        };
+
+        Self { relies, ..self }
+    }
+}
+
+impl Relies {
+    /// What an actor made from `from` is relied on for as it is made: nothing yet of a guest, and never anything of a
+    /// native actor.
+    fn of(from: Code) -> Self {
+        match from {
+            Code::Linked(_) => Self::Never,
+            Code::Blob(_) => Self::On(Reliances::default()),
+        }
+    }
+
+    /// Adds `reliance`, when the actor is a guest.
+    fn add(&mut self, reliance: Reliance) {
+        if let Self::On(reliances) = self {
+            reliances.add(reliance);
+        }
+    }
 }
 
 impl View for Actors {
@@ -139,8 +187,9 @@ impl View for Actors {
     /// used before it asks, so that is two paths with one id or a fault in the engine, and neither has a way on.
     fn fold(shard: &mut Standing, key: u64, record: Record, _: &[Arena]) {
         match record {
-            Record::Made { above, segment, seat, declared } => {
-                let held = shard.live.insert(key, Entry { above, segment, seat, declared });
+            Record::Made { above, segment, seat, from } => {
+                let (declared, relies) = (from.declared(), Relies::of(from));
+                let held = shard.live.insert(key, Entry { above, segment, seat, declared, relies });
                 assert!(
                     held.is_none(),
                     "actor table: an actor was made under the id {key:#018x}, which is already held"
@@ -148,7 +197,14 @@ impl View for Actors {
             }
             Record::Ended => {
                 if let Some(entry) = shard.live.remove(&key) {
-                    shard.ended.keep(key, entry);
+                    shard.ended.keep(key, entry.ended());
+                }
+            }
+            // A reliance on an actor the table does not hold, ended or never made, is let go of, and a native actor
+            // is relied on for nothing.
+            Record::Relied(reliance) => {
+                if let Some(entry) = shard.live.get_mut(&key) {
+                    entry.relies.add(reliance);
                 }
             }
             // An actor that ended in the step it moved in is kept as it was.
@@ -166,29 +222,28 @@ fn record(effect: &Effect) -> Option<(u64, Record)> {
     let by = effect.by();
     let seat = effect.seated().seat;
     let (id, record) = match effect.what() {
-        What::Root { from } => {
-            (by, Record::Made { above: None, segment: from.singleton(), seat, declared: from.declared() })
-        }
+        What::Root { from } => (by, Record::Made { above: None, segment: from.singleton(), seat, from: *from }),
         What::RootInstanced { from, key } => {
-            (by, Record::Made { above: None, segment: from.instanced(key), seat, declared: from.declared() })
+            (by, Record::Made { above: None, segment: from.instanced(key), seat, from: *from })
         }
         What::Failed(_) | What::Close => (by, Record::Ended),
         What::Moved { declared } => (by, Record::Moved { declared }),
+        What::Relied { on, reliance } => (*on, Record::Relied(*reliance)),
         _ => {
             let (child, segment) = spawned(effect)?;
-            let declared = made_from(effect)?;
+            let from = made_from(effect)?;
 
-            (child.id, Record::Made { above: Some(by), segment, seat: child.seat, declared })
+            (child.id, Record::Made { above: Some(by), segment, seat: child.seat, from })
         }
     };
 
     Some((id.bits(), record))
 }
 
-/// What the type of the child `effect` stands up declares, or none for an effect that stands up no child.
-const fn made_from(effect: &Effect) -> Option<&'static Declared> {
+/// The code the child `effect` stands up is made from, or none for an effect that stands up no child.
+const fn made_from(effect: &Effect) -> Option<Code> {
     match effect.what() {
-        What::Spawn { from, .. } | What::SpawnInstanced { from, .. } => Some(from.declared()),
+        What::Spawn { from, .. } | What::SpawnInstanced { from, .. } => Some(*from),
         _ => None,
     }
 }

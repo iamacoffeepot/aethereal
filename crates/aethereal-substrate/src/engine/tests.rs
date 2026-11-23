@@ -646,19 +646,22 @@ impl Node {
                 return Err(Fault::new(&note)?);
             }
             Order::Reply => {
-                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                let sender = turn.sender();
+                if let Some(sender) = turn.cast::<(Note,)>(sender) {
                     turn.to(sender).send(&answer())?;
                 }
             }
             Order::Pair => {
-                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                let sender = turn.sender();
+                if let Some(sender) = turn.cast::<(Note,)>(sender) {
                     turn.to(sender).send(&bounce(2))?;
                     turn.to(sender).send(&last())?;
                 }
             }
             Order::Bounce(0) => {}
             Order::Bounce(left) => {
-                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                let sender = turn.sender();
+                if let Some(sender) = turn.cast::<(Note,)>(sender) {
                     turn.to(sender).send(&bounce(left - 1))?;
                 }
             }
@@ -690,7 +693,8 @@ impl Node {
                 turn.to(turn.me()).send(&rest)?;
             }
             Order::Keep => {
-                if let Some(sender) = turn.cast::<(Note,)>(turn.sender()) {
+                let sender = turn.sender();
+                if let Some(sender) = turn.cast::<(Note,)>(sender) {
                     turn.to(sender).send(&said(Word::Late))?;
                 }
             }

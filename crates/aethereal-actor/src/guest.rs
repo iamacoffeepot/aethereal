@@ -33,7 +33,10 @@ use crate::{
     Fault, How, Item, Tie, Tied, Unanswered,
 };
 use crate::{Beginning, Birth, BlobType, Closing, Guests, Instances, Keeps, Mail, PinSource, Preparing, Puts, Refused};
-use crate::{OldState, Owed, Owes, Runs, SeatNumber, Seated, Seats, SenderType, Table, Time, Turning, Unfit, What};
+use crate::{
+    Effect, OldState, Owed, Owes, Relying, Runs, SeatNumber, Seated, Seats, SenderType, Table, Time, Turning, Unfit,
+    What,
+};
 use crate::{Upgrade, Upgrades};
 use crate::{holders, pins};
 use aethereal_data::{
@@ -191,10 +194,20 @@ pub struct Calls {
     /// Whether the sender of the item of the batch handed in at the index sent it as the type of the id, as its host
     /// holds the stamp the engine put on it at the send: one when it did (ADR-0058).
     pub sent_is: extern "C" fn(u32, u64) -> u32,
-    /// Whether the type the sender of the item of the batch handed in at the index sent it as lists every kind of the
-    /// ids written at the address, of the length, as its host holds the stamp the engine put on it at the send: one
-    /// when it does (ADR-0058).
-    pub sent_lists: extern "C" fn(u32, u32, u32) -> u32,
+    /// Whether the type the sender of the item of the batch handed in at the index, the actor of the id, sent it as
+    /// lists the kind of every [`Relying`] written at the address, of the length, as its host holds the stamp the
+    /// engine put on it at the send: one when it does (ADR-0058). When it does, its host relies on the sender for each,
+    /// as the guest's module, for the call's turn of the index, where the sender was not relied on for it as the step
+    /// began (ADR-0054).
+    pub sent_proves: extern "C" fn(u32, u64, u32, u32) -> u32,
+    /// Whether the type of the actor of the id lists the kind of every [`Relying`] written at the address, of the
+    /// length, one after another as [`Relying::to_bytes`] writes them: one when it does. When it does, its host relies
+    /// on the actor for each, as the guest's module, for the call's turn of the index, where the actor was not relied
+    /// on for it as the step began: the proof a cast makes (ADR-0016, ADR-0054).
+    pub proves: extern "C" fn(u32, u64, u32, u32) -> u32,
+    /// Relies on the actor of the id for each [`Relying`] written at the address, of the length, as
+    /// [`Self::proves`] does, for a proof the guest checked itself, of an actor whose type it holds (ADR-0054).
+    pub rely: extern "C" fn(u32, u64, u32, u32),
     /// Whether the table held the actor of the id as the step began, or it was stood up since in the part: one when
     /// it was.
     pub held: extern "C" fn(u64) -> u32,
@@ -1639,6 +1652,26 @@ impl Table for Host {
         (self.calls.lists)(id.bits(), address(kinds.as_ptr()), count(kinds.len())) == 1
     }
 
+    /// Asks the host whether `on`'s type lists every one of `relying`'s kinds, and to rely on it for them when it
+    /// does, as the call's turn running, in one call: the host holds every other actor's type and what each is relied
+    /// on for, and knows the guest's module, so it asks for each reliance itself, and nothing is added to the turn's
+    /// effects here (ADR-0054). A protocol lists at most 64 kinds, so they are written on the stack.
+    fn proves(&self, _: Seated, on: Seated, _: &[KindId], relying: &[Relying], _: &mut Vec<Effect>) -> bool {
+        let mut written = [0u8; Relying::ROOM];
+        let len = Relying::write_all(relying, &mut written);
+
+        (self.calls.proves)(TURN.get(), on.id.bits(), address(written.as_ptr()), count(len)) == 1
+    }
+
+    /// Asks the host to rely on `on` for `relying`, as the call's turn running, as [`Self::proves`] does, for a proof
+    /// the guest checked itself.
+    fn rely(&self, _: Seated, on: Seated, relying: &[Relying], _: &mut Vec<Effect>) {
+        let mut written = [0u8; Relying::ROOM];
+        let len = Relying::write_all(relying, &mut written);
+
+        (self.calls.rely)(TURN.get(), on.id.bits(), address(written.as_ptr()), count(len));
+    }
+
     /// Nothing: the guest holds no other actor's type, and leaves every check of a send to its host, which fails the
     /// turn of a send its declaration does not reach where a native one stops the engine (ADR-0013, ADR-0015).
     fn declared(&self, _: ActorId) -> Option<&'static Declared> {
@@ -1715,14 +1748,15 @@ pub(crate) fn sent_is(calls: &Calls, item: u32, actor_type: KindId) -> bool {
     (calls.sent_is)(item, u64::from_le_bytes(actor_type.plain_bytes())) == 1
 }
 
-/// Whether the type the sender of the `item`th item of the batch sent it as lists every one of `kinds`, asked through
-/// `calls` of the host, which holds the stamp the engine put on it at the send (ADR-0058).
-pub(crate) fn sent_lists(calls: &Calls, item: u32, kinds: &[KindId]) -> bool {
-    let Ok(kinds) = to_bytes(&kinds.to_vec()) else {
-        return false;
-    };
+/// Whether the type the sender of the `item`th item of the batch, the actor `source` stands for, sent it as lists every
+/// one of `relying`'s kinds, asked through `calls` of the host, which holds the stamp the engine put on it at the send
+/// (ADR-0058), and relies on the sender for them when it does, as the guest's module (ADR-0054). A protocol lists at
+/// most 64 kinds, so they are written on the stack.
+pub(crate) fn sent_proves(calls: &Calls, item: u32, source: ActorId, relying: &[Relying]) -> bool {
+    let mut written = [0u8; Relying::ROOM];
+    let len = Relying::write_all(relying, &mut written);
 
-    (calls.sent_lists)(item, address(kinds.as_ptr()), count(kinds.len())) == 1
+    (calls.sent_proves)(item, source.bits(), address(written.as_ptr()), count(len)) == 1
 }
 
 /// Exports the calls a guest's host makes, for the actor types listed, imports the calls out it makes of its host,
@@ -1758,7 +1792,9 @@ macro_rules! guest {
                 safe fn aethereal_is_live(id: u64) -> u32;
                 safe fn aethereal_lists(id: u64, kinds: u32, len: u32) -> u32;
                 safe fn aethereal_sent_is(item: u32, actor_type: u64) -> u32;
-                safe fn aethereal_sent_lists(item: u32, kinds: u32, len: u32) -> u32;
+                safe fn aethereal_sent_proves(item: u32, source: u64, relying: u32, len: u32) -> u32;
+                safe fn aethereal_proves(turn: u32, id: u64, relying: u32, len: u32) -> u32;
+                safe fn aethereal_rely(turn: u32, id: u64, relying: u32, len: u32);
                 safe fn aethereal_held(id: u64) -> u32;
                 safe fn aethereal_take_seat() -> u64;
                 safe fn aethereal_give_back_seat(seat: u64);
@@ -1795,7 +1831,9 @@ macro_rules! guest {
                 is_live: aethereal_is_live,
                 lists: aethereal_lists,
                 sent_is: aethereal_sent_is,
-                sent_lists: aethereal_sent_lists,
+                sent_proves: aethereal_sent_proves,
+                proves: aethereal_proves,
+                rely: aethereal_rely,
                 held: aethereal_held,
                 take,
                 give_back,

@@ -2,6 +2,7 @@
 //! that covers another (ADR-0016).
 
 use super::{Handled, Handles, Lists};
+use crate::Relying;
 use crate::answering::{Answering, Answers};
 use aethereal_data::{Answered, Kind, KindId, KindPtr, ProtocolShape};
 
@@ -71,6 +72,9 @@ impl<T: Handles<K>, K: Kind> Carries<K> for T {
 pub trait CarriedBy<P> {
     /// Each kind, in order, with the kinds `P` carries it as answered with.
     const ANSWERED: &'static [Answered];
+    /// Each kind, in order, with what `P` carries it as answered with, by id: what a proof for `P` relies on its
+    /// target for (ADR-0054).
+    const RELYING: &'static [Relying];
 }
 
 /// A protocol a [`ProtocolRef`](crate::ProtocolRef) reaches an actor by: a tuple of kinds, which are all tells, or a
@@ -81,20 +85,26 @@ pub trait Listed {
     /// What the layout of a reference to it names: its kinds, and for a named protocol what each is answered with
     /// (ADR-0016).
     const PROTOCOL: ProtocolShape;
+    /// Each of its kinds, with what a reference proven for it allows that kind to be answered with: nothing for a
+    /// tuple's, which are all told. What a proof made at run time relies on a guest for (ADR-0054).
+    const RELYING: &'static [Relying];
 }
 
 impl<P: Protocol> Listed for P {
     type Kinds = P::Kinds;
     const PROTOCOL: ProtocolShape = ProtocolShape::Named(<P::Kinds as CarriedBy<P>>::ANSWERED);
+    const RELYING: &'static [Relying] = <P::Kinds as CarriedBy<P>>::RELYING;
 }
 
 impl Listed for () {
     type Kinds = ();
     const PROTOCOL: ProtocolShape = ProtocolShape::Told(&[]);
+    const RELYING: &'static [Relying] = &[];
 }
 
 impl<P> CarriedBy<P> for () {
     const ANSWERED: &'static [Answered] = &[];
+    const RELYING: &'static [Relying] = &[];
 }
 
 /// A tuple of up to 64 kinds, as a protocol lists them, `()` for none: what a [`Listed`] protocol names its kinds by,
@@ -247,6 +257,7 @@ macro_rules! protocols {
         impl<$($kind: Kind),*> Listed for ($($kind,)*) {
             type Kinds = Self;
             const PROTOCOL: ProtocolShape = ProtocolShape::Told(<Self as Kinds>::NODES);
+            const RELYING: &'static [Relying] = &[$(Relying::told(KindId::of::<$kind>())),*];
         }
 
         impl<P: $(Carries<$kind> +)*, $($kind: Kind),*> CarriedBy<P> for ($($kind,)*) {
@@ -254,6 +265,10 @@ macro_rules! protocols {
                 kind: $kind::KIND,
                 answers: <<P as Carries<$kind>>::Answers as Kinds>::NODES,
             }),*];
+            const RELYING: &'static [Relying] = &[$(Relying::answered(
+                KindId::of::<$kind>(),
+                <<P as Carries<$kind>>::Answers as Kinds>::KINDS,
+            )),*];
         }
     )*};
 }

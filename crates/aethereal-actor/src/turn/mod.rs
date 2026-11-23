@@ -785,15 +785,34 @@ impl Seat<'_> {
         self.table.moves()
     }
 
-    /// The reference, to `P`, whose kinds are `kinds`, when the declaration of its actor's type lists every one of
-    /// them: none when one is missing, or the table holds no such actor (ADR-0016). A type this turn cannot read
-    /// itself is read by the table.
-    fn cast<P>(&self, kinds: &[KindId], reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
-        let id = reference.id();
-        let lists =
-            self.declared_at(id).map_or_else(|| self.table.lists(id, kinds), |declared| declared.lists_all(kinds));
+    /// Whether the declaration of the type of the actor `id` stands for lists every one of `kinds`: not when one is
+    /// missing, or the table holds no such actor (ADR-0016). A type this turn cannot read itself is read by the table.
+    fn lists(&self, id: ActorId, kinds: &[KindId]) -> bool {
+        self.declared_at(id).map_or_else(|| self.table.lists(id, kinds), |declared| declared.lists_all(kinds))
+    }
 
-        lists.then(|| ProtocolRef::new(reference.seated()))
+    /// The reference, to `P`, when the declaration of its actor's type lists every kind of `P`: none when one is
+    /// missing, or the table holds no such actor (ADR-0016). A cast that answers is a proof, and relies on its actor
+    /// for what `P` takes, which a guest is asked for as an effect (ADR-0054). A type this turn cannot read itself is
+    /// read by the table, which relies in the same lookup.
+    fn cast<P: Listed>(&mut self, reference: ErasedActorRef) -> Option<ProtocolRef<P>> {
+        let on = reference.seated();
+        let kinds = <P::Kinds as Kinds>::KINDS;
+        let declared = self.declared_here(on.id);
+        let effects = &mut self.asked.buffers.effects;
+        let proves = match declared {
+            Some(declared) => {
+                let lists = declared.lists_all(kinds);
+                if lists {
+                    self.table.rely(self.me, on, P::RELYING, effects);
+                }
+
+                lists
+            }
+            None => self.table.proves(self.me, on, kinds, P::RELYING, effects),
+        };
+
+        proves.then(|| ProtocolRef::new(on))
     }
 
     /// A handle that logs as this actor and does nothing else.
@@ -1187,6 +1206,12 @@ impl Seat<'_> {
     /// What the type of the actor `id` stands for declares: this actor, its parent, a child this turn stood up, or one
     /// the table holds. An actor's own `begin`, and its parent's, may run before the table holds either.
     fn declared_at(&self, id: ActorId) -> Option<&'static Declared> {
+        self.declared_here(id).or_else(|| self.table.declared(id))
+    }
+
+    /// What the type of the actor `id` stands for declares, when this turn holds it without the table: this actor,
+    /// its parent, or a child this turn stood up.
+    fn declared_here(&self, id: ActorId) -> Option<&'static Declared> {
         let is_me = id == self.me.id;
         if is_me {
             return Some(self.declared);
@@ -1198,7 +1223,7 @@ impl Seat<'_> {
             }
         }
 
-        self.asked.stood_declared(id).or_else(|| self.table.declared(id))
+        self.asked.stood_declared(id)
     }
 
     /// The type a guest's refused sender sent its mail as, `sent_as`, its host's stamp, as the refusal names it. A guest
@@ -1632,10 +1657,13 @@ impl<'a> Turning<'a> {
     }
 
     /// The source of the item the turn handles, which sent it as `sender_type`, as the guard of a handler of an actor
-    /// whose type declares `declared` reads it (ADR-0058). It is handed no table: a guard reads only what was fixed
-    /// when the mail was sent, and what is fixed of the receiver.
-    pub(crate) const fn sender(&self, declared: &'static Declared, sender_type: SenderType) -> Sender<'_> {
-        Sender::new(self.source, sender_type, self.me, declared, self.above, self.made)
+    /// whose type declares `declared` reads it (ADR-0058). A guard reads only what was fixed when the mail was sent,
+    /// and what is fixed of the receiver: the table it is handed is read only to rely on a sender a guard proves
+    /// (ADR-0054).
+    pub(crate) fn sender(&mut self, declared: &'static Declared, sender_type: SenderType) -> Sender<'_> {
+        let relying = (self.table, &mut self.asked.buffers.effects);
+
+        Sender::new(self.source, sender_type, self.me, declared, self.above, self.made, relying)
     }
 
     /// The turn of the handler of `A`, whose type declares `declared`, and whose guard `F` checked the sender as
@@ -2373,10 +2401,10 @@ impl<Me, F: Guard<Me>> Doing<'_, Me, F> {
 
     /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
     /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
-    /// answers with is not checked again.
+    /// answers with is not checked again. A cast of a guest relies on it for what `P` takes (ADR-0054).
     #[must_use]
-    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
+    pub fn cast<P: Listed>(&mut self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
     }
 }
 
@@ -2764,10 +2792,10 @@ impl<Me> Beginning<'_, Me> {
 
     /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
     /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
-    /// answers with is not checked again.
+    /// answers with is not checked again. A cast of a guest relies on it for what `P` takes (ADR-0054).
     #[must_use]
-    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
+    pub fn cast<P: Listed>(&mut self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
     }
 }
 
@@ -3042,9 +3070,9 @@ impl<Me> Ending<'_, Me> {
 
     /// The actor `reference` refers to, as a reference to `P`, a tuple of kinds or a named protocol, when its type
     /// lists every kind of `P`: none when one is missing (ADR-0016). It is read once, here, and the reference it
-    /// answers with is not checked again.
+    /// answers with is not checked again. A cast of a guest relies on it for what `P` takes (ADR-0054).
     #[must_use]
-    pub fn cast<P: Listed>(&self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
-        self.seat.cast(<P::Kinds as Kinds>::KINDS, reference.into())
+    pub fn cast<P: Listed>(&mut self, reference: impl Into<ErasedActorRef>) -> Option<ProtocolRef<P>> {
+        self.seat.cast(reference.into())
     }
 }

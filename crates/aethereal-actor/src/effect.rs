@@ -3,7 +3,9 @@
 
 #[cfg(feature = "std")]
 use crate::Bytes;
-use crate::{BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, SeatNumber, Seated, SentAs, Unreadable};
+use crate::{
+    BlobId, Declared, Due, ErasedActorRef, Fault, How, Payload, Reliance, SeatNumber, Seated, SentAs, Unreadable,
+};
 use aethereal_data::{ActorId, KeyName, KindId, KindName, PathSegment};
 
 /// One thing an actor asks of the engine, and which actor asked (ADR-0009).
@@ -101,6 +103,11 @@ pub enum What {
     /// on: its path, seat and place in the table are as they were. Written by the engine for the actor's host, which
     /// moved it before a batch of its turns (ADR-0054).
     Moved { declared: &'static Declared },
+    /// The guest `on` stands for is relied on for `reliance` from now on: a reference to it was proven for its kind,
+    /// by the asking actor's code, in a turn whose step began with it not yet relied on for that (ADR-0054). Many
+    /// actors rely on one guest, and its reliances are a set, so they fold alike in whatever order they come. The table
+    /// keeps it under the guest's id, so its seat is not carried, and the effect is no wider than the widest other.
+    Relied { on: ActorId, reliance: Reliance },
 }
 
 impl Effect {

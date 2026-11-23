@@ -1,11 +1,14 @@
 //! The source of the item being handled, as a guard reads it (ADR-0058).
 
 #[cfg(feature = "guest")]
-use crate::guest::{Calls, sent_is, sent_lists};
+use crate::guest::{Calls, sent_is, sent_proves};
 use crate::{
-    Above, Actor, ActorRef, ChildOf, Children, Declared, ErasedActorRef, Kinds, Listed, ProtocolRef, Seated, SentAs,
+    Above, Actor, ActorRef, ChildOf, Children, Declared, Effect, ErasedActorRef, Kinds, Listed, ProtocolRef, Relying,
+    Seated, SentAs, Table,
 };
 use aethereal_data::KindId;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 /// The source of the item being handled, as the receiver's turn reads it: nothing is read until a guard asks
 /// (ADR-0058).
@@ -16,6 +19,10 @@ use aethereal_data::KindId;
 /// delivery: a sender that ended after it sent, from its closing turn among others, or moved onto new code, is checked
 /// as it was when it sent (ADR-0020, ADR-0054). Each check answers the reference a guard hands on, typed, so a guard
 /// never casts.
+///
+/// A check that proves the sender takes a protocol relies on it for what the protocol takes, as a cast does: that
+/// alone reads the table, and only to ask whether the sender is relied on for it already, never to decide what the
+/// guard admits (ADR-0054).
 pub struct Sender<'t> {
     source: Seated,
     /// The type the sender sent the mail as, stamped at the send.
@@ -26,6 +33,12 @@ pub struct Sender<'t> {
     above: Above,
     /// The children the receiver made before this step, live or ended.
     made: &'t dyn Children,
+    /// The table as the step began, which says whether the sender is relied on already.
+    table: &'t dyn Table,
+    /// The receiving turn's effects, which a proof of the sender adds what it relies on to. A guard reads the sender
+    /// shared, through `&Sender`, so the one borrow of them a proof takes is checked as it is taken; nothing else
+    /// borrows them while the guard runs.
+    effects: RefCell<&'t mut Vec<Effect>>,
 }
 
 /// The type the sender of a piece of mail sent it as, as a guard reads it: stamped on the mail at the send (ADR-0058).
@@ -50,20 +63,23 @@ impl SenderType {
         }
     }
 
-    /// Whether the type lists every one of `kinds`, as a cast reads it (ADR-0016).
+    /// The engine's stamp, when it is one: none for a stamp only a guest's host holds, which a guest asks it about
+    /// (ADR-0015).
     #[must_use]
-    pub fn lists_all(self, kinds: &[KindId]) -> bool {
+    pub const fn stamped(self) -> Option<SentAs> {
         match self {
-            Self::Stamped(sent_as) => sent_as.lists_all(kinds),
+            Self::Stamped(sent_as) => Some(sent_as),
             #[cfg(feature = "guest")]
-            Self::Hosted { item, calls } => sent_lists(calls, item, kinds),
+            Self::Hosted { .. } => None,
         }
     }
 }
 
 impl<'t> Sender<'t> {
     /// The sender `source` names, which sent the mail as `sent_as`, of mail handed to the actor `me` names, whose
-    /// type declares `declared`, which stands beneath `above`, and has made the children `made` holds.
+    /// type declares `declared`, which stands beneath `above`, and has made the children `made` holds; a proof of it
+    /// reads `table`, as the step began, and adds what it relies on to `effects`.
+    #[allow(clippy::too_many_arguments, reason = "what a sender is read with, each fixed by the receiving turn")]
     pub(crate) const fn new(
         source: Seated,
         sent_as: SenderType,
@@ -71,8 +87,9 @@ impl<'t> Sender<'t> {
         declared: &'static Declared,
         above: Above,
         made: &'t dyn Children,
+        (table, effects): (&'t dyn Table, &'t mut Vec<Effect>),
     ) -> Self {
-        Self { source, sent_as, me, declared, above, made }
+        Self { source, sent_as, me, declared, above, made, table, effects: RefCell::new(effects) }
     }
 
     /// Who it is.
@@ -87,12 +104,18 @@ impl<'t> Sender<'t> {
         self.sent_as.is(KindId::of::<T>()).then(|| ActorRef::new(self.source))
     }
 
-    /// It, when the type it sent the mail as lists every kind of `P`, as a cast reads it (ADR-0016).
+    /// It, when the type it sent the mail as lists every kind of `P`, as a cast reads it (ADR-0016). A proof that
+    /// answers relies on the sender for what `P` takes, as a cast does (ADR-0054).
     #[must_use]
     pub fn speaking<P: Listed>(&self) -> Option<ProtocolRef<P>> {
-        let kinds = <P::Kinds as Kinds>::KINDS;
+        let proves = match self.sent_as {
+            SenderType::Stamped(sent_as) => self.proves(sent_as, <P::Kinds as Kinds>::KINDS, P::RELYING),
+            // The guest's host holds the stamp, and the reliances, and does both in one call.
+            #[cfg(feature = "guest")]
+            SenderType::Hosted { item, calls } => sent_proves(calls, item, self.source.id, P::RELYING),
+        };
 
-        self.sent_as.lists_all(kinds).then(|| ProtocolRef::new(self.source))
+        proves.then(|| ProtocolRef::new(self.source))
     }
 
     /// It, when it is the receiver's own seat, and the receiver is of type `A`.
@@ -124,6 +147,19 @@ impl<'t> Sender<'t> {
         let is_admitted = is_child && is_type;
 
         is_admitted.then(|| ActorRef::new(self.source))
+    }
+
+    /// Whether the type the sender sent the mail as, `sent_as`, lists every one of `kinds`, the kinds of `relying`;
+    /// when it does, relies on the sender for `relying`, as the receiver's turn, as a cast relies on its actor
+    /// (ADR-0054).
+    fn proves(&self, sent_as: SentAs, kinds: &[KindId], relying: &[Relying]) -> bool {
+        let lists = sent_as.lists_all(kinds);
+        if lists {
+            let mut effects = self.effects.borrow_mut();
+            self.table.rely(self.me, self.source, relying, &mut effects);
+        }
+
+        lists
     }
 
     /// The receiver's parent, and its seat: none for a root.

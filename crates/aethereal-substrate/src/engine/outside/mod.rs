@@ -4,11 +4,11 @@
 use super::{Engine, Holding, ROOTS, parity};
 use crate::{Life, lives, table};
 use aethereal_actor::{
-    Actor, Actors, Asking, Awaited, Chain, Closing, Code, Declared, Due, Ended, Fault, Item, JobId, Mail, MailId,
-    Mailed, Owed, PinSource, Pinning, Preparing, Refused, Runs, Seated, SenderType, StateSchema, Tie, Tied, Turning,
-    Unanswered, Upgrade, Upgraded, Why, Written, actor,
+    Actor, Actors, Asking, Awaited, Chain, Closing, Code, Declared, Due, Effect, Ended, Fault, Item, JobId, Mail,
+    MailId, Mailed, Owed, PinSource, Pinning, Preparing, Refused, Reliance, Runs, Seated, SenderType, StateSchema, Tie,
+    Tied, Turning, Unanswered, Upgrade, Upgraded, What, Why, Written, actor,
 };
-use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
+use aethereal_data::{ActorId, ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment, Plain};
 use core::any::Any;
 use crossbeam_queue::SegQueue;
 use std::iter;
@@ -186,6 +186,9 @@ pub struct Turned {
     pub ran: Ran,
     pub handed: Handed,
     pub outcome: Result<(), Fault>,
+    /// What the turn asked that a guest be relied on for, each with the guest, in the order asked: what its proofs
+    /// relied on that their guests were not relied on for as the step began (ADR-0054).
+    pub relied: Vec<(ActorId, Reliance)>,
 }
 
 /// An ask the engine made of an actor behind its kind's head, whether to move onto it, as it recorded it: before a
@@ -270,35 +273,48 @@ impl Recording {
         asked.push(AskedToMove { actor, answer, publish });
     }
 
-    /// Records the closing turn of `me`, at `path` and `depth`, which runs for `why` and ended as `outcome` says.
+    /// Records the closing turn of `me`, at `path` and `depth`, which runs for `why`, ended as `outcome` says, and
+    /// asked for `effects`.
     pub(super) fn closing(
         self,
         me: Seated,
         (path, depth): (&ActorPath, u32),
         why: Why,
-        outcome: &Result<(), Fault>,
+        (outcome, effects): (&Result<(), Fault>, &[Effect]),
         turned: &mut Vec<Turned>,
     ) {
         if let Self::At(step) = self {
             let (ran, handed, outcome, path) = (Ran::Closing, Handed::Closing(why), outcome.clone(), path.clone());
-            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
+            let relied = relied(effects);
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome, relied });
         }
     }
 }
 
+/// What `effects` asked that a guest be relied on for, each with the guest, in the order asked (ADR-0054).
+fn relied(effects: &[Effect]) -> Vec<(ActorId, Reliance)> {
+    let relied = effects.iter().filter_map(|effect| match effect.what() {
+        What::Relied { on, reliance } => Some((*on, *reliance)),
+        _ => None,
+    });
+
+    relied.collect()
+}
+
 impl Noted {
-    /// Records the turn of `me`, at `path`, it was noted for, which ran as `ran` and ended as `outcome` says.
+    /// Records the turn of `me`, at `path`, it was noted for, which ran as `ran`, ended as `outcome` says, and asked
+    /// for `effects`.
     pub(super) fn finish(
         self,
         me: Seated,
         path: &ActorPath,
         ran: Ran,
-        outcome: &Result<(), Fault>,
+        (outcome, effects): (&Result<(), Fault>, &[Effect]),
         turned: &mut Vec<Turned>,
     ) {
         if let Self::Recorded { step, depth, handed } = self {
-            let (path, outcome) = (path.clone(), outcome.clone());
-            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome });
+            let (path, outcome, relied) = (path.clone(), outcome.clone(), relied(effects));
+            turned.push(Turned { actor: me, path, step, depth, ran, handed, outcome, relied });
         }
     }
 }

@@ -145,7 +145,7 @@ impl<A: Handles<K>, K: Kind + Decode<Actors> + 'static> Reached<A> for K {
 
     #[allow(clippy::inline_always, reason = "once for every turn, in place of the call to the handler it wraps")]
     #[inline(always)]
-    fn hand(actor: &mut A, item: Item<'_>, turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault> {
+    fn hand(actor: &mut A, item: Item<'_>, mut turning: Turning<'_>, declared: &'static Declared) -> Result<(), Fault> {
         let Item::Mail(sent) = item else {
             unreachable!("only mail of its kind is handed to a kind's handler");
         };

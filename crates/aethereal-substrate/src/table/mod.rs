@@ -9,7 +9,7 @@ use crate::id::{child_id, path_id};
 use crate::{Column, Context, Folded, Routed};
 pub use actors::Actors;
 use actors::Entry;
-use aethereal_actor::{BlobHash, BlobId, Bytes, Declared, Effect, SeatNumber, Seated, Table, Time};
+use aethereal_actor::{BlobHash, BlobId, Bytes, Declared, Effect, Relied, SeatNumber, Seated, Table, Time};
 use aethereal_data::{ActorId, ActorPath, KindId, KindName, PathSegment};
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
@@ -68,6 +68,15 @@ impl Table for ActorTable {
 
     fn path_of(&self, id: ActorId) -> Option<ActorPath> {
         Self::path(self, id)
+    }
+
+    fn reliances(&self, id: ActorId) -> Relied<'_> {
+        Self::reliances(self, id)
+    }
+
+    /// Both from the actor's entry, in one lookup.
+    fn proving(&self, id: ActorId) -> Option<(&'static Declared, Relied<'_>)> {
+        self.entry(id).map(|entry| (entry.declared(), entry.relied()))
     }
 
     /// The table holds no blobs: a turn reads them through what the engine opens it with, beside the table.
@@ -222,6 +231,14 @@ impl ActorTable {
     #[must_use]
     pub fn seat(&self, id: ActorId) -> Option<SeatNumber> {
         self.entry(id).map(Entry::seat)
+    }
+
+    /// What the actor `id` stands for is relied on for (ADR-0054): nothing of a native actor, and of a live guest what
+    /// every proof of it has relied on it for while it ran, which the harness and the move check read. An actor the
+    /// table does not hold, never made or ended, is unheld.
+    #[must_use]
+    pub fn reliances(&self, id: ActorId) -> Relied<'_> {
+        self.entry(id).map_or(Relied::Unheld, Entry::relied)
     }
 
     /// The actor directly above the one `id` stands for, when that one is live and is not a root.

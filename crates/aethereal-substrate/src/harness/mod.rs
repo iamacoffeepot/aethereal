@@ -11,8 +11,8 @@ use crate::engine::outside::{Reached, Unsent};
 use crate::program::{Bootstraps, Builds, Program, ProgramError};
 use crate::{Clock, Engine};
 use aethereal_actor::{
-    Actor, ActorRef, Actors, Admits, Answered, Bytes, Carries, Declared, Fits, Handled, Handles, Ordered, Owed,
-    Protocol, ProtocolRef, Proven, Reaches, Refused, Root, Seated, Table, Tie, Time, Unanswered,
+    Actor, ActorRef, Actors, Admits, Answered, Bytes, Carries, Declared, ErasedActorRef, Fits, Handled, Handles,
+    Ordered, Owed, Protocol, ProtocolRef, Proven, Reaches, Refused, Relied, Root, Seated, Table, Tie, Time, Unanswered,
 };
 use aethereal_data::{ActorPath, Decode, DecodeError, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::any;
@@ -527,6 +527,14 @@ impl<H: Steps> Harness<H> {
         turned.retain(|turn| turn.actor != outside);
 
         turned
+    }
+
+    /// What the actor `actor` refers to is relied on for, as of the last step: nothing of a native actor, a live
+    /// guest's reliances, and unheld for one that has ended (ADR-0054).
+    pub fn relied(&mut self, actor: impl Into<ErasedActorRef>) -> Relied<'_> {
+        let id = actor.into().id();
+
+        self.host.engine().table().reliances(id)
     }
 
     /// The state of the actor `actor` refers to, as of the last step.

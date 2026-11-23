@@ -51,6 +51,15 @@ impl SentAs {
             Self::Engine => false,
         }
     }
+
+    /// Whether its type lists every one of `kinds`, as [`Self::lists_all`] reads them, taken one by one: for a host
+    /// that reads them where a guest wrote them.
+    pub fn lists_each(self, mut kinds: impl Iterator<Item = KindId>) -> bool {
+        match self {
+            Self::Actor(declared) => kinds.all(|kind| declared.lists(kind)),
+            Self::Engine => false,
+        }
+    }
 }
 
 /// It, by the name of its type.

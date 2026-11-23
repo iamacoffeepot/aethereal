@@ -6,10 +6,10 @@ use crate::resource::{Reach, Resources};
 use crate::{
     Above, Asked, Asking, Awaited, Chain, Claim, Claimed, Code, Declared, Due, Effect, ErasedActorRef, Fault, Gift,
     Giver, Instances, JobCode, JobId, Keeping, Level, Line, MailId, Mailed, NotHeld, NotOwed, Owed, Owes, Payload,
-    Puts, Runs, SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written, carry,
-    take_claimed,
+    Puts, Reliance, Runs, SeatNumber, Seated, Seats, SentAs, Spares, Submitted, Table, Tie, Unreadable, What, Written,
+    carry, take_claimed,
 };
-use aethereal_data::{ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
+use aethereal_data::{ActorId, ActorPath, KeyName, Keyed, KindId, PathSegment, Plain};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
@@ -770,6 +770,13 @@ impl<'a> Hosted<'a> {
     /// Closes this actor, as [`Turn::close`](crate::Turn::close) does.
     pub fn close(&mut self) {
         self.seat.ask(What::Close);
+    }
+
+    /// Asks that the guest `on` stands for be relied on for `reliance`, which a proof this turn's guest made of it
+    /// relies on and its host found it was not relied on for as the step began, as a native proof asks (ADR-0054).
+    pub fn rely(&mut self, on: ActorId, reliance: Reliance) {
+        let me = self.seat.me;
+        self.seat.asked.buffers.effects.push(reliance.asked(me, on));
     }
 
     /// Asks the engine to answer the item this turn handles `Unreadable` when it is a request, and otherwise to drop

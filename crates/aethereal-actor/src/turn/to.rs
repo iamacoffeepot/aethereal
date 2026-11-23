@@ -1,9 +1,7 @@
 //! What a turn's `to` hands back: a target, found once, that sends and asks chain on (ADR-0016, ADR-0022).
 
 use super::Seat;
-use crate::{
-    Actors, Askable, Due, ErasedActorRef, Kinds, ProtocolRef, Proven, Reaches, SeatNumber, Seated, Table, Within,
-};
+use crate::{Actors, Askable, Due, Kinds, Proven, Reaches, SeatNumber, Seated, Table, Within};
 use aethereal_data::{ActorId, Encode, EncodeError, Kind, KindId, PathSegment};
 use core::marker::PhantomData;
 
@@ -136,14 +134,19 @@ impl<'s, 'a> Vantage<'s, 'a> {
     }
 
     /// The actor directly above the sender, when its type lists every one of `P`'s kinds, as a cast finds:
-    /// otherwise, and for a root, the place in [`SeatNumber::NOWHERE`].
+    /// otherwise, and for a root, the place in [`SeatNumber::NOWHERE`]. It is found for one send, and proves no
+    /// reference, so it relies on nothing (ADR-0054).
     pub(crate) fn parent<P: Kinds>(&self) -> Seated {
         let Some(parent) = self.seat.above() else {
             return Seated { id: ActorId::new(0), seat: SeatNumber::NOWHERE };
         };
-        let cast = self.seat.cast::<P>(P::KINDS, ErasedActorRef::new(parent));
+        let lists = self.seat.lists(parent.id, P::KINDS);
 
-        cast.map_or(Seated { id: parent.id, seat: SeatNumber::NOWHERE }, ProtocolRef::seated)
+        if lists {
+            parent
+        } else {
+            Seated { id: parent.id, seat: SeatNumber::NOWHERE }
+        }
     }
 
     /// The place `above` then `last` name beneath the sender, from a child of its own down, when one of kind `kind` is
